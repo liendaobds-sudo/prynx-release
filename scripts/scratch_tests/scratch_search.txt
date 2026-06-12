@@ -1,0 +1,1389 @@
+3: // === BẮT ĐẦU: POLYFILL CHO Array.prototype.indexOf ===
+33: // === KẾT THÚC POLYFILL ===
+82: // === BẮT ĐẦU: POLYFILL CHO Object.keys ===
+124: // === KẾT THÚC: POLYFILL CHO Object.keys ===
+126: // Script BẾ - XÉN - Khánh Phạm Print
+427: var fields = ['status', 'message', 'expires_at', 'remaining_days', 'customer_name'];
+628: var mainPart = str.replace(/[Zz]$/, '').replace(/[+\-]\d{2}:\d{2}$/, '');
+629: var parts = mainPart.split('T');
+790: dlg.orientation = "column"; dlg.alignChildren = ["fill", "top"]; dlg.spacing = 10; dlg.margins = 20;
+807: if (res.remaining_days && res.remaining_days > 0) {
+808: daysLeft = "\nRemaining / Còn lại: " + res.remaining_days + " days / ngày";
+810: daysLeft = "\nRemaining / Còn lại: ∞ Permanent / Vĩnh viễn";
+939: var SCRIPT_TITLE_VI = "BẾ - XÉN   |  \u00A9 PrintSolutions.vn"; //   |   In ấn theo phong cách mì ăn liền
+946: var AUTOMATION_LAYER_NAME = "RegMarks";
+986: var customPontSettings = { markType: 0, markSize: 5, hasWhiteMask: false, addQR: false, qrSize: 7, qrDist: 7, color: 'black' };
+1013: fillBlockGapMM: 0,
+1060: if (typeof rd.fillBlockGapMM === 'number') reportDisplaySettings.fillBlockGapMM = rd.fillBlockGapMM;
+1074: dlg.alignChildren = ["fill", "top"];
+1086: // === MAIN GRID ===
+1087: var grpMain = dlg.add("group");
+1088: grpMain.orientation = "row";
+1089: grpMain.alignChildren = ["fill", "top"];
+1090: grpMain.spacing = 15;
+1092: var colLeft = grpMain.add("group"); colLeft.orientation = "column"; colLeft.alignChildren = ["fill", "top"];
+1093: var colRight = grpMain.add("group"); colRight.orientation = "column"; colRight.alignChildren = ["fill", "top"];
+1096: var pnlMarkConfig = colLeft.add("panel", undefined, lbl.pnlMarkConfig);
+1097: pnlMarkConfig.orientation = "column";
+1098: pnlMarkConfig.alignChildren = "left";
+1099: pnlMarkConfig.spacing = 8;
+1102: var grpType = pnlMarkConfig.add("group");
+1105: ddType.selection = currentSettings.markType || 0;
+1109: var grpSize = pnlMarkConfig.add("group");
+1111: var inpSize = grpSize.add("edittext", undefined, currentSettings.markSize);
+1116: var grpWeight = pnlMarkConfig.add("group");
+1123: var grpNameInfo = pnlMarkConfig.add("group");
+1128: var inpGrpName = grpNameInfo.add("edittext", undefined, currentSettings.markGroupName || "MarkLine");
+1132: var grpItemInfo = pnlMarkConfig.add("group");
+1136: var inpItemName = grpItemInfo.add("edittext", undefined, currentSettings.markItemName || "MKLINE");
+1142: pnlPos.alignChildren = ["fill", "top"];
+1195: var sepGuide = pnlGuide.add("panel"); sepGuide.alignment = "fill"; sepGuide.preferredSize.height = 1;
+1226: // Cập nhật phần độ dày L-mark (Cho cả loại 1 và 2)
+1227: var isStrokeMark = (ddType.selection.index === 1 || ddType.selection.index === 2);
+1228: inpLWeight.enabled = isStrokeMark;
+1242: markGroupName: inpGrpName.text || "MarkLine",
+1243: markItemName: inpItemName.text || "MKLINE",
+1244: markType: ddType.selection.index,
+1245: markSize: parseFloat(inpSize.text) || 5,
+1253: addCenterMark: false, // Mặc định không ốc giữa
+1276: var btnGrp = dlg.add("group"); btnGrp.orientation = "row"; btnGrp.alignment = "fill";
+1319: var sizePt = (settings.markSize || 5) * mm2pt;
+1327: var groupNameStr = settings.markGroupName || "MarkLine";
+1328: var itemNameStr = settings.markItemName || "MKLINE";
+1331: var mainGroup = layer.groupItems.add();
+1332: mainGroup.name = groupNameStr; // Đặt tên cho Group tổng
+1359: function drawSingleMark(cx, cy, type, loc) {
+1362: targetContainer = mainGroup.groupItems.add(); // Group con chứa nền + ốc
+1364: targetContainer = mainGroup; // Vẽ thẳng vào group tổng
+1370: bg.fillColor = white; bg.stroked = false;
+1376: item.fillColor = black; item.stroked = false;
+1379: item.filled = false;
+1417: item.filled = false; item.stroked = true; item.strokeColor = black;
+1437: drawSingleMark(positions[i].x, positions[i].y, settings.markType, positions[i].loc);
+1439: if (settings.addCenterMark) {
+1441: drawSingleMark(midX, boundT, settings.markType, "TL");
+1456: var gPath = mainGroup.pathItems.add();
+1458: gPath.strokeColor = black; gPath.strokeWidth = gWeight; gPath.filled = false;
+1469: var qrBox = mainGroup.pathItems.rectangle(qrCenterY + qrRadius, centerX - qrRadius, qrSizePt, qrSizePt);
+1470: qrBox.stroked = true; qrBox.strokeColor = black; qrBox.strokeWidth = 0.5; qrBox.filled = false;
+1471: var t = mainGroup.textFrames.add();
+1484: pnlMarkConfig: "1. Cấu hình Ốc",
+1512: chkMid: "Thêm Mark ở giữa (Center)",
+1513: chkMask: "Lót nền trắng dưới Mark",
+1583: uiClusterGap: "K/c Cụm",
+1587: uiGuillotineCut: "Xén thành phẩm",
+1588: uiBleedAmount: "Bù xén",
+1617: uiCutOptions: "5. Dao bế - Dấu xén",
+1618: uiTrimMarksTitle: "Dấu xén",
+1619: uiMarkDistance: "K.cách tới tem",
+1620: uiMarkLength: "Độ dài dấu xén",
+1621: uiMarkThickness: "Độ đậm dấu xén",
+1622: uiMarkColorLabel: "Màu sắc:",
+1623: uiMarkColors: {
+1654: uiModeGuillotine: "Xén TP",
+1666: uiFillGangingSlots: "Lấp đầy phần trống",
+1669: uiClusterBorder: "Viền cho cụm",
+1699: uiGangingReportLastPageFilled: " (Trang cuối, đã lấp đầy chỗ trống)",
+1706: uiGuillotineCompleted: "Hoàn thành xử lý xén thành phẩm cho %s / %s%s.",
+1709: uiGuillotineGangingCompleted: "Hoàn thành ghép file cho 'Xén thành phẩm'!",
+1720: uiClusterGangingTitle: "Ghép cụm %s",
+1724: uiErrGuillotine2SidedEven: "Chế độ 'Xén thành phẩm 2 mặt' yêu cầu chọn số lượng đối tượng là số chẵn (các cặp Mặt Trước - Mặt Sau).",
+1725: uiErrGuillotineGangingSelection: "Chế độ 'Ghép file + Xén thành phẩm' yêu cầu chọn ít nhất 1 đối tượng tem.",
+1775: uiSavePdfGuillotineFilenameSuffix: " - xén thành phẩm",
+1803: uiPreviewCustomGridFill: "%s tem x %s cụm = %s tem/tờ",
+1804: uiPreviewCustomGridSingle: "%s tem/cụm",
+1806: uiClusterModeLabel: "Chia cụm",
+1813: uiClusterGapFromMark: "Dấu xén",
+1825: uiErrGuillotineGangingGridMismatch: "Lỗi: Số lượng tem đã chọn (%s) không khớp với kích thước lưới tùy chỉnh (%rx%c = %g tem).\n\nKhông thể nhân bản cụm. Vui lòng điều chỉnh lưới hoặc số lượng tem đã chọn.", // <-- THÊM DÒNG NÀY
+1828: bleedInput: "Nhập kích thước bù xén (bleed) cho mỗi cạnh của tem. Rất quan trọng cho chế độ 'Xén thành phẩm' để đảm bảo không bị lẹm trắng sau khi xén.",
+1829: clusterModeDropdown: "Tự động chia khổ giấy thành các cụm nhỏ để xếp các loại tem khác nhau, tối ưu cho việc xén thành phẩm.",
+1830: clusterCountInput: "Số lượng cụm cần chia (2, 3, 4...)",
+1831: clusterGapModeDropdown: "Chọn cách tính khoảng cách cụm: từ mép tem con, hay từ dấu xén ngoài cùng của cụm.",
+1834: clusterGapInput: "Khoảng cách giữa các cụm lưới khi chọn 'Lấp đầy phần trống' với 'Lưới tùy chỉnh'.",
+1841: "• Xén thành phẩm: Chế độ chuyên dụng để xếp tem và tạo dấu xén thẳng. Chế độ này sẽ sử dụng cài đặt 'Bù xén' thay vì khuôn bế.",
+1846: layoutMethodDropdownLocked: "• 'Xếp Tối ưu' đã bị khóa ở chế độ này để đảm bảo các đường xén thành phẩm luôn thẳng hàng.\n• Vui lòng chọn 'Lưới Đơn giản' hoặc 'Lưới tùy chỉnh'.",
+1851: "B. KHI Ở CHẾ ĐỘ 'XÉN THÀNH PHẨM':\n" +
+1858: cutTypeDropdown: "'1 Dao' sẽ tạo các đường cắt thẳng, phù hợp cho dao cắt LETA.\n'Mặc định' sẽ tạo khuôn bế riêng cho từng con tem.\n(Lưu ý: Tùy chọn này chỉ áp dụng cho chế độ 'Bế', không phải chế độ 'Xén thành phẩm'.)",
+1875: fillGangingSlots: "• Trong chế độ 'Ghép file': Lấp đầy chỗ trống ở trang cuối bằng cách nhân bản các mẫu tem đã chọn. \n• Trong chế độ 'Bình trang' với 'Lưới tùy chỉnh': Coi cụm lưới đã định nghĩa như một khối duy nhất và nhân bản khối đó để lấp đầy toàn bộ khổ giấy, giúp tối ưu giấy. (Yêu cầu đặt 'K/c Cụm').",
+1877: clusterBorder: "Vẽ một đường viền hình chữ nhật bao quanh toàn bộ cụm (bao gồm cả dấu xén). Hữu ích để kiểm soát và xén cụm trước khi xén thành phẩm.",
+1884: customGridInputs: "Nhập số hàng và số cột mong muốn để tạo một cụm lưới khi chọn cách xếp 'Lưới tùy chỉnh'. Kết hợp với 'Lấp đầy phần trống' để nhân bản cụm này lên toàn bộ khổ giấy.",
+1885: subAreaCheckbox: "Chia nhỏ khổ giấy thành các cụm con (ví dụ A5 trên giấy A3).\n" +
+1886: "• Nhập kích thước Rộng x Cao của 1 cụm (mm). Script sẽ tự tính số cụm vừa khít và canh giữa.\n" +
+1887: "• Layout được tính trên 1 cụm, sau đó nhân bản sang tất cả các cụm.\n" +
+1888: "• Dấu xén 6mm (dấu +) được vẽ tại các giao điểm và mép cụm để hỗ trợ cắt.\n" +
+1900: reportFieldModeLabel: "Hiển thị nhãn chế độ (ví dụ: 'Xén thành phẩm').",
+1928: mainHelpTip: "--- SCRIPT BẾ - XÉN ---\n" +
+1941: "C. Chế độ 'Xén thành phẩm':\n" +
+1952: "💡 Để đảm bảo ít xảy ra sai sót, hãy clipping mask cụm tem vector của bạn lại.\n" +
+1959: title: "Registration Marks & Guide Settings",
+1962: pnlMarkConfig: "1. Mark Configuration",
+1970: pnlPosition: "2. Mark Position Settings", // <--- Tên mới
+1987: chkMid: "Center Mark",
+2091: uiPontType: "4. Marker Alignment",
+2092: uiCutOptions: "5. Die Cut - Trim Mark",
+2093: uiTrimMarksTitle: "Trim mark",
+2094: uiMarkDistance: "Distance to item",
+2095: uiMarkLength: "Length",
+2096: uiMarkThickness: "Thickness",
+2097: uiMarkColorLabel: "Color:",
+2098: uiMarkColors: {
+2107: uiDrawSagaPontsDefault: "6mm mark",
+2108: uiPont5mm: "5mm mark",
+2129: uiModeGuillotine: "Trim Cut",
+2133: uiAddTwoSidedAlignPonts: "Duplex Marks",
+2140: uiFillGangingSlots: "Fill empty slots",
+2174: uiGangingReportLastPageFilled: " (Last page, slots filled)",
+2253: uiPontsOnCutFile: "Regmarks on Cut",
+2278: uiPreviewCustomGridFill: "%s items x %s blocks = %s items/sheet",
+2288: uiClusterGapFromMark: "Trim Mark",
+2305: clusterGapModeDropdown: "Choose how to calculate the cluster gap: from the item's edge, or from the cluster's outermost trim mark.",
+2307: pontsOnCutFile: "When checked, registration marks (ponts) will also be drawn on the separate cut file artboard.",
+2308: clusterGapInput: "Gap between grid clusters when 'Fill empty slots' is checked with 'Custom Grid'.",
+2315: "• Guillotine Cut: A dedicated mode for arranging items and creating straight trim marks. This mode will use the 'Bleed' settings instead of a die-cut shape.",
+2320: layoutMethodDropdownLocked: "• 'Optimal' is disabled in this mode to ensure all guillotine cut lines remain straight.\n• Please select 'Simple Grid' or 'Custom Grid'.",
+2321: layoutModeDropdown: "Select the main job type (requires different object selections):\n\n" +
+2342: pontTypeDropdown: "Choose the type of registration marks for the cutting machine.",
+2345: twoSidedPonts: "Add special alignment marks for double-sided printing.",
+2349: fillGangingSlots: "• In 'Ganging' mode: Fills empty slots on the last page by duplicating selected items. \n• In 'Step & Repeat' mode with 'Custom Grid': Treats the defined grid block as a single unit and replicates it to fill the entire sheet, optimizing paper usage. (Requires setting 'Cl. Gap').",
+2351: clusterBorder: "Draws a rectangular border around the entire cluster (including its trim marks). Useful for quality control and pre-trimming clusters.",
+2356: separatePrintCutFiles: "When checked, the script will create a main folder containing 'Print' and 'Cut' subfolders.\nEach print and cut artboard will be saved as a separate PDF file into their respective folders.",
+2358: customGridInputs: "Enter the desired number of rows and columns to create a grid block when 'Custom Grid' method is selected. Combine with 'Fill empty slots' to replicate this block across the sheet.",
+2362: "• 6mm trim marks (+) are drawn at grid intersections and edges to guide cutting.\n" +
+2371: reportFieldSheetCount: "Show the number of sheets needed to fulfill the order.",
+2376: safeEdgeAlign: "On: When colliding with registration marks, removes the offending label and pushes remaining labels to the EDGE (bottom/right) to optimize paper usage.\nOff: Removes offending label and RE-CENTERS remaining labels on the sheet (safer for die-cutting)."
+2403: mainHelpTip: "--- PRO LAYOUT SCRIPT ---\n" +
+2429: "💡 To preview the 'Quantity', ensure you have selected objects and filled in all size/gap parameters."
+2435: markType: 0,        // 0: Tròn, 1: Vuông, 2: Góc L
+2436: markSize: 5,        // mm
+2438: markGroupName: "MarkLine", // Tên Group chứa toàn bộ ốc
+2439: markItemName: "MKLINE",    // Tên từng đối tượng ốc đơn lẻ
+2479: addCenterMark: false,
+2514: var markSizeMM = pontData.markSize || 5;
+2519: var intrusionX = (pontData.objOffsetX + markSizeMM + safetyPaddingMM) * MM_TO_PT;
+2520: var intrusionY = (pontData.objOffsetY + markSizeMM + safetyPaddingMM) * MM_TO_PT;
+2527: var occTop = (pontData.pageTop + markSizeMM + safetyPaddingMM) * MM_TO_PT;
+2528: var occBot = (pontData.pageBottom + markSizeMM + safetyPaddingMM) * MM_TO_PT;
+2529: var occLeft = (pontData.pageLeft + markSizeMM + safetyPaddingMM) * MM_TO_PT;
+2530: var occRight = (pontData.pageRight + markSizeMM + safetyPaddingMM) * MM_TO_PT;
+2577: name = name.replace(/^\s+|\s+$/g, ''); // Thay thế .trim()
+2655: // <-- THÊM MỚI: Hàm tìm ước số thông minh để chia cụm từ script gangrun.jsx -->
+2657: * TÌM ƯỚC SỐ LỚN NHẤT ĐỂ CHIA CỤM ĐỒNG ĐỀU
+2729: // Nhưng phương án ít tem (VD: 1x5=5) + fill có thể ra NHIỀU hơn (5+2=7)
+2730: // so với phương án nhiều tem (VD: 2x3=6) mà không còn chỗ fill.
+2731: // selectBestLayoutOption_NLDT sẽ đánh giá L1+fill cho mỗi phương án.
+3140: pontLayer = doc.layers.getByName("Duplex_Align_Marks");
+3144: pontLayer.name = "Duplex_Align_Marks";
+3162: path.filled = false;
+3593: // KHÔNG canh giữa lại khi layout là clustered - cấu trúc offset giữa các cụm đã chính xác
+4356: if (usableW >= (row_start_x_center - rx + itemW - MY_SCRIPT_TOLERANCE)) { numItemsInRow = 1; if (step_x > MY_SCRIPT_TOLERANCE) { var remainingSpaceForOdd = usableW - (row_start_x_center - rx + itemW); if (remainingSpaceForOdd >= -MY_SCRIPT_TOLERANCE) { numItemsInRow += Math.floor((remainingSpaceForOdd + MY_SCRIPT_TOLERANCE) / step_x); } } }
+4359: if (usableW >= itemW - MY_SCRIPT_TOLERANCE) { numItemsInRow = 1; if (step_x > MY_SCRIPT_TOLERANCE) { var remainingSpaceForEven = usableW - itemW; if (remainingSpaceForEven >= -MY_SCRIPT_TOLERANCE) { numItemsInRow += Math.floor((remainingSpaceForEven + MY_SCRIPT_TOLERANCE) / step_x); } } }
+5167: // --- BƯỚC 1: TÍNH TOÁN KÍCH THƯỚC KHỐI TEM CON (KHÔNG TÍNH DẤU XÉN) ---
+5173: // --- BƯỚC 2: TÍNH KHOẢNG TRỐNG CẦN THÊM CHO DẤU XÉN ---
+5174: var markSpace = 0;
+5176: // Chỉ tính markSpace nếu đang ở chế độ Xén Thành Phẩm (index 2)
+5178: if (settings.markColorName !== 'none') {
+5179: var oneSideMarkSpace = (settings.markDistancePt || 0) + (settings.markLengthPt || 0);
+5180: markSpace = 2 * oneSideMarkSpace;
+5184: // --- BƯỚC 3: TÍNH TOÁN KÍCH THƯỚC HIỆU DỤNG CỦA "SIÊU TEM" (BAO GỒM DẤU XÉN) ---
+5185: var effectiveSuperW_Orig = contentBlockWidth_Orig + markSpace;
+5186: var effectiveSuperH_Orig = contentBlockHeight_Orig + markSpace;
+5187: var effectiveSuperW_Rot = contentBlockWidth_Rot + markSpace;
+5188: var effectiveSuperH_Rot = contentBlockHeight_Rot + markSpace;
+5206: // === BẮT ĐẦU FIX LỖI: CANH GIỮA CÁC CỤM VÀO TRANG GIẤY (ĐÃ ĐẶT ĐÚNG CHỖ) ===
+5209: // Chỉ thực hiện nếu có cụm nào đó được xếp
+5217: // Áp dụng offset cho tất cả các cụm (siêu tem)
+5229: // Nếu cả hai cách đều không xếp được, thử lại bằng cách xếp 1 cụm duy nhất (không tính dấu xén)
+5491: var newFillerItems = [];
+5494: newFillerItems.push(items[i]);
+5499: if (newFillerItems.length > 0) {
+5501: var fillerBBox = calculateItemsBoundingBox(newFillerItems);
+5511: var centeringOffsetX = (direction === 'vertical') ? (regionCenterX - (fillerBBox.minX + fillerBBox.width / 2.0)) : 0;
+5512: var centeringOffsetY = (direction === 'horizontal') ? (regionCenterY - (fillerBBox.minY + fillerBBox.height / 2.0)) : 0;
+5514: for (var k = 0; k < newFillerItems.length; k++) {
+5515: newFillerItems[k].cx += centeringOffsetX;
+5516: newFillerItems[k].cy += centeringOffsetY;
+5520: layoutInRegion.items = newFillerItems;
+5521: layoutInRegion.totalItems = newFillerItems.length;
+5538: function calculateFillStrategy(usableW, usableH, itemW_P1, itemL_P1, gapH_P1, gapV_P1, itemW_P2, itemL_P2, gapH_P2, gapV_P2, p1_primary_tag, p2_orientation_tag_suffix, p2_fallback_strategy_tag, settings) {
+5539: var didFillRight = false;
+5540: var didFillBottom = false;
+5579: var mainBlockBB = calculateItemsBoundingBox(allPlacedItems_uncentered);
+5582: var regionR_X_Start = mainBlockBB.maxX + gapH_P1;
+5589: didFillRight = true;
+5592: var filler_R_BB = calculateItemsBoundingBox(layoutR_in_region.items);
+5593: var mainBlockCenterY = mainBlockBB.minY + mainBlockBB.height / 2.0;
+5596: var targetFiller_R_MinY = mainBlockCenterY - (filler_R_BB.height / 2.0);
+5599: var totalVerticalShift = targetFiller_R_MinY - filler_R_BB.minY;
+5609: item_in_regionR.orientation + p2_orientation_tag_suffix + "_fillR",
+5627: didFillBottom = true;
+5630: var filler_B_BB = calculateItemsBoundingBox(layoutB_in_region.items);
+5631: var mainBlockCenterX = mainBlockBB.minX + mainBlockBB.width / 2.0;
+5634: var targetFiller_B_MinX = mainBlockCenterX - (filler_B_BB.width / 2.0);
+5637: var totalHorizontalShift = targetFiller_B_MinX - filler_B_BB.minX;
+5647: item_in_regionB.orientation + p2_orientation_tag_suffix + "_fillB",
+5670: return { totalItems: 0, items: [], widthUsed: 0, heightUsed: 0, itemActualW: itemW_P1, itemActualL: itemL_P1, strategyTag: effective_strategy_tag, strategyDetails: { didFillRight: didFillRight, didFillBottom: didFillBottom } };
+5677: if (_useSafeEdge && didFillRight) {
+5684: if (_useSafeEdge && didFillBottom) {
+5708: strategyDetails: { didFillRight: didFillRight, didFillBottom: didFillBottom }
+5823: var resultStrategy1 = calculateFillStrategy(usableW, usableH, itemW_orig, itemL_orig, gapH_orig, gapV_orig, itemL_orig, itemW_orig, gapV_orig, gapH_orig, "GocTruoc", "_rot", "XoayTruoc_P1Fail", settings); // <<< THÊM settings
+5824: var resultStrategy2 = calculateFillStrategy(usableW, usableH, itemL_orig, itemW_orig, gapV_orig, gapH_orig, itemW_orig, itemL_orig, gapH_orig, gapV_orig, "XoayTruoc", "_orig", "GocTruoc_P1Fail", settings); // <<< THÊM settings
+5828: if (item.orientation.indexOf("_fill") === -1) {
+5987: var testPoint_main, testPoint_cross;
+5991: testPoint_main = endCoord + direction * overlapAmt; // X mới
+5996: if (testPoint_main > r.minX + 1 && testPoint_main < r.maxX - 1 &&
+6003: testPoint_main = endCoord + direction * overlapAmt; // Y mới
+6008: testPoint_main > r.minY + 1 && testPoint_main < r.maxY - 1) {
+6058: path.filled = false;
+6066: * Vẽ các đường line phân cách giữa các cụm lưới tùy chỉnh trên một layer cụ thể.
+6070: * @param {Object} clusterLayoutResult - Kết quả layout của các cụm (từ calculateGridLayout).
+6071: * @param {Number} clusterWidth - Chiều rộng của 1 cụm (points).
+6072: * @param {Number} clusterHeight - Chiều cao của 1 cụm (points).
+6073: * @param {Number} clusterGapH - Khoảng cách ngang giữa các cụm (points).
+6074: * @param {Number} clusterGapV - Khoảng cách dọc giữa các cụm (points).
+6081: // Kiểm tra đầu vào: Cần có layer hợp lệ và nhiều hơn 1 cụm để vẽ đường phân cách
+6083: return; // Không cần vẽ nếu chỉ có 1 cụm hoặc không có layer hợp lệ
+6093: var clusters = clusterLayoutResult.items; // Lấy danh sách vị trí các cụm
+6103: // --- Tìm tọa độ X, Y và Bounding Box tổng thể của các cụm trong hệ tọa độ layout (0,0 ở góc trên trái vùng usable) ---
+6106: var minLayoutX = Infinity, maxLayoutX = -Infinity; // Tọa độ X trái nhất và phải nhất của khối cụm
+6107: var minLayoutY = Infinity, maxLayoutY = -Infinity; // Tọa độ Y trên cùng và dưới cùng của khối cụm
+6111: // Lặp qua từng cụm để thu thập tọa độ và tính toán bounding box
+6142: // --- Vẽ các đường phân cách NGANG (giữa các hàng cụm) ---
+6143: if (sortedY.length > 1) { // Chỉ vẽ nếu có nhiều hơn 1 hàng cụm
+6145: // Tọa độ Y của đường line (giữa 2 hàng cụm) trong hệ tọa độ layout
+6146: // = Tọa độ tâm hàng trên + nửa chiều cao cụm + nửa khoảng cách dọc giữa các cụm
+6159: hLine.filled = false;
+6165: // --- Vẽ các đường phân cách DỌC (giữa các cột cụm) ---
+6166: if (sortedX.length > 1) { // Chỉ vẽ nếu có nhiều hơn 1 cột cụm
+6168: // Tọa độ X của đường line (giữa 2 cột cụm) trong hệ tọa độ layout
+6169: // = Tọa độ tâm cột trái + nửa chiều rộng cụm + nửa khoảng cách ngang giữa các cụm
+6176: var docLineStartY = docCoords.startY - minLayoutY; // Cạnh dưới của khối cụm
+6177: var docLineEndY = docCoords.startY - maxLayoutY; // Cạnh trên của khối cụm
+6183: vLine.filled = false;
+6195: * Hàm mới: Vẽ một đường viền hình chữ nhật bao quanh một cụm.
+6196: * Sử dụng cài đặt màu sắc và độ đậm của dấu xén.
+6197: * @param {Layer} targetLayer - Layer để vẽ (thường là layer dấu xén).
+6202: * @param {Object} markSettings - Đối tượng chứa (markColorName, markWidth).
+6205: function drawClusterBorder(targetLayer, left, top, width, height, markSettings, doc) {
+6211: rect.filled = false; // Không tô màu nền
+6214: // Áp dụng màu sắc và độ đậm từ cài đặt dấu xén
+6215: rect.strokeColor = getMarkColor(doc, markSettings.markColorName);
+6216: rect.strokeWidth = markSettings.markWidth;
+6523: var mainLayout = calculateInterlockingHammerLayout(usableW, usableH, bbW, bbH, gapH, gapV, flipOrientation, headFrac, headD, bodyW, asymmOffset);
+6525: if (mainLayout.totalItems === 0) return mainLayout;
+6528: var mainItemW = mainLayout.itemActualW;
+6529: var mainItemH = mainLayout.itemActualL;
+6532: var fillItemW = mainItemH;
+6533: var fillItemH = mainItemW;
+6537: var mainIsRotated = (Math.abs(mainItemW - bbW) > 0.01);
+6538: var fillOrientation = mainIsRotated ? 'hammer_up' : 'hammer_up_rot';
+6541: var spaceRight = usableW - mainLayout.widthUsed - gapH;
+6542: var spaceBottom = usableH - mainLayout.heightUsed - gapV;
+6545: var fillRightItems = [];
+6546: if (spaceRight >= fillItemW - 0.01) {
+6548: if (usableH >= fillItemH - 0.01) {
+6549: numR = Math.floor((usableH - fillItemH + 0.01) / (fillItemH + gapV)) + 1;
+6552: var cy = fillItemH / 2 + r * (fillItemH + gapV);
+6553: if (cy + fillItemH / 2 > usableH + 0.01) break;
+6554: fillRightItems.push(createItemData('hammer', 0, cy, fillItemW, fillItemH, fillOrientation, r, -1));
+6559: var fillBottomItems = [];
+6560: if (spaceBottom >= fillItemH - 0.01) {
+6562: if (usableW >= fillItemW - 0.01) {
+6563: numB = Math.floor((usableW - fillItemW + 0.01) / (fillItemW + gapH)) + 1;
+6566: var cx = fillItemW / 2 + c * (fillItemW + gapH);
+6567: if (cx + fillItemW / 2 > usableW + 0.01) break;
+6568: fillBottomItems.push(createItemData('hammer', cx, 0, fillItemW, fillItemH, fillOrientation, -1, c));
+6573: if (fillRightItems.length === 0 && fillBottomItems.length === 0) {
+6574: return mainLayout;
+6578: var mainBB = calculateItemsBoundingBox(mainLayout.items);
+6580: for (var i = 0; i < mainLayout.items.length; i++) {
+6581: var it = mainLayout.items[i];
+6582: allItems.push(createItemData(it.itemShapeType, it.cx - mainBB.minX, it.cy - mainBB.minY, it.w_or_rx, it.h_or_ry, it.orientation, it.rowIndex, it.colIndex));
+6586: if (fillRightItems.length >= fillBottomItems.length) {
+6588: var fillStartX = mainLayout.widthUsed + gapH + fillItemW / 2;
+6591: var fillColBB = calculateItemsBoundingBox(fillRightItems);
+6592: var mainCenterY = mainLayout.heightUsed / 2;
+6593: var fillCenterY = fillColBB.height / 2;
+6594: var fillOffY = mainCenterY - fillCenterY;
+6596: for (var i = 0; i < fillRightItems.length; i++) {
+6597: var fi = fillRightItems[i];
+6598: allItems.push(createItemData(fi.itemShapeType, fillStartX, fi.cy + fillOffY, fi.w_or_rx, fi.h_or_ry, fi.orientation, fi.rowIndex, fi.colIndex));
+6602: var fillStartY = mainLayout.heightUsed + gapV + fillItemH / 2;
+6605: var fillRowBB = calculateItemsBoundingBox(fillBottomItems);
+6606: var mainCenterX = mainLayout.widthUsed / 2;
+6607: var fillCenterX = fillRowBB.width / 2;
+6608: var fillOffX = mainCenterX - fillCenterX;
+6610: for (var i = 0; i < fillBottomItems.length; i++) {
+6611: var fi = fillBottomItems[i];
+6612: allItems.push(createItemData(fi.itemShapeType, fi.cx + fillOffX, fillStartY, fi.w_or_rx, fi.h_or_ry, fi.orientation, fi.rowIndex, fi.colIndex));
+6633: itemActualW: mainItemW,
+6634: itemActualL: mainItemH
+7154: var mainLayout_NoRot = calculateInterlockingTrapezoidLayout(usableW, usableH, itemW, itemH, gapH, gapV, leftOH, rightOH, isHorizontalTrap);
+7155: var mainLayout_Rot = calculateInterlockingTrapezoidLayout(usableW, usableH, itemH, itemW, gapV, gapH, rightOH, leftOH, !isHorizontalTrap);
+7158: { main: mainLayout_NoRot, isRotated: false }
+7163: var baseLayout = opt.main;
+7171: var W_mainUsed = baseLayout.widthUsed || (baseLayout.cols * baseLayout.itemActualW + (baseLayout.cols > 0 ? (baseLayout.cols - 1) * gapH : 0));
+7172: var H_mainUsed = baseLayout.heightUsed || (baseLayout.rows * baseLayout.itemActualL + (baseLayout.rows > 0 ? (baseLayout.rows - 1) * gapV : 0));
+7173: var spaceRight = usableW - W_mainUsed - gapH;
+7174: var spaceBottom = usableH - H_mainUsed - gapV;
+7179: // Reset tọa độ cụm chính về [0,0] để dễ ghép cụm phụ mà KHÔNG BỊ ĐÈ
+7180: var mainLayout = deepCopyLayout(baseLayout);
+7181: var bbMain = calculateItemsBoundingBox(mainLayout.items);
+7182: for (var mi = 0; mi < mainLayout.items.length; mi++) {
+7183: mainLayout.items[mi].cx -= bbMain.minX;
+7184: mainLayout.items[mi].cy -= bbMain.minY;
+7186: var mainMaxX = bbMain.maxX - bbMain.minX;
+7187: var mainMaxY = bbMain.maxY - bbMain.minY;
+7189: // CỤM RIGHT
+7193: var rightTotal = mainLayout.totalItems + rightGrid.totalItems;
+7196: var combinedRight = deepCopyLayout(mainLayout);
+7199: var yOffset = (mainMaxY - rightHeight) / 2;
+7202: // Gắn mép trái cụm phụ sát vào mép phải cụm chính
+7203: cItem.cx = (cItem.cx - bbRight.minX) + mainMaxX + gapH;
+7214: // CỤM BOTTOM
+7218: var bottomTotal = mainLayout.totalItems + bottomGrid.totalItems;
+7221: var combinedBottom = deepCopyLayout(mainLayout);
+7224: var xOffset = (mainMaxX - bottomWidth) / 2;
+7229: // Gắn mép trên cụm phụ sát vào mép dưới cụm chính
+7230: cItem.cy = (cItem.cy - bbBottom.minY) + mainMaxY + gapV;
+7251: var mainLayout_NoRot = calculateInterlockingParallelogramLayout(usableW, usableH, itemW, itemH, gapH, gapV, overhangX, overhangY);
+7254: { main: mainLayout_NoRot, isRotated: false }
+7259: var baseLayout = opt.main;
+7267: var W_mainUsed = baseLayout.widthUsed || (baseLayout.cols * baseLayout.itemActualW + (baseLayout.cols > 0 ? (baseLayout.cols - 1) * gapH : 0));
+7268: var H_mainUsed = baseLayout.heightUsed || (baseLayout.rows * baseLayout.itemActualL + (baseLayout.rows > 0 ? (baseLayout.rows - 1) * gapV : 0));
+7269: var spaceRight = usableW - W_mainUsed - gapH;
+7270: var spaceBottom = usableH - H_mainUsed - gapV;
+7275: var mainLayout = deepCopyLayout(baseLayout);
+7276: var bbMain = calculateItemsBoundingBox(mainLayout.items);
+7277: for (var mi = 0; mi < mainLayout.items.length; mi++) {
+7278: mainLayout.items[mi].cx -= bbMain.minX;
+7279: mainLayout.items[mi].cy -= bbMain.minY;
+7281: var mainMaxX = bbMain.maxX - bbMain.minX;
+7282: var mainMaxY = bbMain.maxY - bbMain.minY;
+7284: // CỤM RIGHT
+7288: var rightTotal = mainLayout.totalItems + rightGrid.totalItems;
+7291: var combinedRight = deepCopyLayout(mainLayout);
+7294: var yOffset = (mainMaxY - rightHeight) / 2;
+7297: cItem.cx = (cItem.cx - bbRight.minX) + mainMaxX + gapH;
+7307: // CỤM BOTTOM
+7311: var bottomTotal = mainLayout.totalItems + bottomGrid.totalItems;
+7314: var combinedBottom = deepCopyLayout(mainLayout);
+7317: var xOffset = (mainMaxX - bottomWidth) / 2;
+7321: cItem.cy = (cItem.cy - bbBottom.minY) + mainMaxY + gapV;
+7611: var mainLayout = calculateInterlockingDumbbellLayout(usableW, usableH, bbW, bbH, gapH, gapV, flipOrientation, bigEndAxisFrac, dbBigD, smallHeadFrac, dbSmallD, dbBodyW);
+7613: if (mainLayout.totalItems === 0) return mainLayout;
+7615: var mainItemW = mainLayout.itemActualW;
+7616: var mainItemH = mainLayout.itemActualL;
+7617: var fillItemW = mainItemH;
+7618: var fillItemH = mainItemW;
+7620: var mainIsRotated = (Math.abs(mainItemW - bbW) > 0.01);
+7621: var fillOrientation = mainIsRotated ? 'dumbbell_up' : 'dumbbell_up_rot';
+7623: var spaceRight = usableW - mainLayout.widthUsed - gapH;
+7624: var spaceBottom = usableH - mainLayout.heightUsed - gapV;
+7626: var fillRightItems = [];
+7627: if (spaceRight >= fillItemW - 0.01) {
+7629: if (usableH >= fillItemH - 0.01) {
+7630: numR = Math.floor((usableH - fillItemH + 0.01) / (fillItemH + gapV)) + 1;
+7633: var cy = fillItemH / 2 + r * (fillItemH + gapV);
+7634: if (cy + fillItemH / 2 > usableH + 0.01) break;
+7635: fillRightItems.push(createItemData('dumbbell', 0, cy, fillItemW, fillItemH, fillOrientation, r, -1));
+7639: var fillBottomItems = [];
+7640: if (spaceBottom >= fillItemH - 0.01) {
+7642: if (usableW >= fillItemW - 0.01) {
+7643: numB = Math.floor((usableW - fillItemW + 0.01) / (fillItemW + gapH)) + 1;
+7646: var cx = fillItemW / 2 + c * (fillItemW + gapH);
+7647: if (cx + fillItemW / 2 > usableW + 0.01) break;
+7648: fillBottomItems.push(createItemData('dumbbell', cx, 0, fillItemW, fillItemH, fillOrientation, -1, c));
+7652: if (fillRightItems.length === 0 && fillBottomItems.length === 0) {
+7653: return mainLayout;
+7656: var mainBB = calculateItemsBoundingBox(mainLayout.items);
+7658: for (var i = 0; i < mainLayout.items.length; i++) {
+7659: var it = mainLayout.items[i];
+7660: allItems.push(createItemData(it.itemShapeType, it.cx - mainBB.minX, it.cy - mainBB.minY, it.w_or_rx, it.h_or_ry, it.orientation, it.rowIndex, it.colIndex));
+7663: if (fillRightItems.length >= fillBottomItems.length) {
+7664: var fillStartX = mainLayout.widthUsed + gapH + fillItemW / 2;
+7665: var fillColBB = calculateItemsBoundingBox(fillRightItems);
+7666: var fillOffY = mainLayout.heightUsed / 2 - fillColBB.height / 2;
+7667: for (var i = 0; i < fillRightItems.length; i++) {
+7668: var fi = fillRightItems[i];
+7669: allItems.push(createItemData(fi.itemShapeType, fillStartX, fi.cy + fillOffY, fi.w_or_rx, fi.h_or_ry, fi.orientation, fi.rowIndex, fi.colIndex));
+7672: var fillStartY = mainLayout.heightUsed + gapV + fillItemH / 2;
+7673: var fillRowBB = calculateItemsBoundingBox(fillBottomItems);
+7674: var fillOffX = mainLayout.widthUsed / 2 - fillRowBB.width / 2;
+7675: for (var i = 0; i < fillBottomItems.length; i++) {
+7676: var fi = fillBottomItems[i];
+7677: allItems.push(createItemData(fi.itemShapeType, fi.cx + fillOffX, fillStartY, fi.w_or_rx, fi.h_or_ry, fi.orientation, fi.rowIndex, fi.colIndex));
+7697: itemActualW: mainItemW,
+7698: itemActualL: mainItemH
+7731: circle.filled = true; circle.fillColor = blackColor; circle.stroked = false;
+7736: rect.filled = true; rect.fillColor = blackColor; rect.stroked = false;
+7787: circle.filled = true; circle.fillColor = blackColor; circle.stroked = false;
+7793: rect.filled = true; rect.fillColor = blackColor; rect.stroked = false;
+7824: pontPath.filled = false;
+7857: square1.filled = true;
+7858: square1.fillColor = pontColor;
+7863: square2.filled = true;
+7864: square2.fillColor = pontColor;
+7904: pinkLine.filled = false;
+7962: rects[i].filled = true;
+7963: rects[i].fillColor = whiteColor;
+8200: var fillEmpty = fillGangingCheckbox.value;
+8204: var itemsPerBlock = numRows * numCols; // Số tem trong 1 cụm
+8206: if (fillEmpty) {
+8207: // Tính toán xem bao nhiêu "siêu tem" (cụm) có thể xếp vừa
+8216: var blocksPerSheet = Math.max(pass_Orig.totalItems, pass_Rot.totalItems); // Số cụm xếp được
+8220: previewText += langData[lang].uiPreviewCustomGridFill
+8226: // Chỉ kiểm tra xem một "siêu tem" (cụm) có vừa không
+8230: maxItemsPerSheet = itemsPerBlock; // Số tem chỉ bằng 1 cụm
+8235: previewText += "0"; // Không vừa cụm nào
+8263: fillBlockGapMM: (typeof fillBlockGapInput !== 'undefined') ? parseFloat(fillBlockGapInput.text) || 0 : 0,
+8361: ? (emptySlots > 0 && !fillGangingCheckbox.value) // Logic cho Lưới tùy chỉnh
+9309: * @param {Number} workingModeIndex - Chế độ: 0=Bế cùng loại, 1=Bế nhiều loại, 2=Xén TP.
+9343: // Xén TP (mode 2): tất cả đều là tem
+9421: dlg.alignChildren = ['fill', 'top'];
+9439: listPanel.alignChildren = ['fill', 'center'];
+9612: reportTextFrame.textRange.characterAttributes.fillColor = blackColor;
+9732: if (rowsToRotate && colsToRotate && layoutCellData.orientation.indexOf("_fill") === -1) {
+9977: var remainingGroupItems = [];
+9983: if (targetGroupToAdjust[i] !== collidedItemData) remainingGroupItems.push(targetGroupToAdjust[i]);
+9986: if (remainingGroupItems.length > 0) {
+9987: var bbox_after = calculateItemsBoundingBox(remainingGroupItems);
+10000: for (var i = 0; i < remainingGroupItems.length; i++) {
+10001: remainingGroupItems[i].cx += deltaX;
+10002: remainingGroupItems[i].cy += deltaY;
+10292: // Tách khối tem chính (Main Block) ra khỏi các tem lấp trống (Fillers)
+10293: // Tem lấp trống sẽ có tag "_fill" trong orientation
+10294: var mainBlockItems = [];
+10296: if (items[i].orientation.indexOf("_fill") === -1) {
+10297: mainBlockItems.push(items[i]);
+10301: if (mainBlockItems.length === 0) return layoutResult;
+10306: // --- TRƯỜNG HỢP 1: CÓ KHỐI PHỤ BÊN PHẢI (Did Fill Right) ---
+10308: if (layoutResult.strategyDetails.didFillRight) {
+10312: for (var i = 0; i < mainBlockItems.length; i++) {
+10313: if (mainBlockItems[i].cx < firstColX) firstColX = mainBlockItems[i].cx;
+10319: for (var i = 0; i < mainBlockItems.length; i++) {
+10320: if (Math.abs(mainBlockItems[i].cx - firstColX) < tolerance) {
+10321: originalFirstColumn.push(mainBlockItems[i]);
+10332: var remainingVerticalMargin = usableH - initialTotalBBox.height;
+10336: var checkValue = remainingVerticalMargin + itemHeight;
+10358: var remainingItemsInColumn = [];
+10360: remainingItemsInColumn.push(originalFirstColumn[i]);
+10362: var oldBBox = calculateItemsBoundingBox(remainingItemsInColumn); // Tâm khi chưa dịch
+10374: for (var i = 0; i < remainingItemsInColumn.length; i++) {
+10375: remainingItemsInColumn[i].cy += deltaY;
+10388: // --- TRƯỜNG HỢP 2: CÓ KHỐI PHỤ BÊN DƯỚI (Did Fill Bottom) ---
+10390: } else if (layoutResult.strategyDetails.didFillBottom) {
+10394: for (var i = 0; i < mainBlockItems.length; i++) {
+10395: if (mainBlockItems[i].cy < firstRowY) firstRowY = mainBlockItems[i].cy;
+10401: for (var i = 0; i < mainBlockItems.length; i++) {
+10402: if (Math.abs(mainBlockItems[i].cy - firstRowY) < tolerance) {
+10403: originalFirstRow.push(mainBlockItems[i]);
+10412: var remainingHorizontalMargin = usableW - initialTotalBBox.width;
+10414: var checkValue = remainingHorizontalMargin + itemWidth;
+10433: var remainingItemsInRow = [];
+10435: remainingItemsInRow.push(originalFirstRow[i]);
+10438: var oldBBox = calculateItemsBoundingBox(remainingItemsInRow);
+10447: for (var i = 0; i < remainingItemsInRow.length; i++) {
+10448: remainingItemsInRow[i].cx += deltaX;
+10474: if (settings.safeEdgeAlign && layoutResult.strategyDetails.didFillRight) {
+10479: } else if (settings.safeEdgeAlign && layoutResult.strategyDetails.didFillBottom) {
+10649: // === BẮT ĐẦU: CÁC HÀM MỚI CHO TÍNH NĂNG "XÉN THÀNH PHẨM" === sửa tiếp nèeeeee
+10714: var markClearance = settings.markDistancePt + settings.markLengthPt;
+10715: // === SỬA LỖI: Chỉ co vùng in ở cạnh nào lề không đủ chứa dấu xén ===
+10716: var trimOverflowLeft = Math.max(0, markClearance - marginsPt.left);
+10717: var trimOverflowRight = Math.max(0, markClearance - marginsPt.right);
+10718: var trimOverflowTop = Math.max(0, markClearance - marginsPt.top);
+10719: var trimOverflowBottom = Math.max(0, markClearance - marginsPt.bottom);
+10720: var layoutUsableW = usableW - trimOverflowLeft - trimOverflowRight;
+10721: var layoutUsableH = usableH - trimOverflowTop - trimOverflowBottom;
+10724: var remainingItems = originalSelection;
+10733: while (remainingItems.length > 0) {
+10735: var numDesignsToProcess = settings.isTwoSided ? remainingItems.length / 2 : remainingItems.length;
+10749: if (settings.clusterGapMode === 'mark') {
+10750: effectiveBatchSpacing_pt = settings.clusterGapPt + (2 * markClearance);
+10774: var itemsForThisRun = remainingItems.splice(0, settings.isTwoSided ? designsPerRun * 2 : designsPerRun);
+10800: var marksLayerFront = doc.layers.add(); marksLayerFront.name = "DauXen_Cluster_Front" + artboardSuffix;
+10801: var resultLayerBack, marksLayerBack;
+10805: marksLayerBack = doc.layers.add(); marksLayerBack.name = "DauXen_Cluster_Back" + artboardSuffix;
+10903: trimOverlap: true,
+10913: var settingsForMarks = {
+10914: markColorName: settings.markColorName,
+10915: markDistance: settings.markDistancePt,
+10916: markLength: settings.markLengthPt,
+10917: markWidth: settings.markWidthPt
+10939: var batchDocCoordsFront = { startX: docCoordsFront.startX + currentX_offset + markClearance, startY: docCoordsFront.startY - currentY_offset - markClearance };
+10941: drawGridTrimMarks(doc, marksLayerFront, layout, batchDocCoordsFront, settingsForMarks, sidesToDraw);
+10945: var markClearance = settings.markDistancePt + settings.markLengthPt;
+10946: var borderLeft = batchDocCoordsFront.startX - markClearance;
+10947: var borderTop = batchDocCoordsFront.startY + markClearance;
+10948: var borderWidth = layout.blockW + (2 * markClearance);
+10949: var borderHeight = layout.blockH + (2 * markClearance);
+10983: // Lấy kích thước của vùng chứa 1 cụm (đã khai báo ở Thay đổi 1)
+10986: // Công thức lật: Vị trí X mới = Tổng_Rộng_Usable - Vị_trí_X_cũ - Rộng_của_cụm
+10990: startX: docCoordsBack.startX + mirroredX_offset + markClearance,
+10991: startY: docCoordsBack.startY - currentY_offset - markClearance // Y giữ nguyên
+10997: startX: docCoordsBack.startX + mirroredX_offset + markClearance,
+10998: startY: docCoordsBack.startY - currentY_offset - markClearance
+11003: drawGridTrimMarks(doc, marksLayerBack, mirroredLayout, batchDocCoordsBack, settingsForMarks, sidesToDraw);
+11007: var markClearance = settings.markDistancePt + settings.markLengthPt;
+11008: var borderLeft = batchDocCoordsBack.startX - markClearance;
+11009: var borderTop = batchDocCoordsBack.startY + markClearance;
+11010: var borderWidth = mirroredLayout.blockW + (2 * markClearance);
+11011: var borderHeight = mirroredLayout.blockH + (2 * markClearance);
+11034: // BƯỚC 1: VẼ TẤT CẢ CÁC ĐƯỜNG VIỀN LÊN LAYER DẤU XÉN (Ở TỌA ĐỘ GỐC)
+11040: drawClusterBorder(marksLayerFront, border.left, border.top, border.width, border.height, settingsForMarks, doc);
+11048: drawClusterBorder(marksLayerBack, border.left, border.top, border.width, border.height, settingsForMarks, doc);
+11054: // Hàm này sẽ tìm cả dấu xén VÀ đường viền (vì chúng đều nằm trong marksLayerFront) và di chuyển tất cả cùng lúc.
+11055: var offsetFront = centerContent(resultLayerFront, marksLayerFront, docCoordsFront.startX, docCoordsFront.startY, usableW, usableH);
+11058: var offsetBack = centerContent(resultLayerBack, marksLayerBack, docCoordsBack.startX, docCoordsBack.startY, usableW, usableH);
+11125: // --- 2. XÁC ĐỊNH VÙNG LÀM VIỆC & LOGIC CHIA CỤM ---
+11173: var remainingPairs = pairsToPlace.slice(0); // Copy mảng để xử lý dần
+11177: while (remainingPairs.length > 0) {
+11186: var trimF = doc.layers.add(); trimF.name = "Trim_Page_" + artboardCounter + "_F";
+11188: var newAbB, layB, trimB;
+11195: trimB = doc.layers.add(); trimB.name = "Trim_Page_" + artboardCounter + "_B";
+11207: for (var i = 0; i < remainingPairs.length; i++) {
+11208: var pair = remainingPairs[i];
+11232: // B. Logic Lấp Đầy Chỗ Trống (Fill Empty Slots) - ĐÃ SỬA LỖI
+11234: if (settings.fillEmptyGangingSlots && itemsUsedCount === remainingPairs.length) {
+11236: var fillIndex = 0;
+11245: var pairToFill = temPairs[fillIndex % temPairs.length];
+11246: fillIndex++;
+11248: var bFill = getVisualBounds(pairToFill.front);
+11249: if (!bFill) continue;
+11251: var wFill = (bFill[2] - bFill[0]) - (2 * bleedPt);
+11252: var hFill = (bFill[1] - bFill[3]) - (2 * bleedPt);
+11254: if (wFill <= 0 || hFill <= 0) continue;
+11259: if ((currentX + wFill) <= workingAreaW) {
+11270: if ((currentY + hFill) > workingAreaH) {
+11275: placedData.push({ pair: pairToFill, x: currentX, y: currentY, w: wFill, h: hFill });
+11278: currentX += wFill + gapPt;
+11279: maxRowH = Math.max(maxRowH, hFill);
+11284: remainingPairs.splice(0, itemsUsedCount);
+11301: // Nếu chia cụm, canh vào giữa cụm nhỏ
+11306: // --- 6. VẼ THỰC TẾ (NHÂN BẢN RA CÁC CỤM GRID) ---
+11348: // Lật X trong cụm
+11372: // Vẽ dấu xén & Viền
+11373: drawDynamicTrimMarks(doc, trimF, itemsInThisBlock_F, settings);
+11374: if (itemsInThisBlock_B.length > 0) drawDynamicTrimMarks(doc, trimB, itemsInThisBlock_B, settings);
+11377: drawClusterBorder(trimF, blockOriginX_F, blockOriginY_F, subW_Pt, subH_Pt, { markColorName: settings.markColorName, markWidth: settings.markWidthPt }, doc);
+11384: drawClusterBorder(trimB, blockOriginX_B, blockOriginY_B, subW_Pt, subH_Pt, { markColorName: settings.markColorName, markWidth: settings.markWidthPt }, doc);
+11390: // Vẽ dấu xén phân cách cụm
+11394: drawSubAreaTrimMarks(separatorLayer, originX_F, originY_F, blocksX, blocksY, subW_Pt, subH_Pt, subAreaGapPt, { markColorName: 'black', markWidth: 0.5 }, doc);
+11397: // Canh giữa toàn bộ nếu KHÔNG chia cụm (nếu chia cụm thì đã canh giữa grid rồi)
+11399: centerContent(layF, trimF, originX_F, originY_F, workingAreaW, workingAreaH);
+11400: if (layB) centerContent(layB, trimB, newAbB.artboardRect[0] + settings.marginLeftPt, newAbB.artboardRect[1] - settings.marginTopPt, workingAreaW, workingAreaH);
+11404: var reportStr = "Trang " + artboardCounter + (isSubAreaMode ? (" | Cụm: " + Math.round(settings.subAreaW) + "x" + Math.round(settings.subAreaH) + "mm (" + blocksX + "x" + blocksY + ")") : "");
+11418: } // End While Remaining Items
+11426: // === HÀM VẼ DẤU XÉN ĐỘNG PHIÊN BẢN AN TOÀN TUYỆT ĐỐI (KIỂM TRA VÙNG BÙ XÉN) ===
+11429: * Vẽ dấu xén cho layout động, tự động ẩn các dấu nằm giữa các tem nếu vùng dấu xén
+11430: * chồng lấn lên vùng bù xén của tem khác.
+11432: * @param {Layer} targetLayer - Layer đích để vẽ dấu xén.
+11436: function drawDynamicTrimMarks(doc, targetLayer, placedItems, settings) {
+11437: if (placedItems.length === 0 || settings.markColorName === 'none') {
+11442: var markColor = getMarkColor(doc, settings.markColorName);
+11443: var markOffsetPt = settings.markDistancePt;
+11444: var markLengthPt = settings.markLengthPt;
+11445: var markWidthPt = settings.markWidthPt;
+11446: var bleedPt = settings.bleedValue * MM_TO_PT; // Lấy giá trị bù xén
+11452: line.filled = false;
+11454: line.strokeColor = markColor;
+11455: line.strokeWidth = markWidthPt;
+11467: // --- BƯỚC 2: TÍNH TOÁN TRƯỚC TRIM BOX VÀ BLEED BOX CHO TẤT CẢ CÁC TEM ---
+11473: var trimBoxData = null;
+11478: trimBoxData = JSON.parse(itemGroup.note);
+11483: if (trimBoxData) {
+11484: var trimBox = {
+11485: left: trimBoxData.trueLeft,
+11486: top: trimBoxData.trueTop,
+11487: right: trimBoxData.trueRight,
+11488: bottom: trimBoxData.trueBottom
+11491: trimBox: trimBox,
+11493: left: trimBox.left - bleedPt,
+11494: top: trimBox.top + bleedPt,
+11495: right: trimBox.right + bleedPt,
+11496: bottom: trimBox.bottom - bleedPt
+11505: var t = current.trimBox; // Viết tắt cho trimBox của tem hiện tại
+11510: // Xác định 4 "Vùng Dấu Xén" (Mark Areas) xung quanh tem hiện tại
+11511: var markAreas = {
+11512: top: { left: t.left, top: t.top + markOffsetPt + markLengthPt, right: t.right, bottom: t.top + markOffsetPt },
+11513: bottom: { left: t.left, top: t.bottom - markOffsetPt, right: t.right, bottom: t.bottom - markOffsetPt - markLengthPt },
+11514: left: { left: t.left - markOffsetPt - markLengthPt, top: t.top, right: t.left - markOffsetPt, bottom: t.bottom },
+11515: right: { left: t.right + markOffsetPt, top: t.top, right: t.right + markOffsetPt + markLengthPt, bottom: t.bottom }
+11518: // --- Kiểm tra từng Vùng Dấu Xén với Bleed Box của tất cả các tem khác ---
+11524: // Nếu Vùng Dấu Xén Bên Trên của tem hiện tại chồng lên Vùng Bù Xén của tem khác -> Cấm vẽ
+11525: if (shouldDraw.top && rectsOverlap(markAreas.top, otherBleedBox)) {
+11529: if (shouldDraw.bottom && rectsOverlap(markAreas.bottom, otherBleedBox)) {
+11532: if (shouldDraw.left && rectsOverlap(markAreas.left, otherBleedBox)) {
+11535: if (shouldDraw.right && rectsOverlap(markAreas.right, otherBleedBox)) {
+11542: drawLine([[t.left, t.top + markOffsetPt], [t.left, t.top + markOffsetPt + markLengthPt]]);
+11543: drawLine([[t.right, t.top + markOffsetPt], [t.right, t.top + markOffsetPt + markLengthPt]]);
+11546: drawLine([[t.left, t.bottom - markOffsetPt], [t.left, t.bottom - markOffsetPt - markLengthPt]]);
+11547: drawLine([[t.right, t.bottom - markOffsetPt], [t.right, t.bottom - markOffsetPt - markLengthPt]]);
+11550: drawLine([[t.left - markOffsetPt, t.top], [t.left - markOffsetPt - markLengthPt, t.top]]);
+11551: drawLine([[t.left - markOffsetPt, t.bottom], [t.left - markOffsetPt - markLengthPt, t.bottom]]);
+11554: drawLine([[t.right + markOffsetPt, t.top], [t.right + markOffsetPt + markLengthPt, t.top]]);
+11555: drawLine([[t.right + markOffsetPt, t.bottom], [t.right + markOffsetPt + markLengthPt, t.bottom]]);
+11683: // === HÀM LƯU FILE CHUYÊN DỤNG CHO CHẾ ĐỘ XÉN THÀNH PHẨM (ĐÃ SỬA LỖI) ===
+11686: * Xử lý việc lưu các artboard kết quả của chế độ Xén thành phẩm thành file PDF.
+11699: var mainSaveFolder;
+11705: mainSaveFolder = settings.saveLocation;
+11706: var existingPDFFiles = mainSaveFolder.getFiles("*.pdf");
+11713: mainSaveFolder = new Folder(settings.saveLocation.fsName + "/" + langData[lang].uiSaveFolderGuillotineBaseName + i);
+11715: } while (mainSaveFolder.exists);
+11716: mainSaveFolder.create();
+11764: var finalFile = new File(mainSaveFolder.fsName + "/" + fileName);
+11905: if (settings.fillEmptyGangingSlots) {
+11949: var simpleGridBenchmarkResult = simpleGridOptions[0];
+11950: var markClearance = (settings.markDistancePt + settings.markLengthPt);
+11951: var totalSeparationGapPt = settings.markWidthPt + (2 * markClearance);
+11953: // === SỬA LỖI: Chỉ co vùng in ở cạnh nào lề không đủ chứa dấu xén ===
+11954: var trimOverflowL = Math.max(0, markClearance - settings.marginLeftPt);
+11955: var trimOverflowR = Math.max(0, markClearance - settings.marginRightPt);
+11956: var trimOverflowT = Math.max(0, markClearance - settings.marginTopPt);
+11957: var trimOverflowB = Math.max(0, markClearance - settings.marginBottomPt);
+11958: var layoutUsableW = usableWidthPt - trimOverflowL - trimOverflowR;
+11959: var layoutUsableH = usableHeightPt - trimOverflowT - trimOverflowB;
+11963: layoutResult1 = simpleGridBenchmarkResult;
+11970: var remainingW_A = layoutUsableW - optimal_layoutResult1.blockW - totalSeparationGapPt;
+11972: if (remainingW_A > 0) { var optsA = calculateGridLayout_NLDT(remainingW_A, layoutUsableH, trueItemW_pt, trueItemH_pt, gapPt, gapPt, false); if (optsA.length > 0) layoutA = optsA[0]; }
+11973: var remainingH_B = layoutUsableH - optimal_layoutResult1.blockH - totalSeparationGapPt;
+11975: if (remainingH_B > 0) { var optsB = calculateGridLayout_NLDT(layoutUsableW, remainingH_B, trueItemW_pt, trueItemH_pt, gapPt, gapPt, false); if (optsB.length > 0) layoutB = optsB[0]; }
+11981: var optimalFillTotalItems = optimal_layoutResult1.totalItems + (optimal_layoutResult2 ? optimal_layoutResult2.totalItems : 0);
+11983: if (optimalFillTotalItems > simpleGridBenchmarkResult.totalItems) {
+11985: } else if (optimalFillTotalItems === simpleGridBenchmarkResult.totalItems) {
+11988: } else if (!simpleGridBenchmarkResult.needsRotation) {
+11989: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+11991: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+11994: layoutResult1 = simpleGridBenchmarkResult;
+12049: if (settings.fillEmptyGangingSlots && totalItemsToPlace > 0) {
+12055: var remainder = totalAvailableSlots % numUniqueTypes;
+12056: var newListAfterFill = [];
+12059: var numCopies = baseCopiesPerType + (i < remainder ? 1 : 0);
+12061: newListAfterFill.push(currentItemObject);
+12064: listToPlace = newListAfterFill;
+12092: var trimLayerFront = doc.layers.add();
+12093: trimLayerFront.name = "XenTP_TrimMarks_Front_" + artboardCounter;
+12097: var artboardRectBack, newArtboardBack, resultLayerBack, trimLayerBack, docCoordsBack;
+12122: trimLayerBack = doc.layers.add();
+12123: trimLayerBack.name = "XenTP_TrimMarks_Back_" + artboardCounter;
+12153: if (isLastArtboard && !settings.fillEmptyGangingSlots && isLayoutPotentiallyAsymmetric && settings.workingModeIndex !== 2) {
+12189: var settingsForPlacing = { trimOverlap: true, itemBleed: settings.bleedValue, gap: convertFromPoints(settings.gapPt, 'mm'), addFrame: false, clusterGapMode: 'item' };
+12190: var settingsForMarks = { markColorName: settings.markColorName, markDistance: settings.markDistancePt, markLength: settings.markLengthPt, markWidth: settings.markWidthPt };
+12203: var isSuperGridGangingMode = (settings.layoutMethodIndex === 2 && settings.fillEmptyGangingSlots);
+12214: var markClearance = (settings.markDistancePt + settings.markLengthPt);
+12215: var totalSeparationGapPt = settings.markWidthPt + (2 * markClearance);
+12241: var layoutForMarksFront_L2 = JSON.parse(JSON.stringify(layoutResult2));
+12242: if (!settings.fillEmptyGangingSlots && settings.workingModeIndex !== 2) {
+12244: layoutForMarksFront_L2.items = layoutResult2.items.slice(0, temListForLayout2_Front.length);
+12245: layoutForMarksFront_L2.totalItems = layoutForMarksFront_L2.items.length;
+12249: drawGridTrimMarks(doc, trimLayerFront, layoutForMarksFront_L2, docCoords2_front, settingsForMarks);
+12254: var layoutForMarksFront = layoutResult1;
+12258: if (isCustomGridSelected && settings.fillEmptyGangingSlots && layoutResult1.clusterLayoutResult && layoutResult1.clusterLayoutResult.totalItems > 0) {
+12285: // Vẽ dấu xén cho từng cụm
+12294: drawGridTrimMarks(doc, trimLayerFront, singleClusterLayoutTemplate_Front, clusterDocCoords_Front, settingsForMarks);
+12297: // <<< THÊM MỚI: Vẽ viền cụm cho Mặt Trước >>>
+12300: var clusterW_with_marks_Front = layoutResult1.clusterWidth;
+12301: var clusterH_with_marks_Front = layoutResult1.clusterHeight;
+12308: var borderLeft_doc_Front = borderCenterX_doc_Front - (clusterW_with_marks_Front / 2);
+12309: var borderTop_doc_Front = borderCenterY_doc_Front + (clusterH_with_marks_Front / 2);
+12311: drawClusterBorder(trimLayerFront, borderLeft_doc_Front, borderTop_doc_Front, clusterW_with_marks_Front, clusterH_with_marks_Front, settingsForMarks, doc);
+12317: // Vẽ dấu xén 1 lần như cũ
+12318: drawGridTrimMarks(doc, trimLayerFront, layoutForMarksFront, docCoordsFront, settingsForMarks);
+12322: centerContent(resultLayerFront, trimLayerFront, docCoordsFront.startX, docCoordsFront.startY, usableWidthPt, usableHeightPt);
+12335: trimLayerBack = doc.layers.add();
+12336: trimLayerBack.name = "XenTP_TrimMarks_Back_" + artboardCounter;
+12342: var isSuperGridGangingMode = (settings.layoutMethodIndex === 2 && settings.fillEmptyGangingSlots);
+12371: var markClearance = (settings.markDistancePt + settings.markLengthPt);
+12372: var totalSeparationGapPt = settings.markWidthPt + (2 * markClearance);
+12428: // 3. Xác định tọa độ cho cụm chính L1 ở mặt sau. Nó sẽ bắt đầu tại điểm X của khối thống nhất.
+12473: // --- 4. Vẽ Dấu xén, Viền cụm, Canh giữa, Report ---
+12474: var layoutForMarksBack_L1 = mirroredLayout_L1; // Lấy layout L1 đã lật
+12475: var layoutForMarksBack_L2 = mirroredLayout_L2; // Lấy layout L2 đã lật
+12478: // Logic điều khiển dấu xén trang cuối (không lấp đầy)
+12479: if (!settings.fillEmptyGangingSlots) {
+12492: layoutForMarksBack_L1 = correctedLayoutBack_L1;
+12495: if (layoutForMarksBack_L2) {
+12506: layoutForMarksBack_L2 = correctedLayoutBack_L2;
+12513: layoutForMarksBack_L1 = correctedLayoutBack_L1_Last;
+12515: if (layoutForMarksBack_L2) {
+12518: layoutForMarksBack_L2 = correctedLayoutBack_L2_Last;
+12523: // Vẽ Dấu xén cho L1
+12559: drawGridTrimMarks(doc, trimLayerBack, singleClusterLayoutTemplate_Back, clusterDocCoords_Back_Single, settingsForMarks);
+12562: // Vẽ dấu xén 1 lần (L1)
+12563: drawGridTrimMarks(doc, trimLayerBack, layoutForMarksBack_L1, docCoords_L1_back, settingsForMarks);
+12566: // Vẽ Dấu xén cho L2 (nếu có)
+12567: if (layoutForMarksBack_L2 && layoutForMarksBack_L2.totalItems > 0) {
+12568: drawGridTrimMarks(doc, trimLayerBack, layoutForMarksBack_L2, docCoords_L2_back, settingsForMarks);
+12571: // Vẽ Viền cụm (nếu cần)
+12575: var clusterW_with_marks_Back = layoutResult1.clusterWidth;
+12576: var clusterH_with_marks_Back = layoutResult1.clusterHeight;
+12583: var borderLeft_doc_Back = borderCenterX_doc_Back - (clusterW_with_marks_Back / 2);
+12584: var borderTop_doc_Back = borderCenterY_doc_Back + (clusterH_with_marks_Back / 2);
+12586: drawClusterBorder(trimLayerBack, borderLeft_doc_Back, borderTop_doc_Back, clusterW_with_marks_Back, clusterH_with_marks_Back, settingsForMarks, doc);
+12592: centerContent(resultLayerBack, trimLayerBack, docCoordsBack.startX, docCoordsBack.startY, usableWidthPt, usableHeightPt);
+12614: // === BẮT ĐẦU: KHỐI CODE THÊM VÀO ĐỂ VẼ REPORT CHO GHÉP FILE + XÉN TP ===
+12626: if (settings.fillEmptyGangingSlots && emptySlotsOnLastSheet > 0) {
+12627: gangingAppend = langData[lang].uiGangingReportLastPageFilled;
+12628: } else if (!settings.fillEmptyGangingSlots && emptySlotsOnLastSheet > 0) {
+12752: // Kiểm tra xem có cần lấp đầy bằng cụm không
+12753: if (settings.fillEmptyGangingSlots) {
+12758: settings.clusterGapPt, settings.clusterGapPt, // gap giữa cụm
+12763: // *** LƯU LẠI KÍCH THƯỚC CỤM KHI LẤP ĐẦY ***
+12774: // *** Reset kích thước cụm khi không lấp đầy ***
+12787: var simpleGridBenchmarkResult = simpleGridOptions[0];
+12789: var markClearance = (settings.markDistancePt + settings.markLengthPt);
+12790: var totalSeparationGapPt = settings.markWidthPt + (2 * markClearance);
+12792: // === SỬA LỖI: Chỉ co vùng in ở cạnh nào lề không đủ chứa dấu xén ===
+12793: var trimOverflowL = Math.max(0, markClearance - settings.marginLeftPt);
+12794: var trimOverflowR = Math.max(0, markClearance - settings.marginRightPt);
+12795: var trimOverflowT = Math.max(0, markClearance - settings.marginTopPt);
+12796: var trimOverflowB = Math.max(0, markClearance - settings.marginBottomPt);
+12797: var layoutUsableW = usableWidthPt - trimOverflowL - trimOverflowR;
+12798: var layoutUsableH = usableHeightPt - trimOverflowT - trimOverflowB;
+12802: layoutResult1 = simpleGridBenchmarkResult;
+12809: var remainingW_A = layoutUsableW - optimal_layoutResult1.blockW - totalSeparationGapPt;
+12811: if (remainingW_A > 0) { var optsA = calculateGridLayout_NLDT(remainingW_A, layoutUsableH, trueItemW_pt, trueItemH_pt, gapPt, gapPt, false); if (optsA.length > 0) layoutA = optsA[0]; }
+12812: var remainingH_B = layoutUsableH - optimal_layoutResult1.blockH - totalSeparationGapPt;
+12814: if (remainingH_B > 0) { var optsB = calculateGridLayout_NLDT(layoutUsableW, remainingH_B, trueItemW_pt, trueItemH_pt, gapPt, gapPt, false); if (optsB.length > 0) layoutB = optsB[0]; }
+12820: var optimalFillTotalItems = optimal_layoutResult1.totalItems + (optimal_layoutResult2 ? optimal_layoutResult2.totalItems : 0);
+12823: if (optimalFillTotalItems > simpleGridBenchmarkResult.totalItems) {
+12825: } else if (optimalFillTotalItems === simpleGridBenchmarkResult.totalItems) {
+12828: } else if (!simpleGridBenchmarkResult.needsRotation) {
+12829: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+12831: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+12834: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+12854: // *** Reset kích thước cụm khi không dùng Lưới tùy chỉnh + Lấp đầy ***
+12940: var trimLayer = doc.layers.add();
+12941: trimLayer.name = "XenTP_TrimMarks_" + modelIndex;
+12943: var settingsForPlacing = { trimOverlap: true, itemBleed: settings.bleedValue, gap: convertFromPoints(settings.gapPt, 'mm'), addFrame: false };
+12944: var settingsForMarks = { markColorName: settings.markColorName, markDistance: settings.markDistancePt, markLength: settings.markLengthPt, markWidth: settings.markWidthPt };
+12962: // --- BẮT ĐẦU SỬA ĐỔI: LOGIC VẼ DẤU XÉN CHO LƯỚI TÙY CHỈNH + LẤP TRỐNG ---
+12963: if (isCustomGridSelected && settings.fillEmptyGangingSlots && layoutResult1.clusterLayoutResult && layoutResult1.clusterLayoutResult.totalItems > 0) {
+12991: // Lặp qua từng cụm và vẽ dấu xén riêng
+13000: drawGridTrimMarks(doc, trimLayer, singleClusterLayoutTemplate, clusterDocCoords, settingsForMarks);
+13003: // Nếu không phải Lưới tùy chỉnh + Lấp trống, vẽ dấu xén 1 lần như cũ
+13004: drawGridTrimMarks(doc, trimLayer, layoutResult1, docCoords, settingsForMarks);
+13008: if (settings.clusterBorder && isCustomGridSelected && settings.fillEmptyGangingSlots && layoutResult1.clusterLayoutResult) {
+13010: var clusterW_with_marks = layoutResult1.clusterWidth;
+13011: var clusterH_with_marks = layoutResult1.clusterHeight;
+13018: var borderLeft_doc = borderCenterX_doc - (clusterW_with_marks / 2);
+13019: var borderTop_doc = borderCenterY_doc + (clusterH_with_marks / 2);
+13021: drawClusterBorder(trimLayer, borderLeft_doc, borderTop_doc, clusterW_with_marks, clusterH_with_marks, settingsForMarks, doc);
+13026: var markClearance = (settings.markDistancePt + settings.markLengthPt); var totalSeparationGapPt = settings.markWidthPt + (2 * markClearance);
+13031: drawGridTrimMarks(doc, trimLayer, layoutResult2, docCoords2, settingsForMarks);
+13036: centerContent(resultLayer, trimLayer, docCoords.startX, docCoords.startY, usableWidthPt, usableHeightPt);
+13136: // Kiểm tra xem có cần lấp đầy bằng cụm không
+13137: if (settings.fillEmptyGangingSlots) {
+13168: var simpleGridBenchmarkResult = simpleGridOptions[0];
+13170: var markClearance = (settings.markDistancePt + settings.markLengthPt);
+13171: var layoutUsableW = usableWidthPt - (2 * markClearance); var layoutUsableH = usableHeightPt - (2 * markClearance); var totalSeparationGapPt = settings.markWidthPt + (2 * markClearance);
+13175: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+13179: var remainingW_A = layoutUsableW - optimal_layoutResult1.blockW - totalSeparationGapPt;
+13181: if (remainingW_A > 0) { var optsA = calculateGridLayout_NLDT(remainingW_A, layoutUsableH, trueItemW_pt, trueItemH_pt, gapPt, gapPt, false); if (optsA.length > 0) layoutA = optsA[0]; }
+13182: var remainingH_B = layoutUsableH - optimal_layoutResult1.blockH - totalSeparationGapPt;
+13184: if (remainingH_B > 0) { var optsB = calculateGridLayout_NLDT(layoutUsableW, remainingH_B, trueItemW_pt, trueItemH_pt, gapPt, gapPt, false); if (optsB.length > 0) layoutB = optsB[0]; }
+13189: var optimalFillTotalItems = optimal_layoutResult1.totalItems + (optimal_layoutResult2 ? optimal_layoutResult2.totalItems : 0);
+13192: if (optimalFillTotalItems > simpleGridBenchmarkResult.totalItems) {
+13194: } else if (optimalFillTotalItems === simpleGridBenchmarkResult.totalItems) {
+13197: } else if (!simpleGridBenchmarkResult.needsRotation) {
+13198: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+13200: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+13203: layoutResult1 = simpleGridBenchmarkResult; layoutResult2 = null;
+13223: // *** Reset kích thước cụm khi không dùng Lưới tùy chỉnh + Lấp đầy ***
+13267: // Lưu vị trí cụm phụ mặt trước (logic giữ nguyên)
+13270: var fillerWidth_Front = 0;
+13271: var fillerHeight_Front = 0;
+13273: var markClearance = (settings.markDistancePt + settings.markLengthPt);
+13274: var totalSeparationGapPt = settings.markWidthPt + (2 * markClearance);
+13275: fillerWidth_Front = layoutResult2.blockW;
+13276: fillerHeight_Front = layoutResult2.blockH;
+13280: currentPair.frontLayoutInfo = { relX: relativeStartX_Front, relY: relativeStartY_Front, fillW: fillerWidth_Front, fillH: fillerHeight_Front };
+13287: var settingsForPlacing = { trimOverlap: true, itemBleed: settings.bleedValue, gap: convertFromPoints(settings.gapPt, 'mm'), addFrame: false };
+13288: var settingsForMarks = { markColorName: settings.markColorName, markDistance: settings.markDistancePt, markLength: settings.markLengthPt, markWidth: settings.markWidthPt };
+13311: var trimLayerFront = doc.layers.add();
+13312: trimLayerFront.name = "XenTP_TrimMarks_Pair_" + (pairIndex + 1) + "_Front";
+13331: // --- BẮT ĐẦU SỬA ĐỔI: LOGIC VẼ DẤU XÉN CHO LƯỚI TÙY CHỈNH + LẤP TRỐNG (MẶT TRƯỚC) ---
+13332: if (isCustomGridSelected && settings.fillEmptyGangingSlots && layoutResult1.clusterLayoutResult && layoutResult1.clusterLayoutResult.totalItems > 0) {
+13360: // Lặp qua từng cụm và vẽ dấu xén riêng
+13369: drawGridTrimMarks(doc, trimLayerFront, singleClusterLayoutTemplate_Front, clusterDocCoords_Front, settingsForMarks);
+13372: // Nếu không phải Lưới tùy chỉnh + Lấp trống, vẽ dấu xén 1 lần như cũ
+13373: drawGridTrimMarks(doc, trimLayerFront, layoutResult1, docCoordsFront, settingsForMarks);
+13378: var markClearance = (settings.markDistancePt + settings.markLengthPt); var totalSeparationGapPt = settings.markWidthPt + (2 * markClearance);
+13397: drawGridTrimMarks(doc, trimLayerFront, layoutResult2, docCoords2_front, settingsForMarks);
+13399: centerContent(resultLayerFront, trimLayerFront, docCoordsFront.startX, docCoordsFront.startY, usableWidthPt, usableHeightPt);
+13460: var trimLayerBack = doc.layers.add();
+13461: trimLayerBack.name = "XenTP_TrimMarks_Pair_" + (pairIndex + 1) + "_Back";
+13466: if (settings.layoutMethodIndex === 2 && settings.fillEmptyGangingSlots && layoutResult1.clusterLayoutResult) {
+13467: // Lật layout của các cụm y hệt như cách lật layout của tem
+13473: var fillerBlockWidth = layoutResult2.blockW;
+13474: mirroredLayoutResult2 = mirrorLayout(layoutResult2, fillerBlockWidth);
+13493: // --- BẮT ĐẦU SỬA ĐỔI: LOGIC VẼ DẤU XÉN CHO LƯỚI TÙY CHỈNH + LẤP TRỐNG (MẶT SAU) ---
+13494: if (isCustomGridSelected && settings.fillEmptyGangingSlots && mirroredLayoutResult1.clusterLayoutResult && mirroredLayoutResult1.clusterLayoutResult.totalItems > 0) {
+13522: // Lặp qua từng cụm (đã lật) và vẽ dấu xén riêng
+13531: // Vẽ dấu xén cho cụm mặt sau
+13532: drawGridTrimMarks(doc, trimLayerBack, singleClusterLayoutTemplate_Back, clusterDocCoords_Back, settingsForMarks);
+13535: // Nếu không phải Lưới tùy chỉnh + Lấp trống, vẽ dấu xén 1 lần như cũ (dùng layout đã lật)
+13536: drawGridTrimMarks(doc, trimLayerBack, mirroredLayoutResult1, docCoordsBack, settingsForMarks);
+13540: // === BẮT ĐẦU SỬA LỖI 1: THÊM CODE VẼ VIỀN CỤM CHO MẶT TRƯỚC ===
+13541: if (settings.clusterBorder && isCustomGridSelected && settings.fillEmptyGangingSlots && layoutResult1.clusterLayoutResult) {
+13543: // Kích thước cụm đã bao gồm cả dấu xén
+13544: var clusterW_with_marks_Front = layoutResult1.clusterWidth;
+13545: var clusterH_with_marks_Front = layoutResult1.clusterHeight;
+13547: // Lặp qua từng cụm của layout MẶT TRƯỚC
+13555: var borderLeft_doc_Front = borderCenterX_doc_Front - (clusterW_with_marks_Front / 2);
+13556: var borderTop_doc_Front = borderCenterY_doc_Front + (clusterH_with_marks_Front / 2);
+13559: drawClusterBorder(trimLayerFront, borderLeft_doc_Front, borderTop_doc_Front, clusterW_with_marks_Front, clusterH_with_marks_Front, settingsForMarks, doc);
+13564: // === THÊM MỚI: VẼ VIỀN CỤM (Bình trang - Mặt Sau) ===
+13565: if (settings.clusterBorder && isCustomGridSelected && settings.fillEmptyGangingSlots && mirroredLayoutResult1.clusterLayoutResult) {
+13567: // Kích thước cụm không đổi, chỉ vị trí lật
+13568: var clusterW_with_marks_Back = mirroredLayoutResult1.clusterWidth;
+13569: var clusterH_with_marks_Back = mirroredLayoutResult1.clusterHeight;
+13576: var borderLeft_doc_Back = borderCenterX_doc_Back - (clusterW_with_marks_Back / 2);
+13577: var borderTop_doc_Back = borderCenterY_doc_Back + (clusterH_with_marks_Back / 2);
+13579: drawClusterBorder(trimLayerBack, borderLeft_doc_Back, borderTop_doc_Back, clusterW_with_marks_Back, clusterH_with_marks_Back, settingsForMarks, doc);
+13589: var fillerWidth_Front = frontLayoutInfo.fillW;
+13592: var relativeStartX_Back = usableWidthPt - relativeStartX_Front - fillerWidth_Front;
+13616: drawGridTrimMarks(doc, trimLayerBack, mirroredLayoutResult2, docCoords2_back_corrected, settingsForMarks);
+13622: centerContent(resultLayerBack, trimLayerBack, docCoordsBack.startX, docCoordsBack.startY, usableWidthPt, usableHeightPt);
+13700: // === HÀM ĐÃ SỬA LỖI (ƯU TIÊN ĐO DẤU XÉN) ===
+13701: function centerContent(resultLayer, marksLayer, startX, startY, usableW, usableH) {
+13707: // Ưu tiên đo layer DẤU XÉN (marksLayer) để làm chuẩn canh lề
+13709: if (marksLayer.pageItems.length > 0) {
+13710: targetLayerToMeasure = marksLayer; // CHUẨN: Đo dấu xén (full grid)
+13712: targetLayerToMeasure = resultLayer; // Dự phòng: nếu không có dấu xén, đo layer tem
+13716: // Tính toán bounding box tổng thể của layer chuẩn (dấu xén hoặc tem)
+13748: for (var k = 0; k < marksLayer.pageItems.length; k++) {
+13749: marksLayer.pageItems[k].translate(deltaX, deltaY);
+13763: function getMarkColor(doc, colorName) {
+13784: var swatchName = "LayoutAssistant_MarkColor_Temp";
+13795: function drawGridTrimMarks(doc, targetLayer, layoutResult, docCoords, settings, sidesToDraw) {
+13798: if (settings.markColorName === 'none' || !layoutResult || layoutResult.totalItems === 0) {
+13802: var markColor = getMarkColor(doc, settings.markColorName);
+13803: var markOffsetPt = settings.markDistance; // Đã là point
+13804: var markLengthPt = settings.markLength; // Đã là point
+13805: var markWidthPt = settings.markWidth;   // Đã là point
+13811: line.filled = false;
+13813: line.strokeColor = markColor;
+13814: line.strokeWidth = markWidthPt;
+13848: drawLine([[x_doc, docGridTop + markOffsetPt], [x_doc, docGridTop + markOffsetPt + markLengthPt]]);
+13851: drawLine([[x_doc, docGridBottom - markOffsetPt], [x_doc, docGridBottom - markOffsetPt - markLengthPt]]);
+13857: drawLine([[docGridLeft - markOffsetPt, y_doc], [docGridLeft - markOffsetPt - markLengthPt, y_doc]]);
+13860: drawLine([[docGridRight + markOffsetPt, y_doc], [docGridRight + markOffsetPt + markLengthPt, y_doc]]);
+13868: * Hàm mới: Vẽ một đường xén phân cách duy nhất giữa hai cụm.
+13877: function drawSeparatorTrimLine(targetLayer, startX, startY, endX, endY, settings, doc) {
+13879: var markColor = getMarkColor(doc, settings.markColorName);
+13884: line.filled = false;
+13886: line.strokeColor = markColor;
+13887: line.strokeWidth = settings.markWidth; // Dùng độ đậm đã cài đặt
+13891: * Vẽ dấu xén nhỏ 6mm tại các điểm lưới phân cách cụm (thay cho đường dài).
+13896: * @param {number} blocksX - Số cụm theo chiều ngang
+13897: * @param {number} blocksY - Số cụm theo chiều dọc
+13898: * @param {number} subW - Chiều rộng 1 cụm (pt)
+13899: * @param {number} subH - Chiều cao 1 cụm (pt)
+13900: * @param {number} gapPt - Khoảng cách giữa các cụm (pt)
+13901: * @param {Object} markSettings - { markColorName, markWidth }
+13904: function drawSubAreaTrimMarks(targetLayer, originX, originY, blocksX, blocksY, subW, subH, gapPt, markSettings, doc) {
+13905: var markColor = getMarkColor(doc, markSettings.markColorName || 'black');
+13906: var markLen = 6 * MM_TO_PT; // 6mm
+13907: var strokeW = markSettings.markWidth || 0.5;
+13928: function drawMark(x1, y1, x2, y2) {
+13931: line.filled = false;
+13933: line.strokeColor = markColor;
+13941: drawMark(px, gridTop, px, gridTop - markLen);
+13943: drawMark(px, gridBottom + markLen, px, gridBottom);
+13947: drawMark(px, py + markLen / 2, px, py - markLen / 2);
+13955: drawMark(gridLeft, py2, gridLeft + markLen, py2);
+13957: drawMark(gridRight - markLen, py2, gridRight, py2);
+13961: drawMark(px2 - markLen / 2, py2, px2 + markLen / 2, py2);
+13977: * @param {Object} trueItemDim - Kích thước thực của tem (không tính bù xén).
+13979: * @param {number} [clusterRows] - SỐ HÀNG CỦA MỘT CỤM CON.
+13980: * @param {number} [clusterCols] - SỐ CỘT CỦA MỘT CỤM CON.
+14065: var trimBox = {
+14081: clipTopCoord = isTopEdgeOfLocalCluster ? bleedBox.top : (trimBox.top + clippingOffsetPt);
+14082: clipBottomCoord = isBottomEdgeOfLocalCluster ? bleedBox.bottom : (trimBox.bottom - clippingOffsetPt);
+14083: clipLeftCoord = isLeftEdgeOfLocalCluster ? bleedBox.left : (trimBox.left - clippingOffsetPt);
+14084: clipRightCoord = isRightEdgeOfLocalCluster ? bleedBox.right : (trimBox.right + clippingOffsetPt);
+14093: if (!isTopEdgeOfLocalCluster) { clipTopCoord = (settings.gap > 0) ? trimBox.top + clippingOffsetPt : trimBox.top; }
+14094: else if (settings.clusterDirection === 'row' && !clusterEdges.isTop) { clipTopCoord = (settings.clusterGapPt > 0) ? trimBox.top + clusterClippingOffsetPt : trimBox.top; }
+14097: if (!isBottomEdgeOfLocalCluster) { clipBottomCoord = (settings.gap > 0) ? trimBox.bottom - clippingOffsetPt : trimBox.bottom; }
+14098: else if (settings.clusterDirection === 'row' && !clusterEdges.isBottom) { clipBottomCoord = (settings.clusterGapPt > 0) ? trimBox.bottom - clusterClippingOffsetPt : trimBox.bottom; }
+14101: if (!isLeftEdgeOfLocalCluster) { clipLeftCoord = (settings.gap > 0) ? trimBox.left - clippingOffsetPt : trimBox.left; }
+14102: else if (settings.clusterDirection === 'column' && !clusterEdges.isLeft) { clipLeftCoord = (settings.clusterGapPt > 0) ? trimBox.left - clusterClippingOffsetPt : trimBox.left; }
+14105: if (!isRightEdgeOfLocalCluster) { clipRightCoord = (settings.gap > 0) ? trimBox.right + clippingOffsetPt : trimBox.right; }
+14106: else if (settings.clusterDirection === 'column' && !clusterEdges.isRight) { clipRightCoord = (settings.clusterGapPt > 0) ? trimBox.right + clusterClippingOffsetPt : trimBox.right; }
+14113: clipTopCoord = shouldClipTop ? (settings.gap > 0 ? trimBox.top + clippingOffsetPt : trimBox.top) : bleedBox.top;
+14114: clipBottomCoord = shouldClipBottom ? (settings.gap > 0 ? trimBox.bottom - clippingOffsetPt : trimBox.bottom) : bleedBox.bottom;
+14115: clipLeftCoord = shouldClipLeft ? (settings.gap > 0 ? trimBox.left - clippingOffsetPt : trimBox.left) : bleedBox.left;
+14116: clipRightCoord = shouldClipRight ? (settings.gap > 0 ? trimBox.right + clippingOffsetPt : trimBox.right) : bleedBox.right;
+14149: // Chế độ NHÂN BẢN CỤM: Lặp qua TẤT CẢ các vị trí trong layout "siêu cụm"
+14203: // Giới hạn độ mở rộng của mask theo bù xén
+14218: var trimBox = {
+14227: // --- KHỐI LOGIC CLIPPING MASK (NÂNG CẤP ĐỂ HỖ TRỢ CỤM) ---
+14231: // Logic MỚI: Tính toán clipping mask dựa trên vị trí trong CỤM
+14237: clipTopCoord = isTopEdgeOfLocalCluster ? bleedBox.top : (trimBox.top + clipExpansion);
+14238: clipBottomCoord = isBottomEdgeOfLocalCluster ? bleedBox.bottom : (trimBox.bottom - clipExpansion);
+14239: clipLeftCoord = isLeftEdgeOfLocalCluster ? bleedBox.left : (trimBox.left - clipExpansion);
+14240: clipRightCoord = isRightEdgeOfLocalCluster ? bleedBox.right : (trimBox.right + clipExpansion);
+14248: // <<< SỬA LỖI LOGIC GỐC: trimBox.top + clipExpansion >>>
+14249: clipTopCoord = shouldClipTop ? (trimBox.top + clipExpansion) : bleedBox.top;
+14250: clipBottomCoord = shouldClipBottom ? (trimBox.bottom - clipExpansion) : bleedBox.bottom;
+14251: clipLeftCoord = shouldClipLeft ? (trimBox.left - clipExpansion) : bleedBox.left;
+14252: clipRightCoord = shouldClipRight ? (trimBox.right + clipExpansion) : bleedBox.right;
+14271: * Vẽ các dấu xén (trim marks) chuẩn xác xung quanh khối tem.
+14272: * @param {Layer} targetLayer - Layer đích để vẽ dấu xén.
+14276: * @param {Number} bleedPt - Kích thước bù xén bằng point.
+14278: function drawTrimMarks(targetLayer, layoutResult, artboardRect, settings, bleedPt) {
+14286: var trimMarkLength = 15; // pt
+14287: var trimMarkOffset = 8;  // pt
+14290: // --- 2. Tính toán tọa độ của khối tem (không tính bù xén) ---
+14303: // --- 3. Vẽ các dấu xén DỌC ---
+14308: var topMark = targetLayer.pathItems.add();
+14309: topMark.setEntirePath([
+14310: [xPos, blockStartY_NoBleed + trimMarkOffset],
+14311: [xPos, blockStartY_NoBleed + trimMarkOffset + trimMarkLength]
+14315: var bottomMark = targetLayer.pathItems.add();
+14316: bottomMark.setEntirePath([
+14317: [xPos, blockStartY_NoBleed - blockHeightNoBleed - trimMarkOffset],
+14318: [xPos, blockStartY_NoBleed - blockHeightNoBleed - trimMarkOffset - trimMarkLength]
+14321: topMark.stroked = bottomMark.stroked = true;
+14322: topMark.strokeColor = bottomMark.strokeColor = regColor;
+14323: topMark.strokeWidth = bottomMark.strokeWidth = strokeWidth;
+14326: // --- 4. Vẽ các dấu xén NGANG ---
+14331: var leftMark = targetLayer.pathItems.add();
+14332: leftMark.setEntirePath([
+14333: [blockStartX_NoBleed - trimMarkOffset, yPos],
+14334: [blockStartX_NoBleed - trimMarkOffset - trimMarkLength, yPos]
+14338: var rightMark = targetLayer.pathItems.add();
+14339: rightMark.setEntirePath([
+14340: [blockStartX_NoBleed + blockWidthNoBleed + trimMarkOffset, yPos],
+14341: [blockStartX_NoBleed + blockWidthNoBleed + trimMarkOffset + trimMarkLength, yPos]
+14344: leftMark.stroked = rightMark.stroked = true;
+14345: leftMark.strokeColor = rightMark.strokeColor = regColor;
+14346: leftMark.strokeWidth = rightMark.strokeWidth = strokeWidth;
+14351: // === KẾT THÚC: CÁC HÀM MỚI CHO TÍNH NĂNG "XÉN THÀNH PHẨM" ===
+14459: // Biến cho logic chia cụm
+14465: var remainingItems = itemsToPlace.slice(0);
+14476: while (remainingItems.length > 0) {
+14536: // [CHẾ ĐỘ CHIA CỤM]
+14592: for (var i = 0; i < remainingItems.length; i++) {
+14593: var pair = remainingItems[i];
+14621: remainingItems.splice(indexesToRemove[idx], 1);
+14626: if (remainingItems.length === 0 && settings.fillEmptyGangingSlots) {
+14627: var sourceForFill = validPairs;
+14628: var fillIndex = 0;
+14634: if (fails >= sourceForFill.length * 2) break; // Break nếu đã thử lấp tất cả các tem mà không vừa
+14636: var pair = sourceForFill[fillIndex % sourceForFill.length];
+14638: if (!b) { fillIndex++; fails++; continue; }
+14646: if (wItem <= 0 || hItem <= 0) { fillIndex++; fails++; continue; }
+14649: var placedFill = packer.insert(wItem + gapPt, hItem + gapPt, true);
+14650: if (placedFill) {
+14653: x: placedFill.x,
+14654: y: placedFill.y,
+14655: w: placedFill.rot ? hItem : wItem,
+14656: h: placedFill.rot ? wItem : hItem,
+14657: rotated: placedFill.rot
+14663: fillIndex++;
+14667: // --- 5. CANH GIỮA NỘI DUNG TRONG CỤM ---
+14741: pontLayerArt.name = "Marks_Art_" + artboardCounter;
+14753: // Vẽ Viền Cụm (Nếu có)
+14761: drawClusterBorder(borderLayer, bOX, bOY, subW_Pt, subH_Pt, { markColorName: settings.markColorName, markWidth: settings.markWidthPt }, doc);
+14772: drawSubAreaTrimMarks(separatorLayer, originX_Art, originY_Art, blocksX, blocksY, subW_Pt, subH_Pt, subAreaGapPt, { markColorName: 'black', markWidth: 0.5 }, doc);
+14783: parts.push(" | Cụm: " + Math.round(settings.subAreaW) + "x" + Math.round(settings.subAreaH) + "mm (" + blocksX + "x" + blocksY + ")");
+14807: pontLayerCut.name = "Marks_Cut_" + artboardCounter;
+14811: } // End While Remaining
+14818: var mainSaveFolder;
+14823: mainSaveFolder = settings.saveLocation;
+14825: startingPrintIndex = countPrintFilesInFolder(mainSaveFolder) + 1;
+14827: var pfCount = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+14828: var cfCount = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+14835: mainSaveFolder = new Folder(settings.saveLocation.fsName + "/" + langData[lang].uiSaveFolderBaseName + fi);
+14837: } while (mainSaveFolder.exists);
+14839: mainSaveFolder.create();
+14843: printFolder = mainSaveFolder;
+14844: cutFolder = mainSaveFolder;
+14846: printFolder = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+14848: cutFolder = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+14861: var titleStr = (langData[lang].uiGangingReportTitle || "Ghep").replace(/:/g, '').trim();
+14889: saveMessage = langData[lang].uiSaveSeparateFilesSuccess + decodeURI(mainSaveFolder.name);
+14977: var mainSaveFolder, printFolder, cutFolder;
+14982: mainSaveFolder = settings.saveLocation;
+14985: startingPrintIndex = countPrintFilesInFolder(mainSaveFolder) + 1;
+14987: var printFolderForCounting = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+14988: var cutFolderForCounting = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+14995: mainSaveFolder = new Folder(settings.saveLocation.fsName + "/" + langData[lang].uiSaveFolderBaseName + i);
+14997: } while (mainSaveFolder.exists);
+14999: mainSaveFolder.create();
+15002: printFolder = mainSaveFolder;
+15003: cutFolder = mainSaveFolder;
+15005: printFolder = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+15007: cutFolder = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+15208: // Tính kích thước vùng cụm lý thuyết (chỉ 1 lần)
+15223: // Tính layout 1 lần cho cụm đầu tiên (tất cả cụm dùng chung layout)
+15226: // Tính bounding box THỰC TẾ của cụm đầu tiên để dùng làm offset
+15238: // Dùng kích thước block THỰC TẾ + gap làm offset, tránh đè cụm
+15241: // Dùng kích thước block THỰC TẾ + gap làm offset, tránh đè cụm
+15269: // Canh giữa toàn bộ nhóm cụm trong vùng usable
+15291: // Lưu thông tin cụm để vẽ dấu xén phân cách (dùng kích thước THỰC TẾ)
+15305: // === LAYOUT THƯỜNG (KHÔNG CHIA CỤM) ===
+15321: // KHÔNG xử lý va chạm khi layout đã clustered (mỗi cụm đã tính chính xác)
+15521: var remainingHorizontalMargin = usableWidthPt - initialBBox.width;
+15522: var remainingVerticalMargin = usableHeightPt - initialBBox.height;
+15527: if (remainingVerticalMargin >= remainingHorizontalMargin && remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+15531: } else if (remainingHorizontalMargin > remainingVerticalMargin && remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+15539: if (layoutResult.strategyDetails && (layoutResult.strategyDetails.didFillRight || layoutResult.strategyDetails.didFillBottom)) {
+15545: if (remainingVerticalMargin >= remainingHorizontalMargin && remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+15548: } else if (remainingHorizontalMargin > remainingVerticalMargin && remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+15565: // === HẬU XỬ LÝ: Loại bỏ items lấn vào vùng ranh giới cụm sau khi xử lý va chạm ===
+15773: var pontArtworkPrefix = "PL_Batch_Marks_Artwork_Run" + currentBatchRunIndex + "_Pair_";
+15808: var pontCutlinePrefix = "PL_Batch_Marks_Cutline_Run" + currentBatchRunIndex + "_Pair_";
+15814: // --- CLUSTER MODE: Vẽ dấu xén phân cách cụm (dấu + và -) ---
+15820: drawSubAreaTrimMarks(clSepLayer_Multi, clSepOX_Multi, clSepOY_Multi, clusterBlocksX_Multi, clusterBlocksY_Multi, clusterSubW_Multi, clusterSubH_Multi, clusterGapPt_Multi, { markColorName: 'black', markWidth: 0.5 }, targetDoc);
+15930: saveMessage = langData[lang].uiSaveSeparateFilesSuccess + decodeURI(mainSaveFolder.name);
+15932: var mainSaveFolder_Legacy;
+15937: mainSaveFolder_Legacy = settings.saveLocation;
+15939: startingPrintIndex_Legacy = countPrintFilesInFolder(mainSaveFolder_Legacy) + 1;
+15941: var printFolderForCounting = new Folder(mainSaveFolder_Legacy.fsName + "/" + langData[lang].uiSaveFolderPrint);
+15942: var cutFolderForCounting = new Folder(mainSaveFolder_Legacy.fsName + "/" + langData[lang].uiSaveFolderCut);
+15949: mainSaveFolder_Legacy = new Folder(settings.saveLocation.fsName + "/" + langData[lang].uiSaveFolderBaseName + i);
+15951: } while (mainSaveFolder_Legacy.exists);
+15954: mainSaveFolder_Legacy.create();
+15958: printFolder_Legacy = mainSaveFolder_Legacy;
+15959: cutFolder_Legacy = mainSaveFolder_Legacy;
+15961: printFolder_Legacy = new Folder(mainSaveFolder_Legacy.fsName + "/" + langData[lang].uiSaveFolderPrint);
+15963: cutFolder_Legacy = new Folder(mainSaveFolder_Legacy.fsName + "/" + langData[lang].uiSaveFolderCut);
+16008: saveMessage = langData[lang].uiSaveSeparateFilesSuccess + decodeURI(mainSaveFolder_Legacy.name);
+16489: var remainingHorizontalMargin = usableWidthPt - initialBBox.width;
+16490: var remainingVerticalMargin = usableHeightPt - initialBBox.height;
+16497: if (remainingVerticalMargin >= remainingHorizontalMargin) {
+16498: if (remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+16512: if (remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+16527: if (remainingVerticalMargin >= remainingHorizontalMargin && remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+16529: } else if (remainingHorizontalMargin > remainingVerticalMargin && remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+16589: var remainingHorizontalMargin = usableWidthPt - initialBBox.width;
+16590: var remainingVerticalMargin = usableHeightPt - initialBBox.height;
+16593: if (layoutResult.strategyDetails && (layoutResult.strategyDetails.didFillRight || layoutResult.strategyDetails.didFillBottom)) {
+16598: if (remainingVerticalMargin >= remainingHorizontalMargin && remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+16602: } else if (remainingHorizontalMargin > remainingVerticalMargin && remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+16625: if (settings.fillEmptyGangingSlots && totalTemsToPlace > 0 && totalTemsToPlace < itemsPerPage) {
+16626: var filledListForOnePage = [];
+16631: var remainderPerPage = itemsPerPage % numUniqueTypes;
+16636: var numCopies = baseCopiesPerPage + (i < remainderPerPage ? 1 : 0);
+16638: if (filledListForOnePage.length < itemsPerPage) {
+16639: filledListForOnePage.push(currentTemObject);
+16643: expandedTemList = filledListForOnePage;
+16746: if (isLastArtboard && settings.fillEmptyGangingSlots && itemsToPlaceOnThisArtboard.length < itemsPerPage) {
+16752: var remainder = emptySlots % numUniqueItems;
+16760: for (var i = 0; i < remainder; i++) {
+16784: // --- SUB-AREA: Nhân bản block sang các vị trí cụm khác ---
+16800: // Vẽ dấu xén phân cách cụm
+16805: drawSubAreaTrimMarks(separatorLayer, sepOriginX, sepOriginY, subAreaBlocksX, subAreaBlocksY, subW_Pt, subH_Pt, subAreaGapPt, { markColorName: 'black', markWidth: 0.5 }, doc);
+16885: if (settings.fillEmptyGangingSlots) {
+16888: reportStr += langData[lang].uiGangingReportLastPageFilled;
+16925: var pontPrefix = "PL_Ganging_Marks_Run" + currentGangingRunIndex + "_Page_";
+16955: var cMarkSize = (cpd.markSize || 5) * MM_TO_PT;
+16959: // Chế độ trang: indent = (pageGap + markSize) - margin + 1mm
+16960: cIndentW = ((cpd.pageLeft || 7) * MM_TO_PT) + cMarkSize - marginLeftPt + safetyPt;
+16961: cIndentH = ((cpd.pageTop || 7) * MM_TO_PT) + cMarkSize - marginTopPt + safetyPt;
+16963: // Chế độ đối tượng: indent = objOffset + markSize + 1mm
+16964: cIndentW = ((cpd.objOffsetX || 5) * MM_TO_PT) + cMarkSize + safetyPt;
+16965: cIndentH = ((cpd.objOffsetY || 5) * MM_TO_PT) + cMarkSize + safetyPt;
+16975: pontGroup.name = "RegMarks_Group_Combined";
+17047: // --- SUB-AREA: Nhân bản khuôn cắt sang các cụm khác ---
+17153: // --- SUB-AREA: Nhân bản khuôn cắt sang các cụm khác (separate artboard) ---
+17171: var pontCutPrefix = "PL_Ganging_Marks_Cutline_Combined_";
+17185: pontGroup.name = "RegMarks_Group_Combined";
+17198: var mainSaveFolder;
+17200: mainSaveFolder = new Folder(settings.saveLocation.fsName + "/" + langData[lang].uiSaveFolderBaseName + i);
+17202: } while (mainSaveFolder.exists);
+17203: mainSaveFolder.create();
+17207: printFolder = mainSaveFolder;
+17208: cutFolder = mainSaveFolder;
+17210: printFolder = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+17212: cutFolder = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+17248: saveMessage = langData[lang].uiSaveSeparateFilesSuccess + decodeURI(mainSaveFolder.name);
+17441: // --- CLUSTER MODE: Biến lưu thông tin cụm để vẽ dấu xén phân cách ---
+17446: var clusterCenterOffX_BT = 0, clusterCenterOffY_BT = 0; // Offset canh giữa để fix trim marks
+17466: if (settings.fillEmptyGangingSlots) {
+17496: // Tính kích thước vùng cụm TỚA HẠN Toán học
+17645: // Nhân bản layout cho từng cụm VỚI CLIPPING dựa trên kích thước Toán học (subW, subH)
+17661: // Loại bỏ các tem lấn ra khỏi ranh giới cụm Toán học!
+17671: continue; // Bỏ qua tem vượt biên cụm
+17693: // === CANH GIỮA TOÀN BỘ CỤM VÀO VÙNG KHẢ DỤNG ===
+17703: // Lưu các thông số chính xác để gửi đi vẽ Trim Marks Toán học
+17720: // Lưu thông tin cụm để vẽ dấu xén phân cách
+17729: clusterSubH_BT = actualBlockH || subH; // Trả về chiều cao VẬT LÝ để vẽ Trim Mark khít
+17734: clusterSubW_BT = actualBlockW || subW; // Trả về chiều rộng VẬT LÝ để vẽ Trim Mark khít
+17933: // KHÔNG xử lý va chạm khi đang ở cluster mode (layout đã chính xác cho mỗi cụm)
+17988: var remainingHorizontalMargin = usableWidthPt - initialBBox.width;
+17989: var remainingVerticalMargin = usableHeightPt - initialBBox.height;
+17996: if (remainingVerticalMargin >= remainingHorizontalMargin) {
+17997: if (remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+18011: if (remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+18026: if (remainingVerticalMargin >= remainingHorizontalMargin && remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+18028: } else if (remainingHorizontalMargin > remainingVerticalMargin && remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+18081: var remainingHorizontalMargin = usableWidthPt - initialBBox.width;
+18082: var remainingVerticalMargin = usableHeightPt - initialBBox.height;
+18102: var fastCheckFailed_H = (remainingHorizontalMargin + itemActualWidth + itemGap < horizontalThresholdPt);
+18104: var fastCheckFailed_V = (remainingVerticalMargin + itemActualHeight + itemGap < verticalThresholdPt);
+18169: var remainingHorizontalMargin = usableWidthPt - initialBBox.width;
+18170: var remainingVerticalMargin = usableHeightPt - initialBBox.height;
+18173: if (layoutResult.strategyDetails && (layoutResult.strategyDetails.didFillRight || layoutResult.strategyDetails.didFillBottom)) {
+18180: if (remainingVerticalMargin >= remainingHorizontalMargin && remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+18185: } else if (remainingHorizontalMargin > remainingVerticalMargin && remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+18284: var remainingHorizontalMargin = usableWidthPt - initialBBox.width;
+18285: var remainingVerticalMargin = usableHeightPt - initialBBox.height;
+18289: if (remainingVerticalMargin >= remainingHorizontalMargin) {
+18290: if (remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+18304: if (remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+18319: if (remainingVerticalMargin >= remainingHorizontalMargin && remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+18321: } else if (remainingHorizontalMargin > remainingVerticalMargin && remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+18529: var remainingHorizontalMargin = usableWidthPt - initialBBox.width;
+18530: var remainingVerticalMargin = usableHeightPt - initialBBox.height;
+18534: if (remainingVerticalMargin >= remainingHorizontalMargin) {
+18535: if (remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+18551: if (remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+18568: if (remainingVerticalMargin >= remainingHorizontalMargin && remainingVerticalMargin >= MARGIN_THRESHOLD_PT) {
+18571: } else if (remainingHorizontalMargin > remainingVerticalMargin && remainingHorizontalMargin >= MARGIN_THRESHOLD_PT) {
+18606: // === HẬU XỬ LÝ: Loại bỏ items lấn vào vùng ranh giới cụm sau khi xử lý va chạm ===
+18636: var isoMainSaveFolder, isoPrintFolder, isoCutFolder;
+18651: isoMainSaveFolder = settings.saveLocation;
+18653: isoStartingPrintIndex = countPrintFilesInFolder(isoMainSaveFolder) + 1;
+18655: var pfCount = new Folder(isoMainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+18656: var cfCount = new Folder(isoMainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+18663: isoMainSaveFolder = new Folder(settings.saveLocation.fsName + "/" + langData[lang].uiSaveFolderBaseName + isoI);
+18665: } while (isoMainSaveFolder.exists);
+18667: isoMainSaveFolder.create();
+18670: isoPrintFolder = isoMainSaveFolder;
+18671: isoCutFolder = isoMainSaveFolder;
+18673: isoPrintFolder = new Folder(isoMainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+18675: isoCutFolder = new Folder(isoMainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+18792: isoPontLayerFront.name = "Marks_Front_" + modelCounter;
+18861: isoPontCutLayer2S.name = "Marks_Cut_" + modelCounter;
+18909: isoSaveMessage = langData[lang].uiSaveSeparateFilesSuccess + decodeURI(isoMainSaveFolder.name);
+18972: if (settings.layoutMethodIndex === 2 && settings.fillEmptyGangingSlots && layoutResult.clusterLayoutResult) {
+19010: pontLayerFront.name = "Marks_Front_" + modelCounter; // Tên duy nhất
+19163: var pontCutPrefix = "PL_2Sided_Marks_Cutline_Combined_";
+19232: if (settings.layoutMethodIndex === 2 && settings.fillEmptyGangingSlots && layoutResult.clusterLayoutResult) {
+19272: drawSubAreaTrimMarks(sepLayer_iso, sepOX, sepOY, subAreaBlocksX_BT, subAreaBlocksY_BT, subW_Pt_BT, subH_Pt_BT, subAreaGapPt_BT, { markColorName: 'black', markWidth: 0.5 }, isoDoc);
+19275: // CLUSTER MODE: dấu xén phân cách cụm
+19281: drawSubAreaTrimMarks(clSepLayer_iso, clSepOX, clSepOY, clusterBlocksX_BT, clusterBlocksY_BT, clusterSubW_BT, clusterSubH_BT, clusterGapPt_BT, { markColorName: 'black', markWidth: 0.5 }, isoDoc);
+19286: isoPontLayer.name = "Marks_" + modelIndex;
+19308: pontGroup.name = "RegMarks_Group_Combined";
+19394: isoPontLayerCut.name = "Marks_Cut_" + modelIndex;
+19457: isoSaveMessage = langData[lang].uiSaveSeparateFilesSuccess + decodeURI(isoMainSaveFolder.name);
+19505: // Logic vẽ đường phân cách cụm cho bình trang
+19506: if (settings.layoutMethodIndex === 2 && settings.fillEmptyGangingSlots && layoutResult.clusterLayoutResult) {
+19531: // --- SUB-AREA: Nhân bản block sang các cụm khác (Bình trang) ---
+19546: // Vẽ dấu xén phân cách cụm
+19551: drawSubAreaTrimMarks(sepLayer_BT, sepOX, sepOY, subAreaBlocksX_BT, subAreaBlocksY_BT, subW_Pt_BT, subH_Pt_BT, subAreaGapPt_BT, { markColorName: 'black', markWidth: 0.5 }, doc);
+19554: // --- CLUSTER MODE: Vẽ dấu xén phân cách cụm (dấu + và -) ---
+19560: drawSubAreaTrimMarks(clSepLayer, clSepOX, clSepOY, clusterBlocksX_BT, clusterBlocksY_BT, clusterSubW_BT, clusterSubH_BT, clusterGapPt_BT, { markColorName: 'black', markWidth: 0.5 }, doc);
+19594: pontLayer.name = "Marks_Model_" + modelIndex;
+19631: var cMarkSize = (cpd.markSize || 5) * MM_TO_PT;
+19635: cIndentW = ((cpd.pageLeft || 7) * MM_TO_PT) + cMarkSize - marginLeftPt + safetyPt;
+19636: cIndentH = ((cpd.pageTop || 7) * MM_TO_PT) + cMarkSize - marginTopPt + safetyPt;
+19638: cIndentW = ((cpd.objOffsetX || 5) * MM_TO_PT) + cMarkSize + safetyPt;
+19639: cIndentH = ((cpd.objOffsetY || 5) * MM_TO_PT) + cMarkSize + safetyPt;
+19651: pontGroup.name = "RegMarks_Group_Combined";
+19826: ? "PL_2Sided_Marks_Cutline_Combined_"
+19827: : "PL_SR_Marks_Cutline_Combined_";
+19841: pontGroupCut.name = "RegMarks_Group_Combined";
+19886: var mainSaveFolder;
+19899: mainSaveFolder = settings.saveLocation;
+19901: startingPrintIndex = countPrintFilesInFolder(mainSaveFolder) + 1;
+19903: var printFolderForCounting = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+19904: var cutFolderForCounting = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+19913: mainSaveFolder = new Folder(settings.saveLocation.fsName + "/" + langData[lang].uiSaveFolderBaseName + i);
+19915: } while (mainSaveFolder.exists);
+19919: mainSaveFolder.create();
+19923: printFolder = mainSaveFolder;
+19924: cutFolder = mainSaveFolder;
+19926: printFolder = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderPrint);
+19928: cutFolder = new Folder(mainSaveFolder.fsName + "/" + langData[lang].uiSaveFolderCut);
+20012: saveMessage = langData[lang].uiSaveSeparateFilesSuccess + decodeURI(mainSaveFolder.name);
+20079: // === BẮT ĐẦU: HÀM MỚI CHO CỬA SỔ CÀI ĐẶT DẤU XÉN ===
+20081: * Hiển thị cửa sổ phụ để cài đặt chi tiết cho dấu xén.
+20086: function showTrimMarkSettingsDialog(currentSettings, currentLang) {
+20088: var dialog = new Window("dialog", langDataDialog.uiTrimMarksTitle);
+20090: dialog.alignChildren = ["fill", "top"];
+20096: distanceGroup.add("statictext", undefined, langDataDialog.uiMarkDistance + ":").preferredSize.width = 100;
+20103: lengthGroup.add("statictext", undefined, langDataDialog.uiMarkLength + ":").preferredSize.width = 100;
+20109: widthGroup.add("statictext", undefined, langDataDialog.uiMarkThickness + ":").preferredSize.width = 100;
+20115: colorGroup.add("statictext", undefined, langDataDialog.uiMarkColorLabel).preferredSize.width = 100;
+20123: if (langDataDialog.uiMarkColors[key]) {
+20124: colorDropdown.add('item', langDataDialog.uiMarkColors[key]);
+20175: settingsDialog.alignChildren = ["fill", "top"];
+20194: marginsContainer.alignChildren = 'fill';
+20220: reportPanel.alignChildren = ["fill", "top"];
+20279: reportListGroup.alignChildren = ["left", "fill"];
+20291: reportBtnGroup.alignChildren = ["fill", "center"];
+20433: // --- Khoảng cách cụm phụ ---
+20434: var fillGapRow = settingsDialog.add("group");
+20435: fillGapRow.orientation = "row";
+20436: fillGapRow.alignChildren = ["left", "center"];
+20437: fillGapRow.spacing = 5;
+20438: var fillGapLabel = (currentLang === 'en') ? "Fill block gap (mm):" : "KC cụm phụ (mm):";
+20439: fillGapRow.add("statictext", undefined, fillGapLabel).preferredSize.width = 120;
+20440: var fillBlockGapInput = fillGapRow.add("edittext", undefined, reportDisplaySettings.fillBlockGapMM || 0);
+20441: fillBlockGapInput.preferredSize = [50, INPUT_HEIGHT];
+20442: fillBlockGapInput.helpTip = (currentLang === 'en')
+20443: ? "Gap between main block and fill block.\nOnly applies in Optimal layout + One-Cut mode.\nSet > 0 so cut lines can safely extend\ninto this gap without cutting into stamps."
+20444: : "Khoảng cách giữa cụm chính và cụm phụ (lấp đầy).\nChỉ áp dụng khi dùng Xếp tối ưu + Bế 1 Dao.\nĐặt > 0 để nét bế 1 Dao có chỗ lòi ra an toàn,\nkhông cắt vào tem của cụm khác.";
+20549: reportDisplaySettings.fillBlockGapMM = parseFloat(fillBlockGapInput.text) || 0;
+20636: reportDisplaySettings.fillBlockGapMM = parseFloat(fillBlockGapInput.text) || 0;
+20651: settingsDialog.alignChildren = ["fill", "top"];
+20743: fillGangingCheckbox,
+20761: markDistanceInput,
+20762: markLengthInput,
+20763: markWidthInput,
+20764: markColorDropdown,
+20765: trimMarkSettingsGroup;
+20768: var tempTrimMarkSettings = {
+20774: var trimMarkSettingsBtn, trimMarkSettingsLabel;
+20778: var mainLaminationDropdown;
+20779: var mainLaminationSidesInput;
+20846: labelBleed: 55,          // Nhãn "Bù xén"
+20847: labelGapCum: 60,          // Nhãn "K/c Cụm"
+20853: labelDauXen: 60,         // nhãn dấu xén
+20858: inputBleed: 33,           // <<< THÊM MỚI: Ô nhập "Bù xén"
+20859: inputGapCum: 29,          // Ô nhập "K/c Cụm"
+20869: dropdownClusterGapMode: 76,     // Dropdown "k/c cụm tính từ..."
+20930: dialog.alignChildren = ["fill", "top"];
+20937: settingsBarGroup.alignment = 'fill';
+20959: spacer.alignment = ['fill', 'center'];
+20975: helpIcon.helpTip = langData[lang].mainHelpTip;
+20982: separator.alignment = 'fill';
+20991: var mainColumnsGroup = dialog.add('group');
+20992: mainColumnsGroup.orientation = 'row';
+20993: mainColumnsGroup.alignChildren = ['fill', 'top'];
+20994: mainColumnsGroup.spacing = 10;
+20997: var leftColumn = mainColumnsGroup.add('group');
+20999: leftColumn.alignChildren = ['fill', 'top'];
+21003: var rightColumn = mainColumnsGroup.add('group');
+21005: rightColumn.alignChildren = ['fill', 'top'];
+21025: paperPanel.alignChildren = ["fill", "top"];
+21141: // --- HÀNG 6: KHOẢNG CÁCH TEM VÀ BÙ XÉN (ĐÃ THAY ĐỔI) ---
+21152: // <<< "BÙ XÉN" ĐÃ ĐƯỢC DI CHUYỂN VÀO ĐÂY >>>
+21179: // --- HÀNG 8: CHIA CỤM VÀ CÁC TÙY CHỌN CON (ĐÃ THAY ĐỔI) ---
+21205: clusterGridWInput.helpTip = (lang === 'vi') ? "Chiều rộng 1 cụm (mm)" : "Cluster width (mm)";
+21210: clusterGridHInput.helpTip = (lang === 'vi') ? "Chiều cao 1 cụm (mm)" : "Cluster height (mm)";
+21219: // --- CÁC TÙY CHỌN CON CHO VIỆC CHIA CỤM (PHIÊN BẢN CĂN LỀ CHUẨN XÁC) ---
+21225: // Nhóm "K/c cụm" (Không cần thay đổi gì bên trong)
+21236: // Nhóm "Tính K/c cụm từ:" (Không cần thay đổi gì bên trong)
+21244: langData[lang].uiClusterGapFromMark
+21258: fillGangingCheckbox = itemPanel.add('checkbox', undefined, langData[lang].uiFillGangingSlots);
+21259: fillGangingCheckbox.onClick = function () {
+21263: fillGangingCheckbox.preferredSize.width = customWidths.lapDay;
+21264: fillGangingCheckbox.helpTip = langData[lang].helpTips.fillGangingSlots;
+21265: fillGangingCheckbox.value = true;
+21266: fillGangingCheckbox.enabled = false;
+21268: // (Chia nhỏ khổ giấy đã được gộp vào chế độ 'Theo Lưới' của dropdown Chia cụm)
+21276: mainLaminationDropdown = laminationGroup.add("dropdownlist", undefined, langData[lang].uiLaminationOptions);
+21277: mainLaminationDropdown.selection = reportDisplaySettings.laminationType || 0;
+21278: mainLaminationDropdown.preferredSize.width = 98;
+21279: mainLaminationDropdown.helpTip = langData[lang].uiLaminationHelpTip;
+21281: mainLaminationSidesInput = laminationGroup.add("edittext", undefined, String(reportDisplaySettings.laminationSides || 1));
+21282: mainLaminationSidesInput.preferredSize = [30, INPUT_HEIGHT];
+21283: mainLaminationSidesInput.helpTip = langData[lang].uiLaminationSidesHelpTip;
+21285: var lamEnabled = (mainLaminationDropdown.selection && mainLaminationDropdown.selection.index > 0);
+21286: mainLaminationSidesInput.enabled = lamEnabled;
+21287: mainLaminationDropdown.onChange = function () {
+21288: var en = (mainLaminationDropdown.selection && mainLaminationDropdown.selection.index > 0);
+21289: mainLaminationSidesInput.enabled = en;
+21344: // <<< "BÙ XÉN" ĐÃ BỊ XÓA KHỎI ĐÂY >>>
+21357: // --- CÀI ĐẶT DẤU XÉN (GIỮ NGUYÊN) ---
+21358: var trimMarkSetupGroup = cutOptionsPanel.add("group");
+21359: trimMarkSetupGroup.orientation = "row";
+21360: trimMarkSetupGroup.alignChildren = ["left", "center"];
+21361: trimMarkSetupGroup.spacing = 10;
+21362: trimMarkSetupGroup.margins = [0, 0, 0, 0];
+21364: trimMarkSettingsLabel = trimMarkSetupGroup.add("statictext", undefined, langData[lang].uiTrimMarksTitle);
+21365: trimMarkSettingsLabel.preferredSize.width = customWidths.labelDauXen;
+21366: trimMarkSettingsBtn = trimMarkSetupGroup.add("button", undefined, langData[lang].uiSettings);
+21367: trimMarkSettingsBtn.preferredSize = [customWidths.nutThietLapChung, INPUT_HEIGHT];
+21370: trimMarkSettingsBtn.onClick = function () {
+21374: distance: convertFromPoints(convertToPoints(tempTrimMarkSettings.distance, 'mm'), currentUnit),
+21375: length: convertFromPoints(convertToPoints(tempTrimMarkSettings.length, 'mm'), currentUnit),
+21376: width: convertFromPoints(convertToPoints(tempTrimMarkSettings.width, 'mm'), currentUnit),
+21377: colorName: tempTrimMarkSettings.colorName
+21380: var result = showTrimMarkSettingsDialog(settingsForDialog, lang);
+21384: tempTrimMarkSettings.distance = convertFromPoints(convertToPoints(result.distance, currentUnit), 'mm');
+21385: tempTrimMarkSettings.length = convertFromPoints(convertToPoints(result.length, currentUnit), 'mm');
+21386: tempTrimMarkSettings.width = convertFromPoints(convertToPoints(result.width, currentUnit), 'mm');
+21387: tempTrimMarkSettings.colorName = result.colorName;
+21469: separatorBottom.alignment = 'fill';
+21474: bottomControlsGroup.alignment = 'fill';
+21475: bottomControlsGroup.alignChildren = ['fill', 'center'];
+21497: // KỊCH BẢN 1: Đang ở chế độ "Xén thành phẩm"
+21554: fillGangingCheckbox.enabled = (isGanging || isCustomGridSR);
+21557: if (!fillGangingCheckbox.enabled) {
+21558: fillGangingCheckbox.value = false;
+21702: // === NHÁNH 1: CHẾ ĐỘ "XÉN THÀNH PHẨM" ===
+21746: // [FIX] Khóa "Canh lề an toàn" - Xén thành phẩm không có ốc
+21750: // 3. MỞ CÁC TÍNH NĂNG "XÉN" (Kiểm tra an toàn)
+21753: if (typeof trimMarkSettingsLabel !== 'undefined' && trimMarkSettingsLabel) trimMarkSettingsLabel.enabled = true;
+21754: if (typeof trimMarkSettingsBtn !== 'undefined' && trimMarkSettingsBtn) trimMarkSettingsBtn.enabled = true;
+21757: if (typeof clusterModeDropdown !== 'undefined' && clusterModeDropdown) clusterModeDropdown.enabled = true; // Cho phép chia cụm
+21788: if (typeof trimMarkSettingsLabel !== 'undefined' && trimMarkSettingsLabel) trimMarkSettingsLabel.enabled = false;
+21789: if (typeof trimMarkSettingsBtn !== 'undefined' && trimMarkSettingsBtn) trimMarkSettingsBtn.enabled = false;
+21794: // Cho phép chia cụm cho Bế nhiều loại + Bình trang + Tối ưu
+21843: // Khóa tính năng Xén
+21846: if (typeof trimMarkSettingsLabel !== 'undefined' && trimMarkSettingsLabel) trimMarkSettingsLabel.enabled = false;
+21847: if (typeof trimMarkSettingsBtn !== 'undefined' && trimMarkSettingsBtn) trimMarkSettingsBtn.enabled = false;
+21896: // Logic cho "Tự động chia cụm"
+21920: var enableFillCheckbox;
+21922: enableFillCheckbox = false;
+21926: enableFillCheckbox = (isGangingTask || isCustomGridTask);
+21928: fillGangingCheckbox.enabled = enableFillCheckbox;
+21929: if (!fillGangingCheckbox.enabled) fillGangingCheckbox.value = false;
+21931: // (Chia nhỏ khổ giấy đã được gộp vào chế độ 'Theo Lưới' của dropdown Chia cụm - xem isClusteringByGrid ở trên)
+21933: // Logic "K/c Cụm" - Cập nhật an toàn
+21935: var condition2_CustomGridFill = (finalIsBinhTrang && finalIsCustomGrid && fillGangingCheckbox.value) && !isDieCutMultiMode;
+21936: var condition3_GangingCustomGridFill = (isGuillotineMode && finalIsGangingSameSize && finalIsCustomGrid && fillGangingCheckbox.value);
+21938: var enableParentGroup = condition1_GangingCluster || condition2_CustomGridFill || condition3_GangingCustomGridFill || condition4_DieCutSameCluster;
+21957: // Logic "Viền cho cụm"
+21959: var isFillingEmptySlots_UI = (fillGangingCheckbox.enabled && fillGangingCheckbox.value);
+21960: var isGapFromTrimMark_UI = (typeof clusterGapModeDropdown !== 'undefined' && clusterGapModeDropdown && clusterGapModeDropdown.enabled && clusterGapModeDropdown.selection && clusterGapModeDropdown.selection.index === 1);
+21962: var condition1 = isGuillotineMode && finalIsGangingSameSize && isClusteringByRowOrCol_UI && isGapFromTrimMark_UI;
+21963: var condition2 = isGuillotineMode && finalIsBinhTrang && finalIsCustomGrid && isFillingEmptySlots_UI;
+21964: var condition3 = isGuillotineMode && finalIsGangingSameSize && finalIsCustomGrid && isFillingEmptySlots_UI;
+22075: trimMarkSettingsLabel.text = currentLangData.uiTrimMarksTitle;
+22076: trimMarkSettingsBtn.text = currentLangData.uiSettings;
+22084: fillGangingCheckbox.text = currentLangData.uiFillGangingSlots;
+22093: // (subAreaCheck đã được gộp vào dropdown Chia cụm)
+22179: clusterGapModeDropdown.add('item', currentLangData.uiClusterGapFromMark);
+22204: // (subAreaCheck helpTip đã được gộp vào dropdown Chia cụm)
+22213: fillGangingCheckbox.helpTip = helpTips.fillGangingSlots;
+22218: if (helpIcon) helpIcon.helpTip = currentLangData.mainHelpTip;
+22379: fillGangingCheckbox.onClick = function () { if (isReloadingUI) return; updateUIState(); };
+22529: if (mainLaminationDropdown && mainLaminationDropdown.selection) {
+22530: reportDisplaySettings.laminationType = mainLaminationDropdown.selection.index;
+22532: if (mainLaminationSidesInput) {
+22533: reportDisplaySettings.laminationSides = parseInt(mainLaminationSidesInput.text) || 1;
+22554: // Lấy giá trị bù xén và cài đặt dấu xén từ bộ nhớ tạm
+22557: markDistance: tempTrimMarkSettings.distance,
+22558: markLength: tempTrimMarkSettings.length,
+22559: markWidth: tempTrimMarkSettings.width,
+22560: markColorName: tempTrimMarkSettings.colorName,
+22579: fillEmptyGangingSlots: fillGangingCheckbox.value,
+22588: clusterGapMode: (clusterGapModeDropdown && clusterGapModeDropdown.selection.index === 0) ? "item" : "mark",
+22592: fillBlockGapMM: reportDisplaySettings.fillBlockGapMM || 0,
+22621: // Chuyển đổi các giá trị dấu xén sang point để tiện sử dụng trong script
+22622: settings.markDistancePt = convertToPoints(settings.markDistance, 'mm');
+22623: settings.markLengthPt = convertToPoints(settings.markLength, 'mm');
+22624: settings.markWidthPt = convertToPoints(settings.markWidth, 'mm');
+22649: isNaN(settings.markDistance) || isNaN(settings.markLength) || isNaN(settings.markWidth) ||
+22702: case 2: // Xén thành phẩm
+22726: lastMarkDistance: tempTrimMarkSettings.distance,
+22727: lastMarkLength: tempTrimMarkSettings.length,
+22728: lastMarkWidth: tempTrimMarkSettings.width,
+22729: lastMarkColorName: tempTrimMarkSettings.colorName,
+22745: lastFillGanging: settings.fillEmptyGangingSlots,
+22769: case 2: // Xén thành phẩm
+22938: if (loadedSettingsOnStartup.lastMarkDistance !== undefined) tempTrimMarkSettings.distance = loadedSettingsOnStartup.lastMarkDistance;
+22939: if (loadedSettingsOnStartup.lastMarkLength !== undefined) tempTrimMarkSettings.length = loadedSettingsOnStartup.lastMarkLength;
+22940: if (loadedSettingsOnStartup.lastMarkWidth !== undefined) tempTrimMarkSettings.width = loadedSettingsOnStartup.lastMarkWidth;
+22960: if (loadedSettingsOnStartup.lastFillGanging !== undefined) {
+22961: fillGangingCheckbox.value = loadedSettingsOnStartup.lastFillGanging;
+23063: function main() {
+23105: main();

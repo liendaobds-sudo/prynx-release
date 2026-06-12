@@ -1,0 +1,97 @@
+# Environment variables (SECURITY: contains Supabase keys)
+.env
+desktop/.env
+
+# Dependencies
+node_modules/
+dist/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ghostscript installer binary (62 MB — already installed, don't commit)
+backend/bin/gs_installer.exe
+
+# Legacy frontend (Next.js web — replaced by Tauri desktop)
+frontend/
+
+# PDF Processing Tools
+backend/bin/pdfcpu.exe
+backend/bin/pdfcpu
+
+# Tauri / Rust Build Artifacts
+src-tauri/target/
+native/target/
+imposition_core/target/
+*.rs.bk
+
+# Sidecar binaries (237 MB each — built by build_production.ps1, too large for GitHub)
+desktop/src-tauri/binaries/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Test Outputs
+test_modified.pdf
+test_original.pdf
+backend/uploads/
+backend/results/
+
+# SQLite databases
+*.db
+backend/data/
+
+# Next.js
+frontend/.next/
+*.pdf
+backend/ocr_*.txt
+desktop/test_*.pdf
+desktop/*.py
+desktop/*.js
+desktop/*.txt
+backend/temp/
+
+# Illustrator scripts
+*.jsx
+
+# Debug log files
+debug_main_*.txt
+debug_frontend_*.txt
+detect_shape_error.log
+*.log
+
+# Temp/scratch files at root
+diff.txt
+search_*.txt
+temp_*.txt
+temp_*.tsx
+recovered_*.json
+recovered_*.ts
+extract.py
+find_res_bottom.py
+old_sticker_imposer.py
+scratch_rewrite.py
+test_*.py
+test_*.png
+test_*.js
+test_*.txt
+
+# Debug folder
+.debug_logs/
+
+# Sandbox / Trash folders
+sandbox/
+backend/sandbox/
+backend/debug/
+backend/debug_output/
+backend/test_*.jpg
+proposal.html
+backend/download_sam.py
+backend/search_models.py
+desktop/src-tauri/icons/android/
+desktop/src-tauri/icons/ios/

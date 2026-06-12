@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+
+# Build artifacts
+dist/
+.next/
+src-tauri/target/
+
+# Version control
+.git/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test files
+*.pyc
+*.pyo
+*.pyd
+test_*.pdf
+
+# Development databases
+*.db
+data/
+
+# Poppler binaries (bundled for desktop, not needed in Docker)
+poppler/
+poppler.zip
+
+# Uploads and results (mounted as volumes)
+backend/uploads/
+backend/results/

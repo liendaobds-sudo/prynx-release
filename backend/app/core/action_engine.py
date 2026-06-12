@@ -1,0 +1,473 @@
+"""
+Action Engine — Tự động sửa lỗi PDF (giống Action Lists của Enfocus PitStop).
+
+Sử dụng:
+  - Ghostscript (CLI): Convert CMYK, Flatten Transparency, Embed Fonts, Downscale
+  - pikepdf (QPDF):    Sửa Metadata, Dictionary, structural repairs
+
+Actions:
+  CONVERT_TO_CMYK       — Chuyển toàn bộ hệ màu sang CMYK + gắn ICC Profile
+  FLATTEN_TRANSPARENCY  — Flatten tất cả transparency groups
+  FIX_METADATA          — Xóa metadata nhạy cảm, cập nhật Producer
+  EMBED_FONTS           — Nhúng toàn bộ font chưa embedded
+  DOWNSCALE_IMAGES      — Giảm ảnh > 600 DPI xuống 300 DPI
+"""
+import asyncio
+import logging
+import os
+import shutil
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+import pikepdf
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ActionLogEntry:
+    """Log entry for a single action step."""
+    action_id: str
+    status: str           # "success" | "failed" | "skipped"
+    message: str
+    duration_ms: int = 0
+
+
+@dataclass
+class ActionResult:
+    """Result of executing one or more actions."""
+    success: bool
+    output_path: str | None = None
+    log: list[ActionLogEntry] = field(default_factory=list)
+    error: str | None = None
+
+
+# ── Available Actions Registry ──
+AVAILABLE_ACTIONS = {
+    "CONVERT_TO_CMYK": {
+        "title": "Chuyển đổi sang CMYK",
+        "description": "Chuyển toàn bộ Object RGB sang hệ màu CMYK với ICC Profile chuẩn in offset.",
+        "engine": "ghostscript",
+    },
+    "FLATTEN_TRANSPARENCY": {
+        "title": "Flatten Transparency",
+        "description": "Xóa bỏ mọi hiệu ứng trong suốt (bóng đổ, blend mode) để máy CTP không bị lỗi.",
+        "engine": "ghostscript",
+    },
+    "OUTLINE_FONTS": {
+        "title": "Khóa Font (Outline Text)",
+        "description": "Convert toàn bộ chữ thành Vector (Curves) để chống lỗi font 100% khi in.",
+        "engine": "ghostscript",
+    },
+    "EMBED_FONTS": {
+        "title": "Nhúng Font (Embed)",
+        "description": "Thử nhúng các font chưa được embedded vào file PDF (kém an toàn hơn).",
+        "engine": "ghostscript",
+    },
+    "DOWNSCALE_IMAGES": {
+        "title": "Giảm độ phân giải ảnh",
+        "description": "Downscale ảnh > 600 DPI xuống 300 DPI để giảm dung lượng file.",
+        "engine": "ghostscript",
+    },
+    "FIX_METADATA": {
+        "title": "Sửa Metadata",
+        "description": "Xóa metadata nhạy cảm (Author, Creator, Subject) và cập nhật Producer.",
+        "engine": "pikepdf",
+    },
+    "FIX_HAIRLINES": {
+        "title": "Sửa nét mảnh (Hairlines)",
+        "description": "Tăng độ dày các nét < 0.25pt để không bị mất khi in offset.",
+        "engine": "pikepdf",
+    },
+    "SET_BLACK_OVERPRINT": {
+        "title": "Overprint Text Đen",
+        "description": "Đặt overprint cho text và nét đen (K>95%), tránh lỗi knockout khi in offset.",
+        "engine": "ghostscript",
+    },
+}
+
+
+class ActionEngine:
+    """
+    Executes auto-fix actions on PDF files.
+    
+    Usage:
+        engine = ActionEngine()
+        result = await engine.execute("input.pdf", "CONVERT_TO_CMYK")
+        result = await engine.execute_batch("input.pdf", [
+            {"id": "CONVERT_TO_CMYK"},
+            {"id": "FLATTEN_TRANSPARENCY"},
+        ])
+    """
+
+    def __init__(self):
+        self.gs_path = settings.GHOSTSCRIPT_PATH
+        self.icc_dir = settings.ICC_PROFILE_DIR
+        self.default_profile = settings.DEFAULT_CMYK_PROFILE
+        self.output_dir = Path(settings.RESULTS_DIR) / "preflight_output"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    async def execute(
+        self, pdf_path: str, action_id: str, params: dict | None = None, original_name: str | None = None
+    ) -> ActionResult:
+        """Execute a single action on a PDF."""
+        if action_id not in AVAILABLE_ACTIONS:
+            return ActionResult(
+                success=False,
+                error=f"Action '{action_id}' không tồn tại.",
+            )
+
+        stem = Path(original_name).stem if original_name else Path(pdf_path).stem
+        output_name = f"{stem}_{action_id}_{uuid.uuid4().hex[:6]}.pdf"
+        output_path = str(self.output_dir / output_name)
+        params = params or {}
+
+        start = datetime.now()
+        try:
+            handler = getattr(self, f"_action_{action_id.lower()}", None)
+            print(f"[DEBUG] action_id={action_id}, handler={handler}, handler_name=_action_{action_id.lower()}", flush=True)
+            if handler is None:
+                return ActionResult(success=False, error=f"Handler cho '{action_id}' chưa được triển khai.")
+
+            print(f"[DEBUG] Calling handler for {action_id}...", flush=True)
+            success = await handler(pdf_path, output_path, params)
+            print(f"[DEBUG] Handler returned: {success}", flush=True)
+            duration = int((datetime.now() - start).total_seconds() * 1000)
+
+            log_entry = ActionLogEntry(
+                action_id=action_id,
+                status="success" if success else "failed",
+                message=f"{AVAILABLE_ACTIONS[action_id]['title']} {'thành công' if success else 'thất bại'}.",
+                duration_ms=duration,
+            )
+
+            return ActionResult(
+                success=success,
+                output_path=output_path if success else None,
+                log=[log_entry],
+            )
+
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            duration = int((datetime.now() - start).total_seconds() * 1000)
+            logger.error(f"Action {action_id} failed: {tb}")
+            return ActionResult(
+                success=False,
+                error=repr(e),
+                log=[ActionLogEntry(
+                    action_id=action_id, status="failed",
+                    message=repr(e), duration_ms=duration,
+                )],
+            )
+
+    async def execute_batch(
+        self, pdf_path: str, actions: list[dict], original_name: str | None = None
+    ) -> ActionResult:
+        """
+        Execute a chain of actions sequentially (pipeline).
+        Each action's output becomes the next action's input.
+        """
+        all_logs: list[ActionLogEntry] = []
+        current_input = pdf_path
+        final_output = None
+
+        for action_spec in actions:
+            action_id = action_spec.get("id", "")
+            params = action_spec.get("params", {})
+
+            result = await self.execute(current_input, action_id, params, original_name=original_name if current_input == pdf_path else None)
+            all_logs.extend(result.log)
+
+            if not result.success:
+                return ActionResult(
+                    success=False,
+                    output_path=None,
+                    log=all_logs,
+                    error=f"Pipeline dừng tại '{action_id}': {result.error}",
+                )
+
+            # Clean up intermediate files (keep only final output)
+            if final_output and os.path.exists(final_output) and final_output != pdf_path:
+                try:
+                    os.remove(final_output)
+                except OSError:
+                    pass
+
+            final_output = result.output_path
+            current_input = result.output_path
+
+        return ActionResult(
+            success=True,
+            output_path=final_output,
+            log=all_logs,
+        )
+
+    # ────────────────────────────────────────────────────────
+    #  ACTION HANDLERS
+    # ────────────────────────────────────────────────────────
+
+    async def _action_convert_to_cmyk(
+        self, input_path: str, output_path: str, params: dict
+    ) -> bool:
+        """Convert all RGB objects to CMYK using Ghostscript + ICC profile."""
+        profile_name = params.get("icc_profile", self.default_profile)
+        icc_path = os.path.join(self.icc_dir, profile_name)
+
+        if not os.path.exists(icc_path):
+            raise FileNotFoundError(f"ICC Profile không tìm thấy: {icc_path}")
+
+        cmd = [
+            self.gs_path,
+            "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
+            "-sDEVICE=pdfwrite",
+            "-dPDFSETTINGS=/prepress",
+            "-dAutoRotatePages=/None",
+            "-sColorConversionStrategy=CMYK",
+            "-sProcessColorModel=DeviceCMYK",
+            f"-sOutputICCProfile={icc_path}",
+            "-dOverrideICC=true",
+            f"-sOutputFile={output_path}",
+            input_path,
+        ]
+        return await self._run_gs(cmd, "CONVERT_TO_CMYK")
+
+    async def _action_flatten_transparency(
+        self, input_path: str, output_path: str, params: dict
+    ) -> bool:
+        """Flatten all transparency in the PDF using Ghostscript."""
+        cmd = [
+            self.gs_path,
+            "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
+            "-sDEVICE=pdfwrite",
+            "-dPDFSETTINGS=/prepress",
+            "-dAutoRotatePages=/None",
+            "-dCompatibilityLevel=1.3",  # Force PDF 1.3 (physically flattens transparency)
+            "-dBackgroundColor=16#ffffff", # Fallback for alpha channels
+            f"-sOutputFile={output_path}",
+            input_path,
+        ]
+        return await self._run_gs(cmd, "FLATTEN_TRANSPARENCY")
+
+    async def _action_embed_fonts(
+        self, input_path: str, output_path: str, params: dict
+    ) -> bool:
+        """Force-embed all fonts using Ghostscript."""
+        cmd = [
+            self.gs_path,
+            "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
+            "-sDEVICE=pdfwrite",
+            "-dPDFSETTINGS=/prepress",
+            "-dAutoRotatePages=/None",
+            "-dEmbedAllFonts=true",
+            "-dSubsetFonts=true",
+            f"-sOutputFile={output_path}",
+            input_path,
+        ]
+        return await self._run_gs(cmd, "EMBED_FONTS")
+
+    async def _action_outline_fonts(
+        self, input_path: str, output_path: str, params: dict
+    ) -> bool:
+        """Convert all text to outlines (curves) using Ghostscript."""
+        cmd = [
+            self.gs_path,
+            "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
+            "-sDEVICE=pdfwrite",
+            "-dPDFSETTINGS=/prepress",
+            "-dAutoRotatePages=/None",
+            "-dNoOutputFonts",
+            f"-sOutputFile={output_path}",
+            input_path,
+        ]
+        return await self._run_gs(cmd, "OUTLINE_FONTS")
+
+    async def _action_downscale_images(
+        self, input_path: str, output_path: str, params: dict
+    ) -> bool:
+        """Downscale high-res images to 300 DPI using Ghostscript."""
+        target_dpi = params.get("target_dpi", 300)
+        cmd = [
+            self.gs_path,
+            "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
+            "-sDEVICE=pdfwrite",
+            "-dPDFSETTINGS=/prepress",
+            "-dAutoRotatePages=/None",
+            f"-dDownsampleColorImages=true",
+            f"-dColorImageResolution={target_dpi}",
+            f"-dDownsampleGrayImages=true",
+            f"-dGrayImageResolution={target_dpi}",
+            f"-dDownsampleMonoImages=true",
+            f"-dMonoImageResolution={target_dpi}",
+            f"-sOutputFile={output_path}",
+            input_path,
+        ]
+        return await self._run_gs(cmd, "DOWNSCALE_IMAGES")
+
+    async def _action_fix_metadata(
+        self, input_path: str, output_path: str, params: dict
+    ) -> bool:
+        """Clean sensitive metadata and update Producer using pikepdf."""
+        try:
+            with pikepdf.open(input_path) as pdf:
+                # Clear sensitive metadata fields
+                with pdf.open_metadata() as meta:
+                    # Remove common sensitive fields
+                    sensitive_keys = [
+                        '{http://purl.org/dc/elements/1.1/}creator',
+                        '{http://ns.adobe.com/xap/1.0/}CreatorTool',
+                        '{http://ns.adobe.com/pdf/1.3/}Producer',
+                    ]
+                    for key in sensitive_keys:
+                        try:
+                            del meta[key]
+                        except (KeyError, TypeError):
+                            pass
+
+                    # Set our own producer
+                    meta['{http://ns.adobe.com/pdf/1.3/}Producer'] = 'PDF Inspector — PrintSolutions.vn'
+
+                # Also update the Info dictionary
+                if pdf.docinfo:
+                    pdf.docinfo[pikepdf.Name.Author] = pikepdf.String("")
+                    pdf.docinfo[pikepdf.Name.Creator] = pikepdf.String("PDF Inspector")
+                    pdf.docinfo[pikepdf.Name.Producer] = pikepdf.String("PDF Inspector — PrintSolutions.vn")
+
+                pdf.save(output_path)
+                logger.info(f"FIX_METADATA: Cleaned metadata → {output_path}")
+                return True
+
+        except Exception as e:
+            logger.error(f"FIX_METADATA failed: {e}")
+            raise
+
+    # ────────────────────────────────────────────────────────
+    #  FIX HAIRLINES (pikepdf)
+    # ────────────────────────────────────────────────────────
+
+    async def _action_fix_hairlines(self, pdf_path: str, output_path: str, params: dict) -> bool:
+        """Detect and widen hairlines (strokes thinner than threshold)."""
+        import pikepdf
+        from app.workers.pdf_types import Point, Rect
+        from app.workers.pdf_ops import new_shape, page_height
+        from app.workers.pdf_content_parser import extract_vector_paths
+
+        threshold = params.get("threshold_pt", 0.1)
+        replace_with = params.get("replace_pt", 0.25)
+
+        try:
+            pdf = pikepdf.Pdf.open(pdf_path)
+            total_fixed = 0
+
+            for pike_page in pdf.pages:
+                drawings = extract_vector_paths(pike_page, pdf)
+                shape = new_shape(pdf, pike_page)
+                fixed_on_page = 0
+
+                for path in drawings:
+                    width = path.get("width", 0)
+                    if 0 < width <= threshold:
+                        # Redraw this path with increased width
+                        color = path.get("color")
+                        fill = path.get("fill")
+                        items = path.get("items", [])
+                        closePath = path.get("closePath", False)
+
+                        for item in items:
+                            if item[0] == "l":  # line
+                                shape.draw_line(item[1], item[2])
+                            elif item[0] == "re":  # rect
+                                shape.draw_rect(item[1])
+                            elif item[0] == "qu":  # quad
+                                shape.draw_quad(item[1])
+                            elif item[0] == "c":  # curve
+                                shape.draw_bezier(item[1], item[2], item[3], item[4])
+
+                        if items:
+                            shape.finish(
+                                color=color,
+                                fill=fill,
+                                width=replace_with,
+                                closePath=closePath,
+                            )
+                            fixed_on_page += 1
+
+                if fixed_on_page > 0:
+                    shape.commit()
+                    total_fixed += fixed_on_page
+
+            pdf.save(output_path)
+            pdf.close()
+
+            logger.info(f"FIX_HAIRLINES: Fixed {total_fixed} hairlines (< {threshold}pt → {replace_with}pt)")
+            return True
+
+        except Exception as e:
+            logger.error(f"FIX_HAIRLINES failed: {e}")
+            raise
+
+    # ────────────────────────────────────────────────────────
+    #  SET BLACK OVERPRINT (Ghostscript)
+    # ────────────────────────────────────────────────────────
+
+    async def _action_set_black_overprint(self, pdf_path: str, output_path: str, params: dict) -> bool:
+        """Set overprint for black text and strokes via Ghostscript."""
+        cmd = [
+            self.gs_path,
+            "-dSAFER", "-dBATCH", "-dNOPAUSE",
+            "-sDEVICE=pdfwrite",
+            "-dPDFSETTINGS=/prepress",
+            "-dAutoRotatePages=/None",
+            "-dCompatibilityLevel=1.4",
+            "-dOverprint=/enable",
+            "-dOPM=1",
+            f"-sOutputFile={output_path}",
+            pdf_path,
+        ]
+        return await self._run_gs(cmd, "SET_BLACK_OVERPRINT")
+
+    # ────────────────────────────────────────────────────────
+    #  GHOSTSCRIPT SUBPROCESS RUNNER
+    # ────────────────────────────────────────────────────────
+
+    async def _run_gs(self, cmd: list[str], action_name: str) -> bool:
+        """Run a Ghostscript command asynchronously (Windows-compatible)."""
+        import subprocess
+        logger.info(f"GS [{action_name}]: {' '.join(cmd[:6])}...")
+
+        def _run_sync():
+            return subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=300,  # 5 min max
+            )
+
+        try:
+            result = await asyncio.to_thread(_run_sync)
+
+            if result.returncode != 0:
+                err = result.stderr.decode("utf-8", errors="ignore").strip()
+                if not err:
+                    err = result.stdout.decode("utf-8", errors="ignore").strip()
+                raise RuntimeError(f"Lỗi hệ thống khi xử lý (mã {result.returncode}): {err[:500]}")
+
+            logger.info(f"GS [{action_name}]: Success")
+            return True
+
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"Lỗi: Không tìm thấy module xử lý đồ họa lõi. "
+                "Vui lòng liên hệ kỹ thuật viên để cài đặt bổ sung thư viện nền tảng."
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Hệ thống xử lý quá hạn (>5 phút) cho thao tác {action_name}")
+
+    @staticmethod
+    def get_available_actions() -> dict:
+        """Return metadata for all available actions (for UI rendering)."""
+        return AVAILABLE_ACTIONS

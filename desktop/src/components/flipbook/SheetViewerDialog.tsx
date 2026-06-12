@@ -1,0 +1,672 @@
+/**
+ * SheetViewerDialog.tsx — "Xem Tay In" (Printer's Sheet View)
+ *
+ * Shows physical sheets exactly as they will be printed.
+ * Simple toggle for front/back, side arrows for navigation, compact bottom bar.
+ */
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { ChevronLeft, ChevronRight, RotateCw, Layers, Grid3X3 } from 'lucide-react';
+import { generateBindingMap, type VirtualSheet, type PageSlot } from '../../lib/imposerEngine/VirtualMap';
+import { SPREAD_FOLD_REGISTRY, getPatternForPageCount } from '../../lib/imposerEngine/FoldPatterns';
+
+const SIG_COLORS = [
+    { bg: 'rgba(99,102,241,0.12)', border: 'rgba(99,102,241,0.4)', text: '#6366f1' },
+    { bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.4)', text: '#10b981' },
+    { bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.4)', text: '#f59e0b' },
+    { bg: 'rgba(239,68,68,0.12)',  border: 'rgba(239,68,68,0.4)',  text: '#ef4444' },
+    { bg: 'rgba(139,92,246,0.12)', border: 'rgba(139,92,246,0.4)', text: '#8b5cf6' },
+    { bg: 'rgba(6,182,212,0.12)',  border: 'rgba(6,182,212,0.4)',  text: '#06b6d4' },
+];
+
+const BINDING_LABELS: Record<string, string> = {
+    saddle: 'Bấm Ghim', thread: 'Khâu Chỉ', cut_stacks: 'Bóc Tép', continuous: 'Liên Tục',
+};
+
+interface SheetViewerDialogProps {
+    isOpen: boolean;
+    onClose: () => void;
+    pdfFile?: any;
+    pageOrder: number[];
+    bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks';
+    foliosize: number;
+    sheetWidth?: number;
+    sheetHeight?: number;
+    scaleMode?: string;
+    foldPattern?: string;
+    catalogJobs?: import('../../lib/imposerEngine/CatalogPlanner').PlateJob[];
+    /** true khi chế độ In Nhanh (digital) — ẩn sơ đồ kẽm */
+    isDigital?: boolean;
+    gripperMargin?: number;
+}
+
+// ─── Single page image ───
+const PageSlotView: React.FC<{
+    slot: PageSlot; pageOrder: number[]; pdfFile?: any;
+}> = ({ slot, pageOrder, pdfFile }) => {
+    const [loaded, setLoaded] = useState(false);
+    const isBlank = slot.srcIndex === null || slot.srcIndex >= pageOrder.length;
+    const pdfPageNum = !isBlank ? pageOrder[slot.srcIndex!] : -1;
+    const isBlankPage = isBlank || pdfPageNum === -1;
+    const totalPages = pageOrder.length;
+
+    let coverLabel = '';
+    if (!isBlankPage && totalPages >= 4) {
+        if (slot.logicalIndex === 1) coverLabel = 'Bìa Trước';
+        else if (slot.logicalIndex === 2) coverLabel = 'Trong Bìa Trước';
+        else if (slot.logicalIndex === totalPages - 1) coverLabel = 'Trong Bìa Sau';
+        else if (slot.logicalIndex === totalPages) coverLabel = 'Bìa Sau';
+    }
+
+    const imageUrl = useMemo(() => {
+        if (isBlankPage || !pdfFile?.path) return '';
+        return `http://tile.localhost/${encodeURIComponent(pdfFile.path)}/${pdfPageNum}/1.0/0/0/0/0/0`;
+    }, [isBlankPage, pdfPageNum, pdfFile]);
+
+    return (
+        <div className="relative flex flex-col items-center justify-center w-full h-full min-w-0 min-h-0">
+            {isBlankPage ? (
+                <div className="bg-slate-100 dark:bg-zinc-800/80 flex items-center justify-center max-w-full max-h-full transition-colors duration-300" style={{ aspectRatio: '1 / 1.414', height: '600px' }}>
+                    <span className="text-slate-400 dark:text-zinc-500 text-xs">Trang trống</span>
+                </div>
+            ) : imageUrl ? (
+                <>
+                    {!loaded && (
+                        <div className="absolute inset-0 bg-slate-100 flex items-center justify-center z-10">
+                            <div className="w-5 h-5 border-2 border-slate-300 border-t-indigo-500 rounded-full animate-spin" />
+                        </div>
+                    )}
+                    <img
+                        src={imageUrl} alt={`Trang ${slot.logicalIndex}`}
+                        className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`}
+                        onLoad={() => setLoaded(true)} draggable={false}
+                    />
+                </>
+            ) : (
+                <div className="bg-slate-100 dark:bg-zinc-800/80 flex items-center justify-center max-w-full max-h-full transition-colors duration-300" style={{ aspectRatio: '1 / 1.414', height: '600px' }}>
+                    <span className="text-slate-400 dark:text-zinc-500 text-xs">P.{slot.logicalIndex}</span>
+                </div>
+            )}
+            
+            {/* Label - absolute positioned inside the page at the bottom center */}
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 pointer-events-none z-20 flex flex-col items-center gap-1 w-[90%] justify-center">
+                {coverLabel && (
+                    <span className="bg-red-100/90 dark:bg-red-500/90 text-red-600 dark:text-white text-[9px] font-medium px-2 py-0.5 rounded shadow-sm whitespace-nowrap backdrop-blur-sm max-w-full overflow-hidden text-ellipsis text-center tracking-wide border border-red-200 dark:border-red-400/30">
+                        {coverLabel}
+                    </span>
+                )}
+                <span className="bg-white/80 dark:bg-zinc-800/80 text-slate-800 dark:text-white text-[11px] font-medium px-2.5 py-1 rounded shadow-sm whitespace-nowrap backdrop-blur-sm border border-slate-200 dark:border-white/10 max-w-full overflow-hidden text-ellipsis text-center">
+                    {isBlankPage ? 'Trống' : `Trang ${slot.logicalIndex}`}
+                </span>
+            </div>
+        </div>
+    );
+};
+
+// ─── Main Dialog ───
+// ─── Blueprint grid cell ───
+// Bìa chỉ áp dụng cho bấm ghim (saddle) — bìa cùng chất liệu
+// Khâu chỉ / Bóc tép / Liên tục → bìa in riêng trên giấy khác → tất cả trang đều là ruột
+const COVER_STYLES = {
+    bia1: { label: 'Bìa Trước', bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.5)', text: '#f87171' },
+    bia2: { label: 'Trong Bìa Trước', bg: 'rgba(251,146,60,0.15)', border: 'rgba(251,146,60,0.5)', text: '#fb923c' },
+    bia3: { label: 'Trong Bìa Sau', bg: 'rgba(251,146,60,0.15)', border: 'rgba(251,146,60,0.5)', text: '#fb923c' },
+    bia4: { label: 'Bìa Sau', bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.5)', text: '#f87171' },
+};
+
+const BlueprintCell: React.FC<{
+    logicalIndex: number; isBlank: boolean; rotation: number;
+    totalPages: number; bindingMode: string;
+    pdfFile?: any; pageNum?: number;
+    currentJob?: import('../../lib/imposerEngine/CatalogPlanner').PlateJob;
+    width?: number;
+    height?: number;
+}> = ({ logicalIndex, isBlank, rotation, totalPages, bindingMode, pdfFile, pageNum, currentJob, width = 120, height = 160 }) => {
+    const isCoverJob = currentJob ? currentJob.isCover : false;
+    const isSameMaterialCover = !currentJob && bindingMode === 'saddle';
+
+    let coverStyle: typeof COVER_STYLES.bia1 | null = null;
+    let coverLabel = '';
+    if (!isBlank && totalPages >= 4 && (isCoverJob || isSameMaterialCover)) {
+        // For cover jobs with rewritten logicalIndex (global page numbers),
+        // compare against actual page indices from the job
+        if (isCoverJob && currentJob) {
+            const coverIndices = currentJob.pageIndices.filter(i => i !== -1);
+            const srcIdx = logicalIndex - 1; // convert back to 0-based
+            if (coverIndices.length >= 4) {
+                if (srcIdx === coverIndices[0]) { coverStyle = COVER_STYLES.bia1; coverLabel = COVER_STYLES.bia1.label; }
+                else if (srcIdx === coverIndices[1]) { coverStyle = COVER_STYLES.bia2; coverLabel = COVER_STYLES.bia2.label; }
+                else if (srcIdx === coverIndices[2]) { coverStyle = COVER_STYLES.bia3; coverLabel = COVER_STYLES.bia3.label; }
+                else if (srcIdx === coverIndices[3]) { coverStyle = COVER_STYLES.bia4; coverLabel = COVER_STYLES.bia4.label; }
+            }
+        } else {
+            // Same-material cover: use standard 1-based position check
+            if (logicalIndex === 1) { coverStyle = COVER_STYLES.bia1; coverLabel = COVER_STYLES.bia1.label; }
+            else if (logicalIndex === 2) { coverStyle = COVER_STYLES.bia2; coverLabel = COVER_STYLES.bia2.label; }
+            else if (logicalIndex === totalPages - 1) { coverStyle = COVER_STYLES.bia3; coverLabel = COVER_STYLES.bia3.label; }
+            else if (logicalIndex === totalPages) { coverStyle = COVER_STYLES.bia4; coverLabel = COVER_STYLES.bia4.label; }
+        }
+    }
+
+    const bgClass = isBlank ? 'bg-slate-200/50 dark:bg-zinc-800/50' : coverStyle ? '' : 'bg-slate-100/40 dark:bg-zinc-700/40';
+    const borderClass = coverStyle ? '' : 'border-slate-300/80 dark:border-zinc-600/50';
+
+    const imageUrl = useMemo(() => {
+        if (isBlank || !pdfFile?.path || !pageNum || pageNum === -1) return '';
+        return `http://tile.localhost/${encodeURIComponent(pdfFile.path)}/${pageNum}/1.0/0/0/0/0/0`;
+    }, [isBlank, pageNum, pdfFile]);
+
+    return (
+        <div className={`relative flex items-center justify-center overflow-hidden shrink-0 transition-all duration-300 border ${bgClass} ${borderClass}`} style={{ width: `${width}px`, height: `${height}px`, transform: rotation === 180 ? 'rotate(180deg)' : undefined, background: coverStyle ? coverStyle.bg : undefined, borderColor: coverStyle ? coverStyle.border : undefined }}>
+            {imageUrl && (
+                <img src={imageUrl} className="absolute inset-0 w-full h-full object-contain opacity-40 dark:opacity-30 mix-blend-multiply dark:mix-blend-overlay pointer-events-none" alt="" />
+            )}
+            {isBlank ? <span className="text-slate-400 dark:text-zinc-600 text-sm">—</span> : (
+                <div className="flex flex-col items-center gap-1">
+                    <span className="text-slate-800 dark:text-white font-bold text-2xl">{logicalIndex}</span>
+                    {coverLabel ? (
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded shadow-sm" style={{ color: coverStyle!.text, background: coverStyle!.bg, border: `1px solid ${coverStyle!.border}` }}>{coverLabel}</span>
+                    ) : (isSameMaterialCover || currentJob) ? (
+                        <span className="text-slate-500 dark:text-zinc-400 text-[10px]">Ruột</span>
+                    ) : null}
+                    {rotation === 180 && <span className="text-slate-400 dark:text-zinc-500 text-[10px]">↻180°</span>}
+                </div>
+            )}
+        </div>
+    );
+};
+
+// ─── Blueprint grid showing full plate layout ───
+const BlueprintGrid: React.FC<{
+    pattern: import('../../lib/imposerEngine/FoldPatterns').SpreadFoldPattern;
+    sheets: VirtualSheet[];
+    currentSheetIdx: number;
+    pageOrder: number[];
+    bindingMode: string;
+    pdfFile?: any;
+    currentJob?: import('../../lib/imposerEngine/CatalogPlanner').PlateJob;
+    gripperMargin?: number;
+}> = ({ pattern, sheets, currentSheetIdx, pageOrder, bindingMode, pdfFile, currentJob, gripperMargin }) => {
+    const hasBack = pattern.backPlate.length > 0;
+    // When catalog jobs are active, logicalIndex has been rewritten to global page numbers
+    // So totalPages should be global (pageOrder.length) not job.actualPageCount
+    const actualTotalPages = pageOrder.length;
+
+    const spreads = useMemo(() => {
+        const result: { left: PageSlot; right: PageSlot }[] = [];
+        for (const sheet of sheets) {
+            result.push({ left: sheet.front.left, right: sheet.front.right });
+            result.push({ left: sheet.back.left, right: sheet.back.right });
+        }
+        return result;
+    }, [sheets]);
+
+    const cs = sheets[currentSheetIdx];
+    const sigSheets = sheets.filter(s => (s.signatureIndex ?? 1) === (cs.signatureIndex ?? 1));
+    const sigSpreadOffset = (sigSheets[0]?.sheetIndex ?? 0) * 2;
+
+    const maxCols = Math.max(0, ...pattern.frontPlate.map(s => s.col)) + 1;
+    const pagesPerRow = maxCols * 2;
+    const numPlates = hasBack ? 2 : 1;
+    const totalPagesAcross = pagesPerRow * numPlates;
+    const rows = pattern.rows;
+
+    let cellWidth = 120;
+    let cellHeight = 160;
+
+    if (totalPagesAcross <= 4 && rows <= 2) {
+        cellWidth = 200;
+        cellHeight = 266;
+    } else if (totalPagesAcross <= 8 && rows <= 2) {
+        cellWidth = 150;
+        cellHeight = 200;
+    } else if (totalPagesAcross > 12 || rows >= 4) {
+        cellWidth = 90;
+        cellHeight = 120;
+    }
+
+    const renderPlate = (slots: import('../../lib/imposerEngine/FoldPatterns').SpreadSlot[], label: string, colorClass: string, bgClass: string) => (
+        <div className="flex flex-col items-center gap-2">
+            <div className={`inline-flex items-center justify-center h-7 text-[11px] font-bold tracking-wider uppercase px-5 rounded-md ${bgClass} ${colorClass}`}>{label}</div>
+            <div className="bg-white/50 dark:bg-zinc-800/50 border border-slate-300 dark:border-zinc-700/50 rounded-lg p-4 shadow-lg backdrop-blur-sm transition-colors duration-300">
+                <div className="flex flex-col gap-1">
+                    {Array.from({ length: pattern.rows }, (_, row) => (
+                        <div key={row} className="flex gap-1">
+                            {slots.filter(s => s.row === row).sort((a, b) => a.col - b.col).map((slot, i) => {
+                                const spreadIdx = sigSpreadOffset + slot.spreadIndex;
+                                const spread = spreadIdx < spreads.length ? spreads[spreadIdx] : null;
+                                const leftBlank = !spread || spread.left.srcIndex === null || spread.left.srcIndex === -1 || spread.left.srcIndex >= pageOrder.length;
+                                const rightBlank = !spread || spread.right.srcIndex === null || spread.right.srcIndex === -1 || spread.right.srcIndex >= pageOrder.length;
+                                const leftPageNum = !leftBlank && spread?.left.srcIndex !== null ? pageOrder[spread.left.srcIndex!] : -1;
+                                const rightPageNum = !rightBlank && spread?.right.srcIndex !== null ? pageOrder[spread.right.srcIndex!] : -1;
+                                return (
+                                    <div key={i} className="flex border-2 border-dashed border-slate-300 dark:border-zinc-500 p-[2px] rounded transition-colors duration-300" style={{ transform: slot.rotation === 180 ? 'rotate(180deg)' : undefined }}>
+                                        <BlueprintCell logicalIndex={spread?.left.logicalIndex ?? 0} isBlank={leftBlank} rotation={0} totalPages={actualTotalPages} bindingMode={bindingMode} pdfFile={pdfFile} pageNum={leftPageNum} currentJob={currentJob} width={cellWidth} height={cellHeight} />
+                                        <div className="w-[3px] bg-red-500/80 shrink-0 relative z-10 mx-[2px]" />
+                                        <BlueprintCell logicalIndex={spread?.right.logicalIndex ?? 0} isBlank={rightBlank} rotation={0} totalPages={actualTotalPages} bindingMode={bindingMode} pdfFile={pdfFile} pageNum={rightPageNum} currentJob={currentJob} width={cellWidth} height={cellHeight} />
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ))}
+                </div>
+            </div>
+            {(gripperMargin && gripperMargin > 0) ? (
+                <div className="w-full h-3 mt-1 bg-red-100/80 dark:bg-red-500/20 border-t border-red-300 dark:border-red-500/50 flex items-center justify-center rounded-b-md relative shrink-0 overflow-visible z-10 shadow-sm" title={`Nhíp in: ${gripperMargin}mm`}>
+                    <span className="text-[9px] font-bold text-red-500/90 dark:text-red-400 whitespace-nowrap px-1 bg-white/60 dark:bg-zinc-800/60 rounded">
+                        Cắn nhíp ({gripperMargin}mm)
+                    </span>
+                </div>
+            ) : null}
+        </div>
+    );
+
+    return (
+        <div className="flex flex-col items-center gap-3">
+            <div className="flex items-center gap-8">
+                {renderPlate(pattern.frontPlate, hasBack ? 'Mặt A (Trước)' : 'Tự Trở (1 kẽm)', 'text-sky-500 dark:text-sky-400', 'bg-sky-100 dark:bg-sky-500/20')}
+                {hasBack && renderPlate(pattern.backPlate, 'Mặt B (Sau)', 'text-amber-500 dark:text-amber-400', 'bg-amber-100 dark:bg-amber-500/20')}
+            </div>
+            <div className="flex items-center justify-center gap-6 text-sm font-medium text-slate-300 mt-2">
+                <span className="flex items-center gap-2"><span className="inline-block w-5 h-[2px] bg-red-500/80 rounded" /> Gáy gấp</span>
+                <span className="flex items-center gap-2"><span className="inline-block w-5 border-t-2 border-dashed border-slate-400" /> Đường cắt</span>
+                {(bindingMode === 'saddle' && (!currentJob || currentJob.isCover)) && (
+                    <>
+                        <span className="text-slate-500 font-normal">|</span>
+                        <span className="flex items-center gap-2">
+                            <span className="inline-block w-4 h-4 rounded-sm" style={{ background: 'rgba(239,68,68,0.2)', border: '1px solid rgba(239,68,68,0.6)' }} />
+                            {currentJob ? 'Bìa (chất liệu riêng)' : 'Bìa (cùng chất liệu)'}
+                        </span>
+                    </>
+                )}
+            </div>
+        </div>
+    );
+};
+
+// ─── Digital Press Sheet Simulation Grid ───
+const DigitalPressSheetGrid: React.FC<{
+    sheets: VirtualSheet[];
+    currentSheetIdx: number;
+    pageOrder: number[];
+    pdfFile?: any;
+    scaleMode: string;
+}> = ({ sheets, currentSheetIdx, pageOrder, pdfFile, scaleMode }) => {
+    const cs = sheets[currentSheetIdx];
+    const halfTotalSheets = Math.ceil(sheets.length / 2);
+    const bottomSheetIdx = currentSheetIdx + halfTotalSheets;
+    const bottomSheet = bottomSheetIdx < sheets.length ? sheets[bottomSheetIdx] : null;
+
+    const topSpread = cs;
+    const bottomSpread = scaleMode === 'cut_stack' ? bottomSheet : cs;
+
+    const renderSpread = (spread: VirtualSheet | null, isBack: boolean) => {
+        if (!spread) return <div className="flex-1 flex items-center justify-center text-slate-400 text-sm min-h-0">Trống</div>;
+        return (
+            <div className="flex flex-1 min-h-0 border border-slate-200 dark:border-zinc-600 justify-center">
+                <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
+                    <PageSlotView slot={isBack ? spread.back.left : spread.front.left} pageOrder={pageOrder} pdfFile={pdfFile} />
+                </div>
+                <div className="shrink-0 w-px bg-red-400/60 z-10" />
+                <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
+                    <PageSlotView slot={isBack ? spread.back.right : spread.front.right} pageOrder={pageOrder} pdfFile={pdfFile} />
+                </div>
+            </div>
+        );
+    };
+
+    const renderPlate = (label: string, isBack: boolean, colorClass: string, bgClass: string) => (
+        <div className="flex flex-col items-center gap-3 w-1/2 h-full justify-center min-h-0 min-w-0">
+            <div className={`shrink-0 inline-flex items-center justify-center h-7 text-[11px] font-bold tracking-wider uppercase px-5 rounded-md ${bgClass} ${colorClass}`}>
+                {label}
+            </div>
+            <div className="flex flex-col w-full h-full bg-white dark:bg-zinc-800 rounded-lg border border-slate-200 dark:border-zinc-700 shadow-lg overflow-hidden min-h-0">
+                {renderSpread(topSpread, isBack)}
+                <div className="relative w-full shrink-0">
+                    <div className="border-t-2 border-dashed border-red-400/50" />
+                    <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-zinc-800 px-2 text-[9px] text-red-400 font-bold uppercase tracking-wider whitespace-nowrap">Xén đôi</span>
+                </div>
+                {renderSpread(bottomSpread, isBack)}
+            </div>
+        </div>
+    );
+
+    return (
+        <div className="flex-1 flex items-center justify-center gap-8 p-4 min-h-0 min-w-0">
+            {renderPlate('Mặt Trước', false, 'text-sky-500 dark:text-sky-400', 'bg-sky-100 dark:bg-sky-500/20')}
+            {renderPlate('Mặt Sau', true, 'text-amber-500 dark:text-amber-400', 'bg-amber-100 dark:bg-amber-500/20')}
+        </div>
+    );
+};
+
+export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
+    isOpen, onClose, pdfFile, pageOrder, bindingMode, foliosize, sheetWidth, sheetHeight, scaleMode = '100', foldPattern = '', catalogJobs, isDigital = false, gripperMargin = 0
+}) => {
+    const [currentSheetIdx, setCurrentSheetIdx] = useState(0);
+    const [showBack, setShowBack] = useState(false);
+    const [blueprintMode, setBlueprintMode] = useState(false);
+
+    const { sheets, report, jobMap } = useMemo(() => {
+        if (catalogJobs && catalogJobs.length > 0) {
+            const allSheets: VirtualSheet[] = [];
+            const jMap = new Map<VirtualSheet, import('../../lib/imposerEngine/CatalogPlanner').PlateJob>();
+            for (const job of catalogJobs) {
+                const { sheets: jobSheets } = generateBindingMap(job.pageIndices.length, job.bindingMode, job.actualPageCount);
+                for (const s of jobSheets) {
+                    const rewrite = (slot: PageSlot) => {
+                        if (slot.srcIndex !== null && slot.srcIndex < job.pageIndices.length) {
+                            const actualIdx = job.pageIndices[slot.srcIndex];
+                            slot.srcIndex = actualIdx;
+                            if (actualIdx !== -1) {
+                                slot.logicalIndex = actualIdx + 1;
+                            }
+                        }
+                    };
+                    rewrite(s.front.left); rewrite(s.front.right);
+                    rewrite(s.back.left); rewrite(s.back.right);
+                    
+                    // NOTE: must re-assign sheetIndex to be absolute across ALL jobs
+                    s.sheetIndex = allSheets.length;
+                    s.signatureIndex = job.sortOrder;
+                    allSheets.push(s);
+                    jMap.set(s, job);
+                }
+            }
+            return { sheets: allSheets, report: 'Dựa trên cấu hình Auto Catalog', jobMap: jMap };
+        } else {
+            if (!pageOrder.length) return { sheets: [] as VirtualSheet[], report: '', jobMap: null };
+            return { ...generateBindingMap(pageOrder.length, bindingMode, foliosize), jobMap: null };
+        }
+    }, [catalogJobs, pageOrder, bindingMode, foliosize]);
+
+    const cs = sheets[currentSheetIdx];
+    const currentJob = jobMap?.get(cs);
+
+    // Always try to resolve a fold pattern for blueprint view
+    const activeFoldPattern = currentJob
+        ? getPatternForPageCount(currentJob.actualPageCount)
+        : ((scaleMode === 'chain_nup' && foldPattern && foldPattern !== '' && foldPattern !== 'auto')
+            ? (SPREAD_FOLD_REGISTRY.find(p => p.id === foldPattern) || getPatternForPageCount(foliosize))
+            : getPatternForPageCount(foliosize) || null);
+
+    const signatureGroups = useMemo(() => {
+        const groups: { sigIndex: number; sheets: VirtualSheet[]; color: typeof SIG_COLORS[0] }[] = [];
+        let cur = -1;
+        for (const sheet of sheets) {
+            const sig = sheet.signatureIndex ?? 1;
+            if (sig !== cur) { cur = sig; groups.push({ sigIndex: sig, sheets: [], color: SIG_COLORS[Math.max(0, sig > 0 ? sig - 1 : 0) % SIG_COLORS.length] }); }
+            groups[groups.length - 1].sheets.push(sheet);
+        }
+        return groups;
+    }, [sheets]);
+
+    useEffect(() => { if (isOpen) { setCurrentSheetIdx(0); setBlueprintMode(false); } }, [isOpen, bindingMode, foliosize]);
+
+    const goToSheet = useCallback((idx: number) => { setCurrentSheetIdx(idx); }, []);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const h = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                onClose();
+                return;
+            }
+
+            // Prevent background scrolling for space and arrows when modal is open
+            if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (blueprintMode) {
+                    const sig = cs?.signatureIndex ?? 1;
+                    const curGroupIdx = signatureGroups.findIndex(g => g.sigIndex === sig);
+                    if (curGroupIdx > 0) goToSheet(sheets.indexOf(signatureGroups[curGroupIdx - 1].sheets[0]));
+                } else {
+                    if (currentSheetIdx > 0) goToSheet(currentSheetIdx - 1);
+                }
+            }
+            
+            if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (blueprintMode) {
+                    const sig = cs?.signatureIndex ?? 1;
+                    const curGroupIdx = signatureGroups.findIndex(g => g.sigIndex === sig);
+                    if (curGroupIdx >= 0 && curGroupIdx < signatureGroups.length - 1) goToSheet(sheets.indexOf(signatureGroups[curGroupIdx + 1].sheets[0]));
+                } else {
+                    if (currentSheetIdx < sheets.length - 1) goToSheet(currentSheetIdx + 1);
+                }
+            }
+        };
+        // Use capture phase to ensure we intercept before AcrobatViewer
+        window.addEventListener('keydown', h, true);
+        return () => window.removeEventListener('keydown', h, true);
+    }, [isOpen, onClose, currentSheetIdx, sheets, blueprintMode, signatureGroups, cs, goToSheet]);
+
+    if (!isOpen || sheets.length === 0 || !cs) return null;
+
+    const sig = cs.signatureIndex ?? 1;
+    const sc = SIG_COLORS[Math.max(0, sig > 0 ? sig - 1 : 0) % SIG_COLORS.length];
+    const cg = signatureGroups.find(g => g.sigIndex === sig);
+    const activeSide = showBack ? cs.back : cs.front;
+
+    return createPortal(
+        <div className="fixed inset-0 z-[9999] bg-slate-50/95 dark:bg-zinc-900/95 backdrop-blur-md select-none transition-colors duration-300">
+            {/* ── TOP BAR ── */}
+            <div className="absolute top-0 left-0 right-0 h-14 px-6 flex items-center justify-between border-b border-slate-200 dark:border-white/10 bg-white/80 dark:bg-zinc-800/80 shadow-sm backdrop-blur-md transition-colors duration-300">
+                <div className="flex items-center gap-3">
+                    <Layers className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
+                    <span className="text-slate-900 dark:text-white text-[15px] font-bold tracking-wide whitespace-nowrap">Xem Bài In</span>
+                    <span className="text-slate-500 dark:text-zinc-300 text-[13px] font-medium whitespace-nowrap">• {BINDING_LABELS[bindingMode]}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                    {activeFoldPattern && bindingMode !== 'continuous' && !isDigital && (
+                        <button
+                            onClick={() => setBlueprintMode(b => !b)}
+                            className={`flex items-center justify-center gap-2 text-[13px] font-bold transition-all px-4 py-2 rounded-md whitespace-nowrap flex-shrink-0 ${blueprintMode ? 'bg-indigo-500 text-white shadow-md' : 'text-slate-600 dark:text-zinc-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-zinc-700 bg-slate-100 dark:bg-zinc-700/50'}`}
+                        >
+                            <Grid3X3 className="w-4 h-4" />
+                            {blueprintMode ? 'Sơ đồ kẽm' : 'Sơ đồ kẽm'}
+                        </button>
+                    )}
+                    <button onClick={onClose} className="text-slate-600 dark:text-zinc-300 hover:text-slate-900 dark:hover:text-white text-[13px] font-bold transition-colors px-4 py-2 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-700 bg-slate-100 dark:bg-zinc-700/30 whitespace-nowrap flex-shrink-0">
+                        Đóng (ESC)
+                    </button>
+                </div>
+            </div>
+
+            {/* ── MAIN AREA ── */}
+            <div className="absolute top-14 bottom-16 left-0 right-0 flex items-center justify-center px-16 py-4">
+                {/* Left arrow */}
+                <button
+                    onClick={() => {
+                        if (blueprintMode) {
+                            const curGroupIdx = signatureGroups.findIndex(g => g.sigIndex === sig);
+                            if (curGroupIdx > 0) goToSheet(sheets.indexOf(signatureGroups[curGroupIdx - 1].sheets[0]));
+                        } else {
+                            if (currentSheetIdx > 0) goToSheet(currentSheetIdx - 1);
+                        }
+                    }}
+                    disabled={blueprintMode ? signatureGroups.findIndex(g => g.sigIndex === sig) === 0 : currentSheetIdx === 0}
+                    className="absolute left-4 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center rounded-full bg-white/80 dark:bg-zinc-800/80 text-slate-700 dark:text-white hover:bg-white dark:hover:bg-zinc-700 hover:scale-110 transition-all disabled:opacity-30 disabled:cursor-not-allowed z-10 shadow-md dark:shadow-lg backdrop-blur-sm"
+                >
+                    <ChevronLeft className="w-6 h-6" />
+                </button>
+
+                {/* Sheet container */}
+                <div className="flex flex-col w-full h-full max-w-6xl">
+                    {/* Sheet header */}
+                    <div className="shrink-0 flex items-center justify-between px-5 py-3">
+                        <div className="flex items-center gap-3">
+                            <span className="text-slate-800 dark:text-white text-sm font-bold">
+                                Tờ {currentSheetIdx + 1}/{sheets.length}
+                            </span>
+                            {bindingMode === 'thread' && cg && (
+                                <>
+                                    <span className="text-slate-400 dark:text-zinc-600 text-sm">•</span>
+                                    <span className="text-sm font-medium" style={{ color: sc.text }}>
+                                        Tép {sig} — Tờ {cg.sheets.indexOf(cs) + 1}/{cg.sheets.length}
+                                    </span>
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    {blueprintMode && activeFoldPattern ? (
+                        /* ── BLUEPRINT GRID VIEW ── */
+                        <div className="flex-1 flex items-center justify-center p-4 min-h-0 min-w-0">
+                            <BlueprintGrid pattern={activeFoldPattern} sheets={sheets} currentSheetIdx={currentSheetIdx} pageOrder={pageOrder} bindingMode={bindingMode} pdfFile={pdfFile} currentJob={currentJob} gripperMargin={gripperMargin} />
+                        </div>
+                    ) : (isDigital && (scaleMode === 'chain_nup' || scaleMode === 'cut_stack')) ? (
+                        /* ── DIGITAL PRESS SHEET SIMULATION VIEW ── */
+                        <div className="flex-1 flex flex-col items-center justify-center min-h-0 min-w-0">
+                            <DigitalPressSheetGrid 
+                                sheets={sheets} 
+                                currentSheetIdx={currentSheetIdx} 
+                                pageOrder={pageOrder} 
+                                pdfFile={pdfFile} 
+                                scaleMode={scaleMode} 
+                            />
+                            {/* Message about digital imposition */}
+                            <div className="shrink-0 mt-2 bg-white/90 dark:bg-zinc-800/95 text-slate-800 dark:text-white px-6 py-3.5 rounded-xl text-sm font-medium shadow-xl dark:shadow-2xl flex items-center gap-3 border border-indigo-200 dark:border-indigo-500/30 max-w-2xl w-max text-center leading-relaxed backdrop-blur-sm z-50 relative">
+                                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400">💡</span>
+                                {scaleMode === 'chain_nup' 
+                                    ? "Bản xem trước mô phỏng: Cụm trang được nhân bản (Step & Repeat) lấp đầy khổ in." 
+                                    : "Bản xem trước mô phỏng: Các tờ booklet khác nhau được ghép đôi (Xén Chồng) trên cùng khổ in."}
+                            </div>
+                        </div>
+                    ) : (
+                        /* ── SIDE-BY-SIDE ACTUAL PAGES VIEW ── */
+                        <div className="flex-1 flex items-center justify-center gap-8 p-4 min-h-0 min-w-0">
+                            {/* FRONT PLATE */}
+                            <div className="flex flex-col items-center gap-3 max-h-full w-1/2 justify-center min-w-0">
+                                <div className="shrink-0 inline-flex items-center justify-center h-7 text-[11px] font-bold tracking-wider uppercase px-5 rounded-md bg-sky-100 dark:bg-sky-500/20 text-sky-500 dark:text-sky-400">
+                                    Mặt Trước
+                                </div>
+                                <div className="flex justify-center bg-white dark:bg-zinc-800 rounded-lg border border-slate-200 dark:border-zinc-700 shadow-lg overflow-hidden min-h-0 min-w-0">
+                                    <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
+                                        <PageSlotView slot={cs.front.left} pageOrder={pageOrder} pdfFile={pdfFile} />
+                                    </div>
+                                    <div className="shrink-0 w-px bg-red-400/60 z-10" />
+                                    <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
+                                        <PageSlotView slot={cs.front.right} pageOrder={pageOrder} pdfFile={pdfFile} />
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            {/* BACK PLATE */}
+                            <div className="flex flex-col items-center gap-3 max-h-full w-1/2 justify-center min-w-0">
+                                <div className="shrink-0 inline-flex items-center justify-center h-7 text-[11px] font-bold tracking-wider uppercase px-5 rounded-md bg-amber-100 dark:bg-amber-500/20 text-amber-500 dark:text-amber-400">
+                                    Mặt Sau
+                                </div>
+                                <div className="flex justify-center bg-white dark:bg-zinc-800 rounded-lg border border-slate-200 dark:border-zinc-700 shadow-lg overflow-hidden min-h-0 min-w-0">
+                                    <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
+                                        <PageSlotView slot={cs.back.left} pageOrder={pageOrder} pdfFile={pdfFile} />
+                                    </div>
+                                    <div className="shrink-0 w-px bg-red-400/60 z-10" />
+                                    <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
+                                        <PageSlotView slot={cs.back.right} pageOrder={pageOrder} pdfFile={pdfFile} />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* Right arrow */}
+                <button
+                    onClick={() => {
+                        if (blueprintMode) {
+                            const curGroupIdx = signatureGroups.findIndex(g => g.sigIndex === sig);
+                            if (curGroupIdx < signatureGroups.length - 1) goToSheet(sheets.indexOf(signatureGroups[curGroupIdx + 1].sheets[0]));
+                        } else {
+                            if (currentSheetIdx < sheets.length - 1) goToSheet(currentSheetIdx + 1);
+                        }
+                    }}
+                    disabled={blueprintMode ? signatureGroups.findIndex(g => g.sigIndex === sig) >= signatureGroups.length - 1 : currentSheetIdx >= sheets.length - 1}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center rounded-full bg-white/80 dark:bg-zinc-800/80 text-slate-700 dark:text-white hover:bg-white dark:hover:bg-zinc-700 hover:scale-110 transition-all disabled:opacity-30 disabled:cursor-not-allowed z-10 shadow-md dark:shadow-lg backdrop-blur-sm"
+                >
+                    <ChevronRight className="w-6 h-6" />
+                </button>
+            </div>
+
+            {/* ── BOTTOM BAR ── */}
+            <div className="absolute bottom-0 left-0 right-0 min-h-[4rem] flex flex-col items-center justify-center border-t border-slate-200 dark:border-white/10 bg-white/90 dark:bg-zinc-900/90 z-20 py-2 backdrop-blur-md transition-colors duration-300">
+                <div className="flex flex-wrap items-center justify-center gap-4 max-w-full px-4">
+                    {!blueprintMode && <div className="w-px h-6 bg-slate-300 dark:bg-zinc-700 hidden sm:block" />}
+
+                    {/* Hide scrollbar using tailwind custom class or inline styles */}
+                    {!blueprintMode && (
+                        <div className="flex flex-wrap justify-center gap-1 max-w-[90vw] px-1 py-1">
+                            {sheets.map((sheet, idx) => {
+                                const s = sheet.signatureIndex ?? 1;
+                                const c = SIG_COLORS[Math.max(0, s > 0 ? s - 1 : 0) % SIG_COLORS.length];
+                                const isCur = idx === currentSheetIdx;
+                                const prevS = idx > 0 ? (sheets[idx - 1].signatureIndex ?? 1) : s;
+                                const divider = (bindingMode === 'thread' && idx > 0 && prevS !== s) || (catalogJobs && idx > 0 && prevS !== s);
+                                return (
+                                    <React.Fragment key={idx}>
+                                        {divider && <div className="w-px h-5 bg-slate-300 dark:bg-zinc-600 mx-1 self-center" />}
+                                        <button
+                                            onClick={() => goToSheet(idx)}
+                                            className="shrink-0 rounded text-[11px] font-bold transition-all"
+                                            style={{
+                                                width: '32px', height: '28px', lineHeight: '28px', textAlign: 'center',
+                                                background: isCur ? c.border : c.bg,
+                                                color: isCur ? 'white' : c.text,
+                                                border: isCur ? `1px solid ${c.text}` : '1px solid transparent',
+                                            }}
+                                        >
+                                            {idx + 1}
+                                        </button>
+                                    </React.Fragment>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {signatureGroups.length > 1 && (
+                        <>
+                            {!blueprintMode && <div className="w-px h-6 bg-slate-300 dark:bg-zinc-700 hidden sm:block" />}
+                            <div className="flex flex-wrap justify-center gap-1 max-w-[90vw] px-1 py-1">
+                                {signatureGroups.map((g) => {
+                                    const isAct = g.sigIndex === sig;
+                                    const job = jobMap?.get(g.sheets[0]);
+                                    let label = `Tép ${g.sigIndex}`;
+                                    if (job && job.label) {
+                                        label = job.label.replace('Kẽm ', 'Tờ in ').replace('Tay ', '').replace(' — Tép ', ' Tép ').replace(/— Trang lẻ.*/, '(Lẻ)').replace(/\(Tự Trở.*\)/, '').trim();
+                                    } else if (job) {
+                                        label = job.isCover ? 'Tờ Bìa' : `Tờ in ${job.sortOrder || g.sigIndex}`;
+                                    }
+                                    return (
+                                        <button key={g.sigIndex}
+                                            onClick={() => goToSheet(sheets.indexOf(g.sheets[0]))}
+                                            className="shrink-0 inline-flex items-center justify-center whitespace-nowrap px-6 py-2 rounded-lg text-xs font-semibold transition-all"
+                                            style={{
+                                                background: isAct ? g.color.border : g.color.bg,
+                                                color: isAct ? 'white' : g.color.text,
+                                                border: `1px solid ${g.color.border}`,
+                                            }}
+                                        >
+                                            {label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </>
+                    )}
+                </div>
+            </div>
+        </div>,
+        document.body
+    );
+};

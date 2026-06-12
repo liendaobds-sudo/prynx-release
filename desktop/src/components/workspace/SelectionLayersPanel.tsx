@@ -1,0 +1,667 @@
+import React, { useState, useRef, useCallback } from 'react';
+import { Button } from '../Button';
+import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
+import { authenticatedFetch, getApiUrl } from '../../lib/api';
+
+// ═══════════════════════════════════════════════════════════
+//  F7-style Layer Manager Panel — Illustrator Layers Panel
+// ═══════════════════════════════════════════════════════════
+
+interface OcgLayer {
+    id: number;
+    name: string;
+    visible: boolean;
+    locked: boolean;
+    depth: number;
+    children: OcgLayer[];
+    color: string;
+    isGroup?: boolean;
+}
+
+interface SelectionLayersPanelProps {
+    handleDeleteObjects: (objs: any[], pageNum: number) => void;
+    fetchPdfObjectsForPage: (pageNum: number) => Promise<void>;
+}
+
+export default function SelectionLayersPanel({
+    handleDeleteObjects,
+    fetchPdfObjectsForPage,
+}: SelectionLayersPanelProps) {
+    const { 
+        pdfUrl, pdfObjectsVersion, selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
+        pdfOcgLayers, hiddenOcgLayerIds, setHiddenOcgLayerIds,
+        lockedOcgLayerIds, setLockedOcgLayerIds,
+        expandedOcgLayerIds, setExpandedOcgLayerIds,
+        selectionFileId, viewerNumPages,
+    } = useWorkspaceStore();
+
+    const [activeTab, setActiveTab] = useState<'ocg' | 'objects'>('ocg');
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; layer: OcgLayer } | null>(null);
+    const [renamingId, setRenamingId] = useState<number | null>(null);
+    const [renameValue, setRenameValue] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [dragOverId, setDragOverId] = useState<number | null>(null);
+    const dragIdRef = useRef<number | null>(null);
+    const renameInputRef = useRef<HTMLInputElement>(null);
+    const [isScanningAll, setIsScanningAll] = useState(false);
+    const [scanProgress, setScanProgress] = useState(0);
+
+    const handleScanAllPages = async () => {
+        if (!viewerNumPages || isScanningAll) return;
+        setIsScanningAll(true);
+        setScanProgress(0);
+        try {
+            // Scan sequentially to avoid overwhelming the backend
+            for (let i = 1; i <= viewerNumPages; i++) {
+                await fetchPdfObjectsForPage(i);
+                setScanProgress(Math.round((i / viewerNumPages) * 100));
+            }
+        } catch (err) {
+            console.error('Scan all pages failed:', err);
+        } finally {
+            setIsScanningAll(false);
+            setScanProgress(0);
+        }
+    };
+
+    // ─── Toggle Eye (Visibility) ───────────────────────────
+    const handleToggleVisibility = useCallback(async (layerId: number) => {
+        const isHidden = hiddenOcgLayerIds.includes(layerId);
+        const newHidden = isHidden
+            ? hiddenOcgLayerIds.filter(id => id !== layerId)
+            : [...hiddenOcgLayerIds, layerId];
+        
+        setHiddenOcgLayerIds(newHidden);
+        
+        // Call backend to update preview
+        if (selectionFileId) {
+            try {
+                await authenticatedFetch(`${getApiUrl()}/preflight/preview-layers`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_id: selectionFileId,
+                        page: 1,
+                        hidden_layer_ids: newHidden,
+                    }),
+                });
+            } catch (err) {
+                console.error('Layer preview failed:', err);
+            }
+        }
+    }, [hiddenOcgLayerIds, setHiddenOcgLayerIds, selectionFileId]);
+
+    // ─── Toggle Lock ───────────────────────────────────────
+    const handleToggleLock = useCallback(async (layerId: number) => {
+        const isLocked = lockedOcgLayerIds.includes(layerId);
+        const newLocked = isLocked
+            ? lockedOcgLayerIds.filter(id => id !== layerId)
+            : [...lockedOcgLayerIds, layerId];
+        
+        setLockedOcgLayerIds(newLocked);
+        
+        if (selectionFileId) {
+            try {
+                await authenticatedFetch(`${getApiUrl()}/preflight/layers/toggle-lock`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_id: selectionFileId,
+                        layer_id: layerId,
+                        locked: !isLocked,
+                    }),
+                });
+            } catch (err) {
+                console.error('Toggle lock failed:', err);
+            }
+        }
+    }, [lockedOcgLayerIds, setLockedOcgLayerIds, selectionFileId]);
+
+    // ─── Toggle Expand/Collapse ────────────────────────────
+    const handleToggleExpand = useCallback((layerId: number) => {
+        setExpandedOcgLayerIds(prev =>
+            prev.includes(layerId)
+                ? prev.filter(id => id !== layerId)
+                : [...prev, layerId]
+        );
+    }, [setExpandedOcgLayerIds]);
+
+    // ─── Rename ────────────────────────────────────────────
+    const startRename = useCallback((layer: OcgLayer) => {
+        setRenamingId(layer.id);
+        setRenameValue(layer.name);
+        setContextMenu(null);
+        setTimeout(() => renameInputRef.current?.focus(), 50);
+    }, []);
+
+    const commitRename = useCallback(async () => {
+        if (!renamingId || !renameValue.trim() || !selectionFileId) {
+            setRenamingId(null);
+            return;
+        }
+        
+        try {
+            setIsLoading(true);
+            await authenticatedFetch(`${getApiUrl()}/preflight/layers/rename`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    file_id: selectionFileId,
+                    layer_id: renamingId,
+                    new_name: renameValue.trim(),
+                }),
+            });
+            // Refresh layers
+            window.dispatchEvent(new CustomEvent('refresh-ocg-layers'));
+        } catch (err) {
+            console.error('Rename failed:', err);
+        } finally {
+            setIsLoading(false);
+            setRenamingId(null);
+        }
+    }, [renamingId, renameValue, selectionFileId]);
+
+    // ─── Delete Layer ──────────────────────────────────────
+    const handleDeleteLayer = useCallback(async (layerId: number) => {
+        setContextMenu(null);
+        if (!selectionFileId) return;
+        
+        try {
+            setIsLoading(true);
+            await authenticatedFetch(`${getApiUrl()}/preflight/layers/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    file_id: selectionFileId,
+                    layer_id: layerId,
+                }),
+            });
+            window.dispatchEvent(new CustomEvent('refresh-ocg-layers'));
+        } catch (err) {
+            console.error('Delete layer failed:', err);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [selectionFileId]);
+
+    // ─── Flatten ───────────────────────────────────────────
+    const handleFlatten = useCallback(async () => {
+        setContextMenu(null);
+        if (!selectionFileId) return;
+        
+        try {
+            setIsLoading(true);
+            await authenticatedFetch(`${getApiUrl()}/preflight/layers/flatten`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_id: selectionFileId }),
+            });
+            window.dispatchEvent(new CustomEvent('refresh-ocg-layers'));
+        } catch (err) {
+            console.error('Flatten failed:', err);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [selectionFileId]);
+
+    // ─── Drag & Drop Reorder ───────────────────────────────
+    const handleDragStart = useCallback((layerId: number) => {
+        dragIdRef.current = layerId;
+    }, []);
+
+    const handleDragOver = useCallback((e: React.DragEvent, layerId: number) => {
+        e.preventDefault();
+        setDragOverId(layerId);
+    }, []);
+
+    const handleDrop = useCallback(async (e: React.DragEvent, targetId: number) => {
+        e.preventDefault();
+        setDragOverId(null);
+        
+        const sourceId = dragIdRef.current;
+        if (!sourceId || sourceId === targetId || !selectionFileId) return;
+        
+        // Build new order by moving sourceId before targetId
+        const flatIds = flattenLayerIds(pdfOcgLayers);
+        const filtered = flatIds.filter(id => id !== sourceId);
+        const targetIdx = filtered.indexOf(targetId);
+        filtered.splice(targetIdx, 0, sourceId);
+        
+        try {
+            setIsLoading(true);
+            await authenticatedFetch(`${getApiUrl()}/preflight/layers/reorder`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    file_id: selectionFileId,
+                    new_order: filtered,
+                }),
+            });
+            window.dispatchEvent(new CustomEvent('refresh-ocg-layers'));
+        } catch (err) {
+            console.error('Reorder failed:', err);
+        } finally {
+            setIsLoading(false);
+            dragIdRef.current = null;
+        }
+    }, [pdfOcgLayers, selectionFileId]);
+
+    // ─── Context Menu ──────────────────────────────────────
+    const handleContextMenu = useCallback((e: React.MouseEvent, layer: OcgLayer) => {
+        e.preventDefault();
+        setContextMenu({ x: e.clientX, y: e.clientY, layer });
+    }, []);
+
+    // ─── Render Layer Tree Item ────────────────────────────
+    const renderLayerItem = (layer: OcgLayer, depth: number = 0) => {
+        const isHidden = hiddenOcgLayerIds.includes(layer.id);
+        const isLocked = lockedOcgLayerIds.includes(layer.id);
+        const isExpanded = expandedOcgLayerIds.includes(layer.id);
+        const hasChildren = layer.children && layer.children.length > 0;
+        const isRenaming = renamingId === layer.id;
+        const isDragOver = dragOverId === layer.id;
+
+        return (
+            <div key={`layer-${layer.id}`}>
+                <div
+                    className={`flex items-center gap-1 py-1 px-1.5 rounded-md text-[12px] transition-all cursor-pointer group/layer
+                        ${isHidden ? 'opacity-40' : ''} 
+                        ${isDragOver ? 'bg-blue-100 dark:bg-blue-900/30 ring-1 ring-blue-400' : 'hover:bg-slate-50 dark:hover:bg-zinc-700/50'}
+                        ${isLocked ? 'bg-amber-50/50 dark:bg-amber-900/10' : ''}
+                    `}
+                    style={{ paddingLeft: `${depth * 16 + 4}px` }}
+                    draggable={!layer.isGroup}
+                    onDragStart={() => handleDragStart(layer.id)}
+                    onDragOver={(e) => handleDragOver(e, layer.id)}
+                    onDrop={(e) => handleDrop(e, layer.id)}
+                    onDragLeave={() => setDragOverId(null)}
+                    onContextMenu={(e) => handleContextMenu(e, layer)}
+                    onDoubleClick={() => !layer.isGroup && startRename(layer)}
+                >
+                    {/* Expand/Collapse Arrow */}
+                    {hasChildren ? (
+                        <button
+                            onClick={(e) => { e.stopPropagation(); handleToggleExpand(layer.id); }}
+                            className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 transition-colors shrink-0"
+                        >
+                            <svg className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                            </svg>
+                        </button>
+                    ) : (
+                        <div className="w-4 shrink-0" />
+                    )}
+
+                    {/* Color Dot */}
+                    <div 
+                        className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-black/10"
+                        style={{ backgroundColor: layer.color || '#3b82f6' }}
+                    />
+
+                    {/* Eye Toggle */}
+                    <button
+                        onClick={(e) => { e.stopPropagation(); handleToggleVisibility(layer.id); }}
+                        className={`w-5 h-5 flex items-center justify-center rounded transition-colors shrink-0 ${
+                            isHidden 
+                                ? 'text-slate-300 dark:text-zinc-600 hover:text-slate-500' 
+                                : 'text-slate-500 dark:text-zinc-300 hover:text-blue-600 dark:hover:text-blue-400'
+                        }`}
+                        title={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
+                    >
+                        {isHidden ? (
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
+                            </svg>
+                        ) : (
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                        )}
+                    </button>
+
+                    {/* Lock Toggle */}
+                    <button
+                        onClick={(e) => { e.stopPropagation(); handleToggleLock(layer.id); }}
+                        className={`w-5 h-5 flex items-center justify-center rounded transition-colors shrink-0 ${
+                            isLocked 
+                                ? 'text-amber-500 hover:text-amber-600' 
+                                : 'text-slate-300 dark:text-zinc-600 hover:text-slate-500 dark:hover:text-zinc-400 opacity-0 group-hover/layer:opacity-100'
+                        }`}
+                        title={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
+                    >
+                        {isLocked ? (
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+                            </svg>
+                        ) : (
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M10 2a5 5 0 00-5 5v2a2 2 0 00-2 2v5a2 2 0 002 2h10a2 2 0 002-2v-5a2 2 0 00-2-2H7V7a3 3 0 015.905-.75 1 1 0 001.937-.5A5.002 5.002 0 0010 2z" />
+                            </svg>
+                        )}
+                    </button>
+
+                    {/* Layer Name */}
+                    {isRenaming ? (
+                        <input
+                            ref={renameInputRef}
+                            className="flex-1 bg-white dark:bg-zinc-700 border border-blue-400 rounded px-1.5 py-0.5 text-[12px] outline-none text-slate-800 dark:text-zinc-100"
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onBlur={commitRename}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') commitRename();
+                                if (e.key === 'Escape') setRenamingId(null);
+                            }}
+                        />
+                    ) : (
+                        <span className={`truncate flex-1 ${
+                            isHidden ? 'text-slate-400 dark:text-zinc-500 line-through' : 
+                            layer.isGroup ? 'text-slate-600 dark:text-zinc-300 font-bold italic' : 
+                            'text-slate-700 dark:text-zinc-200 font-medium'
+                        }`}>
+                            {layer.isGroup ? `📁 ${layer.name}` : layer.name}
+                        </span>
+                    )}
+
+                    {/* Drag Handle (visible on hover) */}
+                    {!layer.isGroup && (
+                        <div className="w-4 h-4 flex items-center justify-center text-slate-300 dark:text-zinc-600 opacity-0 group-hover/layer:opacity-100 cursor-grab shrink-0">
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M7 2a2 2 0 10.001 4.001A2 2 0 007 2zm0 6a2 2 0 10.001 4.001A2 2 0 007 8zm0 6a2 2 0 10.001 4.001A2 2 0 007 14zm6-8a2 2 0 10.001-4.001A2 2 0 0013 6zm0 2a2 2 0 10.001 4.001A2 2 0 0013 8zm0 6a2 2 0 10.001 4.001A2 2 0 0013 14z" />
+                            </svg>
+                        </div>
+                    )}
+                </div>
+
+                {/* Children */}
+                {hasChildren && isExpanded && (
+                    <div className="border-l border-slate-200 dark:border-zinc-700 ml-3">
+                        {layer.children.map(child => renderLayerItem(child, depth + 1))}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    return (
+        <div className="flex flex-col h-full gap-3">
+            {/* Tabs */}
+            <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-md shrink-0">
+                <button
+                    className={`flex-1 py-1.5 text-[11px] font-medium rounded transition-colors ${activeTab === 'ocg' ? 'bg-white dark:bg-zinc-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
+                    onClick={() => setActiveTab('ocg')}
+                >
+                    🎨 Lớp (Layers)
+                </button>
+                <button
+                    className={`flex-1 py-1.5 text-[11px] font-medium rounded transition-colors ${activeTab === 'objects' ? 'bg-white dark:bg-zinc-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
+                    onClick={() => setActiveTab('objects')}
+                >
+                    📦 Thành phần
+                </button>
+            </div>
+
+            {/* Loading Overlay */}
+            {isLoading && (
+                <div className="absolute inset-0 z-50 bg-white/70 dark:bg-zinc-900/70 flex items-center justify-center rounded-lg backdrop-blur-sm">
+                    <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
+                        <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                        <span className="text-xs font-medium">Đang xử lý...</span>
+                    </div>
+                </div>
+            )}
+
+            {/* OCG Layers Tab — F7-style */}
+            {activeTab === 'ocg' && (
+                <>
+                    {/* Toolbar */}
+                    <div className="flex items-center gap-1 px-1 shrink-0">
+                        <button
+                            onClick={handleFlatten}
+                            className="text-[10px] bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-2 py-1 rounded transition-colors text-slate-600 dark:text-zinc-300 flex items-center gap-1"
+                            title="Flatten Visible — gộp tất cả layer thành 1"
+                        >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                            </svg>
+                            Flatten
+                        </button>
+                        <div className="flex-1" />
+                        <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono">
+                            {pdfOcgLayers.length} layers
+                        </span>
+                    </div>
+
+                    {/* Layer Tree */}
+                    <div className="flex-1 overflow-y-auto border border-slate-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 scroller-thin p-1">
+                        {pdfOcgLayers && pdfOcgLayers.length > 0 ? (
+                            <div className="flex flex-col gap-0.5">
+                                {pdfOcgLayers.map((layer: OcgLayer) => renderLayerItem(layer))}
+                            </div>
+                        ) : (
+                            <div className="p-6 text-center">
+                                <div className="text-3xl mb-2 opacity-30">🎨</div>
+                                <p className="text-slate-400 dark:text-zinc-500 italic text-xs">
+                                    Không tìm thấy Lớp OCG nào trong file PDF này.
+                                </p>
+                                <p className="text-slate-300 dark:text-zinc-600 text-[10px] mt-1">
+                                    File cần có cấu trúc OCG (Optional Content Groups)
+                                </p>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Keyboard Hints */}
+                    <div className="shrink-0 text-[9px] text-slate-400 dark:text-zinc-600 px-1 flex gap-3">
+                        <span>👁 Ẩn/Hiện</span>
+                        <span>🔒 Khóa</span>
+                        <span>2x Click = Đổi tên</span>
+                        <span>Kéo = Sắp xếp</span>
+                    </div>
+                </>
+            )}
+
+            {/* Objects Tab (kept from original) */}
+            {activeTab === 'objects' && (
+                <>
+                    <div className="flex items-center justify-between shrink-0 bg-white dark:bg-zinc-800 p-2 rounded-md border border-slate-200 dark:border-zinc-700">
+                        <span className="font-medium text-[13px] text-slate-700 dark:text-zinc-300">Đã chọn: <strong className="text-blue-600 dark:text-blue-400">{selectedObjectIds.length}</strong></span>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => {
+                                    const allIds = Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat().map((o: any) => o.id);
+                                    if (selectedObjectIds.length === allIds.length) {
+                                        setSelectedObjectIds([]);
+                                    } else {
+                                        setSelectedObjectIds(allIds);
+                                    }
+                                }}
+                                className="text-[11px] bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-2 py-1 rounded transition-colors text-slate-600 dark:text-zinc-300"
+                            >
+                                {selectedObjectIds.length > 0 ? 'Bỏ chọn' : 'Chọn tất cả'}
+                            </button>
+                        </div>
+                    </div>
+
+                    {viewerNumPages && Object.keys(globalPdfObjectCache.getAllObjects(pdfUrl || '')).length < viewerNumPages && (
+                        <div className="shrink-0 p-2 border border-blue-200 dark:border-blue-900 bg-blue-50/50 dark:bg-blue-900/10 rounded-md mb-2 flex flex-col gap-2">
+                            <span className="text-[11px] text-blue-700 dark:text-blue-300 leading-tight">
+                                Hiện chỉ hiển thị đối tượng của các trang đã lướt qua. Quét toàn bộ để lấy đầy đủ đối tượng của {viewerNumPages} trang.
+                            </span>
+                            <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="text-[11px] h-7 bg-white dark:bg-zinc-800"
+                                onClick={handleScanAllPages}
+                                disabled={isScanningAll}
+                            >
+                                {isScanningAll ? `Đang quét... ${scanProgress}%` : `Quét toàn bộ ${viewerNumPages} trang`}
+                            </Button>
+                        </div>
+                    )}
+
+                    <div className="flex-1 overflow-y-auto border border-slate-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 scroller-thin">
+                        {Object.entries(globalPdfObjectCache.getAllObjects(pdfUrl || '')).map(([pageNum, objects]) => (
+                            <div key={pageNum}>
+                                {(Object.keys(globalPdfObjectCache.getAllObjects(pdfUrl || '')).length > 1 || objects.length === 0) && (
+                                    <div className="text-[10px] font-bold text-slate-400 bg-slate-50 dark:bg-zinc-800/50 p-1 px-2 border-b border-slate-100 dark:border-zinc-700/50 uppercase">
+                                        Trang {pageNum}
+                                    </div>
+                                )}
+                                {objects.length === 0 ? (
+                                    <div className="p-3 text-center text-[10px] text-slate-400 dark:text-zinc-500 italic">
+                                        (Không có văn bản hoặc hình ảnh. Có thể trang chỉ chứa vector/đường cắt bế)
+                                    </div>
+                                ) : (
+                                    objects.map((obj) => {
+                                        const isSelected = selectedObjectIds.includes(obj.id);
+                                        const isHidden = hiddenObjectIds.includes(obj.id);
+                                        return (
+                                            <div
+                                                key={obj.id}
+                                                className={`flex items-center gap-1.5 p-2 text-xs cursor-pointer border-b border-slate-100 dark:border-zinc-700/50 hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${isHidden ? 'opacity-50' : ''}`}
+                                            >
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setHiddenObjectIds(prev =>
+                                                            prev.includes(obj.id)
+                                                                ? prev.filter(id => id !== obj.id)
+                                                                : [...prev, obj.id]
+                                                        );
+                                                    }}
+                                                    className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isHidden ? 'text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
+                                                    title={isHidden ? 'Bật hiện layer' : 'Tắt mắt layer'}
+                                                >
+                                                    {isHidden ? (
+                                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
+                                                        </svg>
+                                                    ) : (
+                                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                                        </svg>
+                                                    )}
+                                                </button>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isSelected}
+                                                    readOnly
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setSelectedObjectIds(prev =>
+                                                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                                                        );
+                                                    }}
+                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3 h-3 cursor-pointer"
+                                                />
+                                                <span
+                                                    className={`font-mono text-[9px] w-8 shrink-0 ${{
+                                                        'text': 'text-blue-500',
+                                                        'image': 'text-purple-500',
+                                                        'drawing': 'text-yellow-600'
+                                                    }[obj.type as string] || 'text-slate-500'}`}
+                                                >
+                                                    {obj.type}
+                                                </span>
+                                                <span
+                                                    className={`truncate flex-1 text-[11px] ${isHidden ? 'line-through text-slate-400' : ''}`}
+                                                    title={obj.content || obj.type}
+                                                    onClick={() => {
+                                                        setSelectedObjectIds(prev =>
+                                                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                                                        );
+                                                    }}
+                                                >
+                                                    {obj.content || `[${obj.type}]`}
+                                                </span>
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+                        ))}
+                        {Object.keys(globalPdfObjectCache.getAllObjects(pdfUrl || '')).length === 0 && (
+                            <div className="p-4 text-center text-slate-400 italic text-xs">Đang tải cấu trúc trang...</div>
+                        )}
+                    </div>
+
+                    <div className="shrink-0 pt-2">
+                        <Button
+                            variant="primary"
+                            className="w-full bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 border-transparent text-white shadow-md flex justify-center items-center gap-2"
+                            disabled={selectedObjectIds.length === 0}
+                            onClick={() => {
+                                const pageEntries = Object.entries(globalPdfObjectCache.getAllObjects(pdfUrl || ''));
+                                for (const [pageNumStr, objects] of pageEntries) {
+                                    const objectsToDelete = objects.filter(o => selectedObjectIds.includes(o.id));
+                                    if (objectsToDelete.length > 0) {
+                                        handleDeleteObjects(objectsToDelete, parseInt(pageNumStr));
+                                        break;
+                                    }
+                                }
+                            }}
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            Xóa {selectedObjectIds.length} Lớp Đã Chọn
+                        </Button>
+                    </div>
+                </>
+            )}
+
+            {/* Context Menu */}
+            {contextMenu && (
+                <>
+                    <div className="fixed inset-0 z-[999]" onClick={() => setContextMenu(null)} />
+                    <div 
+                        className="fixed z-[1000] bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl py-1 min-w-[160px] animate-fade-in"
+                        style={{ left: contextMenu.x, top: contextMenu.y }}
+                    >
+                        <button 
+                            onClick={() => startRename(contextMenu.layer)}
+                            className="w-full text-left px-3 py-1.5 text-[12px] text-slate-700 dark:text-zinc-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center gap-2"
+                        >
+                            <span>✏️</span> Đổi tên
+                        </button>
+                        <button 
+                            onClick={() => handleToggleLock(contextMenu.layer.id)}
+                            className="w-full text-left px-3 py-1.5 text-[12px] text-slate-700 dark:text-zinc-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center gap-2"
+                        >
+                            <span>{lockedOcgLayerIds.includes(contextMenu.layer.id) ? '🔓' : '🔒'}</span> 
+                            {lockedOcgLayerIds.includes(contextMenu.layer.id) ? 'Mở khóa' : 'Khóa'}
+                        </button>
+                        <div className="border-t border-slate-100 dark:border-zinc-700 my-1" />
+                        <button 
+                            onClick={handleFlatten}
+                            className="w-full text-left px-3 py-1.5 text-[12px] text-slate-700 dark:text-zinc-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center gap-2"
+                        >
+                            <span>📋</span> Flatten Visible
+                        </button>
+                        <div className="border-t border-slate-100 dark:border-zinc-700 my-1" />
+                        <button 
+                            onClick={() => handleDeleteLayer(contextMenu.layer.id)}
+                            className="w-full text-left px-3 py-1.5 text-[12px] text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 flex items-center gap-2"
+                        >
+                            <span>🗑️</span> Xóa lớp
+                        </button>
+                    </div>
+                </>
+            )}
+        </div>
+    );
+}
+
+// ─── Helpers ────────────────────────────────────────────────
+function flattenLayerIds(layers: OcgLayer[]): number[] {
+    const result: number[] = [];
+    for (const layer of layers) {
+        if (!layer.isGroup) result.push(layer.id);
+        if (layer.children?.length) {
+            result.push(...flattenLayerIds(layer.children));
+        }
+    }
+    return result;
+}

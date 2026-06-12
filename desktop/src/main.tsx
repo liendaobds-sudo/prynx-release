@@ -1,0 +1,53 @@
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import * as Sentry from "@sentry/react"
+import './index.css'
+import App from './App'
+import { ErrorBoundary } from './ErrorBoundary'
+
+// ══════════════════════════════════════════════════════════════
+// VECTOR #3+#13 FIX: Freeze Tauri IPC bridge AND capture invoke.
+// Freezing window.__TAURI__ blocks direct overrides, but ES module
+// imports create new references. Solution: capture the REAL invoke
+// at startup and expose it via a frozen global that api.ts uses.
+// ══════════════════════════════════════════════════════════════
+if ((window as any).__TAURI__) {
+  try {
+    const tauri = (window as any).__TAURI__;
+    
+    // Capture the REAL invoke function before anything can override it
+    const realInvoke = tauri.core?.invoke;
+    if (realInvoke) {
+      // Store in a non-enumerable, non-configurable, frozen property
+      Object.defineProperty(window, '__PRYNX_INVOKE__', {
+        value: Object.freeze(realInvoke.bind(tauri.core)),
+        writable: false,
+        configurable: false,
+        enumerable: false,
+      });
+    }
+    
+    if (tauri.core) Object.freeze(tauri.core);
+    Object.freeze(tauri);
+    Object.defineProperty(window, '__TAURI__', {
+      value: tauri,
+      writable: false,
+      configurable: false,
+    });
+  } catch { /* ignore in non-Tauri env */ }
+}
+
+Sentry.init({
+  dsn: import.meta.env.VITE_SENTRY_DSN,
+  sendDefaultPii: true,
+  // Add useful tags for desktop apps
+  environment: import.meta.env.MODE || 'development',
+});
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </StrictMode>,
+)

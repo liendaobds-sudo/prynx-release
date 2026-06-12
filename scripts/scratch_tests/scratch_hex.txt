@@ -1,0 +1,35 @@
+function calculateStaggeredHexLayoutCore(usableW, usableH, itemW, itemL, gapH, gapV) {
+    if (itemW <= MY_SCRIPT_TOLERANCE || itemL <= MY_SCRIPT_TOLERANCE) { return { totalItems: 0, items: [], widthUsed: 0, heightUsed: 0, itemActualW: itemW, itemActualL: itemL }; }
+    var rx = itemW / 2.0; var ry = itemL / 2.0;
+    if (usableW < itemW - MY_SCRIPT_TOLERANCE || usableH < itemL - MY_SCRIPT_TOLERANCE) { return { totalItems: 0, items: [], widthUsed: 0, heightUsed: 0, itemActualW: itemW, itemActualL: itemL }; }
+    var step_x = itemW + gapH; var step_y = Math.sqrt(3) * (ry + gapV / 2.0);
+    if (step_y <= MY_SCRIPT_TOLERANCE && Math.abs(ry + gapV / 2.0) > MY_SCRIPT_TOLERANCE) { return { totalItems: 0, items: [], widthUsed: 0, heightUsed: 0, itemActualW: itemW, itemActualL: itemL }; }
+    else if (step_y <= MY_SCRIPT_TOLERANCE) { if (usableH < itemL - MY_SCRIPT_TOLERANCE) { return { totalItems: 0, items: [], widthUsed: 0, heightUsed: 0, itemActualW: itemW, itemActualL: itemL }; } }
+    var items = []; var maxRowsEstimate = 0;
+    if (usableH >= itemL - MY_SCRIPT_TOLERANCE) { if (step_y > MY_SCRIPT_TOLERANCE) { maxRowsEstimate = Math.floor((usableH - itemL + MY_SCRIPT_TOLERANCE) / step_y) + 1; } else { maxRowsEstimate = 1; } }
+    for (var row = 0; row < maxRowsEstimate; row++) {
+        var current_center_y = ry + row * step_y;
+        if (current_center_y - ry < -MY_SCRIPT_TOLERANCE || current_center_y + ry > usableH + MY_SCRIPT_TOLERANCE) { if (row === 0 && (current_center_y + ry > usableH + MY_SCRIPT_TOLERANCE || current_center_y - ry < -MY_SCRIPT_TOLERANCE)) { } break; }
+        var isOddRow = (row % 2 !== 0); var numItemsInRow = 0; var row_start_x_center;
+        if (isOddRow) {
+            row_start_x_center = rx + (itemW / 2.0) + (gapH / 2.0);
+            if (usableW >= (row_start_x_center - rx + itemW - MY_SCRIPT_TOLERANCE)) { numItemsInRow = 1; if (step_x > MY_SCRIPT_TOLERANCE) { var remainingSpaceForOdd = usableW - (row_start_x_center - rx + itemW); if (remainingSpaceForOdd >= -MY_SCRIPT_TOLERANCE) { numItemsInRow += Math.floor((remainingSpaceForOdd + MY_SCRIPT_TOLERANCE) / step_x); } } }
+        } else {
+            row_start_x_center = rx;
+            if (usableW >= itemW - MY_SCRIPT_TOLERANCE) { numItemsInRow = 1; if (step_x > MY_SCRIPT_TOLERANCE) { var remainingSpaceForEven = usableW - itemW; if (remainingSpaceForEven >= -MY_SCRIPT_TOLERANCE) { numItemsInRow += Math.floor((remainingSpaceForEven + MY_SCRIPT_TOLERANCE) / step_x); } } }
+        }
+        if (numItemsInRow < 0) numItemsInRow = 0;
+        for (var col = 0; col < numItemsInRow; col++) {
+            var current_center_x = row_start_x_center + col * step_x;
+            if (current_center_x - rx < -MY_SCRIPT_TOLERANCE || current_center_x + rx > usableW + MY_SCRIPT_TOLERANCE) { if (col === 0) { break; } continue; }
+            items.push(createItemData('ellipse', current_center_x, current_center_y, rx, ry, 'staggered_core'));
+        }
+    }
+    if (items.length === 0) { return { totalItems: 0, items: [], widthUsed: 0, heightUsed: 0, itemActualW: itemW, itemActualL: itemL }; }
+    var blockBB = calculateItemsBoundingBox(items);
+    var centeringOffsetX = (usableW - blockBB.width) / 2.0 - blockBB.minX; var centeringOffsetY = (usableH - blockBB.height) / 2.0 - blockBB.minY;
+    var centeredItems = [];
+    for (var j = 0; j < items.length; j++) { var oldItem = items[j]; centeredItems.push(createItemData(oldItem.itemShapeType, oldItem.cx + centeringOffsetX, oldItem.cy + centeringOffsetY, oldItem.w_or_rx, oldItem.h_or_ry, oldItem.orientation)); }
+    var finalBB = calculateItemsBoundingBox(centeredItems);
+    return { totalItems: centeredItems.length, items: centeredItems, widthUsed: finalBB.width, heightUsed: finalBB.height, itemActualW: itemW, itemActualL: itemL };
+}

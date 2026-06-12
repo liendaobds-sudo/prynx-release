@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "any-nest": "^1.0.3",
+    "svgnest-mjs": "^1.0.0"
+  }
+}

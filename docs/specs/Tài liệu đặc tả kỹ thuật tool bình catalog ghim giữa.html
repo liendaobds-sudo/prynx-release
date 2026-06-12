@@ -1,0 +1,1744 @@
+<!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Document</title>
+        <style>
+          body {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 2rem 80px;
+            position: relative;
+          }
+          @media screen and (max-width: 500px) {
+            body {
+              padding: 1rem 16px;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <h1>Đặc tả kỹ thuật hệ thống bình catalo đóng ghim giữa (Saddle Stitch Imposition Engine)</h1>
+<p><strong>Phiên bản:</strong> 1.0<br />
+<strong>Ngày:</strong> 2026-04-22<br />
+<strong>Mục tiêu:</strong> Xây dựng đặc tả sản phẩm + đặc tả thuật toán cho tool bình catalo/catalo đóng ghim giữa, hỗ trợ bìa cùng hoặc khác chất liệu, số trang biến thiên, số lượng cuốn biến thiên, và hỗ trợ bóc tép/tách tép.<br />
+<strong>Phạm vi:</strong> Tập trung vào engine logic bình bài, phân rã tay/tép, template layout vật lý, và tính toán sản lượng. Chưa bao gồm creep/shingling, bù xén nâng cao, hay render PDF cuối cùng ở mức production-ready v1.</p>
+<hr />
+<h2>1. Tóm tắt điều hành</h2>
+<p>Bài toán cần giải là tự động bình bài cho <strong>catalog/catalo đóng ghim giữa (saddle stitch)</strong> trong các điều kiện sản xuất thực tế:</p>
+<ul>
+<li>tổng số trang biến thiên,</li>
+<li>bìa có thể cùng hoặc khác stock so với ruột,</li>
+<li>cần hỗ trợ các tay chuẩn 16/8/4 trang,</li>
+<li>có thể phải bóc tép/tách tép theo stock, insert, hoặc ràng buộc sản xuất,</li>
+<li>số lượng cuốn và hao hụt ảnh hưởng trực tiếp đến số tờ, số lượt chạy và khả năng cân bài.</li>
+</ul>
+<p><strong>Quyết định kiến trúc cốt lõi:</strong></p>
+<p>Hệ thống phải tách riêng 3 lớp:</p>
+<ol>
+<li><strong>Publication logic</strong>: logic xuất bản/thành phẩm, tức cuốn có bao nhiêu trang, bìa/ruột, padding blank, insert.</li>
+<li><strong>Signature decomposition</strong>: phân rã thành các tay/tép 16/8/4, thứ tự trong–ngoài, ngoài–trong, bóc tép.</li>
+<li><strong>Physical imposition template</strong>: bố trí vật lý trên tờ in theo máy, kiểu gấp, nhíp, trở, tự trở, template profile.</li>
+</ol>
+<blockquote>
+<p>Không được hard-code một layout duy nhất cho mọi trường hợp. Engine logic phải độc lập với template máy.</p>
+</blockquote>
+<hr />
+<h2>2. Nguồn minh họa / nguồn dữ liệu case thực tế</h2>
+<p>Nguồn dùng làm tư liệu minh họa và fixture logic:</p>
+<ul>
+<li>1A-1B: https://www.genspark.ai/api/files/s/xkZGoNVD</li>
+<li>2A-2B: https://www.genspark.ai/api/files/s/A3ZjgOal</li>
+<li>3A-3B: https://www.genspark.ai/api/files/s/uoFK5qRm</li>
+<li>4A-4B: https://www.genspark.ai/api/files/s/iP2X3sp1</li>
+<li>bìa tự trở: https://www.genspark.ai/api/files/s/O1tSHkit</li>
+<li>8 trang lẻ tự trở: https://www.genspark.ai/api/files/s/Z7lzsNnH</li>
+<li>4 trang lẻ tự trở: https://www.genspark.ai/api/files/s/H4rDBvAm</li>
+</ul>
+<p><strong>Ghi chú quan trọng:</strong> các ảnh nguồn đang ở trạng thái <strong>xoay 180° theo góc nhìn trực quan</strong>. Vì vậy, phần mềm <strong>bắt buộc</strong> phải tách biệt:</p>
+<ul>
+<li><strong>thứ tự logic của trang thành phẩm</strong>, và</li>
+<li><strong>chiều nhìn vận hành/chiều hiển thị trên tờ in</strong>.</li>
+</ul>
+<p>Nói cách khác, <strong>logical page order</strong> không đồng nhất với <strong>physical sheet view</strong>.</p>
+<hr />
+<h2>3. Diễn giải lại case thực tế</h2>
+<h3>3.1 Mô tả case</h3>
+<p>Case thực tế cần mô hình hóa:</p>
+<ul>
+<li>catalo <strong>80 trang cả bìa</strong>,</li>
+<li><strong>bìa 4 trang khác chất liệu</strong> so với ruột,</li>
+<li>các bài <strong>1 tới 4 là A-B</strong>, mỗi cặp <strong>A/B cho ra 1 bộ 16 trang</strong>,</li>
+<li><strong>bìa 4 trang</strong> bình riêng theo kiểu <strong>tự trở</strong>, được <strong>2 bìa/tờ</strong>,</li>
+<li>phần ruột còn dư <strong>12 trang</strong> nên tách thành:
+<ul>
+<li><strong>8 trang lẻ tự trở</strong>,</li>
+<li><strong>4 trang lẻ tự trở</strong>,</li>
+</ul>
+</li>
+<li><strong>nhíp ở mép dưới giấy</strong> theo cách nhìn trực quan,</li>
+<li>các bài <strong>không bắt buộc chạy cùng lượt</strong>,</li>
+<li>ví dụ sản lượng: <strong>1000 cuốn</strong>.</li>
+</ul>
+<h3>3.2 Phân tích logic sản xuất</h3>
+<p>Vì bìa khác stock nên phải <strong>tách bìa khỏi ruột</strong> ở cấp publication partition.</p>
+<p>Khi đó:</p>
+<ul>
+<li><strong>Tổng trang thành phẩm:</strong> 80</li>
+<li><strong>Bìa:</strong> 4 trang</li>
+<li><strong>Ruột:</strong> 76 trang</li>
+</ul>
+<p>Phân rã ruột:</p>
+<p>[<br />
+76 = 16 + 16 + 16 + 16 + 8 + 4<br />
+]</p>
+<p>Tức là:</p>
+<ul>
+<li>4 tay 16 trang,</li>
+<li>1 tay 8 trang,</li>
+<li>1 tay 4 trang.</li>
+</ul>
+<p>Đây là một cấu trúc <strong>hợp lý và điển hình</strong> cho catalog ghim giữa khi:</p>
+<ul>
+<li>bìa chạy stock riêng,</li>
+<li>ruột không tròn theo bội số 16,</li>
+<li>cần ưu tiên tay 16 để giảm số bài,</li>
+<li>phần dư 12 trang được xử lý bằng <strong>8 + 4</strong> thay vì <strong>4 + 4 + 4</strong>.</li>
+</ul>
+<h3>3.3 Kết luận về nguyên lý case</h3>
+<p>Case này phù hợp với nguyên lý sản xuất saddle stitch:</p>
+<ul>
+<li><strong>bìa tách riêng</strong> do khác stock,</li>
+<li><strong>ruột ưu tiên tay 16</strong>,</li>
+<li><strong>dư 12</strong> xử lý thành <strong>8 + 4</strong>,</li>
+<li><strong>bài nhỏ có thể tăng số bộ/tờ</strong> để giảm số lượt chạy,</li>
+<li><strong>A/B là hai mặt của cùng một tay</strong>, không phải hai bộ khác nhau.</li>
+</ul>
+<hr />
+<h2>4. Bảng hóa case thực tế</h2>
+<h3>4.1 Bảng A — Danh mục bài in của case thực tế</h3>
+<table>
+<thead>
+<tr>
+<th>Mã bài</th>
+<th>Loại bài</th>
+<th>Kết cấu</th>
+<th>Mặt</th>
+<th align="right">Số bộ/tờ</th>
+<th>Stock</th>
+<th>Ghi chú</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1A</td>
+<td>Ruột</td>
+<td>Tay 16 trang #1</td>
+<td>A</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Cùng 1B tạo thành 1 bộ 16 trang; dải trang logic: 32–47</td>
+</tr>
+<tr>
+<td>1B</td>
+<td>Ruột</td>
+<td>Tay 16 trang #1</td>
+<td>B</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Hai mặt của cùng tay 16 trang</td>
+</tr>
+<tr>
+<td>2A</td>
+<td>Ruột</td>
+<td>Tay 16 trang #2</td>
+<td>A</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Cùng 2B tạo thành 1 bộ 16 trang; dải logic: 24–31 và 48–55</td>
+</tr>
+<tr>
+<td>2B</td>
+<td>Ruột</td>
+<td>Tay 16 trang #2</td>
+<td>B</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Hai mặt của cùng tay 16 trang</td>
+</tr>
+<tr>
+<td>3A</td>
+<td>Ruột</td>
+<td>Tay 16 trang #3</td>
+<td>A</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Cùng 3B tạo thành 1 bộ 16 trang; dải logic: 16–23 và 56–63</td>
+</tr>
+<tr>
+<td>3B</td>
+<td>Ruột</td>
+<td>Tay 16 trang #3</td>
+<td>B</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Hai mặt của cùng tay 16 trang</td>
+</tr>
+<tr>
+<td>4A</td>
+<td>Ruột</td>
+<td>Tay 16 trang #4</td>
+<td>A</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Cùng 4B tạo thành 1 bộ 16 trang; dải logic: 8–15 và 64–71</td>
+</tr>
+<tr>
+<td>4B</td>
+<td>Ruột</td>
+<td>Tay 16 trang #4</td>
+<td>B</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Hai mặt của cùng tay 16 trang</td>
+</tr>
+<tr>
+<td>Bìa tự trở</td>
+<td>Bìa</td>
+<td>4 trang</td>
+<td>Tự trở</td>
+<td align="right">2</td>
+<td>Bìa</td>
+<td>Bìa chạy stock riêng; 2 bìa/tờ</td>
+</tr>
+<tr>
+<td>8 trang lẻ tự trở</td>
+<td>Ruột</td>
+<td>Tay 8 trang</td>
+<td>Tự trở</td>
+<td align="right">1</td>
+<td>Ruột</td>
+<td>Bài lẻ 8 trang; 1 bộ/tờ</td>
+</tr>
+<tr>
+<td>4 trang lẻ tự trở</td>
+<td>Ruột</td>
+<td>Tay 4 trang</td>
+<td>Tự trở</td>
+<td align="right">2</td>
+<td>Ruột</td>
+<td>Bài lẻ 4 trang; 2 bộ/tờ</td>
+</tr>
+</tbody>
+</table>
+<h3>4.2 Bảng B — Quy đổi logic xuất bản của case</h3>
+<table>
+<thead>
+<tr>
+<th>Nhóm thành phẩm</th>
+<th align="right">Số trang thành phẩm</th>
+<th>Cách xử lý</th>
+<th align="right">Số bộ/tờ</th>
+<th>Thuộc stock nào</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bìa 4 trang</td>
+<td align="right">4</td>
+<td>Tách riêng, bình tự trở</td>
+<td align="right">2</td>
+<td>Bìa</td>
+</tr>
+<tr>
+<td>Ruột tay 16 x 4</td>
+<td align="right">64</td>
+<td>4 tay 16 trang, mỗi tay có mặt A/B</td>
+<td align="right">1</td>
+<td>Ruột</td>
+</tr>
+<tr>
+<td>Ruột tay 8 x 1</td>
+<td align="right">8</td>
+<td>1 bài 8 trang lẻ tự trở</td>
+<td align="right">1</td>
+<td>Ruột</td>
+</tr>
+<tr>
+<td>Ruột tay 4 x 1</td>
+<td align="right">4</td>
+<td>1 bài 4 trang lẻ tự trở</td>
+<td align="right">2</td>
+<td>Ruột</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>5. Trích xuất dữ liệu từ các sơ đồ 1A-4B</h2>
+<p>Dữ liệu dưới đây được đọc từ các sơ đồ theo vị trí trực quan sau khi quy chiếu, dùng làm <strong>fixture kiểm thử</strong> cho logic/template.</p>
+<blockquote>
+<p>Lưu ý: do OCR và trạng thái xoay ảnh, fixture này dùng để <strong>kiểm logic, template, mapping</strong>, không thay thế file bình gốc khi đi sản xuất.</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>Mã sơ đồ</th>
+<th>Khối trái</th>
+<th>Khối phải</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1A</td>
+<td>[46, 33, 45, 34]</td>
+<td>[42, 37, 41, 38]</td>
+</tr>
+<tr>
+<td>1B</td>
+<td>[36, 43, 39, 40]</td>
+<td>[32, 47, 35, 44]</td>
+</tr>
+<tr>
+<td>2A</td>
+<td>[54, 25, 53, 26]</td>
+<td>[50, 29, 49, 30]</td>
+</tr>
+<tr>
+<td>2B</td>
+<td>[28, 51, 31, 48]</td>
+<td>[24, 55, 27, 52]</td>
+</tr>
+<tr>
+<td>3A</td>
+<td>[62, 17, 61, 18]</td>
+<td>[58, 21, 57, 22]</td>
+</tr>
+<tr>
+<td>3B</td>
+<td>[20, 59, 23, 56]</td>
+<td>[16, 63, 19, 60]</td>
+</tr>
+<tr>
+<td>4A</td>
+<td>[70, 9, 69, 10]</td>
+<td>[66, 13, 65, 14]</td>
+</tr>
+<tr>
+<td>4B</td>
+<td>[12, 67, 15, 64]</td>
+<td>[8, 71, 11, 68]</td>
+</tr>
+</tbody>
+</table>
+<h3>5.1 Ý nghĩa fixture</h3>
+<ul>
+<li>Đây là dữ liệu thực chiến để kiểm tra engine có:
+<ul>
+<li>nhận diện đúng cặp A/B,</li>
+<li>giữ đúng quan hệ đối trang,</li>
+<li>không nhầm giữa local page và absolute page,</li>
+<li>không nhầm giữa hướng nhìn trực quan và thứ tự đọc thành phẩm.</li>
+</ul>
+</li>
+<li>Khi triển khai thực tế, <strong>cần xác nhận bằng file bình gốc khi đi sản xuất</strong>.</li>
+</ul>
+<hr />
+<h2>6. Nguyên lý tổng quát của bình saddle stitch / catalog ghim giữa</h2>
+<h3>6.1 Điều kiện tổng số trang</h3>
+<p>Tổng số trang thành phẩm của một khối cần bình phải là bội số của <strong>4</strong>.</p>
+<p>Nếu không:</p>
+<ul>
+<li>hoặc báo lỗi,</li>
+<li>hoặc chèn <strong>padding blank</strong> để đưa về bội số của 4.</li>
+</ul>
+<p>[<br />
+N_{normalized} = \left\lceil \frac{N}{4} \right\rceil \times 4<br />
+]</p>
+<h3>6.2 Ba lớp logic bắt buộc tách riêng</h3>
+<h4>(1) Cấu trúc xuất bản — Publication Logic</h4>
+<p>Xác định:</p>
+<ul>
+<li>tổng số trang thành phẩm,</li>
+<li>cover mode,</li>
+<li>numbering mode,</li>
+<li>insert,</li>
+<li>blank/padding.</li>
+</ul>
+<h4>(2) Cấu trúc tay/tép — Signature Decomposition</h4>
+<p>Xác định:</p>
+<ul>
+<li>chia thành tay 16/8/4,</li>
+<li>thứ tự trong–ngoài,</li>
+<li>bóc tép/tách tép,</li>
+<li>nhóm theo stock.</li>
+</ul>
+<h4>(3) Template bố trí vật lý — Physical Imposition Template</h4>
+<p>Xác định:</p>
+<ul>
+<li>bố trí local page trên tờ in,</li>
+<li>mặt A/B,</li>
+<li>nhíp,</li>
+<li>trở,</li>
+<li>work-and-turn,</li>
+<li>quy ước tọa độ operator.</li>
+</ul>
+<h3>6.3 Cặp đối trang và hằng số K</h3>
+<p>Trong saddle stitch, các trang cùng một lá sau khi gấp tạo thành <strong>cặp đối trang</strong> có tổng bằng hằng số:</p>
+<p>[<br />
+K = p_{start} + p_{end}<br />
+]</p>
+<p>Ví dụ:</p>
+<ul>
+<li>tay local 1..16:​[<br />
+K = 1 + 16 = 17<br />
+]</li>
+<li>tay absolute 32..47:<br />
+[<br />
+K = 32 + 47 = 79<br />
+]</li>
+</ul>
+<p>Các cặp như:</p>
+<ul>
+<li>33 + 46 = 79</li>
+<li>34 + 45 = 79</li>
+<li>37 + 42 = 79</li>
+<li>38 + 41 = 79</li>
+</ul>
+<p>đều phản ánh đúng nguyên lý này.</p>
+<h3>6.4 A/B là hai mặt của cùng một tay</h3>
+<p><strong>Mặt A</strong> và <strong>mặt B</strong>:</p>
+<ul>
+<li>là hai mặt của cùng một tờ/tay,</li>
+<li>dùng cùng số tờ vật lý,</li>
+<li>không phải hai bộ thành phẩm riêng.</li>
+</ul>
+<p>Sai lầm phổ biến cần tránh:</p>
+<ul>
+<li>cộng số bộ của A và B thành gấp đôi,</li>
+<li>tính số tờ A và B như hai lô độc lập.</li>
+</ul>
+<h3>6.5 Không hard-code một layout duy nhất</h3>
+<p>Cùng là tay 16 trang nhưng layout vật lý có thể khác nhau theo:</p>
+<ul>
+<li>máy in,</li>
+<li>kiểu gấp,</li>
+<li>kiểu trở,</li>
+<li>cách đặt nhíp,</li>
+<li>quy chuẩn xưởng,</li>
+<li>khổ giấy,</li>
+<li>profile folding.</li>
+</ul>
+<p>Do đó hệ thống phải dùng <strong>template profile</strong>, không hard-code.</p>
+<h3>6.6 Logic sinh tay: từ trong ra ngoài và từ ngoài vào trong</h3>
+<p>Engine phải hỗ trợ hai cách nhìn:</p>
+<ul>
+<li><strong>Từ trong ra ngoài</strong>: phù hợp khi đánh số tay theo lõi giữa rồi bung ra ngoài.</li>
+<li><strong>Từ ngoài vào trong</strong>: phù hợp khi ráp cuốn theo lớp ngoài cùng vào trong.</li>
+</ul>
+<p>Về logic, hai cách chỉ khác góc nhìn; về toán học phải cho cùng một publication outcome.</p>
+<hr />
+<h2>7. Công thức và thuật toán suy ra tay 16/8/4</h2>
+<h2>7.1 Chuẩn hóa số trang theo stock group</h2>
+<p>Cho mỗi nhóm stock:</p>
+<p>[<br />
+N = \text{số trang cần bình của nhóm stock}<br />
+]</p>
+<p>Sau padding:</p>
+<p>[<br />
+N' = \left\lceil \frac{N}{4} \right\rceil \times 4<br />
+]</p>
+<p>Nếu <code>allow_padding_blanks = false</code> và (N \mod 4 \neq 0) thì phải báo lỗi.</p>
+<hr />
+<h2>7.2 Quy tắc remainder mặc định</h2>
+<p>Ưu tiên tay 16. Với (N'):</p>
+<p>[<br />
+q = \left\lfloor \frac{N'}{16} \right\rfloor,\quad r = N' \mod 16<br />
+]</p>
+<p>Quy tắc mặc định:</p>
+<table>
+<thead>
+<tr>
+<th align="right">Remainder(r)</th>
+<th>Phân rã mặc định</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="right">0</td>
+<td>(q \times 16)</td>
+</tr>
+<tr>
+<td align="right">4</td>
+<td>(q \times 16 + 4)</td>
+</tr>
+<tr>
+<td align="right">8</td>
+<td>(q \times 16 + 8)</td>
+</tr>
+<tr>
+<td align="right">12</td>
+<td>(q \times 16 + 8 + 4)</td>
+</tr>
+</tbody>
+</table>
+<h3>7.3 Vì sao 8 + 4 thường tốt hơn 4 + 4 + 4</h3>
+<p>So sánh cho remainder = 12:</p>
+<ul>
+<li>
+<p><strong>8 + 4</strong>:</p>
+<ul>
+<li>ít bài in hơn,</li>
+<li>ít plate side hơn,</li>
+<li>ít công lồng/bóc tép hơn,</li>
+<li>dễ cân bài hơn.</li>
+</ul>
+</li>
+<li>
+<p><strong>4 + 4 + 4</strong>:</p>
+<ul>
+<li>tăng số form,</li>
+<li>tăng thao tác,</li>
+<li>tăng rủi ro lệch sản lượng giữa các bài nhỏ.</li>
+</ul>
+</li>
+</ul>
+<p>Vì vậy mặc định nên chọn:</p>
+<p>[<br />
+12 \Rightarrow 8 + 4<br />
+]</p>
+<hr />
+<h2>7.4 Công thức phân rã mặc định</h2>
+<p>Một cách biểu diễn:</p>
+<ul>
+<li>nếu (N' = 16q + r),</li>
+<li>với (r \in {0,4,8,12}),</li>
+</ul>
+<p>thì:</p>
+<p>[<br />
+count_{16} = q<br />
+]</p>
+<p>[<br />
+count_{8} =<br />
+\begin{cases}<br />
+1 &amp; \text{nếu } r \in {8,12} \<br />
+0 &amp; \text{ngược lại}<br />
+\end{cases}<br />
+]</p>
+<p>[<br />
+count_{4} =<br />
+\begin{cases}<br />
+1 &amp; \text{nếu } r \in {4,12} \<br />
+0 &amp; \text{ngược lại}<br />
+\end{cases}<br />
+]</p>
+<hr />
+<h2>7.5 Chiến lược tối ưu có thể cấu hình</h2>
+<p>Không phải mọi xưởng đều tối ưu theo cùng mục tiêu. Hệ thống cần hỗ trợ cost function cấu hình:</p>
+<ul>
+<li>ưu tiên <strong>ít bài in</strong>,</li>
+<li>ưu tiên <strong>ít đổi kẽm</strong>,</li>
+<li>ưu tiên <strong>ít công bóc tép</strong>,</li>
+<li>ưu tiên <strong>cân bài tốt</strong>,</li>
+<li>ưu tiên <strong>đồng đều sản xuất giữa các form</strong>,</li>
+<li>ưu tiên <strong>phù hợp giới hạn máy</strong>.</li>
+</ul>
+<p>Một cost function tham khảo:</p>
+<p>[<br />
+Cost = w_1 \cdot forms + w_2 \cdot plate_sides + w_3 \cdot section_splits + w_4 \cdot imbalance + w_5 \cdot manual_operations<br />
+]</p>
+<p>Trong đó:</p>
+<ul>
+<li><code>forms</code>: số bài in</li>
+<li><code>plate_sides</code>: tổng số mặt kẽm</li>
+<li><code>section_splits</code>: số lần bóc tép</li>
+<li><code>imbalance</code>: độ lệch sản lượng hữu dụng giữa các bài</li>
+<li><code>manual_operations</code>: công thao tác sản xuất</li>
+</ul>
+<hr />
+<h2>7.6 Bìa cùng stock và bìa khác stock</h2>
+<h3>a) Bìa cùng stock</h3>
+<p>Có thể:</p>
+<ul>
+<li>gộp vào ruột như một outer signature,</li>
+<li>hoặc tách riêng theo chính sách xưởng.</li>
+</ul>
+<p>Cần có cấu hình:</p>
+<ul>
+<li><code>cover_mode = same_stock</code></li>
+<li><code>cover_merge_policy = merge_into_body | separate_cover_form</code></li>
+</ul>
+<h3>b) Bìa khác stock</h3>
+<p>Luôn:</p>
+<ul>
+<li>tách riêng nhóm stock,</li>
+<li>tính sản lượng riêng,</li>
+<li>tính hao riêng,</li>
+<li>có thể dùng template tự trở riêng.</li>
+</ul>
+<p>[<br />
+stock_groups = {cover, text}<br />
+]</p>
+<hr />
+<h2>7.7 Bóc tép / tách tép</h2>
+<p>Tool phải hỗ trợ <strong>section splitting</strong> trong các trường hợp:</p>
+<ul>
+<li>ruột quá dày hoặc khác định lượng từng đoạn,</li>
+<li>có quảng cáo hoặc insert chen giữa,</li>
+<li>một số đoạn in stock khác,</li>
+<li>giới hạn máy/gấp/khổ,</li>
+<li>yêu cầu sản xuất muốn chia ruột thành nhiều tép.</li>
+</ul>
+<p>Ví dụ:</p>
+<ul>
+<li>ruột 96 trang có thể tách thành:
+<ul>
+<li>64 + 32</li>
+<li>hoặc 48 + 48</li>
+<li>hoặc 16 + 16 + 16 + 16 + 16 + 16</li>
+</ul>
+</li>
+</ul>
+<p>tùy cấu hình và template.</p>
+<hr />
+<h2>8. Template logic cho tay 16/8/4</h2>
+<h2>8.1 Nguyên tắc template profile</h2>
+<p>Hệ thống phải hỗ trợ <code>template_profile</code> theo từng tổ hợp:</p>
+<ul>
+<li>size tay: 16/8/4,</li>
+<li>kiểu máy,</li>
+<li>kiểu trở,</li>
+<li>hướng nhíp,</li>
+<li>khổ in,</li>
+<li>kiểu gấp.</li>
+</ul>
+<p>Không được xem OCR từ ảnh là định nghĩa duy nhất của layout.</p>
+<hr />
+<h2>8.2 Ví dụ template 16 trang theo case thực tế</h2>
+<p>Chuẩn hóa tay 16 trang của cặp <strong>1A/1B</strong> về local pages <strong>1..16</strong>.</p>
+<p>Giả sử dải absolute là <strong>32..47</strong>, ta đặt:</p>
+<p>[<br />
+local = absolute - 31<br />
+]</p>
+<p>Khi đó:</p>
+<h3>16p mặt A</h3>
+<ul>
+<li>trái: <code>[15, 2, 14, 3]</code></li>
+<li>phải: <code>[11, 6, 10, 7]</code></li>
+</ul>
+<h3>16p mặt B</h3>
+<ul>
+<li>trái: <code>[5, 12, 8, 9]</code></li>
+<li>phải: <code>[1, 16, 4, 13]</code></li>
+</ul>
+<h3>Bảng template 16p ví dụ</h3>
+<table>
+<thead>
+<tr>
+<th>Mặt</th>
+<th>Khối trái</th>
+<th>Khối phải</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A</td>
+<td>[15, 2, 14, 3]</td>
+<td>[11, 6, 10, 7]</td>
+</tr>
+<tr>
+<td>B</td>
+<td>[5, 12, 8, 9]</td>
+<td>[1, 16, 4, 13]</td>
+</tr>
+</tbody>
+</table>
+<h3>Ý nghĩa</h3>
+<p>Template trên được suy ra từ cặp 1A/1B sau khi chuẩn hóa về local 1..16. Đây là <strong>một profile thực chiến</strong> dùng tốt làm seed template.</p>
+<hr />
+<h2>8.3 8p và 4p cũng phải template hóa</h2>
+<p>Với tay 8 trang và 4 trang:</p>
+<ul>
+<li>phải có <code>template_profile</code> tương ứng,</li>
+<li>không được hard-code trực tiếp theo OCR từ ảnh nếu chưa xác nhận chắc chắn.</li>
+</ul>
+<p>Lý do:</p>
+<ul>
+<li>OCR có thể sai,</li>
+<li>ảnh đang xoay,</li>
+<li>cách hiển thị không nhất thiết là đúng orientation sản xuất,</li>
+<li>cùng loại tay nhưng template có thể thay đổi theo nhà in.</li>
+</ul>
+<hr />
+<h2>8.4 Định dạng dữ liệu template profile khuyến nghị</h2>
+<pre><code class="language-json">{
+  &quot;template_profile_id&quot;: &quot;offset_ss_16p_bottomgrip_wat_v1&quot;,
+  &quot;signature_size&quot;: 16,
+  &quot;sides&quot;: {
+    &quot;A&quot;: {
+      &quot;left_block&quot;: [15, 2, 14, 3],
+      &quot;right_block&quot;: [11, 6, 10, 7]
+    },
+    &quot;B&quot;: {
+      &quot;left_block&quot;: [5, 12, 8, 9],
+      &quot;right_block&quot;: [1, 16, 4, 13]
+    }
+  },
+  &quot;gripper_edge&quot;: &quot;bottom&quot;,
+  &quot;turn_policy&quot;: &quot;work_and_turn&quot;,
+  &quot;coordinate_system&quot;: &quot;operator_visual&quot;
+}
+</code></pre>
+<hr />
+<h2>9. Quy tắc nhíp, trở, tự trở / work-and-turn</h2>
+<h2>9.1 Nhíp là thuộc lớp vận hành/máy</h2>
+<p>Câu “<strong>nhíp ở mép dưới giấy theo cách nhìn trực quan</strong>” không phải logic xuất bản, mà là logic thuộc <strong>machine/physical layer</strong>.</p>
+<p>Do đó hệ thống phải biểu diễn được:</p>
+<pre><code class="language-text">gripper_edge = top | bottom | left | right
+</code></pre>
+<p>theo <strong>hệ tọa độ trực quan của operator</strong>.</p>
+<hr />
+<h2>9.2 Tự trở / Work-and-turn</h2>
+<p><strong>Work-and-turn</strong> là trường hợp:</p>
+<ul>
+<li>dùng cùng một layout kẽm,</li>
+<li>in xong một mặt,</li>
+<li>trở tờ theo trục quy định,</li>
+<li>in mặt còn lại.</li>
+</ul>
+<p>Cần biểu diễn rõ:</p>
+<ul>
+<li>trở đầu hay trở cạnh,</li>
+<li>có xoay hay không,</li>
+<li>có mirror hay không,</li>
+<li>mặt trước/sau dùng cùng plate logic hay plate logic khác.</li>
+</ul>
+<hr />
+<h2>9.3 Các tham số kỹ thuật cần hỗ trợ</h2>
+<table>
+<thead>
+<tr>
+<th>Tham số</th>
+<th>Kiểu</th>
+<th>Ý nghĩa</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gripper_edge</code></td>
+<td>enum</td>
+<td>top/bottom/left/right theo góc nhìn operator</td>
+</tr>
+<tr>
+<td><code>turn_axis</code></td>
+<td>enum</td>
+<td>horizontal / vertical</td>
+</tr>
+<tr>
+<td><code>flip_mode</code></td>
+<td>enum</td>
+<td>none / turn / tumble / work_and_turn / work_and_tumble</td>
+</tr>
+<tr>
+<td><code>rotate_front</code></td>
+<td>int</td>
+<td>góc xoay mặt trước</td>
+</tr>
+<tr>
+<td><code>rotate_back</code></td>
+<td>int</td>
+<td>góc xoay mặt sau</td>
+</tr>
+<tr>
+<td><code>mirror_front</code></td>
+<td>bool</td>
+<td>mirror mặt trước</td>
+</tr>
+<tr>
+<td><code>mirror_back</code></td>
+<td>bool</td>
+<td>mirror mặt sau</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>9.4 Tách biệt logical page order và physical sheet view</h2>
+<p>Hệ thống phải duy trì ít nhất 2 representation:</p>
+<ol>
+<li>
+<p><strong>Logical page order</strong></p>
+<ul>
+<li>thứ tự trang của thành phẩm,</li>
+<li>dùng cho validation và xuất bản.</li>
+</ul>
+</li>
+<li>
+<p><strong>Physical sheet view</strong></p>
+<ul>
+<li>vị trí trên tờ in,</li>
+<li>orientation, gripper, turn,</li>
+<li>dùng cho xuất layout/mô phỏng.</li>
+</ul>
+</li>
+</ol>
+<blockquote>
+<p>Thứ tự đọc trên màn hình không phải thứ tự đọc thành phẩm.</p>
+</blockquote>
+<hr />
+<h2>10. Tính toán số lượng cuốn, số bộ/tờ, số tờ, số lượt chạy, cân bài</h2>
+<h2>10.1 Các biến cơ bản</h2>
+<ul>
+<li><code>books</code>: số cuốn yêu cầu</li>
+<li><code>sets_per_sheet</code>: số bộ/tờ của từng bài</li>
+<li><code>spoilage_rate</code>: hao hụt theo %</li>
+<li><code>spoilage_sheets</code>: hao hụt tính theo số tờ</li>
+<li><code>overs</code>: số bộ bù thêm</li>
+<li><code>required_sets</code>: số bộ cần sản xuất</li>
+<li><code>sheets_required</code>: số tờ cần in</li>
+<li><code>passes_per_sheet</code>: số lượt in trên mỗi tờ</li>
+<li><code>impressions</code>: tổng lượt in</li>
+</ul>
+<hr />
+<h2>10.2 Công thức chuẩn</h2>
+<h3>Số bộ yêu cầu</h3>
+<p>[<br />
+required_sets = books + overs<br />
+]</p>
+<p>hoặc nếu hao tính theo tỷ lệ:</p>
+<p>[<br />
+required_sets = \left\lceil books \times (1 + spoilage_rate) \right\rceil<br />
+]</p>
+<h3>Số tờ cần in cho một bài</h3>
+<p>[<br />
+sheets_required = \left\lceil \frac{required_sets}{sets_per_sheet} \right\rceil<br />
+]</p>
+<h3>Tổng lượt in</h3>
+<p>[<br />
+impressions = sheets_required \times passes_per_sheet<br />
+]</p>
+<hr />
+<h2>10.3 Lưu ý về A/B</h2>
+<p>A/B là hai mặt của <strong>cùng số tờ</strong>.</p>
+<p>Nếu một tay 16 trang có:</p>
+<ul>
+<li>1 bộ/tờ,</li>
+<li>cần 1000 bộ,</li>
+</ul>
+<p>thì:</p>
+<ul>
+<li>cần 1000 tờ vật lý,</li>
+<li>không phải 2000 tờ.</li>
+</ul>
+<p>Phần khác biệt là <strong>lượt in</strong>:</p>
+<ul>
+<li>máy 1 mặt + trở: thường 2 pass,</li>
+<li>perfecting press: có thể 1 pass cho 2 mặt.</li>
+</ul>
+<hr />
+<h2>10.4 Cách hiểu “lượt chạy”</h2>
+<p>Tùy cấu hình máy:</p>
+<h3>Máy in 1 mặt</h3>
+<ul>
+<li>in mặt A,</li>
+<li>trở giấy,</li>
+<li>in mặt B.</li>
+</ul>
+<p>[<br />
+passes_per_sheet = 2<br />
+]</p>
+<h3>Perfecting press</h3>
+<ul>
+<li>in đồng thời 2 mặt.</li>
+</ul>
+<p>[<br />
+passes_per_sheet = 1<br />
+]</p>
+<h3>Work-and-turn</h3>
+<ul>
+<li>vẫn có thể là 2 pass trên cùng lô tờ,</li>
+<li>nhưng dùng logic plate/template khác.</li>
+</ul>
+<hr />
+<h2>10.5 Ví dụ 1000 cuốn cho case thực tế</h2>
+<p>Bỏ qua hao hụt:</p>
+<h3>Ruột tay 16</h3>
+<ul>
+<li>4 tay 16 trang</li>
+<li>mỗi tay: <code>sets_per_sheet = 1</code></li>
+</ul>
+<p>[<br />
+sheets_required = \lceil 1000 / 1 \rceil = 1000<br />
+]</p>
+<p>=&gt; <strong>1000 tờ/tay</strong>, tức:</p>
+<ul>
+<li>tay 16 #1: 1000 tờ</li>
+<li>tay 16 #2: 1000 tờ</li>
+<li>tay 16 #3: 1000 tờ</li>
+<li>tay 16 #4: 1000 tờ</li>
+</ul>
+<h3>Ruột tay 8</h3>
+<ul>
+<li>1 bộ/tờ</li>
+</ul>
+<p>[<br />
+sheets_required = \lceil 1000 / 1 \rceil = 1000<br />
+]</p>
+<p>=&gt; <strong>1000 tờ</strong></p>
+<h3>Ruột tay 4</h3>
+<ul>
+<li>2 bộ/tờ</li>
+</ul>
+<p>[<br />
+sheets_required = \lceil 1000 / 2 \rceil = 500<br />
+]</p>
+<p>=&gt; <strong>500 tờ</strong></p>
+<h3>Bìa</h3>
+<ul>
+<li>2 bìa/tờ</li>
+</ul>
+<p>[<br />
+sheets_required = \lceil 1000 / 2 \rceil = 500<br />
+]</p>
+<p>=&gt; <strong>500 tờ bìa</strong></p>
+<hr />
+<h2>10.6 Cân bài</h2>
+<p>Số cuốn giao được thực tế bị chi phối bởi bài có sản lượng hữu dụng thấp nhất.</p>
+<p>Nếu:</p>
+<ul>
+<li>tay 16 #1 ra được 1005 bộ,</li>
+<li>tay 16 #2 ra được 1002 bộ,</li>
+<li>tay 8 ra được 998 bộ,</li>
+<li>bìa ra được 1008 bộ,</li>
+</ul>
+<p>thì số cuốn giao hữu dụng tối đa chỉ là:</p>
+<p>[<br />
+min(1005, 1002, 998, 1008) = 998<br />
+]</p>
+<p>Do đó:</p>
+<ul>
+<li>các bài yield thấp phải bù hao riêng,</li>
+<li>cover và ruột có thể cần spoilage policy khác nhau.</li>
+</ul>
+<hr />
+<h2>11. Đặc tả dữ liệu đầu vào / đầu ra cho phần mềm</h2>
+<h2>11.1 Input JSON tối thiểu</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Kiểu</th>
+<th align="right">Bắt buộc</th>
+<th>Mô tả</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>total_pages_physical</code></td>
+<td>integer</td>
+<td align="right">Có</td>
+<td>Tổng số trang vật lý thành phẩm</td>
+</tr>
+<tr>
+<td><code>numbering_mode</code></td>
+<td>enum</td>
+<td align="right">Có</td>
+<td><code>includes_cover</code> / <code>interior_only</code></td>
+</tr>
+<tr>
+<td><code>cover_mode</code></td>
+<td>enum</td>
+<td align="right">Có</td>
+<td><code>same_stock</code> / <code>separate_stock</code> / <code>no_cover</code></td>
+</tr>
+<tr>
+<td><code>cover_pages</code></td>
+<td>integer</td>
+<td align="right">Có</td>
+<td>Mặc định 4</td>
+</tr>
+<tr>
+<td><code>quantity_books</code></td>
+<td>integer</td>
+<td align="right">Có</td>
+<td>Số cuốn yêu cầu</td>
+</tr>
+<tr>
+<td><code>spoilage_policy</code></td>
+<td>object</td>
+<td align="right">Có</td>
+<td>Chính sách hao</td>
+</tr>
+<tr>
+<td><code>preferred_signature_sizes</code></td>
+<td>array[int]</td>
+<td align="right">Có</td>
+<td>Mặc định <code>[16,8,4]</code></td>
+</tr>
+<tr>
+<td><code>template_profile_id</code></td>
+<td>string</td>
+<td align="right">Có</td>
+<td>ID template profile mặc định</td>
+</tr>
+<tr>
+<td><code>stock_groups</code></td>
+<td>array</td>
+<td align="right">Có</td>
+<td>Danh sách nhóm stock</td>
+</tr>
+<tr>
+<td><code>inserts</code></td>
+<td>array</td>
+<td align="right">Không</td>
+<td>Insert/ad section</td>
+</tr>
+<tr>
+<td><code>gripper_edge</code></td>
+<td>enum</td>
+<td align="right">Có</td>
+<td><code>top/bottom/left/right</code></td>
+</tr>
+<tr>
+<td><code>turn_policy</code></td>
+<td>enum</td>
+<td align="right">Có</td>
+<td><code>sheetwise/work_and_turn/work_and_tumble/perfecting</code></td>
+</tr>
+<tr>
+<td><code>press_mode</code></td>
+<td>enum</td>
+<td align="right">Có</td>
+<td><code>single_sided/perfecting</code></td>
+</tr>
+<tr>
+<td><code>allow_padding_blanks</code></td>
+<td>bool</td>
+<td align="right">Có</td>
+<td>Cho phép thêm trang trắng</td>
+</tr>
+<tr>
+<td><code>production_constraints</code></td>
+<td>object</td>
+<td align="right">Không</td>
+<td>Ràng buộc sản xuất</td>
+</tr>
+<tr>
+<td><code>cover_merge_policy</code></td>
+<td>enum</td>
+<td align="right">Không</td>
+<td>Khi cover same stock</td>
+</tr>
+<tr>
+<td><code>split_teps</code></td>
+<td>bool</td>
+<td align="right">Không</td>
+<td>Cho phép bóc tép</td>
+</tr>
+<tr>
+<td><code>max_forms</code></td>
+<td>integer</td>
+<td align="right">Không</td>
+<td>Giới hạn số bài in</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>11.2 Output JSON tối thiểu</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Kiểu</th>
+<th>Mô tả</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>normalized_publication</code></td>
+<td>object</td>
+<td>Publication sau chuẩn hóa</td>
+</tr>
+<tr>
+<td><code>stock_partitions</code></td>
+<td>array</td>
+<td>Danh sách nhóm stock sau tách</td>
+</tr>
+<tr>
+<td><code>signatures</code></td>
+<td>array</td>
+<td>Các tay/tép được sinh ra</td>
+</tr>
+<tr>
+<td><code>forms</code></td>
+<td>array</td>
+<td>Danh mục bài in</td>
+</tr>
+<tr>
+<td><code>side_layouts</code></td>
+<td>array</td>
+<td>Layout từng mặt A/B hoặc tự trở</td>
+</tr>
+<tr>
+<td><code>local_to_absolute_page_map</code></td>
+<td>object</td>
+<td>Ánh xạ local page -&gt; absolute page</td>
+</tr>
+<tr>
+<td><code>sheets_required_per_form</code></td>
+<td>array</td>
+<td>Số tờ cần in cho từng bài</td>
+</tr>
+<tr>
+<td><code>estimated_impressions</code></td>
+<td>array</td>
+<td>Ước tính lượt in</td>
+</tr>
+<tr>
+<td><code>warnings</code></td>
+<td>array</td>
+<td>Cảnh báo</td>
+</tr>
+<tr>
+<td><code>validation_status</code></td>
+<td>object</td>
+<td>Kết quả kiểm tra</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>11.3 Ví dụ JSON input</h2>
+<pre><code class="language-json">{
+  &quot;total_pages_physical&quot;: 80,
+  &quot;numbering_mode&quot;: &quot;includes_cover&quot;,
+  &quot;cover_mode&quot;: &quot;separate_stock&quot;,
+  &quot;cover_pages&quot;: 4,
+  &quot;quantity_books&quot;: 1000,
+  &quot;spoilage_policy&quot;: {
+    &quot;method&quot;: &quot;per_stock_group&quot;,
+    &quot;default_rate&quot;: 0.03,
+    &quot;cover_rate&quot;: 0.05,
+    &quot;text_rate&quot;: 0.03
+  },
+  &quot;preferred_signature_sizes&quot;: [16, 8, 4],
+  &quot;template_profile_id&quot;: &quot;offset_ss_default_v1&quot;,
+  &quot;stock_groups&quot;: [
+    {
+      &quot;id&quot;: &quot;cover&quot;,
+      &quot;type&quot;: &quot;cover&quot;,
+      &quot;stock_code&quot;: &quot;C300&quot;,
+      &quot;pages&quot;: 4
+    },
+    {
+      &quot;id&quot;: &quot;text&quot;,
+      &quot;type&quot;: &quot;text&quot;,
+      &quot;stock_code&quot;: &quot;M150&quot;,
+      &quot;pages&quot;: 76
+    }
+  ],
+  &quot;inserts&quot;: [],
+  &quot;gripper_edge&quot;: &quot;bottom&quot;,
+  &quot;turn_policy&quot;: &quot;work_and_turn&quot;,
+  &quot;press_mode&quot;: &quot;single_sided&quot;,
+  &quot;allow_padding_blanks&quot;: true,
+  &quot;production_constraints&quot;: {
+    &quot;max_forms&quot;: 10,
+    &quot;prefer_fewer_forms&quot;: true,
+    &quot;split_teps&quot;: false
+  }
+}
+</code></pre>
+<hr />
+<h2>11.4 Ví dụ JSON output rút gọn</h2>
+<pre><code class="language-json">{
+  &quot;normalized_publication&quot;: {
+    &quot;total_pages_physical&quot;: 80,
+    &quot;cover_mode&quot;: &quot;separate_stock&quot;,
+    &quot;cover_pages&quot;: 4,
+    &quot;text_pages&quot;: 76,
+    &quot;padding_blanks&quot;: 0
+  },
+  &quot;stock_partitions&quot;: [
+    {
+      &quot;id&quot;: &quot;cover&quot;,
+      &quot;pages&quot;: 4,
+      &quot;decomposition&quot;: [4]
+    },
+    {
+      &quot;id&quot;: &quot;text&quot;,
+      &quot;pages&quot;: 76,
+      &quot;decomposition&quot;: [16, 16, 16, 16, 8, 4]
+    }
+  ],
+  &quot;signatures&quot;: [
+    {&quot;id&quot;: &quot;sig_text_01&quot;, &quot;size&quot;: 16, &quot;order&quot;: &quot;inner&quot;, &quot;page_range_logic&quot;: &quot;32-47&quot;},
+    {&quot;id&quot;: &quot;sig_text_02&quot;, &quot;size&quot;: 16, &quot;order&quot;: &quot;mid&quot;, &quot;page_range_logic&quot;: &quot;24-31 + 48-55&quot;},
+    {&quot;id&quot;: &quot;sig_text_03&quot;, &quot;size&quot;: 16, &quot;order&quot;: &quot;mid&quot;, &quot;page_range_logic&quot;: &quot;16-23 + 56-63&quot;},
+    {&quot;id&quot;: &quot;sig_text_04&quot;, &quot;size&quot;: 16, &quot;order&quot;: &quot;outer&quot;, &quot;page_range_logic&quot;: &quot;8-15 + 64-71&quot;},
+    {&quot;id&quot;: &quot;sig_text_05&quot;, &quot;size&quot;: 8, &quot;order&quot;: &quot;outer_extra&quot;},
+    {&quot;id&quot;: &quot;sig_text_06&quot;, &quot;size&quot;: 4, &quot;order&quot;: &quot;outer_extra&quot;},
+    {&quot;id&quot;: &quot;sig_cover_01&quot;, &quot;size&quot;: 4, &quot;mode&quot;: &quot;work_and_turn&quot;}
+  ],
+  &quot;forms&quot;: [
+    {&quot;id&quot;: &quot;1A/1B&quot;, &quot;sets_per_sheet&quot;: 1, &quot;stock_group&quot;: &quot;text&quot;},
+    {&quot;id&quot;: &quot;2A/2B&quot;, &quot;sets_per_sheet&quot;: 1, &quot;stock_group&quot;: &quot;text&quot;},
+    {&quot;id&quot;: &quot;3A/3B&quot;, &quot;sets_per_sheet&quot;: 1, &quot;stock_group&quot;: &quot;text&quot;},
+    {&quot;id&quot;: &quot;4A/4B&quot;, &quot;sets_per_sheet&quot;: 1, &quot;stock_group&quot;: &quot;text&quot;},
+    {&quot;id&quot;: &quot;8p_self_turn&quot;, &quot;sets_per_sheet&quot;: 1, &quot;stock_group&quot;: &quot;text&quot;},
+    {&quot;id&quot;: &quot;4p_self_turn&quot;, &quot;sets_per_sheet&quot;: 2, &quot;stock_group&quot;: &quot;text&quot;},
+    {&quot;id&quot;: &quot;cover_self_turn&quot;, &quot;sets_per_sheet&quot;: 2, &quot;stock_group&quot;: &quot;cover&quot;}
+  ],
+  &quot;sheets_required_per_form&quot;: [
+    {&quot;form_id&quot;: &quot;1A/1B&quot;, &quot;sheets&quot;: 1030},
+    {&quot;form_id&quot;: &quot;2A/2B&quot;, &quot;sheets&quot;: 1030},
+    {&quot;form_id&quot;: &quot;3A/3B&quot;, &quot;sheets&quot;: 1030},
+    {&quot;form_id&quot;: &quot;4A/4B&quot;, &quot;sheets&quot;: 1030},
+    {&quot;form_id&quot;: &quot;8p_self_turn&quot;, &quot;sheets&quot;: 1030},
+    {&quot;form_id&quot;: &quot;4p_self_turn&quot;, &quot;sheets&quot;: 515},
+    {&quot;form_id&quot;: &quot;cover_self_turn&quot;, &quot;sheets&quot;: 525}
+  ],
+  &quot;warnings&quot;: [],
+  &quot;validation_status&quot;: {
+    &quot;ok&quot;: true,
+    &quot;pair_sum_valid&quot;: true,
+    &quot;page_coverage_valid&quot;: true
+  }
+}
+</code></pre>
+<hr />
+<h2>12. Pseudo-code / luồng xử lý triển khai</h2>
+<pre><code class="language-text">function generateImpositionPlan(input):
+    # 1) validate input
+    validateRequiredFields(input)
+    validateEnums(input)
+    validatePositiveNumbers(input)
+    validateCoverPolicy(input)
+    validateStockGroups(input)
+
+    # 2) normalize page count and cover policy
+    publication = normalizePublication(input)
+    # publication:
+    # - total pages
+    # - cover pages
+    # - text pages
+    # - numbering mode
+    # - blanks if needed
+
+    if publication.total_pages_physical % 4 != 0:
+        if input.allow_padding_blanks:
+            publication = addPaddingBlanks(publication)
+        else:
+            return error(&quot;Total pages must be multiple of 4 or allow padding blanks&quot;)
+
+    # 3) partition by stock
+    stockPartitions = partitionByStock(publication, input.stock_groups, input.cover_mode, input.inserts)
+
+    # 4) decompose each partition into 16/8/4 with optimization rules
+    signatures = []
+    for partition in stockPartitions:
+        N = partition.pages_normalized
+        candidates = generateSignatureDecompositionCandidates(
+            N,
+            allowedSizes=input.preferred_signature_sizes,
+            constraints=input.production_constraints
+        )
+        bestPlan = selectBestCandidate(candidates, input.production_constraints, input.spoilage_policy)
+        partition.decomposition = bestPlan
+        signatures += instantiateSignatures(partition, bestPlan)
+
+    # 5) assign signatures from inner/outer order
+    signatures = assignReadingOrder(signatures, mode=&quot;saddle_stitch&quot;)
+    signatures = assignInnerOuterPosition(signatures)
+
+    # 6) apply template profile to create side layouts
+    forms = []
+    sideLayouts = []
+    localToAbsoluteMap = {}
+
+    for sig in signatures:
+        template = resolveTemplateProfile(sig.size, input.template_profile_id, input.gripper_edge, input.turn_policy)
+
+        localPages = buildLocalPages(sig.size)  # [1..16], [1..8], [1..4]
+        absPages = assignAbsolutePages(sig, publication)
+
+        localToAbsoluteMap[sig.id] = mapLocalToAbsolute(localPages, absPages)
+
+        layout = applyTemplate(template, localToAbsoluteMap[sig.id])
+        layout = applyPhysicalViewTransforms(
+            layout,
+            gripper_edge=input.gripper_edge,
+            turn_policy=input.turn_policy,
+            press_mode=input.press_mode
+        )
+
+        form = buildFormFromSignature(sig, template, layout)
+        forms.append(form)
+        sideLayouts.append(layout)
+
+    # 7) compute sets_per_sheet, sheets_required, impressions, plate sides
+    productionMetrics = []
+    for form in forms:
+        setsPerSheet = resolveSetsPerSheet(form, templateProfile=form.template_profile)
+        requiredSets = computeRequiredSets(
+            books=input.quantity_books,
+            spoilagePolicy=input.spoilage_policy,
+            stockGroup=form.stock_group
+        )
+        sheetsRequired = ceil(requiredSets / setsPerSheet)
+        passesPerSheet = resolvePassesPerSheet(input.press_mode, input.turn_policy, form)
+        impressions = sheetsRequired * passesPerSheet
+        plateSides = resolvePlateSides(form, input.turn_policy)
+
+        productionMetrics.append({
+            &quot;form_id&quot;: form.id,
+            &quot;sets_per_sheet&quot;: setsPerSheet,
+            &quot;required_sets&quot;: requiredSets,
+            &quot;sheets_required&quot;: sheetsRequired,
+            &quot;passes_per_sheet&quot;: passesPerSheet,
+            &quot;impressions&quot;: impressions,
+            &quot;plate_sides&quot;: plateSides
+        })
+
+    # 8) run validation rules
+    validation = {}
+    validation.totalPageCoverage = validatePageCoverage(publication, signatures)
+    validation.noDuplicatePages = validateNoDuplicates(signatures)
+    validation.pairSums = validatePairSums(signatures, sideLayouts)
+    validation.templateConsistency = validateTemplateConsistency(forms)
+    validation.stockAssignment = validateStockAssignment(forms, stockPartitions)
+    validation.sheetCountConsistency = validateSheetCounts(productionMetrics)
+
+    warnings = collectWarnings(publication, signatures, forms, productionMetrics, validation)
+
+    # 9) export result
+    return {
+        &quot;normalized_publication&quot;: publication,
+        &quot;stock_partitions&quot;: stockPartitions,
+        &quot;signatures&quot;: signatures,
+        &quot;forms&quot;: forms,
+        &quot;side_layouts&quot;: sideLayouts,
+        &quot;local_to_absolute_page_map&quot;: localToAbsoluteMap,
+        &quot;sheets_required_per_form&quot;: mapSheets(productionMetrics),
+        &quot;estimated_impressions&quot;: mapImpressions(productionMetrics),
+        &quot;warnings&quot;: warnings,
+        &quot;validation_status&quot;: summarizeValidation(validation)
+    }
+</code></pre>
+<hr />
+<h2>13. Bộ test case và tiêu chí kiểm thử</h2>
+<h3>13.1 Bảng test case</h3>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Input tóm tắt</th>
+<th>Expected</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TC01</td>
+<td>80 trang cả bìa,<code>cover_mode=separate_stock</code></td>
+<td>Bìa 4 riêng; ruột 76 = 16+16+16+16+8+4</td>
+</tr>
+<tr>
+<td>TC02</td>
+<td>80 trang cả bìa,<code>cover_mode=same_stock</code></td>
+<td>80 = 16+16+16+16+16; không tách bìa</td>
+</tr>
+<tr>
+<td>TC03</td>
+<td>68 trang cả bìa,<code>cover_mode=separate_stock</code></td>
+<td>Ruột 64 = 4x16; bìa 4 riêng</td>
+</tr>
+<tr>
+<td>TC04</td>
+<td>72 trang cả bìa,<code>cover_mode=separate_stock</code></td>
+<td>Ruột 68 = 16+16+16+16+4; bìa 4 riêng</td>
+</tr>
+<tr>
+<td>TC05</td>
+<td>84 trang cùng stock</td>
+<td>84 = 16+16+16+16+16+4</td>
+</tr>
+<tr>
+<td>TC06</td>
+<td>82 trang,<code>allow_padding_blanks=true</code></td>
+<td>Thêm 2 blank =&gt; 84; warning về padding</td>
+</tr>
+<tr>
+<td>TC07</td>
+<td>80 trang + 8 trang insert stock riêng</td>
+<td>Sinh thêm partition insert; không gộp nhầm vào ruột</td>
+</tr>
+<tr>
+<td>TC08</td>
+<td>96 trang,<code>split_teps=true</code></td>
+<td>Cho phép bóc tép theo policy, ví dụ 64+32 hoặc 48+48</td>
+</tr>
+<tr>
+<td>TC09</td>
+<td><code>gripper_edge=bottom</code>, <code>turn_policy=work_and_turn</code></td>
+<td>Layout physical view phản ánh nhíp đáy và tự trở đúng profile</td>
+</tr>
+<tr>
+<td>TC10</td>
+<td>Hao cover 5%, ruột 3%, 1000 cuốn</td>
+<td>Sheets cover và text khác nhau theo spoilage policy</td>
+</tr>
+<tr>
+<td>TC11</td>
+<td>12 trang, không bìa</td>
+<td>Phân rã mặc định = 8 + 4</td>
+</tr>
+<tr>
+<td>TC12</td>
+<td>20 trang, không bìa</td>
+<td>Phân rã = 16 + 4</td>
+</tr>
+</tbody>
+</table>
+<h3>13.2 Tiêu chí kiểm thử</h3>
+<p>Mỗi test case phải kiểm các tiêu chí sau:</p>
+<h4>a) Đúng tổng trang</h4>
+<ul>
+<li>Tổng trang sau normalize và padding đúng.</li>
+<li>Không thiếu, không trùng.</li>
+</ul>
+<h4>b) Đúng cặp bù</h4>
+<p>Trong từng tay:</p>
+<p>[<br />
+p_i + p_j = K<br />
+]</p>
+<p>phải đúng theo hằng số của tay.</p>
+<h4>c) Đúng mapping local/absolute</h4>
+<ul>
+<li>local page 1..16/8/4 phải map đúng sang absolute page.</li>
+<li>Không lệch chiều trong/ngoài.</li>
+</ul>
+<h4>d) Đúng số bộ/tờ</h4>
+<ul>
+<li>tay 16: đúng profile cấu hình</li>
+<li>tay 8: đúng profile cấu hình</li>
+<li>tay 4: đúng profile cấu hình</li>
+<li>bìa tự trở: đúng 2 bìa/tờ nếu profile định nghĩa như vậy</li>
+</ul>
+<h4>e) Đúng số tờ</h4>
+<p>[<br />
+sheets_required = \lceil required_sets / sets_per_sheet \rceil<br />
+]</p>
+<h4>f) Đúng warning</h4>
+<ul>
+<li>warning khi thêm blank,</li>
+<li>warning khi layout dựa trên fixture OCR,</li>
+<li>warning khi production constraints gây tách tép bất thường,</li>
+<li>warning khi cover/text có spoilage khác nhau.</li>
+</ul>
+<hr />
+<h2>14. Ngoại lệ và rủi ro triển khai</h2>
+<h3>14.1 Bìa khác stock</h3>
+<ul>
+<li>Bìa không được trộn vào logic ruột nếu <code>cover_mode=separate_stock</code>.</li>
+<li>Hao và số bộ/tờ có thể khác ruột.</li>
+</ul>
+<h3>14.2 Ruột dư trang 4/8/12</h3>
+<ul>
+<li>4 =&gt; tay 4</li>
+<li>8 =&gt; tay 8</li>
+<li>12 =&gt; mặc định 8 + 4</li>
+</ul>
+<h3>14.3 Số trang không chia hết cho 4</h3>
+<ul>
+<li>Nếu <code>allow_padding_blanks=true</code>: thêm blank</li>
+<li>Nếu false: báo lỗi</li>
+</ul>
+<h3>14.4 OCR/hình xoay ngược</h3>
+<ul>
+<li>Không dùng ảnh làm nguồn duy nhất để sản xuất</li>
+<li>Chỉ dùng làm fixture kiểm logic/template</li>
+<li>Khi sản xuất phải xác nhận bằng file bình gốc</li>
+</ul>
+<h3>14.5 Template khác nhau giữa nhà in/máy/folder</h3>
+<ul>
+<li>Cùng logic publication nhưng template vật lý khác</li>
+<li>Phải có profile library</li>
+</ul>
+<h3>14.6 Nhầm giữa side layout và finished reading order</h3>
+<ul>
+<li>Đây là lỗi phổ biến nhất</li>
+<li>Cần validation riêng cho page coverage và pair sum</li>
+</ul>
+<h3>14.7 Bóc tép vì dày giấy, insert hoặc giới hạn máy</h3>
+<ul>
+<li>Không thể giả định mọi job đều tối ưu theo một decomposition duy nhất</li>
+<li>Cần support rules-driven split</li>
+</ul>
+<h3>14.8 Creep / shingling / bù xén</h3>
+<ul>
+<li>Ngoài phạm vi v1</li>
+<li>Nhưng cần trong roadmap v2/v3</li>
+</ul>
+<hr />
+<h2>15. Glossary Việt–Anh</h2>
+<table>
+<thead>
+<tr>
+<th>Việt</th>
+<th>Anh</th>
+<th>Giải thích</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bình bài</td>
+<td>Imposition</td>
+<td>Sắp xếp trang lên tờ in để sau gấp/xén/đóng cho ra đúng thứ tự</td>
+</tr>
+<tr>
+<td>Ghim giữa</td>
+<td>Saddle stitch</td>
+<td>Đóng ghim ở sống giữa sau khi lồng tay</td>
+</tr>
+<tr>
+<td>Tay</td>
+<td>Signature</td>
+<td>Một nhóm trang in/gấp thành một đơn vị lồng</td>
+</tr>
+<tr>
+<td>Tép</td>
+<td>Section</td>
+<td>Nhóm nội dung/tay trong cấu trúc cuốn</td>
+</tr>
+<tr>
+<td>Bóc tép / tách tép</td>
+<td>Section splitting</td>
+<td>Chia nội dung thành nhiều tép vì stock, máy, insert hoặc sản xuất</td>
+</tr>
+<tr>
+<td>Tự trở</td>
+<td>Work-and-turn</td>
+<td>In một mặt rồi trở tờ để in mặt còn lại bằng cùng logic tờ</td>
+</tr>
+<tr>
+<td>Nhíp</td>
+<td>Gripper edge</td>
+<td>Mép giấy được máy kẹp kéo</td>
+</tr>
+<tr>
+<td>Trở đầu</td>
+<td>Turn</td>
+<td>Trở theo đầu tờ hoặc trục tương ứng trong quy ước máy</td>
+</tr>
+<tr>
+<td>Trở cạnh</td>
+<td>Flip / Tumble</td>
+<td>Trở theo cạnh tờ theo quy ước profile</td>
+</tr>
+<tr>
+<td>Ruột</td>
+<td>Text block</td>
+<td>Phần nội dung bên trong, không gồm bìa</td>
+</tr>
+<tr>
+<td>Bìa</td>
+<td>Cover</td>
+<td>Phần bìa của ấn phẩm</td>
+</tr>
+<tr>
+<td>Stock</td>
+<td>Stock / Paper stock</td>
+<td>Loại giấy/chất liệu in</td>
+</tr>
+<tr>
+<td>Kẽm</td>
+<td>Plate</td>
+<td>Bản kẽm/bản in</td>
+</tr>
+<tr>
+<td>Mặt A/B</td>
+<td>Side A / Side B</td>
+<td>Hai mặt của cùng một tờ/tay</td>
+</tr>
+<tr>
+<td>Bộ/tờ</td>
+<td>Sets per sheet</td>
+<td>Số bộ thành phẩm trên một tờ in</td>
+</tr>
+<tr>
+<td>Lượt in</td>
+<td>Pass</td>
+<td>Một lần tờ đi qua cụm in</td>
+</tr>
+<tr>
+<td>Số tờ</td>
+<td>Sheet count</td>
+<td>Số tờ vật lý cần dùng</td>
+</tr>
+<tr>
+<td>Trang trắng</td>
+<td>Padding blank</td>
+<td>Trang thêm vào để đủ bội số 4</td>
+</tr>
+<tr>
+<td>Dồn trang</td>
+<td>Page pairing</td>
+<td>Ghép các trang đối nhau trên cùng lá/tay</td>
+</tr>
+<tr>
+<td>Layout vật lý</td>
+<td>Physical layout</td>
+<td>Bố trí thực tế trên tờ in</td>
+</tr>
+<tr>
+<td>Thứ tự logic</td>
+<td>Logical page order</td>
+<td>Thứ tự trang của thành phẩm đọc được</td>
+</tr>
+<tr>
+<td>Tờ in</td>
+<td>Press sheet</td>
+<td>Tờ giấy in ở khổ máy</td>
+</tr>
+<tr>
+<td>Hao hụt</td>
+<td>Spoilage</td>
+<td>Phần hao do canh máy, hư, mất thành phẩm</td>
+</tr>
+<tr>
+<td>Cân bài</td>
+<td>Yield balancing</td>
+<td>Đảm bảo mọi bài có đủ sản lượng để lồng thành cuốn</td>
+</tr>
+<tr>
+<td>Perfecting press</td>
+<td>Perfecting press</td>
+<td>Máy in hai mặt một lượt</td>
+</tr>
+<tr>
+<td>Template profile</td>
+<td>Template profile</td>
+<td>Hồ sơ định nghĩa layout vật lý theo máy/gấp/trở</td>
+</tr>
+<tr>
+<td>Pair sum</td>
+<td>Pair sum</td>
+<td>Tổng hằng số của cặp đối trang trong một tay</td>
+</tr>
+<tr>
+<td>Local page</td>
+<td>Local page</td>
+<td>Số trang cục bộ trong một tay, ví dụ 1..16</td>
+</tr>
+<tr>
+<td>Absolute page</td>
+<td>Absolute page</td>
+<td>Số trang tuyệt đối trong cả publication</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>16. Kết luận và checklist triển khai</h2>
+<h3>16.1 Kết luận</h3>
+<p>Thiết kế đúng cho tool bình catalo ghim giữa phải tách thành 3 tầng độc lập:</p>
+<ol>
+<li><strong>Engine publication logic</strong></li>
+<li><strong>Engine signature decomposition</strong></li>
+<li><strong>Physical imposition template engine</strong></li>
+</ol>
+<p>Kèm theo đó là một <strong>production calculator</strong> để tính:</p>
+<ul>
+<li>số bộ/tờ,</li>
+<li>số tờ,</li>
+<li>số lượt in,</li>
+<li>hao,</li>
+<li>cân bài.</li>
+</ul>
+<p>Đây là kiến trúc đủ linh hoạt để:</p>
+<ul>
+<li>xử lý bìa cùng/khác stock,</li>
+<li>xử lý tay 16/8/4,</li>
+<li>xử lý bóc tép,</li>
+<li>xử lý work-and-turn,</li>
+<li>thích ứng với template khác nhau giữa các xưởng.</li>
+</ul>
+<hr />
+<h3>16.2 Checklist triển khai</h3>
+<h4>PM</h4>
+<ul>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Chốt phạm vi v1: chỉ saddle stitch, chưa làm creep/shingling</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Chốt schema input/output JSON</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Chốt chính sách cover same_stock vs separate_stock</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Chốt danh sách template profile khởi tạo</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Chốt quy tắc spoilage policy theo stock group</li>
+</ul>
+<h4>Dev Backend / Core Algorithm</h4>
+<ul>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement <code>normalizePublication()</code></li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement <code>partitionByStock()</code></li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement <code>decomposeSignatures()</code> cho 16/8/4</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement cost-based optimizer cho decomposition</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement <code>assignInnerOuterPosition()</code></li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement <code>mapLocalToAbsolute()</code></li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement <code>applyTemplateProfile()</code></li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement production metrics calculator</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Implement validation rules: coverage, duplication, pair sum, stock consistency</li>
+</ul>
+<h4>Dev Template / Layout</h4>
+<ul>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Xây dựng schema template profile</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Seed template 16p từ case thực tế</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Hỗ trợ profile cho 8p và 4p</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Hỗ trợ <code>gripper_edge</code></li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Hỗ trợ <code>turn_policy</code></li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Hỗ trợ <code>physical sheet view</code> tách biệt <code>logical page order</code></li>
+</ul>
+<h4>QA</h4>
+<ul>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Dựng fixture từ case 1A-4B</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Kiểm TC01–TC12</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Kiểm warning khi padding blank</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Kiểm warning khi dùng fixture OCR</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Kiểm đúng sets/tờ</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Kiểm đúng sheet count</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Kiểm đúng mapping local/absolute</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Kiểm đúng cặp bù K của từng tay</li>
+</ul>
+<h4>Production Validation</h4>
+<ul>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Đối chiếu 1 job thực tế 80 trang tách bìa</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> So với file bình gốc của xưởng trước khi sản xuất</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Xác nhận template 8p và 4p bằng file bình gốc</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Xác nhận quy ước nhíp/trở theo operator visual coordinate</li>
+<li class="vditor-task"><input disabled="" type="checkbox" /> Xác nhận policy số lượt in theo loại máy</li>
+</ul>
+<hr />
+<h2>Phụ lục A — Tóm tắt case thực tế theo ngôn ngữ triển khai</h2>
+<ul>
+<li>Publication: 80 pages physical</li>
+<li>Cover: 4 pages, separate stock</li>
+<li>Text: 76 pages</li>
+<li>Text decomposition: 16 + 16 + 16 + 16 + 8 + 4</li>
+<li>Cover form: self-turn, 2 covers/sheet</li>
+<li>8p form: self-turn, 1 set/sheet</li>
+<li>4p form: self-turn, 2 sets/sheet</li>
+<li>Gripper edge: bottom (operator visual)</li>
+<li>Press schedule: forms may run on different passes/batches</li>
+<li>Example quantity: 1000 books</li>
+</ul>
+<hr />
+<h2>Phụ lục B — Quy tắc triển khai ngắn gọn cho AI agent</h2>
+<ol>
+<li>Luôn chuẩn hóa publication trước.</li>
+<li>Tách stock trước khi phân rã tay.</li>
+<li>Mặc định ưu tiên 16, dư 12 thì dùng 8+4.</li>
+<li>A/B luôn là hai mặt của cùng tay.</li>
+<li>Không dùng trực tiếp thứ tự nhìn trên màn hình làm thứ tự thành phẩm.</li>
+<li>Template vật lý phải lấy từ profile.</li>
+<li>Tính số tờ theo <code>sets_per_sheet</code>, không theo số mặt A/B.</li>
+<li>Cân bài theo yield thấp nhất.</li>
+<li>Dữ liệu ảnh chỉ là fixture; khi sản xuất cần xác nhận bằng file bình gốc.</li>
+<li>Mọi output phải xuất được cả logical map lẫn physical layout.</li>
+</ol>
+
+      <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4edd5f8ec12a48cfa682ab8261b80a79","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+    </html>

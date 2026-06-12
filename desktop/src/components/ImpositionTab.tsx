@@ -1,0 +1,1829 @@
+import { useCallback, useMemo, useEffect, useRef, useState, useContext } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory } from '../lib/toolRegistry';
+
+import PDFUploader from './PDFUploader';
+import AcrobatViewer from './AcrobatViewer';
+import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
+import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
+import { Button } from './Button';
+import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
+import ImposerDashboard from './imposition-tools/ImposerDashboard';
+import { PREDEFINED_SIZES, type BookletSettings, type NupSettings } from './imposition-tools/types';
+import { ImposerSettingsContext, createImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
+import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
+import { applyRule, executeShuffle, getPresetById, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
+import { resizePages } from '../lib/preprocessEngine/PageResizer';
+import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
+import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
+import { getApiUrl, uploadPDF, startVdpJobBackend, pollVdpJob, authenticatedFetch } from '../lib/api';
+import { isOutputFile } from '../lib/constants';
+import { getFileArrayBuffer, detectColorSpace } from '../lib/utils';
+import OutputPreviewTab, { type PlateOverlay } from './OutputPreviewTab';
+import DataMergeTool from './preprocess-tools/DataMergeTool';
+import NumberingTool from './preprocess-tools/NumberingTool';
+import StickTextNumberTool from './preprocess-tools/StickTextNumberTool';
+import SaveModal from './workspace/SaveModal';
+import SavePrintFilesModal from './workspace/SavePrintFilesModal';
+import SelectionLayersPanel from './workspace/SelectionLayersPanel';
+import { useAppSettingsStore } from '../stores/appSettingsStore';
+
+import { WorkspaceContext, createWorkspaceStore, useWorkspaceStore } from '../stores/useWorkspaceStore';
+import { useShallow } from 'zustand/react/shallow';
+import { globalPdfObjectCache } from '../stores/pdfObjectCache';
+import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
+
+// Phase type is now defined in useWorkspaceStore
+
+interface Props {
+    tabId?: string;
+    isActive?: boolean;
+    onDirtyChange?: (isDirty: boolean) => void;
+    onTitleChange?: (title: string) => void;
+    onSpawnTab?: (file: File, extraPayload?: any) => void;
+    initialFile?: File;
+    initialReport?: string;
+    initialFeature?: string;
+    lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
+    batchOutput?: { docs: { blob: Blob, filename: string, report?: string }[], mergedBlob: Blob };
+    systemMergeFiles?: File[];
+}
+
+export default function ImpositionTab(props: Props) {
+    const storeRef = useRef<ReturnType<typeof createWorkspaceStore> | null>(null);
+    const imposerStoreRef = useRef<ReturnType<typeof createImposerSettingsStore> | null>(null);
+    if (!storeRef.current) {
+        storeRef.current = createWorkspaceStore();
+    }
+    if (!imposerStoreRef.current) {
+        imposerStoreRef.current = createImposerSettingsStore();
+    }
+    return (
+        <ImposerSettingsContext.Provider value={imposerStoreRef.current}>
+            <WorkspaceContext.Provider value={storeRef.current}>
+                <ImpositionTabInner {...props} imposerStoreRef={imposerStoreRef} />
+            </WorkspaceContext.Provider>
+        </ImposerSettingsContext.Provider>
+    );
+}
+
+function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
+    //#region State & Hooks
+    // ═══ All state from Zustand store ═══
+    const {
+        phase, setPhase, file, setFile, originalFileName, setOriginalFileName,
+        pdfUrl, setPdfUrl, fileSizeStr, setFileSizeStr, highlightedIssue, setHighlightedIssue,
+        isProcessing, setIsProcessing, processStatus, setProcessStatus, error, setError,
+        history, setHistory, isSaved, setIsSaved, showSaveAsModal, setShowSaveAsModal,
+        reportMsg, setReportMsg, viewerDirty, setViewerDirty, viewerPageOrder, setViewerPageOrder,
+        viewerPageRotations, setViewerPageRotations, bleedView, setBleedView,
+        isDraggingSidebar, setIsDraggingSidebar, activeDashboardTool, setActiveDashboardTool,
+        showOutputPreview, setShowOutputPreview, separationPlates, setSeparationPlates,
+        isSelectionMode, setIsSelectionMode, pdfObjectsVersion, setPdfObjectsVersion,
+        pdfOcgLayers, setPdfOcgLayers,
+        selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
+        hiddenOcgLayerIds, setHiddenOcgLayerIds,
+        selectionFileId, setSelectionFileId, vdpFields, setVdpFields,
+        selectedVdpFieldIds, setSelectedVdpFieldIds, batchOutput, setBatchOutput,
+        confirmBookletSettings, setConfirmBookletSettings,
+        showCloseConfirm, setShowCloseConfirm,
+        viewerNumPages,
+        setDetectedShapeType, setDetectedShapeParams, 
+        setDetectedShapesByPage, setDetectedDimensionsByPage, setDetectedShapeParamsByPage,
+        detectedDimensionsByPage,
+        setViewerZoom, setViewerFitMode, setViewerPageDisplayMode
+    } = useWorkspaceStore(useShallow(state => ({
+        phase: state.phase, setPhase: state.setPhase, file: state.file, setFile: state.setFile, originalFileName: state.originalFileName, setOriginalFileName: state.setOriginalFileName,
+        pdfUrl: state.pdfUrl, setPdfUrl: state.setPdfUrl, fileSizeStr: state.fileSizeStr, setFileSizeStr: state.setFileSizeStr, highlightedIssue: state.highlightedIssue, setHighlightedIssue: state.setHighlightedIssue,
+        isProcessing: state.isProcessing, setIsProcessing: state.setIsProcessing, processStatus: state.processStatus, setProcessStatus: state.setProcessStatus, error: state.error, setError: state.setError,
+        history: state.history, setHistory: state.setHistory, isSaved: state.isSaved, setIsSaved: state.setIsSaved, showSaveAsModal: state.showSaveAsModal, setShowSaveAsModal: state.setShowSaveAsModal,
+        reportMsg: state.reportMsg, setReportMsg: state.setReportMsg, viewerDirty: state.viewerDirty, setViewerDirty: state.setViewerDirty, viewerPageOrder: state.viewerPageOrder, setViewerPageOrder: state.setViewerPageOrder,
+        viewerPageRotations: state.viewerPageRotations, setViewerPageRotations: state.setViewerPageRotations, bleedView: state.bleedView, setBleedView: state.setBleedView,
+        isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar, activeDashboardTool: state.activeDashboardTool, setActiveDashboardTool: state.setActiveDashboardTool,
+        showOutputPreview: state.showOutputPreview, setShowOutputPreview: state.setShowOutputPreview, separationPlates: state.separationPlates, setSeparationPlates: state.setSeparationPlates,
+        isSelectionMode: state.isSelectionMode, setIsSelectionMode: state.setIsSelectionMode, pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
+        pdfOcgLayers: state.pdfOcgLayers, setPdfOcgLayers: state.setPdfOcgLayers,
+        selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
+        hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds,
+        selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields,
+        selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds, batchOutput: state.batchOutput, setBatchOutput: state.setBatchOutput,
+        confirmBookletSettings: state.confirmBookletSettings, setConfirmBookletSettings: state.setConfirmBookletSettings,
+        showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
+        viewerNumPages: state.viewerNumPages,
+        setDetectedShapeType: state.setDetectedShapeType, setDetectedShapeParams: state.setDetectedShapeParams, 
+        setDetectedShapesByPage: state.setDetectedShapesByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage,
+        detectedDimensionsByPage: state.detectedDimensionsByPage,
+        setViewerZoom: state.setViewerZoom, setViewerFitMode: state.setViewerFitMode, setViewerPageDisplayMode: state.setViewerPageDisplayMode
+    })));
+
+    const { isWorkspaceSidebarOpen: isSidebarOpen, favoriteTools, hiddenTools } = useAppSettingsStore();
+    const setIsSidebarOpen = useAppSettingsStore(state => state.setWorkspaceSidebarOpen);
+    const sidebarWidth = useAppSettingsStore(state => state.toolMenuWidth);
+    const setSidebarWidth = useAppSettingsStore(state => state.setToolMenuWidth);
+
+    const [isMiniToolbarExpanded, setIsMiniToolbarExpanded] = useState(false);
+    const [showSavePrintModal, setShowSavePrintModal] = useState(false);
+    const [scaleConfirmModal, setScaleConfirmModal] = useState<{ msg: string, resolve: (v: boolean) => void } | null>(null);
+
+    // Set initial report from props (once)
+    useEffect(() => {
+        if (initialReport && !reportMsg) setReportMsg(initialReport);
+    }, []);
+
+    const handleVdpBoxCreate = useCallback((box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string, textContent?: string, name?: string }) => {
+        const fieldId = `field_${Date.now()}`;
+        setVdpFields(prev => {
+            const newField: any = {
+                id: fieldId,
+                name: box.name || `Truong_${prev.length + 1}`,
+                type: box.type || 'text',
+                position: { x: box.x, y: box.y }, // for pdfme
+                x: box.x, // for AcrobatViewer
+                y: box.y, // for AcrobatViewer
+                width: box.width,
+                height: box.height,
+                pageNum: box.pageNum,
+                alignment: 'left',
+                fontSize: 13,
+                characterSpacing: 0,
+                lineHeight: 1,
+                fontName: 'Roboto',
+                fontColor: '#000000',
+                backgroundColor: '',
+                opacity: 1,
+                ...(box.textContent ? { textContent: box.textContent } : {})
+            };
+
+            if (newField.type === 'qrcode') {
+                newField.qrStyle = {
+                    dotType: 'square',
+                    dotColor: '#000000',
+                    cornerSquareType: 'none',
+                    cornerSquareColor: '#000000',
+                    cornerDotType: 'none',
+                    cornerDotColor: '#000000',
+                    bgColor: '#FFFFFF',
+                    transparentBg: false,
+                    margin: 0,
+                };
+                newField.errorCorrection = 'M';
+            } else if (newField.type === 'barcode') {
+                newField.barcodeType = 'code128';
+                newField.barColor = '#000000';
+                newField.bgColor = '#FFFFFF';
+                newField.showText = true;
+                newField.quietZone = 2;
+            }
+
+            return [...prev, newField];
+        });
+        setSelectedVdpFieldIds([fieldId]);
+    }, []);
+
+    // Handle ESC to close modals
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                if (scaleConfirmModal) {
+                    scaleConfirmModal.resolve(false);
+                    setScaleConfirmModal(null);
+                }
+                if (showCloseConfirm) {
+                    setShowCloseConfirm(false);
+                }
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [scaleConfirmModal, showCloseConfirm]);
+
+    // Pre-upload file silently in background for features that need file_id (Output Preview, Selection, etc.)
+    // ĐÃ DEFER: chỉ cần khi dùng Selection/Output Preview, không cần lúc mở. Trì hoãn để
+    // không tranh chấp tài nguyên (đọc file + gọi Python) với meta + render trang đầu.
+    useEffect(() => {
+        if (file && !selectionFileId && file.name.toLowerCase().endsWith('.pdf')) {
+            const timer = setTimeout(() => {
+                uploadPDF(file).then(res => {
+                    setSelectionFileId(res.id);
+                    if (res.pdf_metadata && res.pdf_metadata.color_space) {
+                        onTitleChange?.(`${file.name} (${res.pdf_metadata.color_space})`);
+                    }
+                }).catch(() => { /* silent — will retry when needed */ });
+            }, 2500);
+            return () => clearTimeout(timer);
+        }
+    }, [file]);
+    // Handle initial file passed from App.tsx (if spawned via multi-file drop)
+    useEffect(() => {
+        if (initialFile && !file) {
+            if (pdfUrl) URL.revokeObjectURL(pdfUrl);
+            let objUrl = '';
+            if ((window as any).__TAURI_INTERNALS__ && (initialFile as any).path) {
+                objUrl = convertFileSrc((initialFile as any).path);
+            } else {
+                objUrl = URL.createObjectURL(initialFile);
+            }
+            setFile(initialFile);
+            setOriginalFileName(initialFile.name);
+            setFileSizeStr((initialFile.size / (1024 * 1024)).toFixed(2) + ' MB');
+            setPdfUrl(objUrl);
+            setPhase('workspace');
+            onTitleChange?.(initialFile.name);
+            
+            // Defer: chỉ cập nhật tiêu đề (RGB/CMYK), không cấp thiết khi mở → tránh
+            // gọi Python tranh chấp với meta + render trang đầu.
+            const _csTimer = setTimeout(() => {
+                detectColorSpace(initialFile).then(cs => {
+                    if (cs) {
+                        onTitleChange?.(`${initialFile.name} (${cs})`);
+                    }
+                });
+            }, 2500);
+
+            if (initialBatchOutput) {
+                setBatchOutput(initialBatchOutput);
+            }
+        }
+    }, [initialFile, initialBatchOutput]);
+
+    // Handle initial tool feature from Home screen
+    useEffect(() => {
+        if (initialFeature) {
+            // Only auto-bypass upload for standalone tools
+            if (initialFeature === 'bgremover' || initialFeature === 'upscale') {
+                setPhase('workspace');
+            }
+            setActiveDashboardTool(initialFeature);
+            if (lockedMode) {
+                imposerStoreRef.current!.getState().setTaskMode(lockedMode);
+            }
+            if (!file) {
+                const names: Record<string, string> = {
+                    'bgremover': 'Tách Nền AI',
+                    'sticker': 'Tạo Viền Cắt Bế',
+                    'split': 'Tách File',
+                    'datamerge': 'Trộn Dữ Liệu VDP',
+                    'numbering': 'Nhảy Số Tự Động',
+                    'optimize': 'Nén / Tối ưu PDF',
+                    'shuffle': 'Xáo trộn trang',
+                    'resize': 'Co giãn trang'
+                };
+                if (names[initialFeature]) {
+                    onTitleChange?.(names[initialFeature]);
+                }
+            }
+        }
+    }, [initialFeature, file]);
+
+    // Async physical path polyfill (non-blocking via HTTP)
+    useEffect(() => {
+        if (file && !(file as any).path && (window as any).__TAURI_INTERNALS__) {
+            let isCancelled = false;
+            (async () => {
+                try {
+                    let tempPath = '';
+                    try {
+                        const { uploadFileForNup } = await import('../lib/api');
+                        tempPath = await uploadFileForNup(file as File);
+                    } catch (httpErr) {
+                        console.warn("HTTP upload failed, falling back to IPC writeFile (may freeze UI)", httpErr);
+                        const { tempDir, join } = await import('@tauri-apps/api/path');
+                        const { writeFile } = await import('@tauri-apps/plugin-fs');
+                        const objUrl = URL.createObjectURL(file);
+                        const resp = await fetch(objUrl);
+                        const buffer = await resp.arrayBuffer();
+                        const tDir = await tempDir();
+                        tempPath = await join(tDir, `prynx_input_${Date.now()}_${file.name}`);
+                        await writeFile(tempPath, new Uint8Array(buffer));
+                    }
+                    
+                    if (!isCancelled && tempPath) {
+                        Object.defineProperty(file, 'path', { value: tempPath });
+                        // Clone the file to trigger state update so LivePageFrame sees the path
+                        const newFile = new File([file], file.name, { type: file.type });
+                        Object.defineProperty(newFile, 'path', { value: tempPath });
+                        setFile(newFile);
+                        
+                        // Now that we have a physical path, detectColorSpace can use the backend API
+                        // which supports compressed PDFs and Object Streams
+                        detectColorSpace(newFile).then(cs => {
+                            if (cs) {
+                                onTitleChange?.(`${newFile.name} (${cs})`);
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error("Path polyfill failed", e);
+                }
+            })();
+            return () => { isCancelled = true; };
+        }
+    }, [file]);
+
+    const handleBleedUpdate = useCallback((show: boolean, mm: number) => {
+        setBleedView((prev: { show: boolean; mm: number }) => (prev.show === show && prev.mm === mm) ? prev : { show, mm });
+    }, []);
+
+    useEffect(() => {
+        if (!isActive) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (showSaveAsModal && e.key === 'Escape') setShowSaveAsModal(false);
+        };
+        if (showSaveAsModal) window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [showSaveAsModal, isActive]);
+
+
+    const isDirty = useMemo(() => {
+        if (isSaved) return false;
+        if (history.length > 0) return true;
+        if (viewerDirty) return true;
+
+        if (file && isOutputFile(file.name)) return true;
+
+        if (viewerPageRotations && Object.keys(viewerPageRotations).length > 0) return true;
+        if (vdpFields && vdpFields.length > 0) return true;
+        return false;
+    }, [isSaved, history.length, file, viewerPageRotations, vdpFields, viewerDirty]);
+
+    useEffect(() => {
+        onDirtyChange?.(isDirty);
+    }, [isDirty, onDirtyChange]);
+
+    // Warn before closing the entire browser tab if there are unsaved changes
+    useEffect(() => {
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            if (isDirty) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [isDirty]);
+
+    const commitWorkingFile = useCallback(async (newBlob: Blob, newName: string) => {
+        if (file) {
+            setHistory(prev => [...prev, file]);
+        }
+        // Use newName to correctly reflect the current file's processing state
+        const displayName = newName;
+        setOriginalFileName(newName);
+        
+        let newFile = new File([newBlob as any], displayName, { type: 'application/pdf' });
+        
+        try {
+            if ((window as any).__TAURI_INTERNALS__) {
+                let tempPath = '';
+                try {
+                    const { uploadFileForNup } = await import('../lib/api');
+                    tempPath = await uploadFileForNup(newFile);
+                } catch (err) {
+                    console.warn("HTTP upload failed for fix pdf, falling back to IPC");
+                    const { tempDir, join } = (await import('@tauri-apps/api/path')) as any;
+                    const { writeFile } = (await import('@tauri-apps/plugin-fs')) as any;
+                    const buffer = await newBlob.arrayBuffer();
+                    const tDir = await tempDir();
+                    tempPath = await join(tDir, `prynx_tmp_${Date.now()}_${newName}`);
+                    await writeFile(tempPath, new Uint8Array(buffer));
+                }
+                
+                if (tempPath) {
+                    Object.defineProperty(newFile, 'path', { value: tempPath });
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to write temp file for PDFium', e);
+        }
+
+        setFile(newFile);
+        if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
+        setPdfUrl(URL.createObjectURL(newBlob));
+        setFileSizeStr((newBlob.size / (1024 * 1024)).toFixed(2) + ' MB');
+        setIsSaved(false);
+        onTitleChange?.(displayName);
+        
+        detectColorSpace(newFile).then(cs => {
+            if (cs) onTitleChange?.(`${displayName} (${cs})`);
+        });
+
+        // Cleanup visual edits because they are now baked into the file
+        setViewerPageOrder(undefined);
+        setViewerPageRotations(undefined);
+        setHighlightedIssue(null);
+        setViewerDirty(false); // Clear any preflight highlights
+        setSelectionFileId(''); // Force re-upload for selection tool
+        setHiddenObjectIds([]);
+    }, [file, originalFileName, onTitleChange]);
+
+
+    // --- SELECTION TOOL LOGIC ---
+    const uploadPromiseRef = useRef<Promise<any> | null>(null);
+    const pdfObjectsCacheRef = useRef<Record<number, any[]>>({});
+
+    // Keep cache ref in sync
+    useEffect(() => { pdfObjectsCacheRef.current = globalPdfObjectCache.getAllObjects(pdfUrl || ''); }, [pdfObjectsVersion, pdfUrl]);
+
+    const store = useContext(WorkspaceContext);
+
+    const fetchPdfObjectsForPage = useCallback(async (pageNum: number) => {
+        const state = store!.getState();
+        if (!file || !state.isSelectionMode) return;
+        if (pdfObjectsCacheRef.current[pageNum]) return; // Already fetched
+
+        try {
+            let fid = state.selectionFileId;
+            if (!fid) {
+                // Wait for existing upload or start a new one to avoid concurrent duplicate uploads
+                if (!uploadPromiseRef.current) {
+                    uploadPromiseRef.current = uploadPDF(file).finally(() => {
+                        // Keep the promise if it succeeded, or maybe clear it?
+                        // Let's clear it so if it fails, it can retry. But if it succeeds, fid will be set.
+                        uploadPromiseRef.current = null;
+                    });
+                }
+                const result = await uploadPromiseRef.current;
+                fid = result.id;
+                // Important: Update state synchronously inside the async flow
+                store!.getState().setSelectionFileId(result.id);
+            }
+
+            const res = await authenticatedFetch(`${getApiUrl()}/preflight/objects/${fid}/${pageNum}`);
+            if (!res.ok) throw new Error('Không thể tải danh sách objects');
+            const data = await res.json();
+            
+            const currentPdfUrl = store!.getState().pdfUrl || '';
+            globalPdfObjectCache.setPageObjects(currentPdfUrl, pageNum, data.objects || []);
+            setPdfObjectsVersion(prev => prev + 1);
+
+            // Fetch OCG layers if not loaded yet
+            if (store!.getState().pdfOcgLayers.length === 0) {
+                try {
+                    const layerRes = await authenticatedFetch(`${getApiUrl()}/preflight/layers/${fid}`);
+                    if (layerRes.ok) {
+                        const layerData = await layerRes.json();
+                        // setPdfOcgLayers(layerData.layers || []);
+                        store!.getState().setPdfOcgLayers(layerData.layers || []);
+                    }
+                } catch (e) {
+                    console.warn("Failed to fetch OCG layers", e);
+                }
+            }
+        } catch (err: any) {
+            setError(err.message || `Lỗi tải object trang ${pageNum}`);
+        }
+    }, [file, setError, setPdfObjectsVersion, store]);
+
+    // Update objects when mode is toggled or page changes
+    useEffect(() => {
+        if (!isSelectionMode) {
+            globalPdfObjectCache.clear(pdfUrl || '');
+            setPdfObjectsVersion(0);
+            setSelectedObjectIds([]);
+            setHiddenObjectIds([]);
+            setPdfOcgLayers([]);
+            setHiddenOcgLayerIds([]);
+        }
+    }, [isSelectionMode]);
+
+    // Refresh OCG layers on demand (from Layer Panel actions)
+    useEffect(() => {
+        const handleRefreshLayers = async () => {
+            const fid = selectionFileId;
+            if (!fid) return;
+            try {
+                const layerRes = await authenticatedFetch(`${getApiUrl()}/preflight/layers/${fid}`);
+                if (layerRes.ok) {
+                    const layerData = await layerRes.json();
+                    setPdfOcgLayers(layerData.layers || []);
+                }
+            } catch (e) {
+                console.warn("Failed to refresh OCG layers", e);
+            }
+        };
+        window.addEventListener('refresh-ocg-layers', handleRefreshLayers);
+        return () => window.removeEventListener('refresh-ocg-layers', handleRefreshLayers);
+    }, [selectionFileId, setPdfOcgLayers]);
+
+
+
+    const handleDeleteObjects = useCallback(async (objs: any[], pageNum: number) => {
+        if (!selectionFileId) {
+            setError("Lỗi: Không tìm thấy selectionFileId! (Có thể file chưa tải xong)");
+            return;
+        }
+        if (objs.length === 0) {
+            setError("Lỗi: Chưa có object nào được chọn!");
+            return;
+        }
+
+        // alert(`Bắt đầu xóa ${objs.length} object trên trang ${pageNum}...`);
+        setIsProcessing(true);
+        setProcessStatus('Đang xóa đối tượng...');
+        setError('');
+        try {
+            const res = await authenticatedFetch(`${getApiUrl()}/preflight/delete-object`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    file_id: selectionFileId,
+                    page: pageNum,
+                    objects: objs.map(obj => ({
+                        type: obj.type,
+                        bbox: obj.bbox,
+                        xref: obj.xref
+                    }))
+                })
+            });
+            if (!res.ok) throw new Error('Xóa thất bại');
+            const data = await res.json();
+
+            if (data.success && data.output_filename) {
+                const pdfRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+                if (pdfRes.ok) {
+                    const blob = await pdfRes.blob();
+                    commitWorkingFile(blob, data.output_filename);
+                } else {
+                    setError('Lỗi tải file mới');
+                }
+            } else {
+                setError('API trả về thành công nhưng thiếu dữ liệu');
+            }
+        } catch (err: any) {
+            setError(err.message || 'Lỗi xóa đối tượng');
+        } finally {
+            setIsProcessing(false);
+        }
+    }, [selectionFileId, commitWorkingFile]);
+
+    // Keyboard shortcuts for Selection mode (Delete, Escape, Ctrl+A)
+    useEffect(() => {
+        if (!isSelectionMode || !isActive) return;
+        const handler = (e: KeyboardEvent) => {
+            // Delete / Backspace => delete selected objects
+            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObjectIds.length > 0) {
+                e.preventDefault();
+                const pageEntries = Object.entries(globalPdfObjectCache.getAllObjects(pdfUrl || ''));
+                for (const [pageNumStr, objects] of pageEntries) {
+                    const objectsToDelete = objects.filter((o: any) => selectedObjectIds.includes(o.id));
+                    if (objectsToDelete.length > 0) {
+                        handleDeleteObjects(objectsToDelete, parseInt(pageNumStr));
+                        break;
+                    }
+                }
+            }
+            // Escape => deselect all
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                setSelectedObjectIds([]);
+            }
+            // Ctrl+A => select all on visible page
+            if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                const allIds: string[] = [];
+                Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).forEach((objects: any[]) => {
+                    objects.forEach(o => allIds.push(o.id));
+                });
+                setSelectedObjectIds(allIds);
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [isSelectionMode, selectedObjectIds, pdfObjectsVersion, handleDeleteObjects, isActive]);
+    // ----------------------------
+
+    const handleUndo = useCallback(() => {
+        if (history.length === 0) return;
+
+        const prevFile = history[history.length - 1];
+        setHistory(prev => prev.slice(0, -1));
+
+        setFile(prevFile);
+        
+        if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
+        let objUrl = '';
+        if ((window as any).__TAURI_INTERNALS__ && (prevFile as any).path) {
+            objUrl = convertFileSrc((prevFile as any).path);
+        } else {
+            objUrl = URL.createObjectURL(prevFile);
+        }
+        setPdfUrl(objUrl);
+        setFileSizeStr((prevFile.size / (1024 * 1024)).toFixed(2) + ' MB');
+        onTitleChange?.(prevFile.name);
+        
+        detectColorSpace(prevFile).then(cs => {
+            if (cs) onTitleChange?.(`${prevFile.name} (${cs})`);
+        });
+
+        setViewerPageOrder(undefined);
+        setViewerPageRotations(undefined);
+
+        // Reset detection so it re-runs if needed
+        setDetectedShapeType(null);
+        setDetectedShapeParams(null);
+        setDetectedShapesByPage({});
+        setDetectedDimensionsByPage({});
+        setDetectedShapeParamsByPage({});
+    }, [history, onTitleChange]);
+
+
+
+
+    const sidebarDragRef = useRef({ startX: 0, startWidth: 0, lastWidth: 0 });
+
+    useEffect(() => {
+        if (!isDraggingSidebar) return;
+        const handleMouseMove = (e: MouseEvent) => {
+            const deltaX = sidebarDragRef.current.startX - e.clientX;
+            const newWidth = sidebarDragRef.current.startWidth + deltaX;
+            
+            if (activeDashboardTool !== 'none') {
+                if (newWidth >= 280) {
+                    setIsSidebarOpen(true);
+                    setSidebarWidth(Math.min(newWidth, 800));
+                } else {
+                    setIsSidebarOpen(false);
+                }
+            } else {
+                const clampedWidth = Math.min(Math.max(newWidth, 48), 800);
+                setSidebarWidth(clampedWidth);
+                
+                if (clampedWidth >= 280) {
+                    setIsSidebarOpen(true);
+                } else if (clampedWidth >= 120) {
+                    setIsSidebarOpen(false);
+                    setIsMiniToolbarExpanded(true);
+                } else {
+                    setIsSidebarOpen(false);
+                    setIsMiniToolbarExpanded(false);
+                }
+            }
+        };
+        const handleMouseUp = () => setIsDraggingSidebar(false);
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+
+        // Change cursor while dragging anywhere
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+        };
+    }, [isDraggingSidebar, setSidebarWidth, activeDashboardTool]);
+
+    const formatSize = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+
+    const handleFileSelected = useCallback(async (selectedFile: File, allFiles?: File[]) => {
+        setFile(selectedFile);
+        setOriginalFileName(selectedFile.name);
+        setSelectionFileId(''); // Reset — will be re-uploaded by the useEffect above
+        setFileSizeStr(formatSize(selectedFile.size));
+        
+        if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
+        let objUrl = '';
+        if ((window as any).__TAURI_INTERNALS__ && (selectedFile as any).path) {
+            objUrl = convertFileSrc((selectedFile as any).path);
+        } else {
+            objUrl = URL.createObjectURL(selectedFile);
+        }
+        setPdfUrl(objUrl);
+        setPhase('workspace');
+        
+        setError('');
+        setHistory([]);
+        
+        // Reset detected shapes so it forces a re-detection for the new file
+        setDetectedShapeType(null);
+        setDetectedShapeParams(null);
+        setDetectedShapesByPage({});
+        setDetectedDimensionsByPage({});
+        setDetectedShapeParamsByPage({});
+        
+        // Reset zoom to smart fit (max 100%)
+        setViewerFitMode('smart');
+        setViewerPageDisplayMode('single_scroll');
+
+        onTitleChange?.(selectedFile.name);
+        detectColorSpace(selectedFile).then(cs => {
+            if (cs) {
+                onTitleChange?.(`${selectedFile.name} (${cs})`);
+            }
+        });
+
+        if (allFiles && allFiles.length > 1 && onSpawnTab) {
+            for (let i = 1; i < allFiles.length; i++) {
+                onSpawnTab(allFiles[i]);
+            }
+        }
+    }, [onTitleChange, onSpawnTab]);
+    //#endregion
+
+    //#region Processing Handlers
+    // ═══ Processing handlers (extracted to lib/processHandlers.ts) ═══
+    const buildProcessContext = useCallback(() => {
+        const getWorkingBytesLocal = async (): Promise<Uint8Array> => {
+            if (viewerPageOrder) {
+                const bakedBlob = await applyAcrobatEdits();
+                if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
+            }
+            return new Uint8Array(await file!.arrayBuffer());
+        };
+        return {
+            file: file!,
+            onSpawnTab,
+            commitWorkingFile,
+            setError, setIsProcessing, setProcessStatus, setReportMsg, setBatchOutput,
+            viewerNumPages,
+            getWorkingBytes: getWorkingBytesLocal,
+        };
+    }, [file, onSpawnTab, commitWorkingFile, viewerNumPages, viewerPageOrder, viewerPageRotations]);
+
+    const processEngine = useCallback(async (settings: ProcessingSettings, spawnNewTab: boolean) => {
+        if (!file) return;
+        
+        // Inject custom confirmation callback
+        settings.onConfirmScale = (msg: string) => {
+            return new Promise<boolean>((resolve) => {
+                setScaleConfirmModal({ msg, resolve });
+            });
+        };
+
+        const { runProcessEngine } = await import('../lib/processHandlers');
+        await runProcessEngine(buildProcessContext(), settings, spawnNewTab);
+    }, [file, buildProcessContext]);
+
+    const handleStartCatalogPlan = useCallback(async (planConfig: any, sheetSettings: any) => {
+        if (!file) return;
+        const { runCatalogPlan } = await import('../lib/processHandlers');
+        await runCatalogPlan(buildProcessContext(), planConfig, sheetSettings);
+    }, [file, buildProcessContext]);
+
+    const handleStartShuffle = async (settings: any) => {
+        if (!file) return;
+        const { runShuffle } = await import('../lib/processHandlers');
+        await runShuffle(buildProcessContext(), settings);
+    };
+
+    const handleStartResize = async (settings: any) => {
+        if (!file) return;
+        const { runResize } = await import('../lib/processHandlers');
+        await runResize(buildProcessContext(), settings);
+    };
+
+    const handleStartSplit = useCallback(async (settings: any) => {
+        if (!file) return;
+        const { runSplit } = await import('../lib/processHandlers');
+        await runSplit(buildProcessContext(), settings);
+    }, [file, buildProcessContext]);
+
+    const handleStartMerge = useCallback(async (settings: any) => {
+        if (!file && settings.mode === 'insert_pages') return;
+        const { runMerge } = await import('../lib/processHandlers');
+        await runMerge(buildProcessContext(), settings);
+    }, [file, buildProcessContext]);
+
+    const handleStartBooklet = useCallback((config: BookletSettings) => {
+        // NOTE: For 'auto_100', sheet dimension will be dynamically resolved inside the Engine during Phase 2.
+        const actualFormsize = config.scaleMode === '100' ? 'auto_100' : config.formsize;
+        const isCustom = actualFormsize === 'custom' || actualFormsize.startsWith('custom_');
+        const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[actualFormsize]?.w || config.customSheetWidth);
+        const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[actualFormsize]?.h || config.customSheetHeight);
+
+        const settings: any = {
+            imposerMode: config.foldPattern ? 'offset' : 'guillotine',
+            impositionMode: ImpositionMode.Booklet,
+            bindingMode: config.signatureMode,
+            foliosize: config.foliosize,
+            paperThickness: config.paperThickness,
+            bleed: config.bleed,
+            sheetWidth: sheetW,
+            sheetHeight: sheetH,
+            chainNup: config.scaleMode === 'chain_nup' || config.scaleMode === 'cut_stack',
+            cutStack: config.scaleMode === 'cut_stack',
+            markType: config.markType,
+            markOffset: config.markOffset,
+            markLength: config.markLength,
+            markThickness: config.markThickness,
+            markStyle: config.markStyle,
+            interleave: config.interleave,
+            foldPattern: config.foldPattern,
+            gripperMargin: config.gripperMargin,
+            marginTop: config.marginTop,
+            marginBottom: config.marginBottom,
+            marginLeft: config.marginLeft,
+            marginRight: config.marginRight,
+            marginMode: config.marginMode,
+            gapX: config.gapX,
+            gapY: config.gapY,
+            spreadDistribution: config.spreadDistribution,
+            gutterMargin: config.gutterMargin,
+            separateCover: config.separateCover,
+            coverPageCount: config.coverPageCount,
+            pageOrder: viewerPageOrder,
+            pageRotations: viewerPageRotations
+        };
+
+        // Calculate preview report
+        const effectiveFoliosize = ((settings as any).chainNup && (settings as any).foldPattern && (settings as any).foldPattern.startsWith('sig_'))
+            ? parseInt((settings as any).foldPattern.split('_')[1])
+            : config.foliosize;
+
+        const totalPages = viewerPageOrder ? viewerPageOrder.length : 0;
+        const paddedPages = Math.ceil(totalPages / 4) * 4;
+        const mapResult = generateBindingMap(totalPages, (settings as any).bindingMode || 'saddle', effectiveFoliosize);
+
+        // Check if page sizes are consistent
+        let sizesConsistent = true;
+        const dims = detectedDimensionsByPage; // Fixed bug here: it was reading sourcePageDims from ImposerSettingsStore which doesn't exist
+        if (dims) {
+            const dimValues = Object.values(dims) as { w: number, h: number }[];
+            if (dimValues.length > 1) {
+                const firstDim = dimValues[0];
+                if (firstDim) {
+                    for (let i = 1; i < dimValues.length; i++) {
+                        const dim = dimValues[i];
+                        if (dim && (Math.abs(dim.w - firstDim.w) > 2 || Math.abs(dim.h - firstDim.h) > 2)) {
+                            sizesConsistent = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        const isPerfect = totalPages > 0 && totalPages === paddedPages && sizesConsistent;
+
+        if (isPerfect) {
+            // Bypass confirmation if everything is perfectly aligned
+            processEngine(settings, config.spawnNewTab);
+        } else {
+            setConfirmBookletSettings({
+                settings,
+                spawnNewTab: config.spawnNewTab,
+                report: mapResult.report,
+                totalPages,
+                paddedPages
+            });
+        }
+    }, [viewerPageOrder, viewerPageRotations, setConfirmBookletSettings, processEngine, detectedDimensionsByPage]);
+
+    const handleStartNup = useCallback((config: NupSettings) => {
+        const isCustom = config.formsize === 'custom';
+        const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[config.formsize]?.w || config.customSheetWidth);
+        const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[config.formsize]?.h || config.customSheetHeight);
+
+        const settings: any = {
+            imposerMode: config.cncMode ? 'cnc' : (config.isDieCutMode ? 'diecut' : 'guillotine'),
+            impositionMode: ImpositionMode.NUp,
+            paperThickness: 0,
+            bleed: config.bleed,
+            sheetWidth: sheetW,
+            sheetHeight: sheetH,
+            layoutType: config.layoutType,
+            cols: config.columns || 0,
+            rows: config.rows || 0,
+            gridStrategy: config.gridStrategy,
+            clusterMode: config.clusterMode,
+            clusterCount: config.clusterCount,
+            clusterGap: config.clusterGap,
+            clusterGapMode: config.clusterGapMode,
+            clusterDistribution: config.clusterDistribution,
+            clusterBorder: config.clusterBorder,
+            gapX: config.gapX,
+            gapY: config.gapY,
+            marginTop: config.marginTop,
+            marginBottom: config.marginBottom,
+            marginLeft: config.marginLeft,
+            marginRight: config.marginRight,
+            marginMode: config.marginMode,
+            duplexFlow: config.duplexFlow,
+            align: config.align,
+            mirrorAlign: config.mirrorAlign,
+            markType: config.markType,
+            markOffset: config.markOffset,
+            markLength: config.markLength,
+            markThickness: config.markThickness,
+            markStyle: config.markStyle,
+            pageOrder: viewerPageOrder,
+            pageRotations: viewerPageRotations,
+            isDieCutMode: config.isDieCutMode,
+            cutType: config.cutType,
+            fillBlockGap: config.fillBlockGap,
+            pontType: config.pontType,
+            pontConfig: config.pontConfig,
+            shapeType: config.shapeType,
+            shapeParams: config.shapeParams,
+            detectedShapesByPage: config.detectedShapesByPage,
+            detectedShapeParamsByPage: config.detectedShapeParamsByPage,
+            targetQuantity: config.targetQuantity,
+            targetQuantitiesByPage: config.targetQuantitiesByPage,
+            groupingStrategy: config.groupingStrategy,
+            clusterTileW: config.clusterTileW,
+            clusterTileH: config.clusterTileH,
+            clusterSizingMode: config.clusterSizingMode,
+            clusterCols: config.clusterCols,
+            clusterRows: config.clusterRows,
+            tileGapX: config.tileGapX,
+            tileGapY: config.tileGapY,
+            clusterNesting: config.clusterNesting,
+            separateCutPage: config.separateCutPage,
+            pontsOnCutFile: config.pontsOnCutFile,
+            hiddenOcgLayerIds: config.hiddenOcgLayerIds,
+            splitGap: config.splitGap,
+            // ═══ Bình Bế Rớt (CNC) ═══
+            cncMode: config.cncMode,
+            cncTwoSided: config.cncTwoSided,
+            cncFlipEdge: config.cncFlipEdge,
+            cncDuplexMarks: config.cncDuplexMarks,
+            // Tự động lưu file in
+            autoSavePrint: config.autoSavePrint,
+            savePrintConfig: config.savePrintConfig,
+            // ═══ Report vẽ lên tờ (spec: binh-tem-be-report) — gồm cả CNC ═══
+            reportDisplay: config.reportDisplay,
+            reportMaterial: config.reportMaterial,
+            reportLamination: config.reportLamination,
+            reportLaminationSides: config.reportLaminationSides,
+            reportOrderCode: config.reportOrderCode,
+            exportUniqueSheets: config.exportUniqueSheets,
+            saveByReport: config.saveByReport,
+        };
+
+        processEngine(settings, config.spawnNewTab);
+    }, [viewerPageOrder, viewerPageRotations, processEngine]);
+    //#endregion
+
+    //#region Core UI Handlers
+
+    const forceReset = () => {
+        setBatchOutput(null);
+        setFile(null);
+        setPdfUrl(null);
+        setPhase('upload');
+        setHistory([]);
+        setError('');
+        setIsSaved(false);
+        setViewerPageOrder(undefined);
+        setViewerPageRotations(undefined);
+        setBleedView({ show: false, mm: 0 });
+        setHighlightedIssue(null);
+        setViewerDirty(false); // Clear any preflight highlights
+        setSelectionFileId(''); // Force re-upload for selection tool
+        setHiddenObjectIds([]);
+        setShowCloseConfirm(false);
+        setVdpFields([]); // Clear barcode/VDP fields
+        setSelectedVdpFieldIds([]);
+        
+        // Clear shape detection cache
+        setDetectedShapeType(null);
+        setDetectedShapeParams(null);
+        setDetectedShapesByPage({});
+        setDetectedDimensionsByPage({});
+        setDetectedShapeParamsByPage({});
+        
+        onTitleChange?.('Không có file');
+    };
+
+    const handleReset = () => {
+        if (isDirty || viewerDirty) {
+            setShowCloseConfirm(true);
+            return;
+        }
+        forceReset();
+    };
+
+    const applyAcrobatEdits = async () => {
+        if (!file || !viewerPageOrder) return null;
+        const rotations = viewerPageRotations || {};
+        const arrayBuffer = await getFileArrayBuffer(file);
+        const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+        const newDoc = await PDFDocument.create();
+
+        for (const pIdx of viewerPageOrder) {
+            if (pIdx === -1) {
+                const firstPage = srcDoc.getPages()[0];
+                const defaultDim = firstPage ? { w: firstPage.getSize().width, h: firstPage.getSize().height } : { w: 595.28, h: 841.89 };
+                newDoc.addPage([defaultDim.w, defaultDim.h]);
+            } else {
+                const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
+                const rot = rotations[pIdx];
+                if (rot) {
+                    const currentRot = copiedPage.getRotation().angle;
+                    copiedPage.setRotation(degrees(currentRot + rot));
+                }
+                newDoc.addPage(copiedPage);
+            }
+        }
+
+        const pdfBytes = await newDoc.save();
+        return new Blob([pdfBytes as any], { type: 'application/pdf' });
+    };
+
+    /** Lấy bytes PDF đã áp dụng visual edits (xóa trang, xoay, sắp xếp lại) */
+    const getWorkingBytes = async (): Promise<Uint8Array> => {
+        if (viewerPageOrder) {
+            const bakedBlob = await applyAcrobatEdits();
+            if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
+        }
+        return new Uint8Array(await file!.arrayBuffer());
+    };
+
+    /**
+     * Trả về File template để các tác vụ tiếp theo (VDP, đánh số...) xử lý.
+     * Nếu người dùng đã sửa trang trong viewer (xóa/xoay/sắp xếp) thì "nướng"
+     * các thay đổi đó vào file mới — tuân thủ quy tắc: tác vụ sau chỉ dùng KẾT QUẢ
+     * đã chỉnh, không dùng file gốc. Nếu không có sửa đổi, giữ nguyên file gốc
+     * (bảo toàn .path để backend nạp nhanh qua native path).
+     */
+    const getWorkingFile = async (): Promise<File> => {
+        const hasOrderEdits = !!(viewerPageOrder && viewerPageOrder.length > 0);
+        const hasRotEdits = !!(viewerPageRotations && Object.keys(viewerPageRotations).length > 0);
+        if ((hasOrderEdits || hasRotEdits) && file) {
+            const baked = await applyAcrobatEdits();
+            if (baked) return new File([baked], file.name, { type: 'application/pdf' });
+        }
+        return file!;
+    };
+
+    const handleSaveFile = useCallback(async (isSaveAs: boolean = false) => {
+        let targetBlob: Blob | null = file;
+        let targetName = file ? file.name : 'Document.pdf';
+        let didBake = false;  // có bake edits/VDP vào blob mới hay không
+
+        if (!targetBlob) return;
+
+        // File kết quả đã sinh sẵn (VDP/batch...) đã bake đủ — KHÔNG áp lại edits/VDP còn
+        // sót trong store (tránh bị thêm tiền tố "Edited_"/"VDP_" sai khi chạy nhiều file).
+        const isGeneratedResult = !!(file as any)?.isGenerated;
+
+        // Chỉ bake khi có sửa đổi THẬT SỰ (xoay khác 0, hoặc thứ tự trang khác gốc /
+        // có xoá/chèn). Nếu chỉ "lưu lại" không sửa gì → bỏ qua bake (lưu tức thì).
+        const _hasRot = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
+        const _isIdentityOrder = !!viewerPageOrder && !!viewerNumPages
+            && viewerPageOrder.length === viewerNumPages
+            && viewerPageOrder.every((p: number, i: number) => p === i + 1);
+        const _hasReorder = !!viewerPageOrder && !_isIdentityOrder;
+
+        // Nếu có visual edits (xoay/sắp trang) → bake vào blob để lưu.
+        // KHÔNG commitWorkingFile (tránh đổi tên "Edited_" + race set isSaved=false).
+        if (!isGeneratedResult && (_hasRot || _hasReorder)) {
+            setIsProcessing(true);
+            setProcessStatus('Đang áp dụng thay đổi và lưu...');
+            try {
+                const editedBlob = await applyAcrobatEdits();
+                if (editedBlob) {
+                    targetBlob = editedBlob;
+                    didBake = true;
+                }
+            } catch (err: any) {
+                setError('Lỗi khi áp dụng sửa đổi: ' + err.message);
+                return;
+            } finally {
+                setIsProcessing(false);
+                setProcessStatus('');
+            }
+        }
+
+        // Bake VDP Fields into the PDF (giữ nguyên tên file gốc, không thêm tiền tố).
+        if (!isGeneratedResult && vdpFields && vdpFields.length > 0 && file) {
+            setIsProcessing(true);
+            setProcessStatus('Đang nhúng các trường VDP vào file...');
+            try {
+                const currentFile = new File([targetBlob as any], targetName, { type: 'application/pdf' });
+                const jobId = await startVdpJobBackend(currentFile, vdpFields, []);
+                const vdpResult = await pollVdpJob(jobId, (msg) => setProcessStatus(msg));
+                const vdpBlob = vdpResult.blob;
+                if (vdpBlob) {
+                    targetBlob = vdpBlob;
+                    didBake = true;
+                }
+            } catch (err: any) {
+                setError('Lỗi khi nhúng VDP: ' + err.message);
+                return;
+            } finally {
+                setIsProcessing(false);
+                setProcessStatus('');
+            }
+        }
+
+        // Cập nhật in-memory sau khi lưu thành công: bake blob mới (giữ TÊN GỐC),
+        // xoá visual edits/VDP đã bake, đánh dấu ĐÃ LƯU (không còn dirty).
+        const _bakeInMemory = (blob: Blob, name: string, path: string | null) => {
+            const bf = new File([blob as any], name, { type: 'application/pdf' });
+            if (path) {
+                try { Object.defineProperty(bf, 'path', { value: path }); } catch { /* ignore */ }
+            }
+            setFile(bf);
+            if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
+            setPdfUrl(URL.createObjectURL(blob));
+            setFileSizeStr((blob.size / (1024 * 1024)).toFixed(2) + ' MB');
+            setViewerPageOrder(undefined);
+            setViewerPageRotations(undefined);
+            setViewerDirty(false);
+            setVdpFields([]);
+            setSelectedVdpFieldIds([]);
+            setSelectionFileId('');
+            setHiddenObjectIds([]);
+        };
+
+        try {
+            if ((window as any).__TAURI_INTERNALS__) {
+                const { save } = await import('@tauri-apps/plugin-dialog');
+                const { writeFile } = await import('@tauri-apps/plugin-fs');
+                
+                let path: string | null = null;
+                if (!isSaveAs && (file as any).path) {
+                    path = (file as any).path; // Overwrite original
+                } else {
+                    path = await save({
+                        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+                        defaultPath: targetName,
+                        title: 'Save PDF File'
+                    });
+                }
+
+                if (path) {
+                    const arrBuffer = await targetBlob.arrayBuffer();
+                    try {
+                        await writeFile(path, new Uint8Array(arrBuffer));
+                        const fileName = path.split(/[\\/]/).pop() || targetName;
+                        if (didBake) _bakeInMemory(targetBlob, fileName, path);
+                        setIsSaved(true);
+                        onTitleChange?.(fileName);
+                    } catch (writeErr: any) {
+                        if (writeErr.toString().includes('forbidden path')) {
+                            const fallbackPath = await save({
+                                filters: [{ name: 'PDF', extensions: ['pdf'] }],
+                                defaultPath: targetName,
+                                title: 'Select save location (Original path restricted)'
+                            });
+                            if (fallbackPath) {
+                                await writeFile(fallbackPath, new Uint8Array(arrBuffer));
+                                const fileName = fallbackPath.split(/[\\/]/).pop() || targetName;
+                                if (didBake) _bakeInMemory(targetBlob, fileName, fallbackPath);
+                                setIsSaved(true);
+                                onTitleChange?.(fileName);
+                            }
+                        } else {
+                            throw writeErr;
+                        }
+                    }
+                }
+            } else {
+                // Browser Fallback
+                const url = URL.createObjectURL(targetBlob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = targetName;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }, 100);
+
+                if (didBake) _bakeInMemory(targetBlob, targetName, null);
+                setIsSaved(true);
+                onTitleChange?.(targetName);
+            }
+        } catch (e: any) {
+            setError('Không thể lưu file: ' + e);
+        }
+    }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange]);
+
+    useEffect(() => {
+        const handleTriggerSave = (e: any) => {
+            if (!isActive) return;
+            if (e.detail.tabId === tabId) {
+                if (e.detail.saveAs) {
+                    setShowSaveAsModal(true);
+                } else {
+                    if (isDirty || viewerDirty) {
+                        handleSaveFile(false);
+                    }
+                }
+            }
+        };
+        window.addEventListener('app-trigger-save', handleTriggerSave);
+        return () => window.removeEventListener('app-trigger-save', handleTriggerSave);
+    }, [isActive, tabId, isDirty, viewerDirty, handleSaveFile]);
+
+    const handleExtractPages = async (indices: number[], deleteAfter: boolean) => {
+        if (!file || !onSpawnTab || !viewerPageOrder || !viewerPageRotations) return;
+        try {
+            setIsProcessing(true);
+            setProcessStatus('Đang bóc tách file PDF...');
+            const arrayBuffer = await getFileArrayBuffer(file);
+            const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            const newDoc = await PDFDocument.create();
+
+            const firstPage = srcDoc.getPages()[0];
+            const defaultDim = firstPage ? { w: firstPage.getSize().width, h: firstPage.getSize().height } : { w: 595.28, h: 841.89 }; // A4 fallback
+
+            for (const pIdx of indices) {
+                if (pIdx === -1) {
+                    newDoc.addPage([defaultDim.w, defaultDim.h]);
+                } else {
+                    const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
+                    const rot = viewerPageRotations[pIdx];
+                    if (rot) {
+                        const currentRot = copiedPage.getRotation().angle;
+                        copiedPage.setRotation(degrees(currentRot + rot));
+                    }
+                    newDoc.addPage(copiedPage);
+                }
+            }
+
+            const pdfBytes = await newDoc.save();
+            const blob = new Blob([pdfBytes as any], { type: 'application/pdf' });
+            const extractedFile = new File([blob], `Bi_Broc_Tach_${file.name}`, { type: 'application/pdf' });
+            onSpawnTab(extractedFile);
+        } catch (e: any) {
+            setError(e.message || 'Lỗi hệ thống khi trích xuất.');
+        } finally {
+            setIsProcessing(false);
+            setProcessStatus('');
+        }
+    };
+
+
+    // Derive tool info for upload phase
+    const effectiveTool = initialFeature || lockedMode;
+    const toolInfo = effectiveTool ? TOOL_REGISTRY.find(t => 
+        t.defaultPayload?.focusFeature === effectiveTool || 
+        t.defaultPayload?.lockedMode === effectiveTool || 
+        t.id === effectiveTool
+    ) : null;
+
+    //#endregion
+
+    //#region Render
+    return (
+        <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1c23]">
+            {phase === 'upload' && (
+                <div className="flex-1 flex flex-col items-center justify-center py-12 px-6">
+                    <div className="text-center mb-10 animate-fade-in">
+                        <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">
+                            {toolInfo ? `🚀 ${toolInfo.title}` : '📐 Công cụ Bình Bài & Xử lý AI'}
+                        </h1>
+                        <p className="text-slate-600 dark:text-zinc-400 transition-colors max-w-2xl mx-auto leading-relaxed">
+                            {toolInfo ? toolInfo.longDescription : 'Hoạt động offline 100%. Hỗ trợ tính toán Xẹp Giấy (Creep), bù lề xén (Bleed) cắt dọc gáy, và vẽ tự động vạch chuẩn cực kỳ chính xác. Đi kèm công cụ Tách nền AI và Tạo viền cắt bế tự động.'}
+                        </p>
+                    </div>
+                    <div className="max-w-xl w-full animate-slide-up">
+                        <PDFUploader
+                            label={toolInfo ? "Tải file lên để tiếp tục" : "Kéo thả PDF Bản thảo (Single Pages)"}
+                            sublabel={
+                                toolInfo ? 
+                                `Bạn đang mở công cụ: ${toolInfo.title}. Vui lòng chọn một file PDF để bắt đầu.`
+                                : "Catalog, Tạp chí, Sách truyện cần lồng ghép trang in"
+                            }
+                            onFileSelected={handleFileSelected}
+                            isUploading={false}
+                            uploadedName=""
+                            accentColor="#10b981"
+                        />
+                        <button 
+                            onClick={() => setPhase('workspace')}
+                            className="mt-6 w-full py-2.5 rounded-lg border-2 border-dashed border-slate-300 dark:border-zinc-700 bg-transparent text-slate-500 dark:text-zinc-400 font-medium hover:bg-slate-100 dark:hover:bg-zinc-800 hover:text-slate-700 dark:hover:text-zinc-300 transition-all text-[13px]"
+                        >
+                            Bỏ qua tải file (Vào Không gian làm việc)
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {phase === 'workspace' && (
+                <div className="flex-1 flex flex-row overflow-hidden relative animate-fade-in">
+                    {confirmBookletSettings && (
+                        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+                            <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-slide-up">
+                                <div className="p-5 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
+                                    <h2 className="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                                        <span>🛑</span> Xác nhận Bình Sách
+                                    </h2>
+                                </div>
+                                <div className="p-6">
+                                    <p className="text-slate-700 dark:text-zinc-300 mb-4 text-[15px]">
+                                        File pdf gốc gồm <strong>{confirmBookletSettings.totalPages} trang</strong>.
+                                        {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (
+                                            <span className="text-emerald-600 dark:text-emerald-400 font-medium ml-1">
+                                                (Máy đã lót thêm {confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages} trang trắng cuối sách để làm tròn thành {confirmBookletSettings.paddedPages} trang chẵn theo quy tắc gấp tay sách).
+                                            </span>
+                                        )}
+                                    </p>
+                                    {confirmBookletSettings.report && (
+                                        <div className="mb-5 text-[13px] text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 p-3 rounded-lg leading-relaxed">
+                                            {confirmBookletSettings.report}
+                                        </div>
+                                    )}
+                                    <p className="text-slate-600 dark:text-zinc-400 text-sm">
+                                        Bạn có chắc chắn muốn tiến hành bình trang với cấu hình này không?
+                                    </p>
+                                </div>
+                                <div className="p-4 bg-slate-50 dark:bg-zinc-900/50 flex justify-end gap-3 border-t border-slate-200 dark:border-white/10 mt-2">
+                                    <Button variant="secondary" onClick={() => setConfirmBookletSettings(null)}>Hủy bỏ</Button>
+                                    <Button variant="primary" onClick={() => {
+                                        processEngine(confirmBookletSettings.settings, confirmBookletSettings.spawnNewTab);
+                                        setConfirmBookletSettings(null);
+                                    }}>Đồng ý & Khởi chạy</Button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-100 dark:bg-red-900 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-200 px-4 py-3 rounded shadow-lg z-[100] flex items-center gap-3">
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            {error}
+                        </div>
+                    )}
+
+
+
+                    {/* LEFT: Acrobat Workspace */}
+                    <div className="flex-1 relative z-0">
+                        {isProcessing && (
+                            <div className="absolute inset-0 bg-[#525659]/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white">
+                                <div className="w-16 h-16 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mb-6"></div>
+                                <h3 className="font-bold text-2xl tracking-widest uppercase mb-3">
+                                    {/(bình|kẽm|thuật toán|catalog)/i.test(processStatus) ? 'ĐANG BÌNH TRANG' : 'ĐANG XỬ LÝ FILE'}
+                                </h3>
+                                <p className="text-emerald-200 mt-2 text-sm tracking-normal font-medium">{processStatus}</p>
+                            </div>
+                        )}
+
+                        {showOutputPreview && selectionFileId && (
+                            <OutputPreviewTab
+                                fileId={selectionFileId}
+                                initialPageNum={1}
+                                totalPages={viewerPageOrder ? viewerPageOrder.length : 1}
+                                onClose={() => { setShowOutputPreview(false); setSeparationPlates([]); }}
+                                onPlatesChange={setSeparationPlates}
+                                onFileFixed={(blob: Blob, name: string) => {
+                                    window.dispatchEvent(new CustomEvent('preflight-fixed', { detail: { blob, name } }));
+                                }}
+                            />
+                        )}
+
+                        {activeDashboardTool === 'bgremover' && (
+                            <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
+                                <BgRemoverPreview tabId={tabId || ''} />
+                            </div>
+                        )}
+
+                        {/* Empty State Overlay — hidden when bgremover is active */}
+                        {!pdfUrl && activeDashboardTool !== 'bgremover' && (
+                            <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style={{ right: isSidebarOpen ? sidebarWidth : 0 }}>
+                                <div className="pointer-events-auto max-w-2xl w-full px-6">
+                                    <div 
+                                        className={`w-full relative bg-white dark:bg-zinc-900 rounded-[2rem] border-[3px] border-dashed border-indigo-200 dark:border-indigo-900/60 hover:border-indigo-500 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/20 transition-all cursor-pointer flex flex-col xl:flex-row items-center justify-center gap-6 xl:gap-10 shadow-lg hover:shadow-xl hover:shadow-indigo-500/10 group shrink-0 p-8 md:p-14`}
+                                        onClick={() => document.getElementById('workspace-empty-upload')?.click()}
+                                        onDragOver={(e) => e.preventDefault()}
+                                        onDrop={(e) => {
+                                            e.preventDefault();
+                                            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                                                handleFileSelected(e.dataTransfer.files[0]);
+                                            }
+                                        }}
+                                    >
+                                        <input 
+                                            id="workspace-empty-upload" 
+                                            type="file" 
+                                            accept="application/pdf,image/png,image/jpeg,image/jpg" 
+                                            className="hidden" 
+                                            onChange={(e) => {
+                                                if (e.target.files && e.target.files[0]) {
+                                                    handleFileSelected(e.target.files[0]);
+                                                }
+                                            }}
+                                        />
+                                        <div className={`shrink-0 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 rounded-3xl flex items-center justify-center group-hover:scale-110 group-hover:-rotate-3 transition-transform drop-shadow-sm w-24 h-24 md:w-28 md:h-28 text-6xl md:text-7xl`}>📁</div>
+                                        <div className="text-center xl:text-left flex-1 min-w-0">
+                                           <h2 className={`font-black text-slate-800 dark:text-white tracking-tight text-2xl md:text-3xl mb-2 md:mb-3`}>Mở File PDF</h2>
+                                           <p className="text-slate-500 dark:text-zinc-400 font-medium text-[13px] md:text-[14px] leading-relaxed w-full">Click chọn hoặc kéo thả File PDF vào vùng này để bắt đầu. Bạn đang ở Không gian làm việc.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Main workspace is always AcrobatViewer */}
+                                <AcrobatViewer
+                                    onViewerDirtyChange={setViewerDirty}
+                                    onExtractPages={handleExtractPages}
+                                    onObjectDelete={handleDeleteObjects}
+                                    fetchObjectsForPage={fetchPdfObjectsForPage}
+                                    onVdpBoxCreate={handleVdpBoxCreate}
+                                    rightPanel={(
+                                        <div
+                                            style={{ 
+                                                width: activeDashboardTool !== 'none' 
+                                                    ? (isSidebarOpen ? `${sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)}px` : (isMiniToolbarExpanded ? '220px' : '48px')) 
+                                                    : `${sidebarWidth}px` 
+                                            }}
+                                            className={`shrink-0 bg-[#f8fafc] dark:bg-zinc-900 shadow-[-10px_0_30px_rgba(0,0,0,0.05)] flex flex-row justify-end z-20 h-full transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} relative border-l border-slate-200 dark:border-zinc-800`}
+                                        >
+                                        {/* Resizer Handle */}
+                                        <div
+                                            className="absolute left-0 top-0 bottom-0 w-1.5 -ml-[3px] cursor-col-resize hover:bg-blue-500/50 active:bg-blue-500 z-50 transition-colors"
+                                            onMouseDown={(e) => {
+                                                e.preventDefault();
+                                                const initialWidth = activeDashboardTool !== 'none' 
+                                                    ? (isSidebarOpen ? sidebarWidth : (isMiniToolbarExpanded ? 220 : 48))
+                                                    : sidebarWidth;
+                                                sidebarDragRef.current = {
+                                                    startX: e.clientX,
+                                                    startWidth: initialWidth,
+                                                    lastWidth: initialWidth
+                                                };
+                                                setIsDraggingSidebar(true);
+                                            }}
+                                        />
+                                        
+                                        {/* Main Config Panel */}
+                                        {isSidebarOpen && (
+                                            <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-200 dark:border-zinc-800">
+                                                {/* Sidebar Header */}
+                                                <div className="px-4 h-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-slate-100 dark:bg-[#1a1c23] shrink-0 shadow-sm relative z-10">
+                                                    <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-1.5 uppercase tracking-wide">
+                                                        {activeDashboardTool === 'bgremover' ? (
+                                                            <button 
+                                                                onClick={() => setActiveDashboardTool('none')}
+                                                                className="flex items-center gap-1.5 text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors"
+                                                                title="Quay lại danh sách công cụ"
+                                                            >
+                                                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+                                                                QUAY LẠI
+                                                            </button>
+                                                        ) : (
+                                                            <>
+                                                                <span>🛠️</span> THÔNG SỐ
+                                                                {fileSizeStr && <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono normal-case tracking-normal ml-1 border pl-1.5 pr-1.5 py-0.5 rounded-full border-black/5 dark:border-white/5">{fileSizeStr}</span>}
+                                                            </>
+                                                        )}
+                                                    </h2>
+                                                    <div className="flex items-center gap-1">
+                                                        {(activeDashboardTool === 'booklet' || activeDashboardTool === 'nup' || activeDashboardTool === 'sticker_imposer') && (
+                                                            <button
+                                                                onClick={() => window.dispatchEvent(new CustomEvent('open-preset-modal'))}
+                                                                className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
+                                                                title="Tải preset sản phẩm"
+                                                            >
+                                                                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                                            </button>
+                                                        )}
+
+                                                        {history.length > 0 && activeDashboardTool !== 'bgremover' && (
+                                                            <button
+                                                                onClick={handleUndo}
+                                                                className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
+                                                                title="Trở lại thao tác trước"
+                                                            >
+                                                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+                                                            </button>
+                                                        )}
+
+
+                                                        <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700 mx-0.5" />
+
+                                                        <button
+                                                            onClick={() => setIsSidebarOpen(false)}
+                                                            className="w-7 h-7 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200 rounded transition-colors"
+                                                            title="Thu gọn Menu"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <div className="p-4 overflow-y-auto flex-1 flex flex-col text-sm text-slate-800 dark:text-zinc-200 scroller-thin relative bg-[#f8fafc] dark:bg-zinc-900 border-t border-black/5 dark:border-white/5">
+                                                    {isSelectionMode ? (
+                                                        <SelectionLayersPanel
+                                                            handleDeleteObjects={handleDeleteObjects}
+                                                            fetchPdfObjectsForPage={fetchPdfObjectsForPage}
+                                                        />
+                                                    ) : activeDashboardTool === 'datamerge' ? (
+                                                        <DataMergeTool
+                                                            pdfFile={file}
+                                                            getWorkingFile={getWorkingFile}
+                                                            vdpFields={vdpFields}
+                                                            setVdpFields={setVdpFields}
+                                                            selectedFieldIds={selectedVdpFieldIds}
+                                                            onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
+                                                            isActive={isActive}
+                                                            onBack={() => setActiveDashboardTool('none')}
+                                                            onApplyResult={(blob: Blob, name: string) => {
+                                                                commitWorkingFile(blob, name);
+                                                                setVdpFields([]);
+                                                                setSelectedVdpFieldIds([]);
+                                                                setActiveDashboardTool('none');
+                                                            }}
+                                                            onSpawnTab={(blob: Blob, name: string, path?: string) => {
+                                                                const newFile = new File([blob], name, { type: 'application/pdf' });
+                                                                if (path) {
+                                                                    Object.defineProperty(newFile, 'path', { value: path });
+                                                                }
+                                                                Object.defineProperty(newFile, 'isGenerated', { value: true });
+                                                                if (onSpawnTab) {
+                                                                    onSpawnTab(newFile);
+                                                                }
+                                                            }}
+                                                        />
+                                                    ) : activeDashboardTool === 'numbering' ? (
+                                                        <NumberingTool
+                                                            pdfFile={file}
+                                                            getWorkingFile={getWorkingFile}
+                                                            vdpFields={vdpFields}
+                                                            setVdpFields={setVdpFields}
+                                                            selectedFieldIds={selectedVdpFieldIds}
+                                                            onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
+                                                            isActive={isActive}
+                                                            onBack={() => setActiveDashboardTool('none')}
+                                                            onApplyResult={(blob: Blob, name: string) => {
+                                                                commitWorkingFile(blob, name);
+                                                                setVdpFields([]);
+                                                                setSelectedVdpFieldIds([]);
+                                                                setActiveDashboardTool('none');
+                                                            }}
+                                                            onSpawnTab={(blob: Blob, name: string, path?: string) => {
+                                                                const newFile = new File([blob], name, { type: 'application/pdf' });
+                                                                if (path) {
+                                                                    Object.defineProperty(newFile, 'path', { value: path });
+                                                                }
+                                                                Object.defineProperty(newFile, 'isGenerated', { value: true });
+                                                                if (onSpawnTab) {
+                                                                    onSpawnTab(newFile);
+                                                                }
+                                                            }}
+                                                        />
+                                                    ) : activeDashboardTool === 'stick_text_number' ? (
+                                                        <StickTextNumberTool
+                                                            pdfFile={file}
+                                                            onFileFixed={(blob, name) => {
+                                                                commitWorkingFile(blob, name);
+                                                            }}
+                                                            onBack={() => setActiveDashboardTool('none')}
+                                                        />
+                                                    ) : (
+                                                        <ImposerDashboard
+                                                            tabId={tabId || ''}
+                                                            onStartBooklet={handleStartBooklet}
+                                                            onStartNup={handleStartNup}
+                                                            onStartShuffle={handleStartShuffle}
+                                                            onStartResize={handleStartResize}
+                                                            onStartSplit={handleStartSplit}
+                                                            onStartMerge={handleStartMerge}
+                                                            onStartCatalogPlan={handleStartCatalogPlan}
+                                                            initialFeature={initialFeature}
+                                                            lockedMode={lockedMode}
+                                                            onBleedUpdate={handleBleedUpdate}
+                                                            onFileFixed={commitWorkingFile}
+                                                            systemMergeFiles={systemMergeFiles}
+                                                        />
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                        
+                                        {/* The Fixed Mini Toolbar (Visible when sidebar is collapsed OR when a tool is selected) */}
+                                        {(!isSidebarOpen || activeDashboardTool !== 'none') && (
+                                            <div className={`relative h-full shrink-0 transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} ${activeDashboardTool !== 'none' ? (isMiniToolbarExpanded ? 'w-[220px]' : 'w-[48px]') : 'w-full'}`}>
+                                                <button
+                                                    onClick={() => setIsMiniToolbarExpanded(!isMiniToolbarExpanded)}
+                                                    className="absolute top-1/2 -left-[14px] -translate-y-1/2 w-7 h-7 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full flex items-center justify-center shadow-sm hover:bg-slate-50 dark:hover:bg-zinc-700 transition-colors z-[100] text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400"
+                                                    title={isMiniToolbarExpanded ? "Thu gọn menu" : "Mở rộng menu"}
+                                                >
+                                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                                        {isMiniToolbarExpanded ? (
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M13 5l7 7-7 7M5 5l7 7-7 7" /> // >>
+                                                        ) : (
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7M19 19l-7-7 7-7" /> // <<
+                                                        )}
+                                                    </svg>
+                                                </button>
+
+                                                <div className="w-full h-full flex flex-col items-center bg-[#f8fafc] dark:bg-zinc-900 z-10 overflow-y-auto scroller-none overflow-x-hidden border-l border-slate-200 dark:border-zinc-800">
+                                                    <div className="w-full h-12 flex items-center border-b border-black/5 dark:border-white/10 shrink-0 px-2">
+                                                        <button
+                                                            onClick={() => {
+                                                                if (sidebarWidth < 280) setSidebarWidth(390);
+                                                                setIsSidebarOpen(true);
+                                                            }}
+                                                            className={`h-8 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 transition-colors rounded outline-none w-full ${isMiniToolbarExpanded ? 'justify-start px-2' : ''}`}
+                                                            title="Mở Bảng Cấu Hình"
+                                                        >
+                                                            <span className="text-slate-500 dark:text-zinc-400">⚙️</span>
+                                                            {isMiniToolbarExpanded && <span className="ml-2 text-[13px] font-bold text-slate-700 dark:text-zinc-300">Công cụ</span>}
+                                                        </button>
+                                                    </div>
+                                                    
+                                                    <div className="flex flex-col items-center py-2 gap-0 w-full px-1.5">
+                                                        {(() => {
+                                                            const allDashboardTools = TOOL_CATEGORIES.filter(cat => cat.id !== 'qc').flatMap(cat => getToolsByCategory(cat.id));
+                                                            const favTools = allDashboardTools.filter(t => {
+                                                                if (t.id === 'combine_pdf') return false;
+                                                                const featureId = t.defaultPayload?.focusFeature || t.defaultPayload?.lockedMode || t.id;
+                                                                return favoriteTools.includes(featureId) && !hiddenTools.includes(featureId);
+                                                            });
+                                                            
+                                                            if (favTools.length === 0) return null;
+                                                            
+                                                            return (
+                                                                <div key="favorites" className="w-full flex flex-col items-center mb-1">
+                                                                    {isMiniToolbarExpanded ? (
+                                                                        <div className="w-full px-2 mt-2 mb-1.5 flex items-center gap-2">
+                                                                            <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">⭐ Yêu Thích</span>
+                                                                            <div className="flex-1 h-px bg-amber-500 opacity-40" />
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="w-6 h-[2px] bg-amber-500 opacity-40 my-2 rounded-full" title="Yêu Thích" />
+                                                                    )}
+                                                                    <div className="flex flex-col items-center gap-1.5 w-full">
+                                                                        {favTools.map(tool => {
+                                                                            const featureId = tool.defaultPayload?.focusFeature || tool.defaultPayload?.lockedMode || tool.id;
+                                                                            const isActive = activeDashboardTool === featureId;
+                                                                            return (
+                                                                                <button
+                                                                                    key={`fav-${featureId}`}
+                                                                                    onClick={() => {
+                                                                                        if (isActive && isSidebarOpen) {
+                                                                                            setIsSidebarOpen(false);
+                                                                                        } else {
+                                                                                            setActiveDashboardTool(featureId);
+                                                                                            if (tool.defaultPayload?.lockedMode) {
+                                                                                                imposerStoreRef.current!.getState().setTaskMode(tool.defaultPayload.lockedMode);
+                                                                                            }
+                                                                                            if (sidebarWidth < 280) setSidebarWidth(390);
+                                                                                            setIsSidebarOpen(true);
+                                                                                        }
+                                                                                    }}
+                                                                                    className={`w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
+                                                                                        ${isMiniToolbarExpanded ? 'justify-start px-2' : 'justify-center'}
+                                                                                        ${isActive ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shadow-sm border border-amber-300 dark:border-amber-700/50' : 'bg-amber-50/50 dark:bg-amber-900/20 text-slate-700 dark:text-zinc-300 border border-amber-200/50 dark:border-amber-700/30 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 hover:text-amber-900 dark:hover:text-amber-100'}`
+                                                                                    }
+                                                                                    title={tool.title}
+                                                                                >
+                                                                                    <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
+                                                                                    {isMiniToolbarExpanded && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>}
+                                                                                </button>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })()}
+                                                        {TOOL_CATEGORIES.filter(cat => cat.id !== 'qc').map(cat => {
+                                                            const catTools = getToolsByCategory(cat.id).filter(t => {
+                                                                if (t.id === 'combine_pdf') return false;
+                                                                const featureId = t.defaultPayload?.focusFeature || t.defaultPayload?.lockedMode || t.id;
+                                                                if (hiddenTools.includes(featureId)) return false;
+                                                                if (favoriteTools.includes(featureId)) return false;
+                                                                return true;
+                                                            });
+                                                            if (catTools.length === 0) return null;
+                                                            return (
+                                                                <div key={cat.id} className="w-full flex flex-col items-center mb-1">
+                                                                    {isMiniToolbarExpanded ? (
+                                                                        <div className="w-full px-2 mt-2 mb-1.5 flex items-center gap-2">
+                                                                            <span className="text-[10px] font-bold text-indigo-800 dark:text-indigo-400 uppercase tracking-widest">{cat.title}</span>
+                                                                            <div className="flex-1 h-px bg-indigo-800 dark:bg-indigo-400 opacity-40" />
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="w-6 h-[2px] bg-indigo-800 dark:bg-indigo-400 opacity-40 my-2 rounded-full" title={cat.title} />
+                                                                    )}
+                                                                    <div className="flex flex-col items-center gap-1.5 w-full">
+                                                                        {catTools.map(tool => {
+                                                                            const featureId = tool.defaultPayload?.focusFeature || tool.defaultPayload?.lockedMode || tool.id;
+                                                                            const isActive = activeDashboardTool === featureId;
+                                                                            return (
+                                                                                <button
+                                                                                    key={featureId}
+                                                                                    onClick={() => {
+                                                                                        if (isActive && isSidebarOpen) {
+                                                                                            setIsSidebarOpen(false);
+                                                                                        } else {
+                                                                                            setActiveDashboardTool(featureId);
+                                                                                            if (tool.defaultPayload?.lockedMode) {
+                                                                                                imposerStoreRef.current!.getState().setTaskMode(tool.defaultPayload.lockedMode);
+                                                                                            }
+                                                                                            if (sidebarWidth < 280) setSidebarWidth(390);
+                                                                                            setIsSidebarOpen(true);
+                                                                                        }
+                                                                                    }}
+                                                                                    className={`w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
+                                                                                        ${isMiniToolbarExpanded ? 'justify-start px-2' : 'justify-center'}
+                                                                                        ${isActive ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 shadow-sm border border-indigo-300 dark:border-indigo-700/50' : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 border border-transparent'}`
+                                                                                    }
+                                                                                    title={tool.title}
+                                                                                >
+                                                                                    <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
+                                                                                    {isMiniToolbarExpanded && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>}
+                                                                                </button>
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            />
+                    </div>
+                </div>
+            )}
+
+            <SaveModal
+                handleSaveFile={handleSaveFile}
+                onSavePrint={() => setShowSavePrintModal(true)}
+            />
+
+            <SavePrintFilesModal
+                open={showSavePrintModal}
+                onClose={() => setShowSavePrintModal(false)}
+                resultBlob={file}
+                separateCut={!!imposerStoreRef.current?.getState()?.separateCutPage}
+                cncMode={activeDashboardTool === 'cnc_imposer'}
+                cncTwoSided={imposerStoreRef.current?.getState()?.duplexFlow === 'double'}
+                originalName={file?.name}
+            />
+
+            {/* Custom Scale Confirm Modal */}
+            {scaleConfirmModal && (
+                <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-zinc-700">
+                        <div className="px-6 py-4 border-b border-slate-200 dark:border-zinc-700 flex justify-between items-center bg-amber-50 dark:bg-amber-500/10">
+                            <h3 className="text-lg font-bold text-amber-600 dark:text-amber-500 flex items-center gap-2">
+                                <span className="material-symbols-outlined">warning</span>
+                                Cảnh báo kích thước
+                            </h3>
+                        </div>
+                        <div className="px-6 py-6 text-slate-600 dark:text-slate-300">
+                            {scaleConfirmModal.msg}
+                        </div>
+                        <div className="px-6 py-4 bg-slate-50 dark:bg-zinc-900 border-t border-slate-200 dark:border-zinc-700 flex justify-end gap-3">
+                            <button
+                                onClick={() => {
+                                    scaleConfirmModal.resolve(false);
+                                    setScaleConfirmModal(null);
+                                }}
+                                className="px-4 py-2 rounded-lg font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors"
+                            >
+                                Hủy bỏ (Cancel)
+                            </button>
+                            <button
+                                onClick={() => {
+                                    scaleConfirmModal.resolve(true);
+                                    setScaleConfirmModal(null);
+                                }}
+                                className="px-4 py-2 rounded-lg font-medium bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+                            >
+                                Tiếp tục (Thu nhỏ)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Custom Close Confirm Modal */}
+            {showCloseConfirm && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans">
+                    <div className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
+                        <div className="p-6">
+                            <h3 className="text-[16px] font-semibold text-slate-800 dark:text-white mb-2">
+                                Đóng file chưa lưu?
+                            </h3>
+                            <p className="text-[14px] text-slate-600 dark:text-zinc-300 leading-relaxed">
+                                File này đã bị thay đổi nhưng chưa được lưu. Bạn có chắc chắn muốn đóng và mất các thay đổi không?
+                            </p>
+                        </div>
+                        <div className="bg-slate-50 dark:bg-black/20 p-4 border-t border-slate-100 dark:border-white/5 flex justify-end gap-3">
+                            <button
+                                onClick={() => setShowCloseConfirm(false)}
+                                className="px-5 h-[38px] flex items-center justify-center rounded font-medium text-[13px] text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-white/10 border border-transparent hover:border-slate-200 dark:hover:border-white/10 transition-colors outline-none min-w-[90px]"
+                            >
+                                Hủy bỏ
+                            </button>
+                            <button
+                                onClick={forceReset}
+                                className="px-6 h-[38px] flex items-center justify-center rounded font-medium text-[13px] bg-red-600 hover:bg-red-700 text-white shadow-sm min-w-[120px] transition-colors outline-none"
+                            >
+                                Đóng không lưu
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+    //#endregion
+}

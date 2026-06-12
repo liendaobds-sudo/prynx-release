@@ -1,0 +1,51 @@
+﻿cargo :     
+Checking 
+pdf-inspector 
+v1.0.0 (D:\pdfcompa
+re\desktop\src-taur
+i)
+At line:1 char:1
++ cargo check --mes
+sage-format=short 
+2>&1 | Out-File 
+c.txt -Encoding ut 
+...
++ ~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
+~~~
+    + CategoryInfo 
+             : No  
+  tSpecified: (    
+    Checking pd    
+...ktop\src-ta    
+uri):String) [    
+], RemoteExcep    
+tion
+    + FullyQualifi 
+   edErrorId : Na  
+  tiveCommandErr   
+ or
+ 
+src\lib.rs:1:22: 
+warning: unused 
+import: `Emitter`
+src\lib.rs:82:5: 
+warning: field 
+`pdfium` is never 
+read
+src\lib.rs:473:4: 
+warning: function 
+`sha256_file` is 
+never used
+warning: 
+`pdf-inspector` 
+(lib) generated 3 
+warnings (run 
+`cargo fix --lib 
+-p pdf-inspector` 
+to apply 1 
+suggestion)
+    Finished `dev` 
+profile [optimized 
++ debuginfo] 
+target(s) in 2.00s

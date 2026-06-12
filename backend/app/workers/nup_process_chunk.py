@@ -1,0 +1,1091 @@
+"""
+PDF page assembly worker - process_chunk.
+
+Takes a batch of output sheets and renders source pages onto them
+at computed coordinates. Handles page placement, mark drawing,
+collision detection, and die-cut overlay.
+
+Extracted from nup_engine.py for modularity.
+"""
+
+import os
+import tempfile
+import math
+import logging
+import pikepdf
+from collections import defaultdict
+
+from app.workers import pdf_wrapper as pdf_lib
+from app.workers.nup_layout_solver import get_src_page_idx
+from app.workers.nup_marks import _draw_ponts_on_page
+from app.workers.cluster_tile_engine import draw_tile_cut_marks
+from app.workers.nup_artwork import place_one_artwork, compute_block_bbox
+
+MM_TO_PTS = 2.83465
+logger = logging.getLogger(__name__)
+
+def _strip_color_from_stream(page_or_xobj, target_color):
+    import pikepdf
+    try:
+        stream = pikepdf.parse_content_stream(page_or_xobj)
+    except Exception as e:
+        print(f"[_strip_color] Parse stream error: {e}", flush=True)
+        return False
+
+    new_stream = []
+    current_stroke_color = None
+    stroke_color_stack = []
+    stripped = False
+
+    print(f"[_strip_color] Starting parse. target_color={target_color}", flush=True)
+
+    for operands, operator in stream:
+        op = str(operator)
+        
+        # State save/restore
+        if op == 'q':
+            stroke_color_stack.append(current_stroke_color)
+        elif op == 'Q':
+            if stroke_color_stack:
+                current_stroke_color = stroke_color_stack.pop()
+
+        # Track STROKE color space (CS, not cs)
+        elif op == 'CS':
+            if operands:
+                cs_name = str(operands[0])
+                if cs_name not in ('/DeviceRGB', '/DeviceCMYK', '/DeviceGray', '/Pattern'):
+                    current_stroke_color = 'SPOT'
+                    print(f"[_strip_color] Found SPOT stroke color space: {cs_name}", flush=True)
+                else:
+                    current_stroke_color = None
+        elif op in ('SCN', 'SC'):
+            pass # Keep current_stroke_color for spot
+            
+        # Track STROKE color values (RG, K, G)
+        elif op in ('RG', 'K', 'G'):
+            try:
+                current_stroke_color = tuple(round(float(x), 3) for x in operands)
+            except Exception:
+                current_stroke_color = None
+                
+        # If it's a stroke operation
+        if op in ('S', 's', 'B', 'B*', 'b', 'b*'):
+            match = False
+            if current_stroke_color == 'SPOT':
+                match = True
+                print(f"[_strip_color] Stripping '{op}' because of SPOT color", flush=True)
+            elif current_stroke_color and target_color and current_stroke_color != 'SPOT':
+                if len(current_stroke_color) == len(target_color):
+                    match = True
+                    for c1, c2 in zip(current_stroke_color, target_color):
+                        if abs(c1 - c2) > 0.01:
+                            match = False
+                            break
+                    if match:
+                        print(f"[_strip_color] Stripping '{op}' because of CMYK/RGB match", flush=True)
+            
+            if match:
+                stripped = True
+                if op in ('S', 's'):
+                    continue  # Drop operator
+                elif op == 'B':
+                    operator = pikepdf.Operator('f')
+                elif op == 'B*':
+                    operator = pikepdf.Operator('f*')
+                elif op == 'b':
+                    new_stream.append(([], pikepdf.Operator('h')))
+                    operator = pikepdf.Operator('f')
+                elif op == 'b*':
+                    new_stream.append(([], pikepdf.Operator('h')))
+                    operator = pikepdf.Operator('f*')
+        
+        new_stream.append((operands, operator))
+
+    if stripped:
+        print(f"[_strip_color] Stream stripped successfully.", flush=True)
+        new_contents = pikepdf.unparse_content_stream(new_stream)
+        if isinstance(page_or_xobj, pikepdf.Page):
+            page_or_xobj.contents_coalesce()
+            page_or_xobj.get('/Contents').write(new_contents)
+        else:
+            page_or_xobj.write(new_contents)
+        return True
+    return False
+
+def process_chunk(args):
+
+
+    """Worker function to process a subset of output sheets."""
+
+    from app.workers import pdf_wrapper as pdf_lib
+
+    import os, tempfile, math
+
+    from app.workers.nup_layout_solver import get_src_page_idx, solve_optimal_layout
+
+    from app.workers.nup_engine import compute_sticker_layout_for_page, _find_largest_die_path
+
+    (source_path, job_id, chunk_idx, start_sheet, end_sheet, 
+
+     sheet_w, sheet_h, capacity, cells, bleed_pt, gap_x, gap_y, 
+
+     mark_type, mark_len, mark_off, margin_left, margin_bottom, 
+
+     sheet_usable_w, sheet_usable_h, align, cx_count, cy_count, cluster_gap,
+
+     active_grid_w, active_grid_h, super_grid_w, super_grid_h,
+
+     prog_file, total_page_count, layout_type, is_die_cut, pont_config, strategy, detected_shapes_by_page, target_quantity, detected_shape_params_by_page, sheet_mapping, chunk_precalc_placements,
+
+     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style) = args
+
+    src_doc = pdf_lib.open(source_path)
+
+    local_stripped_pages = set()
+
+    page_count = src_doc.page_count
+
+    out_doc = pdf_lib.open()
+
+    sheets_per_page = 1
+
+    total_capacity = capacity * cx_count * cy_count
+
+    if layout_type == 'repeat' and target_quantity > 0:
+
+        sheets_per_page = math.ceil(target_quantity / total_capacity)
+
+    # Cache die-cut geometry per source page to avoid redundant extract_vector_paths() calls
+
+    # Key: src_page_idx, Value: (sx0, sy0, sx1, sy1, tx0, ty0, tx1, ty1) or None
+
+    _diecut_geom_cache = {}
+    _die_items_cache = {}
+    _die_path_cache = {}    # Cache _find_largest_die_path result per src_page_idx
+    _layout_cache = {}      # Cache compute_sticker_layout_for_page result per src_page_idx
+
+    _MAX_GEOM_CACHE = 200  # Giới hạn để tránh memory leak
+
+    total_capacity = capacity * cx_count * cy_count
+
+    super_base_x = margin_left
+
+    if 'center' in align:
+
+        super_base_x = margin_left + (sheet_usable_w - super_grid_w) / 2
+
+    elif 'right' in align:
+
+        super_base_x = sheet_w - (sheet_w - margin_left - sheet_usable_w) - super_grid_w
+
+    super_base_y = margin_bottom
+
+    if 'center' in align:
+
+        super_base_y = margin_bottom + (sheet_usable_h - super_grid_h) / 2
+
+    elif 'top' in align:
+
+        super_base_y = sheet_h - (sheet_h - margin_bottom - sheet_usable_h) - super_grid_h
+
+
+    for sheet_idx in range(start_sheet, end_sheet):
+
+
+        out_page = out_doc.new_page(width=sheet_w, height=sheet_h)
+
+        # Store cuts per cluster and per blockId
+
+        # dict structure: { cluster_idx: { block_id: {'v': set(), 'h': set()} } }
+
+        block_cuts = {}
+
+        cur_cells = cells
+
+        cur_capacity = capacity
+
+        cur_active_grid_w = active_grid_w
+
+        cur_active_grid_h = active_grid_h
+
+        cur_super_base_x = super_base_x
+
+        cur_super_base_y = super_base_y
+
+        if layout_type == 'repeat':
+
+            src_page_idx = sheet_idx // sheets_per_page if sheets_per_page > 0 else sheet_idx
+
+            if src_page_idx < page_count:
+
+                src_page = src_doc[src_page_idx]
+                cur_geom_rect = None
+
+                if is_die_cut:
+                    # ── CACHE: _find_largest_die_path per source page ──
+                    if src_page_idx in _die_path_cache:
+                        largest_path = _die_path_cache[src_page_idx]
+                    else:
+                        largest_path = _find_largest_die_path(src_page)
+                        _die_path_cache[src_page_idx] = largest_path
+
+                    if largest_path:
+
+                        cur_geom_rect = (largest_path['rect'].x0, largest_path['rect'].y0, largest_path['rect'].x1, largest_path['rect'].y1)
+
+                if cur_geom_rect:
+
+                    cur_trim_w = cur_geom_rect[2] - cur_geom_rect[0]
+
+                    cur_trim_h = cur_geom_rect[3] - cur_geom_rect[1]
+
+                else:
+
+                    # MediaBox (rect) — khớp nup_engine; không ưu tiên TrimBox.
+                    cur_trim_w = src_page.rect.width
+
+                    cur_trim_h = src_page.rect.height
+
+                    cur_trim_w -= 2 * bleed_pt
+
+                    cur_trim_h -= 2 * bleed_pt
+
+                if is_die_cut and strategy in ('simple_auto', 'optimal_auto', 'staggered', 'grid', 'head_to_tail'):
+
+                    # ── CACHE: compute_sticker_layout_for_page per source page ──
+                    if src_page_idx in _layout_cache:
+                        sticker_layout = _layout_cache[src_page_idx]
+                    else:
+                        frontend_shape = None
+
+                        if detected_shapes_by_page:
+
+                            frontend_shape = detected_shapes_by_page.get(str(src_page_idx)) or detected_shapes_by_page.get(src_page_idx)
+
+                        frontend_shape_props = {}
+
+                        if detected_shape_params_by_page:
+
+                            frontend_shape_props = detected_shape_params_by_page.get(str(src_page_idx)) or detected_shape_params_by_page.get(src_page_idx) or {}
+
+                        # Compute secondary_gap for fillBlockGap
+                        _chunk_secondary_gap = main_secondary_gap
+                        if cut_type == 'one_dao' and fill_block_gap_mm > 0:
+                            _chunk_secondary_gap = fill_block_gap_mm * 2.83465
+
+                        sticker_layout = compute_sticker_layout_for_page(
+                            page=src_page,
+
+                            sheet_usable_w=sheet_usable_w,
+
+                            sheet_usable_h=sheet_usable_h,
+
+                            gap_x=gap_x,
+
+                            gap_y=gap_y,
+
+                            strategy=strategy,
+
+                            shape_type_override=frontend_shape if frontend_shape else None,
+
+                            shape_props_override=frontend_shape_props if frontend_shape_props else None,
+
+                            bleed_pt=bleed_pt,
+
+                            secondary_gap=_chunk_secondary_gap,
+
+                        )
+                        _layout_cache[src_page_idx] = sticker_layout
+
+                    cur_cells = sticker_layout.get('items', [])
+
+                    cur_capacity = sticker_layout.get('totalItems', 0)
+
+                    cur_active_grid_w = sticker_layout.get('widthUsed', 0)
+
+                    cur_active_grid_h = sticker_layout.get('heightUsed', 0)
+
+                else:
+
+                    cur_layout = solve_optimal_layout(sheet_usable_w, sheet_usable_h, cur_trim_w, cur_trim_h, gap_x, gap_y, strategy, main_secondary_gap)
+
+                    cur_cells = cur_layout['cells']
+
+                    cur_capacity = cur_layout['totalItems']
+
+                    cur_active_grid_w = cur_layout['overallWidth']
+
+                    cur_active_grid_h = cur_layout['overallHeight']
+
+                cur_super_grid_w = cx_count * cur_active_grid_w + max(0, cx_count - 1) * cluster_gap
+
+                cur_super_grid_h = cy_count * cur_active_grid_h + max(0, cy_count - 1) * cluster_gap
+
+                cur_super_base_x = margin_left
+
+                if 'center' in align:
+
+                    cur_super_base_x = margin_left + (sheet_usable_w - cur_super_grid_w) / 2
+
+                elif 'right' in align:
+
+                    cur_super_base_x = sheet_w - (sheet_w - margin_left - sheet_usable_w) - cur_super_grid_w
+
+                cur_super_base_y = margin_bottom
+
+                if 'center' in align:
+
+                    cur_super_base_y = margin_bottom + (sheet_usable_h - cur_super_grid_h) / 2
+
+                elif 'top' in align:
+
+                    cur_super_base_y = sheet_h - (sheet_h - margin_bottom - sheet_usable_h) - cur_super_grid_h
+
+        # --- Phase 1: Collect all absolute placements ---
+
+        if chunk_precalc_placements is not None:
+
+            placements = chunk_precalc_placements.get(sheet_idx, [])
+
+            # Convert dict keys from string to int if necessary (JSON serialization might change it)
+
+            if not placements and str(sheet_idx) in chunk_precalc_placements:
+
+                placements = chunk_precalc_placements[str(sheet_idx)]
+
+        else:
+
+            # Try Rust fast path for placement calculation
+            try:
+                import pdfcompare_native as _native
+                placements = _native.compute_placements(
+                    sheet_idx=sheet_idx,
+                    cells=cur_cells,
+                    capacity=cur_capacity,
+                    cx_count=cx_count,
+                    cy_count=cy_count,
+                    cluster_gap=cluster_gap,
+                    active_grid_w=cur_active_grid_w,
+                    active_grid_h=cur_active_grid_h,
+                    super_base_x=cur_super_base_x,
+                    super_base_y=cur_super_base_y,
+                    sheet_w=sheet_w,
+                    sheet_h=sheet_h,
+                    layout_type=layout_type,
+                    total_capacity=total_capacity,
+                    page_count=page_count,
+                    sheet_mapping=sheet_mapping,
+                )
+            except Exception:
+                # Python fallback
+                placements = []
+
+                for cy in range(cy_count):
+
+                    for cx in range(cx_count):
+
+                        cluster_base_x = cur_super_base_x + cx * (cur_active_grid_w + cluster_gap)
+
+                        visual_cy = cy_count - 1 - cy
+
+                        cluster_base_y = cur_super_base_y + visual_cy * (cur_active_grid_h + cluster_gap)
+
+                        for cell_idx, cell in enumerate(cur_cells):
+
+                            cluster_idx = cy * cx_count + cx
+
+                            cell_on_sheet_idx = cluster_idx * cur_capacity + cell_idx
+
+                            if sheet_mapping and layout_type == 'repeat':
+
+                                src_page_idx = sheet_mapping[sheet_idx]
+
+                            else:
+
+                                src_page_idx = get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capacity, page_count)
+
+                            if src_page_idx >= page_count:
+
+                                continue # Allow other cells on sheet to process if non-sequential
+
+                            cell_x = cluster_base_x + cell['x']
+
+                            cell_y_from_bottom = cluster_base_y + (cur_active_grid_h - cell['y'] - cell['height'])
+
+                            cell_y = sheet_h - cell_y_from_bottom - cell['height']
+
+                            placements.append({
+
+                                'cluster_idx': cluster_idx,
+
+                                'cell': cell,
+
+                                'src_page_idx': src_page_idx,
+
+                                'abs_x': cell_x,
+
+                                'abs_y': cell_y_from_bottom,
+
+                                'width': cell['width'],
+
+                                'height': cell['height'],
+
+                                'original_cell_y': cell_y
+
+                            })
+
+        
+        # --- Phase 2: Collision Detection ---
+        
+
+        if is_die_cut and pont_config and not pont_config.get('disableCollision', False):
+
+            from app.workers.pont_collision import calculate_forbidden_zones, smart_resolve_collisions, build_shapely_polygon_from_paths, detect_collisions, MM_TO_PTS
+
+            # Determine margins - use pont_config values (which are in MM) if available, otherwise default to margin_bottom/margin_left (which are in PT)
+
+            margins = {
+
+                'top': pont_config.get('marginTop') * MM_TO_PTS if pont_config.get('marginTop') is not None else margin_bottom,
+
+                'bottom': pont_config.get('marginBottom') * MM_TO_PTS if pont_config.get('marginBottom') is not None else margin_bottom,
+
+                'left': pont_config.get('marginLeft') * MM_TO_PTS if pont_config.get('marginLeft') is not None else margin_left,
+
+                'right': pont_config.get('marginRight') * MM_TO_PTS if pont_config.get('marginRight') is not None else margin_left
+
+            }
+
+            zones = calculate_forbidden_zones(pont_config, margins, sheet_w, sheet_h)
+
+            if zones and placements:
+
+                # Try to extract shape from the first valid source page
+
+                first_src_idx = placements[0]['src_page_idx']
+                base_poly = None
+                base_rect_pts = (0, 0, placements[0]['width'], placements[0]['height'])
+                src_page = src_doc[first_src_idx]
+                
+                # Use mathematically perfect polygon for Circle/Ellipse
+                shape_type = (detected_shapes_by_page.get(str(first_src_idx)) or detected_shapes_by_page.get(first_src_idx, 'CUSTOM')) if is_die_cut else 'CUSTOM'
+                if shape_type == 'CIRCLE_ELLIPSE':
+                    from shapely.geometry import Point
+                    from shapely.affinity import scale
+                    rx = placements[0]['width'] / 2.0
+                    ry = placements[0]['height'] / 2.0
+                    base_poly = scale(Point(0,0).buffer(1.0, resolution=64), xfact=rx, yfact=ry)
+                    base_rect_pts = (-rx, -ry, rx, ry)
+                else:
+                    if first_src_idx in _die_items_cache:
+                        cached_paths = _die_items_cache[first_src_idx]
+                        paths = [cached_paths] if cached_paths else []
+                    else:
+                        paths = src_page.extract_vector_paths()
+    
+                    if paths:
+                        base_poly = build_shapely_polygon_from_paths(paths, src_page.rect)
+                        if base_poly:
+                            minx, miny, maxx, maxy = base_poly.bounds
+                            base_rect_pts = (minx, miny, maxx, maxy)
+
+                initial_cols = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
+                
+
+                if initial_cols:
+                    original_len = len(placements)
+                    placements = smart_resolve_collisions(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+
+        # --- Phase 3: Render ---
+
+        # ── Bbox mỗi (cluster, block) theo toạ độ trim để xác định mép NGOÀI vs mép TRONG ──
+        # Mép ngoài block → bleed đầy đủ; mép trong (giáp ô khác) → clip nửa gap (tránh chồng bleed).
+        _block_bbox = {}
+        for _p in placements:
+            _k = (_p['cluster_idx'], _p['cell'].get('blockId', 0))
+            _x0 = _p['abs_x']; _y0 = _p['original_cell_y']
+            _x1 = _x0 + _p['width']; _y1 = _y0 + _p['height']
+            if _k not in _block_bbox:
+                _block_bbox[_k] = [_x0, _y0, _x1, _y1]
+            else:
+                bb = _block_bbox[_k]
+                bb[0] = min(bb[0], _x0); bb[1] = min(bb[1], _y0)
+                bb[2] = max(bb[2], _x1); bb[3] = max(bb[3], _y1)
+        _clip_off_x = min(gap_x / 2.0, bleed_pt) if gap_x > 0 else 0.0
+        _clip_off_y = min(gap_y / 2.0, bleed_pt) if gap_y > 0 else 0.0
+
+        for p in placements:
+
+            cell = p['cell']
+
+            cluster_idx = p['cluster_idx']
+
+            # Đặt artwork qua hàm DÙNG CHUNG (nguồn chân lý duy nhất — xem nup_artwork.py)
+            trim_rect, src_page_idx = place_one_artwork(
+                out_page, src_doc, p,
+                bleed_pt=bleed_pt, is_die_cut=is_die_cut, cut_type=cut_type,
+                separate_cut_page=separate_cut_page, local_stripped_pages=local_stripped_pages,
+                job_id=job_id, diecut_geom_cache=_diecut_geom_cache, die_items_cache=_die_items_cache,
+                max_geom_cache=_MAX_GEOM_CACHE, block_bbox=_block_bbox,
+                clip_off_x=_clip_off_x, clip_off_y=_clip_off_y,
+                find_largest_die_path=_find_largest_die_path,
+            )
+
+            block_id = cell.get('blockId', 0)
+
+            if cluster_idx not in block_cuts:
+
+                block_cuts[cluster_idx] = {}
+
+            if block_id not in block_cuts[cluster_idx]:
+
+                block_cuts[cluster_idx][block_id] = {'v': set(), 'h': set()}
+
+            block_cuts[cluster_idx][block_id]['v'].add(round(trim_rect.x0, 2))
+
+            block_cuts[cluster_idx][block_id]['v'].add(round(trim_rect.x1, 2))
+
+            block_cuts[cluster_idx][block_id]['h'].add(round(trim_rect.y0, 2))
+
+            block_cuts[cluster_idx][block_id]['h'].add(round(trim_rect.y1, 2))
+
+        # Draw guillotine marks exactly around the cut lines
+
+        # Draw guillotine marks exactly around the cut lines per block per cluster
+
+        if not is_die_cut and (mark_type == 'guillotine' or mark_type == 'corners'):
+
+            shape = out_page.new_shape()
+
+            # Rust fast path: compute mark coordinates
+            try:
+                import pdfcompare_native as _native
+                mark_segs = _native.compute_mark_coords(placements, mark_type, float(mark_off), float(mark_len))
+                for seg in mark_segs:
+                    shape.draw_line(pdf_lib.Point(seg['x1'], seg['y1']), pdf_lib.Point(seg['x2'], seg['y2']))
+            except Exception:
+                # Python fallback
+                for c_idx, cluster_blocks in block_cuts.items():
+
+                    _bboxes = {}
+
+                    for b_id, cuts in cluster_blocks.items():
+
+                        v_cuts = cuts['v']
+
+                        h_cuts = cuts['h']
+
+                        if v_cuts and h_cuts:
+
+                            min_x, max_x = min(v_cuts), max(v_cuts)
+
+                            min_y, max_y = min(h_cuts), max(h_cuts)
+
+                            _bboxes[b_id] = (min_x, max_x, min_y, max_y)
+
+                            if mark_type == 'corners':
+
+                                v_cuts_to_draw = {min_x, max_x}
+
+                                h_cuts_to_draw = {min_y, max_y}
+
+                            else:
+
+                                v_cuts_to_draw = v_cuts
+
+                                h_cuts_to_draw = h_cuts
+
+                            for vx in v_cuts_to_draw:
+
+                                shape.draw_line(pdf_lib.Point(vx, min_y - mark_off), pdf_lib.Point(vx, min_y - mark_off - mark_len))
+
+                                shape.draw_line(pdf_lib.Point(vx, max_y + mark_off), pdf_lib.Point(vx, max_y + mark_off + mark_len))
+
+                            for hy in h_cuts_to_draw:
+
+                                shape.draw_line(pdf_lib.Point(min_x - mark_off, hy), pdf_lib.Point(min_x - mark_off - mark_len, hy))
+
+                                shape.draw_line(pdf_lib.Point(max_x + mark_off, hy), pdf_lib.Point(max_x + mark_off + mark_len, hy))
+
+                    # Split mark "dấu dập cắt đôi giữa 2 cụm" — đặt ở lề ngoài global (khớp gốc)
+                    _GAP_EPS = 0.5
+                    b0 = _bboxes.get(0)
+                    if b0 and _bboxes:
+                        g_min_x = min(b[0] for b in _bboxes.values())
+                        g_max_x = max(b[1] for b in _bboxes.values())
+                        g_min_y = min(b[2] for b in _bboxes.values())
+                        g_max_y = max(b[3] for b in _bboxes.values())
+                        b1 = _bboxes.get(1)
+                        if b1 and b1[0] - b0[1] > _GAP_EPS:
+                            dx = (b0[1] + b1[0]) / 2.0
+                            shape.draw_line(pdf_lib.Point(dx, g_min_y - mark_off), pdf_lib.Point(dx, g_min_y - mark_off - mark_len))
+                            shape.draw_line(pdf_lib.Point(dx, g_max_y + mark_off), pdf_lib.Point(dx, g_max_y + mark_off + mark_len))
+                        b2 = _bboxes.get(2)
+                        if b2 and b2[2] - b0[3] > _GAP_EPS:
+                            dy = (b0[3] + b2[2]) / 2.0
+                            shape.draw_line(pdf_lib.Point(g_min_x - mark_off, dy), pdf_lib.Point(g_min_x - mark_off - mark_len, dy))
+                            shape.draw_line(pdf_lib.Point(g_max_x + mark_off, dy), pdf_lib.Point(g_max_x + mark_off + mark_len, dy))
+
+            shape.finish(color=(0,0,0), width=mark_thick)
+
+            shape.commit()
+        # Draw cluster tile cut marks (always, regardless of mark_type)
+        if grouping_strategy == 'cluster_tile' and sheet_idx in chunk_cluster_tile_cuts:
+            _ctcl = chunk_cluster_tile_cuts[sheet_idx]
+            draw_tile_cut_marks(
+                out_page, _ctcl,
+                mark_off=float(mark_off),
+                mark_len=float(mark_len),
+                mark_thickness=float(mark_thick),
+                mark_style=mark_style,
+                bleed_pt=float(bleed_pt),
+            )
+
+        # Create OCG layer on the main page if we are drawing marks directly on it
+        main_ocg_xref = None
+        sheet_num_label = f'_{sheet_idx + 1}' if global_total_sheets > 1 else ''
+        sheet_suffix = f' #{sheet_idx + 1}' if global_total_sheets > 1 else ''
+        if is_die_cut and not separate_cut_page:
+            cut_page_parent = out_doc.add_ocg(f'cut_page{sheet_num_label}', on=True, add_to_order=False)
+            
+            cut_page_children = []
+
+            # Graphtec SA info OCG
+            if pont_config and pont_config.get('isGraphtec', False):
+                layer_info = pont_config.get('layerInfoName', '')
+                if layer_info:
+                    try:
+                        sa_ocg = out_doc.add_ocg(layer_info, on=True, add_to_order=False)
+                        cut_page_children.append(sa_ocg)
+                    except Exception:
+                        pass
+
+            die_cut_layer_name = f'Result_Cutline_Model_{sheet_idx + 1}'
+            main_ocg_xref = out_doc.add_ocg(die_cut_layer_name, on=True, add_to_order=False)
+            cut_page_children.append(main_ocg_xref)
+
+            if pont_config:
+                pont_parent_name = pont_config.get('layerName', 'Marks_Model_')
+                boong_group_name = pont_config.get('groupName', 'MarkLine')
+                boong_item_name = pont_config.get('itemName', 'MKLINE')
+                
+                pont_parent_ocg = out_doc.add_ocg(pont_parent_name, on=True, add_to_order=False)
+                boong_group_ocg = out_doc.add_ocg(boong_group_name, on=True, add_to_order=False)
+                
+                cut_page_children.append(pont_parent_ocg)
+                # Adding an array right after pont_parent_ocg makes its contents children of pont_parent_ocg
+                cut_page_children.append(pikepdf.Array([boong_group_ocg]))
+                
+                _draw_ponts_on_page(out_page, placements, pont_config, sheet_w, sheet_h, margin_left, margin_bottom, ocg_xref=boong_group_ocg, item_name=boong_item_name)
+
+            # Append the full tree to /Order
+            try:
+                d = out_doc._pdf.Root["/OCProperties"]["/D"]
+                if "/Order" not in d:
+                    d["/Order"] = pikepdf.Array()
+                
+                tree = [cut_page_parent]
+                if cut_page_children:
+                    tree.append(pikepdf.Array(cut_page_children))
+                
+                d["/Order"].extend(tree)
+            except Exception:
+                pass
+
+        if is_die_cut and pont_config and separate_cut_page:
+            # If separate_cut_page is TRUE, we still MUST draw the marks on the printed artwork page!
+            # But we draw them directly without an OCG layer, so they just print.
+            _draw_ponts_on_page(out_page, placements, pont_config, sheet_w, sheet_h, margin_left, margin_bottom, ocg_xref=None)
+
+        # Extract default die_color and die_width from first available cache for 1-dao
+        global_die_color = (1, 0, 0)  # Default to Red
+        global_die_width = 0.5
+        for p in placements:
+            idx = p.get('cell', {}).get('pageIdx', p.get('src_page_idx', 0))
+            cache_key = f"{job_id}_{idx}"
+            cached = _die_items_cache.get(cache_key)
+            if cached:
+                c = cached.get('color')
+                if c:
+                    is_invisible = False
+                    if len(c) == 4: # CMYK
+                        if (c[0] < 0.1 and c[1] < 0.1 and c[2] < 0.1 and c[3] < 0.1) or (c[3] > 0.9):
+                            is_invisible = True
+                    elif len(c) == 3: # RGB
+                        if (c[0] < 0.1 and c[1] < 0.1 and c[2] < 0.1) or (c[0] > 0.9 and c[1] > 0.9 and c[2] > 0.9):
+                            is_invisible = True
+                    elif len(c) == 1: # Grayscale
+                        if c[0] < 0.1 or c[0] > 0.9:
+                            is_invisible = True
+                    
+                    if not is_invisible:
+                        global_die_color = c
+                        global_die_width = max(0.5, float(cached.get('width') or 0.5))
+                        break
+                    else:
+                        global_die_color = (1, 0, 0) # Fallback to red if black/white
+                        global_die_width = max(0.5, float(cached.get('width') or 0.5))
+                        break
+
+        # 1 Dao cut lines (duong cat 1 Dao LETA)
+        if cut_type == 'one_dao' and placements:
+            from app.workers.sticker_imposer_pkg.one_dao_cut import (
+                generate_one_dao_cut_segments, draw_one_dao_cuts
+            )
+            one_dao_placements = [
+                {'abs_x': p['abs_x'], 'abs_y': p['original_cell_y'],
+                 'width': p['width'], 'height': p['height']}
+                for p in placements
+            ]
+            cut_segs = generate_one_dao_cut_segments(
+                one_dao_placements, gap_x, gap_y, 2.835 # ONE_DAO_SAFETY_BLEED_PT (1mm)
+            )
+            if not separate_cut_page:
+                draw_one_dao_cuts(out_page, cut_segs, color=global_die_color, stroke_width=global_die_width, oc=main_ocg_xref)
+
+        # Redraw original die-cut lines on the main page inside the OCG layer
+        if is_die_cut and cut_type != 'one_dao' and not separate_cut_page and placements:
+            cut_shape_main = out_page.new_shape()
+            for p_idx_d, p in enumerate(placements):
+                cell = p['cell']
+                src_page_idx_c = cell.get('pageIdx', p.get('src_page_idx', 0))
+                if src_page_idx_c >= page_count:
+                    continue
+                
+                cache_key = f"{job_id}_{src_page_idx_c}"
+                cached = _die_items_cache.get(cache_key)
+                if not cached:
+                    continue
+
+                die_items = cached['items']
+                die_rect = cached['rect']
+                die_color = cached.get('color')
+                if not die_color:
+                    die_color = (1, 0, 0)
+                else:
+                    is_invisible = False
+                    if len(die_color) == 4:
+                        if (die_color[0] < 0.1 and die_color[1] < 0.1 and die_color[2] < 0.1 and die_color[3] < 0.1) or (die_color[3] > 0.9):
+                            is_invisible = True
+                    elif len(die_color) == 3:
+                        if (die_color[0] < 0.1 and die_color[1] < 0.1 and die_color[2] < 0.1) or (die_color[0] > 0.9 and die_color[1] > 0.9 and die_color[2] > 0.9):
+                            is_invisible = True
+                    elif len(die_color) == 1:
+                        if die_color[0] < 0.1 or die_color[0] > 0.9:
+                            is_invisible = True
+                            
+                    if is_invisible:
+                        die_color = (1, 0, 0)
+                die_width = max(0.5, float(cached.get('width') or 0.5))
+
+                abs_x = p['abs_x']
+                abs_y = p['original_cell_y']
+                is_rotated = cell.get('isRotated', False)
+                is_rotated_180 = cell.get('isRotated180', False)
+
+                for item in die_items:
+                    cmd = item[0]
+
+                    if cmd == 'l':
+                        p1 = pdf_lib.Point(item[1])
+                        p2 = pdf_lib.Point(item[2])
+                        if is_rotated and is_rotated_180:
+                            t1 = pdf_lib.Point(abs_x + (die_rect.y1 - p1.y), abs_y + p1.x - die_rect.x0)
+                            t2 = pdf_lib.Point(abs_x + (die_rect.y1 - p2.y), abs_y + p2.x - die_rect.x0)
+                        elif is_rotated_180:
+                            t1 = pdf_lib.Point(abs_x + (die_rect.x1 - p1.x), abs_y + (die_rect.y1 - p1.y))
+                            t2 = pdf_lib.Point(abs_x + (die_rect.x1 - p2.x), abs_y + (die_rect.y1 - p2.y))
+                        elif is_rotated:
+                            t1 = pdf_lib.Point(abs_x + (p1.y - die_rect.y0), abs_y + (die_rect.x1 - p1.x))
+                            t2 = pdf_lib.Point(abs_x + (p2.y - die_rect.y0), abs_y + (die_rect.x1 - p2.x))
+                        else:
+                            t1 = pdf_lib.Point(abs_x + (p1.x - die_rect.x0), abs_y + (p1.y - die_rect.y0))
+                            t2 = pdf_lib.Point(abs_x + (p2.x - die_rect.x0), abs_y + (p2.y - die_rect.y0))
+                        cut_shape_main.draw_line(t1, t2)
+
+                    elif cmd == 'c':
+                        pts = [pdf_lib.Point(item[i]) for i in range(1, 5)]
+                        transformed = []
+                        for pt in pts:
+                            if is_rotated and is_rotated_180:
+                                transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
+                            elif is_rotated_180:
+                                transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
+                            elif is_rotated:
+                                transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
+                            else:
+                                transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
+                        cut_shape_main.draw_bezier(transformed[0], transformed[1], transformed[2], transformed[3])
+
+                    elif cmd == 're':
+                        r = pdf_lib.Rect(item[1])
+                        if is_rotated and is_rotated_180:
+                            nr = pdf_lib.Rect(
+                                abs_x + (die_rect.y1 - r.y1), abs_y + r.x0 - die_rect.x0,
+                                abs_x + (die_rect.y1 - r.y0), abs_y + r.x1 - die_rect.x0
+                            )
+                        elif is_rotated_180:
+                            nr = pdf_lib.Rect(
+                                abs_x + (die_rect.x1 - r.x1), abs_y + (die_rect.y1 - r.y1),
+                                abs_x + (die_rect.x1 - r.x0), abs_y + (die_rect.y1 - r.y0)
+                            )
+                        elif is_rotated:
+                            nr = pdf_lib.Rect(
+                                abs_x + (r.y0 - die_rect.y0), abs_y + (die_rect.x1 - r.x1),
+                                abs_x + (r.y1 - die_rect.y0), abs_y + (die_rect.x1 - r.x0)
+                            )
+                        else:
+                            nr = pdf_lib.Rect(
+                                abs_x + (r.x0 - die_rect.x0), abs_y + (r.y0 - die_rect.y0),
+                                abs_x + (r.x1 - die_rect.x0), abs_y + (r.y1 - die_rect.y0)
+                            )
+                        cut_shape_main.draw_rect(nr)
+
+                    elif cmd == 'qu':
+                        quad = item[1]
+                        quad_pts = [pdf_lib.Point(quad.ul), pdf_lib.Point(quad.ur),
+                                    pdf_lib.Point(quad.lr), pdf_lib.Point(quad.ll)]
+                        transformed = []
+                        for pt in quad_pts:
+                            if is_rotated and is_rotated_180:
+                                transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
+                            elif is_rotated_180:
+                                transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
+                            elif is_rotated:
+                                transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
+                            else:
+                                transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
+                        for qi in range(4):
+                            cut_shape_main.draw_line(transformed[qi], transformed[(qi + 1) % 4])
+
+                cut_shape_main.finish(color=die_color, width=die_width, closePath=False, oc=main_ocg_xref)
+
+            cut_shape_main.commit()
+
+        # ═══ SEPARATE CUT PAGE ═══
+        # After rendering the artwork page, generate a second page with only die-cut paths
+        if separate_cut_page and is_die_cut and placements:
+            out_page_cut = out_doc.new_page(width=sheet_w, height=sheet_h)
+
+            # --- Create parent group OCG: cut_page_N ---
+            cut_num_label = f'_{sheet_idx + 1}' if global_total_sheets > 1 else ''
+            cut_suffix = f' #{sheet_idx + 1}' if global_total_sheets > 1 else ''
+            cut_page_parent = out_doc.add_ocg(f'cut_page{cut_num_label}', on=True, add_to_order=False)
+            cut_child_ocgs = []
+
+            # --- Graphtec SA info OCG (child, empty layer) ---
+            layer_info = pont_config.get('layerInfoName', '') if pont_config else ''
+            if layer_info and pont_config and pont_config.get('isGraphtec', False):
+                try:
+                    sa_ocg = out_doc.add_ocg(layer_info, on=True, add_to_order=False)
+                    cut_child_ocgs.append(sa_ocg)
+                except Exception:
+                    pass
+
+            # --- Result_Cutline_Model_ OCG (child, contains die-cut paths) ---
+            die_cut_layer_name = f'Result_Cutline_Model_{sheet_idx + 1}'
+            ocg_xref = out_doc.add_ocg(die_cut_layer_name, on=True, add_to_order=False)
+            cut_child_ocgs.append(ocg_xref)
+
+            cut_shape = out_page_cut.new_shape()
+
+            # When cut_type is 'one_dao', skip original die-cut shapes — only draw 1 Dao lines below
+            if cut_type != 'one_dao':
+                # _die_items_cache was already populated in the earlier layout placement loop
+                for p_idx_d, p in enumerate(placements):
+                    cell = p['cell']
+                    src_page_idx_c = cell.get('pageIdx', p.get('src_page_idx', 0))
+                    if src_page_idx_c >= page_count:
+                        continue
+                    
+                    cache_key = f"{job_id}_{src_page_idx_c}"
+                    cached = _die_items_cache.get(cache_key)
+                    if not cached:
+                        continue
+
+                    die_items = cached['items']
+                    die_rect = cached['rect']
+                    die_color = cached.get('color')
+                    # Fallback to Red for invisible colors (black, white, near-black, near-white)
+                    # Spot colors often get parsed as white (1,1,1) or black (0,0,0)
+                    if not die_color:
+                        die_color = (1, 0, 0)
+                    else:
+                        is_invisible = False
+                        if len(die_color) == 4: # CMYK
+                            if (die_color[0] < 0.1 and die_color[1] < 0.1 and die_color[2] < 0.1 and die_color[3] < 0.1) or (die_color[3] > 0.9):
+                                is_invisible = True
+                        elif len(die_color) == 3: # RGB
+                            if (die_color[0] < 0.1 and die_color[1] < 0.1 and die_color[2] < 0.1) or (die_color[0] > 0.9 and die_color[1] > 0.9 and die_color[2] > 0.9):
+                                is_invisible = True
+                        elif len(die_color) == 1: # Grayscale
+                            if die_color[0] < 0.1 or die_color[0] > 0.9:
+                                is_invisible = True
+                                
+                        if is_invisible:
+                            die_color = (1, 0, 0)  # Red for visibility
+                    die_width = max(0.5, float(cached.get('width') or 0.5))
+
+                    # Calculate offset: where this placement's trim rect is on the output page
+                    abs_x = p['abs_x']
+                    abs_y = p['original_cell_y']
+                    item_w = p.get('width', cell.get('width', 0))
+                    item_h = p.get('height', cell.get('height', 0))
+
+                    # The die_rect is relative to the source page. 
+                    # We need to map it to the output page position.
+                    is_rotated = cell.get('isRotated', False)
+                    is_rotated_180 = cell.get('isRotated180', False)
+
+                    for item in die_items:
+                        cmd = item[0]  # 'l' (line), 'c' (curve), 're' (rect), 'qu' (quad)
+
+                        if cmd == 'l':  # line: (cmd, p1, p2)
+                            p1 = pdf_lib.Point(item[1])
+                            p2 = pdf_lib.Point(item[2])
+                            if is_rotated and is_rotated_180:
+                                t1 = pdf_lib.Point(abs_x + (die_rect.y1 - p1.y), abs_y + p1.x - die_rect.x0)
+                                t2 = pdf_lib.Point(abs_x + (die_rect.y1 - p2.y), abs_y + p2.x - die_rect.x0)
+                            elif is_rotated_180:
+                                t1 = pdf_lib.Point(abs_x + (die_rect.x1 - p1.x), abs_y + (die_rect.y1 - p1.y))
+                                t2 = pdf_lib.Point(abs_x + (die_rect.x1 - p2.x), abs_y + (die_rect.y1 - p2.y))
+                            elif is_rotated:
+                                t1 = pdf_lib.Point(abs_x + (p1.y - die_rect.y0), abs_y + (die_rect.x1 - p1.x))
+                                t2 = pdf_lib.Point(abs_x + (p2.y - die_rect.y0), abs_y + (die_rect.x1 - p2.x))
+                            else:
+                                t1 = pdf_lib.Point(abs_x + (p1.x - die_rect.x0), abs_y + (p1.y - die_rect.y0))
+                                t2 = pdf_lib.Point(abs_x + (p2.x - die_rect.x0), abs_y + (p2.y - die_rect.y0))
+                            cut_shape.draw_line(t1, t2)
+
+                        elif cmd == 'c':  # cubic bezier: (cmd, p1, p2, p3, p4)
+                            pts = [pdf_lib.Point(item[i]) for i in range(1, 5)]
+                            transformed = []
+                            for pt in pts:
+                                if is_rotated and is_rotated_180:
+                                    transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
+                                elif is_rotated_180:
+                                    transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
+                                elif is_rotated:
+                                    transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
+                                else:
+                                    transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
+                            cut_shape.draw_bezier(transformed[0], transformed[1], transformed[2], transformed[3])
+
+                        elif cmd == 're':  # rect: (cmd, rect)
+                            r = pdf_lib.Rect(item[1])
+                            if is_rotated and is_rotated_180:
+                                nr = pdf_lib.Rect(
+                                    abs_x + (die_rect.y1 - r.y1), abs_y + r.x0 - die_rect.x0,
+                                    abs_x + (die_rect.y1 - r.y0), abs_y + r.x1 - die_rect.x0
+                                )
+                            elif is_rotated_180:
+                                nr = pdf_lib.Rect(
+                                    abs_x + (die_rect.x1 - r.x1), abs_y + (die_rect.y1 - r.y1),
+                                    abs_x + (die_rect.x1 - r.x0), abs_y + (die_rect.y1 - r.y0)
+                                )
+                            elif is_rotated:
+                                nr = pdf_lib.Rect(
+                                    abs_x + (r.y0 - die_rect.y0), abs_y + (die_rect.x1 - r.x1),
+                                    abs_x + (r.y1 - die_rect.y0), abs_y + (die_rect.x1 - r.x0)
+                                )
+                            else:
+                                nr = pdf_lib.Rect(
+                                    abs_x + (r.x0 - die_rect.x0), abs_y + (r.y0 - die_rect.y0),
+                                    abs_x + (r.x1 - die_rect.x0), abs_y + (r.y1 - die_rect.y0)
+                                )
+                            cut_shape.draw_rect(nr)
+
+                        elif cmd == 'qu':  # quad: (cmd, Quad(ul, ur, ll, lr))
+                            quad = item[1]
+                            # Quad has 4 points: upper_left, upper_right, lower_left, lower_right
+                            quad_pts = [pdf_lib.Point(quad.ul), pdf_lib.Point(quad.ur),
+                                        pdf_lib.Point(quad.lr), pdf_lib.Point(quad.ll)]
+                            transformed = []
+                            for pt in quad_pts:
+                                if is_rotated and is_rotated_180:
+                                    transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
+                                elif is_rotated_180:
+                                    transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
+                                elif is_rotated:
+                                    transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
+                                else:
+                                    transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
+                            # Draw quad as closed polygon (4 edges)
+                            for qi in range(4):
+                                cut_shape.draw_line(transformed[qi], transformed[(qi + 1) % 4])
+
+                    # Finish the complete die-cut path for this placement with stroke (no fill), assign to OCG layer
+                    cut_shape.finish(color=die_color, width=die_width, closePath=False, oc=ocg_xref)
+
+                cut_shape.commit()
+
+            # 1 Dao on separate cut page: draw straight cut lines REPLACING the original die-cut paths
+            if cut_type == 'one_dao' and placements:
+                from app.workers.sticker_imposer_pkg.one_dao_cut import (
+                    generate_one_dao_cut_segments, draw_one_dao_cuts
+                )
+                one_dao_placements_cut = [
+                    {'abs_x': p['abs_x'], 'abs_y': p['original_cell_y'],
+                     'width': p['width'], 'height': p['height']}
+                    for p in placements
+                ]
+                cut_segs_cut = generate_one_dao_cut_segments(
+                    one_dao_placements_cut, gap_x, gap_y, 2.835 # ONE_DAO_SAFETY_BLEED_PT (1mm)
+                )
+                
+                draw_one_dao_cuts(out_page_cut, cut_segs_cut, color=global_die_color, stroke_width=global_die_width, oc=ocg_xref)
+
+            # Draw pont marks on the cut page with SEPARATE OCG (child of Marks_Model_ group)
+            if pont_config:
+                pont_parent_name = pont_config.get('layerName', 'Marks_Model_')
+                boong_group_name = pont_config.get('groupName', 'MarkLine')
+                boong_item_name = pont_config.get('itemName', 'MKLINE')
+                
+                pont_parent_ocg = out_doc.add_ocg(pont_parent_name, on=True, add_to_order=False)
+                boong_group_ocg = out_doc.add_ocg(boong_group_name, on=True, add_to_order=False)
+                
+                cut_child_ocgs.append(pont_parent_ocg)
+                # Adding an array right after pont_parent_ocg makes its contents children of pont_parent_ocg
+                cut_child_ocgs.append(pikepdf.Array([boong_group_ocg]))
+                
+                _draw_ponts_on_page(out_page_cut, placements, pont_config, sheet_w, sheet_h, margin_left, margin_bottom, ocg_xref=boong_group_ocg, item_name=boong_item_name)
+
+            # Append the full tree to /Order
+            try:
+                d = out_doc._pdf.Root["/OCProperties"]["/D"]
+                if "/Order" not in d:
+                    d["/Order"] = pikepdf.Array()
+                
+                tree = [cut_page_parent]
+                if cut_child_ocgs:
+                    tree.append(pikepdf.Array(cut_child_ocgs))
+                
+                d["/Order"].extend(tree)
+            except Exception:
+                pass
+
+
+        # Progress tracking
+
+        if prog_file and sheet_idx % 5 == 0:
+
+            completed = min((sheet_idx + 1) * total_capacity, total_page_count)
+
+            try:
+
+                with open(prog_file, 'w') as f:
+
+                    f.write(f"{completed}/{total_page_count}")
+
+            except OSError: pass
+
+    import io
+    buf = io.BytesIO()
+
+    out_doc.save(buf, garbage=0, deflate=True)
+
+    out_doc.close()
+
+    src_doc.close()
+
+    return buf.getvalue()

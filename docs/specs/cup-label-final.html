@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tính Khuôn Bọc Ly & Bình Trang - Mì Print</title> <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://unpkg.com/svg2pdf.js@2.2.1/dist/svg2pdf.umd.min.js"></script>
+    <style>
+        /* --- CSS gốc từ bocly 2 --- */
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: #f5f7fa;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            gap: 20px;
+            flex-wrap: wrap;
+            transition: background-color 0.3s, color 0.3s;
+        }
+        :root {
+            --primary-color: #1a73e8;
+            --secondary-color: #04fdd5;
+            --danger-color: #fd1a40;
+            --dark-bg: #121212;
+            --dark-surface: #1e1e1e;
+            --dark-text: #e0e0e0;
+            --light-bg: #f5f7fa;
+            --light-surface: #fff;
+            --light-text: #333;
+
+            --svg-stroke-color-light: #000000;
+            --svg-red-color-light: #ff0000;
+            --svg-text-color-light: #333333;
+            --svg-bg-color-light: #ffffff;
+
+            --svg-stroke-color-dark: #000000;
+            --svg-red-color-dark: #ff4d6a;
+            --svg-text-color-dark: #000000;
+            --svg-bg-color-dark: #ffffff; /* Nền SVG trong preview luôn trắng */
+
+            --svg-stroke-color: var(--svg-stroke-color-light);
+            --svg-red-color: var(--svg-red-color-light);
+            --svg-text-color: var(--svg-text-color-light);
+            --svg-bg-color: var(--svg-bg-color-light);
+        }
+        body.dark-mode {
+            background-color: var(--dark-bg);
+            color: var(--dark-text);
+            --svg-stroke-color: var(--svg-stroke-color-dark);
+            --svg-red-color: var(--svg-red-color-dark);
+            --svg-text-color: var(--svg-text-color-dark);
+            /* Không đổi --svg-bg-color ở dark mode để preview dễ nhìn */
+             --svg-bg-color: var(--svg-bg-color-light); /* Luôn trắng */
+        }
+        body.dark-mode .container,
+        body.dark-mode .preview-container {
+            background: var(--dark-surface);
+            box-shadow: 0 4px 10px rgba(255, 255, 255, 0);
+        }
+        body.dark-mode h2,
+        body.dark-mode h3 {
+            color: var(--secondary-color);
+        }
+        body.dark-mode .subtitle {
+             color: #bdbdbd; /* Giữ màu subtitle gốc của bocly 2 dark */
+        }
+        body.dark-mode label {
+            color: var(--dark-text);
+        }
+        body.dark-mode input[type=number] {
+            background: #121212;
+            border-color: #121212;
+            color: var(--dark-text);
+        }
+         body.dark-mode input:focus {
+             border-color: var(--secondary-color);
+         }
+        body.dark-mode button {
+            background-color: var(--secondary-color);
+            color: var(--dark-bg);
+        }
+        body.dark-mode button:hover {
+            background-color: #03d4b0;
+        }
+        body.dark-mode button:disabled {
+             background-color: #121212;
+             color: #121212;
+             cursor: not-allowed;
+         }
+        /* CSS cho preview container giữ nguyên background trắng */
+         .preview-container #svgContainer,
+         .preview-container #layoutSvgContainer {
+             background-color: var(--svg-bg-color) !important; /* Luôn dùng background trắng */
+             border: 1px solid #ccc; /* Giữ border sáng */
+         }
+         body.dark-mode .preview-container #svgContainer,
+         body.dark-mode .preview-container #layoutSvgContainer {
+              border-color: #121212; /* Border tối hơn ở dark mode */
+         }
+
+         body.dark-mode .result-text {
+             color: var(--secondary-color);
+         }
+         body.dark-mode #layoutResultText.error { /* Giữ màu lỗi đỏ */
+             color: var(--danger-color) !important;
+         }
+         #layoutResultText.error { /* Màu lỗi đỏ cho light mode */
+              color: var(--danger-color);
+         }
+
+
+        .container,
+        .preview-container {
+            background: var(--light-surface);
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, .1);
+            width: 100%;
+        }
+        .container {
+            max-width: 550px;
+        }
+        .preview-container {
+            max-width: 650px;
+        }
+        h2,
+        h3 {
+            text-align: center;
+            color: var(--primary-color);
+            margin-top: 0;
+            margin-bottom: 10px;
+            transition: color 0.3s;
+        }
+        h3 {
+            margin-top: 20px;
+            font-size: 1.1em;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+            margin-bottom: 15px;
+        }
+         body.dark-mode h3 {
+             border-bottom-color: #121212;
+         }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 25px;
+            transition: color 0.3s;
+        }
+        .input-grid {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 10px 15px;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        label {
+            font-weight: 500;
+            color: #444;
+            text-align: right;
+            transition: color 0.3s;
+        }
+        input[type=number] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            outline: none;
+            transition: border-color 0.3s, background 0.3s, color 0.3s;
+            box-sizing: border-box;
+        }
+        input:focus {
+            border-color: var(--primary-color);
+        }
+        .button-group {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 25px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            background-color: var(--primary-color);
+            color: #fff;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background-color 0.3s, color 0.3s;
+            margin-top: 5px;
+            font-size: 0.9em;
+        }
+        button:hover {
+            background-color: #1557b0;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        #svgContainer, #layoutSvgContainer { /* Đã bị ghi đè ở trên */
+            margin-top: 15px;
+            width: 100%;
+            height: auto;
+            min-height: 350px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            /* background: var(--svg-bg-color); */ /* Bỏ dòng này */
+            /* border: 1px solid #ccc; */ /* Bỏ dòng này */
+            border-radius: 5px;
+            box-sizing: border-box;
+            /* transition: background-color 0.3s, border-color 0.3s; */ /* Bỏ transition */
+        }
+        #svgContainer svg, #layoutSvgContainer svg { /* Giữ lại style cho SVG bên trong */
+            width: 95%;
+            height: auto;
+            max-height: 95%;
+            display: block;
+        }
+        .result-text {
+            text-align: center;
+            margin-top: 15px;
+            font-weight: 500;
+            color: var(--primary-color);
+            min-height: 20px;
+            transition: color 0.3s;
+            font-size: 0.95em;
+        }
+        /* .result-text.error đã được xử lý ở trên */
+
+        .theme-toggle {
+            position: fixed;
+            top: 15px;
+            right: 15px;
+            padding: 8px 16px;
+            background-color: var(--primary-color);
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s, color 0.3s;
+            z-index: 1000;
+        }
+        body.dark-mode .theme-toggle {
+            background-color: var(--secondary-color);
+            color: var(--dark-bg);
+        }
+        @media (max-width:1200px) {
+            body { flex-direction: column; align-items: center; }
+            .container, .preview-container { max-width: 90%; }
+        }
+        @media (max-width:600px) {
+            body { padding: 10px; gap: 15px; }
+            .container, .preview-container { padding: 15px; }
+            .input-grid { grid-template-columns: 1fr; }
+            label { text-align: left; margin-bottom: -5px; }
+            h3 { margin-bottom: 10px; }
+            #svgContainer, #layoutSvgContainer { min-height: 250px; }
+            .theme-toggle { top: 10px; right: 10px; padding: 6px 12px; }
+            .button-group button { padding: 8px 10px; font-size: 0.85em; }
+        }
+        /* --- Hết CSS --- */
+    </style>
+</head>
+<body class="dark-mode">
+    <button class="theme-toggle" onclick="toggleTheme()">Light Mode</button>
+
+    <div class="container">
+        <h2>Tính Khuôn Bọc Ly & Bình Trang - Mì Print</h2>
+        <p class="subtitle">Nhập thông số (mm) để tạo khuôn và xem cách xếp</p>
+        <h3>Thông số ly (mm)</h3>
+        <div class="input-grid">
+            <label>Đ.kính đáy nhỏ (D9):</label>
+            <input type="number" id="D9" step="1" value="50" required>
+            <label>Đ.kính đáy lớn (D10):</label>
+            <input type="number" id="D10" step="1" value="70" required>
+            <label>Độ cao nhãn (D11):</label>
+            <input type="number" id="D11" step="1" value="80" required>
+        </div>
+
+        <h3>Thông số mí dán (mm)</h3>
+        <div class="input-grid">
+            <label>Độ nhô mí dán:</label>
+            <input type="number" id="flapProtrusion" step="1" value="15" required>
+        </div>
+
+        <h3>Thông số khổ giấy & Bình trang (mm)</h3>
+        <div class="input-grid">
+            <label>Rộng khổ giấy:</label>
+            <input type="number" id="sheetWidthLayout" step="1" value="330" required>
+            <label>Cao khổ giấy:</label>
+            <input type="number" id="sheetHeightLayout" step="1" value="480" required>
+            <label>Lề trên:</label>
+            <input type="number" id="marginTopLayout" step="1" value="10" required>
+            <label>Lề dưới:</label>
+            <input type="number" id="marginBottomLayout" step="1" value="10" required>
+            <label>Lề trái:</label>
+            <input type="number" id="marginLeftLayout" step="1" value="10" required>
+            <label>Lề phải:</label>
+            <input type="number" id="marginRightLayout" step="1" value="10" required>
+            <label>Khoảng cách ngang (mm):</label>
+            <input type="number" id="gapHLayout" step="1" value="3" required>
+            <label>Khoảng cách dọc (mm):</label>
+            <input type="number" id="gapVLayout" step="1" value="3" required>
+        </div>
+
+        <div class="button-group">
+            <button onclick="runCalculations()">1. Tính & Vẽ Khuôn</button>
+            <button id="layoutButton" onclick="calculateLayoutPreview()" disabled>2. Bình Trang Preview (Compare V2)</button> <button id="downloadButton" onclick="downloadSingleFile()" disabled>Tải Khuôn Đơn (PDF)</button>
+            <button id="downloadLayoutButton" onclick="downloadLayoutFile()" disabled>Tải Bình Trang (PDF)</button>
+        </div>
+        <div id="layoutResultText" class="result-text"></div>
+    </div>
+
+    <div class="preview-container">
+        <h2 id="previewTitleSingle">Xem trước Khuôn Đơn</h2>
+        <div id="svgContainer">
+            <p style="color: #121212;">Nhấn "Tính và Vẽ Khuôn" để hiển thị</p>
+        </div>
+    </div>
+
+    <div class="preview-container">
+        <h2 id="previewTitleLayout">Xem trước Bình Trang</h2>
+        <div id="layoutSvgContainer">
+            <p style="color: #121212;">Nhấn "Bình Trang Preview" sau khi tính khuôn</p>
+        </div>
+    </div>
+
+    <script>
+        // --- Constants and Globals from bocly 2 minimal fix ---
+        const TOLERANCE = 1e-9;
+        const MM_TO_PT = 2.83465;
+        const SVG_STROKE_WIDTH_SINGLE = 1; // Giữ stroke width gốc của bocly 2
+        const SVG_RED_STROKE_WIDTH_SINGLE = 1;
+        const SVG_STROKE_WIDTH_LAYOUT = 1;
+        const SVG_RED_STROKE_WIDTH_LAYOUT = 1;
+        const DASHED_STROKE_WIDTH_LAYOUT = 0.5;
+        const PDF_STROKE_COLOR = "#000000";
+        const PDF_RED_COLOR = "#ff0000";
+        window.singleShapeData = {
+            svgContent: null,
+            mainPathData90: null,
+            flapEdgePathData90: null,
+            bbox90: null,
+            mainPathData180: null,
+            flapEdgePathData180: null,
+            bbox180: null,
+            isValid: false,
+            layoutSvgContent: null,
+            layoutAlgoDesc: '',
+            bestPlacements: []
+        };
+        const MIN_FLAP_BASE2_LENGTH_MM = 1.0;
+        const FLAP_BASE_LENGTH_DIFFERENCE_MM = 10.0;
+        const LAYOUT_VIEWBOX_PADDING_MM = 5;
+        // --- Constants from bocly 3 needed? ---
+        const STROKE_COLOR = "#000000"; // Có vẻ trùng PDF_STROKE_COLOR
+        const RED_COLOR = "#ff0000"; // Có vẻ trùng PDF_RED_COLOR
+
+        // --- Utility Functions from bocly 2 minimal fix ---
+        function displayError(message) {
+            const resultText = document.getElementById('layoutResultText');
+            resultText.textContent = `Lỗi: ${message}`;
+            // Sử dụng style gốc của bocly 2 cho error text
+             resultText.classList.add('error');
+             // Không dùng resultText.style.color = 'red';
+        }
+        function clearError() {
+             const resultText = document.getElementById('layoutResultText');
+             resultText.textContent = '';
+             resultText.classList.remove('error');
+        }
+        function runCalculations() {
+            clearError();
+            if (calculateAndDraw()) {
+                document.getElementById('layoutButton').disabled = false;
+                document.getElementById('downloadButton').disabled = false;
+                document.getElementById('layoutResultText').textContent = '';
+                document.getElementById('layoutSvgContainer').innerHTML = '<p style="color: #999;">Nhấn "Bình Trang Preview" để xem</p>';
+                document.getElementById('downloadLayoutButton').disabled = true;
+                window.singleShapeData.layoutSvgContent = null;
+            } else {
+                document.getElementById('layoutButton').disabled = true;
+                document.getElementById('downloadButton').disabled = true;
+                document.getElementById('downloadLayoutButton').disabled = true;
+            }
+            updateSvgColors(); // Gọi updateSvgColors sau khi tính toán
+        }
+         function updateSvgColors() {
+             // Sử dụng logic updateSvgColors của bocly 2 gốc
+            const svgBgColor = getComputedStyle(document.body).getPropertyValue('--svg-bg-color').trim();
+            const svgContainer = document.getElementById('svgContainer');
+            const layoutSvgContainer = document.getElementById('layoutSvgContainer');
+
+            if (svgContainer) svgContainer.style.backgroundColor = svgBgColor;
+            if (layoutSvgContainer) layoutSvgContainer.style.backgroundColor = svgBgColor;
+
+             // Redraw SVG nội dung nếu cần để áp dụng màu từ biến CSS
+             if (window.singleShapeData.isValid && window.singleShapeData.svgContent) {
+                 document.getElementById('svgContainer').innerHTML = window.singleShapeData.svgContent;
+             }
+             if (window.singleShapeData.layoutSvgContent) {
+                 // Chỉ redraw layout SVG nếu nó đã được tạo
+                 document.getElementById('layoutSvgContainer').innerHTML = window.singleShapeData.layoutSvgContent;
+             } else {
+                 // Nếu chưa có layout SVG, đảm bảo background được cập nhật
+                 if (layoutSvgContainer) layoutSvgContainer.style.backgroundColor = svgBgColor;
+             }
+         }
+        function toggleTheme() {
+            const body = document.body;
+            const button = document.querySelector('.theme-toggle');
+            body.classList.toggle('light-mode');
+            body.classList.toggle('dark-mode');
+            button.textContent = body.classList.contains('dark-mode') ? 'Light Mode' : 'Dark Mode';
+            updateSvgColors();
+        }
+         function getPathBbox(pathData) {
+            // Giữ nguyên hàm getPathBbox từ bocly 2
+            let tempSvg = null;
+            try {
+                tempSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                tempSvg.setAttribute('id', '__tempSvgForBbox');
+                tempSvg.style.visibility = 'hidden'; tempSvg.style.position = 'absolute';
+                tempSvg.style.width = '1px'; tempSvg.style.height = '1px';
+                const tempPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                tempPath.setAttribute('id', '__tempPathForBbox');
+                tempSvg.appendChild(tempPath); document.body.appendChild(tempSvg);
+                tempPath.setAttribute("d", pathData);
+                const bbox = tempPath.getBBox();
+                if (!isFinite(bbox.x) || !isFinite(bbox.y) || !isFinite(bbox.width) || !isFinite(bbox.height) || bbox.width <= 0 || bbox.height <= 0) {
+                    console.warn("Invalid bbox calculated: ", bbox); return null;
+                }
+                return { x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height };
+            } catch (e) { console.error("Lỗi khi tính bbox:", e); return null;
+            } finally { if (tempSvg) tempSvg.remove(); }
+        }
+        function validatePathData(pathData) {
+             // Giữ nguyên hàm validatePathData từ bocly 2
+            if (!pathData || typeof pathData !== 'string') return false;
+            const commands = pathData.match(/[a-zA-Z][^a-zA-Z]*/g); if (!commands) return false;
+            for (const command of commands) {
+                const type = command[0];
+                const coords = command.slice(1).match(/[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?/g) || [];
+                if (!['M', 'm', 'L', 'l', 'H', 'h', 'V', 'v', 'C', 'c', 'S', 's', 'Q', 'q', 'T', 't', 'A', 'a', 'Z', 'z'].includes(type)) return false;
+                if (!coords.every(coord => !isNaN(parseFloat(coord)) && isFinite(parseFloat(coord)))) return false;
+            } return true;
+        }
+        function transformPathData(pathData, dx, dy) {
+             // Giữ nguyên hàm transformPathData từ bocly 2
+             if (!pathData) return '';
+             const commands = pathData.match(/[a-zA-Z][^a-zA-Z]*/g); if (!commands) return '';
+             const transformed = commands.map(command => {
+                 const type = command[0]; const coordsStr = command.slice(1).trim();
+                 let coords = coordsStr.match(/[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?/g) || [];
+                 const numCoords = coords.length;
+                 if (['M', 'L', 'T'].includes(type) && numCoords >= 2) {
+                     coords[numCoords - 2] = (parseFloat(coords[numCoords - 2]) + dx).toFixed(3); coords[numCoords - 1] = (parseFloat(coords[numCoords - 1]) + dy).toFixed(3); return type + coords.join(',');
+                 } else if (type === 'C' && numCoords === 6) {
+                     coords[0] = (parseFloat(coords[0]) + dx).toFixed(3); coords[1] = (parseFloat(coords[1]) + dy).toFixed(3); coords[2] = (parseFloat(coords[2]) + dx).toFixed(3); coords[3] = (parseFloat(coords[3]) + dy).toFixed(3); coords[4] = (parseFloat(coords[4]) + dx).toFixed(3); coords[5] = (parseFloat(coords[5]) + dy).toFixed(3); return type + coords.join(',');
+                 } else if (['S', 'Q'].includes(type) && numCoords === 4) {
+                     coords[0] = (parseFloat(coords[0]) + dx).toFixed(3); coords[1] = (parseFloat(coords[1]) + dy).toFixed(3); coords[2] = (parseFloat(coords[2]) + dx).toFixed(3); coords[3] = (parseFloat(coords[3]) + dy).toFixed(3); return type + coords.join(',');
+                 } else if (type === 'A' && numCoords === 7) {
+                     coords[5] = (parseFloat(coords[5]) + dx).toFixed(3); coords[6] = (parseFloat(coords[6]) + dy).toFixed(3); return `${type}${coords[0]},${coords[1]} ${coords[2]} ${coords[3]},${coords[4]} ${coords[5]},${coords[6]}`;
+                 } else if (type === 'H' && numCoords === 1) { coords[0] = (parseFloat(coords[0]) + dx).toFixed(3); return type + coords.join(',');
+                 } else if (type === 'V' && numCoords === 1) { coords[0] = (parseFloat(coords[0]) + dy).toFixed(3); return type + coords.join(',');
+                 } return command;
+             }); return transformed.join('');
+        }
+
+        // Dán đoạn code này để thay thế cho hàm calculateAndDraw gốc trong file HTML
+function calculateAndDraw() {
+    clearError();
+    window.singleShapeData.isValid = false;
+    const svgContainer = document.getElementById('svgContainer');
+    const D9_val = parseFloat(document.getElementById('D9').value);
+    const D10_val = parseFloat(document.getElementById('D10').value);
+    const D11_val = parseFloat(document.getElementById('D11').value); // Đây sẽ là ĐƯỜNG SINH
+    const flapProtrusion_val = parseFloat(document.getElementById('flapProtrusion').value);
+
+    let errorMsg = '';
+    if (isNaN(D9_val) || D9_val <= 0) errorMsg += 'Đ.kính đáy nhỏ (D9) không hợp lệ. ';
+    if (isNaN(D10_val) || D10_val <= 0) errorMsg += 'Đ.kính đáy lớn (D10) không hợp lệ. ';
+    if (!isNaN(D9_val) && !isNaN(D10_val) && D10_val <= D9_val + TOLERANCE) errorMsg += 'Đ.kính đáy lớn (D10) phải lớn hơn đáy nhỏ (D9). ';
+    if (isNaN(D11_val) || D11_val <= 0) errorMsg += 'Đường sinh nhãn (D11) không hợp lệ. ';
+    if (isNaN(flapProtrusion_val) || flapProtrusion_val <= 0) errorMsg += 'Độ nhô mí dán không hợp lệ. ';
+    if (errorMsg) {
+        displayError(errorMsg);
+        svgContainer.innerHTML = `<p style="color: var(--danger-color);">${errorMsg}</p>`;
+        return false;
+    }
+    try {
+        const R_large = D10_val / 2;
+        const R_small = D9_val / 2;
+        const R_diff = R_large - R_small; // Giữ lại dòng này vì R_diff vẫn cần dùng ở dưới
+        const slantHeight = D11_val;      // <<<< THAY ĐỔI QUAN TRỌNG NẰM Ở ĐÂY
+
+        if (Math.abs(R_diff) < TOLERANCE) {
+            displayError("Hình trụ (D9=D10), không hỗ trợ.");
+            svgContainer.innerHTML = `<p style="color: var(--danger-color);">Lỗi: D9=D10</p>`;
+            return false;
+        }
+        const r2_flat = (slantHeight * R_large) / R_diff;
+        const r1_flat = r2_flat - slantHeight;
+        if (r1_flat < -TOLERANCE) {
+            displayError("Lỗi hình học (r1_flat < 0).");
+            svgContainer.innerHTML = `<p style="color: var(--danger-color);">Lỗi hình học (r1 âm)</p>`;
+            return false;
+        }
+        const r1_safe = Math.max(0, r1_flat);
+        const thetaRad = (D10_val * Math.PI) / r2_flat;
+        if (!isFinite(r2_flat) || r2_flat <= TOLERANCE || isNaN(thetaRad) || !isFinite(thetaRad) || thetaRad <= TOLERANCE || thetaRad > 2 * Math.PI + TOLERANCE) {
+            displayError("Lỗi tính toán hình học (r2 hoặc góc theta).");
+            svgContainer.innerHTML = `<p style="color: var(--danger-color);">Lỗi hình học (r2/theta)</p>`;
+            return false;
+        }
+        const h_trap = flapProtrusion_val;
+        const b1_len = slantHeight;
+        const b2_len = Math.max(MIN_FLAP_BASE2_LENGTH_MM, b1_len - FLAP_BASE_LENGTH_DIFFERENCE_MM);
+        const startAngle = -thetaRad / 2, endAngle = thetaRad / 2;
+        const largeArcFlag = thetaRad > Math.PI ? 1 : 0, sweepFlag = 1;
+        const pL1 = { x: r2_flat * Math.cos(startAngle), y: r2_flat * Math.sin(startAngle) };
+        const pL2 = { x: r2_flat * Math.cos(endAngle), y: r2_flat * Math.sin(endAngle) };
+        const pS1 = { x: r1_safe * Math.cos(startAngle), y: r1_safe * Math.sin(startAngle) };
+        const pS2 = { x: r1_safe * Math.cos(endAngle), y: r1_safe * Math.sin(endAngle) };
+        const base1_vec = { x: pL2.x - pS2.x, y: pL2.y - pS2.y };
+        const base1_norm = Math.sqrt(base1_vec.x ** 2 + base1_vec.y ** 2);
+        if (base1_norm < TOLERANCE) {
+            return false;
+        }
+        const base1_vec_unit = { x: base1_vec.x / base1_norm, y: base1_vec.y / base1_norm };
+        const height_vec_unit = { x: -base1_vec_unit.y, y: base1_vec_unit.x };
+        const M1 = { x: (pS2.x + pL2.x) / 2, y: (pS2.y + pL2.y) / 2 };
+        const M2 = { x: M1.x + height_vec_unit.x * h_trap, y: M1.y + height_vec_unit.y * h_trap };
+        const flapP_outer_start = { x: M2.x - base1_vec_unit.x * (b2_len / 2), y: M2.y - base1_vec_unit.y * (b2_len / 2) };
+        const flapP_outer_end = { x: M2.x + base1_vec_unit.x * (b2_len / 2), y: M2.y + base1_vec_unit.y * (b2_len / 2) };
+        const rotate_neg90 = p => ({ x: p.y, y: -p.x });
+        const allPoints_prespin = [pS1, pL1, pL2, flapP_outer_end, flapP_outer_start, pS2];
+        const rotatedPoints_90 = allPoints_prespin.map(rotate_neg90);
+        const [rpS1_90, rpL1_90, rpL2_90, rFlapP_outer_end_90, rFlapP_outer_start_90, rpS2_90] = rotatedPoints_90;
+        const mainPathData_90 = `M ${rpS1_90.x.toFixed(3)},${rpS1_90.y.toFixed(3)} L ${rpL1_90.x.toFixed(3)},${rpL1_90.y.toFixed(3)} A ${r2_flat.toFixed(3)},${r2_flat.toFixed(3)} 0 ${largeArcFlag} ${sweepFlag} ${rpL2_90.x.toFixed(3)},${rpL2_90.y.toFixed(3)} L ${rFlapP_outer_end_90.x.toFixed(3)},${rFlapP_outer_end_90.y.toFixed(3)} L ${rFlapP_outer_start_90.x.toFixed(3)},${rFlapP_outer_start_90.y.toFixed(3)} L ${rpS2_90.x.toFixed(3)},${rpS2_90.y.toFixed(3)} ` + (r1_safe > TOLERANCE ? `A ${r1_safe.toFixed(3)},${r1_safe.toFixed(3)} 0 ${largeArcFlag} ${1-sweepFlag} ${rpS1_90.x.toFixed(3)},${rpS1_90.y.toFixed(3)}` : '') + ` Z`;
+        const rFlapEdgeStart_90 = rpS2_90;
+        const rFlapEdgeEnd_90 = rpL2_90;
+        const flapEdgePathData_90 = `M ${rFlapEdgeStart_90.x.toFixed(3)},${rFlapEdgeStart_90.y.toFixed(3)} L ${rFlapEdgeEnd_90.x.toFixed(3)},${rFlapEdgeEnd_90.y.toFixed(3)}`;
+        if (!validatePathData(mainPathData_90) || !validatePathData(flapEdgePathData_90)) {
+            throw new Error("Generated path data (90 deg) is invalid.");
+        }
+        const bbox_90 = getPathBbox(mainPathData_90);
+        if (!bbox_90) {
+            throw new Error("Could not calculate bounding box (90 deg).");
+        }
+        const rotate180_from_origin = p => ({ x: -p.x, y: -p.y });
+        const rotatedPoints_180 = allPoints_prespin.map(rotate180_from_origin);
+        const [rpS1_180, rpL1_180, rpL2_180, rFlapP_outer_end_180, rFlapP_outer_start_180, rpS2_180] = rotatedPoints_180;
+        const mainPathData_180 = `M ${rpS1_180.x.toFixed(3)},${rpS1_180.y.toFixed(3)} L ${rpL1_180.x.toFixed(3)},${rpL1_180.y.toFixed(3)} A ${r2_flat.toFixed(3)},${r2_flat.toFixed(3)} 0 ${largeArcFlag} ${sweepFlag} ${rpL2_180.x.toFixed(3)},${rpL2_180.y.toFixed(3)} L ${rFlapP_outer_end_180.x.toFixed(3)},${rFlapP_outer_end_180.y.toFixed(3)} L ${rFlapP_outer_start_180.x.toFixed(3)},${rFlapP_outer_start_180.y.toFixed(3)} L ${rpS2_180.x.toFixed(3)},${rpS2_180.y.toFixed(3)} ` + (r1_safe > TOLERANCE ? `A ${r1_safe.toFixed(3)},${r1_safe.toFixed(3)} 0 ${largeArcFlag} ${1-sweepFlag} ${rpS1_180.x.toFixed(3)},${rpS1_180.y.toFixed(3)}` : '') + ` Z`;
+        const rFlapEdgeStart_180 = rpS2_180;
+        const rFlapEdgeEnd_180 = rpL2_180;
+        const flapEdgePathData_180 = `M ${rFlapEdgeStart_180.x.toFixed(3)},${rFlapEdgeStart_180.y.toFixed(3)} L ${rFlapEdgeEnd_180.x.toFixed(3)},${rFlapEdgeEnd_180.y.toFixed(3)}`;
+        if (!validatePathData(mainPathData_180) || !validatePathData(flapEdgePathData_180)) {
+            throw new Error("Generated path data (180 deg) is invalid.");
+        }
+        const bbox_180 = getPathBbox(mainPathData_180);
+        if (!bbox_180) {
+            throw new Error("Could not calculate bounding box (180 deg).");
+        }
+        const displayBbox = bbox_90;
+        const padding = LAYOUT_VIEWBOX_PADDING_MM;
+        const textHeightApproximation = Math.max(10, displayBbox.height * 0.05);
+        const vbX = displayBbox.x - padding;
+        const vbY = displayBbox.y - padding - textHeightApproximation;
+        const vbWidth = displayBbox.width + 2 * padding;
+        const vbHeight = displayBbox.height + 2 * padding + textHeightApproximation;
+        const viewBox = `${vbX.toFixed(2)} ${vbY.toFixed(2)} ${vbWidth.toFixed(2)} ${vbHeight.toFixed(2)}`;
+        const textContent = "Khanh Pham - 0862160492";
+        const textX = vbX + vbWidth / 2;
+        const textY = vbY + textHeightApproximation * 0.7;
+        const fontSize = Math.min(vbWidth * 0.04, vbHeight * 0.04, 10).toFixed(2);
+        const svgContentFinal = `
+                     <svg width="100%" height="95%" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="display: block; margin: auto;">
+                         <style> #mainPath { stroke: var(--svg-stroke-color); stroke-width: ${SVG_STROKE_WIDTH_SINGLE}; fill: none; } #flapEdgePath { stroke: var(--svg-red-color); stroke-width: ${SVG_RED_STROKE_WIDTH_SINGLE}; fill: none; } text { fill: var(--svg-text-color); font-family: 'Roboto', sans-serif; } </style>
+                         <title>Khuôn bọc ly D=${D9_val}-${D10_val} H=${D11_val} FlapProtrusion=${flapProtrusion_val}</title>
+                         <desc>r1=${r1_safe.toFixed(2)}mm, r2=${r2_flat.toFixed(2)}mm, angle=${(thetaRad * 180 / Math.PI).toFixed(1)}deg, Flap: h=${h_trap.toFixed(2)}, b1=${b1_len.toFixed(2)}, b2=${b2_len.toFixed(2)}</desc>
+                         <text x="${textX.toFixed(2)}" y="${textY.toFixed(2)}" font-size="${fontSize}" text-anchor="middle">${textContent}</text>
+                         <g id="shapeGroup"><path id="mainPath" d="${mainPathData_90}"/><path id="flapEdgePath" d="${flapEdgePathData_90}"/></g>
+                     </svg>`;
+        svgContainer.innerHTML = svgContentFinal;
+        window.singleShapeData = {
+            svgContent: svgContentFinal,
+            mainPathData90: mainPathData_90,
+            flapEdgePathData90: flapEdgePathData_90,
+            bbox90: bbox_90,
+            mainPathData180: mainPathData_180,
+            flapEdgePathData180: flapEdgePathData_180,
+            bbox180: bbox_180,
+            isValid: true,
+            layoutSvgContent: null,
+            layoutAlgoDesc: '',
+            bestPlacements: []
+        };
+        return true;
+    } catch (error) {
+        console.error("Lỗi trong calculateAndDraw:", error);
+        displayError(`Lỗi không xác định khi vẽ khuôn: ${error.message}`);
+        svgContainer.innerHTML = `<p style="color: red;">Lỗi không xác định khi vẽ khuôn!</p>`;
+        return false;
+    }
+}
+
+        // --- Hàm packAreaSimpleGrid gốc từ bocly 3 (giống bocly 2) ---
+        function packAreaSimpleGrid(area, itemBbox, gapH, gapV, orientation) {
+            const placements = [];
+            if (!area || area.width <= TOLERANCE || area.height <= TOLERANCE || !itemBbox || itemBbox.width <= TOLERANCE || itemBbox.height <= TOLERANCE) {
+                return { placements: [], bounds: null };
+            }
+            const itemW = itemBbox.width; const itemH = itemBbox.height;
+            const itemTotalW = itemW + gapH; const itemTotalH = itemH + gapV;
+            if (area.width < itemW - TOLERANCE || area.height < itemH - TOLERANCE) {
+                return { placements: [], bounds: null };
+            }
+            const cols = (itemTotalW <= gapH + TOLERANCE) ? (area.width >= itemW - TOLERANCE ? 1 : 0) : Math.max(0, Math.floor((area.width + gapH + TOLERANCE) / itemTotalW));
+            const rows = (itemTotalH <= gapV + TOLERANCE) ? (area.height >= itemH - TOLERANCE ? 1 : 0) : Math.max(0, Math.floor((area.height + gapV + TOLERANCE) / itemTotalH));
+            let minX = area.x + area.width; let maxX = area.x; let minY = area.y + area.height; let maxY = area.y;
+            if (cols === 0 || rows === 0) {
+                return { placements: [], bounds: null };
+            }
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const placeX = area.x + c * itemTotalW; const placeY = area.y + r * itemTotalH;
+                    if (placeX + itemW <= area.x + area.width + TOLERANCE && placeY + itemH <= area.y + area.height + TOLERANCE) {
+                        placements.push({ x: placeX, y: placeY, orientation: orientation });
+                        minX = Math.min(minX, placeX); maxX = Math.max(maxX, placeX + itemW);
+                        minY = Math.min(minY, placeY); maxY = Math.max(maxY, placeY + itemH);
+                    }
+                }
+            }
+            const bounds = (placements.length > 0) ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null;
+            return { placements, bounds };
+        }
+
+        // --- *** HÀM calculateLayoutPreview TỪ BOCLY-3.HTML *** ---
+        function calculateLayoutPreview() {
+            clearError(); // Clear previous errors first
+            const layoutSvgContainer = document.getElementById('layoutSvgContainer');
+            const resultText = document.getElementById('layoutResultText');
+            window.singleShapeData.layoutSvgContent = null;
+            window.singleShapeData.layoutAlgoDesc = '';
+            window.singleShapeData.bestPlacements = [];
+            document.getElementById('downloadLayoutButton').disabled = true;
+
+            if (!window.singleShapeData || !window.singleShapeData.isValid ||
+                !window.singleShapeData.bbox90 || !window.singleShapeData.bbox180 ||
+                !window.singleShapeData.mainPathData90 || !window.singleShapeData.mainPathData180) {
+                displayError("Chưa có dữ liệu khuôn hợp lệ.");
+                layoutSvgContainer.innerHTML = `<p style="color: red;">Chưa có dữ liệu khuôn!</p>`;
+                return;
+            }
+
+            const sheetW = parseFloat(document.getElementById('sheetWidthLayout').value);
+            // *** Fix: Đọc sheetH ***
+            const sheetH = parseFloat(document.getElementById('sheetHeightLayout').value);
+            const marginT = parseFloat(document.getElementById('marginTopLayout').value);
+            const marginB = parseFloat(document.getElementById('marginBottomLayout').value);
+            const marginL = parseFloat(document.getElementById('marginLeftLayout').value);
+            const marginR = parseFloat(document.getElementById('marginRightLayout').value);
+            const gapH = parseFloat(document.getElementById('gapHLayout').value);
+            const gapV = parseFloat(document.getElementById('gapVLayout').value);
+
+            // Validation from bocly-3 (allows negative gaps)
+            let errorMsg = '';
+            if (isNaN(sheetW) || sheetW <= 0) errorMsg += 'Rộng khổ không hợp lệ. ';
+            if (isNaN(sheetH) || sheetH <= 0) errorMsg += 'Cao khổ không hợp lệ. '; // Check added sheetH
+            if (isNaN(marginT) || marginT < 0) errorMsg += 'Lề trên không hợp lệ. ';
+            if (isNaN(marginB) || marginB < 0) errorMsg += 'Lề dưới không hợp lệ. ';
+            if (isNaN(marginL) || marginL < 0) errorMsg += 'Lề trái không hợp lệ. ';
+            if (isNaN(marginR) || marginR < 0) errorMsg += 'Lề phải không hợp lệ. ';
+            if (isNaN(gapH)) errorMsg += 'Khoảng cách ngang không phải là số. ';
+            if (isNaN(gapV)) errorMsg += 'Khoảng cách dọc không phải là số. ';
+            const usableW_check = sheetW - marginL - marginR;
+            const usableH_check = sheetH - marginT - marginB; // Use corrected sheetH
+            if (!isNaN(sheetW) && !isNaN(marginL) && !isNaN(marginR) && usableW_check <= TOLERANCE) errorMsg += 'Tổng lề ngang >= Rộng khổ. ';
+            if (!isNaN(sheetH) && !isNaN(marginT) && !isNaN(marginB) && usableH_check <= TOLERANCE) errorMsg += 'Tổng lề dọc >= Cao khổ. ';
+
+            if (errorMsg) {
+                displayError(errorMsg);
+                layoutSvgContainer.innerHTML = `<p style="color: red;">Lỗi thông số!</p>`;
+                return;
+            }
+
+            const usableStartX = marginL;
+            const usableStartY = marginT;
+            const usableW = usableW_check;
+            const usableH = usableH_check;
+            const mainArea = { x: usableStartX, y: usableStartY, width: usableW, height: usableH };
+
+            const bbox_std = window.singleShapeData.bbox90; // Use 90deg as standard
+            const bbox_rot = window.singleShapeData.bbox180; // Use 180deg as rotated
+
+            if (!bbox_std || !bbox_rot || bbox_std.width <= TOLERANCE || bbox_std.height <= TOLERANCE || bbox_rot.width <= TOLERANCE || bbox_rot.height <= TOLERANCE) {
+                displayError("Kích thước khuôn (bbox) không hợp lệ.");
+                layoutSvgContainer.innerHTML = `<p style="color: red;">Lỗi kích thước khuôn!</p>`;
+                return;
+            }
+
+            // Variables for two packing strategies
+            let placements1 = []; // Standard primary, Rotated fill
+            let total1 = 0;
+            let placements2 = []; // Rotated primary, Standard fill
+            let total2 = 0;
+
+            try {
+                // --- Attempt 1: Standard primary, Rotated (180deg) fill ---
+                const result1_main = packAreaSimpleGrid(mainArea, bbox_std, gapH, gapV, 'standard');
+                placements1 = result1_main.placements;
+                let fillPlacements1_Right = [];
+                let fillPlacements1_Bottom = [];
+                if (result1_main.bounds && result1_main.placements.length > 0) {
+                    const mainBlockX1 = result1_main.bounds.x;
+                    const mainBlockY1 = result1_main.bounds.y;
+                    const mainBlockWidth1 = result1_main.bounds.width;
+                    const mainBlockHeight1 = result1_main.bounds.height;
+
+                    // Area to the right
+                    const areaRight1_x = mainBlockX1 + mainBlockWidth1 + gapH;
+                    const areaRight1_width = (usableStartX + usableW) - areaRight1_x;
+                    const areaRight1 = {
+                        x: areaRight1_x, y: usableStartY,
+                        width: (areaRight1_width > TOLERANCE) ? areaRight1_width : 0,
+                        height: usableH
+                    };
+
+                    // Area below the main block (within its width)
+                    const areaBottom1_y = mainBlockY1 + mainBlockHeight1 + gapV;
+                    const areaBottom1_height = (usableStartY + usableH) - areaBottom1_y;
+                    const areaBottom1 = {
+                        x: mainBlockX1, // Start from main block's left edge
+                        y: areaBottom1_y,
+                        width: mainBlockWidth1, // Only width of the main block
+                        height: (areaBottom1_height > TOLERANCE) ? areaBottom1_height : 0
+                    };
+
+                    // Try to fill these areas with ROTATED (180deg) items
+                    fillPlacements1_Right = packAreaSimpleGrid(areaRight1, bbox_rot, gapH, gapV, 'rotated').placements;
+                    fillPlacements1_Bottom = packAreaSimpleGrid(areaBottom1, bbox_rot, gapH, gapV, 'rotated').placements;
+                }
+                placements1 = placements1.concat(fillPlacements1_Right).concat(fillPlacements1_Bottom);
+                total1 = placements1.length;
+
+                // --- Attempt 2: Rotated (180deg) primary, Standard fill ---
+                const result2_main = packAreaSimpleGrid(mainArea, bbox_rot, gapH, gapV, 'rotated');
+                placements2 = result2_main.placements;
+                let fillPlacements2_Right = [];
+                let fillPlacements2_Bottom = [];
+                if (result2_main.bounds && result2_main.placements.length > 0) {
+                    const mainBlockX2 = result2_main.bounds.x;
+                    const mainBlockY2 = result2_main.bounds.y;
+                    const mainBlockWidth2 = result2_main.bounds.width;
+                    const mainBlockHeight2 = result2_main.bounds.height;
+
+                    // Area to the right
+                    const areaRight2_x = mainBlockX2 + mainBlockWidth2 + gapH;
+                    const areaRight2_width = (usableStartX + usableW) - areaRight2_x;
+                    const areaRight2 = {
+                        x: areaRight2_x, y: usableStartY,
+                        width: (areaRight2_width > TOLERANCE) ? areaRight2_width : 0,
+                        height: usableH
+                    };
+
+                    // Area below the main block
+                    const areaBottom2_y = mainBlockY2 + mainBlockHeight2 + gapV;
+                    const areaBottom2_height = (usableStartY + usableH) - areaBottom2_y;
+                    const areaBottom2 = {
+                        x: mainBlockX2, y: areaBottom2_y,
+                        width: mainBlockWidth2,
+                        height: (areaBottom2_height > TOLERANCE) ? areaBottom2_height : 0
+                    };
+
+                    // Try to fill these areas with STANDARD items
+                    fillPlacements2_Right = packAreaSimpleGrid(areaRight2, bbox_std, gapH, gapV, 'standard').placements;
+                    fillPlacements2_Bottom = packAreaSimpleGrid(areaBottom2, bbox_std, gapH, gapV, 'standard').placements;
+                }
+                placements2 = placements2.concat(fillPlacements2_Right).concat(fillPlacements2_Bottom);
+                total2 = placements2.length;
+
+                // --- Compare results ---
+                let bestPlacements = [];
+                let totalItems = 0;
+                let algoDesc = "Không xếp được";
+
+                // Compare totals and select the best strategy
+                if (total1 >= total2 && total1 > 0) { // Prioritize standard-first if equal or better
+                    bestPlacements = placements1;
+                    totalItems = total1;
+                    algoDesc = `Ưu tiên chuẩn (${total1} khuôn)`;
+                } else if (total2 > 0) {
+                    bestPlacements = placements2;
+                    totalItems = total2;
+                    algoDesc = `Ưu tiên xoay (${total2} khuôn)`;
+                }
+
+                if (totalItems <= 0) {
+                    displayError("Không xếp được khuôn nào.");
+                    layoutSvgContainer.innerHTML = `<p style="color: orange;">Không xếp được.</p>`;
+                    return;
+                }
+
+                // --- Centering logic from bocly-3 (slightly different) ---
+                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                 bestPlacements.forEach(placement => {
+                     // Use bbox corresponding to the placed orientation
+                     const bbox = placement.orientation === 'standard' ? bbox_std : bbox_rot;
+                     minX = Math.min(minX, placement.x);
+                     maxX = Math.max(maxX, placement.x + bbox.width);
+                     minY = Math.min(minY, placement.y);
+                     maxY = Math.max(maxY, placement.y + bbox.height);
+                 });
+
+                 const layoutWidth = (maxX > minX) ? maxX - minX : 0;
+                 const layoutHeight = (maxY > minY) ? maxY - minY : 0;
+
+                // Calculate offset to center the bounding box of placements within the usable area
+                 const offsetX_center = usableStartX + (usableW - layoutWidth) / 2;
+                 const offsetY_center = usableStartY + (usableH - layoutHeight) / 2;
+
+                 // Adjust placements relative to the calculated center and the min coordinates of the group
+                 const adjustedPlacements = bestPlacements.map(placement => ({
+                     ...placement,
+                     x: placement.x - minX + offsetX_center,
+                     y: placement.y - minY + offsetY_center
+                 }));
+                // --- End Centering ---
+
+                window.singleShapeData.layoutAlgoDesc = algoDesc;
+                window.singleShapeData.bestPlacements = adjustedPlacements;
+
+                // --- Generate SVG Preview (Using logic/styles from bocly 2 where possible) ---
+                const viewBoxPadding = LAYOUT_VIEWBOX_PADDING_MM;
+                const vbX_layout = -viewBoxPadding;
+                const vbY_layout = -viewBoxPadding;
+                const vbW_layout = sheetW + 2 * viewBoxPadding;
+                const vbH_layout = sheetH + 2 * viewBoxPadding;
+                const layoutViewBox = `${vbX_layout.toFixed(2)} ${vbY_layout.toFixed(2)} ${vbW_layout.toFixed(2)} ${vbH_layout.toFixed(2)}`;
+
+                let shapesSvg = '';
+                // Use bbox origins for defs transform (needed for <use> positioning)
+                const bbox90_OriginX = window.singleShapeData.bbox90.x;
+                const bbox90_OriginY = window.singleShapeData.bbox90.y;
+                const bbox180_OriginX = window.singleShapeData.bbox180.x;
+                const bbox180_OriginY = window.singleShapeData.bbox180.y;
+                // Create transform strings to move paths in defs to origin 0,0 of their bbox
+                const defsTransformStd = `translate(${-bbox90_OriginX.toFixed(3)}, ${-bbox90_OriginY.toFixed(3)})`;
+                const defsTransformRot = `translate(${-bbox180_OriginX.toFixed(3)}, ${-bbox180_OriginY.toFixed(3)})`;
+                // Get original path data
+                const defsPathDataStd = window.singleShapeData.mainPathData90;
+                const defsFlapPathDataStd = window.singleShapeData.flapEdgePathData90;
+                const defsPathDataRot = window.singleShapeData.mainPathData180;
+                const defsFlapPathDataRot = window.singleShapeData.flapEdgePathData180;
+
+                adjustedPlacements.forEach((placement, index) => {
+                    // Use different IDs for standard/rotated shapes in defs
+                    const shapeId = placement.orientation === 'standard' ? '#cupWrapShapeStd_preview' : '#cupWrapShapeRot_preview';
+                    // Apply translate to the final centered position
+                    shapesSvg += `<use href="${shapeId}" transform="translate(${placement.x.toFixed(3)}, ${placement.y.toFixed(3)})" id="item-${index}" />\n`;
+                });
+
+                // Corner and dashed lines (using variables and style from bocly 2)
+                const rightEdge = sheetW - marginR;
+                const bottomEdge = sheetH - marginB;
+                const cornerLength = Math.min(10, usableW * 0.05, usableH * 0.05); // Use smaller corner marks
+                const cornerLines = `
+                    <line x1="${marginL}" y1="${marginT - cornerLength}" x2="${marginL}" y2="${marginT + cornerLength}" stroke="var(--svg-stroke-color)" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/> <line x1="${marginL - cornerLength}" y1="${marginT}" x2="${marginL + cornerLength}" y2="${marginT}" stroke="var(--svg-stroke-color)" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/>
+                    <line x1="${rightEdge}" y1="${marginT - cornerLength}" x2="${rightEdge}" y2="${marginT + cornerLength}" stroke="var(--svg-stroke-color)" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/> <line x1="${rightEdge - cornerLength}" y1="${marginT}" x2="${rightEdge + cornerLength}" y2="${marginT}" stroke="var(--svg-stroke-color)" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/>
+                    <line x1="${marginL}" y1="${bottomEdge - cornerLength}" x2="${marginL}" y2="${bottomEdge + cornerLength}" stroke="var(--svg-stroke-color)" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/> <line x1="${marginL - cornerLength}" y1="${bottomEdge}" x2="${marginL + cornerLength}" y2="${bottomEdge}" stroke="var(--svg-stroke-color)" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/>
+                    <line x1="${rightEdge}" y1="${bottomEdge - cornerLength}" x2="${rightEdge}" y2="${bottomEdge + cornerLength}" stroke="var(--svg-stroke-color)" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/> <line x1="${rightEdge - cornerLength}" y1="${bottomEdge}" x2="${rightEdge + cornerLength}" y2="${bottomEdge}" stroke="var(--svg-stroke-color)" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/>`;
+                const dashedLines = `
+                    <line x1="${marginL}" y1="${marginT}" x2="${rightEdge}" y2="${marginT}" stroke="var(--svg-red-color)" stroke-width="${DASHED_STROKE_WIDTH_LAYOUT}" stroke-dasharray="4,2"/> <line x1="${rightEdge}" y1="${marginT}" x2="${rightEdge}" y2="${bottomEdge}" stroke="var(--svg-red-color)" stroke-width="${DASHED_STROKE_WIDTH_LAYOUT}" stroke-dasharray="4,2"/>
+                    <line x1="${rightEdge}" y1="${bottomEdge}" x2="${marginL}" y2="${bottomEdge}" stroke="var(--svg-red-color)" stroke-width="${DASHED_STROKE_WIDTH_LAYOUT}" stroke-dasharray="4,2"/> <line x1="${marginL}" y1="${bottomEdge}" x2="${marginL}" y2="${marginT}" stroke="var(--svg-red-color)" stroke-width="${DASHED_STROKE_WIDTH_LAYOUT}" stroke-dasharray="4,2"/>`;
+                // SVG style using bocly 2 CSS variables
+                const svgStyleContent = `
+                     .shape-group path { fill: none; }
+                     .main-path { stroke: var(--svg-stroke-color); stroke-width: ${SVG_STROKE_WIDTH_LAYOUT}; vector-effect: non-scaling-stroke; }
+                     .flap-path { stroke: var(--svg-red-color); stroke-width: ${SVG_RED_STROKE_WIDTH_LAYOUT}; vector-effect: non-scaling-stroke; }
+                     .sheet-rect { fill: none; stroke: var(--svg-stroke-color); stroke-width: ${SVG_STROKE_WIDTH_LAYOUT}; vector-effect: non-scaling-stroke; }
+                 `;
+
+                const layoutSvgContent = `
+                    <svg width="100%" height="95%" viewBox="${layoutViewBox}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="display: block; margin: auto;">
+                        <style>${svgStyleContent}</style>
+                        <title>Bình trang ${totalItems} khuôn (${algoDesc})</title>
+                        <desc>Khổ ${sheetW}x${sheetH}, Lề T${marginT} B${marginB} L${marginL} R${marginR}, Gap H ${gapH} V ${gapV}. Chiến lược: ${algoDesc}.</desc>
+                        <defs>
+                            <g id="cupWrapShapeStd_preview" class="shape-group" transform="${defsTransformStd}">
+                                <path class="main-path" d="${defsPathDataStd}" />
+                                <path class="flap-path" d="${defsFlapPathDataStd}" />
+                            </g>
+                            <g id="cupWrapShapeRot_preview" class="shape-group" transform="${defsTransformRot}">
+                                <path class="main-path" d="${defsPathDataRot}" />
+                                <path class="flap-path" d="${defsFlapPathDataRot}" />
+                            </g>
+                        </defs>
+                        <rect class="sheet-rect" x="0" y="0" width="${sheetW}" height="${sheetH}"/>
+                        ${cornerLines}
+                        ${dashedLines}
+                        ${shapesSvg} </svg>
+                `;
+                layoutSvgContainer.innerHTML = layoutSvgContent;
+                resultText.textContent = `Kết quả (${algoDesc}): ${totalItems} khuôn / tờ khổ ${sheetW}x${sheetH}mm`;
+                window.singleShapeData.layoutSvgContent = layoutSvgContent; // Save for redraw on theme change
+                document.getElementById('downloadLayoutButton').disabled = false;
+                updateSvgColors(); // Ensure colors match theme
+            } catch (error) {
+                console.error("Lỗi khi bình trang:", error); // Log detailed error
+                displayError(`Lỗi khi bình trang: ${error.message}`);
+                layoutSvgContainer.innerHTML = `<p style="color: red;">Lỗi khi bình trang!</p>`;
+                window.singleShapeData.layoutSvgContent = null;
+                document.getElementById('downloadLayoutButton').disabled = true;
+            }
+        }
+        // --- *** END OF calculateLayoutPreview from BOCLY-3.HTML *** ---
+
+        // --- Hàm generateSingleSVGForExport gốc từ bocly 2 minimal fix ---
+        function generateSingleSVGForExport() {
+             if (!window.singleShapeData || !window.singleShapeData.isValid || !window.singleShapeData.mainPathData90 || !window.singleShapeData.flapEdgePathData90 || !window.singleShapeData.bbox90) { return null; }
+             if (!validatePathData(window.singleShapeData.mainPathData90) || !validatePathData(window.singleShapeData.flapEdgePathData90)) { return null; }
+             const bbox = window.singleShapeData.bbox90;
+             const svgWidth = bbox.width; const svgHeight = bbox.height;
+             const exportedViewBox = `0 0 ${bbox.width.toFixed(3)} ${bbox.height.toFixed(3)}`;
+             const translatedMainPath = transformPathData(window.singleShapeData.mainPathData90, -bbox.x, -bbox.y);
+             const translatedFlapPath = transformPathData(window.singleShapeData.flapEdgePathData90, -bbox.x, -bbox.y);
+             const D9 = document.getElementById('D9').value || "d9"; const D10 = document.getElementById('D10').value || "d10";
+             const D11 = document.getElementById('D11').value || "h"; const flapProtrusion = document.getElementById('flapProtrusion').value || "fP";
+            return `
+                <svg width="${svgWidth.toFixed(3)}mm" height="${svgHeight.toFixed(3)}mm" viewBox="${exportedViewBox}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+                     <title>Khuon Boc Ly D=${D9}-${D10} H=${D11} Flap=${flapProtrusion}</title>
+                     <desc>Single cup wrap die-line</desc>
+                     <path d="${translatedMainPath}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_SINGLE}" fill="none"/>
+                     <path d="${translatedFlapPath}" stroke="${PDF_RED_COLOR}" stroke-width="${SVG_RED_STROKE_WIDTH_SINGLE}" fill="none"/>
+                 </svg>`;
+        }
+
+        // --- Hàm generateLayoutSVGForExport gốc từ bocly 2 minimal fix (đã sửa lỗi gapH/gapV) ---
+        function generateLayoutSVGForExport() {
+            if (!window.singleShapeData || !window.singleShapeData.isValid || !window.singleShapeData.bestPlacements.length) { return null; }
+            const sheetW = parseFloat(document.getElementById('sheetWidthLayout').value); const sheetH = parseFloat(document.getElementById('sheetHeightLayout').value);
+            const marginL = parseFloat(document.getElementById('marginLeftLayout').value); const marginR = parseFloat(document.getElementById('marginRightLayout').value);
+            const marginT = parseFloat(document.getElementById('marginTopLayout').value); const marginB = parseFloat(document.getElementById('marginBottomLayout').value);
+            const gapH = parseFloat(document.getElementById('gapHLayout').value); const gapV = parseFloat(document.getElementById('gapVLayout').value);
+            const D9 = document.getElementById('D9').value || "d9"; const D10 = document.getElementById('D10').value || "d10"; const D11 = document.getElementById('D11').value || "h";
+             if (isNaN(sheetW) || isNaN(sheetH) || isNaN(marginL) || isNaN(marginR) || isNaN(marginT) || isNaN(marginB) || isNaN(gapH) || isNaN(gapV) ) {
+                 console.error("Invalid layout parameters for export (NaN detected)."); displayError("Một hoặc nhiều thông số layout không phải là số hợp lệ."); return null; }
+             if (!validatePathData(window.singleShapeData.mainPathData90) || !validatePathData(window.singleShapeData.flapEdgePathData90) || !validatePathData(window.singleShapeData.mainPathData180) || !validatePathData(window.singleShapeData.flapEdgePathData180)) {
+                 console.error("Invalid base path data for export."); displayError("Dữ liệu path khuôn gốc không hợp lệ."); return null; }
+             const layoutViewBox = `0 0 ${sheetW.toFixed(3)} ${sheetH.toFixed(3)}`;
+             let shapesSvg = ''; const placements = window.singleShapeData.bestPlacements;
+             const bbox_std = window.singleShapeData.bbox90; const bbox_rot = window.singleShapeData.bbox180; if (!bbox_std || !bbox_rot) return null;
+            placements.forEach(placement => {
+                 const mainPathData = placement.orientation === 'standard' ? window.singleShapeData.mainPathData90 : window.singleShapeData.mainPathData180;
+                 const flapPathData = placement.orientation === 'standard' ? window.singleShapeData.flapEdgePathData90 : window.singleShapeData.flapEdgePathData180;
+                 const bbox = placement.orientation === 'standard' ? bbox_std : bbox_rot;
+                 const dx = placement.x - bbox.x; const dy = placement.y - bbox.y;
+                 const transformedMainPath = transformPathData(mainPathData, dx, dy); const transformedFlapPath = transformPathData(flapPathData, dx, dy);
+                 if (!validatePathData(transformedMainPath) || !validatePathData(transformedFlapPath)) { console.warn("Skipping invalid transformed path for export."); return; }
+                 shapesSvg += `<path d="${transformedMainPath}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}" fill="none"/>\n`;
+                 shapesSvg += `<path d="${transformedFlapPath}" stroke="${PDF_RED_COLOR}" stroke-width="${SVG_RED_STROKE_WIDTH_LAYOUT}" fill="none"/>\n`;
+            });
+             const rightEdge = sheetW - marginR; const bottomEdge = sheetH - marginB; const usableW = sheetW - marginL - marginR; const usableH = sheetH - marginT - marginB;
+             const cornerLength = Math.min(10, usableW * 0.05, usableH * 0.05); // Use smaller corner marks
+             const cornerLines = `
+                <line x1="${marginL}" y1="${marginT - cornerLength}" x2="${marginL}" y2="${marginT + cornerLength}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/> <line x1="${marginL - cornerLength}" y1="${marginT}" x2="${marginL + cornerLength}" y2="${marginT}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/>
+                <line x1="${rightEdge}" y1="${marginT - cornerLength}" x2="${rightEdge}" y2="${marginT + cornerLength}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/> <line x1="${rightEdge - cornerLength}" y1="${marginT}" x2="${rightEdge + cornerLength}" y2="${marginT}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/>
+                <line x1="${marginL}" y1="${bottomEdge - cornerLength}" x2="${marginL}" y2="${bottomEdge + cornerLength}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/> <line x1="${marginL - cornerLength}" y1="${bottomEdge}" x2="${marginL + cornerLength}" y2="${bottomEdge}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/>
+                <line x1="${rightEdge}" y1="${bottomEdge - cornerLength}" x2="${rightEdge}" y2="${bottomEdge + cornerLength}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/> <line x1="${rightEdge - cornerLength}" y1="${bottomEdge}" x2="${rightEdge + cornerLength}" y2="${bottomEdge}" stroke="${PDF_STROKE_COLOR}" stroke-width="${SVG_STROKE_WIDTH_LAYOUT}"/>`;
+             const dashedLines = `
+                <line x1="${marginL}" y1="${marginT}" x2="${rightEdge}" y2="${marginT}" stroke="${PDF_RED_COLOR}" stroke-width="${DASHED_STROKE_WIDTH_LAYOUT}" stroke-dasharray="4,2"/> <line x1="${rightEdge}" y1="${marginT}" x2="${rightEdge}" y2="${bottomEdge}" stroke="${PDF_RED_COLOR}" stroke-width="${DASHED_STROKE_WIDTH_LAYOUT}" stroke-dasharray="4,2"/>
+                <line x1="${rightEdge}" y1="${bottomEdge}" x2="${marginL}" y2="${bottomEdge}" stroke="${PDF_RED_COLOR}" stroke-width="${DASHED_STROKE_WIDTH_LAYOUT}" stroke-dasharray="4,2"/> <line x1="${marginL}" y1="${bottomEdge}" x2="${marginL}" y2="${marginT}" stroke="${PDF_RED_COLOR}" stroke-width="${DASHED_STROKE_WIDTH_LAYOUT}" stroke-dasharray="4,2"/>`;
+             const totalItems = window.singleShapeData.bestPlacements.length; const algoDesc = window.singleShapeData.layoutAlgoDesc || 'layout';
+             return `
+                 <svg width="${sheetW}mm" height="${sheetH}mm" viewBox="${layoutViewBox}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+                     <title>Binh trang ${totalItems} Khuon Boc Ly D=${D9}-${D10} H=${D11} (${algoDesc})</title>
+                     <desc>Kho ${sheetW.toFixed(1)}x${sheetH.toFixed(1)}, Le T${marginT.toFixed(1)} B${marginB.toFixed(1)} L${marginL.toFixed(1)} R${marginR.toFixed(1)}, Gap H${gapH.toFixed(1)} V${gapV.toFixed(1)}</desc>
+                     ${cornerLines} ${dashedLines} ${shapesSvg}
+                 </svg>`;
+        }
+
+        // --- downloadSingleFile, downloadLayoutFile, downloadPDF gốc từ bocly 2 minimal fix ---
+         async function downloadSingleFile() {
+             clearError(); if (!window.singleShapeData || !window.singleShapeData.isValid) { displayError("Chưa có dữ liệu khuôn hợp lệ để tải."); return; }
+             const svgContent = generateSingleSVGForExport(); if (!svgContent) { displayError("Lỗi khi tạo SVG khuôn đơn để xuất."); return; }
+             const bbox = window.singleShapeData.bbox90; if (!bbox) { displayError("Lỗi khi lấy kích thước khuôn đơn (bbox)."); return; }
+             const pdfWidth = bbox.width; const pdfHeight = bbox.height;
+             if (isNaN(pdfWidth) || pdfWidth <= 0 || isNaN(pdfHeight) || pdfHeight <= 0) { displayError(`Kích thước PDF khuôn đơn không hợp lệ (${pdfWidth}x${pdfHeight}).`); return; }
+             const D9 = document.getElementById('D9').value || "d9"; const D10 = document.getElementById('D10').value || "d10"; const D11 = document.getElementById('D11').value || "h"; const flapProtrusion = document.getElementById('flapProtrusion').value || "fP";
+             const filename = `KhuonBocLy_${D9}-${D10}_H${D11}_Flap${flapProtrusion}_PrintSolutions.pdf`; await downloadPDF(svgContent, filename, pdfWidth, pdfHeight);
+         }
+         async function downloadLayoutFile() {
+             clearError(); if (!window.singleShapeData || !window.singleShapeData.isValid || !window.singleShapeData.bestPlacements.length) { displayError("Chưa có dữ liệu bình trang hợp lệ để tải."); return; }
+             const sheetW_str = document.getElementById('sheetWidthLayout').value; const sheetH_str = document.getElementById('sheetHeightLayout').value; const sheetW = parseFloat(sheetW_str); const sheetH = parseFloat(sheetH_str);
+             if (isNaN(sheetW) || sheetW <= 0 || isNaN(sheetH) || sheetH <= 0) { displayError("Kích thước khổ giấy không hợp lệ."); return; }
+             const svgContent = generateLayoutSVGForExport(); if (!svgContent) { return; }
+             const gapH_str = document.getElementById('gapHLayout').value || "gh"; const gapV_str = document.getElementById('gapVLayout').value || "gv"; const algoDesc = window.singleShapeData.layoutAlgoDesc.replace(/[^a-zA-Z0-9]/g, '') || 'CompareV2';
+             const filename = `LayoutBocLy_Kho${sheetW_str}x${sheetH_str}_GapH${gapH_str}V${gapV_str}_${algoDesc}_PrintSolutions.pdf`; await downloadPDF(svgContent, filename, sheetW, sheetH);
+         }
+         async function downloadPDF(svgContent, filename, width, height) {
+             clearError(); if (isNaN(width) || width <= 0 || isNaN(height) || height <= 0) { displayError(`Kích thước PDF không hợp lệ (${width}x${height}).`); return; }
+             try {
+                 if (!window.jspdf || !window.jspdf.jsPDF) { displayError("Thư viện jsPDF chưa được tải."); return; } const { jsPDF } = window.jspdf; const doc = new jsPDF({ orientation: width > height ? 'landscape' : 'portrait', unit: 'mm', format: [width, height] });
+                 if (typeof doc.svg === 'function') {
+                     try {
+                         const parser = new DOMParser(); const svgDoc = parser.parseFromString(svgContent, "image/svg+xml"); const svgElement = svgDoc.documentElement;
+                         if (svgElement.tagName.toLowerCase() !== 'svg') { throw new Error("Parsing SVG content failed, root element is not <svg>."); } const errorNode = svgElement.querySelector('parsererror');
+                         if (errorNode) { console.error("SVG parsing error:", errorNode.textContent); throw new Error(`SVG parsing error: ${errorNode.textContent.split('\n')[0]}`); }
+                         await doc.svg(svgElement, { x: 0, y: 0, width: width, height: height }); doc.save(filename);
+                     } catch (svgRenderError) {
+                         console.error("Error using doc.svg:", svgRenderError); if (typeof svg2pdf === 'function') {
+                             console.log("Falling back to svg2pdf..."); try { const svgElementForFallback = new DOMParser().parseFromString(svgContent, 'image/svg+xml').documentElement; await svg2pdf(svgElementForFallback, doc, { x: 0, y: 0, width: width, height: height }); doc.save(filename);
+                             } catch (svg2pdfError) { console.error("Error using svg2pdf fallback:", svg2pdfError); displayError(`Lỗi khi tạo PDF (cả hai phương thức đều thất bại): ${svg2pdfError.message}`); }
+                         } else { displayError(`Lỗi khi xử lý SVG cho PDF: ${svgRenderError.message}`); }
+                     }
+                 } else if (typeof svg2pdf === 'function') {
+                     console.log("Using svg2pdf directly..."); try { const svgElement = new DOMParser().parseFromString(svgContent, 'image/svg+xml').documentElement; await svg2pdf(svgElement, doc, { x: 0, y: 0, width: width, height: height }); doc.save(filename);
+                     } catch (svg2pdfError) { console.error("Error using svg2pdf:", svg2pdfError); displayError(`Lỗi khi tạo PDF bằng svg2pdf: ${svg2pdfError.message}`); }
+                 } else { displayError("Không tìm thấy thư viện hỗ trợ chuyển đổi SVG sang PDF (jsPDF.svg hoặc svg2pdf)."); }
+             } catch (err) {
+                 console.error("Error during PDF generation setup:", err); let errMsg = err.message || "Lỗi không xác định."; if (err.message && err.message.includes("toFixed")) { errMsg = "Lỗi định dạng số trong dữ liệu SVG/kích thước PDF."; } displayError(`Lỗi khi tạo PDF: ${errMsg}`);
+             }
+         }
+
+        // --- Khởi tạo gốc từ bocly 2 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            document.body.classList.add('dark-mode');
+            document.body.classList.remove('light-mode');
+            document.querySelector('.theme-toggle').textContent = 'Light Mode';
+            updateSvgColors();
+        });
+    </script>
+</body>
+</html>

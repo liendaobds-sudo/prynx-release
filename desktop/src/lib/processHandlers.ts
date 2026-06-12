@@ -1,0 +1,491 @@
+/**
+ * Processing handlers extracted from ImpositionTab.tsx
+ * 
+ * These are pure async functions that receive all dependencies as parameters,
+ * eliminating closure dependency on component state.
+ */
+
+import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
+import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
+import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
+import { getImposerCapability } from '../components/imposition-tools/types';
+import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
+import { resizePages } from '../lib/preprocessEngine/PageResizer';
+import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
+import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
+
+// ─── Shared context type for all handlers ───
+export interface ProcessContext {
+    file: File;
+    onSpawnTab?: (file: File, extra?: any) => void;
+    commitWorkingFile: (blob: Blob, name: string) => void;
+    setError: (msg: string) => void;
+    setIsProcessing: (v: boolean) => void;
+    setProcessStatus: (msg: string) => void;
+    setReportMsg: (msg: string) => void;
+    setBatchOutput: (v: any) => void;
+    viewerNumPages?: number;
+    getWorkingBytes: () => Promise<Uint8Array>;
+}
+
+// ═════════════════════════════════════════════
+//  Main Imposition Engine (Booklet / N-Up)
+// ═════════════════════════════════════════════
+
+export async function runProcessEngine(
+    ctx: ProcessContext,
+    settings: ProcessingSettings,
+    spawnNewTab: boolean
+) {
+    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg } = ctx;
+
+    setError('');
+    setIsProcessing(true);
+    setProcessStatus('Đang khởi tạo...');
+
+    try {
+        const srcPageCount = ctx.viewerNumPages || 0;
+
+        const isDieCut = settings.imposerMode === 'diecut';
+        const isOffset = settings.imposerMode === 'offset';
+        const isGuillotine = settings.imposerMode === 'guillotine';
+        const isCnc = settings.imposerMode === 'cnc';
+        // Task 16 / Req 6: capability khai báo theo profile (mark/pont) — không khóa cứng
+        const caps = getImposerCapability(settings.imposerMode);
+
+        // Task 11: MỌI job N-up (cắt xén + die-cut) đi backend → output dùng chung
+        // solver với preview (nup_engine == /preview-layout, sau Task 10). Không còn
+        // tính layout phía TS cho đường output (NupGridSolver chỉ còn phục vụ booklet).
+        if (settings.impositionMode === ImpositionMode.NUp) {
+            setProcessStatus(isDieCut ? '✂️ Đang thiết lập dữ liệu Bình Tem Bế...' : `🚀 Đang đẩy job bình trang lên backend...`);
+
+            const { uploadFileForNup, startNupJobBackend, getNupJobStatus, downloadNupJob } = await import('../lib/api');
+
+            setProcessStatus('Đang chuẩn bị dữ liệu...');
+            // Use baked working bytes (respects page deletions/rotations) instead of original file
+            const workingBytes = await ctx.getWorkingBytes();
+            const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+            const serverPath = await uploadFileForNup(workingFile);
+
+            // Watermark: backend tự lấy license từ header X-License-Key đã verify
+            // (imposition.py inject _license_key) nên frontend không cần gửi watermarkKey.
+            const backendSettings = {
+                sheetWidth: settings.sheetWidth, sheetHeight: settings.sheetHeight,
+                bleed: settings.bleed, gapX: settings.gapX || 0, gapY: settings.gapY || 0,
+                marginTop: settings.marginTop || 0, marginBottom: settings.marginBottom || 0,
+                marginLeft: settings.marginLeft || 0, marginRight: settings.marginRight || 0,
+                marginMode: settings.marginMode || 'labels_only',
+                markType: caps.supportsMarks ? ((settings as any).markType || 'none') : 'none',
+                markLength: (settings as any).markLength || 5, markOffset: (settings as any).markOffset || 3,
+                gridStrategy: isGuillotine || isDieCut ? (settings as any).gridStrategy || 'simple_auto' : 'simple_auto',
+                layoutType: isGuillotine || isDieCut ? (settings as any).layoutType || 'sequential' : 'sequential',
+                align: settings.align || 'center',
+                cols: settings.cols, rows: settings.rows,
+                splitGap: (settings as any).splitGap,
+                isDieCutMode: isDieCut,
+                cutType: isDieCut ? (settings as any).cutType : undefined, 
+                fillBlockGap: isDieCut ? (settings as any).fillBlockGap : undefined, 
+                pontType: caps.supportsPont ? (settings as any).pontType : undefined, 
+                pontConfig: caps.supportsPont ? (settings as any).pontConfig : undefined,
+                detectedShapesByPage: isDieCut ? (settings as any).detectedShapesByPage : undefined,
+                detectedShapeParamsByPage: isDieCut ? (settings as any).detectedShapeParamsByPage : undefined,
+                targetQuantity: (settings as any).targetQuantity || 0,
+                targetQuantitiesByPage: (settings as any).targetQuantitiesByPage || {},
+                groupingStrategy: isDieCut ? (settings as any).groupingStrategy || 'maximize_area' : 'maximize_area',
+                clusterTileW: isDieCut ? (settings as any).clusterTileW || 148 : undefined,
+                clusterTileH: isDieCut ? (settings as any).clusterTileH || 210 : undefined,
+                separateCutPage: isDieCut && (settings as any).cutType === 'one_dao' ? true : (isDieCut ? (settings as any).separateCutPage || false : false),
+                pontsOnCutFile: caps.supportsPont ? (settings as any).pontsOnCutFile !== false : undefined,
+                hiddenOcgLayerIds: isDieCut ? (settings as any).hiddenOcgLayerIds || [] : [],
+                // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — gồm cả CNC
+                exportUniqueSheets: isDieCut ? (settings as any).exportUniqueSheets !== false : false,
+                reportDisplay: (isDieCut || isCnc) ? (settings as any).reportDisplay : undefined,
+                reportMaterial: (isDieCut || isCnc) ? (settings as any).reportMaterial : undefined,
+                reportLamination: (isDieCut || isCnc) ? (settings as any).reportLamination : undefined,
+                reportLaminationSides: (isDieCut || isCnc) ? (settings as any).reportLaminationSides : undefined,
+                reportOrderCode: (isDieCut || isCnc) ? (settings as any).reportOrderCode : undefined,
+                saveByReport: isDieCut ? (settings as any).saveByReport : undefined,
+                // ═══ Bình Bế Rớt (CNC) — định tuyến renderer riêng ở backend ═══
+                imposerMode: isCnc ? 'cnc' : undefined,
+                cncTwoSided: isCnc ? (settings as any).cncTwoSided : undefined,
+                cncFlipEdge: isCnc ? (settings as any).cncFlipEdge : undefined,
+                cncDuplexMarks: isCnc ? (settings as any).cncDuplexMarks : undefined,
+            };
+
+            const jobName = (settings as any).layoutType === 'repeat' ? 'Nhân bản (S&R)' : 'N-Up';
+            setProcessStatus(`🚀 Đang khởi chạy tiến trình bình trang ${jobName}...`);
+            const jobId = await startNupJobBackend(serverPath, backendSettings);
+
+            let done = false;
+            while (!done) {
+                await new Promise(r => setTimeout(r, 500));
+                const status = await getNupJobStatus(jobId);
+
+                if (status.status === 'completed') {
+                    done = true;
+                    setProcessStatus('Đang tải file kết quả về...');
+                    const blob = await downloadNupJob(jobId);
+                    const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
+
+                    if (spawnNewTab && onSpawnTab) {
+                        onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' }), { report: status.report });
+                        setProcessStatus('');
+                    } else {
+                        commitWorkingFile(blob, newFileName);
+                        if (status.report) setReportMsg(status.report);
+                    }
+
+                    // ═══ Tự động lưu file in (đã cài trước khi bình) ═══
+                    const sp = (settings as any).savePrintConfig;
+                    if ((settings as any).autoSavePrint && sp?.folder) {
+                        try {
+                            setProcessStatus('🖨️ Đang tự động lưu file in...');
+                            const { savePrintFilesToFolder, pagesPerTypeFor } = await import('../lib/savePrintFiles');
+                            const cncMode = settings.imposerMode === 'cnc';
+                            const cncTwoSided = !!(settings as any).cncTwoSided;
+                            const separateCut = !!(settings as any).separateCutPage;
+                            const { ok } = await savePrintFilesToFolder(blob, sp.folder, {
+                                nameMode: sp.nameMode, folderMode: sp.folderMode,
+                                separateCut, includeOrderCode: sp.includeOrderCode, includeDate: sp.includeDate,
+                                orderCode: sp.orderCode, cncMode, cncTwoSided,
+                            }, {
+                                pagesPerType: pagesPerTypeFor({ cncMode, cncTwoSided, separateCut }),
+                                labelName: sp.labelName,
+                            });
+                            setReportMsg(`🖨️ Đã tự động lưu ${ok} file in vào: ${sp.folder}`);
+                        } catch (e: any) {
+                            setError('Bình xong nhưng tự động lưu file in lỗi: ' + (e?.message || e));
+                        }
+                    }
+                } else if (status.status === 'failed') {
+                    throw new Error(status.error || 'Lỗi xử lý hệ thống');
+                } else {
+                    const prog = status.progress || '0/0';
+                    setProcessStatus(prog.includes('/') ? `⚡ Đang xử lý: ${prog} trang đã bình...` : `⚡ ${prog}`);
+                }
+            }
+        } else if (settings.impositionMode === ImpositionMode.Booklet && (srcPageCount > 1000 || file.size > 300 * 1024 * 1024)) {
+            setProcessStatus(`📊 File có ${srcPageCount.toLocaleString()} trang → Đang đẩy nhanh tiến trình...`);
+            const { uploadFileForNup } = await import('../lib/api');
+            const { imposePdfViaBackend } = await import('../lib/pdfImposer');
+
+            setProcessStatus('Đang xử lý dữ liệu...');
+            const serverPath = await uploadFileForNup(file);
+            const result = await imposePdfViaBackend(serverPath, settings, setProcessStatus);
+            const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
+
+            if (result.blob && result.blob.size > 0) {
+                if (spawnNewTab && onSpawnTab) {
+                    onSpawnTab(new File([result.blob], newFileName, { type: 'application/pdf' }));
+                    setProcessStatus('');
+                } else {
+                    commitWorkingFile(result.blob, newFileName);
+                    if (result.report) setReportMsg(result.report);
+                }
+            } else {
+                setReportMsg(`✅ File đã được lưu trên server: ${result.outputPath}\n${result.report}`);
+            }
+        } else {
+            const imposedOut = await imposePdf(file, settings, setProcessStatus);
+            const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
+
+            if (spawnNewTab && onSpawnTab) {
+                onSpawnTab(new File([imposedOut.blob], newFileName, { type: 'application/pdf' }), { report: imposedOut.report });
+                setProcessStatus('');
+            } else {
+                commitWorkingFile(imposedOut.blob, newFileName);
+                if (imposedOut.report) setReportMsg(imposedOut.report);
+            }
+        }
+    } catch (e: any) {
+        if (e.message === "ABORT_BY_USER") {
+            // Silently abort, user cancelled
+            return;
+        }
+        setError(e.message || 'Lỗi hệ thống khi xử lý Bình trang.');
+    } finally {
+        setIsProcessing(false);
+    }
+}
+
+// ═════════════════════════════════════════════
+//  Catalog Auto Plan Handler
+// ═════════════════════════════════════════════
+
+export async function runCatalogPlan(
+    ctx: ProcessContext,
+    planConfig: PlanConfig,
+    sheetSettings: Partial<ProcessingSettings> & { spawnNewTab?: boolean }
+) {
+    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setBatchOutput } = ctx;
+
+    setError('');
+    setIsProcessing(true);
+    setProcessStatus('Đang phân tích cấu trúc Catalog...');
+
+    try {
+        const planResult = planCatalog({ ...planConfig, sourceFileName: file.name });
+        const verifyErrors = verifyCatalogPlan(planConfig, planResult);
+        if (verifyErrors.length > 0) {
+            throw new Error(`Lỗi phân tích: ${verifyErrors.join('; ')}`);
+        }
+
+        setProcessStatus(`Phân tích thành công: ${planResult.jobs.length} tấm kẽm. Bắt đầu bình...`);
+
+        // Tuân thủ kết quả cuối cùng: bình catalog trên file đã áp dụng sửa đổi trang.
+        const workingBytes = await ctx.getWorkingBytes();
+        const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+        const batchResults = await imposeCatalogBatch(workingFile, planResult.jobs, sheetSettings, setProcessStatus);
+        const successCount = batchResults.filter(r => r.blob.size > 0).length;
+
+        setProcessStatus('Đang gộp các kẽm để preview...');
+        const mergedDoc = await PDFDocument.create();
+        for (const r of batchResults) {
+            if (r.blob.size > 0) {
+                const rBytes = await r.blob.arrayBuffer();
+                const rDoc = await PDFDocument.load(rBytes, { ignoreEncryption: true });
+                const copiedPages = await mergedDoc.copyPages(rDoc, rDoc.getPageIndices());
+                copiedPages.forEach(p => mergedDoc.addPage(p));
+            }
+        }
+
+        // Renumber plates globally
+        let globalPlateNum = 0;
+        for (const pg of mergedDoc.getPages()) {
+            const existingUri = pg.node.get(PDFName.of('PlateInfoURI'));
+            if (existingUri) {
+                globalPlateNum++;
+                let rawStr = (existingUri as any).decodeText?.() || (existingUri as any).value || String(existingUri);
+                rawStr = rawStr.replace(/^\(|\)$/g, '');
+                try {
+                    const decoded = decodeURIComponent(rawStr);
+                    const renumbered = decoded.replace(/^Kẽm \d+/, `Kẽm ${globalPlateNum}`);
+                    pg.node.set(PDFName.of('PlateInfoURI'), PDFString.of(encodeURIComponent(renumbered)));
+                } catch (e) { console.warn('Failed to decode PlateInfoURI', e); }
+            } else {
+                const existing = pg.node.get(PDFName.of('PlateInfo'));
+                if (existing) {
+                    globalPlateNum++;
+                    const oldStr = (existing as any).decodeText?.() || (existing as any).value || String(existing);
+                    const renumbered = oldStr.replace(/^Kẽm \d+/, `Kẽm ${globalPlateNum}`);
+                    pg.node.set(PDFName.of('PlateInfo'), PDFString.of(renumbered));
+                }
+            }
+        }
+
+        const mergedBytes = await mergedDoc.save();
+        const mergedBlob = new Blob([mergedBytes as any], { type: 'application/pdf' });
+        const baseName = file.name.replace(/\.[^/.]+$/, '');
+        const mergedFileName = `Kem_Gop_${baseName}_[${successCount}_Kem].pdf`;
+
+        const batchOutputPayload = {
+            docs: batchResults.filter(r => r.blob.size > 0).map(r => ({ blob: r.blob, filename: r.filename, report: r.report })),
+            mergedBlob
+        };
+
+        if (sheetSettings.spawnNewTab && onSpawnTab) {
+            onSpawnTab(new File([mergedBlob], mergedFileName, { type: 'application/pdf' }), { batchOutput: batchOutputPayload });
+            setProcessStatus('');
+        } else {
+            setBatchOutput(batchOutputPayload);
+            commitWorkingFile(mergedBlob, mergedFileName);
+        }
+    } catch (e: any) {
+        setError(e.message || 'Lỗi khi xử lý Catalog Auto Plan.');
+    } finally {
+        setIsProcessing(false);
+        setProcessStatus('');
+    }
+}
+
+// ═════════════════════════════════════════════
+//  Preprocess Handlers
+// ═════════════════════════════════════════════
+
+export async function runShuffle(ctx: ProcessContext, settings: any) {
+    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+    setError(''); setIsProcessing(true); setProcessStatus('Đang xáo trộn trang...');
+    try {
+        const inputBytes = await getWorkingBytes();
+        const srcPdf = await PDFDocument.load(inputBytes);
+        const totalPages = srcPdf.getPageCount();
+
+        if ((totalPages > 1000 || file.size > 300 * 1024 * 1024) && settings.specialAction !== 'split_odd_even') {
+            setProcessStatus(`⚡ Đang xử lý: Xáo trộn ${totalPages.toLocaleString()} trang...`);
+            const { backendShufflePages } = await import('../lib/api');
+            let action = 'reverse'; let mapping: number[] = [];
+            if (settings.presetId === 'special') {
+                if (settings.specialAction === 'reverse') action = 'reverse';
+                else if (settings.specialAction === 'odd_first') action = 'odd_first';
+                else action = 'even_first';
+            } else {
+                action = 'custom';
+                const rules = parseRule(settings.rule);
+                mapping = applyRule(rules, totalPages, Math.max(1, settings.groupSize), settings.mode).map((m: any) => m.newPageNum || m);
+            }
+            const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
+            const blob = await backendShufflePages(workingFile, action, mapping);
+            const newFileName = `Shuffled_${file.name}`;
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+            else { commitWorkingFile(blob, newFileName); }
+        } else {
+            if (settings.presetId === 'special' && settings.specialAction === 'split_odd_even') {
+                const odds = Array.from({ length: totalPages }, (_, i) => i).filter(i => i % 2 === 0);
+                const evens = Array.from({ length: totalPages }, (_, i) => i).filter(i => i % 2 === 1);
+
+                const mappingOdd = odds.map(p => ({ srcPage: p, rotation: 0 }));
+                const mappingEven = evens.map(p => ({ srcPage: p, rotation: 0 }));
+
+                const outputBytesOdd = await executeShuffle(srcPdf, mappingOdd);
+                const outputBytesEven = await executeShuffle(srcPdf, mappingEven);
+
+                if (onSpawnTab) {
+                    onSpawnTab(new File([new Blob([outputBytesOdd as any], { type: 'application/pdf' })], `TrangLe_${file.name}`, { type: 'application/pdf' }));
+                    onSpawnTab(new File([new Blob([outputBytesEven as any], { type: 'application/pdf' })], `TrangChan_${file.name}`, { type: 'application/pdf' }));
+                    ctx.setReportMsg('');
+                } else {
+                    throw new Error("Môi trường hiện tại không hỗ trợ mở nhiều Tab.");
+                }
+                return;
+            }
+
+            let mapping: any[] = [];
+            if (settings.presetId === 'special') {
+                if (settings.specialAction === 'reverse') mapping = reversePages(totalPages);
+                else mapping = shuffleEvenOdd(totalPages, settings.specialAction);
+            } else {
+                const rules = parseRule(settings.rule);
+                if (rules.length === 0) throw new Error("Quy tắc trống hoặc không hợp lệ.");
+                mapping = applyRule(rules, totalPages, Math.max(1, settings.groupSize), settings.mode);
+            }
+            const outputBytes = await executeShuffle(srcPdf, mapping);
+            const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
+            const newFileName = `Shuffled_${file.name}`;
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+            else { commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+        }
+    } catch (err: any) { setError('Lỗi xáo trộn trang: ' + err.message); }
+    finally { setIsProcessing(false); setProcessStatus(''); }
+}
+
+export async function runResize(ctx: ProcessContext, settings: any) {
+    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+    setError(''); setIsProcessing(true); setProcessStatus('Đang đổi khổ trang...');
+    try {
+        const inputBytes = await getWorkingBytes();
+        const quickDoc = await PDFDocument.load(inputBytes);
+        const totalPages = quickDoc.getPageCount();
+
+        if (totalPages > 1000 || file.size > 300 * 1024 * 1024) {
+            setProcessStatus(`⚡ Đang xử lý: Đổi khổ ${totalPages.toLocaleString()} trang...`);
+            const { backendResizePages } = await import('../lib/api');
+            const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
+            const blob = await backendResizePages(workingFile, settings.targetW, settings.targetH, settings.scaleMode, settings.applyToStr || 'all');
+            const newFileName = `Resized_${file.name}`;
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+            else { commitWorkingFile(blob, newFileName); }
+        } else {
+            let applyToPages: 'all' | 'even' | 'odd' | number[] = 'all';
+            if (settings.applyToStr === 'even' || settings.applyToStr === 'odd' || settings.applyToStr === 'all') {
+                applyToPages = settings.applyToStr;
+            } else {
+                const ranges = parseRanges(settings.applyToStr, totalPages);
+                applyToPages = ranges.flatMap(([start, end]: [number, number]) => Array.from({ length: end - start + 1 }, (_, i) => start + i));
+            }
+            const outputBytes = await resizePages(inputBytes, { targetW: settings.targetW, targetH: settings.targetH, scaleMode: settings.scaleMode, applyTo: applyToPages });
+            const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
+            const newFileName = `Resized_${file.name}`;
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+            else { commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+        }
+    } catch (err: any) { setError('Lỗi đổi khổ: ' + err.message); }
+    finally { setIsProcessing(false); setProcessStatus(''); }
+}
+
+export async function runSplit(ctx: ProcessContext, settings: any) {
+    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg, getWorkingBytes } = ctx;
+    setError(''); setIsProcessing(true); setProcessStatus('Đang tách PDF...');
+    try {
+        // Tuân thủ kết quả cuối cùng: tách trên file đã áp dụng sửa đổi trang.
+        const inputBytes = await getWorkingBytes();
+        const quickDoc = await PDFDocument.load(inputBytes);
+        const totalPages = quickDoc.getPageCount();
+
+        let pageList: number[] = [];
+        if (settings.mode === 'extract_pages') {
+            pageList = settings.pageListStr.split(',').map((s: string) => parseInt(s.trim())).filter((n: number) => !isNaN(n));
+        }
+
+        if (totalPages > 1000 || file.size > 300 * 1024 * 1024) {
+            setProcessStatus(`⚡ Đang xử lý: Tách ${totalPages.toLocaleString()} trang...`);
+            const { backendSplitPdf } = await import('../lib/api');
+            const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
+            const blob = await backendSplitPdf(workingFile, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList });
+            const newFileName = `Split_${file.name}`;
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: blob.type })); }
+            else { commitWorkingFile(blob, newFileName); }
+            setReportMsg('Đã tách file thành công.');
+        } else {
+            const results = await splitPdf(inputBytes, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList }, file.name.replace('.pdf', ''));
+            if (results.length === 0) throw new Error("Thao tác tách không tạo ra file nào.");
+            if (settings.spawnNewTab && onSpawnTab) {
+                for (const r of results) { onSpawnTab(new File([new Blob([r.bytes as any])], r.filename, { type: 'application/pdf' })); }
+                setReportMsg(`Đã tạo ${results.length} tab mới.`);
+            } else {
+                const first = results[0];
+                commitWorkingFile(new Blob([first.bytes as any], { type: 'application/pdf' }), first.filename);
+                setReportMsg(`Đã tách thành ${results.length} file.`);
+            }
+        }
+    } catch (err: any) { setError('Lỗi tách PDF: ' + err.message); }
+    finally { setIsProcessing(false); setProcessStatus(''); }
+}
+
+export async function runMerge(ctx: ProcessContext, settings: any) {
+    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+    setError(''); setIsProcessing(true); setProcessStatus('Đang ghép PDF...');
+    try {
+        // Tuân thủ kết quả cuối cùng: file nền (tab hiện tại) dùng bản đã áp dụng sửa đổi trang.
+        const workingBaseFile = file
+            ? new File([await getWorkingBytes() as any], file.name, { type: 'application/pdf' })
+            : null;
+
+        let totalPageEstimate = 0;
+        if (file) totalPageEstimate += file.size / 5000;
+        if (settings.mode === 'merge_files' && settings.filesToMerge?.length > 0) {
+            for (const f of settings.filesToMerge) totalPageEstimate += f.size / 5000;
+        }
+
+        const allMergeFiles = workingBaseFile ? [workingBaseFile, ...(settings.filesToMerge || [])] : (settings.filesToMerge || []);
+        const hasImages = allMergeFiles.some((f: any) => {
+            const n = f.name.toLowerCase();
+            return n.endsWith('.jpg') || n.endsWith('.jpeg') || n.endsWith('.png');
+        });
+
+        if (settings.mode === 'merge_files' && totalPageEstimate > 1000 && !hasImages) {
+            setProcessStatus(`⚡ Đang xử lý: Ghép ${settings.filesToMerge?.length || 0} file...`);
+            const { backendMergePdfs } = await import('../lib/api');
+            const allFiles = workingBaseFile ? [workingBaseFile, ...(settings.filesToMerge || [])] : (settings.filesToMerge || []);
+            const blob = await backendMergePdfs(allFiles, 'merge_files');
+            const newFileName = file ? `Merged_${file.name}` : 'Merged_Document.pdf';
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+            else { commitWorkingFile(blob, newFileName); }
+        } else if (settings.mode === 'interleave' && totalPageEstimate > 1000 && !hasImages) {
+            setProcessStatus(`⚡ Đang xử lý: Trộn xen kẽ...`);
+            const { backendMergePdfs } = await import('../lib/api');
+            const allFiles = [settings.oddFile, settings.evenFile].filter(Boolean);
+            const blob = await backendMergePdfs(allFiles, 'interleave');
+            const newFileName = 'Interleaved_Document.pdf';
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+            else { commitWorkingFile(blob, newFileName); }
+        } else {
+            const inputBytes = workingBaseFile ? new Uint8Array(await workingBaseFile.arrayBuffer()) : null;
+            const outputBytes = await mergePdf(inputBytes, settings);
+            const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
+            const newFileName = file ? `Merged_${file.name}` : `Merged_Document.pdf`;
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+            else { commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+        }
+    } catch (err: any) { setError('Lỗi ghép PDF: ' + err.message); }
+    finally { setIsProcessing(false); setProcessStatus(''); }
+}

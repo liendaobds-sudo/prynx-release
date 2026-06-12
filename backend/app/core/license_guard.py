@@ -1,0 +1,319 @@
+"""
+License Guard Middleware for PrynX Backend.
+
+Security model:
+1. Every API request must include headers:
+   - X-PrynX-Token: A shared secret between Tauri desktop and the Python sidecar.
+     This prevents external callers from using the API.
+   - X-License-Key: The user's license key (for watermarking/audit trail).
+   - X-Hardware-Id: The machine's HWID (for watermarking/audit trail).
+
+2. The shared token is generated at app startup by the Tauri host and passed
+   to the sidecar as an environment variable (PRYNX_SIDECAR_TOKEN).
+   External callers cannot know this token.
+
+3. For an extra layer, we can optionally verify the license key against
+   Supabase RPC on first use, then cache the result for the session.
+"""
+
+import os
+import logging
+import hashlib
+import hmac as hmac_mod
+import time
+import json
+import base64
+from typing import Optional
+from fastapi import Request, HTTPException
+
+logger = logging.getLogger(__name__)
+
+# ── Shared sidecar token ──
+# VECTOR #1 FIX: Token is loaded from a temp file (not env var).
+# The Tauri host writes the token to a file in AppData, passes the path
+# via PRYNX_TOKEN_FILE env var. We read it once and delete immediately.
+# This prevents other processes from reading the token via env var inspection.
+_SIDECAR_TOKEN: Optional[str] = None
+
+def _is_dev_mode() -> bool:
+    """Check DEV_MODE lazily — ensures .env has been loaded by pydantic."""
+    try:
+        from app.config import settings
+        return settings.DEV_MODE
+    except Exception:
+        return os.environ.get("DEV_MODE", "false").lower() in ("true", "1", "yes")
+
+def _load_token_from_file():
+    """Load sidecar token from stdin pipe or temp file, then clean up."""
+    global _SIDECAR_TOKEN
+    
+    # Method 1: stdin pipe (VECTOR #6 FIX — token never on disk)
+    token_source = os.environ.get("PRYNX_TOKEN_SOURCE", "")
+    if token_source == "stdin":
+        try:
+            import sys
+            if sys.stdin and not sys.stdin.isatty():
+                line = sys.stdin.readline().strip()
+                if line.startswith("TOKEN:"):
+                    _SIDECAR_TOKEN = line[6:]
+                    logger.info("[LICENSE_GUARD] Sidecar token loaded from stdin pipe")
+                    return
+        except Exception as e:
+            logger.error(f"[LICENSE_GUARD] Failed to read token from stdin: {e}")
+    
+    # Method 2: Try file-based token (legacy / fallback)
+    token_file = os.environ.get("PRYNX_TOKEN_FILE", "")
+    if token_file and os.path.isfile(token_file):
+        try:
+            with open(token_file, 'r') as f:
+                _SIDECAR_TOKEN = f.read().strip()
+            # Delete the file immediately after reading
+            os.remove(token_file)
+            logger.info("[LICENSE_GUARD] Sidecar token loaded from file and file deleted")
+            return
+        except Exception as e:
+            logger.error(f"[LICENSE_GUARD] Failed to read token file: {e}")
+    
+    # Method 3: Fallback env var (legacy / dev mode)
+    _SIDECAR_TOKEN = os.environ.get("PRYNX_SIDECAR_TOKEN")
+    if _SIDECAR_TOKEN:
+        logger.info("[LICENSE_GUARD] Sidecar token loaded from env var (legacy mode)")
+
+# Load token at import time
+_load_token_from_file()
+
+# ── License cache (avoid hammering Supabase on every request) ──
+# key: hash(license_key + hwid), value: (is_valid, expire_timestamp)
+_license_cache: dict[str, tuple[bool, float]] = {}
+_CACHE_TTL_SECONDS = 30 * 60  # 30 minutes
+
+
+def _hash_credentials(license_key: str, hwid: str) -> str:
+    return hashlib.sha256(f"{license_key}:{hwid}".encode()).hexdigest()
+
+
+def verify_sidecar_signature(url_path: str, token: str, ts: str, sig: str) -> tuple[bool, str]:
+    """
+    Nguồn chân lý duy nhất để xác thực một request đến từ Tauri host (không phải caller ngoài).
+    Dùng chung cho HTTP (require_license) lẫn WebSocket (ws.py).
+
+    Kiểm tra: shared sidecar token + chữ ký HMAC-SHA256 trên f"{ts}:{url_path}" (cửa sổ 30s).
+    Trả về (ok, reason). Bỏ qua hoàn toàn ở dev mode.
+    """
+    # Dev mode: không ép token/chữ ký (chạy backend thủ công khi phát triển).
+    if _is_dev_mode():
+        return True, ""
+
+    if not _SIDECAR_TOKEN:
+        logger.warning("[LICENSE_GUARD] PRYNX_SIDECAR_TOKEN not set — rejecting request")
+        return False, "Server configuration error: missing sidecar token."
+
+    if not token or not hmac_mod.compare_digest(token, _SIDECAR_TOKEN):
+        return False, "Access denied: invalid sidecar token."
+
+    if not ts or not sig:
+        return False, "Missing request signature"
+
+    try:
+        ts_int = int(ts)
+    except (TypeError, ValueError):
+        return False, "Invalid timestamp"
+
+    now = int(time.time())
+    if abs(now - ts_int) > 30:  # 30-second window — chống replay
+        return False, "Request expired (timestamp too old)"
+
+    sign_payload = f"{ts}:{url_path}"
+    expected_hex = hmac_mod.new(
+        _SIDECAR_TOKEN.encode(), sign_payload.encode(), hashlib.sha256
+    ).hexdigest()
+
+    if not hmac_mod.compare_digest(sig, expected_hex):
+        return False, "Invalid request signature"
+
+    return True, ""
+
+
+# ── Server-signed license token (VECTOR: bỏ tin client) ──────────────────────
+# Edge function Supabase ký token bằng PRIVATE key (giữ ở server); sidecar verify bằng
+# PUBLIC key nhúng sẵn dưới đây. Client bị crack KHÔNG giả được token (không có private key).
+# Token ngắn hạn → buộc tái xác thực online định kỳ; thu hồi license có hiệu lực nhanh.
+_LICENSE_PUBLIC_KEY_B64 = "AxpiZnEFXady9wI01spdMRrTNtEthMD30W/90gi27Zk="
+
+
+def _enforce_license_token() -> bool:
+    """Bật cưỡng chế token khi đã triển khai xong edge function + client (rollout an toàn).
+
+    Mặc định TẮT: giai đoạn đầu chỉ verify-nếu-có (không chặn) để không gãy client cũ.
+    Đặt PRYNX_ENFORCE_LICENSE_TOKEN=true để bắt buộc token hợp lệ.
+    """
+    return os.environ.get("PRYNX_ENFORCE_LICENSE_TOKEN", "false").lower() in ("true", "1", "yes")
+
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> tuple[bool, str]:
+    """Xác minh token license do server ký (Ed25519).
+
+    Token định dạng: "<payload_b64url>.<sig_b64url>" — chữ ký ký trên CHUỖI payload_b64url.
+    payload JSON: {"k": sha256(license_key)[:16], "m": machine_id, "p": product_id, "exp": unix}
+    Trả (ok, reason).
+    """
+    if not token or "." not in token:
+        return False, "Missing/malformed license token"
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        payload_b64, sig_b64 = token.split(".", 1)
+        pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(_LICENSE_PUBLIC_KEY_B64))
+        pub.verify(_b64url_decode(sig_b64), payload_b64.encode("ascii"))  # raise nếu sai
+        payload = json.loads(_b64url_decode(payload_b64))
+    except Exception:
+        return False, "Invalid license token signature"
+
+    try:
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return False, "License token expired"
+    except (TypeError, ValueError):
+        return False, "License token has invalid exp"
+
+    # Ràng buộc theo máy (token chỉ dùng được trên đúng HWID đã xác thực).
+    if hwid and payload.get("m") and not hmac_mod.compare_digest(str(payload["m"]), hwid):
+        return False, "License token machine mismatch"
+
+    # Ràng buộc theo license key.
+    if license_key and payload.get("k"):
+        kh = hashlib.sha256(license_key.encode()).hexdigest()[:16]
+        if not hmac_mod.compare_digest(str(payload["k"]), kh):
+            return False, "License token key mismatch"
+
+    return True, ""
+
+
+async def require_license(request: Request) -> dict:
+    """
+    FastAPI dependency that enforces license verification on every request.
+    
+    Usage in routes:
+        from app.core.license_guard import require_license
+        
+        @router.post("/my-endpoint")
+        async def my_endpoint(body: dict, license_info: dict = Depends(require_license)):
+            # license_info contains {"license_key": "...", "hwid": "...", "verified": True}
+            ...
+    """
+    # ── Step 1: Verify sidecar token + HMAC signature (skipped in dev mode) ──
+    # VECTOR #1/#4 FIX: dùng nguồn chân lý duy nhất verify_sidecar_signature().
+    ok, reason = verify_sidecar_signature(
+        request.url.path,
+        request.headers.get("X-PrynX-Token", ""),
+        request.headers.get("X-PrynX-Timestamp", ""),
+        request.headers.get("X-PrynX-Signature", ""),
+    )
+    if not ok:
+        raise HTTPException(status_code=403, detail=reason)
+    
+    # ── Step 2: Extract license credentials ──
+    license_key = request.headers.get("X-License-Key", "").strip()
+    hwid = request.headers.get("X-Hardware-Id", "").strip()
+    
+    if not license_key or not hwid:
+        # In dev mode, allow requests without credentials but log a warning
+        if _is_dev_mode():
+            logger.debug("[LICENSE_GUARD] Dev mode: allowing request without credentials")
+            return {"license_key": "DEV_MODE", "hwid": "DEV_MODE", "verified": False}
+        raise HTTPException(status_code=401, detail="Missing license credentials (X-License-Key, X-Hardware-Id)")
+    
+    # ── Step 2b: Verify server-signed license token (chống client tự phong hợp lệ) ──
+    # Token do edge function Supabase ký; sidecar verify bằng public key nhúng sẵn.
+    # Rollout an toàn: nếu CHƯA bật cưỡng chế thì chỉ verify-nếu-có (log), không chặn.
+    lic_token = request.headers.get("X-License-Token", "").strip()
+    if _enforce_license_token():
+        tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
+        if not tok_ok:
+            raise HTTPException(status_code=403, detail=f"License token rejected: {tok_reason}")
+    elif lic_token:
+        tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
+        if not tok_ok:
+            logger.warning(f"[LICENSE_GUARD] License token present but invalid (not enforced yet): {tok_reason}")
+    
+    # ── Step 3: Check cache ──
+    cache_key = _hash_credentials(license_key, hwid)
+    cached = _license_cache.get(cache_key)
+    if cached:
+        is_valid, expire_at = cached
+        if time.time() < expire_at:
+            if is_valid:
+                return {"license_key": license_key, "hwid": hwid, "verified": True}
+            else:
+                raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
+    
+    # ── Step 4: Verify with Supabase (optional, for online validation) ──
+    try:
+        verified = await _verify_with_supabase(license_key, hwid)
+        _license_cache[cache_key] = (verified, time.time() + _CACHE_TTL_SECONDS)
+        if not verified:
+            raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        # If Supabase is unreachable, allow through with warning (offline grace)
+        logger.warning(f"[LICENSE_GUARD] Supabase verification failed (offline grace): {e}")
+        _license_cache[cache_key] = (True, time.time() + 300)  # 5 min grace
+
+    return {"license_key": license_key, "hwid": hwid, "verified": True}
+
+
+async def _verify_with_supabase(license_key: str, hwid: str) -> bool:
+    """Verify license against Supabase RPC."""
+    supabase_url = os.environ.get("SUPABASE_URL", "")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    
+    if not supabase_url or not supabase_key:
+        logger.debug("[LICENSE_GUARD] No Supabase credentials configured — skipping online verification")
+        return True  # Can't verify online, trust the token
+    
+    # ── VECTOR #2 FIX: DNS manipulation detection ──
+    # Verify Supabase host resolves to a public IP, not loopback/private.
+    try:
+        import socket
+        from urllib.parse import urlparse
+        host = urlparse(supabase_url).hostname
+        if host:
+            resolved = socket.gethostbyname(host)
+            import ipaddress
+            ip = ipaddress.ip_address(resolved)
+            if ip.is_loopback or ip.is_private or ip.is_reserved:
+                logger.error(f"[LICENSE_GUARD] DNS manipulation detected: {host} → {resolved}")
+                raise RuntimeError(f"DNS manipulation: Supabase resolved to {resolved}")
+    except (socket.gaierror, ValueError) as dns_err:
+        logger.warning(f"[LICENSE_GUARD] DNS resolution failed for Supabase: {dns_err}")
+        raise RuntimeError(f"DNS resolution error: {dns_err}")
+    
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{supabase_url}/rest/v1/rpc/verify_license",
+                json={
+                    "p_license_key": license_key,
+                    "p_machine_id": hwid,
+                    "p_product_id": "prynx"
+                },
+                headers={
+                    "apikey": supabase_key,
+                    "Authorization": f"Bearer {supabase_key}",
+                    "Content-Type": "application/json"
+                }
+            )
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            return data and data.get("status") == "VALID"
+        else:
+            logger.warning(f"[LICENSE_GUARD] Supabase returned {resp.status_code}")
+            return False
+    except Exception as e:
+        raise RuntimeError(f"Supabase verification error: {e}")
