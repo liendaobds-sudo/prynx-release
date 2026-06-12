@@ -1,4 +1,4 @@
-# 🖨️ PrynX (formerly PDF Inspector) — Hệ thống Tự động hóa Prepress & Bình trang Toàn diện
+# 🖨️ PrynX — Hệ thống Tự động hóa Prepress & Bình trang
 
 Từ một công cụ so sánh PDF đơn thuần, dự án đã tiến hóa thành một **Hệ sinh thái Prepress và Bình trang (Imposition) chuyên nghiệp**, hỗ trợ xử lý file in ấn khối lượng lớn với hiệu năng cao.
 
@@ -17,66 +17,140 @@ Từ một công cụ so sánh PDF đơn thuần, dự án đã tiến hóa thà
 - **So sánh PDF (Diff):** Thuật toán SSIM + Pixel-by-pixel, hỗ trợ bóc tách từng kênh màu CMYK để tìm kiếm sự khác biệt nhỏ nhất.
 - **Diff Overlay & Tolerance:** Highlight vùng thay đổi theo mức độ nghiêm trọng, hiển thị song song đồng bộ (synchronized scroll).
 
-## 🛠️ Tech Stack Siêu Phân Tán (Tauri + Python)
+---
 
-Hệ thống kết hợp sức mạnh xử lý native của Desktop và khả năng tính toán nặng của Backend.
+## 🛠️ Tech Stack
 
-### Desktop App (Frontend & Native)
-- **Core:** Tauri v2 (Rust-based) + Vite
-- **UI:** React 19 + TypeScript + Tailwind CSS v4
-- **State Management:** Zustand
-- **PDF & Render:** `pdf-lib`, `react-pdf`, `Three.js` (@react-three/fiber) cho 3D render, `react-pageflip`
-- **Native Plugins:** Hỗ trợ File System, Dialog, Process, Shell của Tauri
+### Desktop App (Tauri v2)
+| Layer | Công nghệ |
+|-------|-----------|
+| **Core** | Tauri v2 (Rust) + Vite |
+| **UI** | React 19 + TypeScript + Tailwind CSS v4 |
+| **State** | Zustand |
+| **PDF & Render** | `pdf-lib`, `react-pdf`, Three.js, `react-pageflip` |
+| **Native** | File System, Dialog, Process, Shell (Tauri plugins) |
 
-### Backend & AI (Processing Engine)
-- **Core:** Python 3.11 + FastAPI
-- **Task Queue:** Celery + Redis (xử lý bất đồng bộ nặng)
-- **Computer Vision:** OpenCV + scikit-image
-- **PDF Parser & OCR:** pdf2image, Poppler, PikePDF, Tesseract (OCR Engine)
+### Backend (Python FastAPI)
+| Layer | Công nghệ |
+|-------|-----------|
+| **Core** | Python 3.11 + FastAPI + SQLite (dev) |
+| **Computer Vision** | OpenCV + scikit-image |
+| **PDF Engine** | pypdfium2 (Apache 2.0), PikePDF, pdfplumber |
+| **OCR** | Tesseract (tùy chọn) |
+| **Color Management** | Ghostscript (CMYK separations) |
 
-## 🚀 Hướng dẫn Cài đặt & Chạy (Development)
+### Native Rust Modules
+| Module | Vai trò |
+|--------|---------|
+| `native/` | `pdfcompare_native` — layout solver, fast diff, PDF operations |
+| `imposition_core/` | Grid solver, shared between Tauri & Python |
 
-### 1. Chạy Backend Engine
+---
+
+## 🚀 Cài đặt Nhanh (One-Click)
+
+### Cách 1: Script tự động (khuyên dùng)
+
+```powershell
+# Chạy với quyền Administrator
+.\setup_dev_env.bat
+```
+
+Script sẽ tự động: kiểm tra → tải → cài đặt tất cả tools cần thiết → setup backend + desktop.
+
+### Cách 2: Cài thủ công
+
+#### Yêu cầu hệ thống
+
+| Tool | Phiên bản | Download |
+|------|-----------|----------|
+| **Rust** | Stable | https://rustup.rs |
+| **Node.js** | 18+ | https://nodejs.org |
+| **Python** | 3.11 | https://python.org |
+| **Ghostscript** | 10+ | https://ghostscript.com |
+| **VS Build Tools** | 2022 | https://visualstudio.microsoft.com/visual-cpp-build-tools/ |
+
+#### Bước 1: Setup Backend
 ```bash
 cd backend
 python -m venv venv
-venv\Scripts\activate     # Windows
+venv\Scripts\activate
 pip install -r requirements.txt
-
-# Yêu cầu: Redis phải đang chạy
-# Chạy API Server
-uvicorn app.main:app --reload --port 8000
-
-# Chạy Worker xử lý file nặng (mở terminal khác)
-celery -A app.workers.celery_app worker --loglevel=info
 ```
 
-### 2. Chạy Desktop App (Tauri)
+#### Bước 2: Setup Desktop
 ```bash
 cd desktop
 npm install
+```
+
+#### Bước 3: Tạo file `.env`
+```bash
+# Copy từ template
+copy .env.example .env
+
+# Desktop — cần Supabase keys
+# Tạo desktop/.env với nội dung:
+#   VITE_SUPABASE_URL=<your-url>
+#   VITE_SUPABASE_ANON_KEY=<your-key>
+```
+
+#### Bước 4: Chạy Development
+```bash
+# Terminal 1 — Backend
+cd backend
+venv\Scripts\activate
+uvicorn app.main:app --reload --port 8000
+
+# Terminal 2 — Desktop (Tauri dev)
+cd desktop
 npm run dev
 ```
 
-### Yêu cầu hệ thống phụ trợ:
-- **Poppler**: Cần thiết cho `pdf2image` trên backend. (Windows: tải binary và set `POPPLER_PATH`).
-- **Tesseract OCR**: Cài đặt engine tesseract nếu dùng tính năng OCR.
+Hoặc dùng script có sẵn:
+```bash
+run_dev.bat
+```
 
-## 📁 Cấu trúc Thư mục Chính
+---
+
+## 📁 Cấu trúc Thư mục
 
 ```
-prynx/
-├── desktop/                 # Tauri App (React UI + Rust backend)
-│   ├── src/
-│   │   ├── components/      # UI components (Imposition, Preprocess, 3D Flipbook)
-│   │   ├── lib/             # Core logic (pdfImposer, VirtualMap)
-│   │   └── ...
-├── backend/                 # Xử lý hình ảnh, OCR, PDF Diff
+PrynX/
+├── desktop/                 # Tauri v2 App
+│   ├── src/                 # React UI (components, stores, lib)
+│   └── src-tauri/           # Rust backend + Tauri config
+│       ├── bin/pdfium.dll   # PDFium runtime for Tauri
+│       └── binaries/        # Nuitka sidecar (built, gitignored)
+│
+├── backend/                 # Python FastAPI Backend
 │   └── app/
-│       ├── api/routes/      # API endpoints (vd: imposition.py, cực khủng)
-│       ├── core/            # OCR engine, PDF manipulation
-│       ├── workers/         # Celery tasks (nup_process_chunk)
-│       └── ...
-├── data/, results/, uploads/# Thư mục chứa dữ liệu runtime
-└── ...
+│       ├── api/routes/      # REST endpoints
+│       ├── core/            # Business logic (PDF, CV, OCR)
+│       └── workers/         # Background processing
+│
+├── native/                  # Rust native module (pdfcompare_native)
+│   ├── src/                 # Rust source (imposition, diff, render)
+│   └── pdfium_lib/          # PDFium C library bindings
+│
+├── imposition_core/         # Shared Rust imposition library
+│
+├── scripts/                 # Utility & scratch scripts
+├── docs/                    # Training docs & specs
+│
+├── build_production.ps1     # 🏭 Production build (Nuitka + Tauri)
+├── setup_dev_env.bat        # 🔧 One-click dev environment setup
+└── run_dev.bat              # ▶️ Start dev servers
 ```
+
+---
+
+## 🏭 Build Production
+
+```powershell
+# Đóng gói bản cài cho user (Nuitka sidecar + Tauri installer)
+.\build_production.ps1
+```
+
+Quy trình: Python → Nuitka `.exe` → Tauri nhúng sidecar → `.msi` installer.
