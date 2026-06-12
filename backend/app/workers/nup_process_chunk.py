@@ -29,7 +29,7 @@ def _strip_color_from_stream(page_or_xobj, target_color):
     try:
         stream = pikepdf.parse_content_stream(page_or_xobj)
     except Exception as e:
-        print(f"[_strip_color] Parse stream error: {e}", flush=True)
+        logger.debug(f"[_strip_color] Parse stream error: {e}", flush=True)
         return False
 
     new_stream = []
@@ -37,7 +37,7 @@ def _strip_color_from_stream(page_or_xobj, target_color):
     stroke_color_stack = []
     stripped = False
 
-    print(f"[_strip_color] Starting parse. target_color={target_color}", flush=True)
+    logger.debug(f"[_strip_color] Starting parse. target_color={target_color}", flush=True)
 
     for operands, operator in stream:
         op = str(operator)
@@ -55,7 +55,7 @@ def _strip_color_from_stream(page_or_xobj, target_color):
                 cs_name = str(operands[0])
                 if cs_name not in ('/DeviceRGB', '/DeviceCMYK', '/DeviceGray', '/Pattern'):
                     current_stroke_color = 'SPOT'
-                    print(f"[_strip_color] Found SPOT stroke color space: {cs_name}", flush=True)
+                    logger.debug(f"[_strip_color] Found SPOT stroke color space: {cs_name}", flush=True)
                 else:
                     current_stroke_color = None
         elif op in ('SCN', 'SC'):
@@ -73,7 +73,7 @@ def _strip_color_from_stream(page_or_xobj, target_color):
             match = False
             if current_stroke_color == 'SPOT':
                 match = True
-                print(f"[_strip_color] Stripping '{op}' because of SPOT color", flush=True)
+                logger.debug(f"[_strip_color] Stripping '{op}' because of SPOT color", flush=True)
             elif current_stroke_color and target_color and current_stroke_color != 'SPOT':
                 if len(current_stroke_color) == len(target_color):
                     match = True
@@ -82,7 +82,7 @@ def _strip_color_from_stream(page_or_xobj, target_color):
                             match = False
                             break
                     if match:
-                        print(f"[_strip_color] Stripping '{op}' because of CMYK/RGB match", flush=True)
+                        logger.debug(f"[_strip_color] Stripping '{op}' because of CMYK/RGB match", flush=True)
             
             if match:
                 stripped = True
@@ -102,7 +102,7 @@ def _strip_color_from_stream(page_or_xobj, target_color):
         new_stream.append((operands, operator))
 
     if stripped:
-        print(f"[_strip_color] Stream stripped successfully.", flush=True)
+        logger.debug(f"[_strip_color] Stream stripped successfully.", flush=True)
         new_contents = pikepdf.unparse_content_stream(new_stream)
         if isinstance(page_or_xobj, pikepdf.Page):
             page_or_xobj.contents_coalesce()

@@ -10,12 +10,14 @@ from app.core.license_guard import require_license
 from app.schemas.imposition import ImpositionResponse
 import uuid
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/imposition", tags=["Imposition"], dependencies=[Depends(require_license)])
 
-UPLOAD_DIR = "uploads"
-RESULTS_DIR = "results"
+UPLOAD_DIR = settings.UPLOAD_DIR
+RESULTS_DIR = settings.RESULTS_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 

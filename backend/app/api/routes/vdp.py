@@ -10,6 +10,7 @@ from typing import List, Dict, Optional
 from app.schemas.vdp import VdpRequest, VdpField
 from app.workers.vdp_engine import run_vdp_engine
 from app.core.license_guard import require_license
+from app.config import settings
 
 import logging
 
@@ -17,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
-RESULTS_DIR = os.path.join(os.getcwd(), "results")
+UPLOAD_DIR = settings.UPLOAD_DIR
+RESULTS_DIR = settings.RESULTS_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 

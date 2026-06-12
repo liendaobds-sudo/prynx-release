@@ -672,10 +672,10 @@ class StickerEngine:
         finally:
             if doc_in_pdfium:
                 try: doc_in_pdfium.close()
-                except: pass
+                except Exception: pass
             if doc_in_pike:
                 try: doc_in_pike.close()
-                except: pass
+                except Exception: pass
             if doc_out:
                 try: doc_out.close()
-                except: pass
+                except Exception: pass

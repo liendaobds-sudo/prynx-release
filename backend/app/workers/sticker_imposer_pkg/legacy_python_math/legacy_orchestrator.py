@@ -226,19 +226,15 @@ def _py_solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item
         best_config, is_rotated, best_strategy = configs[0]
         
         # Debug: log all strategies and their item counts
-        import logging
-        _logger = logging.getLogger(__name__)
-        print(f"\n========== Báº®T Äáº¦U CHá»ŒN LAYOUT Tá»I Æ¯U (Shape: {shape_type}) ==========", flush=True)
+        logger.info(f"\n========== BAT DAU CHON LAYOUT TOI UU (Shape: {shape_type}) ==========")
         for cfg, rot, strat in configs:
             score = cfg.get('_debug_score', (0, 0, 0))
             msg = f"[LAYOUT_CANDIDATES] {strat:20s} rot={rot!s:5s} items={cfg['totalItems']:3d} | score_items={score[0]} bonus={score[1]:.4f} area={-score[2]:.1f}"
-            print(msg, flush=True)
-            _logger.warning(msg)
+            logger.info(msg)
             
         winner_msg = f"[LAYOUT_WINNER] >>> {best_strategy} (rot={is_rotated}) items={best_config['totalItems']} shape={shape_type}"
-        print(winner_msg, flush=True)
-        print("====================================================================\n", flush=True)
-        _logger.warning(winner_msg)
+        logger.info(winner_msg)
+        logger.info("====================================================================")
         
         if is_rotated and best_strategy not in ('head_to_tail', 'l_shape', 'hammer_illustrator', 'dumbbell_illustrator', 'trapezoid_illustrator'):
             for item in best_config['items']:
@@ -268,10 +264,10 @@ def _py_solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item
 
         # Config A: right fill spans full usable height, bottom fill spans only main block width
         right_items_a = []
-        _logger.warning(f"[FILL_DEBUG] right_avail_w={right_avail_w:.1f} bottom_avail_h={bottom_avail_h:.1f} min_dim={min(item_w, item_h):.1f}")
+        logger.debug(f"[FILL_DEBUG] right_avail_w={right_avail_w:.1f} bottom_avail_h={bottom_avail_h:.1f} min_dim={min(item_w, item_h):.1f}")
         if right_avail_w >= min(item_w, item_h) - 0.01:
             fr = _best_fill_layout(item_w, item_h, right_avail_w, usable_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props)
-            _logger.warning(f"[FILL_DEBUG] right_items_a generated: {fr['totalItems']} items, rot={fr.get('items', [{}])[0].get('isRotated') if fr['items'] else None}")
+            logger.debug(f"[FILL_DEBUG] right_items_a generated: {fr['totalItems']} items, rot={fr.get('items', [{}])[0].get('isRotated') if fr['items'] else None}")
             for it in fr['items']:
                 right_items_a.append({**it, 'x': it['x'] + right_x})
         bottom_items_a = []

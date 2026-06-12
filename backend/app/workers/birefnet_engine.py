@@ -1,8 +1,11 @@
 import os
+import logging
 import httpx
 import onnxruntime as ort
 import numpy as np
 from PIL import Image, ImageFilter
+
+logger = logging.getLogger(__name__)
 
 MODEL_URL = "https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.onnx"
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models")
@@ -14,19 +17,19 @@ def _download_model_if_needed():
     if not os.path.exists(MODEL_DIR):
         os.makedirs(MODEL_DIR, exist_ok=True)
     if not os.path.exists(MODEL_PATH):
-        print(f"Downloading BiRefNet ONNX model from {MODEL_URL}...")
+        logger.info(f"Downloading BiRefNet ONNX model from {MODEL_URL}...")
         with httpx.stream("GET", MODEL_URL, follow_redirects=True) as r:
             r.raise_for_status()
             with open(MODEL_PATH, "wb") as f:
                 for chunk in r.iter_bytes(chunk_size=8192):
                     f.write(chunk)
-        print("Download complete.")
+        logger.info("Download complete.")
 
 def _get_session():
     global _session
     if _session is None:
         _download_model_if_needed()
-        print("Loading BiRefNet ONNX session...")
+        logger.info("Loading BiRefNet ONNX session...")
         
         # Prioritize GPU providers to accelerate inference
         available_providers = ort.get_available_providers()
@@ -81,13 +84,13 @@ def remove_background(image: Image.Image) -> Image.Image:
     
     # Single output: raw logits [1, 1, 1024, 1024]
     mask_logits = outputs[-1]
-    print(f"[BiRefNet] Raw logits range: min={mask_logits.min():.4f}, max={mask_logits.max():.4f}, mean={mask_logits.mean():.4f}")
+    logger.debug(f"[BiRefNet] Raw logits range: min={mask_logits.min():.4f}, max={mask_logits.max():.4f}, mean={mask_logits.mean():.4f}")
     
     # Apply sigmoid to convert logits to probabilities [0, 1]
     mask_prob = 1.0 / (1.0 + np.exp(-mask_logits))
     mask_prob = np.squeeze(mask_prob)  # shape (1024, 1024)
     
-    print(f"[BiRefNet] Mask stats: min={mask_prob.min():.4f}, max={mask_prob.max():.4f}, mean={mask_prob.mean():.4f}")
+    logger.debug(f"[BiRefNet] Mask stats: min={mask_prob.min():.4f}, max={mask_prob.max():.4f}, mean={mask_prob.mean():.4f}")
     
     # Convert to PIL grayscale mask
     mask_img = Image.fromarray((mask_prob * 255).astype(np.uint8), mode="L")

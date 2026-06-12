@@ -17,13 +17,14 @@ from fastapi.responses import FileResponse
 from typing import List, Optional
 import json
 from app.core.license_guard import require_license
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pdf-tools", tags=["PDF Tools"], dependencies=[Depends(require_license)])
 
-UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
-RESULTS_DIR = os.path.join(os.getcwd(), "results")
+UPLOAD_DIR = settings.UPLOAD_DIR
+RESULTS_DIR = settings.RESULTS_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 

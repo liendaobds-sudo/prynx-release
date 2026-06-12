@@ -580,7 +580,7 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
         
         try:
             os.unlink(tmp.name)
-        except:
+        except Exception:
             pass
         
         return {
@@ -1195,10 +1195,10 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
                 import os
                 if tmp_normal_name and os.path.exists(tmp_normal_name):
                     try: os.unlink(tmp_normal_name)
-                    except: pass
+                    except Exception: pass
                 if tmp_overprint_name and os.path.exists(tmp_overprint_name):
                     try: os.unlink(tmp_overprint_name)
-                    except: pass
+                    except Exception: pass
 
         if not overprint_rendered:
             doc.close()

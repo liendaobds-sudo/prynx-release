@@ -129,13 +129,13 @@ class ActionEngine:
         start = datetime.now()
         try:
             handler = getattr(self, f"_action_{action_id.lower()}", None)
-            print(f"[DEBUG] action_id={action_id}, handler={handler}, handler_name=_action_{action_id.lower()}", flush=True)
+            logger.debug(f"action_id={action_id}, handler={handler}, handler_name=_action_{action_id.lower()}")
             if handler is None:
                 return ActionResult(success=False, error=f"Handler cho '{action_id}' chưa được triển khai.")
 
-            print(f"[DEBUG] Calling handler for {action_id}...", flush=True)
+            logger.debug(f"Calling handler for {action_id}...")
             success = await handler(pdf_path, output_path, params)
-            print(f"[DEBUG] Handler returned: {success}", flush=True)
+            logger.debug(f"Handler returned: {success}")
             duration = int((datetime.now() - start).total_seconds() * 1000)
 
             log_entry = ActionLogEntry(

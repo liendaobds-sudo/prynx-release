@@ -29,7 +29,7 @@ def strip_color_from_stream(page_or_xobj, target_color):
     try:
         stream = pikepdf.parse_content_stream(page_or_xobj)
     except Exception as e:
-        print(f"[_strip_color] Parse stream error: {e}", flush=True)
+        logger.debug(f"[_strip_color] Parse stream error: {e}", flush=True)
         return False
 
     new_stream = []
@@ -231,7 +231,7 @@ def place_one_artwork(
                         if strip_color_from_stream(pike_page, local_target_color):
                             _stripped = True
                     except Exception as e_c:
-                        print(f"[STRIP_DIECUT] page={src_page_idx} content strip error: {e_c}", flush=True)
+                        logger.debug(f"[STRIP_DIECUT] page={src_page_idx} content strip error: {e_c}", flush=True)
                 try:
                     import pikepdf
                     resources = pike_page.get('/Resources')
@@ -255,9 +255,9 @@ def place_one_artwork(
                                 except Exception:
                                     pass
                 except Exception as e_xo:
-                    print(f"[STRIP_DIECUT] page={src_page_idx} XObject scan error: {e_xo}", flush=True)
+                    logger.debug(f"[STRIP_DIECUT] page={src_page_idx} XObject scan error: {e_xo}", flush=True)
             except Exception as e:
-                print(f"[STRIP_DIECUT] page={src_page_idx} FAILED: {e}", flush=True)
+                logger.debug(f"[STRIP_DIECUT] page={src_page_idx} FAILED: {e}", flush=True)
 
         sx0, sy0, sx1, sy1, tx0, ty0, tx1, ty1 = diecut_geom_cache[cache_key]
         vis_w = sx1 - sx0

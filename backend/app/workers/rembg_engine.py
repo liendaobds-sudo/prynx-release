@@ -1,7 +1,10 @@
 import os
 import io
 import time
+import logging
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 _rembg_session = None
 _rembg_model_name = "isnet-general-use"
@@ -12,9 +15,9 @@ def _get_rembg_session():
         try:
             from rembg import new_session
             # Disable U2NET default download if we are using isnet
-            print(f"Loading rembg session with model: {_rembg_model_name}...")
+            logger.info(f"Loading rembg session with model: {_rembg_model_name}...")
             _rembg_session = new_session(_rembg_model_name)
-            print("Session loaded successfully.")
+            logger.info("Session loaded successfully.")
         except ImportError:
             raise RuntimeError("rembg is not installed. Please install it first.")
     return _rembg_session
@@ -23,7 +26,7 @@ def remove_background_rembg(image: Image.Image) -> Image.Image:
     from rembg import remove
     session = _get_rembg_session()
     
-    print(f"[{_rembg_model_name}] Starting background removal...")
+    logger.info(f"[{_rembg_model_name}] Starting background removal...")
     start_time = time.time()
     
     # Process image
@@ -37,6 +40,6 @@ def remove_background_rembg(image: Image.Image) -> Image.Image:
     )
     
     elapsed = time.time() - start_time
-    print(f"[{_rembg_model_name}] Finished in {elapsed:.2f}s")
+    logger.info(f"[{_rembg_model_name}] Finished in {elapsed:.2f}s")
     
     return result

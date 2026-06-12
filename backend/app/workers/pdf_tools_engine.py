@@ -128,7 +128,7 @@ def resize_pages(source_path: str, output_path: str,
         else:
             try:
                 pages_to_resize = set(int(x.strip()) - 1 for x in apply_to.split(',') if x.strip().isdigit())
-            except:
+            except Exception:
                 pages_to_resize = set(range(total))
 
         for i in range(total):
@@ -149,7 +149,7 @@ def resize_pages(source_path: str, output_path: str,
                     mb = src_page.mediabox
                     src_w = float(mb[2] - mb[0])
                     src_h = float(mb[3] - mb[1])
-                except:
+                except Exception:
                     src_w, src_h = 595.28, 841.89
 
                 if scale_mode == 'fit':

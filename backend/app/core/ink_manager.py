@@ -111,9 +111,9 @@ class InkManagerEngine:
                             }
                         if decoded in inks and page_num not in inks[decoded]["pages"]:
                             inks[decoded]["pages"].append(page_num)
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
 
     def _estimate_spot_cmyk(self, spot_name: str) -> list[int]:
