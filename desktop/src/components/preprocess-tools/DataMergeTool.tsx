@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import Papa from 'papaparse';
 import { startVdpJobBackend, getVdpJobStatus, downloadVdpJob, pollVdpJob, getSystemFonts } from '@/lib/api';
@@ -1174,9 +1175,9 @@ export default function DataMergeTool({
                 </div>
             </div>
 
-            {showBatchInfo && (
-                <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setShowBatchInfo(false)}>
-                    <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col border border-slate-200 dark:border-zinc-700" onClick={e => e.stopPropagation()}>
+            {showBatchInfo && createPortal(
+                <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setShowBatchInfo(false)} onKeyDown={e => { if (e.key === 'Escape') setShowBatchInfo(false); }} tabIndex={-1} ref={el => el?.focus()}>
+                    <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-2xl w-full max-w-md max-h-[40vh] flex flex-col border border-slate-200 dark:border-zinc-700" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700">
                             <h3 className="text-sm font-bold text-slate-800 dark:text-white">Danh sách file CSV ({batchFiles.length})</h3>
                             <button onClick={() => setShowBatchInfo(false)} className="p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-700 text-slate-500">
@@ -1217,7 +1218,8 @@ export default function DataMergeTool({
                             </div>
                         )}
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
         </div>
     );

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useEffect, useRef, useState, useContext } from 'react';
+import { createPortal } from 'react-dom';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory } from '../lib/toolRegistry';
 
@@ -1300,9 +1301,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
             {phase === 'workspace' && (
                 <div className="flex-1 flex flex-row overflow-hidden relative animate-fade-in">
-                    {confirmBookletSettings && (
-                        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
-                            <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-slide-up">
+                    {confirmBookletSettings && createPortal(
+                        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setConfirmBookletSettings(null)} onKeyDown={e => { if (e.key === 'Escape') setConfirmBookletSettings(null); }} tabIndex={-1} ref={el => el?.focus()}>
+                            <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-slide-up" onClick={e => e.stopPropagation()}>
                                 <div className="p-5 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
                                     <h2 className="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
                                         <span>🛑</span> Xác nhận Bình Sách
@@ -1334,7 +1335,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     }}>Đồng ý & Khởi chạy</Button>
                                 </div>
                             </div>
-                        </div>
+                        </div>,
+                        document.body
                     )}
 
                     {error && (
@@ -1758,9 +1760,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             />
 
             {/* Custom Scale Confirm Modal */}
-            {scaleConfirmModal && (
-                <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200">
-                    <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-zinc-700">
+            {scaleConfirmModal && createPortal(
+                <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => { scaleConfirmModal.resolve(false); setScaleConfirmModal(null); }} onKeyDown={e => { if (e.key === 'Escape') { scaleConfirmModal.resolve(false); setScaleConfirmModal(null); } }} tabIndex={-1} ref={el => el?.focus()}>
+                    <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-zinc-700" onClick={e => e.stopPropagation()}>
                         <div className="px-6 py-4 border-b border-slate-200 dark:border-zinc-700 flex justify-between items-center bg-amber-50 dark:bg-amber-500/10">
                             <h3 className="text-lg font-bold text-amber-600 dark:text-amber-500 flex items-center gap-2">
                                 <span className="material-symbols-outlined">warning</span>
@@ -1791,13 +1793,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </button>
                         </div>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
 
             {/* Custom Close Confirm Modal */}
-            {showCloseConfirm && (
-                <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans">
-                    <div className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
+            {showCloseConfirm && createPortal(
+                <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans" onClick={() => setShowCloseConfirm(false)} onKeyDown={e => { if (e.key === 'Escape') setShowCloseConfirm(false); }} tabIndex={-1} ref={el => el?.focus()}>
+                    <div className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10" onClick={e => e.stopPropagation()}>
                         <div className="p-6">
                             <h3 className="text-[16px] font-semibold text-slate-800 dark:text-white mb-2">
                                 Đóng file chưa lưu?
@@ -1821,7 +1824,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </button>
                         </div>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
         </div>
     );
