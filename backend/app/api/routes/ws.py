@@ -40,7 +40,7 @@ async def job_progress_ws(
     logger.info(f"WebSocket connected for job: {job_id}")
 
     try:
-        if settings.DEV_MODE:
+        if settings.DEV_MODE or settings.IS_DESKTOP_APP:
             await _poll_db_progress(websocket, job_id)
         else:
             await _subscribe_redis_progress(websocket, job_id)

@@ -75,7 +75,7 @@ def recover_stuck_jobs(db: Session = Depends(get_db), license_info: dict = Depen
         job.current_page = 0
         db.commit()
         
-        if settings.DEV_MODE:
+        if settings.DEV_MODE or settings.IS_DESKTOP_APP:
             from app.api.routes.compare import run_comparison_sync
             import threading
             t = threading.Thread(

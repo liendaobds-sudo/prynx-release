@@ -80,8 +80,8 @@ def create_comparison_job(
     db.commit()
     db.refresh(job)
 
-    if settings.DEV_MODE:
-        # DEV_MODE: run in a real daemon thread (survives uvicorn reload better)
+    if settings.DEV_MODE or settings.IS_DESKTOP_APP:
+        # DEV_MODE or Desktop App: run in a real daemon thread (survives uvicorn reload better)
         t = threading.Thread(
             target=run_comparison_sync,
             args=(str(job.id),),
@@ -93,6 +93,6 @@ def create_comparison_job(
         from app.workers.compare_task import run_comparison
         run_comparison.delay(str(job.id))
 
-    logger.info(f"Created job: {job.id} (dev_mode={settings.DEV_MODE})")
+    logger.info(f"Created job: {job.id} (sync_mode={settings.DEV_MODE or settings.IS_DESKTOP_APP})")
     return JobCreateResponse(job_id=job.id)
 

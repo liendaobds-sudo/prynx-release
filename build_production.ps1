@@ -95,7 +95,7 @@ if (-not $SkipNuitka) {
         --include-package=segno `
         --include-package=redis `
         --include-package=aiofiles `
-        --include-package=python_multipart `
+        --include-package=multipart `
         --include-package=shapely `
         --include-package=skimage `
         --include-package=scipy `
@@ -134,8 +134,8 @@ if ($NuitkaOnly) {
     exit 0
 }
 
-# ---- Step 2: Rename sidecar for Tauri target triple ----
-Write-Host "`n[2/4] Preparing sidecar binary..." -ForegroundColor Yellow
+# ---- Step 2: Prepare sidecar and dependencies ----
+Write-Host "`n[2/4] Preparing sidecar binary and external dependencies..." -ForegroundColor Yellow
 
 $SIDECAR_SRC = "$SIDECAR_DIR\$SIDECAR_NAME.exe"
 $TARGET_TRIPLE = "x86_64-pc-windows-msvc"
@@ -149,6 +149,30 @@ if (Test-Path $SIDECAR_SRC) {
 } else {
     Write-Host "ERROR: Sidecar binary not found!" -ForegroundColor Red
     exit 1
+}
+
+# Copy Ghostscript
+$GS_SRC = "C:\Program Files\gs\gs10.04.0"
+$GS_DEST = "$SIDECAR_DIR\gs"
+if (Test-Path $GS_SRC) {
+    Write-Host "  Copying Ghostscript..." -ForegroundColor DarkGray
+    New-Item -ItemType Directory -Force -Path $GS_DEST | Out-Null
+    Copy-Item -Recurse -Force "$GS_SRC\*" $GS_DEST
+    Write-Host "  Ghostscript bundled." -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: Local Ghostscript not found at $GS_SRC. It will not be bundled." -ForegroundColor Yellow
+}
+
+# Copy Tesseract
+$TESS_SRC = "C:\Program Files\Tesseract-OCR"
+$TESS_DEST = "$SIDECAR_DIR\tesseract"
+if (Test-Path $TESS_SRC) {
+    Write-Host "  Copying Tesseract-OCR..." -ForegroundColor DarkGray
+    New-Item -ItemType Directory -Force -Path $TESS_DEST | Out-Null
+    Copy-Item -Recurse -Force "$TESS_SRC\*" $TESS_DEST
+    Write-Host "  Tesseract bundled." -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: Local Tesseract not found at $TESS_SRC. It will not be bundled." -ForegroundColor Yellow
 }
 
 # ---- Step 3: Compute SHA-256 hash for integrity verification ----
@@ -219,12 +243,18 @@ if (-not $SkipTauri) {
     Write-Host "  Sidecar:   $SIDECAR_FINAL"
     Write-Host "  SHA-256:   $HASH"
     if ($installer) {
-        Write-Host "  Installer: $($installer.FullName)"
-        Write-Host "  Size:      $([math]::Round($installer.Length / 1MB, 1)) MB"
+        # Copy to root folder for easier access
+        $publishDir = "$ROOT\Ban_Phat_Hanh"
+        New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
+        $finalInstallerPath = "$publishDir\$($installer.Name)"
+        Copy-Item -Force $installer.FullName $finalInstallerPath
+
+        Write-Host "  Installer: $finalInstallerPath"
+        Write-Host "  Size:      $([math]::Round((Get-Item $finalInstallerPath).Length / 1MB, 1)) MB"
         if (-not $Release) {
             Write-Host ""
-            Write-Host "  >> File cai gui khach. Dang mo thu muc..." -ForegroundColor Cyan
-            Start-Process explorer.exe -ArgumentList "/select,`"$($installer.FullName)`""
+            Write-Host "  >> Da copy file cai dat ra ngoai thu muc de de lay hon..." -ForegroundColor Cyan
+            Start-Process explorer.exe -ArgumentList "/select,`"$finalInstallerPath`""
         }
     } else {
         Write-Host "  WARNING: Khong tim thay installer trong bundle\nsis\." -ForegroundColor Yellow

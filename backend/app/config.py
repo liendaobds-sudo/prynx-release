@@ -21,7 +21,13 @@ def _find_ghostscript() -> str:
     if env_gs and os.path.isfile(env_gs):
         return env_gs
     
-    # 2. System PATH
+    # 2. Bundled sidecar path (Tauri resource)
+    import sys
+    bundled_gs = Path(sys.executable).parent / "gs" / "bin" / "gswin64c.exe"
+    if bundled_gs.is_file():
+        return str(bundled_gs)
+
+    # 3. System PATH
     found = shutil.which("gswin64c") or shutil.which("gswin32c") or shutil.which("gs")
     if found:
         return found
@@ -42,6 +48,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "PrynX Core"
     DEBUG: bool = False
     DEV_MODE: bool = True  # True = SQLite + sync processing (no Docker needed)
+    IS_DESKTOP_APP: bool = os.environ.get("PRYNX_TOKEN_SOURCE") == "stdin"
 
     # Database
     DATABASE_URL: str = "postgresql://pdfuser:pdfpass@localhost:5432/pdfcompare"
@@ -73,8 +80,8 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# DEV_MODE: override DB to SQLite
-if settings.DEV_MODE:
+# DEV_MODE or IS_DESKTOP_APP: override DB to SQLite (Desktop app must use SQLite)
+if settings.DEV_MODE or settings.IS_DESKTOP_APP:
     db_path = Path("./data").resolve()
     db_path.mkdir(parents=True, exist_ok=True)
     settings.DATABASE_URL = f"sqlite:///{db_path / 'pdfcompare.db'}"

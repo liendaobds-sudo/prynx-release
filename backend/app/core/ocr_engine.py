@@ -7,9 +7,16 @@ from pytesseract import Output
 
 # Auto-detect Tesseract on Windows
 if os.name == 'nt':
-    tess_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    if os.path.exists(tess_path):
-        pytesseract.pytesseract.tesseract_cmd = tess_path
+    import sys
+    from pathlib import Path
+    # Check bundled tesseract first
+    bundled_tess = Path(sys.executable).parent / "tesseract" / "tesseract.exe"
+    if bundled_tess.is_file():
+        pytesseract.pytesseract.tesseract_cmd = str(bundled_tess)
+    else:
+        tess_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+        if os.path.exists(tess_path):
+            pytesseract.pytesseract.tesseract_cmd = tess_path
 
 logger = logging.getLogger(__name__)
 

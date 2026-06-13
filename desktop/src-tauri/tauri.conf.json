@@ -49,6 +49,10 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": [
+      "binaries/gs/**/*",
+      "binaries/tesseract/**/*"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
