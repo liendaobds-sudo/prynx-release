@@ -41,7 +41,7 @@ export async function runProcessEngine(
 
     setError('');
     setIsProcessing(true);
-    setProcessStatus('Đang khởi tạo...');
+    setProcessStatus('Đang chuẩn bị dữ liệu...');
 
     try {
         const srcPageCount = ctx.viewerNumPages || 0;
@@ -57,11 +57,11 @@ export async function runProcessEngine(
         // solver với preview (nup_engine == /preview-layout, sau Task 10). Không còn
         // tính layout phía TS cho đường output (NupGridSolver chỉ còn phục vụ booklet).
         if (settings.impositionMode === ImpositionMode.NUp) {
-            setProcessStatus(isDieCut ? '✂️ Đang thiết lập dữ liệu Bình Tem Bế...' : `🚀 Đang đẩy job bình trang lên backend...`);
+
 
             const { uploadFileForNup, startNupJobBackend, getNupJobStatus, downloadNupJob } = await import('../lib/api');
 
-            setProcessStatus('Đang chuẩn bị dữ liệu...');
+
             // Use baked working bytes (respects page deletions/rotations) instead of original file
             const workingBytes = await ctx.getWorkingBytes();
             const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
@@ -113,7 +113,7 @@ export async function runProcessEngine(
             };
 
             const jobName = (settings as any).layoutType === 'repeat' ? 'Nhân bản (S&R)' : 'N-Up';
-            setProcessStatus(`🚀 Đang khởi chạy tiến trình bình trang ${jobName}...`);
+
             const jobId = await startNupJobBackend(serverPath, backendSettings);
 
             let done = false;
@@ -160,16 +160,17 @@ export async function runProcessEngine(
                 } else if (status.status === 'failed') {
                     throw new Error(status.error || 'Lỗi xử lý hệ thống');
                 } else {
-                    const prog = status.progress || '0/0';
-                    setProcessStatus(prog.includes('/') ? `⚡ Đang xử lý: ${prog} trang đã bình...` : `⚡ ${prog}`);
+                    const prog = status.progress || '';
+                    // Only update display for numeric progress (e.g. "3/10"), ignore backend stage messages
+                    if (prog.includes('/')) {
+                        setProcessStatus(`⚡ Đang xử lý: ${prog} trang đã bình...`);
+                    }
                 }
             }
         } else if (settings.impositionMode === ImpositionMode.Booklet && (srcPageCount > 1000 || file.size > 300 * 1024 * 1024)) {
-            setProcessStatus(`📊 File có ${srcPageCount.toLocaleString()} trang → Đang đẩy nhanh tiến trình...`);
+            setProcessStatus('Đang xử lý dữ liệu...');
             const { uploadFileForNup } = await import('../lib/api');
             const { imposePdfViaBackend } = await import('../lib/pdfImposer');
-
-            setProcessStatus('Đang xử lý dữ liệu...');
             const serverPath = await uploadFileForNup(file);
             const result = await imposePdfViaBackend(serverPath, settings, setProcessStatus);
             const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
@@ -230,7 +231,7 @@ export async function runCatalogPlan(
             throw new Error(`Lỗi phân tích: ${verifyErrors.join('; ')}`);
         }
 
-        setProcessStatus(`Phân tích thành công: ${planResult.jobs.length} tấm kẽm. Bắt đầu bình...`);
+        setProcessStatus(`Đang bình ${planResult.jobs.length} tấm kẽm...`);
 
         // Tuân thủ kết quả cuối cùng: bình catalog trên file đã áp dụng sửa đổi trang.
         const workingBytes = await ctx.getWorkingBytes();
@@ -238,7 +239,7 @@ export async function runCatalogPlan(
         const batchResults = await imposeCatalogBatch(workingFile, planResult.jobs, sheetSettings, setProcessStatus);
         const successCount = batchResults.filter(r => r.blob.size > 0).length;
 
-        setProcessStatus('Đang gộp các kẽm để preview...');
+
         const mergedDoc = await PDFDocument.create();
         for (const r of batchResults) {
             if (r.blob.size > 0) {
@@ -311,7 +312,7 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
         const totalPages = srcPdf.getPageCount();
 
         if ((totalPages > 1000 || file.size > 300 * 1024 * 1024) && settings.specialAction !== 'split_odd_even') {
-            setProcessStatus(`⚡ Đang xử lý: Xáo trộn ${totalPages.toLocaleString()} trang...`);
+            setProcessStatus('Đang xáo trộn trang...');
             const { backendShufflePages } = await import('../lib/api');
             let action = 'reverse'; let mapping: number[] = [];
             if (settings.presetId === 'special') {
@@ -377,7 +378,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
         const totalPages = quickDoc.getPageCount();
 
         if (totalPages > 1000 || file.size > 300 * 1024 * 1024) {
-            setProcessStatus(`⚡ Đang xử lý: Đổi khổ ${totalPages.toLocaleString()} trang...`);
+
             const { backendResizePages } = await import('../lib/api');
             const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
             const blob = await backendResizePages(workingFile, settings.targetW, settings.targetH, settings.scaleMode, settings.applyToStr || 'all');
@@ -417,7 +418,7 @@ export async function runSplit(ctx: ProcessContext, settings: any) {
         }
 
         if (totalPages > 1000 || file.size > 300 * 1024 * 1024) {
-            setProcessStatus(`⚡ Đang xử lý: Tách ${totalPages.toLocaleString()} trang...`);
+
             const { backendSplitPdf } = await import('../lib/api');
             const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
             const blob = await backendSplitPdf(workingFile, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList });
@@ -463,7 +464,7 @@ export async function runMerge(ctx: ProcessContext, settings: any) {
         });
 
         if (settings.mode === 'merge_files' && totalPageEstimate > 1000 && !hasImages) {
-            setProcessStatus(`⚡ Đang xử lý: Ghép ${settings.filesToMerge?.length || 0} file...`);
+
             const { backendMergePdfs } = await import('../lib/api');
             const allFiles = workingBaseFile ? [workingBaseFile, ...(settings.filesToMerge || [])] : (settings.filesToMerge || []);
             const blob = await backendMergePdfs(allFiles, 'merge_files');
@@ -471,7 +472,7 @@ export async function runMerge(ctx: ProcessContext, settings: any) {
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
             else { commitWorkingFile(blob, newFileName); }
         } else if (settings.mode === 'interleave' && totalPageEstimate > 1000 && !hasImages) {
-            setProcessStatus(`⚡ Đang xử lý: Trộn xen kẽ...`);
+
             const { backendMergePdfs } = await import('../lib/api');
             const allFiles = [settings.oddFile, settings.evenFile].filter(Boolean);
             const blob = await backendMergePdfs(allFiles, 'interleave');

@@ -189,11 +189,11 @@ def get_vdp_status(job_id: str, license_info: dict = Depends(require_license)):
         total_processed = 0
         for f in glob.glob(os.path.join(tmp_dir, f"vdp_prog_{job_id}_*.txt")):
             try:
-                with open(f, 'r') as fp:
+                with open(f, 'r', encoding='utf-8', errors='replace') as fp:
                     content = fp.read().strip()
                     if content.isdigit():
                         total_processed += int(content)
-            except (IOError, OSError):
+            except (IOError, OSError, UnicodeDecodeError):
                 pass
         job['processed'] = total_processed
                 

@@ -805,9 +805,9 @@ async def get_nup_status(job_id: str):
     prog_file = os.path.join(tempfile.gettempdir(), f"nup_prog_{job_id}.txt")
     if os.path.exists(prog_file):
         try:
-            with open(prog_file, 'r') as f:
+            with open(prog_file, 'r', encoding='utf-8', errors='replace') as f:
                 job["progress"] = f.read().strip()
-        except (IOError, OSError):
+        except (IOError, OSError, UnicodeDecodeError):
             pass
     
     state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
