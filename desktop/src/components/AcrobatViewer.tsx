@@ -15,6 +15,7 @@ import LayerPanel from './acrobat/LayerPanel';
 import { usePdfLoader } from '../hooks/viewer/usePdfLoader';
 import { useTileRenderer } from '../hooks/viewer/useTileRenderer';
 import { useViewerHotkeys } from '../hooks/viewer/useViewerHotkeys';
+import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useViewerZoom } from '../hooks/viewer/useViewerZoom';
 import { useVdpHistory } from '../hooks/useVdpHistory';
 
@@ -25,15 +26,18 @@ interface Props {
     onExtractPages?: (indices: number[], deleteAfter: boolean) => void;
     onObjectDelete?: (objs: any[], pageNum: number) => void;
     fetchObjectsForPage?: (pageNum: number) => void;
+    onEditCommit?: (outputUrl: string, outputFilename: string, outputFid?: string, outputPath?: string) => void | Promise<void>;
     onVdpBoxCreate?: (box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string }) => void;
     rightPanel?: React.ReactNode;
+    toolbarExtra?: React.ReactNode;
 }
 
-export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObjectsForPage, onVdpBoxCreate, rightPanel, onViewerDirtyChange }: Props) {
+export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, onViewerDirtyChange }: Props) {
     // ═══ Global Store ═══
     const {
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue, isSelectionMode,
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId, setIsSelectionMode,
+        isObjectEditMode,
         hiddenOcgLayerIds, isLayerPanelOpen, setIsLayerPanelOpen,
         separationPlates, activeDashboardTool, setActiveDashboardTool, vdpFields, selectedVdpFieldIds,
         setSelectedVdpFieldIds, setVdpFields, setIsSidebarOpen,
@@ -57,6 +61,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         isSelectionMode: state.isSelectionMode, selectedObjectIds: state.selectedObjectIds,
         setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, selectionFileId: state.selectionFileId,
         setIsSelectionMode: state.setIsSelectionMode, hiddenOcgLayerIds: state.hiddenOcgLayerIds,
+        isObjectEditMode: state.isObjectEditMode,
         isLayerPanelOpen: state.isLayerPanelOpen, setIsLayerPanelOpen: state.setIsLayerPanelOpen,
         separationPlates: state.separationPlates,
         vdpFields: state.vdpFields, selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
@@ -190,18 +195,25 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         }
     };
 
+    // ═══ Hook: Object Edit Undo/Redo (Ctrl+Z hoàn tác move/delete/rotate...) ═══
+    const objectEdit = useObjectEditHistory();
+
     // ═══ Hook: Viewer Hotkeys ═══
     const { commitSnapshot, undo, redo } = useViewerHotkeys({
         containerRef, sidebarRef,
         pageOrder, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
         setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
         pastStack, futureStack, setPastStack, setFutureStack,
-        toolMode, setToolMode, isSelectionMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
+        toolMode, setToolMode, isSelectionMode: isSelectionMode || isObjectEditMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
         setIsDeleteModalOpen, setIsExtractModalOpen, setIsInsertModalOpen, setExtractPagesStrForModal, setContextMenu,
         setIsSidebarOpen, setIsSelectionMode: (v: boolean) => setIsSelectionMode(v),
         guides, setGuides, guidesHistory, setGuidesHistory, selectedGuideId, setSelectedGuideId, toggleRulers,
         navigatePage,
         mainVirtuosoRef, internalScrollRef,
+        // Ctrl+Z trong chế độ chỉnh sửa đối tượng → undo/redo edit-object (không phải trang).
+        isObjectEditMode,
+        onEditUndo: objectEdit.undo,
+        onEditRedo: objectEdit.redo,
     });
 
     // ═══ Hook: Zoom & Gestures ═══
@@ -215,7 +227,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
     } = useViewerZoom({
         containerRef, sidebarRef, internalScrollRef,
         numPages, zoom, setZoom, fitMode, setFitMode: setFitMode as (m: string) => void,
-        pageDim, pageDisplayMode, activePage, actualWidth100,
+        pageDim, pageDisplayMode, setPageDisplayMode: setPageDisplayMode as (m: string) => void, activePage, actualWidth100,
         navigatePage, toolMode,
     });
 
@@ -224,11 +236,13 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
     useEffect(() => { if (pageOrder.length > 0 && activePage > pageOrder.length) setActivePage(pageOrder.length); }, [pageOrder.length, activePage]);
     useEffect(() => { setViewerPageRotations?.(pageRotations); }, [pageRotations]);
     useEffect(() => { setViewerDirty(pastStack.length > 0); }, [pastStack.length, setViewerDirty]);
-    useEffect(() => { if (isSelectionMode || isVdpMode) setToolMode('pointer'); }, [isSelectionMode, isVdpMode]);
+    useEffect(() => { if (isSelectionMode || isObjectEditMode || isVdpMode) setToolMode('pointer'); }, [isSelectionMode, isObjectEditMode, isVdpMode]);
     useEffect(() => { updatePageDimForPage(activePage, numPages); }, [pdfRef, activePage, numPages, updatePageDimForPage]);
 
     // Reset zoom state on new file
     useEffect(() => {
+        // Edit-commit: giữ nguyên zoom/scroll (cùng cấu trúc trang) → không reset.
+        if ((file as any)?.__editCommit) return;
         setIsZoomReadyLocal(false);
         if (internalScrollRef.current) internalScrollRef.current = null;
     }, [pdfUrl, file]);
@@ -674,6 +688,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                         isVdpMode={isVdpMode}
                         onObjectDelete={onObjectDelete}
                         fetchObjectsForPage={fetchObjectsForPage}
+                        onEditCommit={onEditCommit}
                         onVdpBoxCreate={onVdpBoxCreate}
                         onVdpBoxSelect={onVdpBoxSelect}
                         onVdpFieldsChange={onVdpFieldsChange}
@@ -720,6 +735,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                 navigatePage={navigatePage}
                 applyFitWidth={applyFitWidth}
                 applyFitPage={applyFitPage}
+                extraActions={toolbarExtra}
                 onOpenRotateModalOrTools={(type) => {
                     if ((type as string) === 'rotate') { setActiveDashboardTool('pages'); setIsSidebarOpen(true); }
                     else if ((type as string) === 'delete') { setIsDeleteModalOpen(true); }
@@ -789,12 +805,12 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                                         return (
                                             <div className="flex-1 relative min-w-0 min-h-0">
                                                 <div className="absolute inset-0 overflow-auto acro-scroll outline-none block" ref={(el) => { internalScrollRef.current = el; }}>
-                                                    <div className="min-w-full min-h-full w-max h-max flex flex-col items-center justify-center relative">
+                                                    <div className="min-w-full min-h-full w-max h-max flex flex-col relative" style={{ alignItems: 'safe center', justifyContent: 'safe center' }}>
                                                         {renderRows.map((row) => {
                                                             const isActive = row.indices.includes(activePage - 1);
                                                             return (
-                                                                <div key={row.indices.join('_')} className={`flex items-center justify-center min-w-full ${toolMode === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-auto'}`}
-                                                                    style={{ display: 'flex', position: isActive ? 'relative' : 'absolute', opacity: isActive ? 1 : 0, pointerEvents: isActive ? 'auto' : 'none', visibility: isActive ? 'visible' : 'hidden', zIndex: isActive ? 10 : 0, paddingTop: 32, paddingBottom: 32, paddingLeft: 24, paddingRight: 24, gap: 12, width: 'max-content' }}>
+                                                                <div key={row.indices.join('_')} className={`flex min-w-full ${toolMode === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-auto'}`}
+                                                                    style={{ display: 'flex', alignItems: 'safe center', justifyContent: 'safe center', position: isActive ? 'relative' : 'absolute', opacity: isActive ? 1 : 0, pointerEvents: isActive ? 'auto' : 'none', visibility: isActive ? 'visible' : 'hidden', zIndex: isActive ? 10 : 0, paddingTop: 32, paddingBottom: 32, paddingLeft: 24, paddingRight: 24, gap: 12, width: 'max-content' }}>
                                                                     <div className="flex items-center" style={{ gap: 12 }}>
                                                                         {row.pages.map((p: number, idx: number) => <div key={row.indices[idx]}>{renderPdfPage(p)}</div>)}
                                                                     </div>

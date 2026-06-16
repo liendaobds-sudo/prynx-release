@@ -174,9 +174,12 @@ const MemoThumbItem = React.memo((props: any) => {
 // Cổng tải thumbnail: hoãn render thumbnail (qua tile://) cho đến khi trang chính
 // đã hiển thị xong (sự kiện 'prynx-main-tile-ready'), hoặc fallback sau 700ms.
 // Mục đích: trang chính được ưu tiên dùng pdfium handle trước, mở file nhanh hơn hẳn.
-function useThumbLoadGate(pdfUrl: string | null) {
+function useThumbLoadGate(pdfUrl: string | null, skipReset?: boolean) {
     const [ready, setReady] = useState(false);
     useEffect(() => {
+        // Edit-commit: giữ cổng đang mở (không setReady(false)) → thumbnail không
+        // "tải lại" cả dải; trang bị sửa tự cập nhật do MemoThumbItem re-render.
+        if (skipReset) return;
         setReady(false);
         let opened = false;
         const open = () => { if (!opened) { opened = true; setReady(true); } };
@@ -239,11 +242,12 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
     // Chỉ tải tile cho thumbnail đang nằm trong tầm nhìn (IntersectionObserver), kết hợp
     // cổng "trang chính hiển thị trước". Tránh việc mở file nhiều trang fire hàng loạt
     // request thumbnail làm nghẽn pdfium handle dùng chung với trang chính.
-    const thumbsGateOpen = useThumbLoadGate(pdfUrl);
+    const thumbsGateOpen = useThumbLoadGate(pdfUrl, (file as any)?.__editCommit === true);
     const [visibleThumbs, setVisibleThumbs] = useState<Set<number>>(new Set());
     const thumbObserverRef = useRef<IntersectionObserver | null>(null);
 
     useEffect(() => {
+        if ((file as any)?.__editCommit) return;
         setVisibleThumbs(new Set());
     }, [pdfUrl]);
 

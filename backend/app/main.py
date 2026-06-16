@@ -119,15 +119,43 @@ app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(compare.router, prefix="/api", tags=["Compare"])
 app.include_router(results.router, prefix="/api", tags=["Results"])
 app.include_router(qc.router, prefix="/api", tags=["QC"])
-from app.api.routes import system, imposition, preflight, vdp, pdf_tools
+from app.api.routes import system, imposition, preflight, vdp, pdf_tools, edit
 app.include_router(system.router, prefix="/api", tags=["System"])
 app.include_router(imposition.router, prefix="/api", tags=["Imposition"])
 app.include_router(preflight.router, prefix="/api", tags=["Preflight"])
 app.include_router(vdp.router, prefix="/api/vdp", tags=["VDP"])
 app.include_router(pdf_tools.router, prefix="/api", tags=["PDF Tools"])
+app.include_router(edit.router, prefix="/api", tags=["Edit"])
 app.include_router(ws.router, tags=["WebSocket"])
+
+# Cut Export (spec: gui-may-be) — module độc lập backend/app/workers/cut_export
+from app.workers.cut_export.api import router as cut_export_router
+app.include_router(cut_export_router, prefix="/api", tags=["Cut Export"])
 
 
 @app.get("/health")
 def health_check():
     return {"status": "ok", "app": settings.APP_NAME}
+
+
+# ── Entry point cho bản đóng gói (Nuitka sidecar) ──
+# Dev dùng `python -m uvicorn app.main:app --port 8321` (run_dev.bat) nên không cần
+# khối này; nhưng exe Nuitka biên dịch app/main.py PHẢI tự khởi động uvicorn ở đây,
+# nếu không sidecar chỉ định nghĩa `app` rồi thoát (backend không phục vụ → app chết).
+if __name__ == "__main__":
+    import argparse
+    import multiprocessing
+
+    # BẮT BUỘC cho multiprocessing dưới Nuitka/onefile trên Windows: tiến trình con
+    # (ProcessPoolExecutor cho bình trang/VDP/preflight + multiprocessing.Process)
+    # re-launch exe; freeze_support() đảm bảo con chạy worker thay vì khởi động lại server.
+    multiprocessing.freeze_support()
+
+    import uvicorn
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8321)
+    parser.add_argument("--host", default="127.0.0.1")
+    args, _ = parser.parse_known_args()
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")

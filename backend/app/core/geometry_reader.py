@@ -1,0 +1,260 @@
+"""
+Geometry_Reader — liệt kê object hình học của một trang PDF bằng PDFium (read-only).
+
+Vai trò trong kiến trúc `pdf-object-edit`:
+- PDFium (pypdfium2.raw) = engine ĐỌC hình học. Module này CHỈ đọc: liệt kê object,
+  lấy bbox/type chính xác để Object_Mapper ánh xạ về dải operator pikepdf.
+- TUYỆT ĐỐI KHÔNG ghi: KHÔNG gọi `FPDFPage_GenerateContent`, KHÔNG save tài liệu.
+  Mọi đường GHI đi qua pikepdf ở Stream_Editor (color-safe).
+
+Hàm chính: `list_objects(pdf_path, page_index) -> list[ObjMeta]`.
+
+Mapping type (PDFium → ObjMeta.type):
+- FPDF_PAGEOBJ_TEXT  (1) → "text"
+- FPDF_PAGEOBJ_IMAGE (3) → "image"
+- FPDF_PAGEOBJ_PATH  (2) → "vector"
+- Các loại khác (SHADING=4 / FORM=5 / UNKNOWN=0): xử lý an toàn — gắn nhãn "vector"
+  để KHÔNG crash, vẫn liệt kê được bbox (Form/Shading là vùng vẽ vector hợp lý).
+
+BBox lưu theo hệ tọa độ PDF (gốc bottom-left) như PDFium trả về:
+[x0=left, y0=bottom, x1=right, y1=top].
+
+_Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 13.1, 13.3_
+"""
+from __future__ import annotations
+
+import ctypes
+import logging
+
+import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
+
+from app.schemas.edit import ObjMeta
+
+logger = logging.getLogger(__name__)
+
+# ── Ngưỡng an toàn hiệu năng (Yêu cầu 13.1, 13.3) ───────────────────────────
+# Trang in phức tạp có thể chứa vài nghìn object. Liệt kê là O(N) nên an toàn,
+# nhưng ta vẫn áp trần cứng để tránh treo vô hạn với file bất thường.
+MAX_OBJECTS_PER_PAGE: int = 50_000
+
+# Ánh xạ hằng số type PDFium → nhãn type của ObjMeta.
+_TYPE_MAP = {
+    pdfium_c.FPDF_PAGEOBJ_TEXT: "text",
+    pdfium_c.FPDF_PAGEOBJ_IMAGE: "image",
+    pdfium_c.FPDF_PAGEOBJ_PATH: "vector",
+}
+
+
+def _map_type(raw_type: int) -> str:
+    """
+    Chuyển hằng số type PDFium sang nhãn ObjMeta.type ∈ {text, image, vector}.
+
+    Các loại không nằm trong {TEXT, IMAGE, PATH} (SHADING/FORM/UNKNOWN) được gắn
+    nhãn "vector" để xử lý an toàn (chúng đều là vùng vẽ phi-text/phi-ảnh), bảo đảm
+    KHÔNG phát sinh lỗi khi gặp object lạ (Yêu cầu 1.5).
+    """
+    return _TYPE_MAP.get(raw_type, "vector")
+
+
+def _looks_unreliable(s: str) -> bool:
+    """
+    Heuristic phát hiện text trích KHÔNG đáng tin (font có ToUnicode hỏng/thiếu):
+    xuất hiện ký tự U+FFFD (replacement) hoặc ký tự dải MŨI TÊN/KỸ THUẬT
+    (U+2190–U+23FF) — thường là dấu hiệu glyph→unicode bị ánh xạ sai (vd. dấu
+    cách → '↔', 'đ' → '↑'). Khi đó KHÔNG nên điền sẵn editor bằng nội dung sai.
+    """
+    for ch in s:
+        o = ord(ch)
+        if o == 0xFFFD:
+            return True
+        if 0x2190 <= o <= 0x23FF:
+            return True
+    return False
+
+
+def _extract_text(obj, text_page) -> str | None:
+    """
+    Trích nội dung text gốc của MỘT text-object qua `FPDFTextObj_GetText`
+    (read-only). Trả None nếu không có text-page / rỗng / lỗi / KHÔNG đáng tin.
+
+    PDFium trả chuỗi UTF-16LE; `length` tính theo số đơn vị `unsigned short`
+    (gồm ký tự kết thúc null). Gọi lần đầu với buffer=None để lấy độ dài.
+    """
+    if not text_page:
+        return None
+    try:
+        n = int(pdfium_c.FPDFTextObj_GetText(obj, text_page, None, 0))
+        if n <= 0:
+            return None
+        buf = (ctypes.c_ushort * n)()
+        pdfium_c.FPDFTextObj_GetText(obj, text_page, buf, n)
+        s = bytes(buf).decode("utf-16-le", errors="replace").rstrip("\x00")
+        if not s:
+            return None
+        # Font ToUnicode hỏng → trả None để editor KHÔNG điền nội dung sai
+        # (thà để trống cho người dùng tự gõ còn hơn hiện chữ rác).
+        if _looks_unreliable(s):
+            return None
+        return s
+    except Exception:  # noqa: BLE001 - trích text best-effort, lỗi → bỏ qua
+        return None
+
+
+def _extract_fill_color(obj) -> list[int] | None:
+    """
+    Lấy MÀU TÔ (fill) RGB của object qua `FPDFPageObj_GetFillColor` (0..255).
+    Trả None nếu không lấy được. Dùng để editor inline hiển thị ĐÚNG màu chữ gốc.
+    """
+    try:
+        r = ctypes.c_uint(0)
+        g = ctypes.c_uint(0)
+        b = ctypes.c_uint(0)
+        a = ctypes.c_uint(0)
+        ok = pdfium_c.FPDFPageObj_GetFillColor(
+            obj, ctypes.byref(r), ctypes.byref(g), ctypes.byref(b), ctypes.byref(a)
+        )
+        if not ok:
+            return None
+        return [int(r.value), int(g.value), int(b.value)]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def list_objects(pdf_path: str, page_index: int) -> list[ObjMeta]:
+    """
+    Liệt kê tất cả PDF_Object của một trang kèm type + bbox chính xác (read-only).
+
+    Args:
+        pdf_path: đường dẫn file PDF cần đọc.
+        page_index: chỉ số trang (0-indexed).
+
+    Returns:
+        Danh sách `ObjMeta` (id, drawIndex, type, bbox, matrix). Trả về danh sách
+        rỗng nếu trang không có object nào — KHÔNG phát sinh lỗi (Yêu cầu 1.5).
+
+    Ghi chú:
+        - BBox lấy từ `FPDFPageObj_GetBounds` → bao đúng vùng hiển thị của object
+          (ảnh là vùng ảnh, KHÔNG phải cả trang) (Yêu cầu 1.2).
+        - `id` ổn định trong một lần liệt kê của một trang theo dạng
+          "{type}-{drawIndex}", đủ để Object_Mapper ánh xạ lại (Yêu cầu 1.4).
+        - CHỈ-ĐỌC: không gọi GenerateContent, không save (Yêu cầu 1.6).
+    """
+    pdf = None
+    text_page_raw = None
+    try:
+        pdf = pdfium.PdfDocument(pdf_path)
+
+        n_pages = len(pdf)
+        if page_index < 0 or page_index >= n_pages:
+            raise IndexError(
+                f"page_index {page_index} ngoài phạm vi (0..{n_pages - 1})"
+            )
+
+        page = pdf[page_index]
+        page_raw = page.raw
+
+        # Text-page (read-only) để trích nội dung text-object cho editor sửa.
+        # Lỗi/không hỗ trợ → None (vẫn liệt kê object bình thường, chỉ thiếu content).
+        try:
+            text_page_raw = pdfium_c.FPDFText_LoadPage(page_raw)
+        except Exception:  # noqa: BLE001
+            text_page_raw = None
+
+        # Đếm số object trên trang (O(1)); trang rỗng → trả danh sách rỗng.
+        count = int(pdfium_c.FPDFPage_CountObjects(page_raw))
+        if count <= 0:
+            return []
+
+        # Áp trần cứng để tránh treo vô hạn với file bất thường (Yêu cầu 13.1).
+        if count > MAX_OBJECTS_PER_PAGE:
+            logger.warning(
+                "Trang %d có %d object > trần %d; chỉ liệt kê %d object đầu.",
+                page_index,
+                count,
+                MAX_OBJECTS_PER_PAGE,
+                MAX_OBJECTS_PER_PAGE,
+            )
+            count = MAX_OBJECTS_PER_PAGE
+
+        out: list[ObjMeta] = []
+
+        # Khởi tạo sẵn 4 c_float cho GetBounds (left, bottom, right, top) và
+        # FS_MATRIX cho GetMatrix, tái dùng qua mỗi vòng lặp.
+        for i in range(count):
+            obj = pdfium_c.FPDFPage_GetObject(page_raw, i)
+            if not obj:
+                # Object không truy cập được — bỏ qua an toàn, không crash.
+                continue
+
+            raw_type = int(pdfium_c.FPDFPageObj_GetType(obj))
+            obj_type = _map_type(raw_type)
+
+            # ── BBox: c_float (left, bottom, right, top) theo hệ PDF bottom-left ──
+            left = ctypes.c_float(0.0)
+            bottom = ctypes.c_float(0.0)
+            right = ctypes.c_float(0.0)
+            top = ctypes.c_float(0.0)
+            ok_bounds = pdfium_c.FPDFPageObj_GetBounds(
+                obj,
+                ctypes.byref(left),
+                ctypes.byref(bottom),
+                ctypes.byref(right),
+                ctypes.byref(top),
+            )
+            if not ok_bounds:
+                # Không lấy được bbox (object suy biến/clip lạ) → bỏ qua an toàn.
+                logger.debug(
+                    "Bỏ qua object #%d (type=%d): GetBounds thất bại.", i, raw_type
+                )
+                continue
+
+            # bbox theo hệ PDF: [x0=left, y0=bottom, x1=right, y1=top].
+            bbox = [
+                float(left.value),
+                float(bottom.value),
+                float(right.value),
+                float(top.value),
+            ]
+
+            # ── Matrix (CTM) của object nếu có ─────────────────────────────
+            matrix: list[float] | None = None
+            fs_matrix = pdfium_c.FS_MATRIX()
+            if pdfium_c.FPDFPageObj_GetMatrix(obj, ctypes.byref(fs_matrix)):
+                matrix = [
+                    float(fs_matrix.a),
+                    float(fs_matrix.b),
+                    float(fs_matrix.c),
+                    float(fs_matrix.d),
+                    float(fs_matrix.e),
+                    float(fs_matrix.f),
+                ]
+
+            # id ổn định trong một lần liệt kê: theo type + drawIndex.
+            content = _extract_text(obj, text_page_raw) if obj_type == "text" else None
+            color = _extract_fill_color(obj) if obj_type == "text" else None
+            out.append(
+                ObjMeta(
+                    id=f"{obj_type}-{i}",
+                    drawIndex=i,
+                    type=obj_type,
+                    bbox=bbox,
+                    matrix=matrix,
+                    content=content,
+                    color=color,
+                )
+            )
+
+        return out
+    finally:
+        # Quản lý vòng đời document đúng cách: luôn đóng để giải phóng handle PDFium.
+        if text_page_raw is not None:
+            try:
+                pdfium_c.FPDFText_ClosePage(text_page_raw)
+            except Exception:  # pragma: no cover - dọn dẹp best-effort
+                pass
+        if pdf is not None:
+            try:
+                pdf.close()
+            except Exception:  # pragma: no cover - dọn dẹp best-effort
+                pass

@@ -60,6 +60,11 @@ Quyết định đã chốt với người dùng:
 
 ### Yêu cầu 4 — Dấu canh CNC (nhiều loại)
 
+> ⚠️ **CẬP NHẬT:** Yêu cầu "nhiều loại dấu canh" này **chưa được hiện thực** đúng như mô tả.
+> Code hiện tại chỉ có **một** loại dấu canh in 2 mặt (`cncDuplexMarks` →
+> `cnc_marks.draw_duplex_marks`: 4 dấu tròn + chữ thập ở giữa cạnh, vẽ cả Mặt trước & Mặt sau).
+> Việc định vị máy cắt dùng lại hệ **boong (pont)** của Bình Tem Bế (chỉ Mặt trước + Khuôn).
+
 **User Story:** Là người vận hành CNC, tôi muốn chọn loại dấu canh phù hợp máy của mình, để máy nhận đúng vị trí cắt.
 
 #### Acceptance Criteria

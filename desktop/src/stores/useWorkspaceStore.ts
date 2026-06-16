@@ -28,6 +28,11 @@ export interface WorkspaceState {
 
     // ── History & Save ──
     history: File[];
+    // Undo/Redo RIÊNG cho chế độ chỉnh sửa đối tượng (object edit). Mỗi entry lưu
+    // {file, pdfUrl, fid} để khôi phục ĐẦY ĐỦ trạng thái edit (kể cả selectionFileId)
+    // — khác `history` (chỉ File, dùng cho các tool khác qua nút Undo cam).
+    objectEditPast: { file: File | null; pdfUrl: string | null; fid: string }[];
+    objectEditFuture: { file: File | null; pdfUrl: string | null; fid: string }[];
     isSaved: boolean;
     showSaveAsModal: boolean;
     reportMsg: string | null;
@@ -62,6 +67,8 @@ export interface WorkspaceState {
 
     // ── Selection Tool ──
     isSelectionMode: boolean;
+    // ── Object Edit Mode (chế độ chỉnh sửa đối tượng — độc lập Selection Tool) ──
+    isObjectEditMode: boolean;
     pdfObjectsVersion: number;
     selectedObjectIds: string[];
     hiddenObjectIds: string[];
@@ -117,6 +124,8 @@ export interface WorkspaceState {
     setError: (error: string) => void;
 
     setHistory: (updater: File[] | ((prev: File[]) => File[])) => void;
+    setObjectEditPast: (updater: { file: File | null; pdfUrl: string | null; fid: string }[] | ((prev: { file: File | null; pdfUrl: string | null; fid: string }[]) => { file: File | null; pdfUrl: string | null; fid: string }[])) => void;
+    setObjectEditFuture: (updater: { file: File | null; pdfUrl: string | null; fid: string }[] | ((prev: { file: File | null; pdfUrl: string | null; fid: string }[]) => { file: File | null; pdfUrl: string | null; fid: string }[])) => void;
     setIsSaved: (val: boolean) => void;
     setShowSaveAsModal: (val: boolean) => void;
     setReportMsg: (msg: string | null) => void;
@@ -145,6 +154,7 @@ export interface WorkspaceState {
     setOverprintPreviewUrl: (url: string | null) => void;
 
     setIsSelectionMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
+    setIsObjectEditMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setPdfObjectsVersion: (updater: number | ((prev: number) => number)) => void;
     setSelectedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setHiddenObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
@@ -200,6 +210,8 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     error: '',
 
     history: [],
+    objectEditPast: [],
+    objectEditFuture: [],
     isSaved: false,
     showSaveAsModal: false,
     reportMsg: null,
@@ -228,6 +240,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     overprintPreviewUrl: null,
 
     isSelectionMode: false,
+    isObjectEditMode: false,
     pdfObjectsVersion: 0,
     selectedObjectIds: [],
     hiddenObjectIds: [],
@@ -290,6 +303,12 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setHistory: (updater) => set((state) => ({
         history: typeof updater === 'function' ? updater(state.history) : updater,
     })),
+    setObjectEditPast: (updater) => set((state) => ({
+        objectEditPast: typeof updater === 'function' ? updater(state.objectEditPast) : updater,
+    })),
+    setObjectEditFuture: (updater) => set((state) => ({
+        objectEditFuture: typeof updater === 'function' ? updater(state.objectEditFuture) : updater,
+    })),
     setIsSaved: (v) => set({ isSaved: v }),
     setShowSaveAsModal: (v) => set({ showSaveAsModal: v }),
     setReportMsg: (msg) => set({ reportMsg: msg }),
@@ -319,9 +338,16 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setTacHeatmapUrl: (url) => set({ tacHeatmapUrl: url }),
     setOverprintPreviewUrl: (url) => set({ overprintPreviewUrl: url }),
 
-    setIsSelectionMode: (v) => set((state) => ({
-        isSelectionMode: typeof v === 'function' ? v(state.isSelectionMode) : v,
-    })),
+    setIsSelectionMode: (v) => set((state) => {
+        const next = typeof v === 'function' ? v(state.isSelectionMode) : v;
+        // Loại trừ lẫn nhau: bật Selection Tool → tắt chế độ chỉnh sửa đối tượng.
+        return next ? { isSelectionMode: true, isObjectEditMode: false } : { isSelectionMode: false };
+    }),
+    setIsObjectEditMode: (v) => set((state) => {
+        const next = typeof v === 'function' ? v(state.isObjectEditMode) : v;
+        // Loại trừ lẫn nhau: bật chế độ chỉnh sửa đối tượng → tắt Selection Tool.
+        return next ? { isObjectEditMode: true, isSelectionMode: false } : { isObjectEditMode: false };
+    }),
     setPdfObjectsVersion: (updater) => set((state) => ({
         pdfObjectsVersion: typeof updater === 'function' ? updater(state.pdfObjectsVersion) : updater,
     })),

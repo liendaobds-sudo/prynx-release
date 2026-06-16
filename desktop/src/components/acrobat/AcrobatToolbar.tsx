@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 
 interface AcrobatToolbarProps {
@@ -7,9 +7,10 @@ interface AcrobatToolbarProps {
     applyFitWidth: () => void;
     applyFitPage: () => void;
     onOpenRotateModalOrTools: (type: 'tools' | 'delete') => void;
+    extraActions?: ReactNode;
 }
 
-export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, applyFitPage, onOpenRotateModalOrTools }: AcrobatToolbarProps) {
+export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, applyFitPage, onOpenRotateModalOrTools, extraActions }: AcrobatToolbarProps) {
     const {
         viewerZoom: zoom, setViewerZoom: setZoom,
         viewerFitMode: fitMode, setViewerFitMode: setFitMode,
@@ -18,14 +19,15 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
         viewerActivePage: activePage,
         viewerNumPages: numPages,
         isSelectionMode, setIsSelectionMode,
+        isObjectEditMode, setIsObjectEditMode,
         activeDashboardTool,
     } = useWorkspaceStore();
     
     const handleCustomZoom = (newZoom: number | ((z: number) => number)) => {
         setZoom(newZoom);
         setFitMode('custom');
-        if (pageDisplayMode === 'single_fit') setPageDisplayMode('single_scroll');
-        if (pageDisplayMode === 'two_fit') setPageDisplayMode('two_scroll');
+        // GIỮ NGUYÊN chế độ hiển thị (single_fit/two_fit vẫn pan được sau khi safe-center).
+        // Trước đây đổi sang *_scroll (Virtuoso) làm reset scroll về góc trên-trái + mất neo tâm.
     };
 
     const isVdpMode = activeDashboardTool === 'datamerge' || activeDashboardTool === 'numbering';
@@ -47,6 +49,11 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
 
     return (
         <div className="h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#323639] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-50 relative overflow-visible">
+            {extraActions && (
+                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 z-10">
+                    {extraActions}
+                </div>
+            )}
             <div className="flex items-center gap-1 mx-auto min-w-max">
                 <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage - 1)} title="Previous Page">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16V8m-3 3l3-3 3 3"/></svg>
@@ -70,7 +77,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                 <div className="w-px h-5 bg-black/10 dark:bg-white/10 mx-2"></div>
                 
                 <button 
-                    className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${toolMode === 'pointer' && !isSelectionMode && !isVdpMode ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`} 
+                    className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${toolMode === 'pointer' && !isSelectionMode && !isObjectEditMode && !isVdpMode ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`} 
                     onClick={() => setToolMode('pointer')} title="Pointer Tool">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="0.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86 2.89 4.8 2.58-1.55-2.89-4.8 4.79-.19c.45-.02.66-.56.34-.86L5.5 3.21z"/></svg>
                 </button>
@@ -92,6 +99,17 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                         title="Selection Tool (Chọn & Xóa chi tiết PDF)"
                     >
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86 2.89 4.8 2.58-1.55-2.89-4.8 4.79-.19c.45-.02.66-.56.34-.86L5.5 3.21z"/></svg>
+                    </button>
+                )}
+
+                {/* Chế độ Chỉnh sửa đối tượng — độc lập Selection Tool. Màu emerald để phân biệt với Selection (cam). */}
+                {isObjectEditMode !== undefined && (
+                    <button
+                        className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${isObjectEditMode ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 ring-1 ring-emerald-300 dark:ring-emerald-700' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
+                        onClick={() => setIsObjectEditMode(!isObjectEditMode)}
+                        title="Chỉnh sửa đối tượng (di chuyển / resize / xoay / sửa text / thêm)"
+                    >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
                     </button>
                 )}
 

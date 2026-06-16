@@ -30,7 +30,7 @@ DEFAULT_MATERIALS: List[str] = [
 LAMINATION_OPTIONS: List[str] = ["Không cán", "Cán bóng", "Cán mờ"]
 
 DEFAULT_FIELD_ORDER: List[str] = [
-    "orderCode", "identifier", "labelName", "material", "lamination",
+    "orderCode", "identifier", "gangCount", "labelName", "material", "lamination",
     "labelsPerSheet", "actualQty", "sheetCount", "dimensions", "paperSize",
     "cutFileRef", "modeLabel",
 ]
@@ -75,8 +75,8 @@ def sanitize_filename(name: Optional[str]) -> str:
 def _format_lamination(lam_type: int, sides: int = 1) -> str:
     """0=Không cán → '' ; 1/2 → 'Cán bóng' / 'Cán mờ'.
 
-    Bế tem chỉ cán 1 mặt nên KHÔNG ghi số mặt. Tham số `sides` giữ lại cho
-    tương thích chữ ký (công cụ CNC 2 mặt có thể tự ghép số mặt ở chỗ khác).
+    Số mặt CHỈ ghi khi cán 2 mặt ('Cán mờ 2 mặt'); 1 mặt là mặc định ngầm nên
+    giữ gọn 'Cán mờ' (đúng thói quen bế tem + giữ tương thích test cũ).
     """
     try:
         lam_type = int(lam_type)
@@ -84,7 +84,14 @@ def _format_lamination(lam_type: int, sides: int = 1) -> str:
         return ""
     if lam_type <= 0 or lam_type >= len(LAMINATION_OPTIONS):
         return ""
-    return LAMINATION_OPTIONS[lam_type]
+    base = LAMINATION_OPTIONS[lam_type]
+    try:
+        sides = int(sides)
+    except (TypeError, ValueError):
+        sides = 1
+    if sides >= 2:
+        return f"{base} {sides} mặt"
+    return base
 
 
 def compute_report_data(
@@ -102,16 +109,23 @@ def compute_report_data(
     mode_label: str = "",
     order_code: str = "",
     identifier: str = "",
+    gang_count: int = 0,
+    sheet_count_override: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Tính số tờ + số lượng thực và format sẵn text từng field cho build_report_string.
 
     sheet_count = ceil(requested_qty / items_per_sheet) ; tối thiểu 1 nếu qty<=0.
     actual_qty  = sheet_count * items_per_sheet.
+    sheet_count_override: dùng số tờ do engine tính sẵn (CNC tự tính), bỏ qua công thức.
+    gang_count: số mẫu ghép chung 1 tờ (CNC dàn nhiều mẫu); 0 = không hiển thị.
     """
     ips = int(items_per_sheet or 0)
     qty = int(requested_qty or 0)
 
-    if ips <= 0:
+    if sheet_count_override is not None:
+        sheet_count = max(0, int(sheet_count_override))
+        actual_qty = sheet_count * ips
+    elif ips <= 0:
         sheet_count = 0
         actual_qty = 0
     elif qty <= 0:
@@ -135,6 +149,7 @@ def compute_report_data(
         # Các field đã format text (rỗng = sẽ bị build_report_string bỏ qua)
         "orderCode": order_code or "",
         "identifier": identifier or "",
+        "gangCount": f"{int(gang_count)} mẫu" if gang_count and int(gang_count) > 0 else "",
         "labelName": label_name or "",
         "dimensions": dims,
         "paperSize": paper_size or "",
@@ -162,6 +177,7 @@ def build_report_string(rd: Optional[Dict[str, Any]], data: Dict[str, Any]) -> s
     # map key field → cờ hiển thị (mặc định True nếu thiếu cờ)
     show_flags = {
         "identifier": rd.get("showIdentifier", True),
+        "gangCount": rd.get("showGangCount", True),
         "labelName": rd.get("showLabelName", True),
         "dimensions": rd.get("showDimensions", True),
         "paperSize": rd.get("showPaperSize", True),

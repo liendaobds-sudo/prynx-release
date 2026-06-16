@@ -132,12 +132,9 @@ def process_chunk(args):
      mark_type, mark_len, mark_off, margin_left, margin_bottom, 
 
      sheet_usable_w, sheet_usable_h, align, cx_count, cy_count, cluster_gap,
-
      active_grid_w, active_grid_h, super_grid_w, super_grid_h,
-
      prog_file, total_page_count, layout_type, is_die_cut, pont_config, strategy, detected_shapes_by_page, target_quantity, detected_shape_params_by_page, sheet_mapping, chunk_precalc_placements,
-
-     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style) = args
+     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow) = args
 
     src_doc = pdf_lib.open(source_path)
 
@@ -358,7 +355,15 @@ def process_chunk(args):
             # Try Rust fast path for placement calculation
             try:
                 import pdfcompare_native as _native
+                # Rust binding expects PyDict for sheet_mapping, not list
+                _sm = None
+                if sheet_mapping is not None:
+                    if isinstance(sheet_mapping, dict):
+                        _sm = sheet_mapping
+                    elif isinstance(sheet_mapping, (list, tuple)):
+                        _sm = {i: v for i, v in enumerate(sheet_mapping)}
                 placements = _native.compute_placements(
+                    
                     sheet_idx=sheet_idx,
                     cells=cur_cells,
                     capacity=cur_capacity,
@@ -374,10 +379,10 @@ def process_chunk(args):
                     layout_type=layout_type,
                     total_capacity=total_capacity,
                     page_count=page_count,
-                    sheet_mapping=sheet_mapping,
+                    sheet_mapping=_sm,
                 )
-            except Exception:
-                # Python fallback
+            except ImportError:
+                # Python fallback — chỉ khi Rust module thiếu
                 placements = []
 
                 for cy in range(cy_count):
@@ -404,7 +409,8 @@ def process_chunk(args):
 
                                 src_page_idx = get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capacity, page_count)
 
-                            if src_page_idx >= page_count:
+
+                            if src_page_idx >= total_page_count:
 
                                 continue # Allow other cells on sheet to process if non-sequential
 
@@ -433,6 +439,17 @@ def process_chunk(args):
                                 'original_cell_y': cell_y
 
                             })
+
+        # --- Duplex Mirroring ---
+        if duplex_flow == 'double' and sheet_idx % 2 == 1:
+            for p in placements:
+                # Mirror X coordinate across the sheet width
+                p['abs_x'] = sheet_w - (p['abs_x'] + p['width'])
+                # If the item is rotated 90 degrees CCW (isRotated=True), its top edge was pointing to the left.
+                # After mirroring horizontally, its top edge points to the right. 
+                # Pointing to the right means it needs an additional 180 degree rotation (90 CW = 270 CCW).
+                if p['cell'].get('isRotated', False):
+                    p['cell']['isRotated180'] = not p['cell'].get('isRotated180', False)
 
         
         # --- Phase 2: Collision Detection ---
@@ -514,6 +531,7 @@ def process_chunk(args):
         _clip_off_x = min(gap_x / 2.0, bleed_pt) if gap_x > 0 else 0.0
         _clip_off_y = min(gap_y / 2.0, bleed_pt) if gap_y > 0 else 0.0
 
+
         for p in placements:
 
             cell = p['cell']
@@ -557,74 +575,12 @@ def process_chunk(args):
 
             shape = out_page.new_shape()
 
-            # Rust fast path: compute mark coordinates
-            try:
-                import pdfcompare_native as _native
-                mark_segs = _native.compute_mark_coords(placements, mark_type, float(mark_off), float(mark_len))
-                for seg in mark_segs:
-                    shape.draw_line(pdf_lib.Point(seg['x1'], seg['y1']), pdf_lib.Point(seg['x2'], seg['y2']))
-            except Exception:
-                # Python fallback
-                for c_idx, cluster_blocks in block_cuts.items():
-
-                    _bboxes = {}
-
-                    for b_id, cuts in cluster_blocks.items():
-
-                        v_cuts = cuts['v']
-
-                        h_cuts = cuts['h']
-
-                        if v_cuts and h_cuts:
-
-                            min_x, max_x = min(v_cuts), max(v_cuts)
-
-                            min_y, max_y = min(h_cuts), max(h_cuts)
-
-                            _bboxes[b_id] = (min_x, max_x, min_y, max_y)
-
-                            if mark_type == 'corners':
-
-                                v_cuts_to_draw = {min_x, max_x}
-
-                                h_cuts_to_draw = {min_y, max_y}
-
-                            else:
-
-                                v_cuts_to_draw = v_cuts
-
-                                h_cuts_to_draw = h_cuts
-
-                            for vx in v_cuts_to_draw:
-
-                                shape.draw_line(pdf_lib.Point(vx, min_y - mark_off), pdf_lib.Point(vx, min_y - mark_off - mark_len))
-
-                                shape.draw_line(pdf_lib.Point(vx, max_y + mark_off), pdf_lib.Point(vx, max_y + mark_off + mark_len))
-
-                            for hy in h_cuts_to_draw:
-
-                                shape.draw_line(pdf_lib.Point(min_x - mark_off, hy), pdf_lib.Point(min_x - mark_off - mark_len, hy))
-
-                                shape.draw_line(pdf_lib.Point(max_x + mark_off, hy), pdf_lib.Point(max_x + mark_off + mark_len, hy))
-
-                    # Split mark "dấu dập cắt đôi giữa 2 cụm" — đặt ở lề ngoài global (khớp gốc)
-                    _GAP_EPS = 0.5
-                    b0 = _bboxes.get(0)
-                    if b0 and _bboxes:
-                        g_min_x = min(b[0] for b in _bboxes.values())
-                        g_max_x = max(b[1] for b in _bboxes.values())
-                        g_min_y = min(b[2] for b in _bboxes.values())
-                        g_max_y = max(b[3] for b in _bboxes.values())
-                        b1 = _bboxes.get(1)
-                        if b1 and b1[0] - b0[1] > _GAP_EPS:
-                            dx = (b0[1] + b1[0]) / 2.0
-                            shape.draw_line(pdf_lib.Point(dx, g_min_y - mark_off), pdf_lib.Point(dx, g_min_y - mark_off - mark_len))
-                            shape.draw_line(pdf_lib.Point(dx, g_max_y + mark_off), pdf_lib.Point(dx, g_max_y + mark_off + mark_len))
-                        b2 = _bboxes.get(2)
-                        if b2 and b2[2] - b0[3] > _GAP_EPS:
-                            dy = (b0[3] + b2[2]) / 2.0
-                            shape.draw_line(pdf_lib.Point(g_min_x - mark_off, dy), pdf_lib.Point(g_min_x - mark_off - mark_len, dy))
-                            shape.draw_line(pdf_lib.Point(g_max_x + mark_off, dy), pdf_lib.Point(g_max_x + mark_off + mark_len, dy))
+            # Rust-only: compute mark coordinates (Japanese double-line supported via bleed_offset)
+            bleed_for_marks = float(bleed_pt) if mark_style == 'japanese' else 0.0
+            import pdfcompare_native as _native
+            mark_segs = _native.compute_mark_coords(placements, mark_type, float(mark_off), float(mark_len), bleed_for_marks)
+            for seg in mark_segs:
+                shape.draw_line(pdf_lib.Point(seg['x1'], seg['y1']), pdf_lib.Point(seg['x2'], seg['y2']))
 
             shape.finish(color=(0,0,0), width=mark_thick)
 
@@ -700,6 +656,7 @@ def process_chunk(args):
         # Extract default die_color and die_width from first available cache for 1-dao
         global_die_color = (1, 0, 0)  # Default to Red
         global_die_width = 0.5
+
         for p in placements:
             idx = p.get('cell', {}).get('pageIdx', p.get('src_page_idx', 0))
             cache_key = f"{job_id}_{idx}"

@@ -2,6 +2,19 @@
 
 > Tài liệu Thiết kế — Tính năng "CNC ghép nhiều mẫu" (cnc-multi-template)
 
+> ✅ **CẬP NHẬT — TRẠNG THÁI THỰC TẾ (đồng bộ với code).** Thiết kế này phản ánh đúng
+> kiến trúc hiện hành (helper `cnc_layout.build_cnc_front_layout` + `cnc_render` tách riêng).
+> Vài điểm code cuối đã đi KHÁC/THÊM so với mô tả dưới:
+> - **`mirror_placements` (bản đơn) đã bị XÓA.** Lật gương chỉ còn `mirror_placements_multi`.
+>   `cnc_geometry.py` cũng đã xóa (code chết).
+> - **Không tách `_center_placements` dùng chung** như mục 1 mô tả: `cnc_layout` tự căn giữa,
+>   `cnc_render._build_placements` giữ công thức riêng (vẫn nhất quán kết quả). Refactor gộp
+>   công thức là tùy chọn, chưa làm.
+> - **Bổ sung sau spec:** chế độ **Bình trang (S&R, `layoutType=='repeat'`)** KHÔNG dùng
+>   `build_cnc_front_layout` mà gọi `compute_sticker_layout_for_page` (đúng solver Bình Tem Bế,
+>   giữ nesting tổ ong) + truyền `shape_type_override` theo từng trang (parity với Bế tem).
+>   `build_cnc_front_layout` chỉ dùng cho chế độ **Dàn nhiều mẫu (gang)**.
+
 ## Overview
 
 Tính năng mở rộng công cụ **Bình Bế Rớt (CNC)** (`imposerMode='cnc'`) để **trộn nhiều mẫu khác nhau lên cùng một tờ in** cho cả chế độ 1 mặt và 2 mặt, đồng thời bảo đảm **preview khớp khít output**.

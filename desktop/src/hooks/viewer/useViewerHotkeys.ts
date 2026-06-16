@@ -56,6 +56,10 @@ interface UseViewerHotkeysProps {
     // Virtuoso ref
     mainVirtuosoRef: React.RefObject<any>;
     internalScrollRef: React.MutableRefObject<HTMLElement | null>;
+    // Object Edit Mode: Ctrl+Z/Ctrl+Y hoàn tác/làm lại thao tác edit-object.
+    isObjectEditMode?: boolean;
+    onEditUndo?: () => boolean | void;
+    onEditRedo?: () => boolean | void;
 }
 
 export function useViewerHotkeys(props: UseViewerHotkeysProps) {
@@ -70,6 +74,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         guides, setGuides, guidesHistory, setGuidesHistory, selectedGuideId, setSelectedGuideId, toggleRulers,
         navigatePage,
         mainVirtuosoRef, internalScrollRef,
+        isObjectEditMode, onEditUndo, onEditRedo,
     } = props;
 
     const prevToolModeRef = useRef<'pointer' | 'hand'>('pointer');
@@ -206,6 +211,20 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             if (e.ctrlKey || e.metaKey) {
                 // Khi đang ở chế độ VDP, undo/redo do useVdpHistory xử lý (capture-phase).
                 if (isVdpMode) return;
+                // Chế độ chỉnh sửa đối tượng → Ctrl+Z/Y hoàn tác/làm lại edit-object
+                // (move/delete/rotate...), KHÔNG đụng undo thao tác trang.
+                if (isObjectEditMode && (onEditUndo || onEditRedo)) {
+                    if (e.key.toLowerCase() === 'z') {
+                        e.preventDefault();
+                        if (e.shiftKey) onEditRedo?.(); else onEditUndo?.();
+                        return;
+                    }
+                    if (e.key.toLowerCase() === 'y') {
+                        e.preventDefault();
+                        onEditRedo?.();
+                        return;
+                    }
+                }
                 if (e.key.toLowerCase() === 'z') {
                     e.preventDefault();
                     if (e.shiftKey) redo(); else undo();
@@ -268,7 +287,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             document.removeEventListener('keydown', handleKeyDown);
             document.removeEventListener('keyup', handleKeyUp);
         };
-    }, [pastStack, futureStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, toolMode, isThumbMenuOpen, isDeleteModalOpen, activePage, numPages, undo, redo, isVdpMode, isSelectionMode]);
+    }, [pastStack, futureStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, toolMode, isThumbMenuOpen, isDeleteModalOpen, activePage, numPages, undo, redo, isVdpMode, isSelectionMode, isObjectEditMode, onEditUndo, onEditRedo]);
 
     // Escape key closes modals
     useEffect(() => {

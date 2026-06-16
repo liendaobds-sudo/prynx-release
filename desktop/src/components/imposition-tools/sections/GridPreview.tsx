@@ -23,6 +23,8 @@ export interface GridPreviewProps {
   itemH?: number;
   targetQuantity?: number | string;
   targetQuantitiesByPage?: Record<number, number>;
+  /** Tổng số trang nguồn — để N-Up vẽ preview đúng số ô thực sự lấp (mỗi trang 1 lần). */
+  sourceTotalPages?: number;
   shapeParams?: string | null;
   shapesByPage?: Record<number, string>;
   shapeParamsByPage?: Record<number, any>;
@@ -566,6 +568,7 @@ export default function GridPreview(props: GridPreviewProps) {
     shapeType,
     targetQuantity,
     targetQuantitiesByPage,
+    sourceTotalPages,
     itemW = 90,
     itemH = 55,
     shapeParams,
@@ -817,11 +820,24 @@ export default function GridPreview(props: GridPreviewProps) {
 
   if (sheetWidth <= 0 || sheetHeight <= 0) return null;
 
+  // ── N-Up "Dàn nhiều mẫu": tổng con cần = SL mỗi loại × số mẫu (SL trống → lấp đầy 1 tờ).
+  //    "Cần in" theo tổng con; căn giữa CHỈ khi đúng 1 tờ (nhiều tờ giữ vị trí full layout).
+  const _cap = layoutResult?.totalItems ?? 0;
+  const _isNupFill = !isDieCut && taskMode === "nup" && _cap > 0;
+  const _qtyPerType = Number(targetQuantity) || 0;
+  const _nupTotal = _isNupFill
+    ? (_qtyPerType > 0 ? _qtyPerType * Math.max(1, sourceTotalPages || 1) : _cap)
+    : null;
+
   let totalSheets = 1;
   if (layoutResult && layoutResult.totalItems > 0) {
-    const qty = Number(targetQuantity) || 0;
-    if (qty > 0) {
-      totalSheets = Math.ceil(qty / layoutResult.totalItems);
+    if (_nupTotal != null) {
+      totalSheets = Math.max(1, Math.ceil(_nupTotal / layoutResult.totalItems));
+    } else {
+      const qty = Number(targetQuantity) || 0;
+      if (qty > 0) {
+        totalSheets = Math.ceil(qty / layoutResult.totalItems);
+      }
     }
   }
 
@@ -978,6 +994,28 @@ export default function GridPreview(props: GridPreviewProps) {
   };
   const cncBackCells = _isCncPreview ? svgCells.map(toCncBackCell) : svgCells;
 
+  // ── N-Up "Dàn nhiều mẫu": số ô vẽ trên tờ (đại diện) = min(tổng con, sức chứa). ──
+  const _showCount =
+    _nupTotal != null ? Math.min(_nupTotal, svgCells.length) : svgCells.length;
+  let visibleCells =
+    _nupTotal != null && _showCount < svgCells.length
+      ? svgCells.slice(0, _showCount)
+      : svgCells;
+  // Căn giữa CHỈ khi đúng 1 tờ (tổng < sức chứa). NHIỀU tờ → giữ vị trí full layout
+  // (mọi tờ cùng vị trí ô → chồng giấy in ra xén THẲNG HÀNG).
+  if (
+    _nupTotal != null && _nupTotal < svgCells.length &&
+    align === "center" && visibleCells.length
+  ) {
+    const minX = Math.min(...visibleCells.map((c) => c.sx));
+    const maxX = Math.max(...visibleCells.map((c) => c.sx + c.sw));
+    const minY = Math.min(...visibleCells.map((c) => c.sy));
+    const maxY = Math.max(...visibleCells.map((c) => c.sy + c.sh));
+    const dx = uaX + uaW / 2 - (minX + maxX) / 2;
+    const dy = uaY + uaH / 2 - (minY + maxY) / 2;
+    visibleCells = visibleCells.map((c) => ({ ...c, sx: c.sx + dx, sy: c.sy + dy }));
+  }
+
   return (
     <div className="flex flex-col items-center bg-slate-50 dark:bg-zinc-900/50 rounded-lg p-3 border border-slate-200 dark:border-white/10 mt-2">
       {layoutResult ? (
@@ -987,7 +1025,9 @@ export default function GridPreview(props: GridPreviewProps) {
             <div className="text-slate-600 dark:text-zinc-400">
               Sức chứa:{" "}
               <span className="font-bold text-slate-800 dark:text-zinc-200">
-                {layoutResult.totalItems}
+                {_showCount < layoutResult.totalItems
+                  ? `${_showCount} / ${layoutResult.totalItems}`
+                  : layoutResult.totalItems}
               </span>{" "}
               tem/tờ
             </div>
@@ -1208,7 +1248,7 @@ export default function GridPreview(props: GridPreviewProps) {
                   )}
 
                   {/* Cells */}
-                  {svgCells.map((c) => {
+                  {visibleCells.map((c) => {
                     const isMixed = !!layoutResult?.isMixedPreview;
                     const color = BLOCK_COLORS[c.blockId % BLOCK_COLORS.length];
                     // Per-page shape: use pageIdx to get correct shape for this item

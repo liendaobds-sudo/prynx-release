@@ -7,6 +7,67 @@ import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useShallow } from 'zustand/react/shallow';
+import type { ObjType, BBox, EditOp } from './editTypes';
+import { FontSelector } from '../preprocess-tools/FontSelector';
+
+// ─── Edit PDF Object (task 10.1) ─────────────────────────────────────────────
+// Object do GET /edit/objects trả về, SAU khi đã convert bbox PDF (bottom-left)
+// → hệ canvas top-left (point), để dùng chung công thức `x * scale` với overlay
+// Selection_Mode sẵn có. `bbox` ở đây luôn là [x0, y0_top, x1, y1_bottom] (top-left).
+interface EditCanvasObj {
+    id: string;
+    drawIndex: number;
+    type: ObjType;
+    bbox: BBox; // top-left origin, đơn vị point
+    matrix?: number[];
+    content?: string; // nội dung text gốc (type='text') để điền sẵn editor
+    color?: number[]; // màu tô RGB 0..255 (type='text') để editor khớp màu gốc
+}
+
+// ─── Edit PDF Object — move/resize/rotate (task 10.2) ────────────────────────
+// Hệ handle nw/ne/sw/se được TÁI DÙNG từ `vdpInteraction`, THÊM handle xoay.
+type EditHandle = 'nw' | 'ne' | 'sw' | 'se';
+
+// Trạng thái một thao tác transform đang diễn ra (kéo chuột). startBox là hộp bao
+// hợp nhất (union) của các object được chọn TẠI THỜI ĐIỂM BẮT ĐẦU kéo, theo px
+// canvas (gốc trên-trái). startX/startY là vị trí chuột (đã khử xoay) lúc bắt đầu.
+interface EditInteraction {
+    type: 'move' | 'resize' | 'rotate';
+    handle?: EditHandle;
+    startX: number;
+    startY: number;
+    startBox: { left: number; top: number; width: number; height: number };
+}
+
+// Transform TẠM (preview real-time) áp lên overlay bằng CSS — KHÔNG fetch/lưu mỗi
+// frame (Yêu cầu 13.2). dx/dy theo px canvas; sx/sy là hệ số; rotateDeg theo hệ
+// MÀN HÌNH (clockwise dương vì trục y canvas hướng xuống).
+type EditLiveTransform =
+    | { kind: 'move'; dx: number; dy: number }
+    | { kind: 'resize'; sx: number; sy: number; anchor: EditHandle }
+    | { kind: 'rotate'; rotateDeg: number };
+
+// Handle người dùng kéo → góc NEO cố định (góc đối diện). Backend resize_objects
+// nhận trực tiếp góc cố định này; nhãn nw/ne/sw/se ở đây là theo VỊ TRÍ NHÌN THẤY
+// và trùng ngữ nghĩa với _anchor_point của backend ('n' = mép trên nhìn thấy).
+const EDIT_OPPOSITE_ANCHOR: Record<EditHandle, EditHandle> = {
+    nw: 'se', ne: 'sw', sw: 'ne', se: 'nw',
+};
+
+// Góc neo cố định → transform-origin CSS (để scale overlay quanh đúng góc cố định).
+const EDIT_ANCHOR_ORIGIN: Record<EditHandle, string> = {
+    nw: '0% 0%', ne: '100% 0%', sw: '0% 100%', se: '100% 100%',
+};
+
+// ─── Edit PDF Object — thêm object (task 10.3) ───────────────────────────────
+// Id "ảo" dùng cho editor text inline khi ĐANG ĐẶT object text MỚI (chưa có id từ
+// /edit/objects). TÁI DÙNG chung state editingTextId/editTextContent với editor
+// text-object hiện có; sentinel này phân biệt nhánh "thêm mới" vs "sửa cụm có sẵn".
+const EDIT_ADD_TEXT_ID = '__edit_add_text__';
+// Kích thước/cỡ chữ mặc định (point) cho object MỚI tạo tại điểm bấm.
+const EDIT_ADD_TEXT_SIZE_PT = 12;
+const EDIT_ADD_TEXT_W_PT = 200;
+const EDIT_ADD_IMAGE_SIZE_PT = 150;
 
 const TILE_SIZE = 512;
 
@@ -48,7 +109,16 @@ export function clearTileUrlCache() {
     _tileUrlCache.clear();
 }
 
-const LiveTile = ({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssW, cssH, getTileUrl, onVisible }: any) => {
+// ═══ Edit Objects Cache (chế độ Chỉnh sửa đối tượng) ═══
+// Cache danh sách EditCanvasObj theo khóa `${selectionFileId}:${pageIndex}` để
+// bật/tắt chế độ KHÔNG phải fetch lại /edit/objects (hết "load lâu khi tắt/bật").
+// Clear khi pdfUrl đổi (file mới / commit working-file mới) để không dùng dữ liệu cũ.
+const _editObjectsCache = new Map<string, EditCanvasObj[]>();
+function clearEditObjectsCache() {
+    _editObjectsCache.clear();
+}
+
+const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible }: any) => {
     const tileRef = useRef<HTMLDivElement>(null);
     const imgRef = useRef<HTMLImageElement>(null);
     const loadedParamsRef = useRef('');
@@ -156,9 +226,9 @@ const LiveTile = ({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW
                 loadAt(zoom, true);
             }
         };
-        onVisible(el);
+        onVisible(el, false, eager);
         return () => {
-            onVisible(el, true);
+            onVisible(el, true, eager);
         };
     }, [currentParams, getTileUrl, onVisible]);
     
@@ -180,11 +250,11 @@ const LiveTile = ({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW
     }, []);
     
     return (
-        <div ref={tileRef} style={{ position: 'absolute', left: clipX, top: clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: hasLoadedOnce.current ? 1 : 0, transition: 'opacity 0.05s ease-in' }} className="tile-container">
+        <div ref={tileRef} style={{ position: 'absolute', left: cssLeft ?? clipX, top: cssTop ?? clipY, width: cssW || clipW, height: cssH || clipH, outline: 'none', opacity: hasLoadedOnce.current ? 1 : 0, transition: 'opacity 0.05s ease-in' }} className="tile-container">
             <img ref={imgRef} draggable={false} style={{ width: '100%', height: '100%', objectFit: 'fill', pointerEvents: 'none', userSelect: 'none', background: 'white' }} />
         </div>
     );
-};
+});
 
 // ═══ VDP text preview với AUTO-FIT ═══
 // Bóp cỡ chữ (xuống tối thiểu) để text vừa CHIỀU CAO khung, khớp với engine backend
@@ -244,16 +314,17 @@ export const LivePageFrame = (props: any) => {
     const { originalPageNum, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
         onObjectDelete, fetchObjectsForPage,
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
-        setHoveredPdfPosition, detectedDimension, isBlankDoc
+        setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit
     } = props;
 
     const {
-        isSelectionMode, pdfObjectsVersion, selectedObjectIds, selectionFileId, hiddenObjectIds, hiddenOcgLayerIds,
+        isSelectionMode, isObjectEditMode, pdfObjectsVersion, selectedObjectIds, selectionFileId, hiddenObjectIds, hiddenOcgLayerIds,
         separationPlates, vdpFields, selectedVdpFieldIds,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
         setSelectedObjectIds, pdfUrl, setSelectedVdpFieldIds
     } = useWorkspaceStore(useShallow(state => ({
         isSelectionMode: state.isSelectionMode,
+        isObjectEditMode: state.isObjectEditMode,
         pdfObjectsVersion: state.pdfObjectsVersion,
         selectedObjectIds: state.selectedObjectIds,
         selectionFileId: state.selectionFileId,
@@ -285,10 +356,60 @@ export const LivePageFrame = (props: any) => {
     const [vdpInteraction, setVdpInteraction] = useState<{ type: 'move'|'resize', handle?: 'nw'|'ne'|'sw'|'se', fieldIds: string[], startX: number, startY: number, startFields: Record<string, {x: number, y: number, w: number, h: number}> } | null>(null);
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
     const [editTextContent, setEditTextContent] = useState<string>('');
+    // Font người dùng chọn khi sửa/thêm text (đường dẫn file .ttf/.otf trên máy);
+    // rỗng = giữ font gốc nếu được, ngược lại fallback DejaVuSans (hành vi cũ).
+    const [editFontPath, setEditFontPath] = useState<string | undefined>(undefined);
+    const [editFontName, setEditFontName] = useState<string>('');
     
     // Preview image state (driven by hiddenObjectIds prop from parent)
     const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+
+    // ─── Edit PDF Object — Hit-test + overlay (task 10.1) ────────────────────
+    // Nguồn dữ liệu object lấy từ GET /edit/objects (Geometry_Reader, PDFium read-only).
+    // Tách biệt khỏi globalPdfObjectCache (luồng /preflight) vì khác hệ tọa độ + khác
+    // id-space → tránh phá vỡ delete/hide/SelectionLayersPanel hiện có.
+    const [editObjects, setEditObjects] = useState<EditCanvasObj[]>([]);
+    const [editSelectedIds, setEditSelectedIds] = useState<string[]>([]);
+
+    // ─── Edit PDF Object — move/resize/rotate + overlay real-time (task 10.2) ─
+    // editInteraction: thao tác kéo đang diễn ra. Transform tạm (xem trước real-time)
+    // được áp lên ghost qua DOM ref (editGhostRef/editLiveTransformRef bên dưới),
+    // KHÔNG dùng state để không re-render mỗi frame (Yêu cầu 13.2).
+    const [editInteraction, setEditInteraction] = useState<EditInteraction | null>(null);
+    const [editBusy, setEditBusy] = useState(false);
+    // Ghost transform REAL-TIME bằng DOM ref — KHÔNG setState mỗi mousemove (tránh
+    // re-render TOÀN BỘ LivePageFrame gây giật). editGhostRef trỏ div ghost dashed;
+    // handleMouseMove cập nhật trực tiếp editGhostRef.current.style. editLiveTransformRef
+    // lưu transform hiện tại để handleMouseUp đọc khi commit (thay cho state).
+    const editGhostRef = useRef<HTMLDivElement>(null);
+    const editLiveTransformRef = useRef<EditLiveTransform | null>(null);
+    // GIỮ ghost ở vị trí vừa thả tới khi overlay cập nhật vị trí MỚI (sau commit)
+    // → bỏ hiện tượng khung chọn "giật về chỗ cũ rồi nhảy tới chỗ mới".
+    const editGhostHoldRef = useRef<boolean>(false);
+    const editGhostHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Ẩn ghost + xóa transform tạm; dùng chung cho commit/refetch/timeout an toàn.
+    const hideEditGhost = React.useCallback(() => {
+        editGhostHoldRef.current = false;
+        if (editGhostHideTimerRef.current) {
+            clearTimeout(editGhostHideTimerRef.current);
+            editGhostHideTimerRef.current = null;
+        }
+        if (editGhostRef.current) {
+            editGhostRef.current.style.display = 'none';
+            editGhostRef.current.style.transform = 'none';
+        }
+    }, []);
+
+    // ─── Edit PDF Object — editor text inline + thêm object (task 10.3) ──────
+    // editAddMode: chế độ "đặt object mới" do toolbar bật ('text'/'image'); cú bấm
+    // kế tiếp lên trang sẽ đặt object tại điểm đó. editAddDraft: điểm bấm đã chốt
+    // theo hệ CANVAS top-left (point) — convert sang PDF bottom-left khi gửi /edit/add.
+    // editFileInputRef: input file ẩn để chọn ảnh khi thêm image.
+    const [editAddMode, setEditAddMode] = useState<'text' | 'image' | null>(null);
+    const [editAddDraft, setEditAddDraft] = useState<{ xPt: number; yPt: number } | null>(null);
+    const editFileInputRef = useRef<HTMLInputElement>(null);
 
     const observerRef = useRef<IntersectionObserver | null>(null);
 
@@ -302,7 +423,7 @@ export const LivePageFrame = (props: any) => {
                         observerRef.current?.unobserve(target);
                     }
                 });
-            }, { rootMargin: '4000px' });
+            }, { rootMargin: '600px' });
         }
         if (isCleanup) {
             observerRef.current.unobserve(el);
@@ -311,19 +432,21 @@ export const LivePageFrame = (props: any) => {
         }
     }, []);
 
-    // Debounced zoom for crisp rendering without lag.
-    // DPR-aware (nét trên màn HiDPI) NHƯNG chặn theo ngân sách pixel để render+encode
-    // luôn nhanh — tránh việc zoom cao render nguyên trang thành bitmap khổng lồ
-    // (vài chục MP) khiến phải "chờ rất lâu mới nét".
+    // Scale render cho 1 tile phủ CẢ TRANG (chỉ 1 lần render/trang — pdfium xử lý cả
+    // trang dù cắt ô, nên tiling chỉ làm chậm gấp N). Vì chi phí render ~ độ phức tạp
+    // PDF chứ gần như KHÔNG theo độ phân giải, ta render ở scale cao (nét) mà giá ~ nhau.
+    // LƯỢNG TỬ HOÁ theo nấc → zoom thay đổi nhỏ tái dùng ảnh đã cache (đỡ render lại khi zoom).
     const computeRenderZoom = (z: number) => {
         const dpr = (window.devicePixelRatio || 1);
         const target = Math.max(dpr, z * dpr);
-        // Trần theo ngân sách: giữ cạnh dài bitmap ≲ 5000px (encode ~vài trăm ms).
         const w100 = actualWidth100 || 800;
         const ratio = (pageDim && pageDim.w) ? Math.max(1, pageDim.h / pageDim.w) : 1.414;
-        const MAX_LONG_PX = 5000;
-        const capByBudget = MAX_LONG_PX / (w100 * ratio);
-        return Math.min(8, target, Math.max(dpr, capByBudget));
+        // Cap bộ nhớ: cạnh dài bitmap ≤ 6000px (1 render, ~200MB tạm). Native tự clamp ≤8000.
+        const capByBudget = 6000 / (w100 * ratio);
+        const hardCap = Math.min(7.5, Math.max(dpr, capByBudget));
+        const steps = [1, 1.5, 2, 3, 4, 5, 6, 7.5];
+        const q = steps.find(s => s >= target - 1e-3) ?? 7.5;
+        return Math.max(dpr, Math.min(q, hardCap));
     };
     const [renderZoom, setRenderZoom] = useState(() => computeRenderZoom(zoom));
 
@@ -339,7 +462,123 @@ export const LivePageFrame = (props: any) => {
             fetchObjectsForPage?.(originalPageNum);
         }
     }, [isSelectionMode, originalPageNum, fetchObjectsForPage]);
-    
+
+    // ─── Edit PDF Object: nạp danh sách object từ /edit/objects (task 10.1) ───
+    // Khi vào Selection_Mode, gọi GET /edit/objects/{fid}/{pageIndex} (0-based) để lấy
+    // ObjMeta (bbox hệ PDF bottom-left) rồi convert sang hệ canvas top-left bằng
+    // chiều cao trang (pageDim.h, point) — dùng chung công thức `x * scale` với overlay.
+    useEffect(() => {
+        if (!isObjectEditMode || originalPageNum === -1 || !selectionFileId || !pageDim?.h) {
+            setEditObjects([]);
+            setEditSelectedIds([]);
+            return;
+        }
+        const pageIndex = originalPageNum - 1; // /edit dùng chỉ số 0-based
+        const cacheKey = `${selectionFileId}:${pageIndex}`;
+
+        // Cache-hit → dùng ngay, KHÔNG fetch lại (bật/tắt chế độ không tải lại).
+        const cached = _editObjectsCache.get(cacheKey);
+        if (cached) {
+            setEditObjects(cached);
+            setEditSelectedIds([]);
+            hideEditGhost();
+            return;
+        }
+
+        let cancelled = false;
+        // pageDim.h là px@96 (= point × 96/72). Bbox /edit/objects ở POINT. Quy đổi
+        // chiều cao trang về POINT để lật trục y NHẤT QUÁN đơn vị (giữ bbox ở point).
+        const pageHeightPt = pageDim.h * 72 / 96;
+        (async () => {
+            try {
+                const res = await authenticatedFetch(`${getApiUrl()}/edit/objects/${selectionFileId}/${pageIndex}`);
+                if (!res.ok) throw new Error(`/edit/objects HTTP ${res.status}`);
+                const data = await res.json();
+                if (cancelled) return;
+                const objs: EditCanvasObj[] = (data.objects || []).map((o: any) => {
+                    const [x0, yb, x1, yt] = o.bbox; // PDF bottom-left: [left, bottom, right, top]
+                    // Convert sang top-left: top edge = pageH - yTop, bottom edge = pageH - yBottom.
+                    const top = pageHeightPt - yt;
+                    const bottom = pageHeightPt - yb;
+                    return {
+                        id: o.id,
+                        drawIndex: o.drawIndex,
+                        type: o.type as ObjType,
+                        bbox: [x0, Math.min(top, bottom), x1, Math.max(top, bottom)] as BBox,
+                        matrix: o.matrix ?? undefined,
+                        content: o.content ?? undefined,
+                        color: Array.isArray(o.color) ? o.color : undefined,
+                    };
+                });
+                _editObjectsCache.set(cacheKey, objs); // Lưu cache cho lần bật/tắt sau.
+                setEditObjects(objs);
+                setEditSelectedIds([]);
+                hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
+            } catch (err) {
+                if (!cancelled) {
+                    console.warn('[edit] Không tải được /edit/objects:', err);
+                    setEditObjects([]);
+                    setEditSelectedIds([]);
+                }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h]);
+
+    // ─── Edit PDF Object: Ctrl+A chọn tất cả / Esc bỏ chọn / Delete xóa (task 10.1) ─
+    useEffect(() => {
+        if (!isObjectEditMode || isVdpMode) return;
+        const onKey = (e: KeyboardEvent) => {
+            // Bỏ qua khi đang gõ trong input/textarea (vd. editor text inline).
+            const t = e.target as HTMLElement | null;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                e.preventDefault();
+                setEditSelectedIds(editObjects.map(o => o.id));
+            } else if (e.key === 'Delete' || e.key === 'Backspace') {
+                // Xóa tập object đang chọn → POST /edit/delete → Working_File mới.
+                if (editBusy || editSelectedIds.length === 0) return;
+                e.preventDefault();
+                const op: EditOp = {
+                    page: originalPageNum - 1,
+                    kind: 'delete',
+                    targetIds: [...editSelectedIds],
+                };
+                const idsToClear = [...editSelectedIds];
+                void sendEditAndPreview(op, `${getApiUrl()}/edit/delete`).then(() => {
+                    // Bỏ chọn sau khi đã commit (object cũ không còn trên trang mới).
+                    setEditSelectedIds(prev => prev.filter(id => !idsToClear.includes(id)));
+                });
+            } else if (e.key === 'Escape') {
+                setEditSelectedIds([]);
+                // task 10.3: thoát chế độ đặt object mới đang chờ (nếu có).
+                setEditAddMode(null);
+                setEditAddDraft(null);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isObjectEditMode, isVdpMode, editObjects, editSelectedIds, editBusy, originalPageNum, selectionFileId, onEditCommit]);
+
+    // ─── Edit PDF Object: reset transform tạm + preview khi đổi lựa chọn (10.2) ─
+    // Khi tập chọn thay đổi (hoặc bỏ chọn), bỏ transform tạm và ảnh preview cũ để
+    // overlay không "dính" trạng thái của lần thao tác trước.
+    useEffect(() => {
+        editLiveTransformRef.current = null;
+    }, [editSelectedIds]);
+
+    // ─── Edit PDF Object: dọn transform tạm khi Working_File MỚI render (task 12.1) ─
+    // SAU commit, onEditCommit → commitWorkingFile đổi `pdfUrl` (Working_File mới đã
+    // bake đúng thao tác vào nội dung trang). Khi `pdfUrl` đổi, tile mới phản ánh đúng
+    // kết quả lưu → reset transform tạm + xóa cache /edit/objects để overlay khớp
+    // Working_File mới (selectionFileId mới → /edit/objects refetch).
+    useEffect(() => {
+        editLiveTransformRef.current = null;
+        // Working_File mới (commit) hoặc file mới → object cũ không còn đúng → xóa cache
+        // /edit/objects để lần bật chế độ kế tiếp fetch lại dữ liệu khớp trang mới.
+        clearEditObjectsCache();
+    }, [pdfUrl]);
+
     if (originalPageNum === -1) {
         return (
             <div className="bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5 relative shrink-0 overflow-hidden">
@@ -602,8 +841,184 @@ export const LivePageFrame = (props: any) => {
         };
     };
 
+    // ─── Edit PDF Object (task 10.2): hộp bao hợp nhất của object đang chọn ───
+    // Trả về hộp bao (union) theo px canvas (gốc trên-trái) của các object được
+    // chọn, dùng cho overlay transform + neo handle. `scale` = px/point.
+    const getEditSelectionBoxPx = (scale: number): { left: number; top: number; width: number; height: number } | null => {
+        const sel = editObjects.filter(o => editSelectedIds.includes(o.id));
+        if (sel.length === 0) return null;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const o of sel) {
+            const [x0, y0, x1, y1] = o.bbox; // đã ở hệ top-left (point)
+            minX = Math.min(minX, x0); minY = Math.min(minY, y0);
+            maxX = Math.max(maxX, x1); maxY = Math.max(maxY, y1);
+        }
+        return { left: minX * scale, top: minY * scale, width: (maxX - minX) * scale, height: (maxY - minY) * scale };
+    };
+
+    // Bắt đầu một thao tác transform (move/resize/rotate) cho object đang chọn.
+    // Khử xoay tọa độ chuột để nhất quán với overlay; xóa preview cũ + transform tạm.
+    const beginEditInteraction = (e: React.PointerEvent, type: EditInteraction['type'], handle?: EditHandle) => {
+        if (!containerRef.current || !pageDim?.w) return;
+        const rect = containerRef.current.getBoundingClientRect();
+        // editScale = px màn / POINT (bbox edit ở point). = (displayWidth/px@96) × 96/72.
+        const editScale = displayWidth / ((pageDim.w || 595) * 72 / 96);
+        const startBox = getEditSelectionBoxPx(editScale);
+        if (!startBox) return;
+        const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
+        // Bắt đầu thao tác mới → hủy ghost-hold/timeout của lần commit trước (nếu có).
+        editGhostHoldRef.current = false;
+        if (editGhostHideTimerRef.current) {
+            clearTimeout(editGhostHideTimerRef.current);
+            editGhostHideTimerRef.current = null;
+        }
+        // Reset transform tạm + ghost về identity rồi hiện ghost (cập nhật style trực
+        // tiếp trong handleMouseMove). KHÔNG setState để không re-render lúc bắt đầu kéo.
+        editLiveTransformRef.current = null;
+        if (editGhostRef.current) {
+            editGhostRef.current.style.transform = 'none';
+            editGhostRef.current.style.transformOrigin = 'center center';
+            editGhostRef.current.style.display = 'block';
+        }
+        setEditInteraction({ type, handle, startX: coords.x, startY: coords.y, startBox });
+        try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ }
+    };
+
+    // Khi MOUSE UP: dựng EditOp từ transform tạm rồi gửi /edit/transform (1 lần).
+    // Đây là ĐIỂM DUY NHẤT gọi backend (KHÔNG gọi khi đang kéo — Yêu cầu 13.2).
+    //
+    // CHUYỂN TRỤC tọa độ (canvas top-left, y xuống ↔ PDF bottom-left, y lên):
+    //  - move : /edit/transform → move_objects mặc định coord_space='pdf', nên FE
+    //           phải gửi delta ở hệ PDF: dx giữ nguyên, dy_pdf = -dy_canvas.
+    //  - resize: anchor = góc đối diện handle kéo; nhãn nw/ne/sw/se theo VỊ TRÍ NHÌN
+    //           THẤY trùng ngữ nghĩa _anchor_point backend ('n'=mép trên) nên gửi thẳng.
+    //  - rotate: rotateDeg backend dương = NGƯỢC chiều kim đồng hồ (hệ PDF y lên);
+    //           góc đo trên màn (y xuống) dương theo chiều kim đồng hồ → đảo dấu.
+    const commitEditTransform = async (lt: EditLiveTransform | null) => {
+        if (!lt || !selectionFileId || !pageDim?.w || editSelectedIds.length === 0) {
+            return;
+        }
+        const scale = displayWidth / ((pageDim.w || 595) * 72 / 96); // px canvas / POINT
+        const page = originalPageNum - 1;       // /edit dùng 0-based
+        let op: EditOp | null = null;
+
+        if (lt.kind === 'move') {
+            if (Math.abs(lt.dx) < 0.5 && Math.abs(lt.dy) < 0.5) { return; }
+            const dxPt = lt.dx / scale;
+            const dyPtCanvas = lt.dy / scale;
+            op = { page, kind: 'move', targetIds: editSelectedIds, delta: { dx: dxPt, dy: -dyPtCanvas } };
+        } else if (lt.kind === 'resize') {
+            if (Math.abs(lt.sx - 1) < 0.002 && Math.abs(lt.sy - 1) < 0.002) { return; }
+            op = { page, kind: 'resize', targetIds: editSelectedIds, scale: { sx: lt.sx, sy: lt.sy, anchor: lt.anchor } };
+        } else {
+            if (Math.abs(lt.rotateDeg) < 0.5) { return; }
+            op = { page, kind: 'rotate', targetIds: editSelectedIds, rotateDeg: -lt.rotateDeg };
+        }
+
+        setEditBusy(true);
+        try {
+            const headers = { 'Content-Type': 'application/json' };
+            const tRes = await authenticatedFetch(`${getApiUrl()}/edit/transform`, {
+                method: 'POST', headers, body: JSON.stringify({ fid: selectionFileId, op }),
+            });
+            if (!tRes.ok) {
+                const detail = await tRes.text().catch(() => '');
+                throw new Error(`/edit/transform HTTP ${tRes.status} ${detail}`);
+            }
+            // EditResponse{output_url, output_filename}: Working_File MỚI (pikepdf, color-safe).
+            const tData = await tRes.json().catch(() => null);
+            // task 11.1: đẩy Working_File mới vào history → Undo/Redo (Yêu cầu 11.1–11.3).
+            // Trang re-render từ Working_File mới (commitWorkingFile đổi pdfUrl → tile mới)
+            // nên KHÔNG cần gọi /edit/preview (render PDFium toàn trang) — bỏ để giảm tải.
+            if (tData?.success && tData.output_url && onEditCommit) {
+                await onEditCommit(tData.output_url, tData.output_filename, tData.output_fid, tData.output_path);
+            }
+        } catch (err) {
+            console.warn('[edit] transform thất bại:', err);
+            hideEditGhost(); // Commit lỗi → bỏ ghost giữ (tránh kẹt ở vị trí thả).
+        } finally {
+            setEditBusy(false);
+        }
+    };
+
+    // ─── Edit PDF Object (task 10.3): gửi EditOp ──────────────────────────────
+    // Helper dùng chung cho editText/add: POST tới `endpoint` rồi onEditCommit.
+    // KHÔNG gọi /edit/preview (render PDFium toàn trang) — trang sẽ re-render từ
+    // Working_File mới (pdfUrl đổi → tile mới) nên preview là THỪA. TÁI DÙNG đúng
+    // cơ chế authenticatedFetch/getApiUrl của commitEditTransform.
+    const sendEditAndPreview = async (op: EditOp, endpoint: string) => {
+        if (!selectionFileId) return;
+        setEditBusy(true);
+        try {
+            const headers = { 'Content-Type': 'application/json' };
+            const tRes = await authenticatedFetch(endpoint, {
+                method: 'POST', headers, body: JSON.stringify({ fid: selectionFileId, op }),
+            });
+            if (!tRes.ok) {
+                const detail = await tRes.text().catch(() => '');
+                throw new Error(`${endpoint} HTTP ${tRes.status} ${detail}`);
+            }
+            // EditResponse{output_url, output_filename}: Working_File MỚI (pikepdf, color-safe).
+            const tData = await tRes.json().catch(() => null);
+            // task 11.1: đẩy Working_File mới vào history → Undo/Redo (Yêu cầu 11.1–11.3).
+            if (tData?.success && tData.output_url && onEditCommit) {
+                await onEditCommit(tData.output_url, tData.output_filename, tData.output_fid, tData.output_path);
+            }
+        } catch (err) {
+            console.warn('[edit] thao tác thất bại:', err);
+        } finally {
+            setEditBusy(false);
+        }
+    };
+
+    // Sửa nội dung một cụm text CÓ SẴN (double-click → editor inline). editText KHÔNG
+    // cần bbox: backend resolve vị trí/font/cỡ từ object mục tiêu qua Geometry_Reader.
+    const commitEditObjectText = async (objId: string, content: string) => {
+        if (!selectionFileId || !pageDim?.w || !content.trim()) return;
+        const op: EditOp = {
+            page: originalPageNum - 1, kind: 'editText',
+            targetIds: [objId],
+            // font = đường dẫn file font người dùng chọn (nếu có) → backend nhúng font đó.
+            text: { content, font: editFontPath },
+        };
+        await sendEditAndPreview(op, `${getApiUrl()}/edit/text`);
+    };
+
+    // Thêm cụm text MỚI tại điểm bấm. CONVERT TỌA ĐỘ: draft.{xPt,yPt} ở hệ canvas
+    // top-left (point); backend add_text dùng hệ PDF bottom-left → yPDF = pageH - yCanvas.
+    // bbox = [x0, pageH - yBottomCanvas, x1, pageH - yTopCanvas].
+    const commitAddTextObject = async (content: string, draft: { xPt: number; yPt: number }) => {
+        if (!selectionFileId || !pageDim?.w || !pageDim?.h || !content.trim()) return;
+        const pageH = pageDim.h * 72 / 96; // px@96 → POINT (draft.{xPt,yPt} đã ở point)
+        const hPt = EDIT_ADD_TEXT_SIZE_PT * 1.6;
+        const x0 = draft.xPt, x1 = draft.xPt + EDIT_ADD_TEXT_W_PT;
+        const yTopCanvas = draft.yPt, yBottomCanvas = draft.yPt + hPt;
+        const bbox: BBox = [x0, pageH - yBottomCanvas, x1, pageH - yTopCanvas];
+        const op: EditOp = {
+            page: originalPageNum - 1, kind: 'add',
+            targetIds: [], text: { content, sizePt: EDIT_ADD_TEXT_SIZE_PT, bbox, font: editFontPath },
+        };
+        await sendEditAndPreview(op, `${getApiUrl()}/edit/add`);
+    };
+
+    // Thêm ảnh MỚI tại điểm bấm (dataUrl base64). CONVERT TỌA ĐỘ giống add-text:
+    // bbox vuông EDIT_ADD_IMAGE_SIZE_PT ở hệ PDF bottom-left (yPDF = pageH - yCanvas).
+    const commitAddImageObject = async (dataUrl: string, draft: { xPt: number; yPt: number }) => {
+        if (!selectionFileId || !pageDim?.w || !pageDim?.h || !dataUrl) return;
+        const pageH = pageDim.h * 72 / 96; // px@96 → POINT (draft.{xPt,yPt} đã ở point)
+        const sz = EDIT_ADD_IMAGE_SIZE_PT;
+        const x0 = draft.xPt, x1 = draft.xPt + sz;
+        const yTopCanvas = draft.yPt, yBottomCanvas = draft.yPt + sz;
+        const bbox: BBox = [x0, pageH - yBottomCanvas, x1, pageH - yTopCanvas];
+        const op: EditOp = {
+            page: originalPageNum - 1, kind: 'add',
+            targetIds: [], image: { dataRef: dataUrl, bbox },
+        };
+        await sendEditAndPreview(op, `${getApiUrl()}/edit/add`);
+    };
+
     const handleMouseDown = (e: React.MouseEvent) => {
-        if ((!isSelectionMode && !isVdpMode) || !containerRef.current) return;
+        if ((!isSelectionMode && !isObjectEditMode && !isVdpMode) || !containerRef.current) return;
         const rect = containerRef.current.getBoundingClientRect();
         const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
         dragRef.current = { startX: coords.x, startY: coords.y, active: true };
@@ -630,6 +1045,60 @@ export const LivePageFrame = (props: any) => {
                 dragRef.current.lastHoverTime = now;
                 setHoveredPdfPosition({ pageNum: originalPageNum, x: curX / rect.width, y: curY / rect.height });
             }
+        }
+
+        // ─── Edit PDF Object (task 10.2): cập nhật ghost transform theo THỜI GIAN
+        // THỰC qua DOM ref — KHÔNG setState (tránh re-render toàn bộ LivePageFrame →
+        // mượt). Lưu transform vào editLiveTransformRef để mouseup commit. KHÔNG gọi
+        // backend khi đang kéo (Yêu cầu 13.2).
+        if (editInteraction) {
+            const dxPx = curX - editInteraction.startX;
+            const dyPx = curY - editInteraction.startY;
+            const box = editInteraction.startBox;
+            const ghost = editGhostRef.current;
+            if (editInteraction.type === 'move') {
+                editLiveTransformRef.current = { kind: 'move', dx: dxPx, dy: dyPx };
+                if (ghost) {
+                    ghost.style.transformOrigin = 'center center';
+                    ghost.style.transform = `translate(${dxPx}px, ${dyPx}px)`;
+                    ghost.style.display = 'block';
+                }
+            } else if (editInteraction.type === 'resize') {
+                const handle = editInteraction.handle || 'se';
+                let newW = box.width, newH = box.height;
+                if (handle.includes('e')) newW = box.width + dxPx;
+                if (handle.includes('w')) newW = box.width - dxPx;
+                if (handle.includes('s')) newH = box.height + dyPx;
+                if (handle.includes('n')) newH = box.height - dyPx;
+                // Chặn lật/âm: giữ kích thước tối thiểu để sx/sy > 0 (Yêu cầu 6.5).
+                newW = Math.max(2, newW);
+                newH = Math.max(2, newH);
+                const sx = newW / box.width;
+                const sy = newH / box.height;
+                const anchor = EDIT_OPPOSITE_ANCHOR[handle];
+                editLiveTransformRef.current = { kind: 'resize', sx, sy, anchor };
+                if (ghost) {
+                    ghost.style.transformOrigin = EDIT_ANCHOR_ORIGIN[anchor];
+                    ghost.style.transform = `scale(${sx}, ${sy})`;
+                    ghost.style.display = 'block';
+                }
+            } else if (editInteraction.type === 'rotate') {
+                const cx = box.left + box.width / 2;
+                const cy = box.top + box.height / 2;
+                // Vector ban đầu (handle xoay) hướng thẳng LÊN: atan2(-1, 0) = -90°.
+                const initAng = Math.atan2(-1, 0);
+                const curAng = Math.atan2(curY - cy, curX - cx);
+                let deg = (curAng - initAng) * 180 / Math.PI;
+                // Giữ Shift → "bắt" góc về bội số 45° (0/45/90/135/180...) cho xoay chuẩn.
+                if (e.shiftKey) deg = Math.round(deg / 45) * 45;
+                editLiveTransformRef.current = { kind: 'rotate', rotateDeg: deg };
+                if (ghost) {
+                    ghost.style.transformOrigin = 'center center';
+                    ghost.style.transform = `rotate(${deg}deg)`;
+                    ghost.style.display = 'block';
+                }
+            }
+            return;
         }
 
         if (vdpInteraction && onVdpFieldsChange && pageDim) {
@@ -676,7 +1145,7 @@ export const LivePageFrame = (props: any) => {
             return;
         }
 
-        if (!dragRef.current.active || !isSelectionMode) return;
+        if (!dragRef.current.active || (!isSelectionMode && !isObjectEditMode)) return;
         const { startX, startY } = dragRef.current;
         // Direct DOM update â€” no React re-render
         if (marqueeRef.current) {
@@ -688,11 +1157,29 @@ export const LivePageFrame = (props: any) => {
     };
 
     const handleMouseUp = (e: React.MouseEvent) => {
+        // ─── Edit PDF Object (task 10.2): kết thúc thao tác → gửi backend 1 lần ──
+        if (editInteraction) {
+            setEditInteraction(null);
+            const lt = editLiveTransformRef.current;
+            // GIỮ ghost ở vị trí vừa thả (không ẩn ngay) → tránh "giật về chỗ cũ".
+            // Ghost sẽ ẩn khi overlay nạp vị trí mới (effect /edit/objects) hoặc
+            // timeout an toàn dưới đây (phòng commit lỗi/không refetch).
+            if (lt) {
+                editGhostHoldRef.current = true;
+                if (editGhostHideTimerRef.current) clearTimeout(editGhostHideTimerRef.current);
+                editGhostHideTimerRef.current = setTimeout(() => hideEditGhost(), 4000);
+            } else {
+                hideEditGhost();
+            }
+            editLiveTransformRef.current = null;
+            void commitEditTransform(lt);
+            return;
+        }
         if (vdpInteraction) {
             setVdpInteraction(null);
             return;
         }
-        if (!dragRef.current.active || (!isSelectionMode && !isVdpMode) || !containerRef.current) {
+        if (!dragRef.current.active || (!isSelectionMode && !isObjectEditMode && !isVdpMode) || !containerRef.current) {
             dragRef.current.active = false;
             if (marqueeRef.current) marqueeRef.current.style.display = 'none';
             return;
@@ -715,11 +1202,53 @@ export const LivePageFrame = (props: any) => {
         
         // Tiny click = click on empty space => deselect all
         if (x2 - x1 < 5 && y2 - y1 < 5) {
+            // Edit PDF Object: bấm vào vùng trống → bỏ chọn (việc chọn object do overlay
+            // div xử lý ở onClick — ưu tiên bbox nhỏ nhất nhờ thứ tự xếp chồng DOM).
+            if (isObjectEditMode) {
+                // task 10.3: nếu đang ở chế độ "đặt object mới" → đặt tại điểm bấm.
+                // CONVERT px canvas → point (hệ canvas top-left): pt = px / scale.
+                if (editAddMode && !isVdpMode && pageDim?.w) {
+                    // editScale = px màn / POINT → draft ra ĐÚNG point cho /edit/add.
+                    const editScale = displayWidth / ((pageDim.w || 595) * 72 / 96);
+                    const draft = { xPt: curX / editScale, yPt: curY / editScale };
+                    if (editAddMode === 'text') {
+                        // Mở editor text inline tại điểm bấm → gõ nội dung → commit /edit/add.
+                        setEditAddDraft(draft);
+                        setEditTextContent('');
+                        setEditingTextId(EDIT_ADD_TEXT_ID);
+                    } else {
+                        // Ảnh: chốt vị trí rồi mở file picker; onChange sẽ gửi /edit/add.
+                        setEditAddDraft(draft);
+                        editFileInputRef.current?.click();
+                    }
+                    setEditAddMode(null);
+                    return;
+                }
+                setEditSelectedIds([]); return;
+            }
             if (isSelectionMode) onObjectSelect?.([]);
             if (isVdpMode) {
                 setSelectedVdpFieldIds([]);
                 onVdpBoxSelect?.([]);
             }
+            return;
+        }
+
+        // ─── Edit PDF Object: marquee chọn object từ /edit/objects (task 10.1) ───
+        if (isObjectEditMode && !isVdpMode) {
+            const pageWidthPt = pageDim?.w || 595;
+            // bbox edit ở POINT → dùng editScale (px màn / point), KHÔNG dùng scale chung.
+            const editScale = displayWidth / (pageWidthPt * 72 / 96);
+            const picked = [...editSelectedIds];
+            editObjects.forEach((obj) => {
+                const [ox0, oy0, ox1, oy1] = obj.bbox;
+                const left = ox0 * editScale, top = oy0 * editScale;
+                const right = ox1 * editScale, bottom = oy1 * editScale;
+                if (left < x2 && right > x1 && top < y2 && bottom > y1 && !picked.includes(obj.id)) {
+                    picked.push(obj.id);
+                }
+            });
+            setEditSelectedIds(picked);
             return;
         }
 
@@ -743,12 +1272,13 @@ export const LivePageFrame = (props: any) => {
                 setSelectedVdpFieldIds(newlySelectedIds);
                 onVdpBoxSelect?.(newlySelectedIds);
             } else {
-                const currentObjects = globalPdfObjectCache.getPageObjects(pdfUrl || '', originalPageNum);
                 const pageWidthPt = pageDim?.w || 595;
                 const scale = displayWidth / pageWidthPt;
-                
+
+                const currentObjects = globalPdfObjectCache.getPageObjects(pdfUrl || '', originalPageNum);
+
                 const newlySelectedIds = [...selectedObjectIds];
-                
+
                 currentObjects.forEach((obj: any) => {
                     const [ox0, oy0, ox1, oy1] = obj.bbox;
                     const left = ox0 * scale;
@@ -769,6 +1299,16 @@ export const LivePageFrame = (props: any) => {
     const handleMouseLeave = () => {
         dragRef.current.active = false;
         setVdpInteraction(null);
+        // Edit PDF Object (10.2): rời khung khi đang kéo → HỦY thao tác (chưa gọi
+        // backend), bỏ transform tạm để overlay không kẹt trạng thái dở dang.
+        if (editInteraction) {
+            setEditInteraction(null);
+            editLiveTransformRef.current = null;
+            if (editGhostRef.current) {
+                editGhostRef.current.style.display = 'none';
+                editGhostRef.current.style.transform = 'none';
+            }
+        }
         if (marqueeRef.current) marqueeRef.current.style.display = 'none';
     };
     //#endregion
@@ -810,6 +1350,10 @@ export const LivePageFrame = (props: any) => {
                 /* Trang trắng mới tạo: kích thước đã biết, không cần render qua engine nào — hiện nền trắng tức thì */
                 <div style={{ width: displayWidth, height: displayHeight, background: 'white' }} />
             ) : getTileUrl ? (() => {
+                // 1 TILE phủ cả trang, render ĐÚNG 1 LẦN/scale (KHÔNG chia lưới: pdfium
+                // render cả trang dù cắt ô → chia lưới chỉ nhân chi phí ×N). renderZoom đã
+                // được lượng tử hoá nên zoom qua lại tái dùng ảnh cache, đỡ render lại.
+                const S = renderZoom;
                 return (
                     <div style={{ width: displayWidth, height: displayHeight, position: 'relative' }}>
                         {/* Loading Skeleton */}
@@ -820,7 +1364,7 @@ export const LivePageFrame = (props: any) => {
                             </div>
                         </div>
                         <div className="absolute inset-0 z-10">
-                            <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={renderZoom} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} />
+                            <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={S} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} />
                         </div>
                     </div>
                 );
@@ -930,7 +1474,7 @@ export const LivePageFrame = (props: any) => {
                  />
              )}
              
-             {isPreviewLoading && (
+             {(isPreviewLoading || editBusy) && (
                  <div className="absolute top-1.5 left-1.5 z-50 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded-sm backdrop-blur-md flex items-center gap-1.5">
                      <div className="w-2.5 h-2.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                      Preview...
@@ -1050,7 +1594,303 @@ export const LivePageFrame = (props: any) => {
                      </>
                  );
              })()}
-             
+
+             {/* ─── Edit PDF Object — Selection Overlay (task 10.1) ───────────────
+                 Nguồn object: GET /edit/objects (PDFium read-only). Bbox đã convert sang
+                 hệ canvas top-left (point) ở effect nạp dữ liệu. Sắp xếp diện tích LỚN→NHỎ
+                 để object nhỏ nằm trên cùng → click ưu tiên bbox nhỏ nhất (Yêu cầu 2.1, 2.2).
+                 Ctrl+A/Esc xử lý ở keydown effect; overlay vẽ viền quanh object được chọn (2.5). */}
+             {isObjectEditMode && pageDim && (() => {
+                 // scale = px màn / POINT (bbox edit + editAddDraft.{xPt,yPt} đều ở point).
+                 const scale = displayWidth / ((pageDim.w || 595) * 72 / 96);
+                 return (
+                     <>
+                         {[...editObjects].sort((a, b) => {
+                             const areaA = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
+                             const areaB = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
+                             return areaB - areaA; // lớn nhất trước (dưới cùng), nhỏ nhất sau (trên cùng)
+                         }).map((obj) => {
+                             const [x0, y0, x1, y1] = obj.bbox;
+                             const isSelected = editSelectedIds.includes(obj.id);
+                             const typeColor = obj.type === 'text' ? 'rgb(59,130,246)' : obj.type === 'image' ? 'rgb(168,85,247)' : 'rgb(234,179,8)';
+                             return (
+                                 <div
+                                     key={obj.id}
+                                     className="absolute pointer-events-auto cursor-pointer z-30 transition-colors border border-transparent"
+                                     style={{
+                                         left: x0 * scale, top: y0 * scale,
+                                         width: (x1 - x0) * scale, height: (y1 - y0) * scale,
+                                         border: isSelected ? `2px solid ${typeColor}` : undefined,
+                                         backgroundColor: isSelected ? `${typeColor}20` : undefined,
+                                         boxShadow: isSelected ? `0 0 0 1px ${typeColor}40` : 'none',
+                                     }}
+                                     title={`${obj.type.toUpperCase()}: ${obj.id}`}
+                                     onMouseEnter={(e) => {
+                                         if (!isSelected) {
+                                             (e.currentTarget as HTMLDivElement).style.border = `1.5px solid ${typeColor}`;
+                                             (e.currentTarget as HTMLDivElement).style.backgroundColor = `${typeColor}08`;
+                                         }
+                                     }}
+                                     onMouseLeave={(e) => {
+                                         if (!isSelected) {
+                                             (e.currentTarget as HTMLDivElement).style.border = '1px solid transparent';
+                                             (e.currentTarget as HTMLDivElement).style.backgroundColor = 'transparent';
+                                         }
+                                     }}
+                                     onClick={(e) => {
+                                         e.stopPropagation();
+                                         if (e.shiftKey) {
+                                             setEditSelectedIds(prev => prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]);
+                                         } else {
+                                             setEditSelectedIds(prev => (prev.length === 1 && prev[0] === obj.id) ? [] : [obj.id]);
+                                         }
+                                     }}
+                                     onDoubleClick={(e) => {
+                                         // task 10.3: double-click object TEXT → mở editor inline.
+                                         // Chỉ kích hoạt ở chế độ edit-object (KHÔNG VDP) để TÁI DÙNG
+                                         // editingTextId/editTextContent mà không xung đột field VDP.
+                                         if (obj.type === 'text' && !isVdpMode) {
+                                             e.stopPropagation();
+                                             setEditingTextId(obj.id);
+                                             setEditTextContent(obj.content || '');
+                                         }
+                                     }}
+                                 >
+                                     {/* Editor text inline cho cụm text CÓ SẴN (8.5). Enter=commit,
+                                         Shift+Enter=xuống dòng, Esc/blur rỗng=hủy. */}
+                                     {editingTextId === obj.id && obj.type === 'text' && !isVdpMode && (
+                                       <>
+                                         {/* Thanh chọn FONT — gắn NGAY TRÊN ô editor (luôn thấy dù
+                                             zoom/cuộn). Chọn font máy → nhúng đúng tiếng Việt + style. */}
+                                         <div
+                                             className="absolute left-0 z-[60] w-[260px] bg-white rounded shadow-lg border border-slate-300 p-1.5 cursor-default"
+                                             style={{ bottom: 'calc(100% + 4px)' }}
+                                             onMouseDown={(e) => e.stopPropagation()}
+                                             onPointerDown={(e) => e.stopPropagation()}
+                                             onClick={(e) => e.stopPropagation()}
+                                             onDoubleClick={(e) => e.stopPropagation()}
+                                         >
+                                             <div className="text-[10px] font-bold text-slate-500 mb-1">FONT (chọn để nhúng đúng tiếng Việt)</div>
+                                             <FontSelector
+                                                 value={editFontName}
+                                                 fontFile={editFontPath}
+                                                 onChange={(name, file) => { setEditFontName(name); setEditFontPath(file); }}
+                                             />
+                                             {editFontPath && (
+                                                 <button type="button" className="mt-1 text-[10px] text-slate-500 hover:text-rose-600"
+                                                     onClick={(e) => { e.stopPropagation(); setEditFontName(''); setEditFontPath(undefined); }}
+                                                 >↺ Bỏ chọn font</button>
+                                             )}
+                                         </div>
+                                         <textarea
+                                             autoFocus
+                                             value={editTextContent}
+                                             placeholder="Nhập nội dung…"
+                                             onChange={(ev) => setEditTextContent(ev.target.value)}
+                                             onBlur={() => {
+                                                 const c = editTextContent;
+                                                 setEditingTextId(null);
+                                                 // Commit khi có nội dung VÀ (khác text gốc HOẶC có chọn font mới).
+                                                 if (c.trim() && (c !== (obj.content || '') || !!editFontPath)) void commitEditObjectText(obj.id, c);
+                                             }}
+                                             onKeyDown={(ev) => {
+                                                 if (ev.key === 'Enter' && !ev.shiftKey) {
+                                                     ev.preventDefault();
+                                                     (ev.currentTarget as HTMLTextAreaElement).blur();
+                                                 } else if (ev.key === 'Escape') {
+                                                     ev.preventDefault();
+                                                     setEditTextContent('');
+                                                     setEditingTextId(null);
+                                                 }
+                                             }}
+                                             onClick={(ev) => ev.stopPropagation()}
+                                             onMouseDown={(ev) => ev.stopPropagation()}
+                                             onPointerDown={(ev) => ev.stopPropagation()}
+                                             className="absolute left-0 top-0 z-[55] bg-white border border-emerald-500 outline-none px-1 py-0.5 resize overflow-auto shadow-lg whitespace-pre-wrap"
+                                             style={{
+                                                 // KHÔNG bó theo bbox (gây "hụt"/cắt chữ): cho khung rộng tối thiểu để
+                                                 // thấy & gõ trọn nội dung; cao tự nới theo số dòng (tối thiểu bbox).
+                                                 width: `${Math.max((x1 - x0) * scale, 260)}px`,
+                                                 minHeight: `${Math.max((y1 - y0) * scale, 28)}px`,
+                                                 height: 'auto',
+                                                 color: obj.color ? `rgb(${obj.color[0]},${obj.color[1]},${obj.color[2]})` : '#111',
+                                                 fontWeight: 600,
+                                                 lineHeight: 1.2,
+                                                 fontSize: `${Math.max(11, (y1 - y0) * scale * 0.7)}px`,
+                                             }}
+                                             rows={Math.max(1, editTextContent.split('\n').length)}
+                                         />
+                                       </>
+                                     )}
+                                 </div>
+                             );
+                         })}
+                         {/* Editor text inline cho object MỚI (9.5): hiển thị tại điểm bấm đã
+                             chốt (editAddDraft) khi đang ở nhánh thêm-text. */}
+                         {editingTextId === EDIT_ADD_TEXT_ID && editAddDraft && !isVdpMode && (
+                             <textarea
+                                 autoFocus
+                                 value={editTextContent}
+                                 placeholder="Nhập text mới…"
+                                 onChange={(ev) => setEditTextContent(ev.target.value)}
+                                 onBlur={() => {
+                                     const c = editTextContent;
+                                     const d = editAddDraft;
+                                     setEditingTextId(null);
+                                     setEditAddDraft(null);
+                                     if (c.trim() && d) void commitAddTextObject(c, d);
+                                 }}
+                                 onKeyDown={(ev) => {
+                                     if (ev.key === 'Enter' && !ev.shiftKey) {
+                                         ev.preventDefault();
+                                         (ev.currentTarget as HTMLTextAreaElement).blur();
+                                     } else if (ev.key === 'Escape') {
+                                         ev.preventDefault();
+                                         setEditTextContent('');
+                                         setEditAddDraft(null);
+                                         setEditingTextId(null);
+                                     }
+                                 }}
+                                 onClick={(ev) => ev.stopPropagation()}
+                                 onMouseDown={(ev) => ev.stopPropagation()}
+                                 onPointerDown={(ev) => ev.stopPropagation()}
+                                 className="absolute z-[45] bg-white/95 border border-emerald-500 outline-none px-0.5 resize-none overflow-hidden"
+                                 style={{
+                                     left: editAddDraft.xPt * scale, top: editAddDraft.yPt * scale,
+                                     width: EDIT_ADD_TEXT_W_PT * scale, height: EDIT_ADD_TEXT_SIZE_PT * 1.6 * scale,
+                                     color: '#111', lineHeight: 1, fontSize: `${EDIT_ADD_TEXT_SIZE_PT * scale}px`,
+                                 }}
+                             />
+                         )}
+                     </>
+                 );
+             })()}
+
+             {/* Edit PDF Object (task 10.3): toolbar thêm object + input file ẩn (chọn
+                 ảnh). Chỉ hiện ở chế độ edit-object (KHÔNG VDP). Bật editAddMode →
+                 cú bấm kế tiếp lên trang đặt object tại điểm đó (xử lý ở handleMouseUp). */}
+             {isObjectEditMode && !isVdpMode && (
+                 <div className="absolute top-1 left-1 z-[60] flex items-center gap-1 pointer-events-auto">
+                     <button
+                         type="button"
+                         onClick={(e) => { e.stopPropagation(); setEditAddMode(m => m === 'text' ? null : 'text'); }}
+                         className={`px-2 py-0.5 text-[11px] rounded shadow-sm border ${editAddMode === 'text' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
+                     >➕ Text</button>
+                     <button
+                         type="button"
+                         onClick={(e) => { e.stopPropagation(); setEditAddMode(m => m === 'image' ? null : 'image'); }}
+                         className={`px-2 py-0.5 text-[11px] rounded shadow-sm border ${editAddMode === 'image' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
+                     >🖼 Ảnh</button>
+                     {editAddMode && (
+                         <span className="px-1.5 py-0.5 text-[11px] rounded bg-black/70 text-white">
+                             Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : 'ảnh'}…
+                         </span>
+                     )}
+                 </div>
+             )}
+             <input
+                 ref={editFileInputRef}
+                 type="file"
+                 accept="image/*"
+                 className="hidden"
+                 onChange={(e) => {
+                     const file = e.target.files?.[0];
+                     const draft = editAddDraft;
+                     e.target.value = ''; // reset để chọn lại cùng file vẫn kích hoạt
+                     if (!file || !draft) { setEditAddDraft(null); return; }
+                     const reader = new FileReader();
+                     reader.onload = () => {
+                         const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+                         setEditAddDraft(null);
+                         if (dataUrl) void commitAddImageObject(dataUrl, draft);
+                     };
+                     reader.onerror = () => { setEditAddDraft(null); };
+                     reader.readAsDataURL(file);
+                 }}
+             />
+
+             {/* Edit PDF Object (10.2): hộp transform + handle nw/ne/sw/se (tái dùng
+                 từ vdpInteraction) + handle XOAY. Ghost dashed cập nhật theo THỜI GIAN
+                 THỰC bằng CSS transform qua editGhostRef trong handleMouseMove — KHÔNG
+                 setState mỗi frame (Yêu cầu 13.2); chỉ mouseup mới gửi /edit/transform. */}
+             {isObjectEditMode && pageDim && editSelectedIds.length > 0 && !(editingTextId && editingTextId !== EDIT_ADD_TEXT_ID) && (() => {
+                 // scale = px màn / POINT (getEditSelectionBoxPx nhận px/point).
+                 const scale = displayWidth / ((pageDim.w || 595) * 72 / 96);
+                 const box = getEditSelectionBoxPx(scale);
+                 if (!box) return null;
+                 const accent = 'rgb(16,185,129)';
+                 return (
+                     <>
+                         {/* Ghost: xem trước vị trí/kích thước/góc dự kiến (real-time).
+                             LUÔN render khi có lựa chọn; handleMouseMove cập nhật trực tiếp
+                             style.transform/transformOrigin/display qua editGhostRef (KHÔNG
+                             phụ thuộc re-render). Base left/top/width/height TĨNH trong lúc
+                             kéo (selection không đổi), lấy từ getEditSelectionBoxPx(scale). */}
+                         <div
+                             ref={editGhostRef}
+                             className="absolute z-[39] pointer-events-none"
+                             style={{
+                                 left: box.left, top: box.top, width: box.width, height: box.height,
+                                 transform: 'none', transformOrigin: 'center center', display: 'none',
+                                 border: `2px dashed ${accent}`, backgroundColor: `${accent}14`,
+                             }}
+                         />
+                         {/* Hộp transform — vùng trong = kéo MOVE. */}
+                         <div
+                             className="absolute z-40 pointer-events-auto cursor-move"
+                             style={{
+                                 left: box.left, top: box.top, width: box.width, height: box.height,
+                                 border: `1.5px solid ${accent}`, backgroundColor: 'transparent',
+                             }}
+                             onMouseDown={(e) => e.stopPropagation()}
+                             onPointerDown={(e) => { e.stopPropagation(); beginEditInteraction(e, 'move'); }}
+                             onDoubleClick={(e) => {
+                                 // Double-click trên hộp transform (object đang chọn) → mở
+                                 // editor text inline nếu object đó là TEXT (hộp z-40 vốn
+                                 // che object div z-30 nên double-click trực tiếp không tới).
+                                 if (isVdpMode || editSelectedIds.length !== 1) return;
+                                 const sel = editObjects.find(o => o.id === editSelectedIds[0]);
+                                 if (sel && sel.type === 'text') {
+                                     e.stopPropagation();
+                                     setEditingTextId(sel.id);
+                                     setEditTextContent(sel.content || '');
+                                 }
+                             }}
+                         >
+                             {/* Resize handles nw/ne/sw/se (tái dùng hệ handle VDP). */}
+                             {(['nw', 'ne', 'sw', 'se'] as const).map((handle) => {
+                                 const posCls = handle === 'nw' ? '-left-1.5 -top-1.5 cursor-nw-resize'
+                                     : handle === 'ne' ? '-right-1.5 -top-1.5 cursor-ne-resize'
+                                     : handle === 'sw' ? '-left-1.5 -bottom-1.5 cursor-sw-resize'
+                                     : '-right-1.5 -bottom-1.5 cursor-se-resize';
+                                 return (
+                                     <div
+                                         key={handle}
+                                         className={`absolute ${posCls} w-3 h-3 bg-white border-2 rounded-sm shadow-sm hover:scale-150 transition-transform z-[42]`}
+                                         style={{ borderColor: accent }}
+                                         onMouseDown={(e) => e.stopPropagation()}
+                                         onPointerDown={(e) => { e.stopPropagation(); beginEditInteraction(e, 'resize', handle); }}
+                                     />
+                                 );
+                             })}
+                             {/* Đường nối tới handle xoay. */}
+                             <div
+                                 className="absolute left-1/2 -top-7 w-px h-7 -translate-x-1/2 pointer-events-none"
+                                 style={{ backgroundColor: accent }}
+                             />
+                             {/* Handle XOAY — phía trên giữa bbox; tính góc từ tâm → con trỏ. */}
+                             <div
+                                 className="absolute left-1/2 -top-[2.1rem] w-3 h-3 -translate-x-1/2 bg-white border-2 rounded-full shadow-sm hover:scale-150 transition-transform z-[42] cursor-grab"
+                                 style={{ borderColor: accent }}
+                                 title="Xoay"
+                                 onMouseDown={(e) => e.stopPropagation()}
+                                 onPointerDown={(e) => { e.stopPropagation(); beginEditInteraction(e, 'rotate'); }}
+                             />
+                         </div>
+                     </>
+                 );
+             })()}
+
              {/* Watermark Live Preview Overlay */}
              {activeDashboardTool === 'watermark' && watermarkPreview && pageDim && (() => {
                  const {
@@ -1534,7 +2374,7 @@ export const LivePageFrame = (props: any) => {
              })()}
 
              {/* Marquee Drag Box — always in DOM, visibility controlled by ref */}
-             {isSelectionMode && (
+             {(isSelectionMode || isObjectEditMode) && (
                  <div 
                      ref={marqueeRef}
                      className="absolute border-2 border-blue-500 bg-blue-400/15 z-40 pointer-events-none"

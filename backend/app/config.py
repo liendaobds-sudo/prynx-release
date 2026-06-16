@@ -21,11 +21,16 @@ def _find_ghostscript() -> str:
     if env_gs and os.path.isfile(env_gs):
         return env_gs
     
-    # 2. Bundled sidecar path (Tauri resource)
+    # 2. Bundled sidecar path (Tauri resource). Tauri bundles under "binaries/",
+    #    dev/standalone có thể nằm cạnh exe → thử cả hai.
     import sys
-    bundled_gs = Path(sys.executable).parent / "gs" / "bin" / "gswin64c.exe"
-    if bundled_gs.is_file():
-        return str(bundled_gs)
+    _exe_dir = Path(sys.executable).parent
+    for _cand in (
+        _exe_dir / "binaries" / "gs" / "bin" / "gswin64c.exe",
+        _exe_dir / "gs" / "bin" / "gswin64c.exe",
+    ):
+        if _cand.is_file():
+            return str(_cand)
 
     # 3. System PATH
     found = shutil.which("gswin64c") or shutil.which("gswin32c") or shutil.which("gs")

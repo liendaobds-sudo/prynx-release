@@ -13,7 +13,7 @@ import { lazy, type LazyExoticComponent, type ComponentType } from 'react';
 export type ToolCategoryId = 'file' | 'print' | 'vdp' | 'impo' | 'packaging' | 'util' | 'qc';
 
 // ─── Tool App IDs (used as tab type) ───
-export type AppToolId = 'compare_pdf' | 'compare_text' | 'ai_qc' | 'imposition' | 'preflight' | 'combine_pdf' | 'dieline' | 'nup' | 'diecut' | 'booklet';
+export type AppToolId = 'compare_pdf' | 'compare_text' | 'ai_qc' | 'imposition' | 'preflight' | 'combine_pdf' | 'dieline' | 'nup' | 'diecut' | 'cnc' | 'booklet';
 
 export interface ToolDefinition {
   /** Unique tool identifier, used as tab type */
@@ -361,12 +361,12 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     textIcon: 'text-pink-600',
   },
   {
-    id: 'diecut',
+    id: 'cnc',
     title: 'Bình Bế Rớt (CNC)',
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '🔻',
     description: 'Cắt rời CNC, bình 2 mặt',
-    longDescription: 'Chuyên bình sản phẩm bế rớt / cắt rời trên máy CNC: hỗ trợ bình 2 mặt (lật gương mặt sau), dấu canh CNC nhiều loại, xuất 3 trang Mặt trước / Mặt sau / Khuôn.',
+    longDescription: 'Chuyên bình sản phẩm bế rớt / cắt rời trên máy CNC: hỗ trợ bình 2 mặt (lật gương mặt sau), dấu canh in 2 mặt để canh chồng, xuất 3 trang Mặt trước / Mặt sau / Khuôn.',
     category: 'impo',
     component: ImpositionTab,
     isEnabled: true,

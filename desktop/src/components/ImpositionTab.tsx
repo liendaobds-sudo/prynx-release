@@ -5,11 +5,13 @@ import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory } from '../lib/toolR
 
 import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
+import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
 import { Button } from './Button';
 import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
+import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import { PREDEFINED_SIZES, type BookletSettings, type NupSettings } from './imposition-tools/types';
 import { ImposerSettingsContext, createImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
@@ -81,6 +83,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         isDraggingSidebar, setIsDraggingSidebar, activeDashboardTool, setActiveDashboardTool,
         showOutputPreview, setShowOutputPreview, separationPlates, setSeparationPlates,
         isSelectionMode, setIsSelectionMode, pdfObjectsVersion, setPdfObjectsVersion,
+        isObjectEditMode,
         pdfOcgLayers, setPdfOcgLayers,
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
         hiddenOcgLayerIds, setHiddenOcgLayerIds,
@@ -89,6 +92,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         confirmBookletSettings, setConfirmBookletSettings,
         showCloseConfirm, setShowCloseConfirm,
         viewerNumPages,
+        viewerActivePage,
         setDetectedShapeType, setDetectedShapeParams, 
         setDetectedShapesByPage, setDetectedDimensionsByPage, setDetectedShapeParamsByPage,
         detectedDimensionsByPage,
@@ -103,6 +107,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar, activeDashboardTool: state.activeDashboardTool, setActiveDashboardTool: state.setActiveDashboardTool,
         showOutputPreview: state.showOutputPreview, setShowOutputPreview: state.setShowOutputPreview, separationPlates: state.separationPlates, setSeparationPlates: state.setSeparationPlates,
         isSelectionMode: state.isSelectionMode, setIsSelectionMode: state.setIsSelectionMode, pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
+        isObjectEditMode: state.isObjectEditMode,
         pdfOcgLayers: state.pdfOcgLayers, setPdfOcgLayers: state.setPdfOcgLayers,
         selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds,
@@ -111,6 +116,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         confirmBookletSettings: state.confirmBookletSettings, setConfirmBookletSettings: state.setConfirmBookletSettings,
         showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
         viewerNumPages: state.viewerNumPages,
+        viewerActivePage: state.viewerActivePage,
         setDetectedShapeType: state.setDetectedShapeType, setDetectedShapeParams: state.setDetectedShapeParams, 
         setDetectedShapesByPage: state.setDetectedShapesByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage,
         detectedDimensionsByPage: state.detectedDimensionsByPage,
@@ -125,6 +131,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const [isMiniToolbarExpanded, setIsMiniToolbarExpanded] = useState(false);
     const [showSavePrintModal, setShowSavePrintModal] = useState(false);
     const [scaleConfirmModal, setScaleConfirmModal] = useState<{ msg: string, resolve: (v: boolean) => void } | null>(null);
+    // Gửi Máy Bế (spec: gui-may-be) — chỉ hiện trên toolbar khi file là OUTPUT đã bình.
+    const [showCutExport, setShowCutExport] = useState(false);
 
     // Set initial report from props (once)
     useEffect(() => {
@@ -363,6 +371,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return () => window.removeEventListener('beforeunload', handleBeforeUnload);
     }, [isDirty]);
 
+    // Undo/Redo riêng cho chế độ chỉnh sửa đối tượng (Ctrl+Z + nút Undo).
+    const editHistory = useObjectEditHistory();
+
     const commitWorkingFile = useCallback(async (newBlob: Blob, newName: string) => {
         if (file) {
             setHistory(prev => [...prev, file]);
@@ -557,6 +568,91 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
     }, [selectionFileId, commitWorkingFile]);
 
+    // ─── Edit PDF Object: ĐƯỜNG COMMIT NHẸ cho thao tác chỉnh sửa đối tượng ──────
+    // Tối ưu TỐC ĐỘ: backend /edit/* đã tạo Working_File MỘT lần (pikepdf, color-safe)
+    // + đăng ký vào DB → trả `output_fid` (id trỏ thẳng Working_File mới) cùng
+    // `output_path` (đường dẫn tuyệt đối trên CÙNG MÁY — đây là desktop app).
+    //
+    // KHÁC commitWorkingFile (đường nặng cho các tool khác): KHÔNG tải-về-rồi-upload-lại
+    // (uploadFileForNup/uploadPDF), KHÔNG re-upload (không reset selectionFileId=''),
+    // KHÔNG detectColorSpace mỗi op. Chỉ:
+    //   - đẩy file hiện tại vào history (Undo hoạt động — Yêu cầu 11.1–11.3),
+    //   - trỏ file/pdfUrl sang Working_File mới (desktop: dùng output_path trực tiếp),
+    //   - setSelectionFileId(output_fid) TRỰC TIẾP → op kế tiếp + effect /edit/objects
+    //     dùng fid mới (cache key `${selectionFileId}:${page}` đổi ⇒ refetch đúng file).
+    const handleEditCommit = useCallback(async (
+        outputUrl: string,
+        outputFilename: string,
+        outputFid?: string,
+        outputPath?: string,
+    ) => {
+        if (!outputUrl) return;
+        const displayName = outputFilename || `Edited_${file?.name || 'document.pdf'}`;
+        const isTauri = !!(window as any).__TAURI_INTERNALS__;
+        const prevPdfUrl = pdfUrl;
+
+        try {
+            // Lưu snapshot TRƯỚC thao tác vào undo-stack riêng của object-edit (gồm cả
+            // selectionFileId) → Ctrl+Z / nút Undo khôi phục đúng (move/delete/rotate...).
+            editHistory.pushSnapshot({ file, pdfUrl: prevPdfUrl, fid: selectionFileId });
+
+            let newFile: File;
+            let newPdfUrl: string;
+            let sizeStr: string | null = null;
+
+            if (isTauri && outputPath) {
+                // DESKTOP: Working_File nằm trên cùng máy → dùng TRỰC TIẾP, không tải/upload.
+                // File rỗng/nhẹ chỉ mang tên + path; PDFium render qua `path`, react-pdf qua pdfUrl.
+                newFile = new File([], displayName, { type: 'application/pdf' });
+                Object.defineProperty(newFile, 'path', { value: outputPath });
+                newPdfUrl = convertFileSrc(outputPath);
+                // Kích thước file: stat cục bộ (rẻ); lỗi thì bỏ qua, giữ size cũ.
+                try {
+                    const { stat } = (await import('@tauri-apps/plugin-fs')) as any;
+                    const info = await stat(outputPath);
+                    if (info?.size != null) sizeStr = (info.size / (1024 * 1024)).toFixed(2) + ' MB';
+                } catch { /* giữ fileSizeStr hiện tại */ }
+            } else {
+                // WEB fallback: tải blob về rồi createObjectURL (chậm hơn — desktop là chính).
+                const base = getApiUrl().replace(/\/api\/?$/, '');
+                const fullUrl = outputUrl.startsWith('http') ? outputUrl : `${base}${outputUrl}`;
+                const res = await authenticatedFetch(fullUrl);
+                if (!res.ok) throw new Error(`Tải Working_File mới thất bại (HTTP ${res.status})`);
+                const blob = await res.blob();
+                newFile = new File([blob as any], displayName, { type: 'application/pdf' });
+                newPdfUrl = URL.createObjectURL(blob);
+                sizeStr = (blob.size / (1024 * 1024)).toFixed(2) + ' MB';
+            }
+
+            // Đánh dấu File này là "edit-commit": cấu trúc trang KHÔNG đổi (chỉ nội
+            // dung backing file). Các effect tải PDF/zoom/thumbnail đọc cờ này để BỎ
+            // QUA reset hủy diệt (numPages=0 → unmount, reset scroll/zoom/selection),
+            // nhờ đó giao diện KHÔNG "reload" sau mỗi thao tác — chỉ tile + overlay đổi.
+            try { Object.defineProperty(newFile, '__editCommit', { value: true, configurable: true }); } catch { /* noop */ }
+
+            setFile(newFile);
+            setOriginalFileName(displayName);
+            setPdfUrl(newPdfUrl);
+            if (sizeStr) setFileSizeStr(sizeStr);
+            setIsSaved(false);
+            onTitleChange?.(displayName);
+
+            // Trỏ selectionFileId thẳng tới Working_File mới (KHÔNG '' để tránh re-upload).
+            // → thao tác edit kế tiếp + effect /edit/objects dùng fid mới ngay.
+            if (outputFid) setSelectionFileId(outputFid);
+
+            // Dọn pdfUrl cũ (chỉ revoke nếu là blob — convertFileSrc/https là no-op không cần).
+            if (prevPdfUrl && prevPdfUrl.startsWith('blob:') && prevPdfUrl !== newPdfUrl) {
+                URL.revokeObjectURL(prevPdfUrl);
+            }
+            // LƯU Ý: KHÔNG reset viewerPageOrder/rotations (edit không đụng thứ tự trang)
+            // và KHÔNG detectColorSpace (bỏ để giảm tải mỗi op) — khác commitWorkingFile.
+        } catch (err: any) {
+            setError(err?.message || 'Lỗi cập nhật sau chỉnh sửa');
+        }
+    }, [file, pdfUrl, setHistory, setFile, setOriginalFileName, setPdfUrl, setFileSizeStr,
+        setIsSaved, onTitleChange, setSelectionFileId, setError, selectionFileId, editHistory]);
+
     // Keyboard shortcuts for Selection mode (Delete, Escape, Ctrl+A)
     useEffect(() => {
         if (!isSelectionMode || !isActive) return;
@@ -697,6 +793,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         
         setError('');
         setHistory([]);
+        // Reset undo/redo edit-object khi đổi file (tránh khôi phục file cũ).
+        store?.getState().setObjectEditPast([]);
+        store?.getState().setObjectEditFuture([]);
         
         // Reset detected shapes so it forces a re-detection for the new file
         setDetectedShapeType(null);
@@ -902,6 +1001,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             marginLeft: config.marginLeft,
             marginRight: config.marginRight,
             marginMode: config.marginMode,
+            gripperMargin: config.gripperMargin || 0,
             duplexFlow: config.duplexFlow,
             align: config.align,
             mirrorAlign: config.mirrorAlign,
@@ -966,6 +1066,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setPdfUrl(null);
         setPhase('upload');
         setHistory([]);
+        store?.getState().setObjectEditPast([]);
+        store?.getState().setObjectEditFuture([]);
         setError('');
         setIsSaved(false);
         setViewerPageOrder(undefined);
@@ -1348,6 +1450,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
 
 
+                    {/* Gửi Máy Bế — modal cấp tab, mở từ nút trên toolbar khi xem output đã bình */}
+                    <CutExportModal
+                        open={showCutExport}
+                        onClose={() => setShowCutExport(false)}
+                        sheetWmm={0}
+                        sheetHmm={0}
+                        paths={[]}
+                        sourcePdfPath={(file as any)?.path}
+                        sourceName={file?.name}
+                        defaultName={(originalFileName || 'cut').replace(/\.pdf$/i, '')}
+                        currentPage={viewerActivePage}
+                    />
+
                     {/* LEFT: Acrobat Workspace */}
                     <div className="flex-1 relative z-0">
                         {isProcessing && (
@@ -1421,7 +1536,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onExtractPages={handleExtractPages}
                                     onObjectDelete={handleDeleteObjects}
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
+                                    onEditCommit={handleEditCommit}
                                     onVdpBoxCreate={handleVdpBoxCreate}
+                                    toolbarExtra={(file && isOutputFile(file.name)) ? (
+                                        <button
+                                            onClick={() => setShowCutExport(true)}
+                                            className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                                            title="Gửi dữ liệu cắt tới máy bế"
+                                        >
+                                            ✂️ Gửi Máy Bế
+                                        </button>
+                                    ) : undefined}
                                     rightPanel={(
                                         <div
                                             style={{ 
@@ -1481,11 +1606,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             </button>
                                                         )}
 
-                                                        {history.length > 0 && activeDashboardTool !== 'bgremover' && (
+                                                        {(isObjectEditMode ? editHistory.canUndo : history.length > 0) && activeDashboardTool !== 'bgremover' && (
                                                             <button
-                                                                onClick={handleUndo}
+                                                                onClick={() => { if (isObjectEditMode) editHistory.undo(); else handleUndo(); }}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
-                                                                title="Trở lại thao tác trước"
+                                                                title="Hoàn tác thao tác trước (Ctrl+Z)"
                                                             >
                                                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
                                                             </button>

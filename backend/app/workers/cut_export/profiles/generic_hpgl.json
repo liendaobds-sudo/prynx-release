@@ -1,0 +1,23 @@
+{
+  "id": "generic_hpgl",
+  "vendor": "Generic",
+  "model": "HPGL Compatible",
+  "emitter": "command_stream",
+  "dialect": "hpgl_pupd",
+  "resolution_plu_per_mm": 40.0,
+  "origin": "bottom_left",
+  "flip_y": false,
+  "swap_xy": false,
+  "separator": "",
+  "header_template": "IN;SP1;",
+  "footer_template": "PU;",
+  "pen_up": "PU{x},{y};",
+  "pen_down": "PD{x},{y};",
+  "registration": { "mode": "none" },
+  "blade": { "embed_force_speed": false, "blade_offset_plu": 0, "overcut_plu": 0 },
+  "dual_head": { "enabled": false },
+  "filename": { "pattern": "{name}", "ext": "plt", "encoding": "ascii" },
+  "transport": { "default": "file", "tcp_port": 9100, "serial_baud": 9600, "flow_control": "rtscts" },
+  "limits": {},
+  "source_ref": "HP-GL/2 reference (PU/PD)"
+}

@@ -3,8 +3,9 @@ Renderer cho công cụ Bình Bế Rớt (CNC) — bình 2 mặt, xuất 3 trang
 
 Tách RIÊNG khỏi luồng `repeat` của Bình Tem Bế (an toàn tuyệt đối — không sửa
 process_chunk logic), nhưng TÁI DÙNG các primitive dùng chung:
-  - compute_sticker_layout_for_page  : solver layout (Rust) cho Mặt trước.
-  - cnc_geometry.mirror_layout        : lật gương → Mặt sau.
+  - compute_sticker_layout_for_page  : solver nesting (dùng CHUNG với Bình Tem Bế) — chế độ S&R Mặt trước.
+  - build_cnc_front_layout            : bin-pack trộn nhiều mẫu (gang) — Mặt trước.
+  - mirror_placements_multi           : lật gương cả cụm → Mặt sau.
   - nup_artwork.place_one_artwork      : đặt artwork (nguồn chân lý duy nhất).
   - nup_artwork.draw_die_lines_for_placement : vẽ đường bế (Khuôn).
   - nup_marks._draw_ponts_on_page      : vẽ boong định vị (pont) — CHỈ ở Mặt trước + Khuôn.
@@ -72,34 +73,6 @@ def _build_placements(items, usable_w, usable_h, margin_left, margin_bottom,
     return placements
 
 
-def mirror_placements(front_pl, sheet_w, sheet_h, flip_edge, back_idx):
-    """Lật gương danh sách placement Mặt trước (toạ độ TUYỆT ĐỐI của tờ) → Mặt sau.
-
-    Lật ở mức placement đã căn giữa (không lật item thô rồi căn lại) để mỗi ô mặt
-    sau khớp KHÍT ô mặt trước khi lật giấy.
-      - 'long'  (cạnh dài, lật ngang): left' = sheet_w - (left + w); y giữ nguyên.
-      - 'short' (cạnh ngắn, lật dọc):  bottom' = sheet_h - (bottom + h); x giữ nguyên.
-    Artwork mặt sau (back_idx) đặt bình thường vào ô đã lật vị trí.
-    """
-    out = []
-    for p in front_pl:
-        bp = dict(p)
-        bp['cell'] = dict(p['cell'])
-        bp['src_page_idx'] = back_idx
-        # Lật HƯỚNG XOAY: phản chiếu đảo chiều xoay 90° (front +90 → back -90),
-        # 180° giữ nguyên. Theo script: totalRotation += isBackSide ? -90 : 90.
-        # Ánh xạ cờ: nếu isRotated thì toggle isRotated180 (90↔270).
-        if bp['cell'].get('isRotated', False):
-            bp['cell']['isRotated180'] = not bp['cell'].get('isRotated180', False)
-        if flip_edge == 'short':
-            bp['original_cell_y'] = sheet_h - (p['original_cell_y'] + p['height'])
-            bp['abs_y'] = sheet_h - (p['abs_y'] + p['height'])
-        else:  # 'long' (mặc định)
-            bp['abs_x'] = sheet_w - (p['abs_x'] + p['width'])
-        out.append(bp)
-    return out
-
-
 def mirror_placements_multi(front_pl, sheet_w, sheet_h, flip_edge, back_of):
     """Lật gương CẢ CỤM Mặt trước (nhiều mẫu) → Mặt sau.
 
@@ -137,6 +110,92 @@ def _resolve_die_color(color):
         if (color[0] < 0.1 and color[1] < 0.1 and color[2] < 0.1) or (color[0] > 0.9 and color[1] > 0.9 and color[2] > 0.9):
             _inv = True
     return (1, 0, 0) if _inv else color
+
+
+def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_of,
+                     sheet_w, sheet_h, bleed_pt, clip_off_x, clip_off_y,
+                     margin_left, margin_bottom, pont_config, duplex_marks, job_id,
+                     diecut_geom_cache, die_items_cache, local_stripped_pages,
+                     max_geom_cache):
+    """Render MỘT đơn vị bình (1 tờ logic) vào out_doc: Mặt trước → [Mặt sau] → Khuôn.
+
+    Dùng chung cho cả 2 chế độ:
+      - Dàn nhiều mẫu (gang): front_pl chứa nhiều mẫu trên cùng 1 tờ.
+      - Bình trang (S&R):      front_pl chỉ chứa 1 mẫu (lấp đầy tờ).
+    Trả về dict thông tin trang đã thêm (front_page/cut_page) để stamp report.
+    """
+    front_page = out_doc.page_count
+
+    # ── Mặt trước ──
+    front_bbox = compute_block_bbox(front_pl)
+    out_front = out_doc.new_page(width=sheet_w, height=sheet_h)
+    for p in front_pl:
+        place_one_artwork(
+            out_front, src_doc, p,
+            bleed_pt=bleed_pt, is_die_cut=True, cut_type='default',
+            separate_cut_page=True, local_stripped_pages=local_stripped_pages,
+            job_id=job_id, diecut_geom_cache=diecut_geom_cache,
+            die_items_cache=die_items_cache, max_geom_cache=max_geom_cache,
+            block_bbox=front_bbox, clip_off_x=clip_off_x, clip_off_y=clip_off_y,
+            find_largest_die_path=_find_largest_die_path,
+        )
+    if pont_config:
+        _draw_ponts_on_page(out_front, front_pl, pont_config, sheet_w, sheet_h,
+                            margin_left, margin_bottom)
+    if duplex_marks and two_sided:
+        draw_duplex_marks(out_front, sheet_w, sheet_h)
+
+    # ── Mặt sau (lật gương cả cụm) ──
+    if two_sided:
+        back_pl = mirror_placements_multi(front_pl, sheet_w, sheet_h, flip_edge, back_of)
+        back_bbox = compute_block_bbox(back_pl)
+        out_back = out_doc.new_page(width=sheet_w, height=sheet_h)
+        for p in back_pl:
+            place_one_artwork(
+                out_back, src_doc, p,
+                bleed_pt=bleed_pt, is_die_cut=True, cut_type='default',
+                separate_cut_page=True, local_stripped_pages=local_stripped_pages,
+                job_id=job_id, diecut_geom_cache=diecut_geom_cache,
+                die_items_cache=die_items_cache, max_geom_cache=max_geom_cache,
+                block_bbox=back_bbox, clip_off_x=clip_off_x, clip_off_y=clip_off_y,
+                find_largest_die_path=_find_largest_die_path,
+            )
+        # Mặt sau KHÔNG vẽ boong; nhưng CÓ dấu canh 2 mặt (để canh chồng).
+        if duplex_marks:
+            draw_duplex_marks(out_back, sheet_w, sheet_h)
+
+    # ── Khuôn (gộp đường bế của TẤT CẢ mẫu trên tờ) ──
+    cut_page = out_doc.page_count
+    out_cut = out_doc.new_page(width=sheet_w, height=sheet_h)
+    cut_shape = out_cut.new_shape()
+    drew_any = False
+    for p in front_pl:
+        cache_key = f"{job_id}_{p['src_page_idx']}"
+        cached = die_items_cache.get(cache_key)
+        if not (cached and cached.get('items')):
+            continue
+        die_items = cached['items']
+        die_rect = cached['rect']
+        die_color = _resolve_die_color(cached.get('color'))
+        die_width = max(0.5, float(cached.get('width') or 0.5))
+        cell = p['cell']
+        draw_die_lines_for_placement(
+            cut_shape, die_items, die_rect,
+            p['abs_x'], p['original_cell_y'],
+            is_rotated=cell.get('isRotated', False),
+            is_rotated_180=cell.get('isRotated180', False),
+        )
+        cut_shape.finish(color=die_color, width=die_width, closePath=False)
+        drew_any = True
+    if drew_any:
+        cut_shape.commit()
+    else:
+        logger.warning("[CNC] Không có die_items cho mẫu nào → trang khuôn rỗng.")
+    if pont_config:
+        _draw_ponts_on_page(out_cut, front_pl, pont_config, sheet_w, sheet_h,
+                            margin_left, margin_bottom)
+
+    return {'front_page': front_page, 'cut_page': cut_page}
 
 
 def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, Any],
@@ -194,6 +253,15 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
     local_stripped_pages = set()
     MAX_GEOM_CACHE = 200
 
+    # Chế độ TÁC VỤ: layoutType=='repeat' → Bình trang (S&R, mỗi mẫu 1 tờ riêng);
+    # ngược lại → Dàn nhiều mẫu (gang nhiều mẫu chung 1 tờ).
+    layout_type = settings.get('layoutType', settings.get('layout_type', 'sequential')) or 'sequential'
+    is_sr = (layout_type == 'repeat')
+    # Shape phát hiện THEO TRANG (từ frontend) + strategy — để S&R parity với Bình Tem Bế.
+    detected_shapes_by_page = settings.get('detectedShapesByPage') or {}
+    detected_shape_params_by_page = settings.get('detectedShapeParamsByPage') or {}
+    sr_strategy = settings.get('gridStrategy') or 'optimal_auto'
+
     # Danh sách trang Mặt trước + ánh xạ Mặt sau (Yêu cầu 1)
     gap = max(gap_x, gap_y)
     front_idxs, back_of = select_front_pages(page_count, two_sided)
@@ -215,94 +283,91 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
             return r.width, r.height
         return page.rect.width - 2 * bleed_pt, page.rect.height - 2 * bleed_pt
 
-    # SL mỗi mẫu lấy theo trang MẶT TRƯỚC (Yêu cầu 2.3)
-    page_dims_qty = []
-    for fi in front_idxs:
-        tw, th = _trim_dims(src_doc[fi])
-        page_dims_qty.append((fi, tw, th, _qty_for(fi)))
+    # ── Dựng layout cho 1 tập mẫu Mặt trước (SL lấy theo trang MẶT TRƯỚC — Yêu cầu 2.3) ──
+    def _layout_for(sub_front_idxs):
+        if is_sr and len(sub_front_idxs) == 1:
+            # Chế độ S&R 1 mẫu -> dùng solver Bình Tem Bế (giữ cấu trúc lồng ghép NFP tổ ong)
+            fi = sub_front_idxs[0]
+            # Shape override THEO TRANG (giống process_chunk) để parity với Bình Tem Bế + khớp preview.
+            frontend_shape = None
+            if detected_shapes_by_page:
+                frontend_shape = (detected_shapes_by_page.get(str(fi))
+                                  or detected_shapes_by_page.get(fi))
+            frontend_shape_props = {}
+            if detected_shape_params_by_page:
+                frontend_shape_props = (detected_shape_params_by_page.get(str(fi))
+                                        or detected_shape_params_by_page.get(fi) or {})
 
-    # GỌI HELPER (nguồn chân lý duy nhất) — trộn nhiều mẫu 1 tờ Mặt trước
-    layout = build_cnc_front_layout(
-        page_dims_qty, usable_w, usable_h, gap,
-        margin_left=margin_left, margin_bottom=margin_bottom, margin_top=margin_top,
-    )
-    front_pl = layout['placements']
-    sheets_needed = layout['sheets_needed']
-    items_per_sheet = layout['items_per_sheet']
-    placed_by_page = layout['placed_by_page']
-
-    # ════ TRANG MẶT TRƯỚC ════
-    front_bbox = compute_block_bbox(front_pl)
-    out_front = out_doc.new_page(width=sheet_w, height=sheet_h)
-    for p in front_pl:
-        place_one_artwork(
-            out_front, src_doc, p,
-            bleed_pt=bleed_pt, is_die_cut=True, cut_type='default',
-            separate_cut_page=True, local_stripped_pages=local_stripped_pages,
-            job_id=job_id, diecut_geom_cache=diecut_geom_cache,
-            die_items_cache=die_items_cache, max_geom_cache=MAX_GEOM_CACHE,
-            block_bbox=front_bbox, clip_off_x=clip_off_x, clip_off_y=clip_off_y,
-            find_largest_die_path=_find_largest_die_path,
-        )
-    if pont_config:
-        _draw_ponts_on_page(out_front, front_pl, pont_config, sheet_w, sheet_h,
-                            margin_left, margin_bottom)
-    if duplex_marks and two_sided:
-        draw_duplex_marks(out_front, sheet_w, sheet_h)
-
-    # ════ TRANG MẶT SAU (lật gương cả cụm) ════
-    if two_sided:
-        back_pl = mirror_placements_multi(front_pl, sheet_w, sheet_h, flip_edge, back_of)
-        back_bbox = compute_block_bbox(back_pl)
-        out_back = out_doc.new_page(width=sheet_w, height=sheet_h)
-        for p in back_pl:
-            place_one_artwork(
-                out_back, src_doc, p,
-                bleed_pt=bleed_pt, is_die_cut=True, cut_type='default',
-                separate_cut_page=True, local_stripped_pages=local_stripped_pages,
-                job_id=job_id, diecut_geom_cache=diecut_geom_cache,
-                die_items_cache=die_items_cache, max_geom_cache=MAX_GEOM_CACHE,
-                block_bbox=back_bbox, clip_off_x=clip_off_x, clip_off_y=clip_off_y,
-                find_largest_die_path=_find_largest_die_path,
+            layout = compute_sticker_layout_for_page(
+                page=src_doc[fi],
+                sheet_usable_w=usable_w,
+                sheet_usable_h=usable_h,
+                gap_x=gap_x, gap_y=gap_y,
+                strategy=sr_strategy,
+                shape_type_override=frontend_shape if frontend_shape else None,
+                shape_props_override=frontend_shape_props if frontend_shape_props else None,
+                bleed_pt=bleed_pt,
+                secondary_gap=None
             )
-        # Mặt sau KHÔNG vẽ boong; nhưng CÓ dấu canh 2 mặt (để canh chồng).
-        if duplex_marks:
-            draw_duplex_marks(out_back, sheet_w, sheet_h)
+            
+            items = layout.get('items', [])
+            total_placed = len(items)
+            placements = _build_placements(
+                items, usable_w, usable_h, margin_left, margin_bottom, margin_top, fi
+            )
+            
+            target_qty = _qty_for(fi)
+            sheets_needed = 1
+            if target_qty > 0 and total_placed > 0:
+                sheets_needed = -(-target_qty // total_placed)
+                
+            return {
+                'placements': placements,
+                'cells': items,
+                'items_per_sheet': total_placed,
+                'placed_by_page': {fi: total_placed},
+                'sheets_needed': sheets_needed,
+                'overall_w': layout.get('widthUsed', usable_w),
+                'overall_h': layout.get('heightUsed', usable_h),
+            }
+        else:
+            # Chế độ dàn nhiều mẫu -> dùng Bin-packing
+            pdq = []
+            for fi in sub_front_idxs:
+                tw, th = _trim_dims(src_doc[fi])
+                pdq.append((fi, tw, th, _qty_for(fi)))
+            return build_cnc_front_layout(
+                pdq, usable_w, usable_h, gap,
+                margin_left=margin_left, margin_bottom=margin_bottom, margin_top=margin_top,
+            )
 
-    # ════ TRANG KHUÔN (gộp đường bế của TẤT CẢ mẫu trên tờ) ════
-    out_cut = out_doc.new_page(width=sheet_w, height=sheet_h)
-    cut_shape = out_cut.new_shape()
-    drew_any = False
-    for p in front_pl:
-        cache_key = f"{job_id}_{p['src_page_idx']}"
-        cached = die_items_cache.get(cache_key)
-        if not (cached and cached.get('items')):
-            continue
-        die_items = cached['items']
-        die_rect = cached['rect']
-        die_color = _resolve_die_color(cached.get('color'))
-        die_width = max(0.5, float(cached.get('width') or 0.5))
-        cell = p['cell']
-        draw_die_lines_for_placement(
-            cut_shape, die_items, die_rect,
-            p['abs_x'], p['original_cell_y'],
-            is_rotated=cell.get('isRotated', False),
-            is_rotated_180=cell.get('isRotated180', False),
-        )
-        # finish PER placement (giống process_chunk) — đúng nét + đúng màu từng mẫu.
-        cut_shape.finish(color=die_color, width=die_width, closePath=False)
-        drew_any = True
-    if drew_any:
-        cut_shape.commit()
+    # ── Dựng danh sách "đơn vị bình" ──
+    #  - Bình trang (S&R): MỖI mẫu → 1 đơn vị (1 tờ riêng, lấp đầy bằng chính mẫu đó).
+    #  - Dàn nhiều mẫu:    TẤT CẢ mẫu → 1 đơn vị (gang chung 1 tờ).
+    if is_sr:
+        units = [([fi], _layout_for([fi])) for fi in front_idxs]
     else:
-        logger.warning("[CNC] Không có die_items cho mẫu nào → trang khuôn rỗng.")
-    # Boong bế trên trang Khuôn (để máy cắt canh) — giống pontsOnCutFile của script.
-    if pont_config:
-        _draw_ponts_on_page(out_cut, front_pl, pont_config, sheet_w, sheet_h,
-                            margin_left, margin_bottom)
+        units = [(list(front_idxs), _layout_for(front_idxs))]
+
+    # ── Render từng đơn vị: Mặt trước → [Mặt sau lật gương] → Khuôn ──
+    report_units = []  # (sub_front_idxs, layout, page_info)
+    for sub_front_idxs, layout in units:
+        page_info = _render_cnc_unit(
+            out_doc, src_doc, layout['placements'],
+            two_sided=two_sided, flip_edge=flip_edge, back_of=back_of,
+            sheet_w=sheet_w, sheet_h=sheet_h, bleed_pt=bleed_pt,
+            clip_off_x=clip_off_x, clip_off_y=clip_off_y,
+            margin_left=margin_left, margin_bottom=margin_bottom,
+            pont_config=pont_config, duplex_marks=duplex_marks, job_id=job_id,
+            diecut_geom_cache=diecut_geom_cache, die_items_cache=die_items_cache,
+            local_stripped_pages=local_stripped_pages, max_geom_cache=MAX_GEOM_CACHE,
+        )
+        report_units.append((sub_front_idxs, layout, page_info))
+
+    total_sheets = sum(lay['sheets_needed'] for _, lay, _ in report_units)
 
     if progress_callback:
-        progress_callback(1, 1, "CNC: hoàn tất ghép nhiều mẫu")
+        progress_callback(1, 1, "CNC: hoàn tất")
 
     buf = io.BytesIO()
     out_doc.save(buf, garbage=0, deflate=True)
@@ -311,33 +376,48 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
     with open(output_path, 'wb') as f:
         f.write(buf.getvalue())
 
-    # ── Vẽ report (1 dòng tóm tắt) lên Mặt trước + Khuôn (tuỳ chọn) ──
+    # ── Vẽ report (1 dòng tóm tắt mỗi đơn vị) lên Mặt trước + Khuôn (tuỳ chọn) ──
     if report_enabled:
         try:
             from app.workers import nup_report as _nr
-            parts = []
-            _oc = settings.get('reportOrderCode')
-            if _oc:
-                parts.append(f"ĐH: {_oc}")
-            _ln = report_cfg.get('labelNameText')
-            if _ln:
-                parts.append(str(_ln))
-            parts.append("Bình bế rớt CNC")
-            parts.append(f"{len(front_idxs)} mẫu")
-            parts.append(f"{items_per_sheet} con/tờ")
-            parts.append(f"In {sheets_needed} tờ")
-            _mat = settings.get('reportMaterial')
-            if _mat:
-                parts.append(str(_mat))
-            _lam = settings.get('reportLamination', 0)
-            if _lam:
-                parts.append(_nr._format_lamination(_lam, settings.get('reportLaminationSides', 1)))
-            line = "  |  ".join(parts)
-            if report_cfg.get('removeDiacritics'):
-                line = _nr.remove_diacritics(line)
-            # Mặt trước = trang 0; Khuôn = trang cuối cụm (2 nếu 2 mặt, 1 nếu 1 mặt).
-            cut_idx = 2 if two_sided else 1
-            reports_by_page = {0: line, cut_idx: line}
+            reports_by_page = {}
+            # Dùng CHUNG builder với tem bế (build_report_string) để khớp preview +
+            # tôn trọng toggle bật/tắt field + thứ tự field. Bổ sung 'gangCount' vào
+            # fieldOrder nếu cấu hình từ FE chưa có (để số mẫu/tờ vẫn hiển thị cho CNC).
+            _cfg = dict(report_cfg)
+            _fo = list(_cfg.get('fieldOrder') or _nr.DEFAULT_FIELD_ORDER)
+            if 'gangCount' not in _fo:
+                _fo = _fo + ['gangCount']
+            _cfg['fieldOrder'] = _fo
+            for sub_front_idxs, layout, page_info in report_units:
+                if is_sr:
+                    fi = sub_front_idxs[0]
+                    _label = report_cfg.get('labelNameText') or f"Trang {fi + 1}"
+                    _qty = _qty_for(fi)
+                    _gang = 0
+                    _ident = str(fi + 1)
+                else:
+                    _label = report_cfg.get('labelNameText') or ""
+                    _qty = 0
+                    _gang = len(sub_front_idxs)
+                    _ident = ""
+                _data = _nr.compute_report_data(
+                    label_name=_label,
+                    items_per_sheet=layout['items_per_sheet'],
+                    requested_qty=_qty,
+                    material=settings.get('reportMaterial', '') or '',
+                    lamination_type=settings.get('reportLamination', 0) or 0,
+                    lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                    mode_label='Bình bế rớt CNC',
+                    order_code=settings.get('reportOrderCode', '') or '',
+                    identifier=_ident,
+                    gang_count=_gang,
+                    sheet_count_override=layout['sheets_needed'],
+                )
+                # build_report_string đã tự áp removeDiacritics + customText.
+                line = _nr.build_report_string(_cfg, _data)
+                # Report CHỈ vẽ trên trang IN (mặt trước). KHÔNG vẽ lên trang Khuôn.
+                reports_by_page[page_info['front_page']] = line
             _nr.stamp_reports_on_pdf(
                 output_path, output_path, reports_by_page,
                 position=report_cfg.get('position', 'top'),
@@ -349,25 +429,43 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
         except Exception as _e:
             logger.warning("[CNC] Vẽ report lên tờ lỗi: %s", _e)
 
-    # ── Report ──
-    lines = ["✅ Hoàn tất Bình Bế Rớt (CNC) — ghép nhiều mẫu!"]
+    # ── Report (chuỗi tóm tắt) ──
+    sr_txt = "Bình trang (mỗi mẫu 1 tờ)" if is_sr else "Dàn nhiều mẫu (gang)"
     mode_txt = "2 mặt (Trước/Sau/Khuôn)" if two_sided else "1 mặt (Trước/Khuôn)"
-    lines.append(f"Chế độ: {mode_txt} | Lật: {'cạnh dài' if flip_edge == 'long' else 'cạnh ngắn'} | Boong: {pont_type}")
+    lines = ["✅ Hoàn tất Bình Bế Rớt (CNC)!"]
+    lines.append(
+        f"Kiểu: {sr_txt} | {mode_txt} | "
+        f"Lật: {'cạnh dài' if flip_edge == 'long' else 'cạnh ngắn'} | Boong: {pont_type}"
+    )
     lines.append("")
     lines.append("📋 LỆNH IN:")
-    lines.append(f"  • Số mẫu ghép trên tờ: {len(front_idxs)}")
-    lines.append(f"  • Tổng SL/tờ: {items_per_sheet} con")
-    if placed_by_page:
-        for fi in front_idxs:
-            n = placed_by_page.get(fi, placed_by_page.get(str(fi), 0))
+    for sub_front_idxs, layout, _pi in report_units:
+        placed_by_page = layout['placed_by_page']
+        sheets_needed = layout['sheets_needed']
+        if is_sr:
+            fi = sub_front_idxs[0]
+            n = placed_by_page.get(fi, placed_by_page.get(str(fi), layout['items_per_sheet']))
             qty = _qty_for(fi)
             if qty > 0:
                 actual = n * sheets_needed
-                extra = actual - qty
                 lines.append(
-                    f"     - Trang {fi + 1}: {n} con/tờ — đặt {qty} → in thực {actual} (dư {extra})"
+                    f"  • Trang {fi + 1}: {n} con/tờ × {sheets_needed} tờ — "
+                    f"đặt {qty} → in thực {actual} (dư {actual - qty})"
                 )
             else:
-                lines.append(f"     - Trang {fi + 1}: {n} con/tờ — SL auto")
-    lines.append(f"  ⇒ Số tờ cần in: {sheets_needed}")
+                lines.append(f"  • Trang {fi + 1}: {n} con/tờ × {sheets_needed} tờ (SL auto)")
+        else:
+            lines.append(f"  • Số mẫu ghép trên tờ: {len(sub_front_idxs)}")
+            lines.append(f"  • Tổng SL/tờ: {layout['items_per_sheet']} con")
+            for fi in sub_front_idxs:
+                n = placed_by_page.get(fi, placed_by_page.get(str(fi), 0))
+                qty = _qty_for(fi)
+                if qty > 0:
+                    actual = n * sheets_needed
+                    lines.append(
+                        f"     - Trang {fi + 1}: {n} con/tờ — đặt {qty} → in thực {actual} (dư {actual - qty})"
+                    )
+                else:
+                    lines.append(f"     - Trang {fi + 1}: {n} con/tờ — SL auto")
+    lines.append(f"  ⇒ Số tờ cần in (tổng): {total_sheets}")
     return "\n".join(lines)

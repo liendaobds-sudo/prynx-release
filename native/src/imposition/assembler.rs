@@ -105,12 +105,14 @@ pub fn compute_alignment(
 }
 
 #[pyfunction]
+#[pyo3(signature = (placements, mark_type, mark_off, mark_len, bleed_offset=0.0))]
 pub fn compute_mark_coords(
     py: Python<'_>,
     placements: &Bound<'_, PyList>,
     mark_type: &str,
     mark_off: f64,
     mark_len: f64,
+    bleed_offset: f64,
 ) -> PyResult<PyObject> {
     // Parse placement dicts → AbsPlacement (chỉ cần các field mark dùng tới).
     let mut parsed: Vec<core::AbsPlacement> = Vec::new();
@@ -135,7 +137,7 @@ pub fn compute_mark_coords(
         });
     }
 
-    let marks = core::compute_mark_coords(&parsed, mark_type, mark_off, mark_len);
+    let marks = core::compute_mark_coords(&parsed, mark_type, mark_off, mark_len, bleed_offset);
     let out = PyList::empty(py);
     for m in &marks {
         let d = PyDict::new(py);

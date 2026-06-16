@@ -61,6 +61,9 @@ export function usePdfLoader({
 
     // Clear stale tile cache on new file load
     useEffect(() => {
+        // Edit-commit: KHÔNG xóa toàn bộ cache tile (key cũ theo pdfUrl cũ không trùng
+        // key mới nên tự vô hiệu) → tránh white-flash các trang khác.
+        if ((file as any)?.__editCommit) return;
         if (file || pdfUrl) {
             clearTileUrlCache();
         }
@@ -70,6 +73,14 @@ export function usePdfLoader({
     useEffect(() => {
         const isSameUrl = prevPdfUrlRef.current === pdfUrl;
         prevPdfUrlRef.current = pdfUrl;
+
+        // Edit-commit: cùng cấu trúc trang (số trang/kích thước/thứ tự KHÔNG đổi) →
+        // KHÔNG nạp lại metadata, KHÔNG setNumPages(0) (gây unmount toàn viewer +
+        // spinner), KHÔNG reset scroll/zoom/selection/undo. Tile tự nạp lại do
+        // LiveTile khóa theo pdfUrl (đã đổi); overlay /edit/objects refetch theo fid.
+        if ((file as any)?.__editCommit) {
+            return;
+        }
 
         setPdfRef(null);
         setAllPageDims({});

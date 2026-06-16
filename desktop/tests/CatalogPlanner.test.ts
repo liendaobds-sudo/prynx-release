@@ -1,7 +1,7 @@
 // Test script for CatalogPlanner — Verification Matrix
-// Run: npx tsx src/lib/imposerEngine/CatalogPlanner.test.ts
+// Run: npx tsx tests/CatalogPlanner.test.ts
 
-import { planCatalog, verifyCatalogPlan, PlanConfig } from './CatalogPlanner';
+import { planCatalog, verifyCatalogPlan, PlanConfig } from '../src/lib/imposerEngine/CatalogPlanner';
 
 interface TestCase {
     label: string;

@@ -9,9 +9,15 @@ from pytesseract import Output
 if os.name == 'nt':
     import sys
     from pathlib import Path
-    # Check bundled tesseract first
-    bundled_tess = Path(sys.executable).parent / "tesseract" / "tesseract.exe"
-    if bundled_tess.is_file():
+    # Check bundled tesseract first. Tauri bundles resources under "binaries/",
+    # còn dev/standalone có thể nằm cạnh exe → thử cả hai vị trí.
+    _exe_dir = Path(sys.executable).parent
+    _tess_candidates = [
+        _exe_dir / "binaries" / "tesseract" / "tesseract.exe",
+        _exe_dir / "tesseract" / "tesseract.exe",
+    ]
+    bundled_tess = next((p for p in _tess_candidates if p.is_file()), None)
+    if bundled_tess:
         pytesseract.pytesseract.tesseract_cmd = str(bundled_tess)
     else:
         tess_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'

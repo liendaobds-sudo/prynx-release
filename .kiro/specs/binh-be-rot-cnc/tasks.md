@@ -3,6 +3,18 @@
 > Kế hoạch triển khai — Công cụ "Bình Bế Rớt (CNC)".
 > Nguyên tắc: tái dùng engine/solver/report/lưu-file; chỉ thêm 2 mặt + lật gương + dấu canh CNC + card mới.
 
+> ⚠️ **CẬP NHẬT — TRẠNG THÁI THỰC TẾ (đồng bộ với code).**
+> Các ô `[x]` dưới đây phản ánh kế hoạch GỐC, KHÔNG khớp code hiện tại. Đính chính:
+> - **Task 1, 2 (`cnc_geometry.py` + test):** module đã bị **XÓA** (code chết —
+>   lật gương thật do `cnc_render.mirror_placements_multi`). Test `test_cnc_geometry.py` đã xóa.
+> - **Task 3 (`draw_cnc_marks` 4 loại):** KHÔNG làm. Thực tế chỉ có
+>   `cnc_marks.draw_duplex_marks` (1 loại dấu canh 2 mặt), bật/tắt bằng `cncDuplexMarks`.
+> - **Task 4 (mở rộng `nup_engine` nhánh repeat):** thực tế là module riêng
+>   `cnc_render.run_cnc_two_sided` (nup_engine chỉ định tuyến). Mỗi đơn vị bình xuất
+>   `[Trước, Sau, Khuôn]` (2 mặt) / `[Trước, Khuôn]` (1 mặt).
+> - **Task 5, 6, 8 (`cncMarkType`):** thay bằng `cncDuplexMarks`; bỏ `supportsCncMarks`.
+> - Kiến trúc hiện hành & nhiệm vụ chi tiết: xem spec `cnc-multi-template`.
+
 ## Overview
 Backend lõi thuần (lật gương) + test → mở rộng engine 2 mặt/3 trang → dấu canh CNC → frontend (registry, store, UI, save) → kiểm chứng.
 

@@ -205,6 +205,26 @@ def run_nup_engine(
 
         margin_right += mark_space
 
+    # ── TMP: Trace margin values after include_marks block ──
+    try:
+        import json as _jj
+        from pathlib import Path as _PP
+        _dd = os.path.join(str(_PP.home()), "Desktop")
+        with open(os.path.join(_dd, "debug_nup_l_shape.txt"), "a", encoding="utf-8") as _ff:
+            _ff.write(f"\n--- MARGIN TRACE (after include_marks block) ---\n")
+            _ff.write(_jj.dumps({
+                "marginMode": settings.get('marginMode'),
+                "mark_type_var": mark_type,
+                "mark_len": mark_len, "mark_off": mark_off,
+                "margin_top_AFTER": margin_top,
+                "margin_bottom_AFTER": margin_bottom,
+                "margin_left_AFTER": margin_left,
+                "margin_right_AFTER": margin_right,
+                "condition_result": settings.get('marginMode') == 'include_marks' and mark_type != 'none',
+            }, indent=2) + "\n")
+    except Exception:
+        pass
+
     usable_w = sheet_w - margin_left - margin_right
 
     usable_h = sheet_h - margin_top - margin_bottom
@@ -1103,10 +1123,47 @@ def run_nup_engine(
         # Req 4.3: gridStrategy 'manual' → dùng đúng cols/rows người dùng nhập.
         cols_manual = int(settings.get('cols', 0) or 0)
         rows_manual = int(settings.get('rows', 0) or 0)
+
+        logger.info(f"[NUP_ENGINE SOLVER DEBUG] usable_w={usable_w:.2f} usable_h={usable_h:.2f} "
+                    f"trim_w={trim_w:.2f} trim_h={trim_h:.2f} gap_x={gap_x:.2f} gap_y={gap_y:.2f} "
+                    f"strategy={strategy} secondary_gap={secondary_gap} "
+                    f"marginBottom={margin_bottom:.2f} marginTop={margin_top:.2f} "
+                    f"sheet_h={sheet_h:.2f} split_gap_mm={settings.get('splitGap')} "
+                    f"gripperMargin={settings.get('gripperMargin')}")
+
         if strategy == 'manual' and cols_manual > 0 and rows_manual > 0:
             layout = solve_manual(trim_w, trim_h, gap_x, gap_y, cols_manual, rows_manual)
         else:
             layout = solve_optimal_layout(usable_w, usable_h, trim_w, trim_h, gap_x, gap_y, strategy, secondary_gap)
+
+        logger.info(f"[NUP_ENGINE SOLVER RESULT] totalItems={layout.get('totalItems')} strategy={layout.get('strategyUsed')}")
+
+        # ── TMP DEBUG: ghi ra file Desktop để so sánh với preview ──
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _desktop = os.path.join(str(_Path.home()), "Desktop")
+            _log_path = os.path.join(_desktop, "debug_nup_l_shape.txt")
+            with open(_log_path, "a", encoding="utf-8") as _f:
+                _f.write(f"\n--- LOG FROM NUP_ENGINE (BACKEND) ---\n")
+                _f.write(_json.dumps({
+                    "usable_w": usable_w, "usable_h": usable_h,
+                    "trim_w": trim_w, "trim_h": trim_h,
+                    "gap_x": gap_x, "gap_y": gap_y,
+                    "strategy": strategy, "secondary_gap": secondary_gap,
+                    "margin_top": margin_top, "margin_bottom": margin_bottom,
+                    "sheet_w": sheet_w, "sheet_h": sheet_h,
+                    "split_gap_mm": settings.get('splitGap'),
+                    "gripperMargin": settings.get('gripperMargin'),
+                    "bleed_mm": settings.get('bleed'), "bleed_pt": bleed_pt,
+                    "src_w": src_w, "src_h": src_h,
+                    "marginMode": settings.get('marginMode'),
+                    "markType": settings.get('markType'),
+                    "mark_len_pt": mark_len, "mark_off_pt": mark_off,
+                }, indent=2) + "\n")
+                _f.write(f"ENGINE RESULT: totalItems={layout.get('totalItems')} strategyUsed={layout.get('strategyUsed')}\n")
+        except Exception:
+            pass
 
     capacity = layout['totalItems']
 
@@ -1154,13 +1211,120 @@ def run_nup_engine(
 
     else:
 
-        if target_quantity > 0:
+        # ── N-Up "Dàn nhiều mẫu" (sequential): ghép theo SỐ LƯỢNG THỰC, lấp theo layout
+        #    tối ưu/lưới, TRÀN sang tờ sau khi vượt sức chứa; tờ cuối (lẻ) CĂN GIỮA.
+        #    SL mỗi loại = K → tổng = K × số mẫu. SL trống → lấp đầy đúng 1 tờ.
+        #    Dùng precalc (dựng sẵn vị trí) để kiểm soát cyclic + cap + căn giữa từng tờ.
+        _align_np = settings.get('align', 'center')
+        _cells_np = layout['cells']
+        if layout_type == 'sequential' and capacity > 0 and page_count > 0 and _cells_np:
+            if any((int(v or 0) > 0) for v in target_quantities_by_page.values()):
+                total_needed = 0
+                for _p in range(page_count):
+                    _q = target_quantities_by_page.get(str(_p), target_quantities_by_page.get(_p, target_quantity))
+                    try:
+                        _q = int(_q)
+                    except (TypeError, ValueError):
+                        _q = 0
+                    total_needed += max(0, _q)
+            elif target_quantity > 0:
+                total_needed = target_quantity * page_count
+            else:
+                total_needed = capacity  # SL trống → lấp đầy 1 tờ
+            total_needed = max(1, int(total_needed))
+            n_sheets = -(-total_needed // capacity)  # ceil
 
+            # Căn lề:
+            #  - ĐÚNG 1 tờ (ít con): căn giữa theo bbox ô THỰC SỰ lấp (đẹp).
+            #  - NHIỀU tờ: MỌI tờ dùng bbox FULL layout (vị trí ô giống nhau giữa các tờ)
+            #    → chồng giấy in ra xén THẲNG HÀNG; tờ cuối thiếu ô vẫn giữ đúng vị trí.
+            _full_bw = max((c['x'] + c['width'] for c in _cells_np), default=0.0)
+            _full_bh = max((c['y'] + c['height'] for c in _cells_np), default=0.0)
+
+            precalculated_placements = {}
+            for _s in range(n_sheets):
+                _n_this = min(capacity, total_needed - _s * capacity)
+                _sc = _cells_np[:_n_this]
+                if n_sheets == 1:
+                    _bw = max((c['x'] + c['width'] for c in _sc), default=0.0)
+                    _bh = max((c['y'] + c['height'] for c in _sc), default=0.0)
+                else:
+                    _bw, _bh = _full_bw, _full_bh
+                # Base theo align (mặc định giữa).
+                if 'left' in _align_np:
+                    _bx = margin_left
+                elif 'right' in _align_np:
+                    _bx = sheet_w - margin_right - _bw
+                else:
+                    _bx = margin_left + (sheet_usable_w - _bw) / 2
+                if 'top' in _align_np:
+                    _byb = sheet_h - margin_top - _bh
+                elif 'bottom' in _align_np:
+                    _byb = margin_bottom
+                else:
+                    _byb = margin_bottom + (sheet_usable_h - _bh) / 2
+                _pls = []
+                for _j, _c in enumerate(_sc):
+                    _g = _s * capacity + _j
+                    _ax = _bx + _c['x']
+                    _ayb = _byb + (_bh - _c['y'] - _c['height'])
+                    _pls.append({
+                        'cluster_idx': 0,
+                        'cell': dict(_c),
+                        'src_page_idx': _g % page_count,
+                        'abs_x': _ax,
+                        'abs_y': _ayb,
+                        'width': _c['width'],
+                        'height': _c['height'],
+                        'original_cell_y': sheet_h - _ayb - _c['height'],
+                    })
+                precalculated_placements[_s] = _pls
+            total_sheets = n_sheets
+        elif target_quantity > 0:
             total_sheets = math.ceil(target_quantity / total_capacity)
-
         else:
-
             total_sheets = math.ceil(page_count / total_capacity)
+
+    chunk_layout_type = layout_type
+
+    # --- Duplex Interleaving for Multi-Sheet Jobs ---
+    # Đan mặt trước/sau theo TỪNG CẶP trang (0&1, 2&3, ...), MỖI CẶP dùng SỐ TỜ
+    # RIÊNG của nó — KHÔNG chia đều, vì các sản phẩm có số lượng khác nhau
+    # (vd loại 1 = 100 tờ, loại 2 = 50 tờ). Mỗi cặp đóng góp số tờ chẵn nên tờ
+    # chỉ-số-lẻ luôn là mặt sau → bước lật gương (sheet_idx%2==1) vẫn khớp.
+    if settings.get('duplexFlow', 'single') == 'double' and page_count >= 2 and page_count % 2 == 0:
+        # Chế độ 'repeat': sheet_mapping là list page-idx, nhóm theo trang rồi đan từng cặp.
+        if sheet_mapping and len(sheet_mapping) == total_sheets:
+            from collections import Counter as _Counter
+            _counts = _Counter(sheet_mapping)
+            interleaved = []
+            for p in range(0, page_count, 2):
+                n = min(_counts.get(p, 0), _counts.get(p + 1, 0))
+                for _s in range(n):
+                    interleaved.append(p)
+                    interleaved.append(p + 1)
+            if interleaved:
+                sheet_mapping = interleaved
+                total_sheets = len(sheet_mapping)
+        # Chế độ cluster_tile/die-cut: nhóm tờ gốc theo src_page_idx rồi đan từng cặp.
+        if precalculated_placements and len(precalculated_placements) == total_sheets:
+            _page_sheets = {}
+            for _s_idx in sorted(precalculated_placements.keys()):
+                _pls = precalculated_placements[_s_idx]
+                _pg = _pls[0].get('src_page_idx', _pls[0].get('cell', {}).get('pageIdx')) if _pls else None
+                _page_sheets.setdefault(_pg, []).append(_s_idx)
+            new_precalc = {}
+            new_idx = 0
+            for p in range(0, page_count, 2):
+                _front = _page_sheets.get(p, [])
+                _back = _page_sheets.get(p + 1, [])
+                for _f, _b in zip(_front, _back):
+                    new_precalc[new_idx] = precalculated_placements[_f]
+                    new_precalc[new_idx + 1] = precalculated_placements[_b]
+                    new_idx += 2
+            if new_precalc:
+                precalculated_placements = new_precalc
+                total_sheets = len(new_precalc)
 
     align = settings.get('align', 'center')
 
@@ -1208,7 +1372,7 @@ def run_nup_engine(
 
             active_grid_w, active_grid_h, super_grid_w, super_grid_h,
 
-            prog_file, page_count, layout_type, is_die_cut,
+            prog_file, page_count, chunk_layout_type, is_die_cut,
 
             settings.get('pontConfig') if settings.get('pontType', 'none') != 'none' else None,
 
@@ -1235,6 +1399,8 @@ def run_nup_engine(
             mark_thick,  # Độ dày nét dấu xén (pt) — luồn từ markThickness của frontend
 
             mark_style,  # Kiểu dấu xén: 'default' | 'japanese' (nét đôi)
+
+            settings.get('duplexFlow', 'single'),  # Duplex flow for mirroring back side
 
         )
 
@@ -1391,14 +1557,50 @@ def run_nup_engine(
 
         except OSError: pass
 
+    # ── Report cho Cắt Xén (guillotine) — không die-cut, không qua nhánh sticker repeat ──
+    # Cắt xén: 1 trang/tờ (không có trang khuôn) → key report = chỉ số trang output.
+    # Sticker die-cut đã tự dựng _reports_by_sheet ở nhánh repeat nên chỉ dựng khi còn rỗng.
+    if not _reports_by_sheet and not is_die_cut:
+        try:
+            _gcfg = settings.get('reportDisplay') or {}
+            if _gcfg.get('enabled') and total_sheets:
+                from app.workers import nup_report as _nrg
+                _g_paper = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                _g_label = _gcfg.get('labelNameText') or ""
+                _g_cap = int(capacity or 0)
+                for _gs in range(int(total_sheets)):
+                    _gd = _nrg.compute_report_data(
+                        label_name=_g_label, paper_size=_g_paper,
+                        items_per_sheet=_g_cap, requested_qty=0,
+                        material=settings.get('reportMaterial', '') or '',
+                        lamination_type=settings.get('reportLamination', 0) or 0,
+                        lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                        mode_label='Cắt xén',
+                        order_code=settings.get('reportOrderCode', '') or '',
+                        identifier=f"Tờ {_gs + 1}/{int(total_sheets)}",
+                        sheet_count_override=int(total_sheets),
+                    )
+                    _reports_by_sheet[_gs] = _nrg.build_report_string(_gcfg, _gd)
+        except Exception as _ge:
+            logger.warning(f"[REPORT] cắt xén dựng report lỗi: {_ge}")
+
     # ── Stamp report lên từng tờ + bảng tổng hợp (spec: binh-tem-be-report) ──
     if _reports_by_sheet:
         _stage("Đang ghi report lên tờ...")
         try:
             from app.workers import nup_report as _nr
             _rd = settings.get('reportDisplay') or {}
+            # Report CHỈ vẽ trên trang IN. Khi tách trang khuôn (separateCutPage), mỗi tờ
+            # logic đẻ 2 trang output [in, khuôn] → trang in của tờ s nằm ở index s*2.
+            # Remap key tờ-logic → chỉ số trang IN thật để report không dính trang khuôn
+            # và không bị mất ở các tờ sau.
+            _sep_cut = bool(settings.get('separateCutPage')) and is_die_cut
+            if _sep_cut:
+                _reports_to_stamp = {s_idx * 2: txt for s_idx, txt in _reports_by_sheet.items()}
+            else:
+                _reports_to_stamp = _reports_by_sheet
             _nr.stamp_reports_on_pdf(
-                output_path, output_path, _reports_by_sheet,
+                output_path, output_path, _reports_to_stamp,
                 position=_rd.get('position', 'top'),
                 offset_x_mm=float(_rd.get('offsetX', 5.0)),
                 offset_y_mm=float(_rd.get('offsetY', 5.0)),

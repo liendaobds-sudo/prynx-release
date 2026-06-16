@@ -143,11 +143,13 @@ pub fn compute_placements(
 
 /// Tính các đoạn mark cắt từ placements. Tương đương `compute_mark_coords`.
 /// `mark_type`: "corners" chỉ vẽ mép ngoài; còn lại vẽ mọi đường cắt.
+/// `bleed_offset`: nếu > 0, vẽ 2 đường song song offset ±bleed (kiểu Nhật Bản).
 pub fn compute_mark_coords(
     placements: &[AbsPlacement],
     mark_type: &str,
     mark_off: f64,
     mark_len: f64,
+    bleed_offset: f64,
 ) -> Vec<MarkSegment> {
     use std::collections::{BTreeSet, HashMap};
 
@@ -176,12 +178,32 @@ pub fn compute_mark_coords(
     }
 
     let mut marks: Vec<MarkSegment> = Vec::new();
+    let is_japanese = bleed_offset > 0.01;
 
+    macro_rules! push_mark {
+        (v, $x:expr, $y0:expr, $y1:expr) => {
+            if is_japanese {
+                marks.push(MarkSegment { x1: $x - bleed_offset, y1: $y0, x2: $x - bleed_offset, y2: $y1 });
+                marks.push(MarkSegment { x1: $x + bleed_offset, y1: $y0, x2: $x + bleed_offset, y2: $y1 });
+            } else {
+                marks.push(MarkSegment { x1: $x, y1: $y0, x2: $x, y2: $y1 });
+            }
+        };
+        (h, $y:expr, $x0:expr, $x1:expr) => {
+            if is_japanese {
+                marks.push(MarkSegment { x1: $x0, y1: $y - bleed_offset, x2: $x1, y2: $y - bleed_offset });
+                marks.push(MarkSegment { x1: $x0, y1: $y + bleed_offset, x2: $x1, y2: $y + bleed_offset });
+            } else {
+                marks.push(MarkSegment { x1: $x0, y1: $y, x2: $x1, y2: $y });
+            }
+        };
+    }
+
+    #[derive(Clone)]
     struct BBox { min_x: f64, max_x: f64, min_y: f64, max_y: f64 }
     const GAP_EPS: f64 = 0.5;
 
     for cluster_blocks in block_cuts.values() {
-        // ── Pass 1: bbox + cut-vals mỗi block ──
         let mut bboxes: HashMap<i64, BBox> = HashMap::new();
         let mut per_block: Vec<(i64, Vec<f64>, Vec<f64>)> = Vec::new();
         for (&block_id, cuts) in cluster_blocks.iter() {
@@ -197,7 +219,6 @@ pub fn compute_mark_coords(
             per_block.push((block_id, v_vals, h_vals));
         }
 
-        // Tâm gap giữa cụm chính (0) và cụm fill (1 phải / 2 đáy).
         let b0 = bboxes.get(&0);
         let vx_c: Option<f64> = match (b0, bboxes.get(&1)) {
             (Some(a), Some(b)) if b.min_x - a.max_x > GAP_EPS => Some((a.max_x + b.min_x) / 2.0),
@@ -208,8 +229,7 @@ pub fn compute_mark_coords(
             _ => None,
         };
 
-        // ── Pass 2: vẽ dấu xén. Mặt GIÁP giữa 2 cụm KÉO DÀI tới tâm gap để 2 đầu CHẠM NHAU.
-        for (block_id, v_vals, h_vals) in &per_block {
+        for (_block_id, v_vals, h_vals) in &per_block {
             let min_x = v_vals[0];
             let max_x = *v_vals.last().unwrap();
             let min_y = h_vals[0];
@@ -218,68 +238,27 @@ pub fn compute_mark_coords(
             let v_draw: Vec<f64> = if mark_type == "corners" { vec![min_x, max_x] } else { v_vals.clone() };
             let h_draw: Vec<f64> = if mark_type == "corners" { vec![min_y, max_y] } else { h_vals.clone() };
 
-            // Vạch DỌC (mép trên/dưới block).
             for &vx in &v_draw {
-                // tick trên: cụm fill đáy (2) giáp cụm chính phía trên → kéo lên tâm gap.
-                if *block_id == 2 {
-                    if let Some(hc) = hy_c {
-                        marks.push(MarkSegment { x1: vx, y1: min_y - mark_off, x2: vx, y2: hc });
-                    } else {
-                        marks.push(MarkSegment { x1: vx, y1: min_y - mark_off, x2: vx, y2: min_y - mark_off - mark_len });
-                    }
-                } else {
-                    marks.push(MarkSegment { x1: vx, y1: min_y - mark_off, x2: vx, y2: min_y - mark_off - mark_len });
-                }
-                // tick dưới: cụm chính (0) giáp fill đáy phía dưới → kéo xuống tâm gap.
-                if *block_id == 0 {
-                    if let Some(hc) = hy_c {
-                        marks.push(MarkSegment { x1: vx, y1: max_y + mark_off, x2: vx, y2: hc });
-                    } else {
-                        marks.push(MarkSegment { x1: vx, y1: max_y + mark_off, x2: vx, y2: max_y + mark_off + mark_len });
-                    }
-                } else {
-                    marks.push(MarkSegment { x1: vx, y1: max_y + mark_off, x2: vx, y2: max_y + mark_off + mark_len });
-                }
+                push_mark!(v, vx, min_y - mark_off, min_y - mark_off - mark_len);
+                push_mark!(v, vx, max_y + mark_off, max_y + mark_off + mark_len);
             }
-
-            // Vạch NGANG (mép trái/phải block).
             for &hy in &h_draw {
-                // tick trái: cụm fill phải (1) giáp cụm chính bên trái → kéo về tâm gap.
-                if *block_id == 1 {
-                    if let Some(vc) = vx_c {
-                        marks.push(MarkSegment { x1: min_x - mark_off, y1: hy, x2: vc, y2: hy });
-                    } else {
-                        marks.push(MarkSegment { x1: min_x - mark_off, y1: hy, x2: min_x - mark_off - mark_len, y2: hy });
-                    }
-                } else {
-                    marks.push(MarkSegment { x1: min_x - mark_off, y1: hy, x2: min_x - mark_off - mark_len, y2: hy });
-                }
-                // tick phải: cụm chính (0) giáp fill phải bên phải → kéo tới tâm gap.
-                if *block_id == 0 {
-                    if let Some(vc) = vx_c {
-                        marks.push(MarkSegment { x1: max_x + mark_off, y1: hy, x2: vc, y2: hy });
-                    } else {
-                        marks.push(MarkSegment { x1: max_x + mark_off, y1: hy, x2: max_x + mark_off + mark_len, y2: hy });
-                    }
-                } else {
-                    marks.push(MarkSegment { x1: max_x + mark_off, y1: hy, x2: max_x + mark_off + mark_len, y2: hy });
-                }
+                push_mark!(h, hy, min_x - mark_off, min_x - mark_off - mark_len);
+                push_mark!(h, hy, max_x + mark_off, max_x + mark_off + mark_len);
             }
         }
 
-        // ── Dấu chia đôi ở LỀ NGOÀI: tick tại tâm gap, đặt ở đỉnh/đáy (gap dọc) hoặc
-        // trái/phải (gap ngang) của TOÀN khối — canh cắt tách 2 cụm từ mép giấy. ──
         let g_min_x = bboxes.values().map(|b| b.min_x).fold(f64::INFINITY, f64::min);
         let g_max_x = bboxes.values().map(|b| b.max_x).fold(f64::NEG_INFINITY, f64::max);
         let g_min_y = bboxes.values().map(|b| b.min_y).fold(f64::INFINITY, f64::min);
         let g_max_y = bboxes.values().map(|b| b.max_y).fold(f64::NEG_INFINITY, f64::max);
         if let Some(vc) = vx_c {
-            marks.push(MarkSegment { x1: vc, y1: g_min_y - mark_off, x2: vc, y2: g_min_y - mark_off - mark_len });
-            marks.push(MarkSegment { x1: vc, y1: g_max_y + mark_off, x2: vc, y2: g_max_y + mark_off + mark_len });
+            push_mark!(v, vc, g_min_y - mark_off, g_min_y - mark_off - mark_len);
+            push_mark!(v, vc, g_max_y + mark_off, g_max_y + mark_off + mark_len);
         }
         if let Some(hc) = hy_c {
-            marks.push(MarkSegment { x1: g_min_x - mark_off, y1: hc, x2: g_min_x - mark_off - mark_len, y2: hc });
-            marks.push(MarkSegment { x1: g_max_x + mark_off, y1: hc, x2: g_max_x + mark_off + mark_len, y2: hc });
+            push_mark!(h, hc, g_min_x - mark_off, g_min_x - mark_off - mark_len);
+            push_mark!(h, hc, g_max_x + mark_off, g_max_x + mark_off + mark_len);
         }
     }
 
@@ -327,8 +306,8 @@ mod tests {
             AssemblyCell { x: 100.0, y: 0.0, width: 100.0, height: 60.0, is_rotated: false, is_rotated_180: false, block_id: 0 },
         ];
         let pls = compute_placements(0, &cells, 2, 1, 1, 0.0, 200.0, 60.0, 0.0, 0.0, 450.0, "sequential", 2, 2, None);
-        let corners = compute_mark_coords(&pls, "corners", 3.0, 5.0);
-        let guillotine = compute_mark_coords(&pls, "guillotine", 3.0, 5.0);
+        let corners = compute_mark_coords(&pls, "corners", 3.0, 5.0, 0.0);
+        let guillotine = compute_mark_coords(&pls, "guillotine", 3.0, 5.0, 0.0);
         // guillotine có nhiều đường cắt hơn corners (3 đường dọc vs 2).
         assert!(guillotine.len() > corners.len());
     }

@@ -1,0 +1,23 @@
+{
+  "id": "yuty_a3_max",
+  "vendor": "Yuty/Skycut",
+  "model": "A3 Max",
+  "emitter": "command_stream",
+  "dialect": "skycut_ud",
+  "resolution_plu_per_mm": 40.0,
+  "origin": "bottom_left",
+  "flip_y": true,
+  "swap_xy": false,
+  "separator": " ",
+  "header_template": "IN FSIZE{fw},{fh} CMD:32,{aw},{ah},360,360;CMD:18,1;CMD:103,5;CMD:35,{tool},{pressure},{offset};TB26,{fw},{fh} ",
+  "footer_template": "U0,0 @ @ ",
+  "pen_up": "U{x},{y} ",
+  "pen_down": "D{x},{y} ",
+  "registration": { "mode": "onboard_frame", "frame_cmd": "FSIZE" },
+  "blade": { "embed_force_speed": false, "tool": 2, "pressure": 1, "blade_offset_plu": 0, "overcut_plu": 0 },
+  "dual_head": { "enabled": false, "switch_cmd": "CMD:35,{slot};" },
+  "filename": { "pattern": "{barcode}", "ext": "plt", "encoding": "ascii" },
+  "transport": { "default": "file", "tcp_port": 9100, "serial_baud": 9600, "flow_control": "rtscts" },
+  "limits": { "max_w_mm": 297, "max_h_mm": 420 },
+  "source_ref": "scripts/illustrator/dev campuchia v5.6.jsx (exportCutLayerToPLT)"
+}

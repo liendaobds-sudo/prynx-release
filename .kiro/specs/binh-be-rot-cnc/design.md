@@ -2,6 +2,20 @@
 
 > Thiết kế kỹ thuật — Công cụ "Bình Bế Rớt (CNC)"
 
+> ⚠️ **CẬP NHẬT — TRẠNG THÁI THỰC TẾ (đồng bộ với code).**
+> Thiết kế gốc này đã được **thay thế** bởi spec `cnc-multi-template` (xem thư mục
+> `.kiro/specs/cnc-multi-template/`). Code hiện tại KHÁC thiết kế gốc ở các điểm:
+> - Render KHÔNG nằm trong nhánh repeat của `nup_engine`. `nup_engine.run_nup_engine`
+>   chỉ **định tuyến** `imposerMode=='cnc'` sang module riêng `cnc_render.run_cnc_two_sided`.
+> - Layout Mặt trước: chế độ **Bình trang (S&R, layoutType=='repeat')** dùng
+>   `compute_sticker_layout_for_page` (đúng solver Bình Tem Bế); chế độ **Dàn nhiều mẫu**
+>   dùng `build_cnc_front_layout` (bin-pack trộn, `cnc_layout.py`).
+> - Lật gương Mặt sau do `cnc_render.mirror_placements_multi` đảm nhiệm.
+>   **Module `cnc_geometry.py` đã bị XÓA** (từng là code chết).
+> - Dấu canh: KHÔNG có `cncMarkType` nhiều loại / `draw_cnc_marks`. Thực tế chỉ có
+>   **một** loại dấu canh 2 mặt — cờ boolean `cncDuplexMarks` → `cnc_marks.draw_duplex_marks`.
+> Phần dưới giữ nguyên làm lịch sử thiết kế ban đầu.
+
 ## Overview
 
 Thêm công cụ **Bình Bế Rớt (CNC)** dưới dạng **card mới** + **chế độ riêng** (`cnc_imposer`) tái dùng toàn bộ dashboard/engine/report/lưu-file của Bình Tem Bế. Khác biệt khu trú vào 3 điểm:

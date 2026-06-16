@@ -8,6 +8,7 @@ import { useAppSettingsStore } from '../stores/appSettingsStore';
 import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey } from '../lib/toolRegistry';
 import { Button } from './Button';
 import { SettingRow } from './SettingRow';
+import CutterMachinesPanel from './imposition-tools/cut-export/CutterMachinesPanel';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -34,7 +35,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
   const [installing, setInstalling] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
 
-  const [activeTab, setActiveTab] = useState<'gpu' | 'compare' | 'ai' | 'tools' | 'export' | 'workspace' | 'shortcuts'>('gpu');
+  const [activeTab, setActiveTab] = useState<'gpu' | 'compare' | 'ai' | 'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter'>('gpu');
 
   useEffect(() => {
     fetchStatus();
@@ -90,6 +91,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
              <button onClick={() => setActiveTab('export')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'export' ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>📁 Lưu trữ & Đầu ra</button>
              <button onClick={() => setActiveTab('workspace')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'workspace' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>📏 Không gian làm việc</button>
              <button onClick={() => setActiveTab('shortcuts')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'shortcuts' ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>⌨️ Phím tắt hệ thống</button>
+             <button onClick={() => setActiveTab('cutter')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'cutter' ? 'bg-pink-100 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>✂️ Máy bế</button>
           </div>
         </div>
 
@@ -473,6 +475,8 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 </div>
               </div>
             )}
+
+            {activeTab === 'cutter' && <CutterMachinesPanel />}
           </div>
 
           {/* Footer */}

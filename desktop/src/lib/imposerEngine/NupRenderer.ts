@@ -87,9 +87,8 @@ export const renderNup = async (
         
     if (((settings as any).markType === 'guillotine' || (settings as any).markType === 'corners') && 
         (!settings.clusterGap || settings.clusterGapMode === 'mark')) {
-        // Ensure the split gap between main block and fill block in optimal_auto
-        // is large enough to hold two sets of trim marks without overlapping.
-        splitGap = Math.max(splitGap, 2 * markClearance);
+        // Gap = chính xác 2×markClearance để đỉnh mark 2 cụm CHẠM NHAU.
+        splitGap = 2 * markClearance;
     }
 
     const layout = solveOptimalNupLayout(

@@ -795,7 +795,7 @@ async def start_sticker_job(body: dict, license_info: dict = Depends(require_lic
 
 
 @router.get("/nup-status/{job_id}")
-async def get_nup_status(job_id: str):
+async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
     """Poll N-Up job progress."""
     job = nup_jobs.get(job_id)
     if not job:
@@ -832,7 +832,7 @@ async def get_nup_status(job_id: str):
 
 
 @router.get("/nup-download/{job_id}")
-async def download_nup_result(job_id: str):
+async def download_nup_result(job_id: str, _: dict = Depends(require_license)):
     """Download completed N-Up PDF."""
     job = nup_jobs.get(job_id)
     if not job:
@@ -1036,6 +1036,7 @@ async def preview_layout(req: PreviewLayoutRequest):
             logger.debug("   file_path=%s", file_path)
             
             doc = pdf_lib.open(file_path)
+            src_page_count = doc.page_count
             
             page_idx = min(req.page_idx, doc.page_count - 1) if getattr(req, 'page_idx', 0) >= 0 else 0
             page = doc[page_idx]
@@ -1050,8 +1051,12 @@ async def preview_layout(req: PreviewLayoutRequest):
                 _tm in ('nup', 'booklet', 'sticker_imposer')
                 and _lt != 'repeat'
                 and doc.page_count > 1
-                and (_tq == 0 or bool(getattr(req, 'is_die_cut', False)))
+                and (_tm == 'sticker_imposer' or bool(getattr(req, 'is_die_cut', False)))
             )
+            # Lưu ý: "trộn nhiều mẫu / auto-fill" là tính năng DIE-CUT (Bế tem/CNC).
+            # Bình bài xén (taskMode='nup', guillotine) dao chém THẲNG → phải dùng
+            # LƯỚI ĐỀU (solve_optimal_layout) để preview KHỚP output (render guillotine
+            # cũng dùng solve_optimal_layout). KHÔNG đi nhánh bin-pack trộn ở đây.
             
             if is_nup_multi:
                 from app.workers.sticker_imposer_pkg.bin_packing import solve_auto_fill_mixed
@@ -1262,7 +1267,7 @@ async def preview_layout(req: PreviewLayoutRequest):
             
             bleed_pt = req.bleed or 0
             
-            is_cluster = req.grouping_strategy == 'cluster_tile'
+            is_cluster = (req.grouping_strategy == 'cluster_tile') and bool(getattr(req, 'is_die_cut', False))
             req_cluster_w = req.cluster_w
             req_cluster_h = req.cluster_h
             
@@ -1293,6 +1298,11 @@ async def preview_layout(req: PreviewLayoutRequest):
                 from app.workers.nup_layout_solver import solve_optimal_layout, solve_manual
                 trim_w = max(req.item_w - 2 * bleed_pt, 1.0)
                 trim_h = max(req.item_h - 2 * bleed_pt, 1.0)
+                _split_gap_val = getattr(req, 'split_gap', None)
+                logger.info(f"[PREVIEW SOLVER DEBUG] usable_w={compute_w:.2f} usable_h={compute_h:.2f} "
+                            f"trim_w={trim_w:.2f} trim_h={trim_h:.2f} gap_x={req.gap_x:.2f} gap_y={req.gap_y:.2f} "
+                            f"strategy={req.strategy} secondary_gap(split_gap)={_split_gap_val} "
+                            f"item_w={req.item_w:.2f} item_h={req.item_h:.2f} bleed={bleed_pt:.2f}")
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
                     result = solve_manual(trim_w, trim_h, req.gap_x, req.gap_y, req.cols, req.rows)
                 else:
@@ -1304,8 +1314,9 @@ async def preview_layout(req: PreviewLayoutRequest):
                         gap_x=req.gap_x,
                         gap_y=req.gap_y,
                         strategy=req.strategy,
-                        secondary_gap=getattr(req, 'split_gap', None)
+                        secondary_gap=_split_gap_val
                     )
+                logger.info(f"[PREVIEW SOLVER RESULT] totalItems={result.get('totalItems')} strategy={result.get('strategyUsed')}")
                 result['shapeType'] = 'CUSTOM'
                 result['strategyUsed'] = req.strategy
                 result['widthUsed'] = result.get('overallWidth', 0)
@@ -1413,12 +1424,26 @@ async def preview_layout(req: PreviewLayoutRequest):
             
             logger.info(f"[PREVIEW] compute_sticker_layout_for_page: shape={result.get('shapeType')} items={len(items)}")
             
+            # ── Preview vẽ đúng SỐ Ô THỰC SỰ ĐƯỢC LẤP (khớp output) ──
+            # Sức chứa (totalItems) GIỮ NGUYÊN = số ô tối đa của tờ. Riêng N-Up
+            # "Dàn nhiều mẫu" (sequential): nếu KHÔNG auto-fill (có nhập SL) thì mỗi
+            # trang chỉ đặt 1 lần → chỉ lấp min(số_trang, sức_chứa) ô. Trim cells để
+            # preview KHỚP output (vd 14 trang/18 ô: vẽ 14 ô, cụm L-shape rỗng).
+            # Bình trang (step_repeat) & Bế tem fill đầy nên KHÔNG trim.
+            _capacity = len(items)
+            if (not getattr(req, 'is_die_cut', False)) and _tm == 'nup':
+                _tqbp = getattr(req, 'target_quantities_by_page', None) or {}
+                _gq = getattr(req, 'target_quantity', 0) or 0
+                _auto_fill = (_gq == 0) and not any(int(v or 0) > 0 for v in _tqbp.values())
+                if not _auto_fill:
+                    items = items[:min(src_page_count, _capacity)]
+            
             return {
                 "success": True,
                 "cells": items,
                 "overallWidth": result.get("widthUsed", 0),
                 "overallHeight": result.get("heightUsed", 0),
-                "totalItems": len(items),
+                "totalItems": _capacity,
                 "strategyUsed": result.get("strategyUsed", "")
             }
             

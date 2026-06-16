@@ -421,11 +421,12 @@ def draw_tile_cut_marks(
         tick_h(hy, max_x + mark_off, max_x + mark_off + mark_len)
 
     # ── Internal vertical cuts (between tile columns) ──
-    # Tại mỗi h_cut (kể cả biên): vẽ dấu thập nhỏ centered tại (vx, hy)
     for vx in int_v:
         for hy in h_cuts:
-            # Tick ngang (trái + phải)
-            shape.draw_line(Point(vx - mark_off, hy), Point(vx + mark_off, hy))
+            # Tick ngang hướng sang trái
+            tick_h(hy, vx - mark_off, vx - mark_off - mark_len)
+            # Tick ngang hướng sang phải
+            tick_h(hy, vx + mark_off, vx + mark_off + mark_len)
         # Cũng vẽ nét dọc ra ngoài biên trên/dưới
         tick_v(vx, min_y - mark_off, min_y - mark_off - mark_len)
         tick_v(vx, max_y + mark_off, max_y + mark_off + mark_len)
@@ -433,8 +434,10 @@ def draw_tile_cut_marks(
     # ── Internal horizontal cuts (between tile rows) ──
     for hy in int_h:
         for vx in v_cuts:
-            # Tick dọc (trên + dưới)
-            shape.draw_line(Point(vx, hy - mark_off), Point(vx, hy + mark_off))
+            # Tick dọc hướng lên trên
+            tick_v(vx, hy - mark_off, hy - mark_off - mark_len)
+            # Tick dọc hướng xuống dưới
+            tick_v(vx, hy + mark_off, hy + mark_off + mark_len)
         # Nét ngang ra ngoài biên trái/phải
         tick_h(hy, min_x - mark_off, min_x - mark_off - mark_len)
         tick_h(hy, max_x + mark_off, max_x + mark_off + mark_len)

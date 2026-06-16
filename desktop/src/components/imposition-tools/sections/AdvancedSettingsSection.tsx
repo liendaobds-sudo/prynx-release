@@ -605,8 +605,10 @@ export default function AdvancedSettingsSection({ activeTool }: { activeTool: st
                         </CollapsibleGroup>
                         )}
 
-                        {/* 1. Grouping Strategy */}
-                        {s.taskMode !== 'booklet' && (
+                        {/* 1. Grouping Strategy — CHỈ die-cut (Bế tem/CNC). Guillotine (Bình
+                            bài xén) render lưới đều, KHÔNG dùng grouping → ẩn để tránh control
+                            vô tác dụng / lệch preview-output. */}
+                        {s.taskMode !== 'booklet' && stickerLike && (
                         <div>
                             <div className="flex items-center justify-between mb-2">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">CÁCH CHIA CỤM</label>

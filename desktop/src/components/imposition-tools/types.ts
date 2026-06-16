@@ -138,6 +138,7 @@ export interface NupSettings {
     marginLeft: number;
     marginRight: number;
     marginMode: 'labels_only' | 'include_marks';
+    gripperMargin?: number;
     duplexFlow: 'normal' | 'double';
     align: 'top-left' | 'top-center' | 'top-right' | 'center-left' | 'center' | 'center-right' | 'bottom-left' | 'bottom-center' | 'bottom-right';
     mirrorAlign: boolean;
@@ -264,8 +265,6 @@ export interface ImposerCapability {
     supportsPont: boolean;
     /** Bình 2 mặt (lật gương mặt sau) — chỉ công cụ CNC */
     supportsTwoSided?: boolean;
-    /** Dấu canh CNC (graphtec/corner/circle) — chỉ công cụ CNC */
-    supportsCncMarks?: boolean;
 }
 
 export const IMPOSER_CAPABILITIES: Record<string, ImposerCapability> = {

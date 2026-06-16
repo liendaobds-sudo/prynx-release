@@ -1,5 +1,20 @@
 # Implementation Plan: CNC ghép nhiều mẫu (cnc-multi-template)
 
+> ✅ **CẬP NHẬT — TRẠNG THÁI THỰC TẾ (đồng bộ với code).** Các ô `[ ]` dưới đây đã lỗi thời.
+> Trạng thái thật:
+> - **ĐÃ LÀM (core):** 1.1 (`cnc_layout.build_cnc_front_layout`), 2.1 (`select_front_pages`),
+>   2.3 (`mirror_placements_multi`), 4.1–4.4 (`run_cnc_two_sided` gom Mặt trước → 1 cụm
+>   `[Trước,Sau,Khuôn]`/`[Trước,Khuôn]`, boong Front+Cut, duplex Front+Back, report `sheets_needed`),
+>   6.1–6.2 (nhánh preview CNC trong `imposition.py`), 7.1–7.3 (GridPreview 3 chế độ + cờ CNC).
+> - **KHÔNG làm / đã đổi:** 1.3 (không tách `_center_placements` — `cnc_layout` & `cnc_render`
+>   giữ công thức căn giữa riêng nhưng nhất quán). `mirror_placements` (bản đơn) và
+>   `cnc_geometry.py` đã **bị xóa** (code chết) → các test liên quan cũng xóa.
+> - **BỔ SUNG SAU SPEC:** chế độ **Bình trang (S&R)** dùng `compute_sticker_layout_for_page`
+>   (đúng solver Bình Tem Bế) + shape theo từng trang, thay vì `build_cnc_front_layout`
+>   (chỉ dùng cho gang). FE forward `detectedShapesByPage`/`gridStrategy` cho CNC.
+> - **Test:** có `tests/test_cnc_render.py`, `tests/test_cnc_multi_template.py` (pytest);
+>   các sub-task `*` "property/hypothesis 100 iteration" phần lớn KHÔNG triển khai đúng dạng đó.
+
 ## Overview
 
 Kế hoạch triển khai theo đúng kiến trúc Thiết kế: tách **Layout_Helper dùng chung** (`cnc_layout.py`) làm nguồn chân lý duy nhất, refactor `cnc_render` để gom Mặt trước → 1 cụm trang, bổ sung nhánh preview CNC trong `imposition.py`, và cập nhật GridPreview/Dashboard/Store cho 3 chế độ lật xem + ô SL theo trang chẵn.

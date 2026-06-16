@@ -216,15 +216,21 @@ fn try_config(
             // Right fill
             let right_x = tbw + split_gap;
             let right_w = usable_w - right_x;
-            let mut fill_r_actual_h = 0.0f64;
+            // Khởi tạo = tbh (KHỚP bản Python `_py_solve_optimal_layout`): khi cụm fill
+            // phải RỖNG, overall_h phải GIỮ = chiều cao khối chính, KHÔNG lấy theo
+            // solve_grid.height (vốn vẫn > 0 dù 0 cột) — nếu không sẽ thổi phồng overall_h
+            // và TRIỆT TIÊU cụm fill đáy → "Xếp tối ưu" kém hơn (bug parity).
+            let mut fill_r_actual_h = tbh;
             if right_w > 0.01 {
                 let fill_r = solve_grid(right_w, usable_h, fill_w, fill_h, gap_x, gap_y, !primary_rotated);
-                for mut cc in fill_r.cells.clone() {
-                    cc.x += right_x;
-                    cc.block_id = 1; // cụm fill phải — bộ dấu xén riêng
-                    all_cells.push(cc);
+                if !fill_r.cells.is_empty() {
+                    fill_r_actual_h = fill_r.height;
+                    for mut cc in fill_r.cells {
+                        cc.x += right_x;
+                        cc.block_id = 1; // cụm fill phải — bộ dấu xén riêng
+                        all_cells.push(cc);
+                    }
                 }
-                fill_r_actual_h = fill_r.height;
             }
 
             // Bottom fill
@@ -343,6 +349,21 @@ mod tests {
             solve_optimal_layout(907.09, 1275.59, 255.12, 153.07, 0.0, 0.0, "optimal_auto", None).total_items,
             24
         );
+    }
+
+    #[test]
+    fn optimal_lshape_beats_simple_when_fill_possible() {
+        // Ledger 279x432 (lề ~5mm/bên → usable 269x422mm), item 90x50mm, gap 2mm.
+        // Lưới đều = 20; xếp hình-L lấp thêm cụm đáy = 22.
+        // "Xếp tối ưu" PHẢI nhiều hơn "Lưới đơn giản" (chống bug parity fill_r_actual_h).
+        let mm = 2.83465;
+        let (uw, uh) = (269.0 * mm, 422.0 * mm);
+        let (iw, ih, g) = (90.0 * mm, 50.0 * mm, 2.0 * mm);
+        let simple = solve_optimal_layout(uw, uh, iw, ih, g, g, "simple_auto", None).total_items;
+        let opt = solve_optimal_layout(uw, uh, iw, ih, g, g, "optimal_auto", None).total_items;
+        assert_eq!(simple, 20, "lưới đơn giản");
+        assert_eq!(opt, 22, "xếp tối ưu (L-shape) phải lấp thêm cụm đáy");
+        assert!(opt > simple, "tối ưu phải hơn lưới đơn giản");
     }
 
     #[test]

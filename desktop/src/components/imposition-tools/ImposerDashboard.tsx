@@ -46,6 +46,7 @@ import type { ImpositionPreset } from '../../lib/presetManager';
 
 
 export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles }: ImposerDashboardProps) {
+
     // ═══ Workspace State ═══
     const {
         isProcessing, error: globalError, file: pdfFile, viewerPageOrder,
@@ -494,9 +495,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             let splitGap = s.clusterGap && s.clusterGap > 0 ? s.clusterGap : Math.max(s.gapX || 0, s.gapY || 0, 5);
             if ((s.markType === 'guillotine' || s.markType === 'corners') && 
                 (!s.clusterGap || s.clusterGapMode === 'mark')) {
-                const markClearance = (s.markLength ?? 5.0) + (s.markOffset ?? 3.0);
-                // Khớp code gốc (NupRenderer): gap đủ chứa 2 bộ dấu xén của 2 cụm.
-                splitGap = Math.max(splitGap, 2 * markClearance);
+                const markClearance = (s.marksConfig?.length ?? 5.0) + (s.marksConfig?.distance ?? 3.0);
+                // Gap = chính xác 2×markClearance để đỉnh mark 2 cụm CHẠM NHAU.
+                splitGap = 2 * markClearance;
             }
 
             // Tự động lưu: nếu đã tick nhưng CHƯA chọn thư mục → hỏi ngay (không im lặng).
@@ -552,7 +553,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     orderCode: s.reportOrderCode,
                     labelName: s.reportDisplay?.labelNameText || '',
                 },
-                cncMarkType: s.cncMarkType,
                 clusterTileW: s.clusterTileW, clusterTileH: s.clusterTileH,
                 clusterSizingMode: s.clusterSizingMode, clusterCols: s.clusterCols,
                 clusterRows: s.clusterRows, tileGapX: s.tileGapX, tileGapY: s.tileGapY,
@@ -785,8 +785,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 
                                 const effectiveMarginMode = stickerLike ? 'labels_only' : s.marginMode;
                                 if (effectiveMarginMode === 'include_marks' && s.markType && s.markType !== 'none') {
-                                    const len = s.markLength ?? 5.0;
-                                    const off = s.markOffset ?? 3.0;
+                                    const len = s.marksConfig?.length ?? 5.0;
+                                    const off = s.marksConfig?.distance ?? 3.0;
                                     const markSpace = len + off;
                                     
                                     effMarginTop += markSpace;
@@ -798,9 +798,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 let splitGap = s.clusterGap && s.clusterGap > 0 ? s.clusterGap : Math.max(s.gapX || 0, s.gapY || 0, 5);
                                 if ((s.markType === 'guillotine' || s.markType === 'corners') && 
                                     (!s.clusterGap || s.clusterGapMode === 'mark')) {
-                                    const markClearance = (s.markLength ?? 5.0) + (s.markOffset ?? 3.0);
-                                    // Khớp code gốc (NupRenderer): gap đủ chứa 2 bộ dấu xén.
-                                    splitGap = Math.max(splitGap, 2 * markClearance);
+                                    const markClearance = (s.marksConfig?.length ?? 5.0) + (s.marksConfig?.distance ?? 3.0);
+                                    // Gap = chính xác 2×markClearance để đỉnh mark 2 cụm CHẠM NHAU.
+                                    splitGap = 2 * markClearance;
                                 }
 
                                 return (
@@ -824,6 +824,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 itemH={(() => { const dim = detectedDimensionsByPage[safePageIdx]; const h = dim?.h ?? s.sourcePageDim?.h; return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 : 55; })()}
                                 targetQuantity={s.targetQuantity}
                                 targetQuantitiesByPage={stickerLike ? s.targetQuantitiesByPage : undefined}
+                                sourceTotalPages={sourceTotalPages}
                                 imposerMode={activeTool === 'cnc_imposer' ? 'cnc' : undefined}
                                 cncTwoSided={activeTool === 'cnc_imposer' && s.duplexFlow === 'double'}
                                 cncFlipEdge={s.cncFlipEdge}

@@ -11,6 +11,7 @@ interface UseViewerZoomProps {
     setFitMode: (m: string) => void;
     pageDim: { w: number; h: number } | null;
     pageDisplayMode: string;
+    setPageDisplayMode: (m: string) => void;
     activePage: number;
     actualWidth100: number;
     navigatePage: (p: number) => void;
@@ -21,7 +22,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const {
         containerRef, sidebarRef, internalScrollRef,
         numPages, zoom, setZoom, fitMode, setFitMode,
-        pageDim, pageDisplayMode, activePage, actualWidth100,
+        pageDim, pageDisplayMode, setPageDisplayMode, activePage, actualWidth100,
         navigatePage, toolMode,
     } = props;
 
@@ -39,6 +40,8 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const jumpCooldown = useRef(false);
     const pendingZoomRef = useRef<number | null>(null);
     const wheelAccumulatorRef = useRef<number>(0);
+    const lastZoomMouseRef = useRef<{ mouseX: number, mouseY: number } | null>(null);
+    const zoomRafRef = useRef<number | null>(null);
 
     // ═══ Fit Mode Helpers ═══
     const applyFitWidth = useCallback(() => {
@@ -142,17 +145,27 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         };
     }, [numPages]);
 
-    // ═══ Zoom anchor (scroll to mouse position after zoom) ═══
+    // ═══ Zoom anchor (giữ điểm focus sau khi zoom) ═══
     useLayoutEffect(() => {
-        if (zoomTargetRef.current && internalScrollRef.current) {
-            const { mouseX, mouseY, ratio } = zoomTargetRef.current;
-            const el = internalScrollRef.current;
-            el.scrollLeft = (el.scrollLeft + mouseX) * ratio - mouseX;
-            el.scrollTop = (el.scrollTop + mouseY) * ratio - mouseY;
-            zoomTargetRef.current = null;
-            updateViewportRect();
+        const el = internalScrollRef.current;
+        if (!el) return;
+        let focal = zoomTargetRef.current;
+        if (!focal) {
+            // Không có tâm con trỏ (nút +/- hoặc nhập %): neo về TÂM khung nhìn — chỉ khi đang
+            // zoom thủ công (custom) và nội dung tràn (có gì để cuộn). Tránh phá fit-width/page.
+            if (fitMode !== 'custom') return;
+            const old = currentZoomRef.current; // zoom TRƯỚC (currentZoomRef cập nhật ở useEffect chạy SAU)
+            if (old <= 0 || Math.abs(zoom - old) < 1e-4) return;
+            const scrollable = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+            if (!scrollable) return;
+            focal = { mouseX: el.clientWidth / 2, mouseY: el.clientHeight / 2, ratio: zoom / old };
         }
-    }, [zoom]);
+        const { mouseX, mouseY, ratio } = focal;
+        el.scrollLeft = (el.scrollLeft + mouseX) * ratio - mouseX;
+        el.scrollTop = (el.scrollTop + mouseY) * ratio - mouseY;
+        zoomTargetRef.current = null;
+        updateViewportRect();
+    }, [zoom, fitMode]);
 
     // ═══ Wheel handler (Ctrl+Wheel zoom + page-fit scroll-to-page) ═══
     useEffect(() => {
@@ -184,35 +197,33 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                         const mouseY = e.clientY - rect.top;
 
                         isZoomingRef.current = true;
-
+                        // Tích luỹ zoom mục tiêu, gom 1 lần/khung-hình bằng rAF rồi ZOOM THẲNG +
+                        // neo điểm dưới con trỏ (useLayoutEffect [zoom]). KHÔNG dùng CSS transform
+                        // preview nữa — nó làm nội dung phình trong overflow:auto gây scrollbar
+                        // nhấp nháy + giật khi commit. Cách này mượt như nút +/- mà vẫn bám con trỏ.
                         pendingZoomRef.current = (pendingZoomRef.current ?? currentZoomRef.current) * Math.exp(e.deltaY * -0.001);
                         pendingZoomRef.current = Math.max(0.01, Math.min(64, pendingZoomRef.current));
+                        lastZoomMouseRef.current = { mouseX, mouseY };
+                        setFitMode('custom');
 
-                        const contentEl = internalScrollRef.current.firstElementChild as HTMLElement;
-                        if (contentEl) {
-                            const ratio = pendingZoomRef.current / currentZoomRef.current;
-                            const originX = mouseX + internalScrollRef.current.scrollLeft;
-                            const originY = mouseY + internalScrollRef.current.scrollTop;
-                            contentEl.style.transformOrigin = `${originX}px ${originY}px`;
-                            contentEl.style.transform = `scale(${ratio})`;
-                            contentEl.style.transition = 'none';
+                        if (zoomRafRef.current == null) {
+                            zoomRafRef.current = requestAnimationFrame(() => {
+                                zoomRafRef.current = null;
+                                const target = pendingZoomRef.current;
+                                const old = currentZoomRef.current;
+                                if (target != null && Math.abs(target - old) > 1e-4) {
+                                    const m = lastZoomMouseRef.current || { mouseX: 0, mouseY: 0 };
+                                    zoomTargetRef.current = { mouseX: m.mouseX, mouseY: m.mouseY, ratio: target / old };
+                                    setZoom(target);
+                                }
+                            });
                         }
 
                         if (zoomTimeoutRef.current) clearTimeout(zoomTimeoutRef.current);
                         zoomTimeoutRef.current = setTimeout(() => {
                             isZoomingRef.current = false;
-                            const freshContentEl = internalScrollRef.current?.firstElementChild as HTMLElement;
-                            if (freshContentEl) {
-                                freshContentEl.style.transform = 'none';
-                            }
-                            if (pendingZoomRef.current && pendingZoomRef.current !== currentZoomRef.current) {
-                                zoomTargetRef.current = { mouseX, mouseY, ratio: pendingZoomRef.current / currentZoomRef.current };
-                                setZoom(pendingZoomRef.current);
-                            }
                             pendingZoomRef.current = null;
-                        }, 150);
-
-                        setFitMode('custom');
+                        }, 200);
                     }
                 }
             } else if (pageDisplayMode.includes('_fit') && containerRef.current && containerRef.current.contains(e.target as Node)) {
@@ -264,6 +275,7 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         window.addEventListener('wheel', handleWheel, { passive: false, capture: true });
         return () => {
             window.removeEventListener('wheel', handleWheel, { capture: true });
+            if (zoomRafRef.current != null) { cancelAnimationFrame(zoomRafRef.current); zoomRafRef.current = null; }
         };
     }, [pageDisplayMode, activePage, numPages]);
 
