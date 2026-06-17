@@ -51,18 +51,27 @@ export default function SystemIntegrations() {
             })
             .catch(err => console.error("Failed to get startup args:", err));
 
-        // 2. Poll for subsequent files from Single Instance Plugin
-        const intervalId = setInterval(() => {
-            invoke<string[]>('get_pending_system_files')
-                .then(args => {
-                    if (args && args.length > 0) {
-                        processPaths(args);
-                    }
-                })
-                .catch(err => {
-                    console.error("Failed to poll pending system files:", err);
-                });
-        }, 1000);
+        // 2. Poll for subsequent files — KHÔNG dùng setInterval (nó bắn mỗi 1s BẤT KỂ
+        // lần trước xong chưa → lúc kênh IPC nghẽn sẽ chất đống invoke, làm tệ thêm).
+        // Dùng setTimeout đệ quy: chỉ lên lịch lần kế SAU khi lần này xong.
+        let pollTimer: ReturnType<typeof setTimeout> | null = null;
+        let pollStopped = false;
+        const scheduleNextPoll = () => {
+            if (pollStopped) return;
+            pollTimer = setTimeout(() => {
+                invoke<string[]>('get_pending_system_files')
+                    .then(args => {
+                        if (args && args.length > 0) {
+                            processPaths(args);
+                        }
+                    })
+                    .catch(err => {
+                        console.error("Failed to poll pending system files:", err);
+                    })
+                    .finally(() => { scheduleNextPoll(); });
+            }, 1000);
+        };
+        scheduleNextPoll();
 
         // 3. Listen to Tauri native drag and drop events
         let isUnmounted = false;
@@ -88,7 +97,8 @@ export default function SystemIntegrations() {
 
         return () => {
             isUnmounted = true;
-            clearInterval(intervalId);
+            pollStopped = true;
+            if (pollTimer) clearTimeout(pollTimer);
             if (unlistenDrop) unlistenDrop();
         };
     }, []);

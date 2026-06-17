@@ -8,9 +8,10 @@ import RecentFilesGrid from './RecentFiles/RecentFilesGrid';
 
 interface Props {
   onOpenApp: (appId: AppToolId, payload?: any) => void;
+  isActive?: boolean;
 }
 
-export default function HomeTab({ onOpenApp }: Props) {
+export default function HomeTab({ onOpenApp, isActive = true }: Props) {
     const rightPanelWidth = useAppSettingsStore(state => state.toolMenuWidth);
     const setRightPanelWidth = useAppSettingsStore(state => state.setToolMenuWidth);
     const isExpanded = useAppSettingsStore(state => state.isToolMenuExpanded);
@@ -315,7 +316,7 @@ export default function HomeTab({ onOpenApp }: Props) {
                     </div>
 
                     {/* RECENT FILES GRID */}
-                    <RecentFilesGrid onOpenFile={(file) => onOpenApp('imposition', { file })} />
+                    <RecentFilesGrid onOpenFile={(file) => onOpenApp('imposition', { file })} active={isActive} />
                 </div>
             </div>
 

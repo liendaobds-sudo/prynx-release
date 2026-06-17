@@ -48,7 +48,7 @@ def _content_stream_worker(pdf_path: str, page_nums: list[int], active_rules: se
         engine._has_rgb = False
         engine._has_spot = False
 
-        if "IMAGE_LOW_RES" in active_rules or "COLOR_RGB_DETECTED" in active_rules or "COLOR_SPOT_DETECTED" in active_rules:
+        if "IMAGE_LOW_RES" in active_rules or "IMAGE_HIGH_DPI" in active_rules or "IMAGE_NOT_EMBEDDED" in active_rules or "COLOR_RGB_DETECTED" in active_rules or "COLOR_SPOT_DETECTED" in active_rules:
             issues += engine._check_image_resolution(doc, active_rules, page_nums)
             
         if "COLOR_RGB_DETECTED" in active_rules or "COLOR_SPOT_DETECTED" in active_rules:
@@ -149,6 +149,7 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
         # ── Phase B: pikepdf content stream scan (deeper) ──
         try:
             doc = pikepdf.Pdf.open(pdf_path)
+            doc._path = pdf_path  # Needed by pdfplumber-based checks (live text, font bbox)
 
             if "IMAGE_NOT_EMBEDDED" in active_rules:
                 issues += self._check_illustrator_hidden_links(doc)
@@ -163,7 +164,7 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
             CHUNK_SIZE = 10
             if total_pages <= CHUNK_SIZE:
                 # Sequential for small files
-                if "IMAGE_LOW_RES" in active_rules or "COLOR_RGB_DETECTED" in active_rules or "COLOR_SPOT_DETECTED" in active_rules:
+                if "IMAGE_LOW_RES" in active_rules or "IMAGE_HIGH_DPI" in active_rules or "IMAGE_NOT_EMBEDDED" in active_rules or "COLOR_RGB_DETECTED" in active_rules or "COLOR_SPOT_DETECTED" in active_rules:
                     issues += self._check_image_resolution(doc, active_rules)
                     
                 if "COLOR_RGB_DETECTED" in active_rules or "COLOR_SPOT_DETECTED" in active_rules:
@@ -217,6 +218,7 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
             if "FONT_NOT_EMBEDDED" in active_rules:
                 if doc is None:
                     doc = pikepdf.Pdf.open(pdf_path)
+                    doc._path = pdf_path
                 self._enrich_font_bboxes(doc, issues)
 
             if doc is not None:

@@ -684,35 +684,43 @@ function calcSmart(
         return r0.positions.length >= r90.positions.length ? r0 : r90;
     };
 
+    // Bất biến: smart KHÔNG ĐƯỢC kém grid. Nếu grid xếp được nhiều khuôn hơn
+    // interlock (với hình học cụ thể này), dùng grid. Hòa → ưu tiên interlock
+    // (giữ nhãn chiến lược lồng để người dùng thấy đã thử lồng).
+    const chooseBest = (interlock: LayoutResult): LayoutResult => {
+        const grid = gridFallback();
+        return interlock.positions.length >= grid.positions.length ? interlock : grid;
+    };
+
     if (params.boxType === 'rte') {
         // RTE: luôn dùng interlock (không xoay, overlap closureH + tuckH)
         const interlock = calcRTEInterlock(dieW, dieH, gap, areaW, areaH, ox, oy, closureH, tuckH, safeDustH, params.D);
-        return interlock.positions.length > 0 ? interlock : gridFallback();
+        return chooseBest(interlock);
     }
 
     if (params.boxType === 'slb') {
         // SLB: luôn dùng 180° interlock (xoay đầu đuôi để lồng crash-lock)
         const lockTabH = params.lockTab ? (params.LTH || 0) : 0;
         const interlock = calcSLBInterlock(dieW, dieH, gap, areaW, areaH, ox, oy, closureH, tuckH, safeDustH, params.D, lockTabH, params.L, params.W, params.G);
-        return interlock.positions.length > 0 ? interlock : gridFallback();
+        return chooseBest(interlock);
     }
 
     if (params.boxType === 'cup_sleeve') {
         // Cup Sleeve: lồng quạt 180° xen kẽ cột
         const interlock = calcCupSleeveInterlock(dieW, dieH, gap, areaW, areaH, ox, oy, params);
-        return interlock.positions.length > 0 ? interlock : gridFallback();
+        return chooseBest(interlock);
     }
 
     if (params.boxType === 'pizza') {
         // Pizza: lồng dọc — tai bụi front lồng vào nắp phụ/fan tab
         const interlock = calcPizzaInterlock(dieW, dieH, gap, areaW, areaH, ox, oy, params.D);
-        return interlock.positions.length > 0 ? interlock : gridFallback();
+        return chooseBest(interlock);
     }
 
     if (params.boxType === 'envelope') {
         // Envelope: lồng bì thư (ngang = cột, dọc = 3 hàng)
         const interlock = calcEnvelopeInterlock(dieW, dieH, gap, areaW, areaH, ox, oy, params);
-        return interlock.positions.length > 0 ? interlock : gridFallback();
+        return chooseBest(interlock);
     }
 
     // Gable & Paper Bag: chỉ grid — không lồng được

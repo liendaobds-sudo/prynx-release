@@ -1,5 +1,6 @@
 import { useCallback, useContext } from 'react';
 import { WorkspaceContext, useWorkspaceStore } from '../stores/useWorkspaceStore';
+import { authenticatedFetch, getApiUrl } from '../lib/api';
 
 /**
  * useObjectEditHistory — Undo/Redo cho chế độ "Chỉnh sửa đối tượng" (pdf-object-edit).
@@ -18,6 +19,23 @@ export interface EditSnap {
     file: File | null;
     pdfUrl: string | null;
     fid: string;
+}
+
+// Giới hạn số bước undo để tránh phình RAM (mỗi snapshot giữ 1 File object).
+const MAX_EDIT_HISTORY = 30;
+
+/**
+ * Dọn các Working_File trung gian không còn cần (best-effort, fire-and-forget).
+ * KHÔNG xoá file đang là `currentFid` (đang hiển thị). Backend tự bảo vệ: chỉ
+ * xoá file trong thư mục edit_output, không đụng file gốc.
+ */
+function _discardWorkingFiles(fids: (string | null)[], currentFid: string) {
+    const seen = new Set<string>();
+    for (const fid of fids) {
+        if (!fid || fid === currentFid || seen.has(fid)) continue;
+        seen.add(fid);
+        void authenticatedFetch(`${getApiUrl()}/edit/working/${fid}`, { method: 'DELETE' }).catch(() => {});
+    }
 }
 
 function markEditCommit(f: File | null) {
@@ -40,8 +58,23 @@ export function useObjectEditHistory() {
     const pushSnapshot = useCallback((snap: EditSnap) => {
         if (!store) return;
         const st = store.getState();
-        st.setObjectEditPast([...st.objectEditPast, snap]);
+        // Cắt bớt đầu stack khi vượt trần; thao tác mới làm mất redo → các snapshot
+        // bị loại (cũ quá / redo bị huỷ) sẽ KHÔNG bao giờ khôi phục lại được nữa →
+        // dọn Working_File trung gian tương ứng (backend chỉ xoá file trong edit_output).
+        const all = [...st.objectEditPast, snap];
+        let dropped: EditSnap[] = [];
+        let kept = all;
+        if (all.length > MAX_EDIT_HISTORY) {
+            dropped = all.slice(0, all.length - MAX_EDIT_HISTORY);
+            kept = all.slice(all.length - MAX_EDIT_HISTORY);
+        }
+        const orphanedFuture = st.objectEditFuture;
+        st.setObjectEditPast(kept);
         st.setObjectEditFuture([]);
+        _discardWorkingFiles(
+            [...dropped, ...orphanedFuture].map(s => s.fid),
+            st.selectionFileId,
+        );
     }, [store]);
 
     const applySnap = useCallback((snap: EditSnap) => {

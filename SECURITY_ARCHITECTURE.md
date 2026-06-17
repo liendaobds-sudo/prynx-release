@@ -1,13 +1,14 @@
 # PrynX Security Architecture — Tài liệu tổng kết
 
-> **Phiên bản:** 3.0 — Sau audit toàn diện 2026-06-12 (xem Mục 8)
-> **Cập nhật:** 2026-06-12
+> **Phiên bản:** 3.1 — Sau re-audit & hardening 2026-06-17 (xem **Mục 9**)
+> **Cập nhật:** 2026-06-17
 > **Mục đích:** Đọc 1 lần hiểu hết, phục vụ tham chiếu lâu dài
 >
-> ⚠️ **Đọc Mục 8 trước.** Bản 2.0 mô tả thiết kế *dự kiến*; audit 2026-06-12 phát hiện
-> nhiều lớp release-only **chưa từng chạy** (release build lỗi) và một **lỗ hổng server
-> nghiêm trọng** (anon đọc được toàn bộ bảng license). Mục 8 ghi lại sự thật đã kiểm
-> chứng, các bản vá, và lớp **token ký server (Ed25519)** mới bổ sung.
+> ⚠️ **Đọc Mục 9 trước (mới nhất),** rồi Mục 8. Bản 2.0 mô tả thiết kế *dự kiến*; audit
+> 2026-06-12 (Mục 8) phát hiện nhiều lớp release-only **chưa từng chạy** + lỗ hổng server.
+> Re-audit 2026-06-17 (Mục 9) trace lại toàn bộ sau khi vá, bổ sung các hardening mới
+> (watermark phủ toàn bộ output, fs deny, token persist offline, DEV_MODE fail-closed,
+> public-key trust-anchor, security.log) và **làm rõ biên giới bảo mật thật**.
 >
 > **Phạm vi 2 repo:** phần client/sidecar ở `d:\pdfcompare`; phần **quản lý license + DB +
 > edge function** ở repo riêng `d:\printsolutions-main` (Supabase project `ryvyuxjgdcvoxujqmggm`,
@@ -339,3 +340,234 @@ Sidecar (require_license) → verify_license_token():
 - **Private key** `LICENSE_SIGNING_KEY` chỉ nằm trong Supabase secret; file `.SECRET.txt` đã xóa. Mất secret này → phải sinh lại cặp khóa + cập nhật public key trong `license_guard.py` + deploy lại.
 - Anon key bị hardcode trong mọi script (.jsx/PS1/Python) — bình thường với anon key public, **nhưng** đó là lý do bản vá RLS tối quan trọng: anon key ở khắp nơi.
 - Tự động hóa triển khai: `printsolutions-main/TRIEN_KHAI_TOKEN.bat` (set secret + deploy + xóa file khóa).
+
+
+---
+
+## 9. Re-audit & Hardening 2026-06-17
+
+> Trace lại ground-truth toàn bộ luồng sau các bản vá ở Mục 8, bổ sung hardening và
+> **làm rõ biên giới bảo mật thật**. Mọi mục đều verify bằng đọc code + test (14/14 token
+> test pass, `cargo check` sạch, `npm run typecheck` sạch, py_compile sạch).
+
+### 9.1. Làm rõ QUAN TRỌNG: đâu là biên giới bảo mật THẬT
+
+Trace `sign_api_request` (security.rs) + `register_validated_key`:
+
+- "Rust license gate" (Gate 1 trong `sign_api_request`: kiểm key có trong `VALIDATED_KEYS`)
+  **KHÔNG phải biên giới bảo mật**. Cache đó do **chính frontend nạp** qua
+  `register_validated_key(key)`; Rust **không** tự re-verify với Supabase. Một client bị
+  crack chỉ cần gọi `register_validated_key("bất_kỳ")` → `sign_api_request` ký HMAC hợp lệ.
+- Tương tự, `X-PrynX-Token` (token sidecar) được trả về cho JS và gửi plaintext qua
+  loopback → một local attacker xem được. XOR-mask chỉ chống scan RAM thô.
+
+➡️ **Biên giới bảo mật THẬT DUY NHẤT = token Ed25519 verify ở sidecar** (`verify_license_token`,
+Layer #21). Server ký bằng private key (Supabase secret), client không có private key nên
+**không giả được token**. Mọi lớp client-side khác (Rust cache gate, HMAC token, XOR, anti-debug,
+integrity) là **defense-in-depth** làm chậm/khó kẻ tấn công, KHÔNG phải lớp chặn tuyệt đối.
+
+➡️ Do đó **toàn bộ độ kháng-crack rốt cuộc phụ thuộc vào: edge function `license-verify`
+cấp token Ed25519 đều đặn + `PRYNX_ENFORCE_LICENSE_TOKEN=true`.** Cả hai điều kiện này
+hiện ĐÃ có (xem 9.3). Đây là điều DUY NHẤT phải xác nhận lại trên mỗi bản release.
+
+### 9.2. enforce flag — ĐÃ BẬT (cập nhật Mục 8.6 #2)
+
+`lib.rs` spawn sidecar (release) đã set cứng `("PRYNX_ENFORCE_LICENSE_TOKEN","true")`.
+→ Mục 8.6 #2 ("việc còn lại: bật enforce") **đã hoàn thành**. Sidecar release từ chối
+(403) mọi request thiếu token Ed25519 hợp lệ.
+
+### 9.3. Hardening áp dụng trong đợt này
+
+| # | Hạng mục | Thay đổi | File | Verify |
+|---|---|---|---|---|
+| H1 | **Watermark phủ TOÀN BỘ output** | Trước chỉ nup/vdp/sticker/plan_executor. Thêm `_safe_watermark` cho merge/split (cả ZIP)/resize/shuffle/ocr/optimize **và** toàn bộ luồng edit (delete/transform/text/add) tại chokepoint `_build_output_response`. | `api/routes/pdf_tools.py`, `api/routes/edit.py` | py_compile ✓ |
+| H2 | **Token Ed25519 persist (offline-restart)** | Lưu token qua DPAPI (`prynx_token.dat`), nạp lại lúc khởi động + kiểm `exp` → mở app offline vẫn có token gửi sidecar (trước: token chỉ ở RAM → mở lại offline = 403, "grace 24h" thực tế không chạy). | `security.rs` (`store/load/delete_license_token`), `lib.rs` (đăng ký lệnh), `useAuthStore.ts` | cargo ✓, tsc ✓ |
+| H3 | **DEV_MODE fail-closed ở binary release** | `_is_dev_mode()` trả `False` ngay nếu chạy dưới binary đã compile (`__compiled__` của Nuitka / `sys.frozen`). Chặn kẻ trích `pdf-inspector-backend.exe` chạy trực tiếp + set `DEV_MODE=true` để tắt verify. Dev (Python thông dịch) không đổi. | `license_guard.py` (`_is_dev_mode`) | 14/14 test ✓ |
+| H4 | **Public key = trust anchor** | Production LUÔN dùng key nhúng cứng; env `PRYNX_LICENSE_PUBLIC_KEY` chỉ override khi `DEV_MODE=true`. (Sửa lại lỗ "đọc public key từ env runtime" — vì nếu cho đọc env ở production, kẻ gian đặt env trỏ key của hắn → tự ký token → bypass.) | `license_guard.py` | test ✓ |
+| H5 | **fs capability deny vùng nhạy cảm** | Giữ allow rộng (mở/lưu PDF mọi nơi) + thêm `deny` cho `.ssh/.aws/.gnupg/.config/.kube`, Credentials Windows, Startup folder. | `capabilities/default.json` | — |
+| H6 | **Lệnh Rust đọc file chặn vùng nhạy cảm** | `read_system_file` + `get_file_size` thêm `is_sensitive_path()` (chặn `.ssh/.aws/...`/Credentials + path traversal `..`). Vá lỗ "lệnh Rust bỏ qua fs deny" (capability deny chỉ ràng plugin-fs). | `lib.rs` | cargo ✓ |
+| H7 | **Log kiểm chứng bảo mật** | Log startup `enforce_license_token / dev_mode / sidecar_token / pubkey_source`; log khi token bị reject. Ghi thêm ra file `%APPDATA%\PrynX\logs\security.log` (thầm lặng, KHÔNG hiện cho user, KHÔNG ghi key/token thô) để verify trên bản cài. | `license_guard.py` (`_security_log_to_file`) | test ✓ |
+| H8 | **Test mở rộng** | +7 test: `verify_sidecar_signature` (valid/sai token/hết hạn ts/sai sig/sai path/dev-bypass) + override public key. Tổng **14/14 pass**. | `tests/test_license_token.py` | ✓ |
+
+### 9.4. Bề mặt đã trace lại — kết quả TỐT (không đổi)
+
+- **CORS** (`main.py`): allowlist hẹp hardcode (`tauri.localhost` + vite dev), cố ý bỏ qua
+  `settings.CORS_ORIGINS`; không dùng `*`. ✓
+- **Host binding**: uvicorn + entry Nuitka đều `127.0.0.1` → sidecar chỉ loopback, không lộ LAN. ✓
+- **WebSocket** (`ws.py`): enforce `verify_sidecar_signature` qua query param, đóng `4001` nếu sai. ✓
+- **`write_debug_log`**: confine `%APPDATA%\PrynX\logs` qua `file_name()` (loại `..`/thư mục). ✓
+
+### 9.5. Rủi ro còn lại (chấp nhận / cố hữu)
+
+| Rủi ro | Mức | Ghi chú |
+|---|---|---|
+| HWID qua PowerShell (3 nguồn) | 🟡 | Lớp yếu nhất; thay bằng WinAPI native là thay đổi lớn + nguy cơ lệch HWID của license đã kích hoạt → cần migration riêng. |
+| Rotate public key cần rebuild | 🟢 | ĐÚNG nguyên tắc trust-anchor (không cho thay runtime). Tùy chọn: sinh file hằng số lúc build để key không nằm trong git. |
+| Sidecar Python (Nuitka) | 🟢 | Attack surface lớn hơn Rust thuần; re-architecture ngoài phạm vi. |
+| Watermark tích lũy trên edit | 🟢 | Mỗi op edit nhúng 1 chuỗi invisible nhỏ + 1 vòng open/save; vô hại, hơi tốn. |
+| Ring 3 | 🟢 | Kernel driver vẫn bypass được — giới hạn vật lý. |
+
+### 9.6. Cách kiểm chứng trên bản release (BẮT BUỘC trước khi ship)
+
+1. `.\build_production.ps1` → cài app (script tự set `PRYNX_SIDECAR_HASH` + `PRYNX_FRONTEND_HASH`).
+2. Đăng nhập **license thật**, dùng 1 tính năng gọi backend (merge/imposition):
+   - Chạy được → chuỗi token Ed25519 hoạt động end-to-end (edge function CÓ cấp token). ✅
+   - Mọi thao tác 403 → edge function chưa trả `token` → sửa ở Supabase (repo printsolutions-main).
+3. Mở `%APPDATA%\PrynX\logs\security.log`: phải có
+   `STARTUP enforce_license_token=true dev_mode=False sidecar_token=set pubkey=embedded`.
+4. (Tùy chọn) chạy `pdf-inspector-backend.exe` trực tiếp trong terminal → phải thấy
+   `dev_mode=False` + `sidecar_token=MISSING` → request bị 403 (đúng fail-closed H3).
+5. Sửa 1 byte file đã cài → app báo tamper + thoát (integrity #10/#11).
+
+### 9.7. File map bổ sung (đợt 2026-06-17)
+
+```
+backend/app/api/routes/pdf_tools.py   ← _safe_watermark cho merge/split/resize/shuffle/ocr/optimize
+backend/app/api/routes/edit.py        ← _safe_watermark tại _build_output_response (mọi op edit)
+backend/app/core/license_guard.py     ← _is_dev_mode fail-closed (__compiled__), public-key dev-only,
+                                         _security_log_to_file, log enforce + token reject
+backend/tests/test_license_token.py   ← +7 test (HMAC sidecar sig + public-key override) = 14 total
+desktop/src-tauri/src/security.rs      ← store/load/delete_license_token (DPAPI)
+desktop/src-tauri/src/lib.rs           ← đăng ký lệnh token; is_sensitive_path() cho read_system_file/get_file_size
+desktop/src-tauri/capabilities/default.json ← fs deny .ssh/.aws/.gnupg/.config/.kube/Credentials/Startup
+desktop/src/stores/useAuthStore.ts     ← persist/load/exp-check licenseToken (DPAPI)
+```
+
+
+### 9.8. Phát hiện & vá bổ sung khi dựng ma trận endpoint (2026-06-17)
+
+| # | Mức | Phát hiện (VERIFIED) | Bằng chứng | Trạng thái |
+|---|---|---|---|---|
+| H9 | 🟠 | **Router `cut_export` KHÔNG gate license** — `app/workers/cut_export/api.py` tạo `APIRouter(prefix="/imposition")` **không** `dependencies=[Depends(require_license)]`. 9 endpoint (cut-export, cut-export-from-file, cut-preview, cut-pages, cut-layers, quản lý profile) callable mà KHÔNG cần sidecar token/license — cùng lớp lỗ với WebSocket (mục C). Đọc `path` PDF client cấp + gửi máy bế (TCP/serial/file). | `api.py` thiếu dependency | ✅ Vá: thêm `dependencies=[Depends(require_license)]` cấp router (verify: router dựng với deps=1). |
+
+> Lưu ý: output của cut_export là **luồng lệnh cắt gửi máy** (DXF/command stream), KHÔNG phải
+> PDF phân phối → không áp watermark (không phù hợp). License gate là biện pháp đúng ở đây.
+
+---
+
+## 10. Ma trận bảo vệ endpoint (đã trace 2026-06-17)
+
+Mọi router xử lý đều gate bằng `require_license` (token sidecar HMAC + — khi enforce — token Ed25519).
+WebSocket gate bằng `verify_sidecar_signature` qua query param. Output PDF được nhúng watermark.
+
+| Router / Endpoint | Gate license | Watermark output | Ghi chú |
+|---|---|---|---|
+| `upload` (`/api/upload`) | ✅ per-route | — (input) | |
+| `compare` (`/api/jobs/compare`) | ✅ | — | so sánh, không xuất PDF mới |
+| `results` (`/api/jobs/*`, `/files/{id}/serve`) | ✅ per-route | — | serve file đã có |
+| `report` (`/api/jobs/{id}/report`) | ✅ | — | report PDF (cân nhắc watermark sau) |
+| `qc` (`/api/qc/*`) | ✅ per-route | — | trích text/QC |
+| `system` (`/api/system/*`) | ✅ per-route | — | |
+| `preflight` | ✅ router-level | (qua worker) | |
+| `imposition` | ✅ router-level + per-route | ✅ nup/sticker/plan_executor | |
+| `vdp` (`/api/vdp/*`) | ✅ per-route | ✅ vdp_engine | |
+| `pdf_tools` (merge/split/resize/shuffle/ocr/optimize) | ✅ router-level + per-route | ✅ `_safe_watermark` (H1) | |
+| `edit` (delete/transform/text/add) | ✅ router-level + per-route | ✅ `_build_output_response` (H1) | |
+| `cut_export` (`/imposition/cut-*`) | ✅ router-level (H9) | N/A (luồng máy cắt) | vá 2026-06-17 |
+| `ws` (`/ws/jobs/{id}/progress`) | ✅ `verify_sidecar_signature` | N/A | query param token+ts+sig |
+
+---
+
+## 11. Vòng đời token Ed25519 (online + offline persist — H2)
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant EF as Edge Function (Supabase)
+    participant RS as Rust (DPAPI)
+    participant SC as Sidecar
+
+    Note over FE,SC: === ONLINE (đăng nhập / heartbeat 30') ===
+    FE->>EF: license-verify {key, hwid, product}
+    EF->>EF: RPC verify_license → VALID → ký Ed25519 (private key)
+    EF-->>FE: {status, token (exp ~2h)}
+    FE->>RS: store_license_token(token)  (DPAPI prynx_token.dat)
+    FE->>FE: licenseToken = token (RAM)
+
+    Note over FE,SC: === MỖI REQUEST ===
+    FE->>SC: fetch + X-License-Token
+    SC->>SC: verify_license_token (public key nhúng) + exp + m/k
+    alt enforce=true & token hỏng/thiếu
+        SC-->>FE: 403 (ghi security.log TOKEN_REJECTED)
+    else hợp lệ
+        SC-->>FE: 200 + watermark
+    end
+
+    Note over FE,SC: === KHỞI ĐỘNG LẠI KHI OFFLINE (H2) ===
+    FE->>RS: load_license_token() (DPAPI)
+    RS-->>FE: token
+    FE->>FE: isLicenseTokenValid(exp)? → còn hạn: dùng tiếp; hết hạn: xóa + chờ online
+```
+
+**Hệ quả thiết kế:** offline-grace cho backend = `min(grace 24h, TTL token)`. Muốn grace
+24h có nghĩa thì edge function nên cấp token TTL ≥ 24h (hoặc chấp nhận grace = TTL token).
+
+---
+
+## 12. Tham chiếu biến môi trường & file
+
+### Biến môi trường (sidecar)
+| Biến | Nguồn | Ý nghĩa | Bảo mật |
+|---|---|---|---|
+| `PRYNX_TOKEN_SOURCE` | spawn `lib.rs` = `stdin` | Đọc token sidecar từ stdin (không file/env) | Spawn ép giá trị (override inherited) |
+| `PRYNX_ENFORCE_LICENSE_TOKEN` | spawn = `true` | Bắt buộc token Ed25519, thiếu → 403 | Spawn ép `true` |
+| `DEV_MODE` | spawn = `false`; dev: `.env` = `true` | Bỏ qua verify khi true | Binary compiled (`__compiled__`) **luôn** ép False (H3) |
+| `PRYNX_LICENSE_PUBLIC_KEY` | (chỉ dev) env | Override public key để test | Production **bỏ qua** (H4) |
+| `PRYNX_SIDECAR_HASH` / `PRYNX_FRONTEND_HASH` | build-time (`build_production.ps1`) | Integrity anchor | `option_env!` baked vào binary Rust |
+| `LICENSE_SIGNING_KEY` | Supabase secret (server) | Private key ký token | KHÔNG bao giờ ở client |
+
+### File quan trọng (máy người dùng)
+| File | Nội dung | Mã hoá |
+|---|---|---|
+| `%APPDATA%\PrynX\prynx_license.dat` | License key | DPAPI (user+máy) |
+| `%APPDATA%\PrynX\prynx_ts.dat` | Last-online timestamp | DPAPI |
+| `%APPDATA%\PrynX\prynx_token.dat` | Token Ed25519 (H2) | DPAPI |
+| `%APPDATA%\PrynX\logs\security.log` | Log kiểm chứng (H7) | Plaintext — KHÔNG chứa key/token thô |
+
+---
+
+## 13. Runbook: Rotate khóa ký license (Ed25519)
+
+> Rotate là sự kiện hiếm (lộ private key, định kỳ). Public key là trust-anchor **nhúng cứng**
+> → rotate BẮT BUỘC rebuild + redeploy. Đây là đúng nguyên tắc, không phải hạn chế.
+
+1. **Sinh cặp khóa mới** (Ed25519) — giữ private key tuyệt mật.
+2. **Cập nhật Supabase secret** `LICENSE_SIGNING_KEY` = private key mới; deploy lại edge
+   function `license-verify` (repo `printsolutions-main`).
+3. **Cập nhật public key** trong `backend/app/core/license_guard.py` →
+   `_LICENSE_PUBLIC_KEY_B64 = "<base64 raw public key mới>"`.
+4. **Rebuild sidecar + app** bằng `build_production.ps1` (Nuitka nhồi public key mới vào binary;
+   tính lại `PRYNX_SIDECAR_HASH`/`PRYNX_FRONTEND_HASH`).
+5. **Ship bản mới** cho khách. Trong giai đoạn chuyển tiếp, client cũ (public key cũ) sẽ
+   KHÔNG verify được token mới → cần buộc cập nhật (token cũ còn hạn vẫn chạy tới khi `exp`).
+6. (Tùy chọn) Đưa public key ra khỏi git: sinh file hằng số lúc build từ secret/CI rồi để
+   `license_guard.py` import — vẫn nhúng cứng (trust-anchor), chỉ khác là không nằm trong source.
+
+---
+
+## 14. Ứng phó sự cố (Incident Response)
+
+| Sự cố | Triệu chứng | Hành động |
+|---|---|---|
+| **Lộ private key ký** | Key signing key rò rỉ | Rotate ngay (Mục 13) + thu hồi/đánh dấu key bị ảnh hưởng trong DB. |
+| **License key bị share** | 1 key chạy >2 máy | HWID device-limit chặn máy thứ 3; kiểm `license_logs`, thu hồi nếu lạm dụng. |
+| **RLS lộ bảng** (như mục B) | Anon đọc được bảng | Vá RLS migration; CI chặn `USING(true)`; rotate key đã phơi nhiễm. |
+| **Hàng loạt `TOKEN_REJECTED`** trong security.log | Khách báo app 403 | Kiểm edge function có cấp `token` không; kiểm TTL token vs heartbeat. |
+| **App báo tamper + thoát** | Integrity hash lệch | File bị sửa hoặc build thiếu set hash; rebuild đúng pipeline. |
+| **`sidecar_token=MISSING` trong log (release)** | Mọi request 403 | Tauri host không ghi token qua stdin; kiểm chuỗi spawn `lib.rs`. |
+
+---
+
+## 15. Checklist bảo mật trước khi RELEASE
+
+- [ ] `cargo check --release` sạch (không lỗi `webview2_com` — mục A).
+- [ ] `build_production.ps1` set cả `PRYNX_SIDECAR_HASH` **và** `PRYNX_FRONTEND_HASH`.
+- [ ] Cài app → `security.log` hiện `enforce_license_token=true dev_mode=False sidecar_token=set pubkey=embedded`.
+- [ ] Đăng nhập license thật → dùng 1 tính năng backend → **chạy được** (xác nhận edge function cấp token).
+- [ ] License sai/không đăng nhập → backend từ chối (403).
+- [ ] Chạy `pdf-inspector-backend.exe` trực tiếp → `dev_mode=False` + request bị 403 (fail-closed H3).
+- [ ] Sửa 1 byte file đã cài → app báo tamper + thoát.
+- [ ] Không có `.env` `DEV_MODE=true` lọt vào bundle; spawn ép `DEV_MODE=false`.
+- [ ] Edge function `license-verify` trả `token` (HTTP 200) với TTL phù hợp grace mong muốn.
+- [ ] Rotate các key đã phơi nhiễm (nếu có); private key chỉ ở Supabase secret.
+- [ ] (Tùy chọn) Code signing Authenticode để giảm cảnh báo SmartScreen.

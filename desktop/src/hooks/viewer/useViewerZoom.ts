@@ -45,44 +45,55 @@ export function useViewerZoom(props: UseViewerZoomProps) {
 
     // ═══ Fit Mode Helpers ═══
     const applyFitWidth = useCallback(() => {
-        let fitW = mainWidth;
-        if (internalScrollRef.current) {
-            fitW = internalScrollRef.current.clientWidth;
-        }
-        const safeContainerWidth = Math.max(100, fitW - 48);
-        const fitZoom = safeContainerWidth / actualWidth100;
+        const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
+        const padX = 48 + 12 * (numPagesWide - 1) + 4;
+        const fitW = internalScrollRef.current ? internalScrollRef.current.clientWidth : mainWidth;
+        const safeContainerWidth = Math.max(100, fitW - padX);
+        const fitZoom = safeContainerWidth / (actualWidth100 * numPagesWide);
         setZoom(fitZoom);
         setFitMode('width');
-    }, [mainWidth, internalScrollRef, actualWidth100, setZoom, setFitMode]);
+    }, [mainWidth, internalScrollRef, actualWidth100, setZoom, setFitMode, pageDisplayMode]);
 
     const applyFitPage = useCallback(() => {
-        if (pageDim && containerRef.current) {
-            const containerHeight = Math.max(100, (mainHeight || containerRef.current.clientHeight) - 64);
+        const scrollEl = internalScrollRef.current;
+        if (pageDim && (scrollEl || containerRef.current)) {
+            const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
+            const padX = 48 + 12 * (numPagesWide - 1) + 4;
+            const ch = scrollEl ? scrollEl.clientHeight : (mainHeight || containerRef.current!.clientHeight);
+            const cw = scrollEl ? scrollEl.clientWidth : mainWidth;
+            const containerHeight = Math.max(100, ch - 64);
+            const containerWidth = Math.max(100, cw - padX);
             const ratio = pageDim.w / pageDim.h;
-            const targetWidth = containerHeight * ratio;
-            const fitZoom = targetWidth / actualWidth100;
+            const targetWidthByHeight = containerHeight * ratio;
+            let fitZoom = targetWidthByHeight / actualWidth100;
+            if (targetWidthByHeight * numPagesWide > containerWidth) {
+                fitZoom = containerWidth / (actualWidth100 * numPagesWide);
+            }
             setZoom(fitZoom);
         }
         setFitMode('page');
-    }, [pageDim, containerRef, mainHeight, actualWidth100, setZoom, setFitMode]);
+    }, [pageDim, containerRef, internalScrollRef, mainHeight, mainWidth, actualWidth100, setZoom, setFitMode, pageDisplayMode]);
 
     // ═══ Auto-zoom on fitMode / container resize ═══
+    // Chrome layout: hàng có padding ngang 48px (24+24) + khe 12px giữa mỗi cặp trang.
+    // Phải trừ đúng các giá trị này (và dùng clientWidth THẬT của vùng cuộn — đã trừ
+    // scrollbar-gutter) thì "vừa trang/vừa ngang" 2 trang mới khít, không tràn → căn giữa đúng.
     useEffect(() => {
+        const scrollEl = internalScrollRef.current;
+        const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
+        const padX = 48 + 12 * (numPagesWide - 1) + 4; // padding hàng + khe + 4px an toàn
         if (fitMode === 'width' && actualWidth100 > 0 && mainWidth > 50) {
-            let fitW = mainWidth;
-            if (internalScrollRef.current) {
-                fitW = internalScrollRef.current.clientWidth;
-            }
-            const safeContainerWidth = Math.max(100, fitW - 48);
-            const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
+            const fitW = scrollEl ? scrollEl.clientWidth : mainWidth;
+            const safeContainerWidth = Math.max(100, fitW - padX);
             const calcZoom = safeContainerWidth / (actualWidth100 * numPagesWide);
             setZoom(calcZoom);
             setIsZoomReady(true);
         } else if ((fitMode === 'page' || fitMode === 'smart') && pageDim && actualWidth100 > 0) {
             if (mainWidth < 50 || mainHeight < 50) return;
-            const containerHeight = Math.max(100, mainHeight - 64);
-            const containerWidth = Math.max(100, mainWidth - 40);
-            const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
+            const ch = scrollEl ? scrollEl.clientHeight : mainHeight;
+            const cw = scrollEl ? scrollEl.clientWidth : mainWidth;
+            const containerHeight = Math.max(100, ch - 64); // padding dọc 32+32
+            const containerWidth = Math.max(100, cw - padX);
             const ratio = pageDim.w / pageDim.h;
             const targetWidthByHeight = containerHeight * ratio;
             let calcZoom = targetWidthByHeight / actualWidth100;

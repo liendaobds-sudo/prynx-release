@@ -75,6 +75,10 @@ class ObjMeta(BaseModel):
         default=None,
         description="Màu tô RGB 0..255 của text (chỉ type='text') để editor khớp màu gốc",
     )
+    fontName: str | None = Field(
+        default=None,
+        description="Tên font gốc (BaseFont, bỏ tiền tố subset) — gợi ý/khớp font hệ thống",
+    )
 
     @field_validator("bbox")
     @classmethod

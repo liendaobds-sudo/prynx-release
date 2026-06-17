@@ -5,9 +5,10 @@ import { useAppSettingsStore } from '../../stores/appSettingsStore';
 
 interface Props {
   onOpenFile: (file: File) => void;
+  active?: boolean;
 }
 
-export default function RecentFilesGrid({ onOpenFile }: Props) {
+export default function RecentFilesGrid({ onOpenFile, active = true }: Props) {
   const { files, toggleStar, removeFile, clearUnstarred, removeFiles } = useRecentFiles();
   const [activeTab, setActiveTab] = useState<'recent' | 'starred'>('recent');
   const { recentFilesViewMode, setRecentFilesViewMode } = useAppSettingsStore();
@@ -184,7 +185,7 @@ export default function RecentFilesGrid({ onOpenFile }: Props) {
                     </div>
                   )}
                   <div className={`relative h-[160px] w-full bg-slate-50 dark:bg-zinc-800 flex items-center justify-center overflow-hidden border-b border-slate-100 dark:border-white/5 ${isSelected ? 'opacity-90' : ''}`}>
-                    <ThumbnailView path={file.path} name={file.name} />
+                    <ThumbnailView path={file.path} name={file.name} active={active} />
                     {!isSelectMode && (
                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-start justify-between p-2">
                       <button 
@@ -237,7 +238,7 @@ export default function RecentFilesGrid({ onOpenFile }: Props) {
                     </div>
                   )}
                   <div className={`relative w-12 h-12 rounded bg-slate-50 dark:bg-zinc-800 flex items-center justify-center overflow-hidden shrink-0 border border-slate-100 dark:border-white/5 ${isSelected ? 'opacity-90' : ''}`}>
-                      <ThumbnailView path={file.path} name={file.name} />
+                      <ThumbnailView path={file.path} name={file.name} active={active} />
                   </div>
                   <div className="flex-1 min-w-0">
                       <div className="text-[13px] font-bold text-slate-800 dark:text-white truncate" title={file.name}>{file.name}</div>
@@ -286,7 +287,7 @@ export default function RecentFilesGrid({ onOpenFile }: Props) {
                         </div>
                       )}
                       <div className={`w-8 h-8 rounded bg-slate-100 dark:bg-zinc-800 flex items-center justify-center overflow-hidden shrink-0 border border-slate-200 dark:border-white/5 ${isSelected ? 'opacity-90' : ''}`}>
-                          <ThumbnailView path={file.path} name={file.name} />
+                          <ThumbnailView path={file.path} name={file.name} active={active} />
                       </div>
                       <span className={`text-sm font-semibold truncate ${isSelected ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-zinc-200'}`} title={file.name}>{file.name}</span>
                     </div>

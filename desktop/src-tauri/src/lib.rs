@@ -24,9 +24,62 @@ fn get_doc_pool_size() -> usize {
     1
 }
 
+// ═══ Disk tile cache (giống "display cache" của Acrobat/MuPDF) ═══
+// Lưu tile đã render ra ĐĨA (thư mục temp — luôn ghi được kể cả bản đóng gói) để
+// mở lại / cuộn lại / zoom về mức cũ là LẤY TỪ ĐĨA, không render lại (file nặng ~1s).
+static DISK_CACHE_WRITES: AtomicUsize = AtomicUsize::new(0);
+
+fn tile_cache_dir() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("prynx_tile_cache");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn tile_disk_path(cache_key: &str) -> std::path::PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cache_key.hash(&mut h);
+    tile_cache_dir().join(format!("{:016x}.jpg", h.finish()))
+}
+
+// Giữ tối đa `max_files` tile mới nhất trên đĩa; xoá cũ nhất khi vượt.
+fn prune_tile_cache_dir(max_files: usize) {
+    let dir = tile_cache_dir();
+    let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if let Ok(meta) = e.metadata() {
+                entries.push((meta.modified().unwrap_or(std::time::UNIX_EPOCH), e.path()));
+            }
+        }
+    }
+    if entries.len() > max_files {
+        entries.sort_by_key(|(t, _)| *t);
+        let remove_n = entries.len() - max_files;
+        for (_, p) in entries.into_iter().take(remove_n) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
 struct DocHandle {
     doc: PdfDocument<'static>,
     lock: Mutex<()>,
+    // Cache page ĐÃ MỞ (LRU) để pdfium TÁI DÙNG ảnh đã giải nén giữa các lần render
+    // (re-render/zoom/thumbnail rớt từ ~600ms → ~120ms cho trang nhiều ảnh nặng).
+    pages: Mutex<PageLru>,
+}
+
+// LRU các PdfPage đang mở. Giữ ít (mặc định 4) vì mỗi page giữ ảnh đã giải nén tốn RAM.
+struct PageLru {
+    map: HashMap<u16, PdfPage<'static>>,
+    order: std::collections::VecDeque<u16>,
+    max: usize,
+}
+impl PageLru {
+    fn new(max: usize) -> Self {
+        Self { map: HashMap::new(), order: std::collections::VecDeque::new(), max }
+    }
 }
 
 struct CachedDocument {
@@ -129,7 +182,7 @@ async fn get_pdf_metadata(app_handle: tauri::AppHandle, file_path: String) -> Re
             for _ in 0..pool_size {
                 pool.push(OnceLock::new());
             }
-            let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()) });
+            let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(4)) });
             cache.insert(file_path.clone(), Arc::new(CachedDocument {
                 pool,
                 next: AtomicUsize::new(0),
@@ -226,6 +279,20 @@ fn render_tile_jpeg(
         }
     }
 
+    // Cache ĐĨA: nếu tile đã từng render (mở lại/cuộn lại/zoom cũ) → đọc thẳng, khỏi render.
+    {
+        let dpath = tile_disk_path(&cache_key);
+        if let Ok(bytes) = std::fs::read(&dpath) {
+            if !bytes.is_empty() {
+                let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
+                if let Ok(mut cache) = cache_lock.lock() {
+                    cache.insert(cache_key.clone(), bytes.clone());
+                }
+                return Ok(bytes);
+            }
+        }
+    }
+
     let pdfium = PDFIUM_STATIC.get_or_init(|| {
         let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./bin/"))
             .or_else(|_| Pdfium::bind_to_system_library())
@@ -249,7 +316,7 @@ fn render_tile_jpeg(
             pdfium.load_pdf_from_byte_vec(bytes, None)
                 .map_err(|e| format!("Failed to open PDF: {:?}", e))?
         };
-        let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()) });
+        let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(4)) });
         cache.insert(file_path.to_string(), Arc::new(CachedDocument {
             pool,
             next: AtomicUsize::new(0),
@@ -269,19 +336,41 @@ fn render_tile_jpeg(
             let bytes = std::fs::read(file_path).expect("FS read failed");
             pdfium.load_pdf_from_byte_vec(bytes, None).expect("Lazy load failed")
         };
-        DocHandle { doc, lock: Mutex::new(()) }
+        DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(4)) }
     });
     
     let start_render = std::time::Instant::now();
     let rgba_image = {
         let _guard = handle.lock.lock().unwrap();
-        let document = &handle.doc;
         let page_index = (page - 1) as u16;
-        if page_index >= document.pages().len() {
+        if page_index >= handle.doc.pages().len() {
             return Err("Page out of bounds".into());
         }
-        let pdf_page = document.pages().get(page_index)
-            .map_err(|e| format!("Failed to get page: {:?}", e))?;
+        // Lấy page từ cache LRU. Giữ PdfPage MỞ giữa các lần render để pdfium TÁI DÙNG
+        // ảnh đã giải nén (giun.pdf: 16MB ảnh/trang). Nếu mở page mới mỗi lần render,
+        // pdfium giải nén lại toàn bộ → ~600-1300ms; tái dùng page → ~120ms.
+        let mut lru = handle.pages.lock().unwrap();
+        if !lru.map.contains_key(&page_index) {
+            // SAFETY: page mượn từ handle.doc; doc nằm trong Pdfium đã Box::leak ('static),
+            // sống suốt vòng đời tiến trình, nên kéo dài borrow lên 'static là hợp lệ ở đây.
+            let doc_ref: &'static PdfDocument<'static> = unsafe {
+                std::mem::transmute::<&PdfDocument<'static>, &'static PdfDocument<'static>>(&handle.doc)
+            };
+            let new_page = doc_ref.pages().get(page_index)
+                .map_err(|e| format!("Failed to get page: {:?}", e))?;
+            if lru.order.len() >= lru.max {
+                if let Some(old) = lru.order.pop_front() {
+                    lru.map.remove(&old);
+                }
+            }
+            lru.map.insert(page_index, new_page);
+            lru.order.push_back(page_index);
+        } else if let Some(pos) = lru.order.iter().position(|&p| p == page_index) {
+            // LRU touch: chuyển page vừa dùng về cuối hàng đợi.
+            lru.order.remove(pos);
+            lru.order.push_back(page_index);
+        }
+        let pdf_page = lru.map.get(&page_index).unwrap();
         
         let mut render_scale = (96.0 / 72.0) * zoom as f32;
         if render_scale.is_nan() || render_scale.is_infinite() {
@@ -326,9 +415,9 @@ fn render_tile_jpeg(
     
     let start_encode = std::time::Instant::now();
     let mut buffer = Vec::new();
-    // Quality 92: giảm mạnh hiện tượng nhòe/ringing JPEG ở cạnh chữ & nét mảnh
-    // (so với 72) trong khi vẫn nhanh. Kết hợp render DPR-aware ở frontend cho độ nét
-    // gần Acrobat. (Nếu cần nét tuyệt đối cho text: chuyển sang PNG lossless.)
+    // JPEG-92: nhanh + nhẹ cho mọi loại nội dung (kể cả trang đồ hoạ/ảnh nặng). PNG
+    // lossless từng thử nhưng encode/transfer rất chậm ở bitmap lớn (zoom cao ~280ms)
+    // cho nội dung phức tạp → bỏ. 92 đã giảm tốt ringing ở cạnh chữ/nét mảnh.
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 92);
     encoder.encode_image(&rgba_image).map_err(|e| format!("Encode error: {:?}", e))?;
     let encode_ms = start_encode.elapsed().as_millis();
@@ -352,6 +441,17 @@ fn render_tile_jpeg(
     {
         let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
         if let Ok(mut cache) = cache_lock.lock() {
+            // Ghi ĐĨA trước (cần &cache_key) rồi mới move cache_key vào RAM cache.
+            let dpath = tile_disk_path(&cache_key);
+            let _ = std::fs::write(&dpath, &buffer);
+            // Prune ĐỊNH KỲ trên THREAD NỀN (không chặn việc trả tile về). Bỏ qua lần ghi
+            // đầu (n=0) và chỉ chạy mỗi 64 lần ghi. Trước đây prune chạy ĐỒNG BỘ ngay lần
+            // ghi đầu + quét cả thư mục cache (tích lũy nhiều ngày → hàng nghìn file) →
+            // chặn trả tile vài giây ở lần mở đầu phiên (regression "hôm qua nhanh nay chậm").
+            let n = DISK_CACHE_WRITES.fetch_add(1, Ordering::Relaxed);
+            if n > 0 && n % 64 == 0 {
+                std::thread::spawn(|| prune_tile_cache_dir(3000));
+            }
             cache.insert(cache_key, buffer.clone());
         }
     }
@@ -383,6 +483,34 @@ fn get_startup_args() -> Vec<String> {
 }
 
 #[tauri::command]
+/// SECURITY (đồng bộ với fs capability deny): từ chối đọc các vị trí nhạy cảm
+/// (khóa SSH/AWS/GnuPG, credential store Windows) + chặn path traversal ("..").
+/// Áp cho các lệnh Rust đọc file vì capability `deny` chỉ ràng plugin-fs, KHÔNG
+/// ràng lệnh Rust tự viết. Không ảnh hưởng mở PDF/ảnh (không nằm ở các thư mục này).
+fn is_sensitive_path(path: &str) -> bool {
+    let norm = path.replace('/', "\\").to_lowercase();
+    // Chống path traversal
+    if norm.contains("\\..\\") || norm.ends_with("\\..") || norm.starts_with("..\\") {
+        return true;
+    }
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    if home.is_empty() {
+        return false;
+    }
+    let home_l = home.replace('/', "\\").to_lowercase();
+    let blocked = [
+        ".ssh", ".aws", ".gnupg", ".config", ".kube",
+        "appdata\\local\\microsoft\\credentials",
+        "appdata\\roaming\\microsoft\\credentials",
+    ];
+    blocked
+        .iter()
+        .any(|s| norm.starts_with(&format!("{}\\{}", home_l, s)))
+}
+
+#[tauri::command]
 fn read_system_file(path: String) -> Result<Response, String> {
     // Security: only allow known file types to prevent arbitrary file reads
     let ext = std::path::Path::new(&path)
@@ -394,12 +522,18 @@ fn read_system_file(path: String) -> Result<Response, String> {
     if !allowed.contains(&ext.as_str()) {
         return Err(format!("File type .{} not allowed", ext));
     }
+    if is_sensitive_path(&path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
     let bytes = std::fs::read(&path).map_err(|e| format!("Lỗi đọc file từ Rust: {}", e))?;
     Ok(Response::new(bytes))
 }
 
 #[tauri::command]
 fn get_file_size(path: String) -> Result<u64, String> {
+    if is_sensitive_path(&path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
     let metadata = std::fs::metadata(&path).map_err(|e| format!("Lỗi lấy metadata: {}", e))?;
     Ok(metadata.len())
 }
@@ -615,10 +749,24 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Re
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ─── FIX "chỉ nhanh khi mở DevTools": WebView2 trên cửa sổ transparent hay tính
+    // NHẦM là bị che (occluded) → bóp ga (throttle) timer + render xuống cực chậm
+    // (load file ~7s). Mở DevTools ép cửa sổ "active" nên hết throttle → nhanh tức thì.
+    // Tắt occlusion + background/timer throttling NGAY TRƯỚC khi WebView2 environment
+    // được tạo (env var phải set sớm; config additionalBrowserArgs không đủ tin cậy).
+    #[cfg(target_os = "windows")]
+    {
+        let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+        // CHỈ thêm các cờ AN TOÀN (không mở remote-debugging-port) — không tạo lỗ hổng.
+        let flags = "--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding";
+        let merged = if existing.trim().is_empty() { flags.to_string() } else { format!("{} {}", existing, flags) };
+        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
+    }
+
     tauri::Builder::default()
         .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_debug_log, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::sign_api_request, security::store_last_online, security::load_last_online, normalize_image_to_png, normalize_image_bytes])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_debug_log, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {

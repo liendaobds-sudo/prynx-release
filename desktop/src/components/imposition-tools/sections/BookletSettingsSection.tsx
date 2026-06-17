@@ -139,7 +139,7 @@ export default function BookletSettingsSection() {
                             options={[
                                 { value: '', title: '2-Up Classic (Mặc định)', desc: 'Nhân bản booklet 2-up lên khổ lớn. Không dùng sơ đồ gấp offset.' },
                                 ...(s.autoCatalog ? [{ value: 'auto', title: 'Tự động theo tay sách', desc: 'Tự chọn sơ đồ gấp phù hợp nhất cho từng tay sách (4p/8p/16p).' }] : []),
-                                { value: 'sig_4p', title: 'Tay 4 Trang (Nhân bản 2-Up)', desc: 'Lưới 2×2 spreads (8 con/mặt). In 2 tay 4 trang trên 1 tờ kẽm.' },
+                                { value: 'sig_4p_2up', title: 'Tay 4 Trang (Nhân bản 2-Up)', desc: 'Lưới 2×2 spreads (8 con/mặt). In 2 tay 4 trang trên 1 tờ kẽm.' },
                                 { value: 'sig_8p', title: 'Tay 8 Trang (Tự trở)', desc: 'Lưới 2×2 spreads (8 con/mặt). Tự trở lật ngang, 1 tờ kẽm = 1 tay 8.' },
                                 { value: 'sig_16p', title: 'Tay 16 Trang (In 2 mặt)', desc: 'Lưới 2×2 spreads (8 con/mặt). Tiêu chuẩn công nghiệp.' },
                             ]}

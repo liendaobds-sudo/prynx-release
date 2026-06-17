@@ -31,6 +31,7 @@ describe('nestingEngine — calculateNesting', () => {
                 dieGap: 3,
                 gutter: 3,
                 rotation: 'none',
+                sheetOrientation: 'portrait',
                 nestingMode: 'grid',
             });
             const result = calculateNesting(bbox, config);
@@ -63,6 +64,7 @@ describe('nestingEngine — calculateNesting', () => {
                 dieGap: 3,
                 gutter: 3,
                 rotation: 'none',
+                sheetOrientation: 'portrait',
                 nestingMode: 'grid',
             });
             const result = calculateNesting(bbox, config);
@@ -332,15 +334,15 @@ describe('nestingEngine — calculateNesting', () => {
 
     describe('Smart Envelope — Wallet (ngang)', () => {
         it('should use 180° column interlock for wallet envelope', () => {
-            // Bì thư DL (220×110): bbox ≈ W+2*SF × 2*H + FH
-            // SF ≈ 12mm, FH ≈ 50mm → bbox ≈ 244 × 270
-            const bbox = { width: 244, height: 270 };
+            // Bì wallet nằm NGANG: die rộng-thấp (360×90) — interlock theo cột
+            // (xoay 180° xen kẽ + lồng tai hông) xếp được nhiều hơn grid.
+            const bbox = { width: 360, height: 90 };
             const params = makeParams({
                 boxType: 'envelope',
                 envW: 220,
                 envH: 110,
-                envFH: 0,
-                envSF: 0,
+                envFH: 20,
+                envSF: 30,
                 envFlapShape: 'pointed',
                 envStyle: 'wallet',
             });

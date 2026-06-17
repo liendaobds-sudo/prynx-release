@@ -181,8 +181,10 @@ export async function runProcessEngine(
                     }
                 }
             }
-        } else if (settings.impositionMode === ImpositionMode.Booklet && (srcPageCount > 1000 || file.size > 300 * 1024 * 1024)) {
-            setProcessStatus('Đang xử lý dữ liệu...');
+        } else if (settings.impositionMode === ImpositionMode.Booklet || settings.impositionMode === ImpositionMode.NUp) {
+            // P2-T01: Prefer backend (imposition_core + pikepdf) for imposition to keep client as dumb assembler.
+            // Sticker and other modes may use activeDashboardTool or separate paths.
+            setProcessStatus('Đang xử lý dữ liệu qua backend (unified engine)...');
             const { uploadFileForNup } = await import('../lib/api');
             const { imposePdfViaBackend } = await import('../lib/pdfImposer');
             const serverPath = await uploadFileForNup(file);

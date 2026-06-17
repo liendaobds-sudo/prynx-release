@@ -7,57 +7,51 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 interface Props {
   path: string;
   name: string;
+  active?: boolean;
 }
 
-const ThumbnailView = React.memo(({ path, name }: Props) => {
+const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
   const [src, setSrc] = useState<string | { data: Uint8Array }>('');
-  const [shouldRenderPdf, setShouldRenderPdf] = useState(false);
   const [fileExists, setFileExists] = useState<boolean | null>(null);
-  
+
   useEffect(() => {
-    setShouldRenderPdf(false);
     setFileExists(null);
   }, [path]);
 
   const isPdf = name.toLowerCase().endsWith('.pdf');
+  const isTauri = typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__;
 
   useEffect(() => {
     let isActive = true;
-    let timeoutId: NodeJS.Timeout;
 
-    if ((window as any).__TAURI_INTERNALS__) {
-      Promise.all([
-        import('@tauri-apps/api/core'),
-        import('@tauri-apps/plugin-fs')
-      ]).then(([{ convertFileSrc }, { readFile }]) => {
+    // CHỈ render thumbnail khi tab Home đang HIỆN (active). Khi mở file (Home ẩn),
+    // KHÔNG render thumbnail → tránh hàng loạt tile render pdfium serial hoá cạnh
+    // tranh với render trang chính → hết "đơ ~5s lúc mở file". Render khi quay lại Home.
+    if (!active) return;
+
+    if (isTauri) {
+      // ⚠️ KHÔNG readFile cả PDF để vẽ thumbnail nữa: readFile nạp TOÀN BỘ file qua
+      // Tauri IPC (file 96MB → ~323MB serialize) → chặn IPC/host vài giây MỖI file →
+      // lưới recnt nhiều file lớn = đơ cả app (đã đo Network: nhiều plugin:fs|read_file
+      // 100-323MB). Thay bằng protocol tile:// — Rust render trang 1 ở DPI nhỏ (~chục KB,
+      // có disk cache), KHÔNG nạp full file. Ảnh/file non-PDF dùng convertFileSrc (lazy).
+      import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
         if (!isActive) return;
-        
         if (isPdf) {
-          // Use readFile for PDFs to avoid 404 network errors if out of scope
-          readFile(path).then((data) => {
-            if (!isActive) return;
-            setFileExists(true);
-            setSrc({ data });
-            timeoutId = setTimeout(() => {
-              if (isActive) setShouldRenderPdf(true);
-            }, 300);
-          }).catch(() => {
-            if (isActive) {
-              setFileExists(false); // Gracefully handle scope/missing file errors
-            }
-          });
+          const enc = encodeURIComponent(path);
+          // page=1, zoom nhỏ (~0.3) đủ nét cho thumbnail 180px; object-contain tự vừa khung.
+          setSrc(`http://tile.localhost/${enc}/1/0.3/0/0/0/0/0`);
+          setFileExists(true);
         } else {
-          // For images, we still use convertFileSrc
           setSrc(convertFileSrc(path));
           setFileExists(true);
         }
       });
     }
-    return () => { 
-      isActive = false; 
-      if (timeoutId) clearTimeout(timeoutId);
+    return () => {
+      isActive = false;
     };
-  }, [path, isPdf]);
+  }, [path, isPdf, isTauri, active]);
 
   if (fileExists === false) {
     return (
@@ -67,30 +61,43 @@ const ThumbnailView = React.memo(({ path, name }: Props) => {
     );
   }
 
-  if (!src || (isPdf && !shouldRenderPdf)) {
+  if (!src) {
     return <div className="animate-pulse w-full h-full bg-slate-100 dark:bg-zinc-800" />;
   }
 
+  // Tauri: cả PDF (tile://) lẫn ảnh (asset) đều là <img> — nhẹ, không nạp full file.
+  if (isTauri) {
+    return (
+      <img
+        src={typeof src === 'string' ? src : undefined}
+        alt={name}
+        loading="lazy"
+        className={`w-full h-full ${isPdf ? 'object-contain bg-white' : 'object-cover'}`}
+        onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0'; }}
+      />
+    );
+  }
+
+  // Web (không Tauri): giữ react-pdf để render thumbnail từ URL/blob.
   if (isPdf) {
     return (
-      <Document 
-        file={src} 
+      <Document
+        file={src}
         loading={<div className="animate-pulse w-full h-full bg-slate-100 dark:bg-zinc-800" />}
         error={<div className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex items-center justify-center"><span className="text-xs text-slate-400">PDF</span></div>}
         className="flex items-center justify-center w-full h-full overflow-hidden"
       >
-        <Page 
-          pageNumber={1} 
-          width={180} 
-          renderTextLayer={false} 
-          renderAnnotationLayer={false} 
-          className="shadow-none" 
+        <Page
+          pageNumber={1}
+          width={180}
+          renderTextLayer={false}
+          renderAnnotationLayer={false}
+          className="shadow-none"
           error={<div className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex items-center justify-center"><span className="text-xs text-slate-400">Error</span></div>}
         />
       </Document>
     );
   }
-  // Fallback for images
   return (
     <img src={typeof src === 'string' ? src : undefined} alt={name} className="object-cover w-full h-full" />
   );

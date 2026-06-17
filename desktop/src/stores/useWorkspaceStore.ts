@@ -49,7 +49,6 @@ export interface WorkspaceState {
     isSidebarOpen: boolean;
     sidebarWidth: number;
     isDraggingSidebar: boolean;
-    activeDashboardTool: string;
 
     // ── Output Preview ──
     showOutputPreview: boolean;
@@ -92,10 +91,6 @@ export interface WorkspaceState {
     detectedShapesByPage: Record<number, string>;
     detectedDimensionsByPage: Record<number, { w: number, h: number }>;
     detectedShapeParamsByPage: Record<number, any>;
-
-    // ── Batch & Booklet ──
-    batchOutput: { docs: { blob: Blob; filename: string; report?: string }[]; mergedBlob: Blob } | null;
-    confirmBookletSettings: { settings: ProcessingSettings; spawnNewTab: boolean; report: string; totalPages: number; paddedPages: number } | null;
 
     // ── Watermark Preview ──
     watermarkPreview: any | null;
@@ -140,7 +135,6 @@ export interface WorkspaceState {
     setIsSidebarOpen: (val: boolean) => void;
     setSidebarWidth: (width: number) => void;
     setIsDraggingSidebar: (val: boolean) => void;
-    setActiveDashboardTool: (tool: string) => void;
 
     setShowOutputPreview: (val: boolean) => void;
     setSeparationPlates: (plates: PlateOverlay[]) => void;
@@ -178,9 +172,6 @@ export interface WorkspaceState {
     setDetectedShapesByPage: (updater: Record<number, string> | ((prev: Record<number, string>) => Record<number, string>)) => void;
     setDetectedDimensionsByPage: (updater: Record<number, { w: number, h: number }> | ((prev: Record<number, { w: number, h: number }>) => Record<number, { w: number, h: number }>)) => void;
     setDetectedShapeParamsByPage: (updater: Record<number, any> | ((prev: Record<number, any>) => Record<number, any>)) => void;
-
-    setBatchOutput: (output: { docs: { blob: Blob; filename: string; report?: string }[]; mergedBlob: Blob } | null) => void;
-    setConfirmBookletSettings: (settings: { settings: ProcessingSettings; spawnNewTab: boolean; report: string; totalPages: number; paddedPages: number } | null) => void;
 
     setViewerZoom: (updater: number | ((prev: number) => number)) => void;
     setViewerFitMode: (mode: 'width' | 'page' | 'custom' | 'smart') => void;
@@ -226,7 +217,6 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     isSidebarOpen: true,
     sidebarWidth: 390,
     isDraggingSidebar: false,
-    activeDashboardTool: 'none',
 
     showOutputPreview: false,
     separationPlates: [],
@@ -261,9 +251,6 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     detectedShapesByPage: {},
     detectedDimensionsByPage: {},
     detectedShapeParamsByPage: {},
-
-    batchOutput: null,
-    confirmBookletSettings: null,
 
     watermarkPreview: null,
     stickPreviewParams: null,
@@ -325,7 +312,6 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setIsSidebarOpen: (v) => set({ isSidebarOpen: v }),
     setSidebarWidth: (w) => set({ sidebarWidth: w }),
     setIsDraggingSidebar: (v) => set({ isDraggingSidebar: v }),
-    setActiveDashboardTool: (tool) => set({ activeDashboardTool: tool }),
 
     setShowOutputPreview: (v) => set({ showOutputPreview: v }),
     setSeparationPlates: (plates) => set({ separationPlates: plates }),
@@ -392,9 +378,6 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setDetectedShapeParamsByPage: (updater) => set((state) => ({
         detectedShapeParamsByPage: typeof updater === 'function' ? updater(state.detectedShapeParamsByPage) : updater,
     })),
-
-    setBatchOutput: (output) => set({ batchOutput: output }),
-    setConfirmBookletSettings: (settings) => set({ confirmBookletSettings: settings }),
 
     setViewerZoom: (updater) => set((state) => ({
         viewerZoom: typeof updater === 'function' ? updater(state.viewerZoom) : updater,

@@ -13,7 +13,7 @@ import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import { PREDEFINED_SIZES, type BookletSettings, type NupSettings } from './imposition-tools/types';
-import { ImposerSettingsContext, createImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
+import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
 import { applyRule, executeShuffle, getPresetById, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
 import { resizePages } from '../lib/preprocessEngine/PageResizer';
@@ -80,7 +80,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         history, setHistory, isSaved, setIsSaved, showSaveAsModal, setShowSaveAsModal,
         reportMsg, setReportMsg, viewerDirty, setViewerDirty, viewerPageOrder, setViewerPageOrder,
         viewerPageRotations, setViewerPageRotations, bleedView, setBleedView,
-        isDraggingSidebar, setIsDraggingSidebar, activeDashboardTool, setActiveDashboardTool,
+        isDraggingSidebar, setIsDraggingSidebar,
         showOutputPreview, setShowOutputPreview, separationPlates, setSeparationPlates,
         isSelectionMode, setIsSelectionMode, pdfObjectsVersion, setPdfObjectsVersion,
         isObjectEditMode,
@@ -88,8 +88,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
         hiddenOcgLayerIds, setHiddenOcgLayerIds,
         selectionFileId, setSelectionFileId, vdpFields, setVdpFields,
-        selectedVdpFieldIds, setSelectedVdpFieldIds, batchOutput, setBatchOutput,
-        confirmBookletSettings, setConfirmBookletSettings,
+        selectedVdpFieldIds, setSelectedVdpFieldIds,
         showCloseConfirm, setShowCloseConfirm,
         viewerNumPages,
         viewerActivePage,
@@ -104,7 +103,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         history: state.history, setHistory: state.setHistory, isSaved: state.isSaved, setIsSaved: state.setIsSaved, showSaveAsModal: state.showSaveAsModal, setShowSaveAsModal: state.setShowSaveAsModal,
         reportMsg: state.reportMsg, setReportMsg: state.setReportMsg, viewerDirty: state.viewerDirty, setViewerDirty: state.setViewerDirty, viewerPageOrder: state.viewerPageOrder, setViewerPageOrder: state.setViewerPageOrder,
         viewerPageRotations: state.viewerPageRotations, setViewerPageRotations: state.setViewerPageRotations, bleedView: state.bleedView, setBleedView: state.setBleedView,
-        isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar, activeDashboardTool: state.activeDashboardTool, setActiveDashboardTool: state.setActiveDashboardTool,
+        isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar,
         showOutputPreview: state.showOutputPreview, setShowOutputPreview: state.setShowOutputPreview, separationPlates: state.separationPlates, setSeparationPlates: state.setSeparationPlates,
         isSelectionMode: state.isSelectionMode, setIsSelectionMode: state.setIsSelectionMode, pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
         isObjectEditMode: state.isObjectEditMode,
@@ -112,8 +111,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds,
         selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields,
-        selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds, batchOutput: state.batchOutput, setBatchOutput: state.setBatchOutput,
-        confirmBookletSettings: state.confirmBookletSettings, setConfirmBookletSettings: state.setConfirmBookletSettings,
+        selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
         viewerNumPages: state.viewerNumPages,
         viewerActivePage: state.viewerActivePage,
@@ -121,6 +119,22 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setDetectedShapesByPage: state.setDetectedShapesByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage,
         detectedDimensionsByPage: state.detectedDimensionsByPage,
         setViewerZoom: state.setViewerZoom, setViewerFitMode: state.setViewerFitMode, setViewerPageDisplayMode: state.setViewerPageDisplayMode
+    })));
+
+    // P1-T03: Use dedicated store for these (migrated)
+    // DÙNG SELECTOR + useShallow: chỉ re-render khi 6 field này đổi. Trước đây gọi
+    // useImposerSettingsStore() KHÔNG selector → subscribe TOÀN BỘ store → ImpositionTab
+    // (cây lớn nhất) re-render mỗi khi ImposerDashboard set sourcePageDim/optimalData/
+    // catalogPreview/capacities/fetchEpoch... → re-render cả cây nhiều lần × jsxDEV nặng
+    // = góp phần "đơ ~3-4s lúc mở" (đo được trong Performance profile).
+    const {
+        activeDashboardTool, setActiveDashboardTool,
+        batchOutput, setBatchOutput,
+        confirmBookletSettings, setConfirmBookletSettings,
+    } = useImposerSettingsStore(useShallow(s => ({
+        activeDashboardTool: s.activeDashboardTool, setActiveDashboardTool: s.setActiveDashboardTool,
+        batchOutput: s.batchOutput, setBatchOutput: s.setBatchOutput,
+        confirmBookletSettings: s.confirmBookletSettings, setConfirmBookletSettings: s.setConfirmBookletSettings,
     })));
 
     const { isWorkspaceSidebarOpen: isSidebarOpen, favoriteTools, hiddenTools } = useAppSettingsStore();
@@ -209,8 +223,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Pre-upload file silently in background for features that need file_id (Output Preview, Selection, etc.)
     // ĐÃ DEFER: chỉ cần khi dùng Selection/Output Preview, không cần lúc mở. Trì hoãn để
     // không tranh chấp tài nguyên (đọc file + gọi Python) với meta + render trang đầu.
+    // ⚠️ ĐO ĐƯỢC: với file native LỚN, prepareFileForUpload → readFile(path) đọc CẢ FILE
+    // qua Tauri IPC (chặn main thread ~6s với file 96MB) rồi POST 96MB lên Python → "treo"
+    // ~6s sau khi mở (đã đo: render xong 1s nhưng paint mãi 6s sau). Vì pre-upload chỉ là
+    // tối ưu latency cho tính năng dùng SAU, BỎ QUA với file lớn → để upload LAZY khi tính
+    // năng cần (lúc đó mới chịu chi phí, không treo lúc mở).
     useEffect(() => {
         if (file && !selectionFileId && file.name.toLowerCase().endsWith('.pdf')) {
+            const sz = (file as any)?.size || 0;
+            // Bỏ pre-upload eager cho file > 20MB (sẽ upload on-demand khi mở Selection/Output Preview).
+            if (sz > 20 * 1024 * 1024) return;
             const timer = setTimeout(() => {
                 uploadPDF(file).then(res => {
                     setSelectionFileId(res.id);
@@ -437,6 +459,28 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => { pdfObjectsCacheRef.current = globalPdfObjectCache.getAllObjects(pdfUrl || ''); }, [pdfObjectsVersion, pdfUrl]);
 
     const store = useContext(WorkspaceContext);
+
+    // ── Object Edit Mode CẦN selectionFileId (để gọi /edit/objects, /edit/text…) ──
+    // Pre-upload có thể BỊ BỎ QUA (file > 20MB) hoặc chưa kịp/đã lỗi, và on-demand
+    // upload cũ CHỈ chạy cho Selection Tool. Hệ quả: bật chế độ Chỉnh sửa đối tượng
+    // với file lớn → fid rỗng → /edit/objects không chạy → không có đối tượng để
+    // chọn/sửa. Effect này đảm bảo upload (tái dùng uploadPromiseRef tránh trùng)
+    // và set selectionFileId ngay khi vào edit mode mà chưa có fid.
+    useEffect(() => {
+        if (!isObjectEditMode || !file || selectionFileId) return;
+        if (!file.name.toLowerCase().endsWith('.pdf')) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                if (!uploadPromiseRef.current) {
+                    uploadPromiseRef.current = uploadPDF(file).finally(() => { uploadPromiseRef.current = null; });
+                }
+                const res = await uploadPromiseRef.current;
+                if (!cancelled && res?.id) store!.getState().setSelectionFileId(res.id);
+            } catch { /* sẽ thử lại khi bật lại edit mode */ }
+        })();
+        return () => { cancelled = true; };
+    }, [isObjectEditMode, file, selectionFileId]);
 
     const fetchPdfObjectsForPage = useCallback(async (pageNum: number) => {
         const state = store!.getState();

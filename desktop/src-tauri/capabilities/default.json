@@ -23,6 +23,15 @@
         { "path": "$DESKTOP/**" },
         { "path": "$HOME/**" },
         { "path": "$APPDATA/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.gnupg/**" },
+        { "path": "$HOME/.config/**" },
+        { "path": "$HOME/.kube/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" }
       ]
     },
     {
@@ -33,6 +42,15 @@
         { "path": "$DESKTOP/**" },
         { "path": "$HOME/**" },
         { "path": "$APPDATA/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.gnupg/**" },
+        { "path": "$HOME/.config/**" },
+        { "path": "$HOME/.kube/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" }
       ]
     },
     {
@@ -43,6 +61,16 @@
         { "path": "$DESKTOP/**" },
         { "path": "$HOME/**" },
         { "path": "$APPDATA/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.gnupg/**" },
+        { "path": "$HOME/.config/**" },
+        { "path": "$HOME/.kube/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**" }
       ]
     },
     {
@@ -53,6 +81,14 @@
         { "path": "$DESKTOP/**" },
         { "path": "$HOME/**" },
         { "path": "$APPDATA/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.gnupg/**" },
+        { "path": "$HOME/.config/**" },
+        { "path": "$HOME/.kube/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**" }
       ]
     }
   ]

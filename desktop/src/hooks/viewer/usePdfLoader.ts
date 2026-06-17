@@ -229,8 +229,12 @@ export function usePdfLoader({
                     }
 
                     // Background: detect plate labels (for spot colors)
-                    // Skip for large files — fetching 261MB into RAM crashes the browser
-                    if (numPagesFromEngine <= 100) {
+                    // Skip for large files — fetching cả file vào RAM gây nghẽn main
+                    // thread + cấp phát blob lớn (giun.pdf 96MB từng làm "load" treo ~4s).
+                    // Dùng KÍCH THƯỚC FILE đã biết (file.size) để bỏ qua TRƯỚC khi fetch,
+                    // thay vì tải hết về rồi mới kiểm tra .size (lãng phí toàn bộ băng thông).
+                    const knownSize = (file as any)?.size || 0;
+                    if (numPagesFromEngine <= 100 && knownSize > 0 && knownSize <= 30 * 1024 * 1024) {
                         setTimeout(async () => {
                             try {
                                 const resp = await fetch(pdfUrl);

@@ -32,11 +32,10 @@ const RULES = [
   { id: 'BLEED_MISSING',         icon: I.Crop,    label: 'Bleed',            desc: 'Kiểm tra xem file PDF có được thiết lập TrimBox và BleedBox hợp lệ hay không. Thiếu lề bù xén (Bleed) sẽ dẫn đến việc lộ viền giấy trắng sau khi gia công cắt xén thành phẩm.' },
   { id: 'OVERPRINT_DETECTED',    icon: I.Overprint, label: 'Overprint',      desc: 'Phát hiện các đối tượng cài đặt Overprint sai quy cách (ví dụ: text màu trắng đánh Overprint sẽ bị tàng hình khi in). Cảnh báo các lỗi cơ chế bóc lấp nền (Knockout).' },
   { id: 'COLOR_SPOT_DETECTED',   icon: I.Droplet, label: 'Spot Color',       desc: 'Phân tích và liệt kê các kênh màu pha (Spot Color / Pantone) đang tồn tại. Giúp tránh việc xuất kẽm in dư màu hoặc hệ thống tính sai chi phí in ấn.' },
-  { id: 'PDF_VERSION',           icon: I.FileText, label: 'PDF Version',     desc: 'Xác minh phiên bản PDF (ví dụ: 1.4, 1.6) và kiểm tra tính tương thích với các tiêu chuẩn in ấn PDF/X (PDF/X-1a, PDF/X-4) để đảm bảo an toàn tối đa khi RIP.' },
   { id: 'IMAGE_HIGH_DPI',        icon: I.ZoomIn,   label: 'Ảnh DPI quá cao', desc: 'Phát hiện ảnh có DPI vượt quá 600. Gây tăng dung lượng file không cần thiết, RIP xử lý chậm. Nên giảm xuống 300 DPI bằng tính năng Downscale.' },
   { id: 'GIF_IN_PDF',            icon: I.Film,     label: 'Ảnh GIF/Indexed', desc: 'Phát hiện ảnh dạng Indexed (GIF/palette) chỉ có tối đa 256 màu. Chất lượng in rất kém, banding, mất chi tiết gradient. Nên thay bằng TIFF hoặc JPEG chất lượng cao.' },
   { id: 'PROGRESSIVE_JPEG',      icon: I.Signal,   label: 'JPEG Progressive', desc: 'Phát hiện ảnh JPEG sử dụng Progressive encoding. Một số hệ thống RIP cũ (đặc biệt PostScript Level 2) không xử lý được, gây lỗi in hoặc hình bị trắng.' },
-  { id: 'OBJECT_OFF_PAGE',       icon: I.MoveOut,  label: 'Object ngoài trang', desc: 'Phát hiện đối tượng (text, ảnh, vector) nằm hoàn toàn bên ngoài vùng in (TrimBox/MediaBox). Có thể gây lỗi RIP hoặc tăng thời gian xử lý không cần thiết.' },
+  { id: 'OBJECT_OFF_PAGE',       icon: I.MoveOut,  label: 'Object ngoài trang', desc: 'Phát hiện đối tượng (text, ảnh, vector, nét vẽ) nằm hoàn toàn bên ngoài vùng in (TrimBox/MediaBox). Có thể gây lỗi RIP hoặc tăng thời gian xử lý không cần thiết. Nên xóa.' },
   { id: 'PDF_VERSION_MISMATCH',  icon: I.Hash,     label: 'Phiên bản PDF',   desc: 'Kiểm tra phiên bản PDF có tương thích với tiêu chuẩn in ấn không. PDF quá cũ (<1.3) thiếu hỗ trợ ICC/Transparency. PDF quá mới (>1.7) có thể không tương thích RIP.' },
 ];
 

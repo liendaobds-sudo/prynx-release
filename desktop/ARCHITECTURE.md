@@ -42,6 +42,8 @@ Trước đây, `ImpositionTab.tsx` chứa hơn 31 `useState` và truyền (prop
    - **Smart Component** (như `ImpositionTab`): Chỉ dùng để đọc Store và phân bổ các Dumb Components. Không chứa giao diện chi tiết.
    - **Dumb Component** (như `LivePageFrame`): Chỉ nhận dữ liệu và render UI, logic xử lý phức tạp gọi ngược lại Store hoặc file tĩnh ngoài (`ViewerHelpers.ts`).
 
+**Cập nhật Phase 1 (P1-T03):** Một số state liên quan imposition (activeDashboardTool, batchOutput, confirmBookletSettings) đã được di cư sang useImposerSettingsStore để giảm God Store và tuân thủ spec unification. Workspace store vẫn giữ tạm thời cho compatibility trong quá trình di trú. Xem PR Plan cho chi tiết.
+
 ---
 
 ## 3. Quản Lý Trạng Thái (State Management) với Zustand

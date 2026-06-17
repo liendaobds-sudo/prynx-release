@@ -5,6 +5,7 @@ import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { Virtuoso } from 'react-virtuoso';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { useShallow } from 'zustand/react/shallow';
+import { useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -39,7 +40,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId, setIsSelectionMode,
         isObjectEditMode,
         hiddenOcgLayerIds, isLayerPanelOpen, setIsLayerPanelOpen,
-        separationPlates, activeDashboardTool, setActiveDashboardTool, vdpFields, selectedVdpFieldIds,
+        separationPlates, vdpFields, selectedVdpFieldIds,
         setSelectedVdpFieldIds, setVdpFields, setIsSidebarOpen,
         setViewerPageOrder, setViewerPageRotations, setViewerDirty,
         error, setError,
@@ -67,7 +68,6 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         vdpFields: state.vdpFields, selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         softProofImageUrl: state.softProofImageUrl, gamutWarningUrl: state.gamutWarningUrl, tacHeatmapUrl: state.tacHeatmapUrl, overprintPreviewUrl: state.overprintPreviewUrl,
         ocgPreviewUrl: state.ocgPreviewUrl,
-        activeDashboardTool: state.activeDashboardTool, setActiveDashboardTool: state.setActiveDashboardTool, 
         setVdpFields: state.setVdpFields, setIsSidebarOpen: state.setIsSidebarOpen,
         setViewerPageOrder: state.setViewerPageOrder, setViewerPageRotations: state.setViewerPageRotations, setViewerDirty: state.setViewerDirty,
         error: state.error, setError: state.setError,
@@ -81,6 +81,11 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         viewerThumbMenuOpen: state.viewerThumbMenuOpen, setViewerThumbMenuOpen: state.setViewerThumbMenuOpen,
         setHoveredPdfPosition: state.setHoveredPdfPosition,
         detectedDimensionsByPage: state.detectedDimensionsByPage
+    })));
+
+    const { activeDashboardTool, setActiveDashboardTool } = useImposerSettingsStore(useShallow(s => ({
+        activeDashboardTool: s.activeDashboardTool,
+        setActiveDashboardTool: s.setActiveDashboardTool,
     })));
 
     const isVdpMode = activeDashboardTool === 'datamerge' || activeDashboardTool === 'numbering' || activeDashboardTool === 'stick_text_number';

@@ -561,7 +561,7 @@ function AppInner() {
             key={tab.id}
             className={`absolute inset-0 flex-col w-full h-full ${tab.id === activeTabId ? 'flex z-10' : 'flex z-[0] opacity-0 pointer-events-none overflow-hidden'}`}
           >
-            {tab.type === 'home' && <HomeTab onOpenApp={handleOpenApp} />}
+            {tab.type === 'home' && <HomeTab onOpenApp={handleOpenApp} isActive={tab.id === activeTabId} />}
             {tab.type !== 'home' && (() => {
               const toolDef = TOOL_REGISTRY.find(t => t.id === tab.type && t.isEnabled);
               if (!toolDef) return <div className="flex items-center justify-center h-full text-slate-400">Công cụ không tìm thấy</div>;
@@ -579,7 +579,7 @@ function AppInner() {
                       initialReport={tab.payload?.report}
                       initialFeature={tab.payload?.focusFeature}
                       lockedMode={tab.payload?.lockedMode}
-                      batchOutput={tab.payload?.batchOutput}
+                      batchOutput={tab.payload?.batchOutput} // Note: batchOutput now primarily from imposerStore in context, this is legacy payload
                       systemMergeFiles={tab.payload?.systemMergeFiles}
                       onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', { file, lockedMode: tab.payload?.lockedMode, ...extraPayload })}
                     />

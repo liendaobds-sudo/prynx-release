@@ -252,8 +252,29 @@ def _register_working_file(output_path: str, original_name: str) -> str:
         db.close()
 
 
-def _build_output_response(output_path: str, op_result) -> EditResponse:
+def _safe_watermark(pdf_path: str, license_info: dict | None) -> None:
+    """Nhúng stealth watermark vào Working_File xuất ra (non-blocking).
+
+    Bỏ qua ở dev mode (license_key == 'DEV_MODE') hoặc khi thiếu license_key.
+    """
+    try:
+        lk = (license_info or {}).get("license_key", "") or ""
+        if not lk or lk == "DEV_MODE":
+            return
+        hwid = (license_info or {}).get("hwid", "") or ""
+        import pikepdf
+        from app.core.watermark import embed_watermark
+        with pikepdf.Pdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+            embed_watermark(pdf, lk, hwid)
+            pdf.save(pdf_path)
+    except Exception as e:
+        logger.error(f"[WATERMARK] edit output failed (non-blocking): {e}")
+
+
+def _build_output_response(output_path: str, op_result, license_info: dict | None = None) -> EditResponse:
     """Dựng EditResponse từ Working_File mới + op_result."""
+    # Đóng dấu bản quyền TRƯỚC khi đăng ký (để file_size lưu trong DB khớp file đã watermark).
+    _safe_watermark(output_path, license_info)
     filename = Path(output_path).name
     output_fid = _register_working_file(output_path, filename)
     # output_path PHẢI tuyệt đối: client desktop (Tauri) có cwd KHÁC backend, nên
@@ -270,7 +291,7 @@ def _build_output_response(output_path: str, op_result) -> EditResponse:
     )
 
 
-async def _execute(blocking_fn) -> EditResponse:
+async def _execute(blocking_fn, license_info: dict | None = None) -> EditResponse:
     """
     Chạy thao tác edit (đồng bộ, nặng) trong threadpool với TRẦN THỜI GIAN an toàn
     (Yêu cầu 13.4) và map lỗi domain → HTTP status rõ ràng.
@@ -311,7 +332,7 @@ async def _execute(blocking_fn) -> EditResponse:
         logger.exception("Thao tác edit thất bại")
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
 
-    return _build_output_response(output_path, op_result)
+    return _build_output_response(output_path, op_result, license_info)
 
 
 def _page_or_raise(pdf, page_index: int):
@@ -396,7 +417,9 @@ def _render_preview_blocking(pdf_path: str, op: EditOp) -> PreviewResponse:
     with pikepdf.Pdf.open(pdf_path) as pdf:
         _apply_edit_op(pdf, op, pdf_path)
         buf = BytesIO()
-        pdf.save(buf)
+        # compress_streams=False: KHÔNG nén lại stream ảnh đã nén → nhanh ~10× trên
+        # file ảnh nặng (xem ghi chú edit_io.save_working_file). Chỉ để render preview.
+        pdf.save(buf, compress_streams=False)
     pdf_bytes = buf.getvalue()
 
     # 2) Render READ-ONLY bằng PDFium từ chính bytes pikepdf vừa ghi.
@@ -470,17 +493,86 @@ async def list_page_objects(fid: str, page: int):
     """
     pdf_path, _ = _get_file_info(fid)
     try:
-        objects = geometry_reader.list_objects(pdf_path, page)
+        # include_text_props=False: KHÔNG trích nội dung/màu/font cho MỌI object
+        # (nhanh trên trang cực nhiều object). Props lấy LAZY qua /edit/text-props
+        # khi mở editor sửa text.
+        objects = geometry_reader.list_objects(pdf_path, page, include_text_props=False)
     except IndexError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Liệt kê object thất bại")
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
-    return {"objects": objects, "count": len(objects)}
+
+    # CropBox của trang (PDF user-space): client trừ gốc CropBox để overlay khớp ảnh
+    # render (PDFium render theo CropBox). File có CropBox/MediaBox lệch gốc (vd. xuất
+    # từ Illustrator) sẽ không bị lệch tọa độ. None nếu không đọc được (client coi gốc 0).
+    page_box: list[float] | None = None
+    try:
+        import pikepdf
+        with pikepdf.open(pdf_path) as _pdf:
+            if 0 <= page < len(_pdf.pages):
+                _pg = _pdf.pages[page]
+                try:
+                    _b = _pg.cropbox  # pikepdf: fallback MediaBox nếu không có CropBox
+                except Exception:  # noqa: BLE001
+                    _b = _pg.mediabox
+                page_box = [float(_b[0]), float(_b[1]), float(_b[2]), float(_b[3])]
+    except Exception:  # noqa: BLE001 - đọc box best-effort
+        page_box = None
+
+    return {"objects": objects, "count": len(objects), "pageBox": page_box}
+
+
+@router.get("/edit/text-props/{fid}/{page}/{index}")
+async def get_text_props(fid: str, page: int, index: int):
+    """
+    LAZY: nội dung/màu/font của MỘT text-object (theo drawIndex) — gọi khi mở
+    editor sửa text. Tách khỏi /edit/objects để liệt kê trang nhanh.
+    """
+    pdf_path, _ = _get_file_info(fid)
+    try:
+        props = geometry_reader.get_text_object_props(pdf_path, page, index)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Lấy text-props thất bại")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+    return props
+
+
+@router.delete("/edit/working/{fid}")
+async def discard_working_file(fid: str):
+    """
+    Dọn một Working_File TRUNG GIAN không còn cần (bị loại khỏi undo/redo của
+    client). AN TOÀN: CHỈ xóa file nằm trong thư mục `edit_output` (Working_File
+    do edit tạo) — KHÔNG bao giờ xóa file gốc người dùng tải lên.
+
+    Idempotent: fid không tồn tại / không phải working-file → trả deleted=False.
+    """
+    db = SessionLocal()
+    try:
+        row = db.query(UploadedFile).filter(UploadedFile.id == fid).first()
+        if row is None or not row.file_path:
+            return {"deleted": False, "reason": "not_found"}
+        norm = os.path.normpath(row.file_path).replace("\\", "/")
+        # Chỉ xóa khi path thuộc thư mục edit_output (Working_File của edit).
+        if f"/{EDIT_OUTPUT_SUBDIR}/" not in norm and not norm.endswith(f"/{EDIT_OUTPUT_SUBDIR}"):
+            return {"deleted": False, "reason": "not_working_file"}
+        try:
+            if os.path.exists(row.file_path):
+                os.remove(row.file_path)
+        except OSError as exc:
+            logger.warning("Không xóa được Working_File '%s': %s", row.file_path, exc)
+        db.delete(row)
+        db.commit()
+        return {"deleted": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("discard_working_file lỗi: %s", exc)
+        return {"deleted": False, "reason": "error"}
+    finally:
+        db.close()
 
 
 @router.post("/edit/delete", response_model=EditResponse)
-async def edit_delete(req: EditRequest):
+async def edit_delete(req: EditRequest, license_info: dict = Depends(require_license)):
     """Xóa tập object mục tiêu + lưu Working_File mới (color-safe)."""
     if req.op.kind != "delete":
         raise HTTPException(status_code=422, detail="Endpoint /edit/delete yêu cầu op.kind='delete'.")
@@ -500,11 +592,11 @@ async def edit_delete(req: EditRequest):
             output_subdir=EDIT_OUTPUT_SUBDIR,
         )
 
-    return await _execute(_do)
+    return await _execute(_do, license_info)
 
 
 @router.post("/edit/transform", response_model=EditResponse)
-async def edit_transform(req: EditRequest):
+async def edit_transform(req: EditRequest, license_info: dict = Depends(require_license)):
     """Move / resize / rotate tập object mục tiêu (phân nhánh theo op.kind)."""
     op = req.op
     if op.kind not in ("move", "resize", "rotate"):
@@ -535,11 +627,11 @@ async def edit_transform(req: EditRequest):
             output_subdir=EDIT_OUTPUT_SUBDIR,
         )
 
-    return await _execute(_do)
+    return await _execute(_do, license_info)
 
 
 @router.post("/edit/text", response_model=EditResponse)
-async def edit_text_endpoint(req: EditRequest):
+async def edit_text_endpoint(req: EditRequest, license_info: dict = Depends(require_license)):
     """Sửa nội dung text của (các) cụm text mục tiêu, giữ font/cỡ/vị trí."""
     op = req.op
     if op.kind != "editText":
@@ -564,11 +656,11 @@ async def edit_text_endpoint(req: EditRequest):
             output_subdir=EDIT_OUTPUT_SUBDIR,
         )
 
-    return await _execute(_do)
+    return await _execute(_do, license_info)
 
 
 @router.post("/edit/add", response_model=EditResponse)
-async def edit_add(req: EditRequest):
+async def edit_add(req: EditRequest, license_info: dict = Depends(require_license)):
     """Thêm object mới (text hoặc image) — chỉ bổ sung, không sửa object cũ."""
     op = req.op
     if op.kind != "add":
@@ -595,7 +687,7 @@ async def edit_add(req: EditRequest):
             output_subdir=EDIT_OUTPUT_SUBDIR,
         )
 
-    return await _execute(_do)
+    return await _execute(_do, license_info)
 
 
 @router.post("/edit/preview", response_model=PreviewResponse)

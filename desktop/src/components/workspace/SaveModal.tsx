@@ -2,6 +2,7 @@
 import React from 'react';
 import { Button } from '../Button';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 
 interface SaveModalProps {
     handleSaveFile: (isSaveAs: boolean) => void;
@@ -9,7 +10,8 @@ interface SaveModalProps {
 }
 
 export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProps) {
-    const { showSaveAsModal, setShowSaveAsModal, batchOutput, file, setReportMsg } = useWorkspaceStore();
+    const { showSaveAsModal, setShowSaveAsModal, file, setReportMsg } = useWorkspaceStore();
+    const { batchOutput } = useImposerSettingsStore();
     if (!showSaveAsModal) return null;
 
     return (

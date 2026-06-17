@@ -42,6 +42,48 @@ async function deleteFromDPAPI(): Promise<void> {
   } catch { /* ignore */ }
 }
 
+// ── DPAPI-backed license TOKEN storage (C-1) ──
+// Token Ed25519 do server ký được lưu mã hoá (DPAPI) để khi MỞ LẠI app lúc OFFLINE
+// vẫn còn token hợp lệ gửi sidecar (backend release ép token). Token đã ràng HWID.
+
+async function saveTokenToDPAPI(token: string): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('store_license_token', { token });
+  } catch { /* ignore (dev/web) */ }
+}
+
+async function loadTokenFromDPAPI(): Promise<string | null> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke('load_license_token') as string;
+  } catch {
+    return null;
+  }
+}
+
+async function deleteTokenFromDPAPI(): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('delete_license_token');
+  } catch { /* ignore */ }
+}
+
+/** Đọc 'exp' (unix giây) từ token "<payload_b64url>.<sig>" và kiểm tra còn hạn (đệm 60s). */
+function isLicenseTokenValid(token: string | null): boolean {
+  if (!token || token.indexOf('.') < 0) return false;
+  try {
+    let p = token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+    while (p.length % 4) p += '=';
+    const payload = JSON.parse(decodeURIComponent(escape(atob(p))));
+    const exp = Number(payload?.exp || 0);
+    if (!exp) return false;
+    return exp * 1000 > Date.now() + 60_000;
+  } catch {
+    return false;
+  }
+}
+
 // ── localStorage fallback (for dev mode / web mode) ──
 
 function encodeKey(key: string): string {
@@ -235,7 +277,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     await supabase.auth.signOut();
     get().setLicenseKey(null);
     await deleteFromDPAPI(); // Explicitly clear DPAPI
-    set({ user: null, session: null, licenseValid: false, lastValidated: 0, remainingDays: null, licenseExpiresAt: null });
+    await deleteTokenFromDPAPI(); // C-1: dọn token đã lưu
+    set({ user: null, session: null, licenseValid: false, lastValidated: 0, remainingDays: null, licenseExpiresAt: null, licenseToken: null });
   },
 
   checkSession: async () => {
@@ -253,6 +296,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
       const storedKey = dpapiKey || get().licenseKey;
       if (session?.user && storedKey) {
+        // C-1: nạp token đã lưu (DPAPI) trước khi validate — để nếu OFFLINE (RPC lỗi,
+        // vào grace) thì vẫn có token hợp lệ gửi sidecar. Chỉ dùng nếu CHƯA hết hạn.
+        const persistedToken = await loadTokenFromDPAPI();
+        if (isLicenseTokenValid(persistedToken)) {
+          set({ licenseToken: persistedToken });
+        } else if (persistedToken) {
+          await deleteTokenFromDPAPI(); // token cũ đã hết hạn → dọn
+        }
         const isValid = await get().validateLicense();
         if (!isValid) {
           console.warn('[AUTH] Stored license key is no longer valid — clearing');
@@ -406,7 +457,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           const { data: tokData } = await supabase.functions.invoke('license-verify', {
             body: { license_key: licenseKey, machine_id: hwid, product_id: 'prynx' },
           });
-          if ((tokData as any)?.token) set({ licenseToken: (tokData as any).token });
+          if ((tokData as any)?.token) {
+            const tok = (tokData as any).token as string;
+            set({ licenseToken: tok });
+            // C-1: lưu token (DPAPI) để mở lại app offline vẫn dùng được tới khi hết hạn.
+            void saveTokenToDPAPI(tok);
+          }
         } catch { /* ignore — token optional during rollout */ }
       }
       set({

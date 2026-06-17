@@ -101,6 +101,38 @@ def _extract_text(obj, text_page) -> str | None:
         return None
 
 
+def _extract_font_name(obj) -> str | None:
+    """
+    Lấy TÊN font gốc của text-object (BaseFont), bỏ tiền tố subset dạng 'ABCDEF+'.
+    Dùng để gợi ý/khớp với font hệ thống khi sửa (auto nhận font gốc). None nếu
+    không lấy được (API không hỗ trợ / lỗi).
+    """
+    try:
+        get_font = getattr(pdfium_c, "FPDFTextObj_GetFont", None)
+        if get_font is None:
+            return None
+        font = get_font(obj)
+        if not font:
+            return None
+        get_name = getattr(pdfium_c, "FPDFFont_GetBaseFontName", None) or getattr(
+            pdfium_c, "FPDFFont_GetFontName", None
+        )
+        if get_name is None:
+            return None
+        n = int(get_name(font, None, 0))
+        if n <= 0:
+            return None
+        buf = ctypes.create_string_buffer(n)
+        get_name(font, buf, n)
+        name = buf.value.decode("ascii", errors="replace").strip()
+        # Bỏ tiền tố subset 'ABCDEF+' (6 chữ in hoa + '+').
+        if len(name) > 7 and name[6] == "+" and name[:6].isupper() and name[:6].isalpha():
+            name = name[7:]
+        return name or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _extract_fill_color(obj) -> list[int] | None:
     """
     Lấy MÀU TÔ (fill) RGB của object qua `FPDFPageObj_GetFillColor` (0..255).
@@ -121,7 +153,7 @@ def _extract_fill_color(obj) -> list[int] | None:
         return None
 
 
-def list_objects(pdf_path: str, page_index: int) -> list[ObjMeta]:
+def list_objects(pdf_path: str, page_index: int, include_text_props: bool = True) -> list[ObjMeta]:
     """
     Liệt kê tất cả PDF_Object của một trang kèm type + bbox chính xác (read-only).
 
@@ -155,11 +187,13 @@ def list_objects(pdf_path: str, page_index: int) -> list[ObjMeta]:
         page_raw = page.raw
 
         # Text-page (read-only) để trích nội dung text-object cho editor sửa.
-        # Lỗi/không hỗ trợ → None (vẫn liệt kê object bình thường, chỉ thiếu content).
-        try:
-            text_page_raw = pdfium_c.FPDFText_LoadPage(page_raw)
-        except Exception:  # noqa: BLE001
-            text_page_raw = None
+        # Chỉ nạp khi include_text_props=True (trích nội dung/màu/font). Trang CỰC
+        # NHIỀU object → bỏ qua để liệt kê nhanh (props lấy lazy qua endpoint riêng).
+        if include_text_props:
+            try:
+                text_page_raw = pdfium_c.FPDFText_LoadPage(page_raw)
+            except Exception:  # noqa: BLE001
+                text_page_raw = None
 
         # Đếm số object trên trang (O(1)); trang rỗng → trả danh sách rỗng.
         count = int(pdfium_c.FPDFPage_CountObjects(page_raw))
@@ -231,8 +265,12 @@ def list_objects(pdf_path: str, page_index: int) -> list[ObjMeta]:
                 ]
 
             # id ổn định trong một lần liệt kê: theo type + drawIndex.
-            content = _extract_text(obj, text_page_raw) if obj_type == "text" else None
-            color = _extract_fill_color(obj) if obj_type == "text" else None
+            if include_text_props and obj_type == "text":
+                content = _extract_text(obj, text_page_raw)
+                color = _extract_fill_color(obj)
+                font_name = _extract_font_name(obj)
+            else:
+                content = color = font_name = None
             out.append(
                 ObjMeta(
                     id=f"{obj_type}-{i}",
@@ -242,6 +280,7 @@ def list_objects(pdf_path: str, page_index: int) -> list[ObjMeta]:
                     matrix=matrix,
                     content=content,
                     color=color,
+                    fontName=font_name,
                 )
             )
 
@@ -257,4 +296,53 @@ def list_objects(pdf_path: str, page_index: int) -> list[ObjMeta]:
             try:
                 pdf.close()
             except Exception:  # pragma: no cover - dọn dẹp best-effort
+                pass
+
+
+def get_text_object_props(pdf_path: str, page_index: int, draw_index: int) -> dict:
+    """
+    Lấy LAZY (on-demand) nội dung/màu/font của MỘT text-object theo `draw_index`
+    (chỉ số thứ tự vẽ PDFium). Dùng khi mở editor sửa text — tránh trích cho MỌI
+    object lúc liệt kê (nhanh trên trang cực nhiều object).
+
+    Trả {"content": str|None, "color": [r,g,b]|None, "fontName": str|None}.
+    Object không tồn tại / không phải text → các trường None.
+    """
+    pdf = None
+    text_page_raw = None
+    out = {"content": None, "color": None, "fontName": None}
+    try:
+        pdf = pdfium.PdfDocument(pdf_path)
+        if page_index < 0 or page_index >= len(pdf):
+            return out
+        page = pdf[page_index]
+        page_raw = page.raw
+        count = int(pdfium_c.FPDFPage_CountObjects(page_raw))
+        if draw_index < 0 or draw_index >= count:
+            return out
+        obj = pdfium_c.FPDFPage_GetObject(page_raw, draw_index)
+        if not obj:
+            return out
+        if int(pdfium_c.FPDFPageObj_GetType(obj)) != pdfium_c.FPDF_PAGEOBJ_TEXT:
+            return out
+        try:
+            text_page_raw = pdfium_c.FPDFText_LoadPage(page_raw)
+        except Exception:  # noqa: BLE001
+            text_page_raw = None
+        out["content"] = _extract_text(obj, text_page_raw)
+        out["color"] = _extract_fill_color(obj)
+        out["fontName"] = _extract_font_name(obj)
+        return out
+    except Exception:  # noqa: BLE001 - best-effort
+        return out
+    finally:
+        if text_page_raw is not None:
+            try:
+                pdfium_c.FPDFText_ClosePage(text_page_raw)
+            except Exception:  # pragma: no cover
+                pass
+        if pdf is not None:
+            try:
+                pdf.close()
+            except Exception:  # pragma: no cover
                 pass

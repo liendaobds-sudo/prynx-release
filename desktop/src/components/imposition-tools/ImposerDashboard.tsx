@@ -51,7 +51,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const {
         isProcessing, error: globalError, file: pdfFile, viewerPageOrder,
         setHighlightedIssue: onIssueSelect, setShowOutputPreview,
-        activeDashboardTool: currentTool, setActiveDashboardTool: onActiveToolChange,
         detectedShapeType, detectedShapeParams, setDetectedShapeType,
         detectedShapesByPage, setDetectedShapesByPage,
         detectedDimensionsByPage, setDetectedDimensionsByPage,
@@ -60,7 +59,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     } = useWorkspaceStore(useShallow(state => ({
         isProcessing: state.isProcessing, error: state.error, file: state.file, viewerPageOrder: state.viewerPageOrder,
         setHighlightedIssue: state.setHighlightedIssue, setShowOutputPreview: state.setShowOutputPreview,
-        activeDashboardTool: state.activeDashboardTool, setActiveDashboardTool: state.setActiveDashboardTool,
         detectedShapeType: state.detectedShapeType, detectedShapeParams: state.detectedShapeParams, setDetectedShapeType: state.setDetectedShapeType,
         detectedShapesByPage: state.detectedShapesByPage, setDetectedShapesByPage: state.setDetectedShapesByPage,
         detectedDimensionsByPage: state.detectedDimensionsByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage,
@@ -68,6 +66,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         selectionFileId: state.selectionFileId,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds
     })));
+
+    // P1-T03: activeDashboardTool from dedicated imposer store (migration in progress, dupe in workspace for now)
+    const { activeDashboardTool: currentTool, setActiveDashboardTool: onActiveToolChange } = useImposerSettingsStore();
     const sourceTotalPages = viewerPageOrder ? viewerPageOrder.length : 0;
     const onOpenOutputPreview = () => setShowOutputPreview(true);
 

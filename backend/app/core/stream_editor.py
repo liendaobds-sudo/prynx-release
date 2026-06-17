@@ -48,6 +48,7 @@ from app.core.object_mapper import (
     parse_page_ops,
     text_show_op_for_move,
 )
+from app.core.text_shaping import needs_shaping, shape_text
 from app.schemas.edit import OpSpan, normalize_bbox
 
 logger = logging.getLogger(__name__)
@@ -1046,7 +1047,12 @@ def _subset_font_bytes(font_path: str, codepoints) -> bytes | None:
         options.layout_features = []
         options.hinting = False
 
-        font = _TTFont(font_path)
+        # Font collection (.ttc/.otc) cần chỉ định fontNumber; lấy face đầu (0).
+        _ext = os.path.splitext(font_path)[1].lower()
+        if _ext in (".ttc", ".otc"):
+            font = _TTFont(font_path, fontNumber=0)
+        else:
+            font = _TTFont(font_path)
         subsetter = _ftsubset.Subsetter(options=options)
         subsetter.populate(unicodes=sorted(cps))
         subsetter.subset(font)
@@ -1167,6 +1173,42 @@ def _embed_cid_font(pdf: pikepdf.Pdf, font_path: str, subset_codepoints=None):
     # Giữ tham chiếu cid_font để dựng W sau khi biết glyph dùng (caller set W).
     font_obj._cid_font = cid_font  # type: ignore[attr-defined]
     return font_obj, char_to_glyph, char_widths
+
+
+def _make_shaped_show(pdf: pikepdf.Pdf, page, font_path: str, text: str):
+    """
+    SHAPING chữ phức tạp (Arabic/Thai/Indic…): dùng HarfBuzz chọn dạng glyph theo
+    ngữ cảnh, nhúng FONT ĐẦY ĐỦ (Type0/Identity-H, CID=GID — để mọi glyph shaped
+    đều có), đặt `/W` theo advance HarfBuzz, và trả op show-text Tj theo chuỗi GID
+    đã shape.
+
+    Returns `(new_tf_name, show_instr)` hoặc None nếu shaping không khả dụng/thất
+    bại (caller fallback về đường mã hóa theo codepoint).
+    """
+    glyphs = shape_text(font_path, text)
+    if not glyphs:
+        return None
+    try:
+        # Nhúng FULL font (subset_codepoints=None) → CID=GID khớp GID shaped.
+        font_obj, _c2g, _cw = _embed_cid_font(pdf, font_path, subset_codepoints=None)
+        gid_bytes = bytearray()
+        widths: dict[int, float] = {}
+        for g in glyphs:
+            gid = int(g["gid"])
+            if gid == 0:
+                # gid 0 = .notdef → font thiếu glyph cho script này → fallback an toàn.
+                return None
+            gid_bytes += struct.pack(">H", gid)
+            widths[gid] = float(g["x_advance"]) * 1000.0  # em → em-1000 (đơn vị /W)
+        _set_cid_widths(font_obj._cid_font, widths)  # type: ignore[attr-defined]
+        new_tf_name = _ensure_font_resource(page, font_obj, "FShape")
+        show_instr = pikepdf.ContentStreamInstruction(
+            [pikepdf.String(bytes(gid_bytes))], pikepdf.Operator("Tj")
+        )
+        return new_tf_name, show_instr
+    except Exception as exc:  # noqa: BLE001 - shaping embed lỗi → fallback
+        logger.warning("Nhúng glyph shaped thất bại, fallback codepoint: %s", exc)
+        return None
 
 
 def _set_cid_widths(cid_font, used_gid_widths: dict[int, float]) -> None:
@@ -1506,51 +1548,60 @@ def edit_text(
             [pikepdf.String(kept_bytes)], pikepdf.Operator("Tj")
         )
     else:
-        # Nhúng/đổi sang font ĐÃ CHỌN (hoặc dự phòng DejaVuSans nếu không chọn),
-        # Type0/Identity-H, SUBSET theo các codepoint thực dùng để giảm dung lượng.
-        if not os.path.exists(embed_path):
-            raise GlyphCoverageError(
-                f"Không có file font tại '{embed_path}' để nhúng — HỦY thao tác "
-                f"(Yêu cầu 8.4), KHÔNG ghi."
-            )
-        font_obj, char_to_glyph, char_widths = _embed_cid_font(
-            pdf, embed_path, subset_codepoints={ord(c) for c in new_text}
-        )
-
-        # KIỂM GLYPH trước khi ghi (Yêu cầu 8.4).
-        missing = sorted({c for c in new_text if ord(c) not in char_to_glyph})
-        if missing:
-            preview = "".join(missing[:10])
-            raise GlyphCoverageError(
-                f"Font nhúng thiếu glyph cho ký tự: {preview!r} — HỦY thao tác "
-                f"(Yêu cầu 8.4), KHÔNG ghi .notdef/ô vuông. Hãy chọn font khác."
-            )
-
-        # Mã hóa text → chuỗi 2-byte glyph-id (Identity-H, CID = GID).
-        used_gid_widths: dict[int, float] = {}
-        gid_to_unicode: dict[int, str] = {}
-        gid_bytes = bytearray()
-        for c in new_text:
-            cp = ord(c)
-            gid = char_to_glyph[cp]
-            gid_bytes += struct.pack(">H", gid)
-            if cp in char_widths:
-                used_gid_widths[gid] = char_widths[cp]
-            gid_to_unicode[gid] = c
-        _set_cid_widths(font_obj._cid_font, used_gid_widths)  # type: ignore[attr-defined]
-        _set_to_unicode(font_obj, pdf, gid_to_unicode)
-
-        new_tf_name = _ensure_font_resource(pg, font_obj, "FEdit")
-        font_resource = new_tf_name
-        used_fallback = True
-
         # Giữ cỡ chữ cũ; nếu không xác định được, dùng sizePt từ payload/12.
         if font_size <= 0:
             font_size = 12.0
+        # CHỮ PHỨC TẠP (Arabic/Thai/Indic…): shape bằng HarfBuzz → nhúng glyph
+        # shaped (dạng ngữ cảnh ĐÚNG). Chỉ khi cần; Latin/CJK/Việt đi đường codepoint.
+        shaped = None
+        if needs_shaping(new_text) and os.path.exists(embed_path):
+            shaped = _make_shaped_show(pdf, pg, embed_path, new_text)
+        if shaped is not None:
+            new_tf_name, new_show_instr = shaped
+            font_resource = new_tf_name
+            used_fallback = True
+        else:
+            # Nhúng/đổi sang font ĐÃ CHỌN (hoặc dự phòng DejaVuSans nếu không chọn),
+            # Type0/Identity-H, SUBSET theo các codepoint thực dùng để giảm dung lượng.
+            if not os.path.exists(embed_path):
+                raise GlyphCoverageError(
+                    f"Không có file font tại '{embed_path}' để nhúng — HỦY thao tác "
+                    f"(Yêu cầu 8.4), KHÔNG ghi."
+                )
+            font_obj, char_to_glyph, char_widths = _embed_cid_font(
+                pdf, embed_path, subset_codepoints={ord(c) for c in new_text}
+            )
 
-        new_show_instr = pikepdf.ContentStreamInstruction(
-            [pikepdf.String(bytes(gid_bytes))], pikepdf.Operator("Tj")
-        )
+            # KIỂM GLYPH trước khi ghi (Yêu cầu 8.4).
+            missing = sorted({c for c in new_text if ord(c) not in char_to_glyph})
+            if missing:
+                preview = "".join(missing[:10])
+                raise GlyphCoverageError(
+                    f"Font nhúng thiếu glyph cho ký tự: {preview!r} — HỦY thao tác "
+                    f"(Yêu cầu 8.4), KHÔNG ghi .notdef/ô vuông. Hãy chọn font khác."
+                )
+
+            # Mã hóa text → chuỗi 2-byte glyph-id (Identity-H, CID = GID).
+            used_gid_widths: dict[int, float] = {}
+            gid_to_unicode: dict[int, str] = {}
+            gid_bytes = bytearray()
+            for c in new_text:
+                cp = ord(c)
+                gid = char_to_glyph[cp]
+                gid_bytes += struct.pack(">H", gid)
+                if cp in char_widths:
+                    used_gid_widths[gid] = char_widths[cp]
+                gid_to_unicode[gid] = c
+            _set_cid_widths(font_obj._cid_font, used_gid_widths)  # type: ignore[attr-defined]
+            _set_to_unicode(font_obj, pdf, gid_to_unicode)
+
+            new_tf_name = _ensure_font_resource(pg, font_obj, "FEdit")
+            font_resource = new_tf_name
+            used_fallback = True
+
+            new_show_instr = pikepdf.ContentStreamInstruction(
+                [pikepdf.String(bytes(gid_bytes))], pikepdf.Operator("Tj")
+            )
 
     # ── Dựng instruction list MỚI: GHIM Tm tuyệt đối mọi show-op trong cụm để
     # không xê dịch khi đổi bề rộng text; CHỈ thay nội dung show-op MỤC TIÊU,
@@ -1727,43 +1778,53 @@ def add_text(
             [pikepdf.String(text.encode("latin-1"))], pikepdf.Operator("Tj")
         )
     else:
-        # Nhúng font ĐÃ CHỌN (hoặc dự phòng DejaVuSans) — Type0/Identity-H, subset.
-        if not os.path.exists(embed_path):
-            raise GlyphCoverageError(
-                f"Không có file font tại '{embed_path}' để nhúng — HỦY thao tác "
-                f"(Yêu cầu 9.3), KHÔNG ghi."
+        # CHỮ PHỨC TẠP (Arabic/Thai/Indic…): shape bằng HarfBuzz → nhúng glyph
+        # shaped (dạng ngữ cảnh ĐÚNG). Chỉ khi cần; Latin/CJK/Việt đi đường codepoint.
+        shaped = None
+        if needs_shaping(text) and os.path.exists(embed_path):
+            shaped = _make_shaped_show(pdf, pg, embed_path, text)
+        if shaped is not None:
+            shaped_tf_name, show_instr = shaped
+            font_resource = shaped_tf_name
+            used_fallback = True
+        else:
+            # Nhúng font ĐÃ CHỌN (hoặc dự phòng DejaVuSans) — Type0/Identity-H, subset.
+            if not os.path.exists(embed_path):
+                raise GlyphCoverageError(
+                    f"Không có file font tại '{embed_path}' để nhúng — HỦY thao tác "
+                    f"(Yêu cầu 9.3), KHÔNG ghi."
+                )
+            font_obj, char_to_glyph, char_widths = _embed_cid_font(
+                pdf, embed_path, subset_codepoints={ord(c) for c in text}
             )
-        font_obj, char_to_glyph, char_widths = _embed_cid_font(
-            pdf, embed_path, subset_codepoints={ord(c) for c in text}
-        )
 
-        # KIỂM GLYPH trước khi ghi (Yêu cầu 9.3 / 8.4).
-        missing = sorted({c for c in text if ord(c) not in char_to_glyph})
-        if missing:
-            preview = "".join(missing[:10])
-            raise GlyphCoverageError(
-                f"Font nhúng thiếu glyph cho ký tự: {preview!r} — HỦY thao tác "
-                f"(Yêu cầu 9.3), KHÔNG ghi .notdef/ô vuông. Hãy chọn font khác."
+            # KIỂM GLYPH trước khi ghi (Yêu cầu 9.3 / 8.4).
+            missing = sorted({c for c in text if ord(c) not in char_to_glyph})
+            if missing:
+                preview = "".join(missing[:10])
+                raise GlyphCoverageError(
+                    f"Font nhúng thiếu glyph cho ký tự: {preview!r} — HỦY thao tác "
+                    f"(Yêu cầu 9.3), KHÔNG ghi .notdef/ô vuông. Hãy chọn font khác."
+                )
+
+            used_gid_widths: dict[int, float] = {}
+            gid_to_unicode: dict[int, str] = {}
+            gid_bytes = bytearray()
+            for c in text:
+                cp = ord(c)
+                gid = char_to_glyph[cp]
+                gid_bytes += struct.pack(">H", gid)
+                if cp in char_widths:
+                    used_gid_widths[gid] = char_widths[cp]
+                gid_to_unicode[gid] = c
+            _set_cid_widths(font_obj._cid_font, used_gid_widths)  # type: ignore[attr-defined]
+            _set_to_unicode(font_obj, pdf, gid_to_unicode)
+
+            font_resource = _ensure_font_resource(pg, font_obj, "FAdd")
+            used_fallback = True
+            show_instr = pikepdf.ContentStreamInstruction(
+                [pikepdf.String(bytes(gid_bytes))], pikepdf.Operator("Tj")
             )
-
-        used_gid_widths: dict[int, float] = {}
-        gid_to_unicode: dict[int, str] = {}
-        gid_bytes = bytearray()
-        for c in text:
-            cp = ord(c)
-            gid = char_to_glyph[cp]
-            gid_bytes += struct.pack(">H", gid)
-            if cp in char_widths:
-                used_gid_widths[gid] = char_widths[cp]
-            gid_to_unicode[gid] = c
-        _set_cid_widths(font_obj._cid_font, used_gid_widths)  # type: ignore[attr-defined]
-        _set_to_unicode(font_obj, pdf, gid_to_unicode)
-
-        font_resource = _ensure_font_resource(pg, font_obj, "FAdd")
-        used_fallback = True
-        show_instr = pikepdf.ContentStreamInstruction(
-            [pikepdf.String(bytes(gid_bytes))], pikepdf.Operator("Tj")
-        )
 
     # ── Dựng khối text cô lập `q [màu] BT … ET Q` và APPEND vào cuối ─────────
     text_block: list = [_q_instruction()]

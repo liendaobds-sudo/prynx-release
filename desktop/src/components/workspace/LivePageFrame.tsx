@@ -1,14 +1,26 @@
 import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Page } from 'react-pdf';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { authenticatedFetch, getApiUrl } from '../../lib/api';
+import { authenticatedFetch, getApiUrl, getSystemFonts } from '../../lib/api';
 import { VdpPreviewImage } from './ViewerHelpers';
 import { useViewerHotkeys } from '../../hooks/viewer/useViewerHotkeys';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
 import type { ObjType, BBox, EditOp } from './editTypes';
 import { FontSelector } from '../preprocess-tools/FontSelector';
+import {
+    pageWidthPtFromDim,
+    editScale as calcEditScale,
+    objectBboxNativeToCanvas,
+    addBboxCanvasToNative,
+    moveDeltaCanvasToPdf,
+    snapRotation,
+    rotationScreenToPdf,
+    pickFontForName as pickFontForNameUtil,
+} from './editGeometry';
 
 // ─── Edit PDF Object (task 10.1) ─────────────────────────────────────────────
 // Object do GET /edit/objects trả về, SAU khi đã convert bbox PDF (bottom-left)
@@ -22,6 +34,7 @@ interface EditCanvasObj {
     matrix?: number[];
     content?: string; // nội dung text gốc (type='text') để điền sẵn editor
     color?: number[]; // màu tô RGB 0..255 (type='text') để editor khớp màu gốc
+    fontName?: string; // tên font gốc (BaseFont) để gợi ý/khớp font hệ thống
 }
 
 // ─── Edit PDF Object — move/resize/rotate (task 10.2) ────────────────────────
@@ -114,8 +127,12 @@ export function clearTileUrlCache() {
 // bật/tắt chế độ KHÔNG phải fetch lại /edit/objects (hết "load lâu khi tắt/bật").
 // Clear khi pdfUrl đổi (file mới / commit working-file mới) để không dùng dữ liệu cũ.
 const _editObjectsCache = new Map<string, EditCanvasObj[]>();
+// Gốc CropBox (bx0,by0) theo cùng khóa cache — để add-text/image quy đổi tọa độ
+// canvas (cropbox-relative) ↦ PDF NATIVE đúng trên file có CropBox lệch gốc.
+const _editCropOriginCache = new Map<string, [number, number]>();
 function clearEditObjectsCache() {
     _editObjectsCache.clear();
+    _editCropOriginCache.clear();
 }
 
 const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, clipY, clipW, clipH, cssLeft, cssTop, cssW, cssH, eager, getTileUrl, onVisible }: any) => {
@@ -227,6 +244,13 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
             }
         };
         onVisible(el, false, eager);
+        // FIX màn-trắng-khi-occluded: IntersectionObserver CHỈ bắn khi trang được
+        // paint; cửa sổ WebView2 bị coi là occluded thì không paint → observer không
+        // bắn → tile không được xin → trắng tới ~7s tới khi bị ép paint (mở DevTools).
+        // Gọi _loadTile() ĐỒNG BỘ ngay trong effect (không phụ thuộc observer/paint)
+        // để tile luôn được nạp tức thì. Observer vẫn giữ làm dự phòng cho tile cuộn xa;
+        // _loadTile có guard nên gọi 2 lần là vô hại.
+        (el as any)._loadTile?.();
         return () => {
             onVisible(el, true, eager);
         };
@@ -345,12 +369,13 @@ export const LivePageFrame = (props: any) => {
     const onObjectSelect = setSelectedObjectIds;
     
     const watermarkPreview = useWorkspaceStore(s => s.watermarkPreview);
-    const activeDashboardTool = useWorkspaceStore(s => s.activeDashboardTool);
+    // Migrated to imposer store per P1-T03
+    const activeDashboardTool = useImposerSettingsStore(s => s.activeDashboardTool);
     const containerRef = useRef<HTMLDivElement>(null);
     const marqueeRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<{ startX: number; startY: number; active: boolean; lastHoverTime?: number }>({ startX: 0, startY: 0, active: false });
     
-    const { stickPreviewParams } = useWorkspaceStore();
+    const stickPreviewParams = useWorkspaceStore(s => s.stickPreviewParams);
 
     // VDP Drag/Resize interaction state
     const [vdpInteraction, setVdpInteraction] = useState<{ type: 'move'|'resize', handle?: 'nw'|'ne'|'sw'|'se', fieldIds: string[], startX: number, startY: number, startFields: Record<string, {x: number, y: number, w: number, h: number}> } | null>(null);
@@ -360,6 +385,83 @@ export const LivePageFrame = (props: any) => {
     // rỗng = giữ font gốc nếu được, ngược lại fallback DejaVuSans (hành vi cũ).
     const [editFontPath, setEditFontPath] = useState<string | undefined>(undefined);
     const [editFontName, setEditFontName] = useState<string>('');
+    // Danh sách font hệ thống (nạp 1 lần) để TỰ KHỚP font gốc khi mở editor sửa text.
+    const systemFontsRef = useRef<{ name: string; path: string }[]>([]);
+    // Props text lấy LAZY khi mở editor (tránh trích cho mọi object lúc liệt kê).
+    const [editTextColor, setEditTextColor] = useState<number[] | null>(null);
+    const [editOrigContent, setEditOrigContent] = useState<string>('');
+    const [editOrigFontName, setEditOrigFontName] = useState<string>('');
+    const editOpenTokenRef = useRef(0); // chống race khi mở nhanh object khác
+    // Thông báo tạm (vd. cảnh báo không giữ được font gốc → dùng font dự phòng).
+    const [editNotice, setEditNotice] = useState<string | null>(null);
+    useEffect(() => {
+        getSystemFonts().then(f => { systemFontsRef.current = Array.isArray(f) ? f : []; }).catch(() => {});
+    }, []);
+    // Khớp tên font gốc (vd. 'Montserrat-Bold') với một font hệ thống (chuẩn hóa tên).
+    const pickFontForName = (name?: string): { name: string; path: string } | null =>
+        pickFontForNameUtil(name, systemFontsRef.current);
+    // Nội dung trích KHÔNG đáng tin: chứa U+FFFD hoặc ký tự dải mũi tên/kỹ thuật
+    // (U+2190–U+23FF) — dấu hiệu glyph→unicode sai (vd. dấu cách → '↔'). Khi đó
+    // KHÔNG prefill (tránh ghi lại chữ rác gây thiếu glyph khi đổi font).
+    const looksUnreliableText = (s: string): boolean => {
+        for (const ch of s) {
+            const o = ch.codePointAt(0) ?? 0;
+            if (o === 0xFFFD) return true;                 // replacement char
+            if (o >= 0x2190 && o <= 0x2BFF) return true;   // arrows, math, technical, box, geometric, misc symbols
+            if (o >= 0xE000 && o <= 0xF8FF) return true;   // Private Use Area (font subset remap glyph→PUA)
+            if (o >= 0xFFF0 && o <= 0xFFFF) return true;   // specials
+            if (o < 0x20 && o !== 0x09 && o !== 0x0A && o !== 0x0D) return true; // control chars
+        }
+        return false;
+    };
+    // Thay MỖI ký tự rác (arrow/symbol/PUA/control) bằng DẤU CÁCH — giữ nguyên chữ
+    // đọc được. Đa số lỗi là dấu cách giữa từ bị map sai (vd. '↔'), nên thay bằng
+    // space cho ra text gần đúng để người dùng sửa nhanh (thay vì để trống).
+    const sanitizeText = (s: string): string =>
+        Array.from(s).map(c => {
+            const o = c.codePointAt(0) ?? 0;
+            const bad = o === 0xFFFD
+                || (o >= 0x2190 && o <= 0x2BFF)
+                || (o >= 0xE000 && o <= 0xF8FF)
+                || (o >= 0xFFF0 && o <= 0xFFFF)
+                || (o < 0x20 && o !== 0x09 && o !== 0x0A && o !== 0x0D);
+            return bad ? ' ' : c;
+        }).join('');
+    // Mở editor sửa text cho object: mở NGAY (trống) rồi LAZY fetch props
+    // (content/màu/font gốc) cho đúng object → điền sẵn + tự khớp font hệ thống.
+    const openTextEditor = (o: EditCanvasObj) => {
+        const token = ++editOpenTokenRef.current;
+        setEditingTextId(o.id);
+        setEditTextContent('');
+        setEditOrigContent('');
+        setEditTextColor(null);
+        setEditOrigFontName('');
+        setEditFontName('');
+        setEditFontPath(undefined);
+        if (!selectionFileId) return;
+        const page = originalPageNum - 1;
+        void (async () => {
+            try {
+                const res = await authenticatedFetch(`${getApiUrl()}/edit/text-props/${selectionFileId}/${page}/${o.drawIndex}`);
+                if (!res.ok) return;
+                const p = await res.json();
+                if (editOpenTokenRef.current !== token) return; // đã mở object khác → bỏ
+                const raw = typeof p.content === 'string' ? p.content : '';
+                // Text trích ra có thể chứa ký tự RÁC do font mã hoá riêng (vd. dấu
+                // cách → '↔'). Nhưng chữ thường VẪN ĐÚNG → THAY ký tự rác bằng dấu
+                // cách rồi PREFILL (giữ phần đọc được) để người dùng sửa nhanh.
+                const dirty = raw !== '' && looksUnreliableText(raw);
+                const content = dirty ? sanitizeText(raw) : raw;
+                setEditTextContent(content);
+                setEditOrigContent(content);
+                setEditTextColor(Array.isArray(p.color) ? p.color : null);
+                setEditOrigFontName(typeof p.fontName === 'string' ? p.fontName : '');
+                const m = pickFontForName(p.fontName);
+                if (m && m.path) { setEditFontName(m.name); setEditFontPath(m.path); }
+                else { setEditFontName(p.fontName || ''); setEditFontPath(undefined); }
+            } catch { /* giữ editor trống nếu lỗi */ }
+        })();
+    };
     
     // Preview image state (driven by hiddenObjectIds prop from parent)
     const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
@@ -384,6 +486,8 @@ export const LivePageFrame = (props: any) => {
     // lưu transform hiện tại để handleMouseUp đọc khi commit (thay cho state).
     const editGhostRef = useRef<HTMLDivElement>(null);
     const editLiveTransformRef = useRef<EditLiveTransform | null>(null);
+    // Gốc CropBox (bx0,by0) point của TRANG hiện tại — dùng cho add-text/image.
+    const editCropOriginRef = useRef<[number, number]>([0, 0]);
     // GIỮ ghost ở vị trí vừa thả tới khi overlay cập nhật vị trí MỚI (sau commit)
     // → bỏ hiện tượng khung chọn "giật về chỗ cũ rồi nhảy tới chỗ mới".
     const editGhostHoldRef = useRef<boolean>(false);
@@ -433,20 +537,17 @@ export const LivePageFrame = (props: any) => {
     }, []);
 
     // Scale render cho 1 tile phủ CẢ TRANG (chỉ 1 lần render/trang — pdfium xử lý cả
-    // trang dù cắt ô, nên tiling chỉ làm chậm gấp N). Vì chi phí render ~ độ phức tạp
-    // PDF chứ gần như KHÔNG theo độ phân giải, ta render ở scale cao (nét) mà giá ~ nhau.
-    // LƯỢNG TỬ HOÁ theo nấc → zoom thay đổi nhỏ tái dùng ảnh đã cache (đỡ render lại khi zoom).
+    // trang dù cắt ô, nên tiling chỉ làm chậm gấp N). Render ĐÚNG zoom×dpr (đủ nét cho
+    // màn hình, ÍT pixel nhất → mở file nhanh). KHÔNG làm tròn scale lên nấc cao (từng
+    // làm tròn lên gây render dư pixel → chậm trên màn HiDPI).
     const computeRenderZoom = (z: number) => {
         const dpr = (window.devicePixelRatio || 1);
         const target = Math.max(dpr, z * dpr);
         const w100 = actualWidth100 || 800;
         const ratio = (pageDim && pageDim.w) ? Math.max(1, pageDim.h / pageDim.w) : 1.414;
-        // Cap bộ nhớ: cạnh dài bitmap ≤ 6000px (1 render, ~200MB tạm). Native tự clamp ≤8000.
+        // Cap bộ nhớ: cạnh dài bitmap ≤ 6000px (1 render). Native tự clamp ≤8000.
         const capByBudget = 6000 / (w100 * ratio);
-        const hardCap = Math.min(7.5, Math.max(dpr, capByBudget));
-        const steps = [1, 1.5, 2, 3, 4, 5, 6, 7.5];
-        const q = steps.find(s => s >= target - 1e-3) ?? 7.5;
-        return Math.max(dpr, Math.min(q, hardCap));
+        return Math.max(dpr, Math.min(7.5, target, capByBudget));
     };
     const [renderZoom, setRenderZoom] = useState(() => computeRenderZoom(zoom));
 
@@ -481,6 +582,7 @@ export const LivePageFrame = (props: any) => {
         if (cached) {
             setEditObjects(cached);
             setEditSelectedIds([]);
+            editCropOriginRef.current = _editCropOriginCache.get(cacheKey) || [0, 0];
             hideEditGhost();
             return;
         }
@@ -495,22 +597,29 @@ export const LivePageFrame = (props: any) => {
                 if (!res.ok) throw new Error(`/edit/objects HTTP ${res.status}`);
                 const data = await res.json();
                 if (cancelled) return;
+                // CropBox offset: object bbox từ PDFium ở hệ user-space NATIVE. Trang
+                // hiển thị (tile) render theo CropBox → cần TRỪ gốc CropBox (bx0,by0)
+                // để overlay khớp ảnh. File thường có gốc (0,0) → no-op; file Illustrator
+                // hay có CropBox/MediaBox lệch gốc → fix lệch tọa độ (rủi ro audit #1).
+                const pb = Array.isArray(data.pageBox) && data.pageBox.length === 4 ? data.pageBox : null;
+                const bx0 = pb ? Number(pb[0]) || 0 : 0;
+                const by0 = pb ? Number(pb[1]) || 0 : 0;
+                editCropOriginRef.current = [bx0, by0];
                 const objs: EditCanvasObj[] = (data.objects || []).map((o: any) => {
-                    const [x0, yb, x1, yt] = o.bbox; // PDF bottom-left: [left, bottom, right, top]
-                    // Convert sang top-left: top edge = pageH - yTop, bottom edge = pageH - yBottom.
-                    const top = pageHeightPt - yt;
-                    const bottom = pageHeightPt - yb;
+                    const cbbox = objectBboxNativeToCanvas(o.bbox as BBox, pageHeightPt, bx0, by0);
                     return {
                         id: o.id,
                         drawIndex: o.drawIndex,
                         type: o.type as ObjType,
-                        bbox: [x0, Math.min(top, bottom), x1, Math.max(top, bottom)] as BBox,
+                        bbox: cbbox,
                         matrix: o.matrix ?? undefined,
                         content: o.content ?? undefined,
                         color: Array.isArray(o.color) ? o.color : undefined,
+                        fontName: o.fontName ?? undefined,
                     };
                 });
                 _editObjectsCache.set(cacheKey, objs); // Lưu cache cho lần bật/tắt sau.
+                _editCropOriginCache.set(cacheKey, [bx0, by0]);
                 setEditObjects(objs);
                 setEditSelectedIds([]);
                 hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
@@ -519,6 +628,15 @@ export const LivePageFrame = (props: any) => {
                     console.warn('[edit] Không tải được /edit/objects:', err);
                     setEditObjects([]);
                     setEditSelectedIds([]);
+                    const m = err instanceof Error ? err.message : String(err);
+                    // 404 = fid/file không còn trên backend (thường sau khi RESTART
+                    // server, file tải lên cũ đã mất) → hướng dẫn mở lại file.
+                    if (/HTTP 404/.test(m)) {
+                        setEditNotice('Không tải được đối tượng: file này không còn trên server (có thể do khởi động lại). Hãy MỞ LẠI file để chỉnh sửa.');
+                    } else {
+                        setEditNotice('Không tải được danh sách đối tượng để chỉnh sửa. Thử mở lại file hoặc khởi động lại app.');
+                    }
+                    setTimeout(() => setEditNotice(null), 8000);
                 }
             }
         })();
@@ -898,21 +1016,20 @@ export const LivePageFrame = (props: any) => {
         if (!lt || !selectionFileId || !pageDim?.w || editSelectedIds.length === 0) {
             return;
         }
-        const scale = displayWidth / ((pageDim.w || 595) * 72 / 96); // px canvas / POINT
+        const scale = calcEditScale(displayWidth, pageWidthPtFromDim(pageDim.w)); // px canvas / POINT
         const page = originalPageNum - 1;       // /edit dùng 0-based
         let op: EditOp | null = null;
 
         if (lt.kind === 'move') {
             if (Math.abs(lt.dx) < 0.5 && Math.abs(lt.dy) < 0.5) { return; }
-            const dxPt = lt.dx / scale;
-            const dyPtCanvas = lt.dy / scale;
-            op = { page, kind: 'move', targetIds: editSelectedIds, delta: { dx: dxPt, dy: -dyPtCanvas } };
+            const delta = moveDeltaCanvasToPdf(lt.dx, lt.dy, scale);
+            op = { page, kind: 'move', targetIds: editSelectedIds, delta };
         } else if (lt.kind === 'resize') {
             if (Math.abs(lt.sx - 1) < 0.002 && Math.abs(lt.sy - 1) < 0.002) { return; }
             op = { page, kind: 'resize', targetIds: editSelectedIds, scale: { sx: lt.sx, sy: lt.sy, anchor: lt.anchor } };
         } else {
             if (Math.abs(lt.rotateDeg) < 0.5) { return; }
-            op = { page, kind: 'rotate', targetIds: editSelectedIds, rotateDeg: -lt.rotateDeg };
+            op = { page, kind: 'rotate', targetIds: editSelectedIds, rotateDeg: rotationScreenToPdf(lt.rotateDeg) };
         }
 
         setEditBusy(true);
@@ -964,8 +1081,30 @@ export const LivePageFrame = (props: any) => {
             if (tData?.success && tData.output_url && onEditCommit) {
                 await onEditCommit(tData.output_url, tData.output_filename, tData.output_fid, tData.output_path);
             }
+            // Cảnh báo khi KHÔNG giữ được font gốc và người dùng CHƯA chọn font →
+            // đã âm thầm dùng font dự phòng (DejaVuSans). Nhắc người dùng chọn font.
+            const r = tData?.result;
+            const usedFallback = Array.isArray(r) ? r.some((x: any) => x?.used_fallback) : !!r?.used_fallback;
+            if (usedFallback && !editFontPath) {
+                setEditNotice('Không giữ được font gốc → đã dùng font dự phòng (DejaVuSans). Mở lại để chọn font ở thanh "FONT" nếu muốn đúng kiểu chữ.');
+                setTimeout(() => setEditNotice(null), 6000);
+            }
         } catch (err) {
             console.warn('[edit] thao tác thất bại:', err);
+            const msg = err instanceof Error ? err.message : String(err);
+            let friendly: string;
+            if (/HTTP 422/.test(msg)) {
+                // Thiếu glyph (font đã chọn không có ký tự cần) — thường do nội dung
+                // gốc đọc không chuẩn hoặc font thiếu dấu tiếng Việt.
+                friendly = 'Không đổi được: font đã chọn THIẾU GLYPH cho một số ký tự. '
+                    + 'Hãy gõ lại đúng nội dung, hoặc chọn font khác có đủ dấu tiếng Việt.';
+            } else if (/HTTP 409/.test(msg)) {
+                friendly = 'Không sửa được: không xác định được đối tượng duy nhất (đã hủy để bảo toàn màu in).';
+            } else {
+                friendly = 'Thao tác chỉnh sửa thất bại. Thử lại hoặc chọn font/nội dung khác.';
+            }
+            setEditNotice(friendly);
+            setTimeout(() => setEditNotice(null), 7000);
         } finally {
             setEditBusy(false);
         }
@@ -991,9 +1130,8 @@ export const LivePageFrame = (props: any) => {
         if (!selectionFileId || !pageDim?.w || !pageDim?.h || !content.trim()) return;
         const pageH = pageDim.h * 72 / 96; // px@96 → POINT (draft.{xPt,yPt} đã ở point)
         const hPt = EDIT_ADD_TEXT_SIZE_PT * 1.6;
-        const x0 = draft.xPt, x1 = draft.xPt + EDIT_ADD_TEXT_W_PT;
-        const yTopCanvas = draft.yPt, yBottomCanvas = draft.yPt + hPt;
-        const bbox: BBox = [x0, pageH - yBottomCanvas, x1, pageH - yTopCanvas];
+        const [bx0, by0] = editCropOriginRef.current; // gốc CropBox → quy về PDF NATIVE
+        const bbox: BBox = addBboxCanvasToNative(draft.xPt, draft.yPt, EDIT_ADD_TEXT_W_PT, hPt, pageH, bx0, by0);
         const op: EditOp = {
             page: originalPageNum - 1, kind: 'add',
             targetIds: [], text: { content, sizePt: EDIT_ADD_TEXT_SIZE_PT, bbox, font: editFontPath },
@@ -1007,9 +1145,8 @@ export const LivePageFrame = (props: any) => {
         if (!selectionFileId || !pageDim?.w || !pageDim?.h || !dataUrl) return;
         const pageH = pageDim.h * 72 / 96; // px@96 → POINT (draft.{xPt,yPt} đã ở point)
         const sz = EDIT_ADD_IMAGE_SIZE_PT;
-        const x0 = draft.xPt, x1 = draft.xPt + sz;
-        const yTopCanvas = draft.yPt, yBottomCanvas = draft.yPt + sz;
-        const bbox: BBox = [x0, pageH - yBottomCanvas, x1, pageH - yTopCanvas];
+        const [bx0, by0] = editCropOriginRef.current; // gốc CropBox → quy về PDF NATIVE
+        const bbox: BBox = addBboxCanvasToNative(draft.xPt, draft.yPt, sz, sz, pageH, bx0, by0);
         const op: EditOp = {
             page: originalPageNum - 1, kind: 'add',
             targetIds: [], image: { dataRef: dataUrl, bbox },
@@ -1090,7 +1227,7 @@ export const LivePageFrame = (props: any) => {
                 const curAng = Math.atan2(curY - cy, curX - cx);
                 let deg = (curAng - initAng) * 180 / Math.PI;
                 // Giữ Shift → "bắt" góc về bội số 45° (0/45/90/135/180...) cho xoay chuẩn.
-                if (e.shiftKey) deg = Math.round(deg / 45) * 45;
+                deg = snapRotation(deg, e.shiftKey);
                 editLiveTransformRef.current = { kind: 'rotate', rotateDeg: deg };
                 if (ghost) {
                     ghost.style.transformOrigin = 'center center';
@@ -1651,8 +1788,7 @@ export const LivePageFrame = (props: any) => {
                                          // editingTextId/editTextContent mà không xung đột field VDP.
                                          if (obj.type === 'text' && !isVdpMode) {
                                              e.stopPropagation();
-                                             setEditingTextId(obj.id);
-                                             setEditTextContent(obj.content || '');
+                                             openTextEditor(obj);
                                          }
                                      }}
                                  >
@@ -1663,6 +1799,7 @@ export const LivePageFrame = (props: any) => {
                                          {/* Thanh chọn FONT — gắn NGAY TRÊN ô editor (luôn thấy dù
                                              zoom/cuộn). Chọn font máy → nhúng đúng tiếng Việt + style. */}
                                          <div
+                                             data-edit-ui="1"
                                              className="absolute left-0 z-[60] w-[260px] bg-white rounded shadow-lg border border-slate-300 p-1.5 cursor-default"
                                              style={{ bottom: 'calc(100% + 4px)' }}
                                              onMouseDown={(e) => e.stopPropagation()}
@@ -1670,28 +1807,45 @@ export const LivePageFrame = (props: any) => {
                                              onClick={(e) => e.stopPropagation()}
                                              onDoubleClick={(e) => e.stopPropagation()}
                                          >
-                                             <div className="text-[10px] font-bold text-slate-500 mb-1">FONT (chọn để nhúng đúng tiếng Việt)</div>
                                              <FontSelector
                                                  value={editFontName}
                                                  fontFile={editFontPath}
                                                  onChange={(name, file) => { setEditFontName(name); setEditFontPath(file); }}
                                              />
-                                             {editFontPath && (
-                                                 <button type="button" className="mt-1 text-[10px] text-slate-500 hover:text-rose-600"
-                                                     onClick={(e) => { e.stopPropagation(); setEditFontName(''); setEditFontPath(undefined); }}
-                                                 >↺ Bỏ chọn font</button>
-                                             )}
+                                             <div className="flex items-center gap-1 mt-1">
+                                                 <button type="button"
+                                                     className="px-2 py-0.5 text-[11px] rounded bg-emerald-600 text-white font-semibold"
+                                                     onClick={(e) => {
+                                                         e.stopPropagation();
+                                                         const c = editTextContent;
+                                                         setEditingTextId(null);
+                                                         if (c.trim()) void commitEditObjectText(obj.id, c);
+                                                     }}
+                                                 >✓ Áp dụng</button>
+                                                 <button type="button"
+                                                     className="px-2 py-0.5 text-[11px] rounded border border-slate-300 text-slate-600"
+                                                     onClick={(e) => { e.stopPropagation(); setEditingTextId(null); }}
+                                                 >✕ Hủy</button>
+                                                 {editFontPath && (
+                                                     <button type="button" className="ml-auto text-[10px] text-slate-500 hover:text-rose-600"
+                                                         onClick={(e) => { e.stopPropagation(); setEditFontName(''); setEditFontPath(undefined); }}
+                                                     >↺ Bỏ font</button>
+                                                 )}
+                                             </div>
                                          </div>
                                          <textarea
                                              autoFocus
                                              value={editTextContent}
                                              placeholder="Nhập nội dung…"
                                              onChange={(ev) => setEditTextContent(ev.target.value)}
-                                             onBlur={() => {
+                                             onBlur={(e) => {
+                                                 // Nếu focus chuyển sang thanh FONT (data-edit-ui) thì KHÔNG đóng
+                                                 // editor (cho phép chọn font). Chỉ đóng khi bấm ra ngoài hẳn.
+                                                 const rt = e.relatedTarget as HTMLElement | null;
+                                                 if (rt && rt.closest('[data-edit-ui]')) return;
                                                  const c = editTextContent;
                                                  setEditingTextId(null);
-                                                 // Commit khi có nội dung VÀ (khác text gốc HOẶC có chọn font mới).
-                                                 if (c.trim() && (c !== (obj.content || '') || !!editFontPath)) void commitEditObjectText(obj.id, c);
+                                                 if (c.trim() && (c !== editOrigContent || !!editFontPath)) void commitEditObjectText(obj.id, c);
                                              }}
                                              onKeyDown={(ev) => {
                                                  if (ev.key === 'Enter' && !ev.shiftKey) {
@@ -1713,10 +1867,15 @@ export const LivePageFrame = (props: any) => {
                                                  width: `${Math.max((x1 - x0) * scale, 260)}px`,
                                                  minHeight: `${Math.max((y1 - y0) * scale, 28)}px`,
                                                  height: 'auto',
-                                                 color: obj.color ? `rgb(${obj.color[0]},${obj.color[1]},${obj.color[2]})` : '#111',
-                                                 fontWeight: 600,
+                                                 color: editTextColor ? `rgb(${editTextColor[0]},${editTextColor[1]},${editTextColor[2]})` : '#111',
+                                                 fontWeight: /bold|black|heavy|semibold/i.test(editOrigFontName) ? 700 : 'normal',
                                                  lineHeight: 1.2,
                                                  fontSize: `${Math.max(11, (y1 - y0) * scale * 0.7)}px`,
+                                                 // Realtime preview: dùng font ĐÃ CHỌN (FontSelector inject @font-face
+                                                 // "<name>_local"). Đổi font ở thanh FONT → editor đổi mặt chữ ngay.
+                                                 fontFamily: editFontName
+                                                     ? `"${editFontName}_local", "${editFontName}", sans-serif`
+                                                     : undefined,
                                              }}
                                              rows={Math.max(1, editTextContent.split('\n').length)}
                                          />
@@ -1788,6 +1947,13 @@ export const LivePageFrame = (props: any) => {
                      )}
                  </div>
              )}
+             {editNotice && createPortal(
+                 <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] max-w-md px-4 py-2 rounded-lg bg-amber-600 text-white text-[12px] font-medium shadow-2xl flex items-center gap-3">
+                     <span>⚠️ {editNotice}</span>
+                     <button onClick={() => setEditNotice(null)} className="font-bold text-white/90 hover:text-white">✕</button>
+                 </div>,
+                 document.body
+             )}
              <input
                  ref={editFileInputRef}
                  type="file"
@@ -1852,8 +2018,7 @@ export const LivePageFrame = (props: any) => {
                                  const sel = editObjects.find(o => o.id === editSelectedIds[0]);
                                  if (sel && sel.type === 'text') {
                                      e.stopPropagation();
-                                     setEditingTextId(sel.id);
-                                     setEditTextContent(sel.content || '');
+                                     openTextEditor(sel);
                                  }
                              }}
                          >

@@ -44,16 +44,17 @@ describe('optimizeMasterSig', () => {
     it('should recommend best fitting sig for A5 pages on SRA3 sheet', () => {
         const result = optimizeMasterSig(A5_PT, SRA3_SHEET, defaultMargins);
         expect(result.recommended).not.toBeNull();
-        // A5 spread (148×2+bleed = ~300mm wide) on SRA3 (320×450mm):
-        // sig_16p needs 2×2 grid ≈ 600×424mm → doesn't fit 320mm width
-        // sig_8p needs 1×2 grid ≈ 300×424mm → fits SRA3
-        expect(result.recommended!.pagesPerSig).toBe(8);
+        // Optimizer làm việc theo SPREAD (2 trang ghép ngang ≈ 292mm cho A5).
+        // sig_16p/8p/4p_2up đều cần grid 2×2 spread ≈ 584×420mm → KHÔNG vừa
+        // SRA3 (320×450, usable ~305×440). Chỉ sig_4p_1up (1 cột × 2 hàng ≈
+        // 292×420mm) vừa → recommended = Tay 4 (1 bộ), 4 trang/tay.
+        expect(result.recommended!.pagesPerSig).toBe(4);
         expect(result.recommended!.fits).toBe(true);
     });
 
-    it('should have 3 options in allOptions', () => {
+    it('should have 4 options in allOptions', () => {
         const result = optimizeMasterSig(A5_PT, SRA3_SHEET, defaultMargins);
-        expect(result.allOptions).toHaveLength(3);
+        expect(result.allOptions).toHaveLength(4);
     });
 
     it('should return utilization > 0 for fitting options', () => {
@@ -106,12 +107,14 @@ describe('suggestMinimumSheet', () => {
         expect(result.forSig4).toBeDefined();
     });
 
-    it('forSig16 should be larger than forSig8', () => {
+    it('forSig16 should be at least as large as forSig8', () => {
         const result = suggestMinimumSheet(A5_PT, defaultMargins);
         if (result.forSig16) {
             const area16 = result.forSig16.width * result.forSig16.height;
             const area8 = result.forSig8.width * result.forSig8.height;
-            expect(area16).toBeGreaterThan(area8);
+            // Tay 16 và Tay 8 cùng dùng grid 2×2 spread → cùng dấu chân kẽm
+            // (chỉ khác số tờ/cách gấp). Vậy khổ kẽm tối thiểu bằng nhau.
+            expect(area16).toBeGreaterThanOrEqual(area8);
         }
     });
 

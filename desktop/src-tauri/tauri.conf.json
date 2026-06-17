@@ -22,11 +22,12 @@
         "center": true,
         "decorations": false,
         "transparent": true,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "additionalBrowserArgs": "--disable-features=msWebView2EnableDraggableRegions,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:8321 https://*.supabase.co https://cdnjs.cloudflare.com; script-src 'self' blob: https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' asset: http://asset.localhost http://localhost:8321 data: blob: tile:; worker-src 'self' blob:;",
+      "csp": "default-src 'self'; connect-src 'self' http://localhost:8321 https://*.supabase.co https://cdnjs.cloudflare.com; script-src 'self' blob: https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com asset: http://asset.localhost https://asset.localhost data: blob:; img-src 'self' asset: http://asset.localhost http://localhost:8321 data: blob: tile:; worker-src 'self' blob:;",
       "assetProtocol": {
         "enable": true,
         "scope": ["**", "**/*"]

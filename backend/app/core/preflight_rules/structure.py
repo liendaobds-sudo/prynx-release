@@ -135,15 +135,42 @@ class StructureRulesMixin:
         return issues
 
     def _check_overprint(self, doc, page_nums: list[int] = None) -> list[PreflightIssue]:
-        """Check for Overprint settings in page resources."""
+        """Check for Overprint settings in page ExtGState resources.
+
+        Reads the resolved /ExtGState dictionaries and inspects the /OP (fill)
+        and /op (stroke) overprint flags. Avoids matching against the pikepdf
+        repr string, which uses Python syntax and hides indirect objects.
+        """
         issues = []
         page_count = len(doc.pages)
         target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
         for page_num in target_pages:
             page = doc.pages[page_num]
             try:
-                page_str = str(page.obj)
-                if "/OP true" in page_str or "/op true" in page_str:
+                resources = page.get("/Resources")
+                if not resources:
+                    continue
+                extgstates = resources.get("/ExtGState")
+                if not extgstates:
+                    continue
+
+                overprint_on = False
+                for _name, gs_ref in extgstates.items():
+                    try:
+                        gs = gs_ref
+                        if hasattr(gs_ref, "resolve") and callable(getattr(gs_ref, "resolve", None)):
+                            gs = gs_ref.resolve()
+                        for key in ("/OP", "/op"):
+                            val = gs.get(key)
+                            if val is not None and bool(val):
+                                overprint_on = True
+                                break
+                        if overprint_on:
+                            break
+                    except Exception:
+                        continue
+
+                if overprint_on:
                     issues.append(PreflightIssue(
                         rule_id="OVERPRINT_DETECTED",
                         severity="info",
@@ -157,15 +184,91 @@ class StructureRulesMixin:
         return issues
 
     def _check_objects_off_page(self, doc, page_nums: list[int] = None) -> list[PreflightIssue]:
-        """Check for objects that are completely outside the visible page area.
-        Simplified version using pikepdf — checks image XObjects positions."""
+        """Detect objects (text, image, vector) lying completely outside the page area.
+
+        Uses pdfplumber (consistent coordinate system between page.bbox and object
+        bboxes: top-left origin, x in [x0,x1], top in [top,bottom]). An object is
+        flagged only if it is ENTIRELY outside the page rectangle by more than EPS,
+        so normal bleed objects that overlap the edge are not reported.
+        """
+        issues = []
+        EPS = 0.5  # pt tolerance to ignore objects merely touching the edge
+
+        pdf_path = getattr(doc, "_path", None)
+        if pdf_path is None:
+            # Fallback: validate page-box dimensions only (cannot enumerate objects)
+            return self._check_page_box_validity(doc, page_nums)
+
+        target_page_set = set([p - 1 for p in page_nums]) if page_nums else None
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as plumber:
+                for page_idx, page in enumerate(plumber.pages):
+                    if target_page_set is not None and page_idx not in target_page_set:
+                        continue
+
+                    px0, ptop, px1, pbottom = page.bbox  # page rect in pdfplumber coords
+
+                    # Invalid page box → report and skip object scan for this page
+                    if (px1 - px0) <= 0 or (pbottom - ptop) <= 0:
+                        issues.append(PreflightIssue(
+                            rule_id="OBJECT_OFF_PAGE",
+                            severity="warning",
+                            page=page_idx + 1,
+                            object_ref="Page Box",
+                            description=f"Trang {page_idx + 1} có kích thước hộp trang không hợp lệ.",
+                            auto_fixable=False,
+                        ))
+                        continue
+
+                    off_bboxes = []
+                    object_groups = (
+                        (page.chars or []),
+                        (page.images or []),
+                        (page.rects or []),
+                        (page.lines or []),
+                        (page.curves or []),
+                    )
+                    for group in object_groups:
+                        for o in group:
+                            try:
+                                ox0 = float(o.get("x0", 0))
+                                ox1 = float(o.get("x1", 0))
+                                otop = float(o.get("top", 0))
+                                obottom = float(o.get("bottom", 0))
+                            except (TypeError, ValueError):
+                                continue
+                            # Completely outside on any side
+                            if (ox1 <= px0 + EPS or ox0 >= px1 - EPS
+                                    or obottom <= ptop + EPS or otop >= pbottom - EPS):
+                                off_bboxes.append([ox0, otop, ox1, obottom])
+
+                    if off_bboxes:
+                        issues.append(PreflightIssue(
+                            rule_id="OBJECT_OFF_PAGE",
+                            severity="warning",
+                            page=page_idx + 1,
+                            object_ref=f"{len(off_bboxes)} đối tượng ngoài trang",
+                            description=(
+                                f"Trang {page_idx + 1} có {len(off_bboxes)} đối tượng nằm hoàn toàn "
+                                f"ngoài vùng in. Nên xóa để tránh lỗi RIP và giảm dung lượng."
+                            ),
+                            auto_fixable=False,
+                            bbox=off_bboxes[0],
+                            bboxes=off_bboxes[:50],
+                        ))
+        except Exception as e:
+            logger.debug(f"Off-page object check failed: {e}")
+        return issues
+
+    def _check_page_box_validity(self, doc, page_nums: list[int] = None) -> list[PreflightIssue]:
+        """Fallback check: verify page boxes have valid (positive) dimensions."""
         issues = []
         page_count = len(doc.pages)
         target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
         for page_num in target_pages:
             page = doc.pages[page_num]
             try:
-                # Get page rect
                 mb = page.get("/MediaBox") or page.get("/CropBox")
                 tb = page.get("/TrimBox")
                 if tb:
@@ -174,9 +277,6 @@ class StructureRulesMixin:
                     page_rect = [float(x) for x in mb]
                 else:
                     continue
-                    
-                # We cannot easily detect off-page objects without rendering.
-                # This is a simplified check — just verify page boxes are valid.
                 pw = page_rect[2] - page_rect[0]
                 ph = page_rect[3] - page_rect[1]
                 if pw <= 0 or ph <= 0:

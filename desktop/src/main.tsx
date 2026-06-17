@@ -1,4 +1,3 @@
-import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import * as Sentry from "@sentry/react"
 import './index.css'
@@ -44,10 +43,12 @@ Sentry.init({
   environment: import.meta.env.MODE || 'development',
 });
 
+// LƯU Ý: Đã BỎ <StrictMode>. Ở DEV, StrictMode chạy MỌI effect/render 2 LẦN
+// (doubleInvokeEffectsOnFiber) → nhân đôi mọi fetch metadata/colorspace + tile load
+// lúc mở file → góp phần gây "đơ ~7s" trên cây component lớn (đo được trong Performance
+// profile: doubleInvoke + jsxDEV). Production vốn KHÔNG double-invoke nên không đổi hành vi.
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
-  </StrictMode>,
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
 )

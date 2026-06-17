@@ -14,9 +14,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from app.core.license_guard import require_license
 from app.workers.cut_export.cut_model_builder import build_cut_model, NamingContractError
 from app.workers.cut_export.profile import (
     load_builtin_profiles, load_all_profiles, builtin_profile_ids,
@@ -26,7 +27,7 @@ from app.workers.cut_export import profile_store
 from app.workers.cut_export import service
 from app.workers.cut_export.pdf_source import build_cut_model_from_pdf, preview_svg_from_pdf, list_cut_layers, list_cut_pages
 
-router = APIRouter(prefix="/imposition", tags=["cut-export"])
+router = APIRouter(prefix="/imposition", tags=["cut-export"], dependencies=[Depends(require_license)])
 
 
 class PointModel(BaseModel):

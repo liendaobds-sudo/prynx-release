@@ -29,6 +29,26 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
+def _safe_watermark(pdf_path: str, license_info: dict) -> None:
+    """Nhúng stealth watermark (XMP + invisible text) vào PDF output.
+
+    Non-blocking: mọi lỗi chỉ log, KHÔNG làm hỏng output. Bỏ qua ở dev mode
+    (license_key == 'DEV_MODE') để output dev không bị đóng dấu rác.
+    """
+    try:
+        lk = (license_info or {}).get("license_key", "") or ""
+        if not lk or lk == "DEV_MODE":
+            return
+        hwid = (license_info or {}).get("hwid", "") or ""
+        import pikepdf
+        from app.core.watermark import embed_watermark
+        with pikepdf.Pdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+            embed_watermark(pdf, lk, hwid)
+            pdf.save(pdf_path)
+    except Exception as e:
+        logger.error(f"[WATERMARK] pdf-tools failed (non-blocking): {e}")
+
+
 async def save_upload(file: UploadFile) -> str:
     """Save an uploaded file and return its path. 
     Uses async read and seek(0) to bypass FastAPI multipart parsing cursor bugs.
@@ -67,6 +87,7 @@ async def merge_pdfs_endpoint(
     
     try:
         merge_pdfs(file_paths, output_path, mode=mode)
+        _safe_watermark(output_path, license_info)
         return FileResponse(
             path=output_path,
             filename="merged_output.pdf",
@@ -98,7 +119,7 @@ async def split_pdf_endpoint(
     import zipfile
     from fastapi.responses import Response
     
-    source_path = save_upload(file)
+    source_path = await save_upload(file)
     cfg = json.loads(config)
     
     job_id = uuid.uuid4().hex[:8]
@@ -116,6 +137,7 @@ async def split_pdf_endpoint(
         )
         
         if len(results) == 1:
+            _safe_watermark(results[0]["path"], license_info)
             return FileResponse(
                 path=results[0]["path"],
                 filename=results[0]["filename"],
@@ -127,6 +149,7 @@ async def split_pdf_endpoint(
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             for r in results:
+                _safe_watermark(r["path"], license_info)
                 zf.write(r["path"], r["filename"])
         zip_buffer.seek(0)
         
@@ -160,6 +183,7 @@ async def resize_pages_endpoint(
     
     try:
         resize_pages(source_path, output_path, target_w, target_h, scale_mode, apply_to)
+        _safe_watermark(output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"resized_{file.filename}",
@@ -195,6 +219,7 @@ async def shuffle_pages_endpoint(
     
     try:
         shuffle_pages(source_path, output_path, action=action, mapping=mapping_list)
+        _safe_watermark(output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"shuffled_{file.filename}",
@@ -213,6 +238,7 @@ async def ocr_searchable_endpoint(
     lang: str = Form("vie+eng"),
     dpi: int = Form(300),
     preprocess: str = Form("false"),
+    license_info: dict = Depends(require_license),
 ):
     """
     Create a Searchable PDF by embedding an invisible OCR text layer.
@@ -250,6 +276,7 @@ async def ocr_searchable_endpoint(
                 detail="OCR không nhận diện được ký tự nào. File có thể trống hoặc chứa nội dung không phải chữ."
             )
 
+        _safe_watermark(output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"searchable_{file.filename}",
@@ -276,6 +303,7 @@ async def optimize_pdf_endpoint(
     image_dpi: int = Form(300),
     strip_metadata: str = Form("true"),
     grayscale: str = Form("false"),
+    license_info: dict = Depends(require_license),
 ):
     """
     Compress/optimize a PDF using Ghostscript.
@@ -370,6 +398,7 @@ async def optimize_pdf_endpoint(
             output_size = original_size
             ratio = 0
 
+        _safe_watermark(output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"optimized_{file.filename}",

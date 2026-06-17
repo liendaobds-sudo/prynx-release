@@ -504,3 +504,96 @@ pub fn load_last_online() -> Result<u64, String> {
     let ts_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     ts_str.parse::<u64>().map_err(|_| "Invalid timestamp".to_string())
 }
+
+// ══════════════════════════════════════════════════════════════
+// C-1 FIX: Persist server-signed license token (Ed25519) via DPAPI.
+// Lý do: backend release ép PRYNX_ENFORCE_LICENSE_TOKEN=true → MỌI request
+// phải kèm token hợp lệ. Trước đây token chỉ giữ trong RAM (zustand) nên khi
+// MỞ LẠI app lúc OFFLINE (trong hạn grace) thì token=null → backend 403 →
+// "grace 24h" thực tế không hoạt động. Lưu token (DPAPI, ràng user+máy) để
+// khởi động offline vẫn dùng được tới khi token hết hạn (exp).
+// Token vốn đã ràng theo HWID nên lưu KHÔNG mở rộng bề mặt tấn công:
+// copy file sang máy khác vừa không giải mã được (DPAPI) vừa lệch 'm' (HWID).
+// ══════════════════════════════════════════════════════════════
+
+const TOKEN_FILE: &str = "prynx_token.dat";
+
+fn get_token_path() -> Result<std::path::PathBuf, String> {
+    let appdata = std::env::var("APPDATA")
+        .map_err(|_| "Cannot find APPDATA".to_string())?;
+    let dir = std::path::Path::new(&appdata).join("PrynX");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Cannot create dir: {}", e))?;
+    Ok(dir.join(TOKEN_FILE))
+}
+
+#[command]
+pub fn store_license_token(token: String) -> Result<(), String> {
+    let path = get_token_path()?;
+    let path_str = path.to_string_lossy().replace('\\', "\\\\");
+    let ps_script = format!(
+        r#"
+        Add-Type -AssemblyName System.Security
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes('{}')
+        $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
+            $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        [System.IO.File]::WriteAllBytes('{}', $encrypted)
+        "#,
+        token.replace("'", "''"),
+        path_str
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("DPAPI token encrypt failed: {}", e))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("DPAPI token encrypt failed: {}", err));
+    }
+    Ok(())
+}
+
+#[command]
+pub fn load_license_token() -> Result<String, String> {
+    let path = get_token_path()?;
+    if !path.exists() {
+        return Err("No stored license token".to_string());
+    }
+    let path_str = path.to_string_lossy().replace('\\', "\\\\");
+    let ps_script = format!(
+        r#"
+        Add-Type -AssemblyName System.Security
+        $encrypted = [System.IO.File]::ReadAllBytes('{}')
+        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $encrypted, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        [System.Text.Encoding]::UTF8.GetString($decrypted)
+        "#,
+        path_str
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("DPAPI token decrypt failed: {}", e))?;
+    if !output.status.success() {
+        return Err("DPAPI token decrypt failed".to_string());
+    }
+    let tok = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if tok.is_empty() {
+        return Err("Decrypted license token is empty".to_string());
+    }
+    Ok(tok)
+}
+
+#[command]
+pub fn delete_license_token() -> Result<(), String> {
+    let path = get_token_path()?;
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("Failed to delete token file: {}", e))?;
+    }
+    Ok(())
+}

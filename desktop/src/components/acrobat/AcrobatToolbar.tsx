@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 
 interface AcrobatToolbarProps {
     pageOrderLength: number;
@@ -20,8 +21,9 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
         viewerNumPages: numPages,
         isSelectionMode, setIsSelectionMode,
         isObjectEditMode, setIsObjectEditMode,
-        activeDashboardTool,
     } = useWorkspaceStore();
+
+    const { activeDashboardTool } = useImposerSettingsStore();
     
     const handleCustomZoom = (newZoom: number | ((z: number) => number)) => {
         setZoom(newZoom);

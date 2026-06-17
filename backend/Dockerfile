@@ -1,18 +1,10 @@
 FROM python:3.11-slim
 
-# Install system dependencies for OpenCV headless and pdfcpu
+# Install system dependencies for OpenCV headless (pdfcpu legacy removed in unification Phase 1)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    wget \
-    tar \
     && rm -rf /var/lib/apt/lists/*
-
-# Download and install pdfcpu for Linux
-RUN wget https://github.com/pdfcpu/pdfcpu/releases/download/v0.11.1/pdfcpu_0.11.1_Linux_x86_64.tar.gz \
-    && tar -xzf pdfcpu_0.11.1_Linux_x86_64.tar.gz \
-    && mv pdfcpu_0.11.1_Linux_x86_64/pdfcpu /usr/local/bin/ \
-    && rm -rf pdfcpu_0.11.1_Linux_x86_64*
 
 WORKDIR /app
 

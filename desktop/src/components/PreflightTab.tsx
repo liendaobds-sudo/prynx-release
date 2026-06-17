@@ -49,7 +49,7 @@ const INSPECT_RULES = [
   { id: 'IMAGE_HIGH_DPI', title: 'Ảnh DPI quá cao', desc: 'Phát hiện ảnh > 600 DPI gây nặng file' },
   { id: 'GIF_IN_PDF', title: 'Ảnh GIF/Indexed', desc: 'Phát hiện ảnh palette 256 màu' },
   { id: 'PROGRESSIVE_JPEG', title: 'JPEG Progressive', desc: 'Ảnh JPEG progressive gây lỗi RIP' },
-  { id: 'OBJECT_OFF_PAGE', title: 'Object ngoài trang', desc: 'Đối tượng nằm ngoài vùng in' },
+  { id: 'OBJECT_OFF_PAGE', title: 'Object ngoài trang', desc: 'Phát hiện đối tượng nằm hoàn toàn ngoài vùng in' },
   { id: 'PDF_VERSION_MISMATCH', title: 'Phiên bản PDF', desc: 'Kiểm tra tương thích PDF version' },
 ];
 

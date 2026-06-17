@@ -18,8 +18,8 @@ import {
 
 
 describe('FoldPatterns — Registry', () => {
-    it('should have exactly 3 patterns', () => {
-        expect(SPREAD_FOLD_REGISTRY).toHaveLength(3);
+    it('should have exactly 4 patterns', () => {
+        expect(SPREAD_FOLD_REGISTRY).toHaveLength(4);
     });
 
     it('should have correct pagesPerSig for each pattern', () => {
@@ -62,7 +62,8 @@ describe('FoldPatterns — Lookup', () => {
     it('getPatternForPageCount should prefer exact match', () => {
         expect(getPatternForPageCount(8)?.id).toBe('sig_8p');
         expect(getPatternForPageCount(16)?.id).toBe('sig_16p');
-        expect(getPatternForPageCount(4)?.id).toBe('sig_4p');
+        // 4 trang có 2 biến thể (1up/2up) — chỉ yêu cầu khớp đúng số trang.
+        expect(getPatternForPageCount(4)?.pagesPerSig).toBe(4);
     });
 
     it('getPatternForPageCount should fallback to largest fit', () => {
@@ -97,8 +98,8 @@ describe('FoldPatterns — Spread Index Bounds', () => {
 
 
 describe('FoldPatterns — Self-Turn Patterns', () => {
-    it('sig_4p should be work_and_turn with empty backPlate', () => {
-        const p = getSpreadPatternById('sig_4p')!;
+    it('sig_4p_2up should be work_and_turn with empty backPlate', () => {
+        const p = getSpreadPatternById('sig_4p_2up')!;
         expect(p.workStyle).toBe('work_and_turn');
         expect(p.backPlate).toHaveLength(0);
         expect(p.sheetsPerSig).toBe(1);

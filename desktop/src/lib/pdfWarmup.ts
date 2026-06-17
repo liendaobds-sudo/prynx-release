@@ -11,6 +11,30 @@
  */
 let warmed = false;
 let pdfiumWarmed = false;
+let chunksWarmed = false;
+
+/**
+ * Preload các CHUNK workspace nặng lúc app rảnh (màn hình Home).
+ *
+ * Mở file lần đầu trong phiên phải nạp + (ở DEV mode) vite BIÊN DỊCH ON-DEMAND cả
+ * cây component nặng: ImpositionTab → AcrobatViewer → LivePageFrame + react-pdf/pdfjs
+ * + tool con → đo được ~7s "treo" lần mở đầu (UI thread bận đánh giá khối JS lớn).
+ * Import sẵn lúc idle → vite biên dịch + webview eval TRƯỚC, nên lần mở file đầu tiên
+ * không còn phải chờ. (Production: chỉ là prefetch chunk, rẻ.)
+ */
+export async function warmupWorkspaceChunks(): Promise<void> {
+    if (chunksWarmed) return;
+    chunksWarmed = true;
+    try {
+        await Promise.all([
+            import('../components/ImpositionTab'),
+            import('../components/AcrobatViewer'),
+            import('../components/workspace/LivePageFrame'),
+        ]);
+    } catch (e) {
+        chunksWarmed = false;
+    }
+}
 
 /**
  * Warm-up engine pdfium NATIVE (Tauri) — đây là engine render chính của view.
@@ -65,6 +89,9 @@ export function scheduleWarmupPdfjs(): () => void {
     const run = () => {
         // Ưu tiên warm pdfium (engine chính của view native) NGAY.
         warmupPdfium();
+        // Preload chunk workspace nặng lúc idle → bỏ "treo ~7s" lần mở file ĐẦU TIÊN
+        // (dev mode biên dịch on-demand cả cây component khi mở file).
+        setTimeout(() => { warmupWorkspaceChunks(); }, 500);
         // pdfjs (chỉ dùng cho browser-mode/thumbnail) warm sau, tránh đụng độ tài nguyên
         // với lần mở file đầu tiên.
         setTimeout(() => { warmupPdfjs(); }, 4000);

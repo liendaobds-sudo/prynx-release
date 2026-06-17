@@ -28,6 +28,11 @@ export const imposePdf = async (
     settings: ProcessingSettings,
     setStatus: (message: string) => void
 ): Promise<{ blob: Blob; report: string }> => {
+    // DEPRECATION NOTE (P2 - Phase 2): This local TS layout math path is being phased out in favor of
+    // imposePdfViaBackend (Planner in TS + Executor in backend via imposition_core + pikepdf).
+    // Client should be dumb assembler only. Prefer viaBackend for imposition modes.
+    // See PR Plan prynx-imposition-unification-v1.
+    console.warn('[DEPRECATED] Local imposePdf used for imposition - migrate to viaBackend for unified engine.');
     setStatus('Đang phân tích và nạp tệp PDF...');
     const arrayBuffer = await getFileArrayBuffer(pdfFile);
     let reportMsg = '';

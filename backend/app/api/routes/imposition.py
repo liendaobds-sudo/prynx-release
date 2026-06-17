@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
-from app.core.imposition_engine import ImpositionEngine, ImpositionError
 from app.core.license_guard import require_license
 from app.schemas.imposition import ImpositionResponse
 import uuid
@@ -58,77 +57,6 @@ def _validate_file_path(path: str | None, must_exist: bool = True) -> str:
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
     return resolved
-
-@router.post("/process")
-async def process_imposition(
-    file: UploadFile = File(...),
-    mode: str = Form("booklet"),
-    n_up: int = Form(2),
-    formsize: str = Form("A4"),
-    binding: str = Form("booklet"),
-    guides: bool = Form(True),
-    margin: int = Form(0),
-    multifolio: bool = Form(False),
-    foliosize: int = Form(8),
-    orientation: str = Form("rd"),
-    border: bool = Form(True),
-    license_info: dict = Depends(require_license)
-):
-    """
-    Process a PDF file using pdfcpu for Booklet or N-up imposition.
-    """
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
-
-    job_id = str(uuid.uuid4())
-    input_path = os.path.join(UPLOAD_DIR, f"{job_id}_input.pdf")
-    output_path = os.path.join(RESULTS_DIR, f"{job_id}_imposed.pdf")
-
-    # Save uploaded file
-    with open(input_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    try:
-        await ImpositionEngine.validate_pdf(input_path)
-        
-        if mode == "booklet":
-            await ImpositionEngine.process_booklet(
-                input_pdf=input_path,
-                output_pdf=output_path,
-                n_up=n_up,
-                formsize=formsize,
-                binding=binding,
-                guides=guides,
-                margin=margin,
-                multifolio=multifolio,
-                foliosize=foliosize
-            )
-        elif mode == "nup":
-            await ImpositionEngine.process_nup(
-                input_pdf=input_path,
-                output_pdf=output_path,
-                n_up=n_up,
-                formsize=formsize,
-                orientation=orientation,
-                border=border,
-                margin=margin
-            )
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported mode: {mode}")
-
-    except ImpositionError as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
-    finally:
-        # Cleanup input file if needed (optional)
-        pass
-
-    # Return the file directly for download, or provide a URL to download it later.
-    # For a simple UX, we might just return the FileResponse immediately.
-    return FileResponse(
-        path=output_path, 
-        filename=f"imposed_{file.filename}", 
-        media_type="application/pdf"
-    )
 
 @router.post("/unlock-pdf")
 async def unlock_pdf(file: UploadFile = File(...), license_info: dict = Depends(require_license)):

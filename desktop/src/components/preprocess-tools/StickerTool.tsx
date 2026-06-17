@@ -37,7 +37,8 @@ const BLEED_COLOR_MODES_RECTANGLE = [
 
 export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const getWorkingFile = useWorkingPdf();
-    const { setDetectedShapeType, setDetectedShapeParams, setActiveDashboardTool } = useWorkspaceStore();
+    const { setDetectedShapeType, setDetectedShapeParams } = useWorkspaceStore();
+    const { setActiveDashboardTool } = useImposerSettingsStore();
     
     // Tab State
     const [productType, setProductType] = useState<'sticker' | 'rectangle'>('sticker');

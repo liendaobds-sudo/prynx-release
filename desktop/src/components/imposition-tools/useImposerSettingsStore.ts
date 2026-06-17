@@ -240,6 +240,17 @@ export interface ImposerSettingsState {
     splitSettings: any;
     setSplitSettings: (v: any) => void;
 
+    // ═══ Workspace / Imposition Orchestration State (migrated from useWorkspaceStore - P1-T03) ═══
+    // activeDashboardTool: controls which tool/panel is active (booklet, nup, sticker_imposer, etc.)
+    activeDashboardTool: string;
+    setActiveDashboardTool: (tool: string) => void;
+    // batchOutput for multi-sheet results (catalog etc.)
+    batchOutput: { docs: { blob: Blob; filename: string; report?: string }[]; mergedBlob: Blob } | null;
+    setBatchOutput: (output: { docs: { blob: Blob; filename: string; report?: string }[]; mergedBlob: Blob } | null) => void;
+    // confirmBookletSettings for booklet confirmation modal
+    confirmBookletSettings: { settings: any; spawnNewTab: boolean; report: string; totalPages: number; paddedPages: number } | null;
+    setConfirmBookletSettings: (settings: { settings: any; spawnNewTab: boolean; report: string; totalPages: number; paddedPages: number } | null) => void;
+
     // ═══ Tool Profiles — chống rò rỉ state thuật toán giữa công cụ ═══
     toolProfiles: Record<string, Record<string, any>>;
     switchToolProfile: (prevTool: string, nextTool: string) => void;
@@ -286,6 +297,14 @@ export const createImposerSettingsStore = () => createStore<ImposerSettingsState
             setTaskMode: (mode) => {
                 set({ taskMode: mode });
             },
+
+            // ═══ Workspace / Imposition Orchestration (P1-T03 migration) ═══
+            activeDashboardTool: 'none',
+            setActiveDashboardTool: (tool) => set({ activeDashboardTool: tool }),
+            batchOutput: null,
+            setBatchOutput: (output) => set({ batchOutput: output }),
+            confirmBookletSettings: null,
+            setConfirmBookletSettings: (settings) => set({ confirmBookletSettings: settings }),
 
             // ═══ Paper ═══
             formsize: 'SRA3',

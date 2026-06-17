@@ -160,6 +160,25 @@ Kế hoạch triển khai theo kiến trúc đã chốt: **pikepdf = engine GHI 
 - [x] 13. Final checkpoint — Đảm bảo toàn bộ test pass
   - Ensure all tests pass, ask the user if questions arise.
 
+## Hardening sau MVP (audit follow-up)
+
+> Các hạng mục bổ sung sau khi MVP chốt, từ audit + phản hồi sử dụng thực tế. Đều đã verify (backend 214 pass, typecheck exit 0, vitest edit 16 pass).
+
+- [x] H1. Sửa thao tác text GRANULAR (delete/move/rotate/editText theo từng run)
+  - `object_mapper`/`stream_editor`: `map_text_show_op`, `text_show_op_for_move`, `_iter_text_show_ops`, `inverse_matrix`, `_shifted_text_tm`, `_rotated_text_tm`; ghim `Tm` tuyệt đối từng run, chỉ run mục tiêu đổi (không còn xóa/di chuyển cả cụm `BT…ET`)
+- [x] H2. Editor text: điền nội dung gốc + chọn font + style
+  - Trích `content`/`color`/`fontName` qua PDFium; `_looks_unreliable` bỏ điền khi ToUnicode hỏng; tái dùng `FontSelector`; `chosen_font_path` nhúng font người dùng chọn; tự khớp font gốc (`pickFontForName`)
+- [x] H3. Undo/Redo riêng cho object-edit + cap 30 bước
+  - `objectEditPast/objectEditFuture` + `useObjectEditHistory` + wire `useViewerHotkeys`; dọn Working_File trung gian khi snapshot rời stack (`DELETE /edit/working/{fid}`)
+- [x] H4. CropBox offset: `/edit/objects` trả `pageBox`; FE trừ/cộng gốc CropBox
+- [x] H5. Banner cảnh báo fallback font khi `used_fallback` mà chưa chọn font
+- [x] H6. Lazy trích text-props: `list_objects(include_text_props=False)` + `GET /edit/text-props/{fid}/{page}/{index}`; FE fetch lazy khi mở editor
+- [x] H7. Pure-math geometry FE: `editGeometry.ts` + `editGeometry.test.ts` (16 vitest pass), refactor `LivePageFrame.tsx`
+- [x] H8. CJK: xác nhận hoạt động + vá subset `.ttc` (fontNumber=0)
+- [x] H9. Complex-script shaping (HarfBuzz): `text_shaping.py` (`needs_shaping`/`shape_text`), `_make_shaped_show` (nhúng full font CID=GID, `/W` theo advance); wire vào `edit_text` + `add_text`; chỉ kích hoạt cho Arabic/Thai/Indic/Hebrew (Latin/CJK/Việt giữ đường codepoint)
+  - _Giới hạn v1 đã biết: advance qua `/W`, chưa xử lý x/y offset dấu chồng (Thai marks có thể lệch nhẹ); ToUnicode shaped chưa map → extraction complex-script không round-trip._
+- [x] H10. Bổ sung test: PBT editText/add, integration edit→imposition, benchmark lazy vs full, `test_text_shaping.py`
+
 ## Notes
 
 - Tasks đánh dấu `*` là tùy chọn (test) và có thể bỏ qua để ra MVP nhanh; task lõi không bao giờ tùy chọn.

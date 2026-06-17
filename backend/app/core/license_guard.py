@@ -28,6 +28,24 @@ from fastapi import Request, HTTPException
 
 logger = logging.getLogger(__name__)
 
+
+def _security_log_to_file(msg: str) -> None:
+    """Ghi 1 dòng trạng thái bảo mật ra file để DEV kiểm chứng trên bản cài (release).
+
+    - Thầm lặng: KHÔNG hiển thị cho người dùng cuối (file nằm trong %APPDATA%\\PrynX\\logs).
+    - KHÔNG ghi dữ liệu nhạy cảm (license key/token thô) — chỉ cờ trạng thái + lý do generic.
+    - Best-effort: mọi lỗi đều nuốt, không bao giờ ảnh hưởng luồng xử lý.
+    """
+    try:
+        base = os.environ.get("APPDATA") or os.environ.get("HOME") or os.path.expanduser("~")
+        log_dir = os.path.join(base, "PrynX", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(os.path.join(log_dir, "security.log"), "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
+
 # ── Shared sidecar token ──
 # VECTOR #1 FIX: Token is loaded from a temp file (not env var).
 # The Tauri host writes the token to a file in AppData, passes the path
@@ -36,7 +54,18 @@ logger = logging.getLogger(__name__)
 _SIDECAR_TOKEN: Optional[str] = None
 
 def _is_dev_mode() -> bool:
-    """Check DEV_MODE lazily — ensures .env has been loaded by pydantic."""
+    """Check DEV_MODE lazily — ensures .env has been loaded by pydantic.
+
+    PRODUCTION HARDENING (fail-closed): nếu đang chạy dưới dạng BINARY ĐÃ COMPILE
+    (Nuitka --onefile khi release, hoặc PyInstaller), thì TUYỆT ĐỐI KHÔNG bao giờ
+    là dev mode — kể cả khi kẻ gian trích exe sidecar chạy TRỰC TIẾP (không qua
+    Tauri) rồi cố set env/.env DEV_MODE=true để tắt verify chữ ký + enforce token.
+    Cờ '__compiled__' do Nuitka chèn vào mọi module đã compile, không thể gỡ.
+    Dev (chạy Python thông dịch) không có cờ này → vẫn đọc DEV_MODE từ .env như cũ.
+    """
+    import sys
+    if "__compiled__" in globals() or getattr(sys, "frozen", False):
+        return False
     try:
         from app.config import settings
         return settings.DEV_MODE
@@ -81,6 +110,27 @@ def _load_token_from_file():
 
 # Load token at import time
 _load_token_from_file()
+
+# #1: Log rõ trạng thái cưỡng chế token + nguồn token lúc khởi động để KIỂM CHỨNG
+# trên bản release (xác nhận PRYNX_ENFORCE_LICENSE_TOKEN thực sự có hiệu lực).
+try:
+    logger.info(
+        "[LICENSE_GUARD] startup: enforce_license_token=%s, dev_mode=%s, sidecar_token=%s, pubkey_source=%s",
+        os.environ.get("PRYNX_ENFORCE_LICENSE_TOKEN", "false"),
+        _is_dev_mode(),
+        "set" if _SIDECAR_TOKEN else "MISSING",
+        "env" if (_is_dev_mode() and os.environ.get("PRYNX_LICENSE_PUBLIC_KEY", "").strip()) else "embedded",
+    )
+    _security_log_to_file(
+        "STARTUP enforce_license_token={} dev_mode={} sidecar_token={} pubkey={}".format(
+            os.environ.get("PRYNX_ENFORCE_LICENSE_TOKEN", "false"),
+            _is_dev_mode(),
+            "set" if _SIDECAR_TOKEN else "MISSING",
+            "env" if (_is_dev_mode() and os.environ.get("PRYNX_LICENSE_PUBLIC_KEY", "").strip()) else "embedded",
+        )
+    )
+except Exception:
+    pass
 
 # ── License cache (avoid hammering Supabase on every request) ──
 # key: hash(license_key + hwid), value: (is_valid, expire_timestamp)
@@ -136,9 +186,23 @@ def verify_sidecar_signature(url_path: str, token: str, ts: str, sig: str) -> tu
 
 # ── Server-signed license token (VECTOR: bỏ tin client) ──────────────────────
 # Edge function Supabase ký token bằng PRIVATE key (giữ ở server); sidecar verify bằng
-# PUBLIC key nhúng sẵn dưới đây. Client bị crack KHÔNG giả được token (không có private key).
+# PUBLIC key dưới đây. Client bị crack KHÔNG giả được token (không có private key).
 # Token ngắn hạn → buộc tái xác thực online định kỳ; thu hồi license có hiệu lực nhanh.
+#
+# BẢO MẬT (quan trọng): public key là TRUST ANCHOR — phải NHÚNG CỨNG trong binary và
+# KHÔNG được cho phép thay lúc runtime ở production. Nếu cho đọc từ env/file lúc chạy,
+# kẻ crack chỉ cần đặt PRYNX_LICENSE_PUBLIC_KEY = <key của hắn> trước khi mở app →
+# tự ký token bằng private key của hắn → giả license hợp lệ. Vì vậy:
+#   - PRODUCTION: LUÔN dùng giá trị nhúng cứng bên dưới (env bị BỎ QUA).
+#   - DEV (DEV_MODE=true): cho phép override qua env để test với cặp khóa riêng.
 _LICENSE_PUBLIC_KEY_B64 = "AxpiZnEFXady9wI01spdMRrTNtEthMD30W/90gi27Zk="
+
+# Dev-only override (production bỏ qua hoàn toàn — chống tráo trust anchor qua env).
+if _is_dev_mode():
+    _dev_pubkey = os.environ.get("PRYNX_LICENSE_PUBLIC_KEY", "").strip()
+    if _dev_pubkey:
+        _LICENSE_PUBLIC_KEY_B64 = _dev_pubkey
+        logger.warning("[LICENSE_GUARD] DEV: public key overridden via env (dev-only).")
 
 
 def _enforce_license_token() -> bool:
@@ -233,6 +297,16 @@ async def require_license(request: Request) -> dict:
     if _enforce_license_token():
         tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
         if not tok_ok:
+            # #6: log rõ khi token bị từ chối (telemetry chẩn đoán + phát hiện tấn công).
+            logger.warning(
+                "[LICENSE_GUARD] License token REJECTED (enforced): %s | path=%s | token_present=%s",
+                tok_reason, request.url.path, bool(lic_token),
+            )
+            _security_log_to_file(
+                "TOKEN_REJECTED reason={!r} path={} token_present={}".format(
+                    tok_reason, request.url.path, bool(lic_token)
+                )
+            )
             raise HTTPException(status_code=403, detail=f"License token rejected: {tok_reason}")
     elif lic_token:
         tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
