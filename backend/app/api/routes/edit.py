@@ -42,8 +42,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.core import geometry_reader
+from app.core import edit_session, geometry_reader
 from app.core.edit_io import apply_and_save
+from app.core.edit_session import SessionNotFoundError, get_active_session, list_objects_from_session
 from app.core.license_guard import require_license
 from app.core.stream_editor import (
     GlyphCoverageError,
@@ -76,6 +77,29 @@ EDIT_OUTPUT_SUBDIR = "edit_output"
 # DPI render preview (read-only). 150 DPI cân bằng giữa độ nét và chi phí; PDFium
 # render theo scale = DPI/72 so với hệ point của PDF.
 PREVIEW_DPI: float = 150.0
+
+# ── Object list cache (simple in-memory, per (fid, page)) ────────────────────
+# Giúp load edit tool nhanh hơn rất nhiều trên trang phức tạp.
+# Invalidate khi có edit thành công trên trang đó (hoặc khi fid mới từ commit).
+_object_list_cache: dict[tuple[str, int], dict] = {}
+
+
+def _get_cached_objects(fid: str, page: int):
+    return _object_list_cache.get((fid, page))
+
+
+def _set_cached_objects(fid: str, page: int, payload: dict):
+    _object_list_cache[(fid, page)] = payload
+
+
+def _invalidate_object_cache(fid: str, page: int | None = None):
+    if page is not None:
+        _object_list_cache.pop((fid, page), None)
+    else:
+        # clear all pages for this fid
+        keys = [k for k in _object_list_cache if k[0] == fid]
+        for k in keys:
+            _object_list_cache.pop(k, None)
 
 
 # ── Request schemas ──────────────────────────────────────────────────────────
@@ -123,6 +147,74 @@ class PreviewResponse(BaseModel):
     width: int = Field(description="Chiều rộng ảnh render (px)")
     height: int = Field(description="Chiều cao ảnh render (px)")
     page: int = Field(description="Chỉ số trang 0-based đã render")
+
+
+# ── Session schemas (`pdf-edit-session`) ─────────────────────────────────────
+class SessionOpenReq(BaseModel):
+    """Mở một Edit_Session từ `fid` (file đã upload)."""
+
+    fid: str = Field(description="ID file PDF đã upload (UploadedFile.id)")
+
+
+class SessionOpenResp(BaseModel):
+    """Kết quả mở phiên: Session_Id duy nhất + số trang của Live_Document."""
+
+    session_id: str = Field(description="Session_Id duy nhất do backend cấp")
+    page_count: int = Field(description="Số trang của Live_Document")
+
+
+class SessionOpReq(BaseModel):
+    """
+    Áp một `EditOp` in-memory lên Live_Document của phiên + render clip.
+
+    `render_scale` (px/point ≈ zoom×dpr) và `clip_pad_pt` (lề an toàn quanh
+    Clip_Region, point) điều khiển Incremental_Render.
+    """
+
+    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
+    op: EditOp
+    render_scale: float = Field(default=2.0, description="px/point để render preview (≈ zoom×dpr)")
+    clip_pad_pt: float = Field(default=8.0, description="lề an toàn quanh clip (point)")
+
+
+class SessionRefReq(BaseModel):
+    """
+    Tham chiếu phiên cho thao tác KHÔNG kèm EditOp (undo/redo) — vẫn cần tham số
+    render để dựng Preview_Image của vùng bị thay đổi sau khi hoàn tác/làm lại.
+    """
+
+    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
+    render_scale: float = Field(default=2.0, description="px/point để render preview (≈ zoom×dpr)")
+    clip_pad_pt: float = Field(default=8.0, description="lề an toàn quanh clip (point)")
+
+
+class SessionCommitReq(BaseModel):
+    """Yêu cầu Commit Live_Document hiện tại ra một Working_File mới."""
+
+    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
+
+
+class SessionOpResp(BaseModel):
+    """
+    Kết quả một thao tác phiên (op / undo / redo): Preview_Image (vùng clip hoặc
+    toàn trang) + tọa độ Clip_Region + opResult (gồm BBox MỚI để FE cập nhật overlay
+    tại chỗ) + trạng thái Undo/Redo.
+    """
+
+    success: bool
+    preview: str | None = Field(
+        default=None,
+        description="data:image/png;base64,... (vùng clip hoặc toàn trang); None nếu no-op",
+    )
+    clipRect: list[float] | None = Field(
+        default=None,
+        description="[x0,y0,x1,y1] POINT gốc Page_Box-relative; None = toàn trang/no-op",
+    )
+    full: bool = Field(default=False, description="True nếu render toàn trang (fallback)")
+    page: int | None = Field(default=None, description="Chỉ số trang 0-based bị tác động")
+    opResult: dict = Field(default_factory=dict, description="Gồm BBox MỚI để FE cập nhật overlay")
+    canUndo: bool = Field(default=False, description="Còn op để hoàn tác?")
+    canRedo: bool = Field(default=False, description="Còn op để làm lại?")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -400,6 +492,72 @@ def _apply_edit_op(pdf, op: EditOp, pdf_path: str):
     raise ValueError(f"op.kind không hỗ trợ: {kind!r}")
 
 
+def _render_clip_blocking(
+    pdf_bytes: bytes,
+    page: int,
+    scale: float,
+    clip_rect: list[float] | None = None,
+) -> tuple[str, int, int]:
+    """
+    Render READ-ONLY trang `page` của `pdf_bytes` bằng PDFium ở `scale` (px/point)
+    rồi (tùy chọn) CROP ảnh theo `clip_rect` bằng PIL.
+
+    - `clip_rect=None` → trả ảnh TOÀN TRANG (hành vi cũ của `/edit/preview`).
+    - `clip_rect=[x0, y0, x1, y1]` (PDF point, gốc Page_Box-relative, gốc DƯỚI-TRÁI)
+      → crop ảnh toàn trang về đúng vùng đó. Việc quy đổi qua Page_Box (CropBox lệch
+      gốc) được thực hiện ở TẦNG TRÊN (`render_clip` trong `edit_session.py`); ở đây
+      chỉ nhân `scale` và lật trục y để khớp ảnh PDFium (gốc TRÊN-TRÁI).
+
+    CẤM TUYỆT ĐỐI dùng PDFium để GHI: PDFium ở đây CHỈ mở `pdf_bytes` (do pikepdf
+    ghi) ở chế độ đọc và render ra ảnh (Yêu cầu 3.4, 6.1). Không tạo file tạm — toàn
+    bộ nằm trong bộ nhớ.
+
+    Trả về `(b64_png, width, height)`: chuỗi base64 ASCII của PNG (KHÔNG kèm tiền tố
+    `data:`) cùng kích thước pixel của ảnh kết quả (đã crop nếu có `clip_rect`).
+    """
+    import pypdfium2 as pdfium
+
+    render_doc = pdfium.PdfDocument(pdf_bytes)
+    try:
+        n_pages = len(render_doc)
+        if page < 0 or page >= n_pages:
+            raise IndexError(f"Trang {page} ngoài phạm vi (0..{n_pages - 1}).")
+        render_page = render_doc[page]
+        bitmap = render_page.render(scale=scale)
+        img = bitmap.to_pil()
+        full_w, full_h = img.size
+
+        if clip_rect is not None:
+            x0, y0, x1, y1 = clip_rect
+            # Chuẩn hóa thứ tự cạnh (phòng x1<x0 / y1<y0).
+            if x1 < x0:
+                x0, x1 = x1, x0
+            if y1 < y0:
+                y0, y1 = y1, y0
+            # PDF point (gốc DƯỚI-TRÁI) → pixel (gốc TRÊN-TRÁI): nhân scale, lật y.
+            left = int(round(x0 * scale))
+            right = int(round(x1 * scale))
+            top = int(round(full_h - y1 * scale))
+            bottom = int(round(full_h - y0 * scale))
+            # Kẹp trong khung ảnh toàn trang.
+            left = max(0, min(left, full_w))
+            right = max(0, min(right, full_w))
+            top = max(0, min(top, full_h))
+            bottom = max(0, min(bottom, full_h))
+            # Chỉ crop khi vùng hợp lệ (diện tích > 0); nếu không, giữ toàn trang.
+            if right > left and bottom > top:
+                img = img.crop((left, top, right, bottom))
+
+        width, height = img.size
+        out = BytesIO()
+        img.save(out, format="PNG")
+        b64 = base64.b64encode(out.getvalue()).decode("ascii")
+    finally:
+        render_doc.close()
+
+    return b64, int(width), int(height)
+
+
 def _render_preview_blocking(pdf_path: str, op: EditOp) -> PreviewResponse:
     """
     Áp `op` lên bản sao in-memory của `pdf_path` (pikepdf) → lấy BYTES qua
@@ -411,7 +569,6 @@ def _render_preview_blocking(pdf_path: str, op: EditOp) -> PreviewResponse:
     hoàn toàn trong bộ nhớ.
     """
     import pikepdf
-    import pypdfium2 as pdfium
 
     # 1) Áp thao tác bằng pikepdf (đường GHI color-safe) → lấy bytes in-memory.
     with pikepdf.Pdf.open(pdf_path) as pdf:
@@ -422,22 +579,10 @@ def _render_preview_blocking(pdf_path: str, op: EditOp) -> PreviewResponse:
         pdf.save(buf, compress_streams=False)
     pdf_bytes = buf.getvalue()
 
-    # 2) Render READ-ONLY bằng PDFium từ chính bytes pikepdf vừa ghi.
-    render_doc = pdfium.PdfDocument(pdf_bytes)
-    try:
-        n_pages = len(render_doc)
-        if op.page < 0 or op.page >= n_pages:
-            raise IndexError(f"Trang {op.page} ngoài phạm vi (0..{n_pages - 1}).")
-        render_page = render_doc[op.page]
-        bitmap = render_page.render(scale=PREVIEW_DPI / 72.0)
-        img = bitmap.to_pil()
-        width, height = img.size
-
-        out = BytesIO()
-        img.save(out, format="PNG")
-        b64 = base64.b64encode(out.getvalue()).decode("ascii")
-    finally:
-        render_doc.close()
+    # 2) Render READ-ONLY TOÀN TRANG (clip_rect=None) — giữ nguyên hành vi cũ.
+    b64, width, height = _render_clip_blocking(
+        pdf_bytes, op.page, PREVIEW_DPI / 72.0, None
+    )
 
     return PreviewResponse(
         success=True,
@@ -484,28 +629,95 @@ async def _execute_preview(pdf_path: str, op: EditOp) -> PreviewResponse:
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
 
 
+async def _execute_session(blocking_fn):
+    """
+    Chạy một thao tác PHIÊN (đồng bộ, đụng `pikepdf`/PDFium) trong threadpool với
+    TRẦN THỜI GIAN an toàn (Yêu cầu 10.1) và map lỗi domain → HTTP status RÕ RÀNG
+    cho namespace `/edit/session/*`.
+
+    Map lỗi (design "Map lỗi → HTTP"):
+      - timeout                → 504 (giữ nguyên `pdf`; op CHƯA append op_log).
+      - SessionNotFoundError   → 410 Gone (FE bắt → fallback Legacy_Commit_Flow).
+      - ObjectMapError         → 409 (không map được object duy nhất — bảo toàn màu).
+      - GlyphCoverageError     → 422 (thiếu glyph).
+      - ValueError             → 422 (tham số sai / bbox suy biến).
+      - FileNotFoundError      → 404 (file gốc biến mất).
+      - IndexError             → 400 (trang ngoài phạm vi).
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, blocking_fn), timeout=EDIT_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        # Timeout: thao tác bị HỦY. apply_op/undo/redo chỉ append op_log SAU khi áp
+        # thành công nên op CHƯA vào log; Live_Document giữ nguyên (Yêu cầu 10.1, 10.3).
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Thao tác phiên vượt thời gian xử lý an toàn "
+                f"({EDIT_TIMEOUT_SECONDS:.0f}s). Đã HỦY — giữ nguyên trạng thái phiên "
+                "(Yêu cầu 10.1)."
+            ),
+        )
+    except HTTPException:
+        raise
+    except SessionNotFoundError as exc:
+        # Phiên không tồn tại/đã dọn TTL → 410 để FE khởi tạo lại / fallback Legacy
+        # (Yêu cầu 9.5, 11.1).
+        raise HTTPException(status_code=410, detail=str(exc))
+    except ObjectMapError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except GlyphCoverageError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except IndexError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Thao tác phiên thất bại")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 @router.get("/edit/objects/{fid}/{page}")
 async def list_page_objects(fid: str, page: int):
     """
-    Liệt kê object (text/image/vector) của một trang qua Geometry_Reader (PDFium,
-    read-only). `page` là chỉ số 0-based.
+    Liệt kê object (text/image/vector) của một trang (PDFium read-only).
+    Ưu tiên dùng Live EditSession (nếu đang mở) để:
+      - Nhanh (không mở file từ đĩa)
+      - Phản ánh thay đổi chưa commit (sau move/edit text...)
+    Dùng cache đơn giản để load công cụ edit gần như tức thì.
+
+    `page` là chỉ số 0-based.
     """
+    # 1. Cache hit nhanh
+    cached = _get_cached_objects(fid, page)
+    if cached:
+        return cached
+
     pdf_path, _ = _get_file_info(fid)
+
+    # 2. Thử lấy từ session đang sống (nhanh + state mới nhất)
     try:
-        # include_text_props=False: KHÔNG trích nội dung/màu/font cho MỌI object
-        # (nhanh trên trang cực nhiều object). Props lấy LAZY qua /edit/text-props
-        # khi mở editor sửa text.
-        objects = geometry_reader.list_objects(pdf_path, page, include_text_props=False)
+        session = edit_session.get_active_session(fid)
+        if session:
+            objects_list = edit_session.list_objects_from_session(
+                session, page, include_text_props=False
+            )
+        else:
+            objects_list = geometry_reader.list_objects(
+                pdf_path, page, include_text_props=False
+            )
     except IndexError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Liệt kê object thất bại")
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
 
-    # CropBox của trang (PDF user-space): client trừ gốc CropBox để overlay khớp ảnh
-    # render (PDFium render theo CropBox). File có CropBox/MediaBox lệch gốc (vd. xuất
-    # từ Illustrator) sẽ không bị lệch tọa độ. None nếu không đọc được (client coi gốc 0).
+    # 3. Lấy pageBox (CropBox) từ đĩa (nhẹ, chỉ cần metadata)
     page_box: list[float] | None = None
     try:
         import pikepdf
@@ -520,7 +732,12 @@ async def list_page_objects(fid: str, page: int):
     except Exception:  # noqa: BLE001 - đọc box best-effort
         page_box = None
 
-    return {"objects": objects, "count": len(objects), "pageBox": page_box}
+    payload = {
+        "objects": [o.model_dump() for o in objects_list],
+        "pageBox": page_box,
+    }
+    _set_cached_objects(fid, page, payload)
+    return payload
 
 
 @router.get("/edit/text-props/{fid}/{page}/{index}")
@@ -536,6 +753,35 @@ async def get_text_props(fid: str, page: int, index: int):
         logger.exception("Lấy text-props thất bại")
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
     return props
+
+
+# ── OCG visibility for Edit PDF (live session) ────────────────────────────────
+class OcgVisibilityRequest(BaseModel):
+    fid: str
+    layer_id: int
+    visible: bool
+
+
+@router.post("/edit/ocg/visibility")
+async def set_edit_ocg_visibility(req: OcgVisibilityRequest, license_info: dict = Depends(require_license)):
+    """
+    Áp dụng ẨN/HIỆN OCG layer TRỰC TIẾP lên EditSession sống (pikepdf in-RAM).
+    Khi thành công, mọi tile render sau sẽ phản ánh trạng thái visibility thật (không chỉ overlay preview).
+    Dùng trong chế độ Edit PDF cho panel "Lớp & Thành phần".
+    """
+    try:
+        session = edit_session.get_active_session(req.fid)
+        if not session:
+            raise HTTPException(status_code=410, detail="No active edit session for OCG toggle (open edit session first).")
+        result = edit_session.set_ocg_visibility(session, req.layer_id, req.visible)
+        return {"success": True, **result}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("set ocg visibility failed")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
 
 
 @router.delete("/edit/working/{fid}")
@@ -704,3 +950,148 @@ async def edit_preview(req: EditRequest):
     """
     pdf_path, _ = _get_file_info(req.fid)
     return await _execute_preview(pdf_path, req.op)
+
+
+# ── Session endpoints `/edit/session/*` (`pdf-edit-session`) ─────────────────
+# Phương án "C": giữ một pikepdf.Pdf SỐNG theo phiên trong RAM, áp Edit_Op
+# in-memory, render tăng tiến theo vùng clip, chỉ Commit ra đĩa khi cần. Tất cả
+# handler chạy trong threadpool qua `_execute_session` (timeout + map lỗi → HTTP).
+# Các endpoint Legacy ở trên GIỮ NGUYÊN để Legacy_Commit_Flow fallback (Yêu cầu 11.3).
+@router.post("/edit/session/open", response_model=SessionOpenResp)
+async def session_open(req: SessionOpenReq, license_info: dict = Depends(require_license)):
+    """
+    Mở một Edit_Session từ `fid`: nạp Live_Document (pikepdf từ bytes file gốc) vào
+    RAM và cấp Session_Id duy nhất (Yêu cầu 1.1). `fid` không tồn tại / file mất →
+    404, KHÔNG tạo phiên (Yêu cầu 1.3).
+    """
+    def _do() -> SessionOpenResp:
+        session = edit_session.open_session(req.fid)
+        return SessionOpenResp(
+            session_id=session.session_id,
+            page_count=len(session.pdf.pages),
+        )
+
+    return await _execute_session(_do)
+
+
+@router.post("/edit/session/op", response_model=SessionOpResp)
+async def session_op(req: SessionOpReq, license_info: dict = Depends(require_license)):
+    """
+    Áp một `EditOp` IN-MEMORY lên Live_Document của phiên rồi render Incremental_Render
+    (vùng clip) — KHÔNG ghi Working_File (Yêu cầu 2.1, 3.1). Phiên không tồn tại → 410
+    (Yêu cầu 9.5); op lỗi → giữ nguyên `pdf`, KHÔNG vào op_log (Yêu cầu 10.2, 10.3).
+    """
+    def _do() -> SessionOpResp:
+        session = edit_session.get_session(req.session_id)
+        op_result = edit_session.apply_op(session, req.op)
+        _invalidate_object_cache(session.source_fid, req.op.page)
+        preview, clip_rect, full = edit_session.render_clip(
+            session, req.op, op_result,
+            scale=req.render_scale, clip_pad=req.clip_pad_pt,
+        )
+        return SessionOpResp(
+            success=True,
+            preview=preview,
+            clipRect=clip_rect,
+            full=full,
+            page=req.op.page,
+            opResult=op_result,
+            canUndo=bool(op_result.get("canUndo", False)),
+            canRedo=bool(op_result.get("canRedo", False)),
+        )
+
+    return await _execute_session(_do)
+
+
+@router.post("/edit/session/undo", response_model=SessionOpResp)
+async def session_undo(req: SessionRefReq, license_info: dict = Depends(require_license)):
+    """
+    Hoàn tác Edit_Op gần nhất của phiên (baseline + replay) và render clip vùng khôi
+    phục (Yêu cầu 7.2). Op_Log rỗng → trả no-op, giữ nguyên Live_Document (Yêu cầu 7.6).
+    Phiên không tồn tại → 410.
+    """
+    def _do() -> SessionOpResp:
+        session = edit_session.get_session(req.session_id)
+        result = edit_session.undo(
+            session, scale=req.render_scale, clip_pad=req.clip_pad_pt
+        )
+        if result and result.get("page") is not None:
+            _invalidate_object_cache(session.source_fid, result.get("page"))
+        return SessionOpResp(
+            success=True,
+            preview=result.get("preview"),
+            clipRect=result.get("clipRect"),
+            full=bool(result.get("full", False)),
+            page=result.get("page"),
+            opResult=result,
+            canUndo=bool(result.get("canUndo", False)),
+            canRedo=bool(result.get("canRedo", False)),
+        )
+
+    return await _execute_session(_do)
+
+
+@router.post("/edit/session/redo", response_model=SessionOpResp)
+async def session_redo(req: SessionRefReq, license_info: dict = Depends(require_license)):
+    """
+    Làm lại Edit_Op vừa bị hoàn tác và render clip (Yêu cầu 7.3). Redo_stack rỗng →
+    trả no-op, giữ nguyên Live_Document. Op áp lại lỗi → giữ nguyên `pdf`, op vẫn
+    trong redo_stack (Yêu cầu 10.2). Phiên không tồn tại → 410.
+    """
+    def _do() -> SessionOpResp:
+        session = edit_session.get_session(req.session_id)
+        result = edit_session.redo(
+            session, scale=req.render_scale, clip_pad=req.clip_pad_pt
+        )
+        if result and result.get("page") is not None:
+            _invalidate_object_cache(session.source_fid, result.get("page"))
+        return SessionOpResp(
+            success=True,
+            preview=result.get("preview"),
+            clipRect=result.get("clipRect"),
+            full=bool(result.get("full", False)),
+            page=result.get("page"),
+            opResult=result,
+            canUndo=bool(result.get("canUndo", False)),
+            canRedo=bool(result.get("canRedo", False)),
+        )
+
+    return await _execute_session(_do)
+
+
+@router.post("/edit/session/commit", response_model=EditResponse)
+async def session_commit(req: SessionCommitReq, license_info: dict = Depends(require_license)):
+    """
+    Commit (Defer_Commit) trạng thái HIỆN TẠI của Live_Document ra một Working_File
+    MỚI color-safe (KHÔNG đè file gốc) và đăng ký `fid` mới (Yêu cầu 5.2, 6.2, 11.4).
+    Commit lỗi → giữ nguyên `pdf` trong RAM để thử lại (Yêu cầu 10.5). Phiên không
+    tồn tại → 410.
+    """
+    def _do() -> EditResponse:
+        session = edit_session.get_session(req.session_id)
+        result = edit_session.commit(session)
+        # Invalidate source fid caches (new fid will be used by client)
+        _invalidate_object_cache(session.source_fid)
+        return EditResponse(
+            success=bool(result.get("success", True)),
+            output_filename=result["output_filename"],
+            output_url=result["output_url"],
+            output_path=result["output_path"],
+            output_fid=result["output_fid"],
+        )
+
+    return await _execute_session(_do)
+
+
+@router.delete("/edit/session/{sid}")
+async def session_close(sid: str, license_info: dict = Depends(require_license)):
+    """
+    Đóng một Edit_Session: giải phóng Live_Document khỏi RAM, GIỮ NGUYÊN file gốc +
+    mọi Working_File đã Commit (Yêu cầu 9.1, 9.3). Idempotent: phiên đã đóng/dọn →
+    `closed=False` (không lỗi).
+    """
+    def _do() -> dict:
+        closed = edit_session.close_session(sid)
+        return {"closed": closed}
+
+    return await _execute_session(_do)

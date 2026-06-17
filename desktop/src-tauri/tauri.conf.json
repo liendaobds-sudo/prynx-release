@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "PrynX Ã¢â‚¬â€ Print made easy!",
+        "title": "PrynX — Print made easy!",
         "width": 1400,
         "height": 900,
         "minWidth": 900,
@@ -30,14 +30,19 @@
       "csp": "default-src 'self'; connect-src 'self' http://localhost:8321 https://*.supabase.co https://cdnjs.cloudflare.com; script-src 'self' blob: https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com asset: http://asset.localhost https://asset.localhost data: blob:; img-src 'self' asset: http://asset.localhost http://localhost:8321 data: blob: tile:; worker-src 'self' blob:;",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**", "**/*"]
+        "scope": [
+          "**",
+          "**/*"
+        ]
       }
     }
   },
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["prynx"]
+        "schemes": [
+          "prynx"
+        ]
       }
     },
     "updater": {
@@ -49,7 +54,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "resources": [
       "binaries/gs/**/*",
       "binaries/tesseract/**/*"
@@ -63,7 +70,9 @@
     ],
     "fileAssociations": [
       {
-        "ext": ["pdf"],
+        "ext": [
+          "pdf"
+        ],
         "name": "PDF Document",
         "description": "PDF Document",
         "role": "Editor",

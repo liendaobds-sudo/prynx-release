@@ -296,12 +296,17 @@ def extract_vector_paths(pike_page: pikepdf.Page, pdf: pikepdf.Pdf) -> list:
             for ref in contents:
                 try:
                     stream_obj = pdf.get_object(ref.objgen)
-                    raw_bytes += stream_obj.read_bytes()
+                    chunk = stream_obj.read_bytes()
+                    if b"PX_" in chunk and b"Tj" in chunk:
+                        continue
+                    raw_bytes += chunk
                 except Exception:
                     pass
         else:
             try:
-                raw_bytes = contents.read_bytes()
+                chunk = contents.read_bytes()
+                if b"PX_" not in chunk or b"Tj" not in chunk:
+                    raw_bytes = chunk
             except Exception:
                 pass
     except Exception:

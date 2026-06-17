@@ -57,11 +57,36 @@ async def lifespan(app: FastAPI):
     from app.core.cleanup import cleanup_expired_files_loop
     app.state.cleanup_task = asyncio.create_task(cleanup_expired_files_loop())
 
+    # Background sweep dọn Edit_Session quá SESSION_TTL (Yêu cầu 9.4):
+    # lazy sweep (get_session) đã dọn khi CÓ truy cập, nhưng nếu người dùng bỏ
+    # phiên giữa chừng (không gọi close) thì Live_Document còn treo RAM tới khi có
+    # request mới. Vòng nền quét định kỳ mỗi ~5 phút bảo đảm RAM được giải phóng
+    # kể cả khi backend nhàn rỗi (file lớn → chống rò RAM).
+    from app.core import edit_session
+
+    async def _edit_session_sweep_loop():
+        SWEEP_INTERVAL_SECONDS = 300  # ~5 phút
+        while True:
+            try:
+                await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
+                swept = await asyncio.to_thread(edit_session.sweep_expired)
+                if swept:
+                    logger.info("🧹 Background sweep: dọn %d Edit_Session quá hạn TTL.", swept)
+            except asyncio.CancelledError:
+                logger.info("Edit_Session sweep task cancelled.")
+                break
+            except Exception as e:  # noqa: BLE001 - không để lỗi 1 vòng giết task
+                logger.error(f"Error in Edit_Session sweep task: {e}")
+
+    app.state.edit_session_sweep_task = asyncio.create_task(_edit_session_sweep_loop())
+
     yield
 
     # Shutdown
     if getattr(app.state, "cleanup_task", None):
         app.state.cleanup_task.cancel()  # Application runs here
+    if getattr(app.state, "edit_session_sweep_task", None):
+        app.state.edit_session_sweep_task.cancel()
 
     # Shutdown (cleanup if needed)
     logger.info(f"👋 {settings.APP_NAME} shutting down")

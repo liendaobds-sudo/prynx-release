@@ -4,7 +4,7 @@ title PrynX - Phat hanh ban cap nhat (auto-update)
 cd /d "%~dp0"
 echo.
 echo   === PrynX - Phat hanh ban cap nhat ===
-echo   (build + ky updater + upload len GitHub Releases)
+echo   (Preflight QA -^> build + ky updater + upload len GitHub Releases)
 echo.
 set /p VER=Nhap so phien ban moi (vd 1.0.1): 
 set /p REPO=Nhap repo releases PUBLIC (vd owner/pdfcompare-releases): 

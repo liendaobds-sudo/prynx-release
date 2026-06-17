@@ -4,7 +4,15 @@
 
 Kế hoạch triển khai theo kiến trúc đã chốt: **pikepdf = engine GHI (color-safe)**, **PDFium (pypdfium2.raw) = engine ĐỌC hình học (read-only)**, và **Object_Mapper** nối hai mô hình. Backend viết bằng **Python** (`backend/app`), frontend bằng **TypeScript/React** (`desktop/src`). Mỗi task xây trên task trước và kết thúc bằng việc wiring frontend ↔ backend ↔ preview ↔ history. Property-Based Tests canh giữ 7 thuộc tính đúng đắn trong design, đặc biệt là bảo toàn màu in.
 
+**Thực tế đã triển khai (2026):** 
+- Legacy flow (`/edit/delete|transform|text|add` + Working_File mới qua commitWorkingFile) vẫn tồn tại để tương thích.
+- **Session flow (phương án C — pdf-edit-session)** là đường chính cho UX mượt: `Edit_Session` giữ `pikepdf.Pdf` sống trong RAM, áp op in-memory, render incremental clip PNG + update bbox tại chỗ. Debounce ~1.5s commit ra Working_File + `output_fid`. Fallback 410 → legacy. Xem `edit_session.py`, `routes/edit.py:883`, `useEditSession.ts`, `ImpositionTab.tsx`, `LivePageFrame.tsx`.
+- Dual history: in-memory op_log/redo (session) + snapshot {file,pdfUrl,fid} 30 bước (useObjectEditHistory + objectEditPast/Future) chỉ push tại commit points.
+- Tất cả H1-H10 đã implement + verify (xem phần Hardening + test_edit_session.py mới).
+
 > Chạy test bằng venv dự án `backend/venv` theo audit-rules. Các test watcher/dev-server phải chạy thủ công; dùng chế độ chạy đơn (`--run` / `pytest`) khi verify.
+
+> Audit 2026-06: 39+ edit tests pass (PBT + unit + integration + new session tests), desktop typecheck 0, color guardrails + roundtrip giữ nguyên.
 
 ## Tasks
 
@@ -160,9 +168,23 @@ Kế hoạch triển khai theo kiến trúc đã chốt: **pikepdf = engine GHI 
 - [x] 13. Final checkpoint — Đảm bảo toàn bộ test pass
   - Ensure all tests pass, ask the user if questions arise.
 
+## Edit PDF Upgrade 2026-06 (OCG + Thành phần unified live)
+
+Đã nâng cấp 1 luồng: 
+- Panel EditLayersPanel dùng editObjects (accurate) + search + icons + hide cho thành phần.
+- OCG hide/show trong edit mode gọi /edit/ocg/visibility → mutate pikepdf live /D/OFF trong EditSession.
+- Preview layers ưu tiên session bytes để xem ngay (overlay).
+- Components hide filter trên overlay boxes + hiddenObjectIds.
+- Typecheck 0, edit tests ~77+ pass.
+
 ## Hardening sau MVP (audit follow-up)
 
-> Các hạng mục bổ sung sau khi MVP chốt, từ audit + phản hồi sử dụng thực tế. Đều đã verify (backend 214 pass, typecheck exit 0, vitest edit 16 pass).
+> Các hạng mục bổ sung sau khi MVP chốt, từ audit + phản hồi sử dụng thực tế. 
+> **2026 full audit + hoàn thiện:** Tất cả [x] đã re-verify bằng chạy test thực tế + code trace. Thêm `test_edit_session.py` (9 tests pass covering open/apply/undo/redo/commit/error-restore/sweep). 
+> Dual history + session đã được trace và hoạt động đúng (in-mem fast + coarse snapshot tại commit). 
+> Backend edit tests tổng: 39+ pass (không regression).
+
+> Các hạng mục dưới đây đều đã verify.
 
 - [x] H1. Sửa thao tác text GRANULAR (delete/move/rotate/editText theo từng run)
   - `object_mapper`/`stream_editor`: `map_text_show_op`, `text_show_op_for_move`, `_iter_text_show_ops`, `inverse_matrix`, `_shifted_text_tm`, `_rotated_text_tm`; ghim `Tm` tuyệt đối từng run, chỉ run mục tiêu đổi (không còn xóa/di chuyển cả cụm `BT…ET`)
@@ -178,6 +200,7 @@ Kế hoạch triển khai theo kiến trúc đã chốt: **pikepdf = engine GHI 
 - [x] H9. Complex-script shaping (HarfBuzz): `text_shaping.py` (`needs_shaping`/`shape_text`), `_make_shaped_show` (nhúng full font CID=GID, `/W` theo advance); wire vào `edit_text` + `add_text`; chỉ kích hoạt cho Arabic/Thai/Indic/Hebrew (Latin/CJK/Việt giữ đường codepoint)
   - _Giới hạn v1 đã biết: advance qua `/W`, chưa xử lý x/y offset dấu chồng (Thai marks có thể lệch nhẹ); ToUnicode shaped chưa map → extraction complex-script không round-trip._
 - [x] H10. Bổ sung test: PBT editText/add, integration edit→imposition, benchmark lazy vs full, `test_text_shaping.py`
+  - **2026 bổ sung:** Thêm `test_edit_session.py` (full unit + PBT metamorphic cho apply→undo, error recovery, commit, 1/fid, TTL). Tổng edit tests ~39+ pass sau audit hoàn thiện.
 
 ## Notes
 

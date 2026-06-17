@@ -5,7 +5,11 @@ import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { authenticatedFetch, getApiUrl } from '../../lib/api';
 
 // ═══════════════════════════════════════════════════════════
-//  F7-style Layer Manager Panel — Illustrator Layers Panel
+//  Edit PDF Layers & Components Panel (unified)
+//  Repurposed for Object Edit mode (isObjectEditMode).
+//  Uses accurate editObjects from /edit/objects (PDFium) for "thành phần".
+//  OCG layers use real /edit/ocg/visibility when in edit (live session).
+//  Search, icons, hide/show (ẩn hiện), reorder, delete wired.
 // ═══════════════════════════════════════════════════════════
 
 interface OcgLayer {
@@ -19,24 +23,31 @@ interface OcgLayer {
     isGroup?: boolean;
 }
 
-interface SelectionLayersPanelProps {
+interface EditLayersPanelProps {
     handleDeleteObjects: (objs: any[], pageNum: number) => void;
     fetchPdfObjectsForPage: (pageNum: number) => Promise<void>;
+    // For edit PDF upgrade: pass accurate current page objects from edit system for "thành phần"
+    editObjects?: any[];
+    isEditMode?: boolean;
 }
 
-export default function SelectionLayersPanel({
+export default function EditLayersPanel({
     handleDeleteObjects,
     fetchPdfObjectsForPage,
-}: SelectionLayersPanelProps) {
+    editObjects,
+    isEditMode,
+}: EditLayersPanelProps) {
     const { 
         pdfUrl, pdfObjectsVersion, selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
         pdfOcgLayers, hiddenOcgLayerIds, setHiddenOcgLayerIds,
         lockedOcgLayerIds, setLockedOcgLayerIds,
         expandedOcgLayerIds, setExpandedOcgLayerIds,
         selectionFileId, viewerNumPages,
+        setPdfObjectsVersion,
+        setViewerDirty,
     } = useWorkspaceStore();
 
-    const [activeTab, setActiveTab] = useState<'ocg' | 'objects'>('ocg');
+    const [searchTerm, setSearchTerm] = useState(''); // Search for components (thành phần)
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; layer: OcgLayer } | null>(null);
     const [renamingId, setRenamingId] = useState<number | null>(null);
     const [renameValue, setRenameValue] = useState('');
@@ -74,23 +85,41 @@ export default function SelectionLayersPanel({
         
         setHiddenOcgLayerIds(newHidden);
         
-        // Call backend to update preview
+        // Edit PDF upgrade: prefer real OCG on live edit session (byte-level)
+        // Legacy preflight only for non-edit flows.
         if (selectionFileId) {
             try {
-                await authenticatedFetch(`${getApiUrl()}/preflight/preview-layers`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        file_id: selectionFileId,
-                        page: 1,
-                        hidden_layer_ids: newHidden,
-                    }),
-                });
+                if (isEditMode) {
+                    // Real apply: mutate session.pdf /OCProperties/D/OFF → next renders use it
+                    await authenticatedFetch(`${getApiUrl()}/edit/ocg/visibility`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            fid: selectionFileId,
+                            layer_id: layerId,
+                            visible: isHidden, // was hidden → now visible
+                        }),
+                    });
+                    // Bump to encourage LivePageFrame / objects effects to re-eval (list from live bytes)
+                    setPdfObjectsVersion((v: any) => ((v || 0) + 1));
+                    // Mark dirty to nudge full viewer / tile refresh path where possible
+                    setViewerDirty(true);
+                } else {
+                    await authenticatedFetch(`${getApiUrl()}/preflight/preview-layers`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            file_id: selectionFileId,
+                            page: 1,
+                            hidden_layer_ids: newHidden,
+                        }),
+                    });
+                }
             } catch (err) {
-                console.error('Layer preview failed:', err);
+                console.error('Layer visibility update failed:', err);
             }
         }
-    }, [hiddenOcgLayerIds, setHiddenOcgLayerIds, selectionFileId]);
+    }, [hiddenOcgLayerIds, setHiddenOcgLayerIds, selectionFileId, isEditMode]);
 
     // ─── Toggle Lock ───────────────────────────────────────
     const handleToggleLock = useCallback(async (layerId: number) => {
@@ -387,21 +416,8 @@ export default function SelectionLayersPanel({
 
     return (
         <div className="flex flex-col h-full gap-3">
-            {/* Tabs */}
-            <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-md shrink-0">
-                <button
-                    className={`flex-1 py-1.5 text-[11px] font-medium rounded transition-colors ${activeTab === 'ocg' ? 'bg-white dark:bg-zinc-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
-                    onClick={() => setActiveTab('ocg')}
-                >
-                    🎨 Lớp (Layers)
-                </button>
-                <button
-                    className={`flex-1 py-1.5 text-[11px] font-medium rounded transition-colors ${activeTab === 'objects' ? 'bg-white dark:bg-zinc-700 shadow-sm text-blue-600 dark:text-blue-400' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
-                    onClick={() => setActiveTab('objects')}
-                >
-                    📦 Thành phần
-                </button>
-            </div>
+            {/* Unified OCG + Thành phần view for Edit PDF upgrade */}
+            <div className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 px-1">🎨 Lớp & Thành phần (Edit PDF)</div>
 
             {/* Loading Overlay */}
             {isLoading && (
@@ -413,9 +429,8 @@ export default function SelectionLayersPanel({
                 </div>
             )}
 
-            {/* OCG Layers Tab — F7-style */}
-            {activeTab === 'ocg' && (
-                <>
+            {/* OCG Layers Section */}
+            <>
                     {/* Toolbar */}
                     <div className="flex items-center gap-1 px-1 shrink-0">
                         <button
@@ -461,17 +476,22 @@ export default function SelectionLayersPanel({
                         <span>Kéo = Sắp xếp</span>
                     </div>
                 </>
-            )}
 
-            {/* Objects Tab (kept from original) */}
-            {activeTab === 'objects' && (
-                <>
+            {/* Components (Thành phần) Section - using editObjects for accuracy */}
                     <div className="flex items-center justify-between shrink-0 bg-white dark:bg-zinc-800 p-2 rounded-md border border-slate-200 dark:border-zinc-700">
                         <span className="font-medium text-[13px] text-slate-700 dark:text-zinc-300">Đã chọn: <strong className="text-blue-600 dark:text-blue-400">{selectedObjectIds.length}</strong></span>
                         <div className="flex gap-2">
+                            <input
+                                type="text"
+                                placeholder="Tìm thành phần..."
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                className="text-[11px] px-2 py-0.5 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800"
+                            />
                             <button
                                 onClick={() => {
-                                    const allIds = Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat().map((o: any) => o.id);
+                                    const source = editObjects && editObjects.length > 0 ? editObjects : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
+                                    const allIds = source.map((o: any) => o.id);
                                     if (selectedObjectIds.length === allIds.length) {
                                         setSelectedObjectIds([]);
                                     } else {
@@ -485,108 +505,69 @@ export default function SelectionLayersPanel({
                         </div>
                     </div>
 
-                    {viewerNumPages && Object.keys(globalPdfObjectCache.getAllObjects(pdfUrl || '')).length < viewerNumPages && (
-                        <div className="shrink-0 p-2 border border-blue-200 dark:border-blue-900 bg-blue-50/50 dark:bg-blue-900/10 rounded-md mb-2 flex flex-col gap-2">
-                            <span className="text-[11px] text-blue-700 dark:text-blue-300 leading-tight">
-                                Hiện chỉ hiển thị đối tượng của các trang đã lướt qua. Quét toàn bộ để lấy đầy đủ đối tượng của {viewerNumPages} trang.
-                            </span>
-                            <Button 
-                                variant="outline" 
-                                size="sm" 
-                                className="text-[11px] h-7 bg-white dark:bg-zinc-800"
-                                onClick={handleScanAllPages}
-                                disabled={isScanningAll}
-                            >
-                                {isScanningAll ? `Đang quét... ${scanProgress}%` : `Quét toàn bộ ${viewerNumPages} trang`}
-                            </Button>
-                        </div>
-                    )}
-
                     <div className="flex-1 overflow-y-auto border border-slate-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 scroller-thin">
-                        {Object.entries(globalPdfObjectCache.getAllObjects(pdfUrl || '')).map(([pageNum, objects]) => (
-                            <div key={pageNum}>
-                                {(Object.keys(globalPdfObjectCache.getAllObjects(pdfUrl || '')).length > 1 || objects.length === 0) && (
-                                    <div className="text-[10px] font-bold text-slate-400 bg-slate-50 dark:bg-zinc-800/50 p-1 px-2 border-b border-slate-100 dark:border-zinc-700/50 uppercase">
-                                        Trang {pageNum}
+                        {(() => {
+                            const sourceObjects = isEditMode && editObjects && editObjects.length > 0 ? editObjects : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
+                            const filtered = sourceObjects.filter((obj: any) => 
+                                !searchTerm || (obj.content || obj.type || '').toLowerCase().includes(searchTerm.toLowerCase())
+                            );
+                            if (filtered.length === 0) {
+                                return <div className="p-4 text-center text-slate-400 italic text-xs">Không có thành phần khớp tìm kiếm.</div>;
+                            }
+                            return filtered.map((obj: any) => {
+                                const isSelected = selectedObjectIds.includes(obj.id);
+                                const isHidden = hiddenObjectIds.includes(obj.id);
+                                return (
+                                    <div
+                                        key={obj.id}
+                                        className={`flex items-center gap-1.5 p-2 text-xs cursor-pointer border-b border-slate-100 dark:border-zinc-700/50 hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${isHidden ? 'opacity-50' : ''}`}
+                                    >
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setHiddenObjectIds(prev =>
+                                                    prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                                                );
+                                            }}
+                                            className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isHidden ? 'text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
+                                            title={isHidden ? 'Hiện thành phần' : 'Ẩn thành phần'}
+                                        >
+                                            {isHidden ? '🙈' : '👁'}
+                                        </button>
+                                        <input
+                                            type="checkbox"
+                                            checked={isSelected}
+                                            readOnly
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setSelectedObjectIds(prev =>
+                                                    prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                                                );
+                                            }}
+                                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3 h-3 cursor-pointer"
+                                        />
+                                        <span className={`font-mono text-[9px] w-8 shrink-0 ${{
+                                            'text': 'text-blue-500',
+                                            'image': 'text-purple-500',
+                                            'vector': 'text-yellow-600'
+                                        }[obj.type as string] || 'text-slate-500'}`}>
+                                            {obj.type === 'text' ? 'T' : obj.type === 'image' ? '🖼' : obj.type === 'vector' ? '✏️' : '•'}
+                                        </span>
+                                        <span
+                                            className={`truncate flex-1 text-[11px] ${isHidden ? 'line-through text-slate-400' : ''}`}
+                                            title={obj.content || obj.type}
+                                            onClick={() => {
+                                                setSelectedObjectIds(prev =>
+                                                    prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                                                );
+                                            }}
+                                        >
+                                            {obj.content || `[${obj.type}]`}
+                                        </span>
                                     </div>
-                                )}
-                                {objects.length === 0 ? (
-                                    <div className="p-3 text-center text-[10px] text-slate-400 dark:text-zinc-500 italic">
-                                        (Không có văn bản hoặc hình ảnh. Có thể trang chỉ chứa vector/đường cắt bế)
-                                    </div>
-                                ) : (
-                                    objects.map((obj) => {
-                                        const isSelected = selectedObjectIds.includes(obj.id);
-                                        const isHidden = hiddenObjectIds.includes(obj.id);
-                                        return (
-                                            <div
-                                                key={obj.id}
-                                                className={`flex items-center gap-1.5 p-2 text-xs cursor-pointer border-b border-slate-100 dark:border-zinc-700/50 hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${isHidden ? 'opacity-50' : ''}`}
-                                            >
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setHiddenObjectIds(prev =>
-                                                            prev.includes(obj.id)
-                                                                ? prev.filter(id => id !== obj.id)
-                                                                : [...prev, obj.id]
-                                                        );
-                                                    }}
-                                                    className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isHidden ? 'text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
-                                                    title={isHidden ? 'Bật hiện layer' : 'Tắt mắt layer'}
-                                                >
-                                                    {isHidden ? (
-                                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21" />
-                                                        </svg>
-                                                    ) : (
-                                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                                        </svg>
-                                                    )}
-                                                </button>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={isSelected}
-                                                    readOnly
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setSelectedObjectIds(prev =>
-                                                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
-                                                        );
-                                                    }}
-                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3 h-3 cursor-pointer"
-                                                />
-                                                <span
-                                                    className={`font-mono text-[9px] w-8 shrink-0 ${{
-                                                        'text': 'text-blue-500',
-                                                        'image': 'text-purple-500',
-                                                        'drawing': 'text-yellow-600'
-                                                    }[obj.type as string] || 'text-slate-500'}`}
-                                                >
-                                                    {obj.type}
-                                                </span>
-                                                <span
-                                                    className={`truncate flex-1 text-[11px] ${isHidden ? 'line-through text-slate-400' : ''}`}
-                                                    title={obj.content || obj.type}
-                                                    onClick={() => {
-                                                        setSelectedObjectIds(prev =>
-                                                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
-                                                        );
-                                                    }}
-                                                >
-                                                    {obj.content || `[${obj.type}]`}
-                                                </span>
-                                            </div>
-                                        );
-                                    })
-                                )}
-                            </div>
-                        ))}
-                        {Object.keys(globalPdfObjectCache.getAllObjects(pdfUrl || '')).length === 0 && (
-                            <div className="p-4 text-center text-slate-400 italic text-xs">Đang tải cấu trúc trang...</div>
-                        )}
+                                );
+                            });
+                        })()}
                     </div>
 
                     <div className="shrink-0 pt-2">
@@ -595,22 +576,16 @@ export default function SelectionLayersPanel({
                             className="w-full bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 border-transparent text-white shadow-md flex justify-center items-center gap-2"
                             disabled={selectedObjectIds.length === 0}
                             onClick={() => {
-                                const pageEntries = Object.entries(globalPdfObjectCache.getAllObjects(pdfUrl || ''));
-                                for (const [pageNumStr, objects] of pageEntries) {
-                                    const objectsToDelete = objects.filter(o => selectedObjectIds.includes(o.id));
-                                    if (objectsToDelete.length > 0) {
-                                        handleDeleteObjects(objectsToDelete, parseInt(pageNumStr));
-                                        break;
-                                    }
+                                const source = (editObjects && editObjects.length > 0) ? editObjects : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
+                                const objectsToDelete = source.filter((o: any) => selectedObjectIds.includes(o.id));
+                                if (objectsToDelete.length > 0) {
+                                    handleDeleteObjects(objectsToDelete, 1);
                                 }
                             }}
                         >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                            Xóa {selectedObjectIds.length} Lớp Đã Chọn
+                            🗑️ Xóa {selectedObjectIds.length} Thành phần Đã Chọn
                         </Button>
                     </div>
-                </>
-            )}
 
             {/* Context Menu */}
             {contextMenu && (

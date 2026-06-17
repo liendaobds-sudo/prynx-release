@@ -416,7 +416,7 @@ async def optimize_pdf_endpoint(
         except OSError: pass
 
 @router.post("/sticker-dieline")
-async def sticker_dieline_endpoint(request: Request):
+async def sticker_dieline_endpoint(request: Request, license_info: dict = Depends(require_license)):
     """Generate Cut Contour and Bleed for Stickers."""
     from app.workers.sticker_engine import StickerEngine
     
@@ -504,7 +504,9 @@ async def sticker_dieline_endpoint(request: Request):
         )
         if not success or not os.path.exists(output_path):
             raise RuntimeError("Lỗi lưu file kết quả. (File not found)")
-            
+
+        _safe_watermark(output_path, license_info)
+
         headers = {}
         if meta and "width_mm" in meta and "height_mm" in meta:
             headers["X-Sticker-Width-MM"] = str(meta["width_mm"])

@@ -7,13 +7,17 @@ from app.core.preflight_models import PreflightIssue
 logger = logging.getLogger(__name__)
 
 class ColorRulesMixin:
-    def _check_page_colorspaces(self, pdf: pikepdf.Pdf, active_rules: set) -> list[PreflightIssue]:
+    def _check_page_colorspaces(self, pdf: pikepdf.Pdf, active_rules: set, page_nums: list[int] = None) -> list[PreflightIssue]:
         issues = []
         if not hasattr(self, "_has_rgb"):
             self._has_rgb = False
             self._has_spot = False
 
-        for page_num, page in enumerate(pdf.pages, 1):
+        page_count = len(pdf.pages)
+        target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
+        for page_idx in target_pages:
+            page = pdf.pages[page_idx]
+            page_num = page_idx + 1
             resources = page.get("/Resources", {})
             if not resources:
                 continue

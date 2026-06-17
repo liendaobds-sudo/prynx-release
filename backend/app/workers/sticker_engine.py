@@ -644,19 +644,11 @@ class StickerEngine:
                     
             debug_step = "Save Output PDF"
             doc_out.save(output_path)
-            
-            # Stealth watermark
-            _wm_license = settings.get('_license_key', '')
-            _wm_hwid = settings.get('_hwid', '')
-            if _wm_license:
-                try:
-                    from app.core.watermark import embed_watermark
-                    with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as _wm_pdf:
-                        embed_watermark(_wm_pdf, _wm_license, _wm_hwid)
-                        _wm_pdf.save(output_path)
-                except Exception as _wm_e:
-                    logger.warning(f"Sticker watermark failed: {_wm_e}")
-            
+
+            # Watermark (stealth) được áp ở tầng route qua _safe_watermark(license_info),
+            # nhất quán với các endpoint pdf-tools khác. Engine KHÔNG có thông tin license
+            # nên không tự nhúng ở đây (trước đây gọi `settings` chưa định nghĩa → crash).
+
             # Instead of returning a single meta dict, we return a dict with a 'pages' array
             # And for backward compatibility, keep the first page's meta at the top level
             final_meta = {}

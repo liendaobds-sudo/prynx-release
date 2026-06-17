@@ -38,6 +38,34 @@ export function objectBboxNativeToCanvas(
 }
 
 /**
+ * Đổi clipRect (vùng render tăng tiến từ backend `/edit/session/op`) từ hệ PDF
+ * (POINT, gốc DƯỚI-TRÁI) sang hệ CANVAS (PX, gốc TRÊN-TRÁI), trừ gốc Page_Box
+ * (bx0,by0 = CropBox; fallback MediaBox) rồi lật trục y theo `pageHeightPt`
+ * (chiều cao trang theo point, tương đối Page_Box) và nhân `scale` (px/point).
+ *
+ * Hàm THUẦN, không side-effect — dùng để dán Preview_Image vùng clip lên đúng
+ * vị trí trên Canvas_UI. Sai số quy đổi ≤ 1.0pt (số học chính xác; chỉ phụ thuộc
+ * độ chính xác đầu vào). `clipRect` = [x0, yb, x1, yt] PDF native point.
+ * Trả [left, top, right, bottom] PX canvas với top ≤ bottom.
+ */
+export function clipRectPdfToCanvas(
+    clipRect: BBox, pageHeightPt: number, bx0 = 0, by0 = 0, scale = 1,
+): BBox {
+    const [x0, yb, x1, yt] = clipRect;
+    const left = (x0 - bx0) * scale;
+    const right = (x1 - bx0) * scale;
+    // Lật trục y quanh Page_Box (trừ gốc by0 trước khi lật), rồi đổi sang px.
+    const top = (pageHeightPt - (yt - by0)) * scale;
+    const bottom = (pageHeightPt - (yb - by0)) * scale;
+    return [
+        Math.min(left, right),
+        Math.min(top, bottom),
+        Math.max(left, right),
+        Math.max(top, bottom),
+    ];
+}
+
+/**
  * Đổi điểm/bbox THÊM object từ canvas top-left (point) sang PDF NATIVE
  * (bottom-left), CỘNG lại gốc CropBox. `xPt,yPt` = góc trên-trái; w,h = kích thước.
  */

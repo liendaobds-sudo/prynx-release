@@ -10,6 +10,7 @@ cd /d "%~dp0"
 echo.
 echo   ============================================
 echo     PrynX - Dang dong goi file cai dat...
+echo     (Tu dong chay Preflight QA truoc khi dong goi)
 echo     (Lan dau co the mat 10-20 phut, cu de may chay)
 echo   ============================================
 echo.

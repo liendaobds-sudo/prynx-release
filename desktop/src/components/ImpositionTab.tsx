@@ -6,6 +6,7 @@ import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory } from '../lib/toolR
 import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
+import { useEditSession } from '../hooks/useEditSession';
 import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
 import { Button } from './Button';
@@ -28,7 +29,7 @@ import NumberingTool from './preprocess-tools/NumberingTool';
 import StickTextNumberTool from './preprocess-tools/StickTextNumberTool';
 import SaveModal from './workspace/SaveModal';
 import SavePrintFilesModal from './workspace/SavePrintFilesModal';
-import SelectionLayersPanel from './workspace/SelectionLayersPanel';
+import EditLayersPanel from './workspace/SelectionLayersPanel';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 
 import { WorkspaceContext, createWorkspaceStore, useWorkspaceStore } from '../stores/useWorkspaceStore';
@@ -82,8 +83,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         viewerPageRotations, setViewerPageRotations, bleedView, setBleedView,
         isDraggingSidebar, setIsDraggingSidebar,
         showOutputPreview, setShowOutputPreview, separationPlates, setSeparationPlates,
-        isSelectionMode, setIsSelectionMode, pdfObjectsVersion, setPdfObjectsVersion,
+        pdfObjectsVersion, setPdfObjectsVersion,
         isObjectEditMode,
+        currentEditObjects,
         pdfOcgLayers, setPdfOcgLayers,
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
         hiddenOcgLayerIds, setHiddenOcgLayerIds,
@@ -105,8 +107,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         viewerPageRotations: state.viewerPageRotations, setViewerPageRotations: state.setViewerPageRotations, bleedView: state.bleedView, setBleedView: state.setBleedView,
         isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar,
         showOutputPreview: state.showOutputPreview, setShowOutputPreview: state.setShowOutputPreview, separationPlates: state.separationPlates, setSeparationPlates: state.setSeparationPlates,
-        isSelectionMode: state.isSelectionMode, setIsSelectionMode: state.setIsSelectionMode, pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
+        pdfObjectsVersion: state.pdfObjectsVersion, setPdfObjectsVersion: state.setPdfObjectsVersion,
         isObjectEditMode: state.isObjectEditMode,
+        currentEditObjects: state.currentEditObjects,
         pdfOcgLayers: state.pdfOcgLayers, setPdfOcgLayers: state.setPdfOcgLayers,
         selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds,
@@ -484,41 +487,48 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     const fetchPdfObjectsForPage = useCallback(async (pageNum: number) => {
         const state = store!.getState();
-        if (!file || !state.isSelectionMode) return;
+        // Updated: support object edit mode with accurate /edit/objects (PDFium)
+        // Old preflight objects deprecated for component display
+        if (!file || !state.isObjectEditMode) return;
         if (pdfObjectsCacheRef.current[pageNum]) return; // Already fetched
 
         try {
-            let fid = state.selectionFileId;
+            // Prefer edit fid if available (more accurate, session aware)
+            let fid = state.selectionFileId || '';
+            const useEdit = state.isObjectEditMode;
+
             if (!fid) {
-                // Wait for existing upload or start a new one to avoid concurrent duplicate uploads
                 if (!uploadPromiseRef.current) {
                     uploadPromiseRef.current = uploadPDF(file).finally(() => {
-                        // Keep the promise if it succeeded, or maybe clear it?
-                        // Let's clear it so if it fails, it can retry. But if it succeeds, fid will be set.
                         uploadPromiseRef.current = null;
                     });
                 }
                 const result = await uploadPromiseRef.current;
                 fid = result.id;
-                // Important: Update state synchronously inside the async flow
                 store!.getState().setSelectionFileId(result.id);
             }
 
-            const res = await authenticatedFetch(`${getApiUrl()}/preflight/objects/${fid}/${pageNum}`);
+            // Use modern edit endpoint for better accuracy (replaces old pdfplumber preflight)
+            const endpoint = useEdit 
+                ? `${getApiUrl()}/edit/objects/${fid}/${pageNum - 1}` 
+                : `${getApiUrl()}/preflight/objects/${fid}/${pageNum}`;
+
+            const res = await authenticatedFetch(endpoint);
             if (!res.ok) throw new Error('Không thể tải danh sách objects');
+
             const data = await res.json();
-            
+            const objects = data.objects || data; // edit returns {objects, pageBox}, preflight {objects}
+
             const currentPdfUrl = store!.getState().pdfUrl || '';
-            globalPdfObjectCache.setPageObjects(currentPdfUrl, pageNum, data.objects || []);
+            globalPdfObjectCache.setPageObjects(currentPdfUrl, pageNum, Array.isArray(objects) ? objects : objects.objects || []);
             setPdfObjectsVersion(prev => prev + 1);
 
-            // Fetch OCG layers if not loaded yet
+            // OCG layers (kept for now, though OCG support is limited)
             if (store!.getState().pdfOcgLayers.length === 0) {
                 try {
                     const layerRes = await authenticatedFetch(`${getApiUrl()}/preflight/layers/${fid}`);
                     if (layerRes.ok) {
                         const layerData = await layerRes.json();
-                        // setPdfOcgLayers(layerData.layers || []);
                         store!.getState().setPdfOcgLayers(layerData.layers || []);
                     }
                 } catch (e) {
@@ -532,7 +542,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     // Update objects when mode is toggled or page changes
     useEffect(() => {
-        if (!isSelectionMode) {
+        if (!isObjectEditMode) {
             globalPdfObjectCache.clear(pdfUrl || '');
             setPdfObjectsVersion(0);
             setSelectedObjectIds([]);
@@ -540,7 +550,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setPdfOcgLayers([]);
             setHiddenOcgLayerIds([]);
         }
-    }, [isSelectionMode]);
+    }, [isObjectEditMode]);
 
     // Refresh OCG layers on demand (from Layer Panel actions)
     useEffect(() => {
@@ -573,23 +583,23 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             return;
         }
 
-        // alert(`Bắt đầu xóa ${objs.length} object trên trang ${pageNum}...`);
         setIsProcessing(true);
         setProcessStatus('Đang xóa đối tượng...');
         setError('');
         try {
-            const res = await authenticatedFetch(`${getApiUrl()}/preflight/delete-object`, {
+            // Prefer modern edit delete when in object edit mode (safer, accurate)
+            const endpoint = isObjectEditMode 
+                ? `${getApiUrl()}/edit/delete` 
+                : `${getApiUrl()}/preflight/delete-object`;
+
+            const body = isObjectEditMode 
+                ? { fid: selectionFileId, op: { page: pageNum - 1, kind: 'delete', targetIds: objs.map(o => o.id) } }
+                : { file_id: selectionFileId, page: pageNum, objects: objs.map(obj => ({ type: obj.type, bbox: obj.bbox })) };
+
+            const res = await authenticatedFetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    file_id: selectionFileId,
-                    page: pageNum,
-                    objects: objs.map(obj => ({
-                        type: obj.type,
-                        bbox: obj.bbox,
-                        xref: obj.xref
-                    }))
-                })
+                body: JSON.stringify(body),
             });
             if (!res.ok) throw new Error('Xóa thất bại');
             const data = await res.json();
@@ -697,9 +707,66 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [file, pdfUrl, setHistory, setFile, setOriginalFileName, setPdfUrl, setFileSizeStr,
         setIsSaved, onTitleChange, setSelectionFileId, setError, selectionFileId, editHistory]);
 
+    // ─── PHIÊN CHỈNH SỬA TRONG BỘ NHỚ (spec `pdf-edit-session`) ─────────────────
+    // VÌ SAO: thay cho Legacy_Commit_Flow (mỗi Edit_Op ghi 1 Working_File ra đĩa →
+    // Rust mở lại file → render cả trang, ~5s), backend giữ một `pikepdf.Pdf` SỐNG
+    // theo phiên. ImpositionTab quản VÒNG ĐỜI phiên (mở khi vào edit mode, đóng khi
+    // thoát, commit khi lưu) — task 12.1. Việc áp Edit_Op + dán overlay clip do
+    // LivePageFrame đảm nhiệm (task 11.1), KHÔNG đụng tới ở đây.
+    //
+    // - onCommit (debounce tự động ~1.5s sau op cuối): vật chất hóa Working_File mới
+    //   rồi nối qua handleEditCommit để đổi tile thật + selectionFileId (Yêu cầu 5.3, 12.2).
+    // - onSessionFailed (HTTP 410 / mở phiên lỗi): LivePageFrame tự rơi về Legacy qua
+    //   onEditCommit; ở mức Tab chỉ cần buông trạng thái phiên (Yêu cầu 9.5, 11.1).
+    const editSession = useEditSession({
+        onCommit: (result) => {
+            if (result?.success && result.output_url) {
+                void handleEditCommit(
+                    result.output_url,
+                    result.output_filename || `Edited_${file?.name || 'document.pdf'}`,
+                    result.output_fid,
+                    result.output_path,
+                );
+            }
+        },
+        onSessionFailed: () => {
+            // Phiên không còn → fallback Legacy do tầng LivePageFrame xử lý. Tab không
+            // giữ lại trạng thái phiên (Yêu cầu 11.1).
+        },
+    });
+
+    // Mở/đóng phiên theo vòng đời edit mode (Yêu cầu 9.1, 11.1, 12.2).
+    //  - Vào edit mode + đã có `fid` (selectionFileId) → mở phiên MỘT lần; giữ phiên
+    //    qua các lần commit (commit tạo Working_File mới nhưng KHÔNG đóng phiên).
+    //  - Thoát edit mode → đóng phiên, giải phóng Live_Document khỏi RAM backend.
+    // `editSessionTriedRef` chặn mở lặp khi `fid` đổi giữa phiên (sau commit) và tránh
+    // spam mở lại khi phiên mở lỗi; reset khi rời edit mode để cho phép thử lại lần sau.
+    const editSessionTriedRef = useRef(false);
+    useEffect(() => {
+        if (isObjectEditMode) {
+            if (selectionFileId && !editSession.sessionId && !editSessionTriedRef.current) {
+                editSessionTriedRef.current = true;
+                void editSession.openSession(selectionFileId).then(() => {
+                    // Prefetch objects ngay sau khi session mở → lần đầu vào edit tool nhanh hơn nhiều
+                    // (backend sẽ dùng live pdf + cache). Prefetch trang đầu (0-based).
+                    if (selectionFileId) {
+                        void authenticatedFetch(`${getApiUrl()}/edit/objects/${selectionFileId}/0`).catch(() => {});
+                    }
+                });
+            }
+        } else {
+            editSessionTriedRef.current = false;
+            if (editSession.sessionId) void editSession.closeSession();
+        }
+    }, [isObjectEditMode, selectionFileId, editSession.sessionId, editSession.openSession, editSession.closeSession]);
+
+    // Đóng phiên khi unmount để không rò Live_Document trong RAM backend (Yêu cầu 9.1).
+    useEffect(() => () => { void editSession.closeSession(); }, []);
+
     // Keyboard shortcuts for Selection mode (Delete, Escape, Ctrl+A)
     useEffect(() => {
-        if (!isSelectionMode || !isActive) return;
+        // Old selection keyboard delete removed; edit mode handles its own delete in LivePageFrame
+        if (!isObjectEditMode || !isActive) return;
         const handler = (e: KeyboardEvent) => {
             // Delete / Backspace => delete selected objects
             if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObjectIds.length > 0) {
@@ -730,7 +797,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [isSelectionMode, selectedObjectIds, pdfObjectsVersion, handleDeleteObjects, isActive]);
+    }, [isObjectEditMode, selectedObjectIds, pdfObjectsVersion, handleDeleteObjects, isActive]);
     // ----------------------------
 
     const handleUndo = useCallback(() => {
@@ -1203,6 +1270,47 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         if (!targetBlob) return;
 
+        // ── Commit phiên chỉnh sửa in-memory TRƯỚC khi lưu (Yêu cầu 5.2, 12.2) ──
+        // Nếu đang có Edit_Session với thay đổi chưa ghi (dirty), vật chất hóa
+        // Live_Document ra Working_File rồi dùng CHÍNH file đó làm nguồn lưu — tránh
+        // lưu nhầm trạng thái cũ khi op cuối chưa kịp debounce-commit. Commit thất bại
+        // → giữ nguyên phiên, báo lỗi, vẫn cho lưu trạng thái hiện có (Yêu cầu 10.5).
+        if (editSession.sessionId && editSession.dirty) {
+            setIsProcessing(true);
+            setProcessStatus('Đang lưu thay đổi chỉnh sửa...');
+            try {
+                const committed = await editSession.commit();
+                if (committed?.success) {
+                    // Đồng bộ con trỏ file in-memory + selectionFileId sang Working_File mới.
+                    await handleEditCommit(
+                        committed.output_url || '',
+                        committed.output_filename || targetName,
+                        committed.output_fid,
+                        committed.output_path,
+                    );
+                    // Nạp nguồn lưu từ Working_File vừa commit (không dùng `file` cũ stale).
+                    const isTauri = !!(window as any).__TAURI_INTERNALS__;
+                    if (isTauri && committed.output_path) {
+                        const { readFile } = (await import('@tauri-apps/plugin-fs')) as any;
+                        const bytes = await readFile(committed.output_path);
+                        targetBlob = new Blob([bytes], { type: 'application/pdf' });
+                    } else if (committed.output_url) {
+                        const base = getApiUrl().replace(/\/api\/?$/, '');
+                        const fullUrl = committed.output_url.startsWith('http')
+                            ? committed.output_url : `${base}${committed.output_url}`;
+                        const res = await authenticatedFetch(fullUrl);
+                        if (res.ok) targetBlob = await res.blob();
+                    }
+                    if (committed.output_filename) targetName = committed.output_filename;
+                }
+            } catch (err: any) {
+                setError('Lỗi commit phiên chỉnh sửa: ' + (err?.message || err));
+            } finally {
+                setIsProcessing(false);
+                setProcessStatus('');
+            }
+        }
+
         // File kết quả đã sinh sẵn (VDP/batch...) đã bake đủ — KHÔNG áp lại edits/VDP còn
         // sót trong store (tránh bị thêm tiền tố "Edited_"/"VDP_" sai khi chạy nhiều file).
         const isGeneratedResult = !!(file as any)?.isGenerated;
@@ -1341,7 +1449,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         } catch (e: any) {
             setError('Không thể lưu file: ' + e);
         }
-    }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange]);
+    }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange, editSession, handleEditCommit]);
 
     useEffect(() => {
         const handleTriggerSave = (e: any) => {
@@ -1581,6 +1689,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onObjectDelete={handleDeleteObjects}
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
                                     onEditCommit={handleEditCommit}
+                                    editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}
                                     toolbarExtra={(file && isOutputFile(file.name)) ? (
                                         <button
@@ -1674,10 +1783,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 </div>
 
                                                 <div className="p-4 overflow-y-auto flex-1 flex flex-col text-sm text-slate-800 dark:text-zinc-200 scroller-thin relative bg-[#f8fafc] dark:bg-zinc-900 border-t border-black/5 dark:border-white/5">
-                                                    {isSelectionMode ? (
-                                                        <SelectionLayersPanel
+                                                    {isObjectEditMode ? (
+                                                        <EditLayersPanel
+                                                            // Unified OCG + Components panel for Edit PDF upgrade
                                                             handleDeleteObjects={handleDeleteObjects}
                                                             fetchPdfObjectsForPage={fetchPdfObjectsForPage}
+                                                            editObjects={currentEditObjects || []}
+                                                            isEditMode={isObjectEditMode}
                                                         />
                                                     ) : activeDashboardTool === 'datamerge' ? (
                                                         <DataMergeTool

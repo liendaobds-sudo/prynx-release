@@ -27,7 +27,7 @@ const RULES = [
   { id: 'FONT_NOT_EMBEDDED',     icon: I.Type,    label: 'Font chưa nhúng',  desc: 'Kiểm tra xem tất cả font chữ đã được nhúng (embedded) hoàn toàn vào file PDF chưa. Font chưa nhúng có thể bị thay thế bởi font mặc định của máy RIP, gây lỗi nhảy chữ, lỗi dấu.' },
   { id: 'IMAGE_NOT_EMBEDDED',    icon: I.Link,    label: 'Ảnh chưa Embed (Mất Link)', desc: 'Phát hiện file PDF (được xuất từ Illustrator/Corel) đang chứa đường dẫn ảo thay vì nhúng ảnh thật. Mở bằng phần mềm thiết kế sẽ bị rớt ảnh.' },
   { id: 'TEXT_DETECTED',         icon: I.Type,    label: 'Chữ chưa Outline', desc: 'Cảnh báo an toàn: Phát hiện có Text sống (Live Text) trên mặt giấy. Dù đã nhúng font nhưng nếu bấm Khóa Font trên máy không có font gốc vẫn có thể bị lỗi nhảy chữ. Khuyên dùng.' },
-  { id: 'IMAGE_LOW_RES',         icon: I.Image,   label: 'Ảnh low-res',      desc: 'Phát hiện các hình ảnh bitmap có độ phân giải thấp (dưới 300 DPI). Hình ảnh low-res sẽ bị vỡ nét, răng cưa và không đạt chất lượng sắc nét khi in ấn thực tế.' },
+  { id: 'IMAGE_LOW_RES',         icon: I.Image,   label: 'Ảnh low-res',      desc: 'Phát hiện các hình ảnh bitmap có độ phân giải thấp (dưới 200 DPI). Hình ảnh low-res sẽ bị vỡ nét, răng cưa và không đạt chất lượng sắc nét khi in ấn thực tế.' },
   { id: 'TRANSPARENCY_DETECTED', icon: I.Layers,  label: 'Transparency',     desc: 'Đánh dấu các trang chứa đối tượng sử dụng hiệu ứng trong suốt (Transparency, Drop Shadow). Một số hệ thống RIP cũ xử lý sai sẽ gây lỗi mất chi tiết hoặc lộ viền trắng.' },
   { id: 'BLEED_MISSING',         icon: I.Crop,    label: 'Bleed',            desc: 'Kiểm tra xem file PDF có được thiết lập TrimBox và BleedBox hợp lệ hay không. Thiếu lề bù xén (Bleed) sẽ dẫn đến việc lộ viền giấy trắng sau khi gia công cắt xén thành phẩm.' },
   { id: 'OVERPRINT_DETECTED',    icon: I.Overprint, label: 'Overprint',      desc: 'Phát hiện các đối tượng cài đặt Overprint sai quy cách (ví dụ: text màu trắng đánh Overprint sẽ bị tàng hình khi in). Cảnh báo các lỗi cơ chế bóc lấp nền (Knockout).' },
@@ -37,6 +37,8 @@ const RULES = [
   { id: 'PROGRESSIVE_JPEG',      icon: I.Signal,   label: 'JPEG Progressive', desc: 'Phát hiện ảnh JPEG sử dụng Progressive encoding. Một số hệ thống RIP cũ (đặc biệt PostScript Level 2) không xử lý được, gây lỗi in hoặc hình bị trắng.' },
   { id: 'OBJECT_OFF_PAGE',       icon: I.MoveOut,  label: 'Object ngoài trang', desc: 'Phát hiện đối tượng (text, ảnh, vector, nét vẽ) nằm hoàn toàn bên ngoài vùng in (TrimBox/MediaBox). Có thể gây lỗi RIP hoặc tăng thời gian xử lý không cần thiết. Nên xóa.' },
   { id: 'PDF_VERSION_MISMATCH',  icon: I.Hash,     label: 'Phiên bản PDF',   desc: 'Kiểm tra phiên bản PDF có tương thích với tiêu chuẩn in ấn không. PDF quá cũ (<1.3) thiếu hỗ trợ ICC/Transparency. PDF quá mới (>1.7) có thể không tương thích RIP.' },
+  { id: 'PAGE_SIZE_MISMATCH',    icon: I.Crop,     label: 'Khổ trang',       desc: 'Kiểm tra kích thước các trang không đồng nhất. Trang lệch khổ có thể gây lỗi ghép bài hoặc căn chỉnh trên máy in.' },
+  { id: 'TAC_EXCEEDED',          icon: I.Droplet,  label: 'TAC vượt ngưỡng', desc: 'Phát hiện vùng có tổng mực (C+M+Y+K + spot) vượt ngưỡng cấu hình (mặc định 300%). Gây khô mực, bám dính khi in.' },
 ];
 
 const ACTIONS = [
@@ -93,7 +95,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
       const fid = await ensureUploaded();
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/inspect`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fid, rules: Array.from(selectedRules) }),
+        body: JSON.stringify({ file_id: fid, rules: Array.from(selectedRules), tac_threshold: 300 }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Lỗi kiểm tra');
       setReport(await res.json());

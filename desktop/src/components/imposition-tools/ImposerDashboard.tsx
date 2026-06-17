@@ -829,7 +829,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 imposerMode={activeTool === 'cnc_imposer' ? 'cnc' : undefined}
                                 cncTwoSided={activeTool === 'cnc_imposer' && s.duplexFlow === 'double'}
                                 cncFlipEdge={s.cncFlipEdge}
-                                shapeParams={(() => { const params = detectedShapeParamsByPage[safePageIdx]; return params ? JSON.stringify(params) : null; })()}
+                                shapeParams={(() => { const params = detectedShapeParamsByPage[safePageIdx]; return params ? (typeof params === 'string' ? params : JSON.stringify(params)) : null; })()}
                                 shapesByPage={stickerLike ? detectedShapesByPage : undefined}
                                 shapeParamsByPage={stickerLike ? detectedShapeParamsByPage : undefined}
                                 isDetectingShape={isDetectingShape}

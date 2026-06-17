@@ -39,6 +39,7 @@ router = APIRouter(dependencies=[Depends(require_license)])
 class InspectByIdRequest(BaseModel):
     file_id: str
     rules: Optional[List[str]] = None
+    tac_threshold: Optional[int] = 300
 
 
 class PreflightIssueResponse(BaseModel):
@@ -157,9 +158,13 @@ async def inspect_pdf(request: InspectByIdRequest):
     pdf_path, original_name = _get_file_info(request.file_id)
 
     try:
+        from app.core.preflight_rules.ink import _normalize_tac_threshold
+        tac_threshold = _normalize_tac_threshold(request.tac_threshold)
         engine = PreflightEngine()
-        report = engine.run(pdf_path, rules=request.rules)
-        return _report_to_response(report)
+        report = engine.run(pdf_path, rules=request.rules, tac_threshold=tac_threshold)
+        resp = _report_to_response(report)
+        resp.summary["tac_threshold"] = tac_threshold
+        return resp
     except Exception as e:
         logger.exception("Preflight inspect failed")
         raise HTTPException(status_code=500, detail=f"Lỗi kiểm tra: {str(e)}")
@@ -522,7 +527,7 @@ async def delete_pdf_object(req: DeleteObjectRequest):
 @router.post("/preflight/preview-hide")
 async def preview_hide_pdf_object(req: DeleteObjectRequest):
     """Tạo ảnh preview Base64 của trang với các objects đã bị xóa tạm (tắt mắt)."""
-    import io
+    import io as _io
     db = SessionLocal()
     try:
         uploaded = db.query(UploadedFile).filter(UploadedFile.id == req.file_id).first()
@@ -531,7 +536,23 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
             
         import pypdfium2 as pdfium
         
-        doc = pikepdf.Pdf.open(uploaded.file_path)
+        # Prefer live EditSession bytes (for edit mode accurate state after transforms/hides)
+        import app.core.edit_session as edit_session_mod
+        from io import BytesIO as _BytesIO
+        session = edit_session_mod.get_active_session(req.file_id)
+        temp_doc_path = None
+        if session:
+            buf = _BytesIO()
+            with session.lock:
+                session.pdf.save(buf, compress_streams=False)
+            live_bytes = buf.getvalue()
+            import tempfile, os
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmpf:
+                tmpf.write(live_bytes)
+                temp_doc_path = tmpf.name
+            doc = pikepdf.Pdf.open(temp_doc_path)
+        else:
+            doc = pikepdf.Pdf.open(uploaded.file_path)
         if req.page < 1 or req.page > len(doc.pages):
             raise HTTPException(status_code=400, detail="Trang không hợp lệ.")
             
@@ -562,26 +583,32 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
         if text_objs:
             _remove_text_from_stream(doc, p, text_objs)
 
-        # Save to temp buffer and render via pypdfium2
-        import tempfile
-        tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
-        doc.save(tmp.name)
-        doc.close()
-        
-        pdf_render = pdfium.PdfDocument(tmp.name)
-        render_page = pdf_render[req.page - 1]
-        bitmap = render_page.render(scale=200/72)
-        img = bitmap.to_pil()
-        pdf_render.close()
-        
-        buf = _io.BytesIO()
-        img.save(buf, format='JPEG', quality=92)
-        b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-        
+        # Save processed doc (live or disk) to a render temp and rasterize
+        import tempfile, os
+        render_tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
         try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
+            doc.save(render_tmp.name)
+            doc.close()
+            
+            pdf_render = pdfium.PdfDocument(render_tmp.name)
+            render_page = pdf_render[req.page - 1]
+            bitmap = render_page.render(scale=200/72)
+            img = bitmap.to_pil()
+            pdf_render.close()
+            
+            buf = _io.BytesIO()
+            img.save(buf, format='JPEG', quality=92)
+            b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+        finally:
+            try:
+                os.unlink(render_tmp.name)
+            except Exception:
+                pass
+            if temp_doc_path:
+                try:
+                    os.unlink(temp_doc_path)
+                except Exception:
+                    pass
         
         return {
             "success": True,
@@ -614,12 +641,35 @@ class PreviewLayersRequest(BaseModel):
 
 @router.post("/preflight/preview-layers")
 async def preview_layers_pdf(req: PreviewLayersRequest):
-    """Tạo ảnh preview Base64 của trang với các OCG layers bị ẩn (pikepdf + pypdfium2)."""
+    """Tạo ảnh preview Base64 của trang với các OCG layers bị ẩn (pikepdf + pypdfium2).
+    Ưu tiên dùng EditSession live bytes nếu đang mở (để phản ánh thay đổi OCG chưa commit).
+    """
     from app.core.layer_engine import LayerEngine
+    import app.core.edit_session as edit_session
+    from io import BytesIO
     pdf_path = _get_file_path(req.file_id)
     engine = LayerEngine()
     try:
-        preview_b64 = engine.render_with_visibility(pdf_path, req.page, req.hidden_layer_ids)
+        # Prefer live session bytes for accurate current OCG state (edit mode)
+        session = edit_session.get_active_session(req.file_id)
+        if session:
+            buf = BytesIO()
+            with session.lock:
+                session.pdf.save(buf, compress_streams=False)
+            live_bytes = buf.getvalue()
+            # Layer engine render accepts path or we can temp save? Use bytes path via temp or extend.
+            # For simplicity, use a temp file from live bytes (fast, then deleted by engine flow)
+            import tempfile, os
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(live_bytes)
+                tmp_path = tmp.name
+            try:
+                preview_b64 = engine.render_with_visibility(tmp_path, req.page, req.hidden_layer_ids)
+            finally:
+                try: os.unlink(tmp_path)
+                except: pass
+        else:
+            preview_b64 = engine.render_with_visibility(pdf_path, req.page, req.hidden_layer_ids)
         return {
             "success": True,
             "preview_b64": preview_b64,

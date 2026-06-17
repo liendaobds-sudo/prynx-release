@@ -342,13 +342,14 @@ export const LivePageFrame = (props: any) => {
     } = props;
 
     const {
-        isSelectionMode, isObjectEditMode, pdfObjectsVersion, selectedObjectIds, selectionFileId, hiddenObjectIds, hiddenOcgLayerIds,
+        isSelectionMode, isObjectEditMode, setCurrentEditObjects, pdfObjectsVersion, selectedObjectIds, selectionFileId, hiddenObjectIds, hiddenOcgLayerIds,
         separationPlates, vdpFields, selectedVdpFieldIds,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
         setSelectedObjectIds, pdfUrl, setSelectedVdpFieldIds
     } = useWorkspaceStore(useShallow(state => ({
         isSelectionMode: state.isSelectionMode,
         isObjectEditMode: state.isObjectEditMode,
+        setCurrentEditObjects: state.setCurrentEditObjects,
         pdfObjectsVersion: state.pdfObjectsVersion,
         selectedObjectIds: state.selectedObjectIds,
         selectionFileId: state.selectionFileId,
@@ -581,6 +582,7 @@ export const LivePageFrame = (props: any) => {
         const cached = _editObjectsCache.get(cacheKey);
         if (cached) {
             setEditObjects(cached);
+            if (setCurrentEditObjects) setCurrentEditObjects(cached);
             setEditSelectedIds([]);
             editCropOriginRef.current = _editCropOriginCache.get(cacheKey) || [0, 0];
             hideEditGhost();
@@ -621,6 +623,7 @@ export const LivePageFrame = (props: any) => {
                 _editObjectsCache.set(cacheKey, objs); // Lưu cache cho lần bật/tắt sau.
                 _editCropOriginCache.set(cacheKey, [bx0, by0]);
                 setEditObjects(objs);
+                if (setCurrentEditObjects) setCurrentEditObjects(objs);
                 setEditSelectedIds([]);
                 hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
             } catch (err) {
@@ -717,6 +720,14 @@ export const LivePageFrame = (props: any) => {
 
         if (!selectionFileId) return;
 
+        // In object edit mode, component (thành phần) hides are handled by overlay filter on edit boxes.
+        // Skip legacy preview-hide to avoid 500s on mismatched data / legacy path. Clear any stale overlay.
+        if (isObjectEditMode && hiddenObjectIds.length > 0 && hiddenOcgLayerIds.length === 0) {
+            setPreviewImageUrl(null);
+            setIsPreviewLoading(false);
+            return;
+        }
+
         let isMounted = true;
         setIsPreviewLoading(true);
 
@@ -742,6 +753,12 @@ export const LivePageFrame = (props: any) => {
                 }
 
                 // Fallback to hidden object preview
+                // In edit mode: use accurate editObjects (current bboxes/ids), but skip legacy preflight preview-hide
+                // (components hide is handled by overlay filter + real delete uses edit session). Avoids fragile legacy path + 500s.
+                if (isObjectEditMode) {
+                    if (isMounted) setIsPreviewLoading(false);
+                    return;
+                }
                 const currentObjects = globalPdfObjectCache.getPageObjects(pdfUrl || '', originalPageNum);
                 const objectsToHide = currentObjects.filter((o: any) => hiddenObjectIds.includes(o.id));
                 
@@ -781,7 +798,7 @@ export const LivePageFrame = (props: any) => {
             isMounted = false;
             clearTimeout(timeoutId);
         };
-    }, [hiddenObjectIds, hiddenOcgLayerIds, selectionFileId, originalPageNum, pdfObjectsVersion]);
+    }, [hiddenObjectIds, hiddenOcgLayerIds, selectionFileId, originalPageNum, pdfObjectsVersion, isObjectEditMode]);
     
     //#endregion
 
@@ -1050,8 +1067,14 @@ export const LivePageFrame = (props: any) => {
             if (tData?.success && tData.output_url && onEditCommit) {
                 await onEditCommit(tData.output_url, tData.output_filename, tData.output_fid, tData.output_path);
             }
-        } catch (err) {
+        } catch (err: any) {
             console.warn('[edit] transform thất bại:', err);
+            // User-friendly for mapping ambiguity (409) — common for vectors inside clips / Form XObjects
+            const msg = String(err?.message || err);
+            if (msg.includes('409') || msg.includes('ánh xạ') || msg.includes('map')) {
+                setEditNotice('Vector quá phức tạp (clip/XObject) — không thể biến đổi an toàn (bảo toàn màu). Hãy dùng Delete hoặc tách group ở file nguồn.');
+                setTimeout(() => setEditNotice(null), 7000);
+            }
             hideEditGhost(); // Commit lỗi → bỏ ghost giữ (tránh kẹt ở vị trí thả).
         } finally {
             setEditBusy(false);
@@ -1742,7 +1765,9 @@ export const LivePageFrame = (props: any) => {
                  const scale = displayWidth / ((pageDim.w || 595) * 72 / 96);
                  return (
                      <>
-                         {[...editObjects].sort((a, b) => {
+                         {[...editObjects]
+                            .filter(obj => !hiddenObjectIds.includes(obj.id))
+                            .sort((a, b) => {
                              const areaA = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
                              const areaB = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
                              return areaB - areaA; // lớn nhất trước (dưới cùng), nhỏ nhất sau (trên cùng)

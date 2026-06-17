@@ -15,6 +15,7 @@ from app.core.preflight_rules.colors import ColorRulesMixin
 from app.core.preflight_rules.fonts import FontRulesMixin
 from app.core.preflight_rules.images import ImageRulesMixin
 from app.core.preflight_rules.structure import StructureRulesMixin
+from app.core.preflight_rules.ink import InkRulesMixin
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["PreflightEngine", "PreflightReport", "PreflightIssue"]
 
 
-def _content_stream_worker(pdf_path: str, page_nums: list[int], active_rules: set):
+def _content_stream_worker(pdf_path: str, page_nums: list[int], active_rules: set, tac_threshold: int = 300):
     """Top-level worker function for ProcessPoolExecutor."""
     import pikepdf
     # Note: PreflightEngine must be imported locally to avoid circular imports if any, 
@@ -69,6 +70,9 @@ def _content_stream_worker(pdf_path: str, page_nums: list[int], active_rules: se
         if "OBJECT_OFF_PAGE" in active_rules:
             issues += engine._check_objects_off_page(doc, page_nums)
 
+        if "TAC_EXCEEDED" in active_rules:
+            issues += engine._check_tac(doc, page_nums, tac_threshold)
+
         doc.close()
         
         stats["image_total"] = getattr(engine, "_image_total", 0)
@@ -87,7 +91,7 @@ def _content_stream_worker(pdf_path: str, page_nums: list[int], active_rules: se
         
     return issues, stats
 
-class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, StructureRulesMixin):
+class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, StructureRulesMixin, InkRulesMixin):
     """
     Runs preflight checks on a PDF file.
     
@@ -97,7 +101,7 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
         # report.issues contains all detected issues
     """
 
-    def run(self, pdf_path: str, rules: list[str] | None = None) -> PreflightReport:
+    def run(self, pdf_path: str, rules: list[str] | None = None, tac_threshold: int = 300) -> PreflightReport:
         """
         Execute preflight checks on a PDF.
         
@@ -184,6 +188,9 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
 
                 if "OBJECT_OFF_PAGE" in active_rules:
                     issues += self._check_objects_off_page(doc)
+
+                if "TAC_EXCEEDED" in active_rules:
+                    issues += self._check_tac(doc, tac_threshold=tac_threshold)
             else:
                 # Multiprocessing for large files
                 doc.close()
@@ -201,7 +208,7 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
                 logger.info(f"Preflight: Using multiprocessing with {max_workers} workers for {len(chunks)} chunks.")
 
                 with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(_content_stream_worker, pdf_path, chunk, active_rules) for chunk in chunks]
+                    futures = [executor.submit(_content_stream_worker, pdf_path, chunk, active_rules, tac_threshold) for chunk in chunks]
                     
                     for future in futures:
                         chunk_issues, chunk_stats = future.result()

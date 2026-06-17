@@ -19,6 +19,7 @@ import { useViewerHotkeys } from '../hooks/viewer/useViewerHotkeys';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useViewerZoom } from '../hooks/viewer/useViewerZoom';
 import { useVdpHistory } from '../hooks/useVdpHistory';
+import type { UseEditSession } from '../hooks/useEditSession';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -31,9 +32,12 @@ interface Props {
     onVdpBoxCreate?: (box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string }) => void;
     rightPanel?: React.ReactNode;
     toolbarExtra?: React.ReactNode;
+    /** PHIÊN chỉnh sửa trong bộ nhớ (spec `pdf-edit-session`) — sở hữu bởi ImpositionTab,
+        chuyển tiếp xuống LivePageFrame để Apply_In_Memory + overlay clip (task 11.1). */
+    editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, onViewerDirtyChange }: Props) {
+export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, onViewerDirtyChange, editSession }: Props) {
     // ═══ Global Store ═══
     const {
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue, isSelectionMode,
@@ -702,6 +706,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                         setHoveredPdfPosition={setHoveredPdfPosition}
                         isBlankDoc={!!(file as any)?.isBlank}
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
+                        editSession={editSession}
                     />
                     {showOcgOverlay && (
                         <img
@@ -714,7 +719,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                 </div>
             </div>
         );
-    }, [pageRotations, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage]);
+    }, [pageRotations, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession]);
 
     const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
 

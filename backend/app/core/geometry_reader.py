@@ -346,3 +346,107 @@ def get_text_object_props(pdf_path: str, page_index: int, draw_index: int) -> di
                 pdf.close()
             except Exception:  # pragma: no cover
                 pass
+
+
+def list_image_placements(pdf_path: str, page_index: int) -> list[dict]:
+    """
+    Liệt kê tất cả PLACEMENT ẢNH của một trang (read-only, PDFium).
+
+    PDFium tự phẳng hóa Form XObject lồng nhau → bbox/matrix của image-object đã
+    phản ánh tích CTM Form-cha × placement, nên kích thước đặt thật tính được trực
+    tiếp từ matrix/bbox (Yêu cầu 1.2, 2.1, 2.4). Helper CHỈ-ĐỌC, không ghi.
+
+    Returns: list dict, mỗi placement:
+        {
+          "draw_index": int,                  # thứ tự vẽ (đã phẳng hóa)
+          "bbox": [x0, y0, x1, y1],           # hệ PDF bottom-left, point
+          "matrix": [a, b, c, d, e, f] | None,
+          "xobject_name": str | None,         # PDFium không lộ tên resource → None
+          "pixel_w": int | None,              # từ FPDFImageObj metadata nếu có
+          "pixel_h": int | None,
+        }
+    Không phát sinh lỗi; object lỗi → bỏ qua (debug log). Trang ngoài phạm vi → [].
+    """
+    pdf = None
+    try:
+        pdf = pdfium.PdfDocument(pdf_path)
+        n_pages = len(pdf)
+        if page_index < 0 or page_index >= n_pages:
+            return []
+
+        page = pdf[page_index]
+        page_raw = page.raw
+
+        count = int(pdfium_c.FPDFPage_CountObjects(page_raw))
+        if count <= 0:
+            return []
+        if count > MAX_OBJECTS_PER_PAGE:
+            count = MAX_OBJECTS_PER_PAGE
+
+        out: list[dict] = []
+        for i in range(count):
+            obj = pdfium_c.FPDFPage_GetObject(page_raw, i)
+            if not obj:
+                continue
+            if int(pdfium_c.FPDFPageObj_GetType(obj)) != pdfium_c.FPDF_PAGEOBJ_IMAGE:
+                continue
+
+            # ── BBox (hệ PDF bottom-left) ──
+            left = ctypes.c_float(0.0)
+            bottom = ctypes.c_float(0.0)
+            right = ctypes.c_float(0.0)
+            top = ctypes.c_float(0.0)
+            if not pdfium_c.FPDFPageObj_GetBounds(
+                obj,
+                ctypes.byref(left),
+                ctypes.byref(bottom),
+                ctypes.byref(right),
+                ctypes.byref(top),
+            ):
+                logger.debug("Bỏ qua image #%d: GetBounds thất bại.", i)
+                continue
+            bbox = [float(left.value), float(bottom.value), float(right.value), float(top.value)]
+
+            # ── Matrix (CTM) ──
+            matrix: list[float] | None = None
+            fs_matrix = pdfium_c.FS_MATRIX()
+            if pdfium_c.FPDFPageObj_GetMatrix(obj, ctypes.byref(fs_matrix)):
+                matrix = [
+                    float(fs_matrix.a), float(fs_matrix.b), float(fs_matrix.c),
+                    float(fs_matrix.d), float(fs_matrix.e), float(fs_matrix.f),
+                ]
+
+            # ── Pixel size qua metadata (best-effort) ──
+            pixel_w: int | None = None
+            pixel_h: int | None = None
+            try:
+                get_meta = getattr(pdfium_c, "FPDFImageObj_GetImageMetadata", None)
+                if get_meta is not None:
+                    meta = pdfium_c.FPDF_IMAGEOBJ_METADATA()
+                    if get_meta(obj, page_raw, ctypes.byref(meta)):
+                        pw = int(meta.width)
+                        ph = int(meta.height)
+                        pixel_w = pw if pw > 0 else None
+                        pixel_h = ph if ph > 0 else None
+            except Exception:  # noqa: BLE001 - metadata best-effort
+                pixel_w = pixel_h = None
+
+            out.append({
+                "draw_index": i,
+                "bbox": bbox,
+                "matrix": matrix,
+                "xobject_name": None,  # PDFium không lộ tên resource /Im..
+                "pixel_w": pixel_w,
+                "pixel_h": pixel_h,
+            })
+
+        return out
+    except Exception as exc:  # noqa: BLE001 - read-only best-effort
+        logger.debug("list_image_placements lỗi (trang %s): %s", page_index, exc)
+        return []
+    finally:
+        if pdf is not None:
+            try:
+                pdf.close()
+            except Exception:  # pragma: no cover
+                pass

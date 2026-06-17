@@ -1,3 +1,5 @@
+import re
+
 import pikepdf
 
 import logging
@@ -5,15 +7,45 @@ from app.core.preflight_models import PreflightIssue
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_font_token(name: str) -> str:
+    """Strip subset prefix (ABCDEF+) and style suffix (-Bold)."""
+    if not name:
+        return ""
+    token = name.strip()
+    if "+" in token:
+        token = token.split("+", 1)[1]
+    return token.split("-")[0].lower()
+
+
+def _extract_base_font_from_ref(object_ref: str) -> str:
+    """Extract BaseFont from object_ref like 'Font /F1 (Helvetica-Bold)'."""
+    m = re.search(r"\(([^)]+)\)", object_ref)
+    return _normalize_font_token(m.group(1) if m else object_ref)
+
+
+def _font_names_match(span_font: str, object_ref: str) -> bool:
+    """Match pdfplumber fontname to PreflightIssue object_ref."""
+    span = _normalize_font_token(span_font)
+    ref = _extract_base_font_from_ref(object_ref)
+    if not span or not ref:
+        return False
+    return span == ref
+
+
 class FontRulesMixin:
-    def _check_fonts(self, pdf: pikepdf.Pdf) -> list[PreflightIssue]:
+    def _check_fonts(self, pdf: pikepdf.Pdf, page_nums: list[int] = None) -> list[PreflightIssue]:
         """Check all fonts in the PDF for embedding status."""
         issues = []
         total_fonts = 0
         not_embedded = 0
         seen_fonts = set()
 
-        for page_num, page in enumerate(pdf.pages, 1):
+        page_count = len(pdf.pages)
+        target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
+        for page_idx in target_pages:
+            page = pdf.pages[page_idx]
+            page_num = page_idx + 1
             fonts = page.get("/Resources", {}).get("/Font", {})
             if not fonts:
                 continue
@@ -114,11 +146,9 @@ class FontRulesMixin:
                     for char in chars:
                         char_font = char.get("fontname", "")
                         for fi in p_issues:
-                            if fi.bbox is None:
-                                clean_name = char_font.split('-')[0].split('+')[-1]
-                                if clean_name and clean_name.lower() in fi.object_ref.lower():
-                                    fi.bbox = [char.get("x0", 0), char.get("top", 0),
-                                               char.get("x1", 0), char.get("bottom", 0)]
-                                    break
+                            if fi.bbox is None and _font_names_match(char_font, fi.object_ref):
+                                fi.bbox = [char.get("x0", 0), char.get("top", 0),
+                                           char.get("x1", 0), char.get("bottom", 0)]
+                                break
         except Exception as e:
             logger.debug(f"Font bbox enrichment failed: {e}")

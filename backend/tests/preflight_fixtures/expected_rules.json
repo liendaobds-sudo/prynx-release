@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "generated_by": "tests/preflight_fixtures/generate_fixtures.py",
+  "fixtures": {
+    "01_clean_blank.pdf": {
+      "title": "Trang trắng — thiếu TrimBox/Bleed",
+      "category": "baseline",
+      "must_have": [
+        "BLEED_MISSING"
+      ],
+      "must_not_have": [
+        "INTERNAL_ERROR"
+      ],
+      "manual_note": "File tối thiểu từ pikepdf; kiểm tra CTP báo thiếu hộp cắt."
+    },
+    "02_rgb_colorspace.pdf": {
+      "title": "ColorSpace DeviceRGB nhúng trên trang",
+      "category": "color",
+      "must_have": [
+        "COLOR_RGB_DETECTED"
+      ],
+      "must_not_have": [],
+      "manual_note": "Mở Separations/Output Preview — vùng RGB phải highlight."
+    },
+    "03_live_text.pdf": {
+      "title": "Live text (ReportLab)",
+      "category": "font",
+      "must_have": [
+        "TEXT_DETECTED"
+      ],
+      "must_not_have": [],
+      "manual_note": "Viewer highlight text; thử action Khóa Font."
+    },
+    "04_font_not_embedded.pdf": {
+      "title": "Font TrueType không có FontFile",
+      "category": "font",
+      "must_have": [
+        "FONT_NOT_EMBEDDED"
+      ],
+      "must_not_have": [],
+      "manual_note": "BBox font trên viewer (nếu pdfplumber khớp tên)."
+    },
+    "05_page_size_mismatch.pdf": {
+      "title": "Hai trang khác khổ",
+      "category": "structure",
+      "must_have": [
+        "PAGE_SIZE_MISMATCH"
+      ],
+      "must_not_have": [],
+      "manual_note": "Trang 2 khác trang 1 — kiểm tra ghép bài N-Up."
+    },
+    "06_opi_linked_image.pdf": {
+      "title": "Ảnh OPI link (chưa embed)",
+      "category": "image",
+      "must_have": [
+        "IMAGE_NOT_EMBEDDED"
+      ],
+      "must_not_have": [],
+      "manual_note": "OPI trong XObject. QA manual thêm: file Illustrator XMP linked thật."
+    },
+    "07_indexed_palette.pdf": {
+      "title": "Ảnh Indexed / palette 256 màu",
+      "category": "image",
+      "must_have": [
+        "GIF_IN_PDF"
+      ],
+      "must_not_have": [],
+      "manual_note": "Giống GIF trong PDF — chất lượng in kém."
+    },
+    "08_low_res_image.pdf": {
+      "title": "Ảnh 40×40px kéo full trang (~5 DPI)",
+      "category": "image",
+      "must_have": [
+        "IMAGE_LOW_RES"
+      ],
+      "must_not_have": [],
+      "manual_note": "BBox ảnh trên viewer; mô tả ~DPI thấp."
+    },
+    "09_high_dpi_image.pdf": {
+      "title": "Ảnh 2400×2400px đặt 1 inch (~2400 DPI)",
+      "category": "image",
+      "must_have": [
+        "IMAGE_HIGH_DPI"
+      ],
+      "must_not_have": [],
+      "manual_note": "Gợi ý Downscale 300 DPI."
+    },
+    "10_overprint.pdf": {
+      "title": "ExtGState Overprint bật",
+      "category": "color",
+      "must_have": [
+        "OVERPRINT_DETECTED"
+      ],
+      "must_not_have": [],
+      "manual_note": "Bật Overprint Preview — vùng thay đổi."
+    },
+    "11_transparency.pdf": {
+      "title": "Transparency Group trên trang",
+      "category": "structure",
+      "must_have": [
+        "TRANSPARENCY_DETECTED"
+      ],
+      "must_not_have": [],
+      "manual_note": "Thử Flatten Transparency fix."
+    },
+    "12_spot_color.pdf": {
+      "title": "Separation / Spot ColorSpace",
+      "category": "color",
+      "must_have": [
+        "COLOR_SPOT_DETECTED"
+      ],
+      "must_not_have": [],
+      "manual_note": "Liệt kê kênh spot trong báo cáo."
+    },
+    "13_multipage_15.pdf": {
+      "title": "15 trang — smoke test multiprocessing",
+      "category": "performance",
+      "must_have": [
+        "BLEED_MISSING"
+      ],
+      "must_not_have": [
+        "INTERNAL_ERROR"
+      ],
+      "manual_note": "File >10 trang → ProcessPoolExecutor; không crash."
+    },
+    "15_pdf_version_old.pdf": {
+      "title": "PDF version 1.2 (quá cũ)",
+      "category": "structure",
+      "must_have": [
+        "PDF_VERSION_MISMATCH"
+      ],
+      "must_not_have": [],
+      "manual_note": "Khuyên nâng lên PDF 1.4+."
+    },
+    "16_object_off_page.pdf": {
+      "title": "Text vẽ ngoài MediaBox",
+      "category": "structure",
+      "must_have": [
+        "OBJECT_OFF_PAGE"
+      ],
+      "must_not_have": [],
+      "manual_note": "Đối tượng hoàn toàn ngoài vùng in."
+    },
+    "17_tac_heavy_cmyk.pdf": {
+      "title": "Tấm CMYK đặc — TAC cao (cần Ghostscript)",
+      "category": "ink",
+      "must_have": [
+        "TAC_EXCEEDED"
+      ],
+      "must_not_have": [
+        "INTERNAL_ERROR"
+      ],
+      "manual_note": "Chỉ chạy khi SeparationEngine/GS khả dụng. QA manual bắt buộc."
+    }
+  },
+  "manual_only_fixtures": {
+    "06b_xmp_linked_manual.pdf": {
+      "title": "[Manual QA] XMP Illustrator linked — không dùng golden auto",
+      "category": "image",
+      "must_have": [],
+      "must_not_have": [
+        "INTERNAL_ERROR"
+      ],
+      "manual_only": true,
+      "manual_note": "Chỉ kiểm tra bằng file AI/Corel thật; pikepdf strip XMP khi save."
+    },
+    "14_progressive_jpeg.pdf": {
+      "title": "[Manual QA] JPEG Progressive — ReportLab embed",
+      "category": "image",
+      "must_have": [],
+      "must_not_have": [
+        "INTERNAL_ERROR"
+      ],
+      "manual_only": true,
+      "manual_note": "ReportLab dùng ASCII85+DCT; verify PROGRESSIVE_JPEG bằng file JPEG progressive thật từ khách."
+    }
+  }
+}

@@ -10,6 +10,7 @@
 #    .\build_production.ps1 -SkipTauri       # Skip Tauri build
 #    .\build_production.ps1 -NuitkaOnly      # Only compile Python
 #    .\build_production.ps1 -Release         # Build updater artifacts (needs signing key)
+#    .\build_production.ps1 -SkipPreflightQA # Emergency build without pytest gate
 #
 # ============================================================
 
@@ -17,7 +18,8 @@ param(
     [switch]$SkipNuitka,
     [switch]$SkipTauri,
     [switch]$NuitkaOnly,
-    [switch]$Release
+    [switch]$Release,
+    [switch]$SkipPreflightQA
 )
 
 $ErrorActionPreference = "Continue"
@@ -40,9 +42,23 @@ if (-not (Test-Path $VENV_PYTHON)) {
     exit 1
 }
 
+# ---- Step 0: Preflight QA gate (runs before Nuitka/Tauri) ----
+if (-not $SkipPreflightQA) {
+    Write-Host "[0/5] Running Preflight QA (pytest + golden fixtures)..." -ForegroundColor Yellow
+    & "$ROOT\backend\scripts\run_preflight_qa.ps1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Preflight QA failed. Fix tests before release." -ForegroundColor Red
+        Write-Host "  Emergency only: add -SkipPreflightQA to skip this gate." -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "  Preflight QA passed." -ForegroundColor Green
+} else {
+    Write-Host "[0/5] Skipped Preflight QA (-SkipPreflightQA)." -ForegroundColor DarkGray
+}
+
 # ---- Step 1: Nuitka compile backend ----
 if (-not $SkipNuitka) {
-    Write-Host "[1/4] Compiling Python backend with Nuitka..." -ForegroundColor Yellow
+    Write-Host "[1/5] Compiling Python backend with Nuitka..." -ForegroundColor Yellow
     Write-Host "  This may take 5-15 minutes on first run." -ForegroundColor DarkGray
 
     & $VENV_PYTHON -m pip show nuitka *> $null
@@ -135,7 +151,7 @@ if ($NuitkaOnly) {
 }
 
 # ---- Step 2: Prepare sidecar and dependencies ----
-Write-Host "`n[2/4] Preparing sidecar binary and external dependencies..." -ForegroundColor Yellow
+Write-Host "`n[2/5] Preparing sidecar binary and external dependencies..." -ForegroundColor Yellow
 
 $SIDECAR_SRC = "$SIDECAR_DIR\$SIDECAR_NAME.exe"
 $TARGET_TRIPLE = "x86_64-pc-windows-msvc"
@@ -176,7 +192,7 @@ if (Test-Path $TESS_SRC) {
 }
 
 # ---- Step 3: Compute SHA-256 hash for integrity verification ----
-Write-Host "`n[3/4] Computing sidecar integrity hash..." -ForegroundColor Yellow
+Write-Host "`n[3/5] Computing sidecar integrity hash..." -ForegroundColor Yellow
 
 $HASH = (Get-FileHash $SIDECAR_FINAL -Algorithm SHA256).Hash.ToLower()
 Write-Host "  PRYNX_SIDECAR_HASH = $HASH" -ForegroundColor Green
@@ -260,7 +276,7 @@ if (-not $SkipTauri) {
         Write-Host "  WARNING: Khong tim thay installer trong bundle\nsis\." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "`n[4/4] Skipped Tauri build." -ForegroundColor DarkGray
+    Write-Host "`n[4/5] Skipped Tauri build." -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Build complete (Nuitka only)." -ForegroundColor Green
     Write-Host "  Sidecar: $SIDECAR_FINAL"

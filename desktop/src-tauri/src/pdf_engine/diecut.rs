@@ -1,35 +1,35 @@
 use pdfium_render::prelude::*;
 use std::path::Path;
 
-/// XÃ³a cÃ¡c Ä‘Æ°á»ng vector dao báº¿ (mÃ u Magenta/Cyan 100%) khá»i file PDF.
-/// Tráº£ vá» Ä‘Æ°á»ng dáº«n cá»§a file PDF Ä‘Ã£ lÃ m sáº¡ch.
+/// Xóa các đường vector dao bế (màu Magenta/Cyan 100%) khỏi file PDF.
+/// Trả về đường dẫn của file PDF đã làm sạch.
 #[tauri::command]
 pub fn strip_diecut_lines(input_path: String, output_path: String) -> Result<String, String> {
-    // Khá»Ÿi táº¡o Pdfium engine
+    // Khởi tạo Pdfium engine
     println!("DEBUG: Start bind"); let bindings = Pdfium::bind_to_system_library()
         .or_else(|_| Pdfium::bind_to_library("pdfium.dll"))
-        .map_err(|e| format!("Lá»—i táº£i thÆ° viá»‡n PDFium: {:?}", e))?;
+        .map_err(|e| format!("Lỗi tải thư viện PDFium: {:?}", e))?;
         
     let pdfium = Pdfium::new(bindings);
 
     if !Path::new(&input_path).exists() {
-        return Err(format!("File khÃ´ng tá»“n táº¡i: {}", input_path));
+        return Err(format!("File không tồn tại: {}", input_path));
     }
 
     let bytes = std::fs::read(&input_path).map_err(|e| format!("FS read error: {}", e))?;
     let mut document = pdfium.load_pdf_from_byte_vec(bytes, None)
-        .map_err(|e| format!("Lá»—i Ä‘á» c file PDF: {:?}", e))?;
+        .map_err(|e| format!("Lỗi đọc file PDF: {:?}", e))?;
 
     let mut removed_count = 0;
 
-    // Duyá»‡t qua tá»«ng trang
+    // Duyệt qua từng trang
     for mut page in document.pages_mut().iter() {
         let mut objects_to_remove = Vec::new();
         
-        // Duyá»‡t qua cÃ¡c object trÃªn trang
+        // Duyệt qua các object trên trang
         for (index, object) in page.objects().iter().enumerate() {
             if let Some(path_obj) = object.as_path_object() {
-                // Kiá»ƒm tra mÃ u viá»n (stroke color)
+                // Kiểm tra màu viền (stroke color)
                 if let Ok(color) = path_obj.stroke_color() {
                     let r = color.red();
                     let b = color.blue();
@@ -50,11 +50,10 @@ pub fn strip_diecut_lines(input_path: String, output_path: String) -> Result<Str
         }
     }
 
-    // LÆ°u láº¡i file
+    // Lưu lại file
     if let Err(e) = document.save_to_file(&output_path) {
-        return Err(format!("Lá»—i lÆ°u file PDF: {:?}", e));
+        return Err(format!("Lỗi lưu file PDF: {:?}", e));
     }
 
-    Ok(format!("ÄÃ£ xÃ³a {} nÃ©t khuÃ´n báº¿, lÆ°u táº¡i: {}", removed_count, output_path))
+    Ok(format!("Đã xóa {} nét khuôn bế, lưu tại: {}", removed_count, output_path))
 }
-

@@ -64,10 +64,12 @@ export interface WorkspaceState {
     tacHeatmapUrl: string | null;
     overprintPreviewUrl: string | null;
 
-    // ── Selection Tool ──
-    isSelectionMode: boolean;
-    // ── Object Edit Mode (chế độ chỉnh sửa đối tượng — độc lập Selection Tool) ──
+    // ── Object Edit Mode (chế độ chỉnh sửa đối tượng) ──
     isObjectEditMode: boolean;
+    // Compat for old selection mode (deprecated, mutual exclusive with object edit)
+    isSelectionMode: boolean;
+    // Current page components for layers-like panel in edit PDF (accurate from /edit/objects)
+    currentEditObjects: any[];
     pdfObjectsVersion: number;
     selectedObjectIds: string[];
     hiddenObjectIds: string[];
@@ -149,6 +151,7 @@ export interface WorkspaceState {
 
     setIsSelectionMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setIsObjectEditMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
+    setCurrentEditObjects: (updater: any[] | ((prev: any[]) => any[])) => void;
     setPdfObjectsVersion: (updater: number | ((prev: number) => number)) => void;
     setSelectedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setHiddenObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
@@ -231,6 +234,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
 
     isSelectionMode: false,
     isObjectEditMode: false,
+    currentEditObjects: [],
     pdfObjectsVersion: 0,
     selectedObjectIds: [],
     hiddenObjectIds: [],
@@ -334,6 +338,9 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
         // Loại trừ lẫn nhau: bật chế độ chỉnh sửa đối tượng → tắt Selection Tool.
         return next ? { isObjectEditMode: true, isSelectionMode: false } : { isObjectEditMode: false };
     }),
+    setCurrentEditObjects: (updater) => set((state) => ({
+        currentEditObjects: typeof updater === 'function' ? updater(state.currentEditObjects) : updater,
+    })),
     setPdfObjectsVersion: (updater) => set((state) => ({
         pdfObjectsVersion: typeof updater === 'function' ? updater(state.pdfObjectsVersion) : updater,
     })),

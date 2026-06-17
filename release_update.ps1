@@ -12,7 +12,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ReleaseRepo,   # vd: owner/pdfcompare-releases (PUBLIC)
     [string]$KeyPassword = "",                            # mat khau cua ~/.tauri/prynx.key (de trong neu khong dat)
     [string]$Notes = "",
-    [switch]$SkipNuitka                                   # Bo qua bien dich backend (dung lai sidecar cu khi backend khong doi)
+    [switch]$SkipNuitka,                                  # Bo qua bien dich backend (dung lai sidecar cu khi backend khong doi)
+    [switch]$SkipPreflightQA                              # KHAN CAP: bo qua pytest Preflight truoc build
 )
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -61,10 +62,10 @@ if ($SkipNuitka) {
     if (-not (Test-Path $sidecar)) {
         throw "Bat -SkipNuitka nhung khong thay sidecar cu: $sidecar . Hay build day du it nhat 1 lan truoc."
     }
-    & "$ROOT\build_production.ps1" -Release -SkipNuitka
+    & "$ROOT\build_production.ps1" -Release -SkipNuitka $(if ($SkipPreflightQA) { '-SkipPreflightQA' })
 } else {
     Write-Host "  [..] Build (Nuitka + frontend + tauri + KY updater) - co the lau..." -ForegroundColor Yellow
-    & "$ROOT\build_production.ps1" -Release
+    & "$ROOT\build_production.ps1" -Release $(if ($SkipPreflightQA) { '-SkipPreflightQA' })
 }
 if ($LASTEXITCODE -ne 0) { throw "Build that bai." }
 

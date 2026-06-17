@@ -19,7 +19,6 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
         viewerPageDisplayMode: pageDisplayMode, setViewerPageDisplayMode: setPageDisplayMode,
         viewerActivePage: activePage,
         viewerNumPages: numPages,
-        isSelectionMode, setIsSelectionMode,
         isObjectEditMode, setIsObjectEditMode,
     } = useWorkspaceStore();
 
@@ -79,7 +78,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                 <div className="w-px h-5 bg-black/10 dark:bg-white/10 mx-2"></div>
                 
                 <button 
-                    className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${toolMode === 'pointer' && !isSelectionMode && !isObjectEditMode && !isVdpMode ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`} 
+                    className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${toolMode === 'pointer' && !isObjectEditMode && !isVdpMode ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`} 
                     onClick={() => setToolMode('pointer')} title="Pointer Tool">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="0.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86 2.89 4.8 2.58-1.55-2.89-4.8 4.79-.19c.45-.02.66-.56.34-.86L5.5 3.21z"/></svg>
                 </button>
@@ -94,15 +93,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     </svg>
                 </button>
 
-                {isSelectionMode !== undefined && (
-                    <button 
-                        className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${isSelectionMode ? 'text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/30 ring-1 ring-orange-300 dark:ring-orange-700' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
-                        onClick={() => setIsSelectionMode(!isSelectionMode)}
-                        title="Selection Tool (Chọn & Xóa chi tiết PDF)"
-                    >
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86 2.89 4.8 2.58-1.55-2.89-4.8 4.79-.19c.45-.02.66-.56.34-.86L5.5 3.21z"/></svg>
-                    </button>
-                )}
+                {/* Old Selection Tool removed - object management now integrated into Object Edit mode with better PDFium-based listing */}
 
                 {/* Chế độ Chỉnh sửa đối tượng — độc lập Selection Tool. Màu emerald để phân biệt với Selection (cam). */}
                 {isObjectEditMode !== undefined && (

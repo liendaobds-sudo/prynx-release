@@ -51,6 +51,9 @@ const INSPECT_RULES = [
   { id: 'PROGRESSIVE_JPEG', title: 'JPEG Progressive', desc: 'Ảnh JPEG progressive gây lỗi RIP' },
   { id: 'OBJECT_OFF_PAGE', title: 'Object ngoài trang', desc: 'Phát hiện đối tượng nằm hoàn toàn ngoài vùng in' },
   { id: 'PDF_VERSION_MISMATCH', title: 'Phiên bản PDF', desc: 'Kiểm tra tương thích PDF version' },
+  { id: 'TEXT_DETECTED', title: 'Chữ chưa Outline', desc: 'Phát hiện Live Text chưa khóa font' },
+  { id: 'IMAGE_NOT_EMBEDDED', title: 'Ảnh chưa Embed', desc: 'Phát hiện OPI link ảo / XMP linked' },
+  { id: 'TAC_EXCEEDED', title: 'TAC vượt ngưỡng', desc: 'Tổng mực CMYK+Spot vượt ngưỡng (mặc định 300%)' },
 ];
 
 type Phase = 'upload' | 'workspace';
@@ -131,7 +134,7 @@ export default function PreflightTab() {
     try {
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/inspect`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fileId, rules: Array.from(selectedRules) }),
+        body: JSON.stringify({ file_id: fileId, rules: Array.from(selectedRules), tac_threshold: 300 }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Lỗi kiểm tra');
       setReport(await res.json());

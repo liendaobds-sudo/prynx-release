@@ -39,10 +39,14 @@ class StructureRulesMixin:
             logger.debug(f"Live text check failed: {e}")
         return issues
 
-    def _check_transparency(self, pdf: pikepdf.Pdf) -> list[PreflightIssue]:
+    def _check_transparency(self, pdf: pikepdf.Pdf, page_nums: list[int] = None) -> list[PreflightIssue]:
         """Check if any page has transparency groups."""
         issues = []
-        for page_num, page in enumerate(pdf.pages, 1):
+        page_count = len(pdf.pages)
+        target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
+        for page_idx in target_pages:
+            page = pdf.pages[page_idx]
+            page_num = page_idx + 1
             group = page.get("/Group")
             if group is not None:
                 try:
@@ -61,10 +65,14 @@ class StructureRulesMixin:
                     pass
         return issues
 
-    def _check_bleed_boxes(self, pdf: pikepdf.Pdf) -> list[PreflightIssue]:
+    def _check_bleed_boxes(self, pdf: pikepdf.Pdf, page_nums: list[int] = None) -> list[PreflightIssue]:
         """Check if TrimBox and BleedBox are properly set."""
         issues = []
-        for page_num, page in enumerate(pdf.pages, 1):
+        page_count = len(pdf.pages)
+        target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
+        for page_idx in target_pages:
+            page = pdf.pages[page_idx]
+            page_num = page_idx + 1
             media_box = page.get("/MediaBox")
             trim_box = page.get("/TrimBox")
             bleed_box = page.get("/BleedBox")
@@ -95,12 +103,16 @@ class StructureRulesMixin:
                     pass
         return issues
 
-    def _check_page_sizes(self, pdf: pikepdf.Pdf) -> list[PreflightIssue]:
+    def _check_page_sizes(self, pdf: pikepdf.Pdf, page_nums: list[int] = None) -> list[PreflightIssue]:
         """Check if all pages have consistent dimensions."""
         issues = []
         sizes = []
 
-        for page_num, page in enumerate(pdf.pages, 1):
+        page_count = len(pdf.pages)
+        target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
+        for page_idx in target_pages:
+            page = pdf.pages[page_idx]
+            page_num = page_idx + 1
             media_box = page.get("/MediaBox")
             if media_box:
                 try:

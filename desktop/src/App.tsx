@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, Suspense } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, Suspense } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import HomeTab from './components/HomeTab';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -209,6 +209,155 @@ function AppInner() {
       tabHoverTimeoutRef.current = null;
     }
   }, []);
+
+  // ── Kéo-thả sắp xếp lại tab (mượt như Chrome) ──────────────────────────────
+  // KHÔNG dùng HTML5 draggable (Tauri dragDropEnabled nuốt sự kiện). Dùng pointer
+  // events + thao tác DOM TRỰC TIẾP để đạt 60fps: tab đang kéo bám con trỏ, các tab
+  // khác TRƯỢT nhường chỗ bằng CSS transition, chỉ commit lại thứ tự mảng khi thả.
+  const TAB_GAP = 6; // khớp gap-1.5 của thanh tab
+  const dragRef = useRef<null | {
+    id: string;
+    pointerStartX: number;
+    draggedEl: HTMLElement;
+    els: { id: string; el: HTMLElement; center: number }[];
+    d: number;          // vị trí gốc của tab kéo trong danh sách tab tool
+    unit: number;       // bề rộng tab kéo + gap = quãng dịch của tab nhường chỗ
+    targetIndex: number;
+    moved: boolean;
+  }>(null);
+  const justDraggedRef = useRef(false);
+  // FLIP: tab vừa thả sẽ trượt từ vị trí con trỏ về đúng ô của nó.
+  const settleRef = useRef<null | { id: string; oldLeft: number }>(null);
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+
+  const onTabPointerMove = useCallback((e: PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.pointerStartX;
+    if (!d.moved && Math.abs(dx) < 5) return; // ngưỡng tránh nhầm click
+    if (!d.moved) {
+      d.moved = true;
+      setDraggingTabId(d.id);
+      for (const o of d.els) {
+        o.el.style.transition = o.id === d.id ? 'none' : 'transform 180ms cubic-bezier(0.2,0,0,1)';
+      }
+      d.draggedEl.style.position = 'relative';
+      d.draggedEl.style.zIndex = '50';
+    }
+    // Tab kéo bám con trỏ
+    d.draggedEl.style.transform = `translateX(${dx}px)`;
+
+    // Chỉ số đích = số tab (khác tab kéo) có tâm nằm trước tâm tab kéo hiện tại
+    const draggedCenter = d.els[d.d].center + dx;
+    let t = 0;
+    for (let i = 0; i < d.els.length; i++) {
+      if (i === d.d) continue;
+      if (draggedCenter > d.els[i].center) t++;
+    }
+    d.targetIndex = t;
+
+    // Dịch các tab nhường chỗ (move d → t kiểu mảng)
+    for (let i = 0; i < d.els.length; i++) {
+      if (i === d.d) continue;
+      let shift = 0;
+      if (d.d < t && i > d.d && i <= t) shift = -d.unit;
+      else if (d.d > t && i >= t && i < d.d) shift = d.unit;
+      d.els[i].el.style.transform = `translateX(${shift}px)`;
+    }
+  }, []);
+
+  const onTabPointerUp = useCallback(() => {
+    window.removeEventListener('pointermove', onTabPointerMove);
+    const d = dragRef.current;
+    if (!d) { return; }
+
+    // Các tab nhường chỗ: xoá tức thì (sau khi commit, vị trí mới trùng vị trí đã dịch
+    // nên không bị nhảy). Tab kéo xử lý riêng bên dưới để trượt mượt.
+    for (const o of d.els) {
+      if (o.id === d.id) continue;
+      o.el.style.transition = ''; o.el.style.transform = '';
+      o.el.style.zIndex = ''; o.el.style.position = '';
+    }
+
+    const dragged = d.draggedEl;
+    const settleBack = () => {
+      dragged.style.transition = 'transform 180ms cubic-bezier(0.2,0,0,1)';
+      dragged.style.transform = '';
+      const cleanup = () => {
+        dragged.style.transition = ''; dragged.style.zIndex = ''; dragged.style.position = '';
+        dragged.removeEventListener('transitionend', cleanup);
+      };
+      dragged.addEventListener('transitionend', cleanup);
+    };
+
+    if (d.moved) {
+      justDraggedRef.current = true;
+      setTimeout(() => { justDraggedRef.current = false; }, 0);
+      const from = d.d;
+      const to = d.targetIndex;
+      if (from !== to) {
+        // FLIP: ghi vị trí con trỏ hiện tại rồi commit thứ tự; useLayoutEffect sẽ
+        // cho tab trượt từ đây về ô đích.
+        settleRef.current = { id: d.id, oldLeft: dragged.getBoundingClientRect().left };
+        dragged.style.transition = ''; dragged.style.transform = '';
+        dragged.style.zIndex = ''; dragged.style.position = '';
+        setTabs(prev => {
+          const tools = prev.filter(tb => tb.id !== 'home');
+          const home = prev.filter(tb => tb.id === 'home');
+          const [moved] = tools.splice(from, 1);
+          tools.splice(to, 0, moved);
+          return [...home, ...tools];
+        });
+      } else {
+        // Thả tại chỗ: trượt tab kéo về 0 thay vì snap.
+        settleBack();
+      }
+    } else {
+      dragged.style.transition = ''; dragged.style.transform = '';
+      dragged.style.zIndex = ''; dragged.style.position = '';
+    }
+    dragRef.current = null;
+    setDraggingTabId(null);
+  }, [onTabPointerMove]);
+
+  const handleTabPointerDown = useCallback((e: React.PointerEvent, id: string) => {
+    if (e.button !== 0) return; // chỉ chuột trái
+    const nodes = Array.from(document.querySelectorAll<HTMLElement>('[data-tab-id]'))
+      .filter(n => n.getAttribute('data-tab-id') !== 'home');
+    const els = nodes.map(el => {
+      const r = el.getBoundingClientRect();
+      return { id: el.getAttribute('data-tab-id')!, el, center: r.left + r.width / 2 };
+    });
+    const d = els.findIndex(o => o.id === id);
+    if (d < 0) return;
+    const draggedRect = els[d].el.getBoundingClientRect();
+    dragRef.current = {
+      id, pointerStartX: e.clientX, draggedEl: els[d].el, els, d,
+      unit: draggedRect.width + TAB_GAP, targetIndex: d, moved: false,
+    };
+    window.addEventListener('pointermove', onTabPointerMove);
+    window.addEventListener('pointerup', onTabPointerUp, { once: true });
+  }, [onTabPointerMove, onTabPointerUp]);
+
+  // FLIP sau khi commit thứ tự: tab vừa thả trượt mượt từ vị trí con trỏ về ô đích.
+  useLayoutEffect(() => {
+    const s = settleRef.current;
+    if (!s) return;
+    settleRef.current = null;
+    const el = document.querySelector<HTMLElement>(`[data-tab-id="${s.id}"]`);
+    if (!el) return;
+    const newLeft = el.getBoundingClientRect().left;
+    const delta = s.oldLeft - newLeft;
+    if (Math.abs(delta) < 0.5) return;
+    el.style.transition = 'none';
+    el.style.transform = `translateX(${delta}px)`;
+    requestAnimationFrame(() => {
+      el.style.transition = 'transform 180ms cubic-bezier(0.2,0,0,1)';
+      el.style.transform = '';
+      const cleanup = () => { el.style.transition = ''; el.style.transform = ''; el.removeEventListener('transitionend', cleanup); };
+      el.addEventListener('transitionend', cleanup);
+    });
+  }, [tabs]);
 
   useEffect(() => {
     const handleTabHoverEvent = (e: any) => {
@@ -516,10 +665,12 @@ function AppInner() {
             <div
               key={tab.id}
               data-tab-id={tab.id}
-              onClick={() => setActiveTabId(tab.id)}
+              onPointerDown={(e) => handleTabPointerDown(e, tab.id)}
+              onClick={() => { if (justDraggedRef.current) return; setActiveTabId(tab.id); }}
               className={`
                 group relative flex items-center justify-between min-w-[140px] max-w-[200px] h-[30px] pl-3 pr-2 
-                rounded-t-lg transition-colors cursor-default border border-b-0
+                rounded-t-lg transition-[background-color,color] border border-b-0
+                ${draggingTabId === tab.id ? 'cursor-grabbing shadow-lg shadow-black/20 dark:shadow-black/50' : 'cursor-default'}
                 ${isActive
                   ? 'bg-[#e6e8eb] dark:bg-[#1a1a1a] border-black/10 dark:border-white/10 shadow-[0_-2px_6px_rgba(0,0,0,0.03)] text-slate-900 dark:text-white font-semibold z-10'
                   : 'bg-[#e6e8eb]/50 dark:bg-[#1a1a1a]/50 border-black/5 dark:border-white/5 text-slate-500 dark:text-zinc-400 hover:bg-[#e0e2e5] dark:hover:bg-[#1f2937] z-0'}
