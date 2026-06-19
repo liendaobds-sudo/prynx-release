@@ -13,7 +13,7 @@ import { Scissors, Settings, Star } from 'lucide-react';
 import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
-import { PREDEFINED_SIZES, type BookletSettings, type NupSettings } from './imposition-tools/types';
+import { PREDEFINED_SIZES, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
 import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
 import { applyRule, executeShuffle, getPresetById, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
@@ -370,6 +370,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [showSaveAsModal, isActive]);
 
+
+    // Routing panel-PHẢI: quyết định tường minh qua hàm thuần (test ở toolPanel.test.ts).
+    const rightPanelKind = resolveRightPanel(activeDashboardTool, isObjectEditMode);
 
     const isDirty = useMemo(() => {
         if (isSaved) return false;
@@ -1652,7 +1655,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 </div>
 
                                                 <div className="p-4 overflow-y-auto flex-1 flex flex-col text-sm text-slate-800 dark:text-zinc-200 scroller-thin relative bg-[#f8fafc] dark:bg-zinc-900 border-t border-black/5 dark:border-white/5">
-                                                    {isObjectEditMode ? (
+                                                    {rightPanelKind === 'edit' ? (
                                                         <EditLayersPanel
                                                             // Unified OCG + Components panel for Edit PDF upgrade
                                                             handleDeleteObjects={handleDeleteObjects}
@@ -1660,7 +1663,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             editObjects={currentEditObjects || []}
                                                             isEditMode={isObjectEditMode}
                                                         />
-                                                    ) : activeDashboardTool === 'datamerge' ? (
+                                                    ) : rightPanelKind === 'datamerge' ? (
                                                         <DataMergeTool
                                                             pdfFile={file}
                                                             getWorkingFile={getWorkingFile}
@@ -1687,7 +1690,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 }
                                                             }}
                                                         />
-                                                    ) : activeDashboardTool === 'numbering' ? (
+                                                    ) : rightPanelKind === 'numbering' ? (
                                                         <NumberingTool
                                                             pdfFile={file}
                                                             getWorkingFile={getWorkingFile}
@@ -1714,7 +1717,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 }
                                                             }}
                                                         />
-                                                    ) : activeDashboardTool === 'cover_numbering' ? (
+                                                    ) : rightPanelKind === 'cover_numbering' ? (
                                                         <CoverNumberingTool
                                                             pdfFile={file}
                                                             getWorkingFile={getWorkingFile}
@@ -1736,7 +1739,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 if (onSpawnTab) onSpawnTab(newFile);
                                                             }}
                                                         />
-                                                    ) : activeDashboardTool === 'stick_text_number' ? (
+                                                    ) : rightPanelKind === 'stick_text_number' ? (
                                                         <StickTextNumberTool
                                                             pdfFile={file}
                                                             onFileFixed={(blob, name) => {

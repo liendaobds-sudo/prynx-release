@@ -287,6 +287,25 @@ export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = 
     upscale: 'preprocess',
 };
 
+/**
+ * Panel-PHẢI mà ImpositionTab render theo công cụ đang chọn (routing tường minh,
+ * thuần — test được mà KHÔNG cần render component nặng).
+ *   - 'edit'            : chế độ chỉnh sửa đối tượng (EditLayersPanel)
+ *   - datamerge/numbering/cover_numbering/stick_text_number : component VDP/đóng dấu riêng
+ *   - 'dashboard'       : ImposerDashboard (bình bài + tiền xử lý)
+ */
+export type RightPanelKind =
+    | 'edit' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'dashboard';
+
+export function resolveRightPanel(activeDashboardTool: string, isObjectEditMode: boolean): RightPanelKind {
+    if (isObjectEditMode) return 'edit';
+    if (activeDashboardTool === 'datamerge') return 'datamerge';
+    if (activeDashboardTool === 'numbering') return 'numbering';
+    if (activeDashboardTool === 'cover_numbering') return 'cover_numbering';
+    if (activeDashboardTool === 'stick_text_number') return 'stick_text_number';
+    return 'dashboard';
+}
+
 export interface ImposerDashboardProps {
     tabId: string;
     onStartBooklet: (settings: BookletSettings) => void;

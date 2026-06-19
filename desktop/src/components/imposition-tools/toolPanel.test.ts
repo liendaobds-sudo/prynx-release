@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { WORKSPACE_TOOL_PANEL, type WorkspacePanelKind } from './types';
+import { WORKSPACE_TOOL_PANEL, resolveRightPanel, type WorkspacePanelKind } from './types';
 import { PREPROCESS_ROUTER_TOOLS } from './sections/preprocessRouterTools';
 
 /**
@@ -43,5 +43,40 @@ describe('WORKSPACE_TOOL_PANEL — nguồn chân lý routing', () => {
 
     it('none → "none" (hiện menu công cụ)', () => {
         expect(WORKSPACE_TOOL_PANEL.none).toBe('none');
+    });
+});
+
+describe('resolveRightPanel — routing panel-phải ImpositionTab (lưới an toàn refactor)', () => {
+    it('isObjectEditMode = true LUÔN thắng (trả "edit") bất kể tool', () => {
+        for (const t of ['none', 'nup', 'datamerge', 'numbering', 'merge', 'sticker_imposer']) {
+            expect(resolveRightPanel(t, true)).toBe('edit');
+        }
+    });
+
+    it('các tool VDP/đóng dấu → đúng component riêng', () => {
+        expect(resolveRightPanel('datamerge', false)).toBe('datamerge');
+        expect(resolveRightPanel('numbering', false)).toBe('numbering');
+        expect(resolveRightPanel('cover_numbering', false)).toBe('cover_numbering');
+        expect(resolveRightPanel('stick_text_number', false)).toBe('stick_text_number');
+    });
+
+    it('mọi tool còn lại (bình bài + tiền xử lý + none) → "dashboard"', () => {
+        for (const t of ['none', 'booklet', 'nup', 'sticker_imposer', 'cnc_imposer',
+            'merge', 'shuffle', 'resize', 'split', 'pages', 'sticker', 'preflight',
+            'hairlines', 'convertcolors', 'trapping', 'pdfx', 'ocr', 'optimize',
+            'bgremover', 'watermark', 'upscale']) {
+            expect(resolveRightPanel(t, false)).toBe('dashboard');
+        }
+    });
+
+    it('nhất quán với map: tool "external" ↔ có panel-phải riêng (không phải dashboard)', () => {
+        for (const [tool, kind] of Object.entries(WORKSPACE_TOOL_PANEL)) {
+            const rp = resolveRightPanel(tool, false);
+            if (kind === 'external') {
+                expect(rp).not.toBe('dashboard');
+            } else {
+                expect(rp).toBe('dashboard');
+            }
+        }
     });
 });
