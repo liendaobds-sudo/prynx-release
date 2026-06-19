@@ -226,9 +226,9 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                 <div className="flex-1 min-w-0 text-center pr-8">
                     <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
                         <span>🔠</span>
-                        <span>ĐÓNG SỐ & CHỮ (STICK)</span>
+                        <span>HEADER & FOOTER</span>
                     </h2>
-                    <p className="text-[11px] text-slate-500 mt-1">Chèn văn bản cố định, ngày tháng vào 6 góc trang.</p>
+                    <p className="text-[11px] text-slate-500 mt-1">Chèn số trang, ngày tháng, text cố định vào đầu/chân trang (6 góc).</p>
                 </div>
             </div>
 

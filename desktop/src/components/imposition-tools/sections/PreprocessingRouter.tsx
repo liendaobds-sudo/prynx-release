@@ -47,7 +47,7 @@ const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }
     bgremover: { icon: '✨', title: 'Tách nền AI', desc: 'Sử dụng AI siêu nét để bóc tách nền tóc, lưới, chi tiết mảnh.' },
     datamerge: { icon: '🔤', title: 'Trộn dữ liệu VDP', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để kéo thả vùng in và nạp dữ liệu.' },
     numbering: { icon: '🔢', title: 'Nhảy số tự động', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để cấu hình số nhảy.' },
-    stick_text_number: { icon: '🔠', title: 'Đóng Số & Chữ (Stick)', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để đóng dấu cố định trang.' },
+    stick_text_number: { icon: '🔠', title: 'Header & Footer', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để đóng dấu cố định trang.' },
     watermark: { icon: '©️', title: 'Chèn Nền & Đóng Dấu', desc: 'Chèn phôi nền (Background), logo chìm, text mờ (Watermark).' },
     upscale: { icon: '🪄', title: 'Phóng to Ảnh', desc: 'Phóng to ảnh nhưng vẫn giữ được độ sắc nét, không bị vỡ hạt.' },
     pages: { icon: '📄', title: 'Quản lý trang', desc: 'Nhân bản, xóa, xoay, và di chuyển trang PDF.' },
