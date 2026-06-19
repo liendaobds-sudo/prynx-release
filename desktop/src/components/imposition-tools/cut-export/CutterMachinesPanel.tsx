@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { confirmDialog } from "../../ui/confirmDialog";
 import {
   listCutProfiles,
   getCutProfile,
@@ -94,7 +95,7 @@ export default function CutterMachinesPanel() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm(`Xóa máy "${id}"?`)) return;
+    if (!(await confirmDialog({ title: 'Xóa máy bế', message: `Xóa máy "${id}"?`, danger: true }))) return;
     const r = await deleteCutProfile(id);
     if (!r.ok) {
       setError(r.error || "Xóa thất bại.");

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../lib/api';
 import { useComparisonStore } from '../stores/comparisonStore';
 import { Button } from './Button';
+import { toast } from './ui/Toast';
 
 export default function AiQcTab() {
   const { llmMode, cloudApiKey } = useComparisonStore();
@@ -13,17 +14,17 @@ export default function AiQcTab() {
 
   const handleRunQc = async () => {
     if (!textInput.trim()) {
-      alert("Vui lòng nhập văn bản cần soát lỗi.");
+      toast.info("Vui lòng nhập văn bản cần soát lỗi.");
       return;
     }
 
     if (llmMode === 'off') {
-      alert("Vui lòng chọn một Mô hình AI (Gemini/OpenAI/Ollama) trong danh sách cấu hình.");
+      toast.info("Vui lòng chọn một Mô hình AI (Gemini/OpenAI/Ollama) trong danh sách cấu hình.");
       return;
     }
 
     if (['gemini', 'openai', 'deepseek'].includes(llmMode) && !cloudApiKey) {
-      alert("Vui lòng nhập API Key cho Cloud AI đã chọn.");
+      toast.info("Vui lòng nhập API Key cho Cloud AI đã chọn.");
       return;
     }
 
@@ -72,10 +73,10 @@ export default function AiQcTab() {
       if (data.text) {
         setTextInput(data.text);
       } else {
-         alert("Không tìm thấy ký tự nào trong file này (có thể file rỗng hoặc bị mã hoá).");
+         toast.info("Không tìm thấy ký tự nào trong file này (có thể file rỗng hoặc bị mã hoá).");
       }
     } catch (e: any) {
-      alert(`Lỗi trích xuất: ${e.message}`);
+      toast.error(`Lỗi trích xuất: ${e.message}`);
     } finally {
       setIsExtracting(false);
     }

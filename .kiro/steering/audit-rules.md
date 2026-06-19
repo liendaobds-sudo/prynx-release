@@ -107,7 +107,100 @@ Quy ước mức độ (chỉ gắn sau khi `[VERIFIED]`):
 
 ---
 
-## 6. Checklist tự kiểm trước khi gửi báo cáo
+## 6. Lỗi HÌNH HỌC / TOẠ ĐỘ / PARITY (preview ≡ output) — bài học đắt giá
+
+Đây là nhóm lỗi tốn NHIỀU lượt nhất vì dễ "tự chứng minh là đúng" bằng công thức
+sai. Quy tắc bắt buộc khi đụng layout/bình/nesting/render/preview:
+
+1. **XÁC MINH QUY ƯỚC TRỤC bằng THỰC NGHIỆM, không suy từ công thức.** Trước khi
+   so 2 biểu diễn (preview vs output, A vs B), phải biết chắc mỗi bên dùng:
+   - gốc toạ độ ở đâu (đỉnh-trái hay đáy-trái), y tăng lên hay xuống (top-down vs
+     bottom-up), đơn vị (mm/point/px).
+   - Cách XÁC MINH: render thật rồi **raster hoá** (vd pypdfium2) và đo "ô có toạ
+     độ nhỏ nằm TRÊN hay DƯỚI". KHÔNG được giả định `y` là bottom-up rồi tính
+     `sheet_h - (y+h)` để "chứng minh khớp" — chính giả định đó từng che mất việc
+     output bị **lật dọc** suốt nhiều lượt.
+   > Bài học: `build_cnc_front_layout` tính `original_cell_y` kiểu bottom-up,
+   > nhưng `show_pdf_page` đọc Rect theo TOP-DOWN → output lật dọc so với preview.
+   > Chỉ lộ ra khi raster hoá và đo vị trí thật.
+
+2. **So bằng ARTIFACT THẬT, không chỉ bằng data trung gian.** "Dữ liệu khớp"
+   (cùng số ô, cùng toạ độ trong log) KHÁC "hình khớp". Với lỗi thị giác, phải
+   render output (PDF→ảnh) và đối chiếu trực tiếp; phân biệt **vị trí** (layout)
+   với **loại hình** (preview vẽ hình schematic đã phân loại, output vẽ artwork
+   thật — phân loại sai sẽ khác hình nhưng vị trí vẫn đúng).
+
+3. **PARITY là ĐA TRỤC — phải khớp ĐỒNG THỜI:** (a) cùng INPUT (giá trị **và**
+   thứ tự phép tính float), (b) cùng THUẬT TOÁN, (c) cùng QUY ƯỚC TOẠ ĐỘ,
+   (d) cùng cách RENDER (frontend vẽ vs backend xuất). Sửa 1 trục có thể **lộ ra**
+   sai ở trục kế. KHÔNG tuyên bố "đã khớp" cho tới khi xác minh end-to-end trên
+   artifact thật.
+
+4. **Float order-of-operations có thể LẬT quyết định rời rạc.** `(a-b)*k` và
+   `a*k - b*k` lệch ~1e-13, đủ làm bin-packing "vừa/không vừa" thêm 1 ô → preview
+   (frontend tính kiểu này) ≠ output (backend tính kiểu kia). Khi 2 đường tính
+   cùng một đại lượng theo thứ tự khác nhau → **làm tròn/snap** ở biên (vd round
+   6 chữ số) để triệt nhiễu.
+
+5. **Nhánh điều kiện = bẫy regression.** Thêm nhánh đổi hành vi theo điều kiện
+   (vd "có boong thì KHÔNG căn giữa") dễ làm 1 chế độ lệch chế độ kia. Ưu tiên
+   MỘT đường nhất quán; nếu buộc phải có special-case, phải chứng minh nó giữ
+   đúng bất biến của đường chung (vị trí, căn giữa, đối xứng).
+
+6. **Mirror/lật 2 mặt = PHẢN CHIẾU, không phải XOAY.** Mặt sau duplex là ảnh
+   phản chiếu quanh trục/tâm; dùng toggle xoay 180°/90° để "giả lập" sẽ sai với
+   hình bất đối xứng. Phản chiếu phải quanh đúng tâm (tâm TỜ, không phải tâm rect
+   trang nguồn — nếu trim lệch tâm sẽ bị dịch).
+
+---
+
+## 7. Khi QUAN SÁT của user mâu thuẫn với phân tích của mình
+
+- Nếu user **lặp lại** "vẫn lỗi / vẫn lệch" trong khi mình "đã chứng minh khớp"
+  → **giả định của mình gần như chắc chắn sai**, KHÔNG phải user nhìn nhầm.
+  Dừng lặp lại lập luận cũ; **đổi phương pháp**: render artifact thật, raster,
+  đo lại từ gốc. (Phản pattern: bám "log nói khớp" rồi bảo user nhìn kỹ lại.)
+- Khi user chỉ vào một chi tiết cụ thể (vd "3 ô trên cùng lại nằm dưới"), DÙNG
+  ngay chi tiết đó làm mốc kiểm chứng — nó là ground truth nhanh nhất.
+- Nếu một hướng đã thất bại 2 lần, chẩn đoán lại ROOT CAUSE từ đầu (đo thực
+  nghiệm), đừng vá tiếp lớp ngọn.
+
+---
+
+## 8. Instrument tại ĐƯỜNG CHẠY THẬT, không chỉ replicate
+
+- Replicate hàm lõi in-process rồi thấy "khớp" có thể đánh lừa, vì đường thật
+  còn qua tầng render/đổi toạ độ khác. Hãy **chèn log/đo tại đúng sink thật**
+  (vd ghi placements thực render ra file để đối chiếu) thay vì chỉ gọi lại hàm
+  con với input mình tự dựng.
+- Khi cần debug lâu: ghi 1 file log gọn ra nơi dễ lấy (vd Desktop) chứa cả 2 phía
+  (preview + output) + toạ độ từng phần tử → so trực tiếp. Gỡ sạch sau khi xong.
+
+---
+
+## 9. Kỷ luật logging (ảnh hưởng hiệu năng + nhiễu audit)
+
+- Log debug/trace PHẢI dùng `logger.debug`, KHÔNG dùng `warning/error/info`.
+  Log mức `warning`/`error` luôn xuất → flood console + tốn I/O mỗi item/candidate
+  → kéo chậm rõ rệt ở vòng lặp nóng (nesting/collision/NFP).
+- Vòng lặp in nhiều phần tử → guard bằng `if logger.isEnabledFor(logging.DEBUG)`
+  để khỏi format f-string khi không cần.
+- Khi audit hiệu năng: rà các log mức cao nằm trong vòng lặp nóng — đó thường là
+  thủ phạm chậm dễ sửa.
+
+---
+
+## 10. So sánh "nhanh hơn / dày hơn" giữa 2 luồng tương tự
+
+- Khi 2 tính năng làm việc giống nhau nhưng khác tốc độ/chất lượng rõ rệt → tìm
+  xem chúng dùng **thuật toán khác nhau** không (vd bin-pack chữ nhật bbox vs
+  nesting NFP đa giác). Đo bằng số thật (đếm item, %lãi) trên cùng dữ liệu, đừng
+  kết luận "nesting không chạy" chỉ vì cảm giác — có thể lợi ích bị **pha loãng**
+  bởi tầng khác (vd chia dải/zone) chứ thuật toán vẫn đúng.
+
+---
+
+## 11. Checklist tự kiểm trước khi gửi báo cáo
 
 - [ ] Mỗi finding đều có `[VERIFIED]`/`[SUSPECTED]` rõ ràng.
 - [ ] Mỗi nhãn 🔴/🟠 đều kèm bằng chứng code (file:line) + đã trace tới sink.
@@ -116,3 +209,9 @@ Quy ước mức độ (chỉ gắn sau khi `[VERIFIED]`):
 - [ ] Claim về deps/môi trường đã chạy bằng venv của dự án.
 - [ ] Đề xuất xóa đã nêu tracked/untracked + mức khôi phục.
 - [ ] Không có nhãn nghiêm trọng nào chỉ dựa trên suy đoán bề mặt.
+- [ ] (Layout/hình học) Đã xác minh QUY ƯỚC TOẠ ĐỘ bằng raster thực nghiệm, không
+      bằng công thức giả định.
+- [ ] (Parity) Đã so trên ARTIFACT THẬT (render/raster), khớp đủ 4 trục: input +
+      thuật toán + toạ độ + render.
+- [ ] (Float) Đã cân nhắc nhiễu order-of-operations ở quyết định rời rạc/biên.
+- [ ] Quan sát của user không bị bác bằng "log nói khớp" — nếu mâu thuẫn đã đo lại.

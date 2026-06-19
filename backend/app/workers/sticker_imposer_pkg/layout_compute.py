@@ -95,6 +95,10 @@ def compute_sticker_layout_for_page(
 
     from .orchestrator import solve_optimal_sticker_layout
 
+    # Fail-fast Rust cho lớp tính layout (R12.1): gọi trước mọi phép tính.
+    from app.workers.imposition_rust_policy import require_rust as _require_rust
+    _require_rust("sticker_layout")
+
     # ── Caller tag for debug ──
 
     import traceback as _tb
@@ -117,21 +121,21 @@ def compute_sticker_layout_for_page(
 
             break
 
-    logger.info(f"\n{'='*60}")
+    logger.debug(f"\n{'='*60}")
 
-    logger.info(f"🔧 [COMyUTE_LAYOUT] caller={_caller_tag}")
+    logger.debug(f"🔧 [COMyUTE_LAYOUT] caller={_caller_tag}")
 
-    logger.info(f"   INyUTS: usable_w={sheet_usable_w:.2f} usable_h={sheet_usable_h:.2f}")
+    logger.debug(f"   INyUTS: usable_w={sheet_usable_w:.2f} usable_h={sheet_usable_h:.2f}")
 
-    logger.info(f"   INyUTS: gap_x={gap_x:.2f} gap_y={gap_y:.2f} strategy={strategy}")
+    logger.debug(f"   INyUTS: gap_x={gap_x:.2f} gap_y={gap_y:.2f} strategy={strategy}")
 
-    logger.info(f"   INyUTS: shape_type_override={shape_type_override}")
+    logger.debug(f"   INyUTS: shape_type_override={shape_type_override}")
 
-    logger.info(f"   INyUTS: shape_props_override={shape_props_override}")
+    logger.debug(f"   INyUTS: shape_props_override={shape_props_override}")
 
-    logger.info(f"   INyUTS: bleed_pt={bleed_pt:.2f}")
+    logger.debug(f"   INyUTS: bleed_pt={bleed_pt:.2f}")
 
-    logger.info(f"   INyUTS: page.rect={page.rect}")
+    logger.debug(f"   INyUTS: page.rect={page.rect}")
 
     # ── Step 1: Determine trim dimensions from page ──
 
@@ -145,7 +149,7 @@ def compute_sticker_layout_for_page(
 
         trim_h = r.height
 
-        logger.info(f"   TRIM: from die-path rect={r} → trim_w={trim_w:.2f} trim_h={trim_h:.2f}")
+        logger.debug(f"   TRIM: from die-path rect={r} → trim_w={trim_w:.2f} trim_h={trim_h:.2f}")
 
     else:
 
@@ -165,19 +169,15 @@ def compute_sticker_layout_for_page(
 
         trim_h -= 2 * bleed_pt
 
-        logger.info(f"   TRIM: from page rect → trim_w={trim_w:.2f} trim_h={trim_h:.2f}")
+        logger.debug(f"   TRIM: from page rect → trim_w={trim_w:.2f} trim_h={trim_h:.2f}")
 
     # ── Step 2: Determine shape type ──
 
-    # CRITICAL: We ALWAYS extract shape_props from the actual yDF page vectors.
-
-    # shape_props_override is IGNORED because it comes from different detection
-
-    # contexts (frontend detect-shape AyI vs backend settings) at different scales,
-
-    # which caused divergent layout results between preview and nup_engine.
-
-    # Only shape_type_override is used (to select WHICH algorithm to run).
+    # SSOT (spec die-shape-detection-ssot — R2/R6): shape_type + shape_props đến
+    # từ Detection (DetectedShape) và được TIN DÙNG. Nay shape_props_override ĐƯỢC
+    # HONOR (không còn bị bỏ): vì Detection chạy cùng backend page-coords và đã
+    # chuẩn hoá props về TRIM nên không còn lệch scale → preview == output (sửa RC-4).
+    # classify_shape chỉ dùng làm FALLBACK khi không có override.
 
     shape_type = shape_type_override
 
@@ -201,11 +201,11 @@ def compute_sticker_layout_for_page(
 
             _auto_detected_props = result.get('params', {})
 
-            logger.info(f"   SHAyE: classify_shape from yDF → {_auto_detected_shape}")
+            logger.debug(f"   SHAyE: classify_shape from yDF → {_auto_detected_shape}")
 
     except Exception as e:
 
-        logger.info(f"   SHAyE: classify_shape failed: {e}")
+        logger.debug(f"   SHAyE: classify_shape failed: {e}")
 
     if not shape_type:
 
@@ -223,11 +223,22 @@ def compute_sticker_layout_for_page(
 
     else:
 
-        # shape_type was overridden — extract props for that specific shape type
+        # shape_type được override từ Detection (SSOT). HONOR override props (R6.2):
+        # dùng props từ DetectedShape; chỉ dùng auto-detected props làm FALLBACK khi
+        # override không cung cấp props. (Sửa RC-4: trước đây luôn bỏ override props
+        # và tái trích từ yDF → lệch preview/output.)
 
-        shape_props = _auto_detected_props  # Use auto-detected props as base
+        if shape_props_override:
 
-        logger.info(f"   SHAyE: using override type={shape_type}, auto_props={bool(_auto_detected_props)}")
+            shape_props = dict(shape_props_override)
+
+            logger.debug(f"   SHAyE: override type={shape_type}, using OVERRIDE props (keys={list(shape_props.keys())})")
+
+        else:
+
+            shape_props = _auto_detected_props  # fallback khi override thiếu props
+
+            logger.debug(f"   SHAyE: override type={shape_type}, auto_props={bool(_auto_detected_props)} (no override props)")
 
     if not shape_type:
 
@@ -239,9 +250,9 @@ def compute_sticker_layout_for_page(
     # Force re-extract for shapes that need specific params.
     _needs_force_extract = (
         (not shape_props and shape_type in ('HAMMER', 'DUMBBELL')) or
-        (shape_type in ('TRAyEZOID', 'yARALLELOGRAM') and 'leftOH' not in shape_props and 'overhangX' not in shape_props) or
+        (shape_type in ('TRAPEZOID', 'PARALLELOGRAM') and 'leftOH' not in shape_props and 'overhangX' not in shape_props) or
         (shape_type == 'TRIANGLE' and 'gapMultiplierH' not in shape_props) or
-        (shape_type == 'yENTAGON' and 'peakHeightRatio' not in shape_props)
+        (shape_type == 'PENTAGON' and 'peakHeightRatio' not in shape_props)
     )
 
     if _needs_force_extract:
@@ -254,21 +265,21 @@ def compute_sticker_layout_for_page(
 
                 shape_props = force_extract_shape_params(shape_type, largest_path.get('items', []))
 
-                logger.info(f"   SHAyE_yROyS: force-extracted → {shape_props}")
+                logger.debug(f"   SHAyE_yROyS: force-extracted → {shape_props}")
 
         except Exception:
 
             pass
 
-    if shape_type in ('CIRCLE_ELLIySE', 'RECTANGLE'):
+    if shape_type in ('CIRCLE_ELLIPSE', 'RECTANGLE'):
 
         shape_props['width'] = trim_w
 
         shape_props['height'] = trim_h
 
-    logger.info(f"   SHAyE: final shape_type={shape_type}")
+    logger.debug(f"   SHAyE: final shape_type={shape_type}")
 
-    logger.info(f"   SHAyE: final shape_props keys={list(shape_props.keys()) if shape_props else 'empty'}")
+    logger.debug(f"   SHAyE: final shape_props keys={list(shape_props.keys()) if shape_props else 'empty'}")
 
     # ── Step 4: Compute NFy params (p5/p6) and base_poly ──
 
@@ -282,9 +293,9 @@ def compute_sticker_layout_for_page(
 
             p5, p6, p5r, p6r, p5c, p6c, nfp_shape, nfp_props, overlap_poly = get_optimal_head_to_tail_overlap(page, gap_x)
 
-            logger.info(f"   NFy: p5={p5} p6={p6}")
+            logger.debug(f"   NFy: p5={p5} p6={p6}")
 
-            logger.info(f"   NFy: nfp_shape={nfp_shape} overlap_poly={'YES' if overlap_poly else 'None'}")
+            logger.debug(f"   NFy: nfp_shape={nfp_shape} overlap_poly={'YES' if overlap_poly else 'None'}")
 
             if overlap_poly is not None:
 
@@ -302,15 +313,15 @@ def compute_sticker_layout_for_page(
 
                     shape_props = nfp_props
 
-                logger.info(f"   NFy: overriding shape → {shape_type}")
+                logger.debug(f"   NFy: overriding shape → {shape_type}")
 
         except Exception as e:
 
-            logger.info(f"   NFy: computation FAILED: {e}")
+            logger.debug(f"   NFy: computation FAILED: {e}")
 
     else:
 
-        logger.info(f"   NFy: SKIyyED (strategy={strategy})")
+        logger.debug(f"   NFy: SKIyyED (strategy={strategy})")
 
     # Fallback: extract polygon if not available from NFy
 
@@ -318,11 +329,11 @@ def compute_sticker_layout_for_page(
 
         base_poly = extract_page_die_cut_polygon(page)
 
-        logger.info(f"   yOLY: fallback extract → {'YES' if base_poly else 'None'}")
+        logger.debug(f"   yOLY: fallback extract → {'YES' if base_poly else 'None'}")
 
     else:
 
-        logger.info(f"   yOLY: from NFy → {'YES' if base_poly else 'None'}")
+        logger.debug(f"   yOLY: from NFy → {'YES' if base_poly else 'None'}")
 
     # If user explicitly chose CUSTOM via dropdown, force it
 
@@ -332,11 +343,11 @@ def compute_sticker_layout_for_page(
 
         shape_props = {}
 
-        logger.info(f"   OVERRIDE: forced CUSTOM by user")
+        logger.debug(f"   OVERRIDE: forced CUSTOM by user")
 
-    logger.info(f"   FINAL: shape={shape_type} trim={trim_w:.2f}x{trim_h:.2f} base_poly={'YES' if base_poly else 'None'}")
+    logger.debug(f"   FINAL: shape={shape_type} trim={trim_w:.2f}x{trim_h:.2f} base_poly={'YES' if base_poly else 'None'}")
 
-    logger.info(f"   CALLING solve_optimal_sticker_layout...")
+    logger.debug(f"   CALLING solve_optimal_sticker_layout...")
 
     # ── Step 5: Solve layout (identical call for preview AND output) ──
 
@@ -364,22 +375,22 @@ def compute_sticker_layout_for_page(
 
     result['shapeType'] = shape_type
 
-    result['shapeyrops'] = shape_props
+    result['shapeProps'] = shape_props
 
     result['trimW'] = trim_w
 
     result['trimH'] = trim_h
 
-    logger.info(f"   RESULT: totalItems={result.get('totalItems', 0)} strategyUsed={result.get('strategyUsed', 'N/A')}")
+    logger.debug(f"   RESULT: totalItems={result.get('totalItems', 0)} strategyUsed={result.get('strategyUsed', 'N/A')}")
 
-    logger.info(f"   RESULT: widthUsed={result.get('widthUsed', 0):.2f} heightUsed={result.get('heightUsed', 0):.2f}")
+    logger.debug(f"   RESULT: widthUsed={result.get('widthUsed', 0):.2f} heightUsed={result.get('heightUsed', 0):.2f}")
 
     if result.get('items'):
 
         first_item = result['items'][0]
 
-        logger.info(f"   RESULT: first_item={first_item}")
+        logger.debug(f"   RESULT: first_item={first_item}")
 
-    logger.info(f"{'='*60}\n")
+    logger.debug(f"{'='*60}\n")
 
     return result

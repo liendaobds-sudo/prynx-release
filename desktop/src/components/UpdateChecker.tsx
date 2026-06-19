@@ -54,7 +54,7 @@ export default function UpdateChecker() {
     };
 
     return (
-        <div className="fixed bottom-4 right-4 z-[10000] w-80 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-xl p-4 text-sm">
+        <div className="fixed bottom-4 right-4 z-toast w-80 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-xl p-4 text-sm">
             <div className="flex items-start justify-between gap-2">
                 <div className="font-semibold text-slate-800 dark:text-zinc-100">
                     Có bản cập nhật mới {update.version ? `(${update.version})` : ''}

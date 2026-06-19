@@ -205,26 +205,6 @@ def run_nup_engine(
 
         margin_right += mark_space
 
-    # ── TMP: Trace margin values after include_marks block ──
-    try:
-        import json as _jj
-        from pathlib import Path as _PP
-        _dd = os.path.join(str(_PP.home()), "Desktop")
-        with open(os.path.join(_dd, "debug_nup_l_shape.txt"), "a", encoding="utf-8") as _ff:
-            _ff.write(f"\n--- MARGIN TRACE (after include_marks block) ---\n")
-            _ff.write(_jj.dumps({
-                "marginMode": settings.get('marginMode'),
-                "mark_type_var": mark_type,
-                "mark_len": mark_len, "mark_off": mark_off,
-                "margin_top_AFTER": margin_top,
-                "margin_bottom_AFTER": margin_bottom,
-                "margin_left_AFTER": margin_left,
-                "margin_right_AFTER": margin_right,
-                "condition_result": settings.get('marginMode') == 'include_marks' and mark_type != 'none',
-            }, indent=2) + "\n")
-    except Exception:
-        pass
-
     usable_w = sheet_w - margin_left - margin_right
 
     usable_h = sheet_h - margin_top - margin_bottom
@@ -354,7 +334,7 @@ def run_nup_engine(
 
             page_infos.append((p_idx, qty, cur_trim_w, cur_trim_h))
 
-            logger.info(f"   [ZONE] Page {p_idx}: qty={qty} trim={cur_trim_w:.1f}x{cur_trim_h:.1f}")
+            logger.debug(f"   [ZONE] Page {p_idx}: qty={qty} trim={cur_trim_w:.1f}x{cur_trim_h:.1f}")
 
         # Sort page_infos by size ONLY when mixing multiple types on same sheet
         # (e.g. maximize_area, strict_ratio, cluster_tile).
@@ -412,7 +392,7 @@ def run_nup_engine(
 
             remaining_h -= alloc_h
 
-            logger.info(f"   [ZONE] Page {p_idx}: alloc_h={alloc_h:.1f}pt "
+            logger.debug(f"   [ZONE] Page {p_idx}: alloc_h={alloc_h:.1f}pt "
 
                   f"(item_h={th:.1f}, qty={qty}, strategy={grouping_strategy})")
 
@@ -473,7 +453,7 @@ def run_nup_engine(
                 else:
                     _secondary_gap = None
 
-                logger.error(f"   [ZONE DEBUG] w_for_nfp={w_for_nfp} h_for_nfp={h_for_nfp} gap_x={gap_x} gap_y={gap_y} bleed_pt={bleed_pt} secondary_gap={_secondary_gap}")
+                logger.debug(f"   [ZONE DEBUG] w_for_nfp={w_for_nfp} h_for_nfp={h_for_nfp} gap_x={gap_x} gap_y={gap_y} bleed_pt={bleed_pt} secondary_gap={_secondary_gap}")
                 layout_result = compute_sticker_layout_for_page(
                     page_obj,
                     w_for_nfp,
@@ -496,13 +476,13 @@ def run_nup_engine(
 
                 capacity = len(layout_result.get('items', []))
 
-                logger.info(f"   [ZONE] Page {p_idx}: full-sheet layout -> {capacity} items "
+                logger.debug(f"   [ZONE] Page {p_idx}: full-sheet layout -> {capacity} items "
 
                       f"(strategy={layout_result.get('strategyUsed','?')})")
 
             except Exception as e:
 
-                logger.info(f"   [ZONE] Layout engine failed for page {p_idx}: {e}")
+                logger.warning(f"   [ZONE] Layout engine failed for page {p_idx}: {e}")
 
                 full_layouts[p_idx] = None
 
@@ -540,7 +520,7 @@ def run_nup_engine(
             if is_auto_fill:
                 sum_inv_c = sum(1.0 / items_per_sheet_type[p_idx] for p_idx, _, _, _ in page_infos)
                 N = max(1, int(1.0 / sum_inv_c)) if sum_inv_c > 0 else 1
-                logger.info(f"   [ZONE] AUTO-FILL MODE: Calculated N={N} items per type to fill 1 sheet")
+                logger.debug(f"   [ZONE] AUTO-FILL MODE: Calculated N={N} items per type to fill 1 sheet")
                 page_infos = [(p_idx, N, tw, th) for p_idx, _, tw, th in page_infos]
                 remaining_by_page = {p_idx: N for p_idx, _, _, _ in page_infos}
             else:
@@ -724,7 +704,7 @@ def run_nup_engine(
                 p['original_cell_y'] = usable_h + margin_bottom + margin_top - p['abs_y'] - cell['height']
 
         if layout_type == 'repeat':
-            logger.info(f"   [ZONE] STICKER IMPOSER -> processing pages independently without mixing")
+            logger.debug(f"   [ZONE] STICKER IMPOSER -> processing pages independently without mixing")
             sheet_idx = 0
 
             # ── REPORT & XUẤT TỜ DUY NHẤT (spec: binh-tem-be-report) ──
@@ -947,30 +927,19 @@ def run_nup_engine(
                 # ── MaxRects BIN-PACKING: all types compete freely for space ──
                 
                 # Pre-compute forbidden zones from pont/ốc marks
+                # Dùng SSOT compute_packer_exclude_zones (NGUỒN CHÂN LÝ DUY NHẤT) để
+                # preview (/preview-layout) và output (đây) LUÔN khớp — không chép tay.
                 engine_exclude_zones = []
                 pont_cfg = settings.get('pontConfig') if settings.get('pontType', 'none') != 'none' else None
                 if pont_cfg and not pont_cfg.get('disableCollision', False):
                     try:
-                        from app.workers.pont_collision import calculate_forbidden_zones, MM_TO_PTS as PC_MM
-                        pc_margins = {
-                            'top': pont_cfg.get('marginTop') * PC_MM if pont_cfg.get('marginTop') is not None else margin_top,
-                            'bottom': pont_cfg.get('marginBottom') * PC_MM if pont_cfg.get('marginBottom') is not None else margin_bottom,
-                            'left': pont_cfg.get('marginLeft') * PC_MM if pont_cfg.get('marginLeft') is not None else margin_left,
-                            'right': pont_cfg.get('marginRight') * PC_MM if pont_cfg.get('marginRight') is not None else margin_right,
-                        }
-                        pc_zones = calculate_forbidden_zones(pont_cfg, pc_margins, sheet_w, sheet_h)
-                        if pc_zones:
-                            for z in pc_zones:
-                                zminx, zminy, zmaxx, zmaxy = z.bounds
-                                zw = zmaxx - zminx
-                                zh = zmaxy - zminy
-                                px = zminx - margin_left
-                                py = usable_h - (zminy - margin_bottom + zh)
-                                gap_buf = max(gap_x, gap_y) / 2
-                                px -= gap_buf; py -= gap_buf
-                                zw += gap_buf * 2; zh += gap_buf * 2
-                                engine_exclude_zones.append((px, py, zw, zh))
-                            logger.info(f"   [ZONE] BIN-PACK: {len(engine_exclude_zones)} exclude zones from pont/oc")
+                        from app.workers.pont_collision import compute_packer_exclude_zones
+                        engine_exclude_zones = compute_packer_exclude_zones(
+                            pont_cfg, sheet_w, sheet_h, usable_w, usable_h,
+                            margin_left, margin_bottom, max(gap_x, gap_y),
+                        )
+                        if engine_exclude_zones:
+                            logger.debug(f"   [ZONE] BIN-PACK: {len(engine_exclude_zones)} exclude zones from pont/oc")
                     except Exception as e:
                         logger.warning(f"   [ZONE] BIN-PACK: pont zone calc failed: {e}")
                         engine_exclude_zones = []
@@ -1013,7 +982,7 @@ def run_nup_engine(
                     placed_on_sheet += 1
 
                 _finalize_sheet_centering(sheet_idx)
-                logger.info(f"   [ZONE] BIN-PACK AUTO-FILL DONE: {placed_on_sheet} items on 1 sheet")
+                logger.debug(f"   [ZONE] BIN-PACK AUTO-FILL DONE: {placed_on_sheet} items on 1 sheet")
 
             total_items_placed = placed_on_sheet
 
@@ -1065,7 +1034,7 @@ def run_nup_engine(
                 _finalize_sheet_centering(sheet_idx)
 
             total_items_placed = len(one_sheet_placements) * sheets_needed
-            logger.info(f"   [ZONE] BIN-PACK OFFSET DONE: {len(one_sheet_placements)} items/sheet × {sheets_needed} sheets = {total_items_placed} total")
+            logger.debug(f"   [ZONE] BIN-PACK OFFSET DONE: {len(one_sheet_placements)} items/sheet × {sheets_needed} sheets = {total_items_placed} total")
 
         layout = {
 
@@ -1085,7 +1054,7 @@ def run_nup_engine(
 
         total_items_needed = sum(qty for _, qty, _, _ in page_infos)
 
-        logger.info(f"   [ZONE] DONE: {total_items_placed}/{total_items_needed} items on 1 sheet")
+        logger.debug(f"   [ZONE] DONE: {total_items_placed}/{total_items_needed} items on 1 sheet")
 
         layout = {
 
@@ -1136,34 +1105,8 @@ def run_nup_engine(
         else:
             layout = solve_optimal_layout(usable_w, usable_h, trim_w, trim_h, gap_x, gap_y, strategy, secondary_gap)
 
-        logger.info(f"[NUP_ENGINE SOLVER RESULT] totalItems={layout.get('totalItems')} strategy={layout.get('strategyUsed')}")
-
-        # ── TMP DEBUG: ghi ra file Desktop để so sánh với preview ──
-        try:
-            import json as _json
-            from pathlib import Path as _Path
-            _desktop = os.path.join(str(_Path.home()), "Desktop")
-            _log_path = os.path.join(_desktop, "debug_nup_l_shape.txt")
-            with open(_log_path, "a", encoding="utf-8") as _f:
-                _f.write(f"\n--- LOG FROM NUP_ENGINE (BACKEND) ---\n")
-                _f.write(_json.dumps({
-                    "usable_w": usable_w, "usable_h": usable_h,
-                    "trim_w": trim_w, "trim_h": trim_h,
-                    "gap_x": gap_x, "gap_y": gap_y,
-                    "strategy": strategy, "secondary_gap": secondary_gap,
-                    "margin_top": margin_top, "margin_bottom": margin_bottom,
-                    "sheet_w": sheet_w, "sheet_h": sheet_h,
-                    "split_gap_mm": settings.get('splitGap'),
-                    "gripperMargin": settings.get('gripperMargin'),
-                    "bleed_mm": settings.get('bleed'), "bleed_pt": bleed_pt,
-                    "src_w": src_w, "src_h": src_h,
-                    "marginMode": settings.get('marginMode'),
-                    "markType": settings.get('markType'),
-                    "mark_len_pt": mark_len, "mark_off_pt": mark_off,
-                }, indent=2) + "\n")
-                _f.write(f"ENGINE RESULT: totalItems={layout.get('totalItems')} strategyUsed={layout.get('strategyUsed')}\n")
-        except Exception:
-            pass
+        logger.debug("[NUP_ENGINE SOLVER RESULT] totalItems=%s strategy=%s",
+                     layout.get('totalItems'), layout.get('strategyUsed'))
 
     capacity = layout['totalItems']
 

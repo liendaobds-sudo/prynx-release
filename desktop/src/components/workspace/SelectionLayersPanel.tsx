@@ -3,6 +3,7 @@ import { Button } from '../Button';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { authenticatedFetch, getApiUrl } from '../../lib/api';
+import { Lock, LockOpen, Eye, EyeOff, Trash2, FolderOpen } from 'lucide-react';
 
 // ═══════════════════════════════════════════════════════════
 //  Edit PDF Layers & Components Panel (unified)
@@ -39,6 +40,7 @@ export default function EditLayersPanel({
 }: EditLayersPanelProps) {
     const { 
         pdfUrl, pdfObjectsVersion, selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
+        lockedObjectIds, setLockedObjectIds,
         pdfOcgLayers, hiddenOcgLayerIds, setHiddenOcgLayerIds,
         lockedOcgLayerIds, setLockedOcgLayerIds,
         expandedOcgLayerIds, setExpandedOcgLayerIds,
@@ -313,6 +315,7 @@ export default function EditLayersPanel({
                         <button
                             onClick={(e) => { e.stopPropagation(); handleToggleExpand(layer.id); }}
                             className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 transition-colors shrink-0"
+                            aria-label={isExpanded ? 'Thu gọn nhóm lớp' : 'Mở rộng nhóm lớp'}
                         >
                             <svg className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -337,6 +340,7 @@ export default function EditLayersPanel({
                                 : 'text-slate-500 dark:text-zinc-300 hover:text-blue-600 dark:hover:text-blue-400'
                         }`}
                         title={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
+                        aria-label={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
                     >
                         {isHidden ? (
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -359,6 +363,7 @@ export default function EditLayersPanel({
                                 : 'text-slate-300 dark:text-zinc-600 hover:text-slate-500 dark:hover:text-zinc-400 opacity-0 group-hover/layer:opacity-100'
                         }`}
                         title={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
+                        aria-label={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
                     >
                         {isLocked ? (
                             <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
@@ -390,7 +395,7 @@ export default function EditLayersPanel({
                             layer.isGroup ? 'text-slate-600 dark:text-zinc-300 font-bold italic' : 
                             'text-slate-700 dark:text-zinc-200 font-medium'
                         }`}>
-                            {layer.isGroup ? `📁 ${layer.name}` : layer.name}
+                            {layer.isGroup ? (<><FolderOpen className="w-3 h-3 inline-block mr-1 -mt-0.5" />{layer.name}</>) : layer.name}
                         </span>
                     )}
 
@@ -470,8 +475,8 @@ export default function EditLayersPanel({
 
                     {/* Keyboard Hints */}
                     <div className="shrink-0 text-[9px] text-slate-400 dark:text-zinc-600 px-1 flex gap-3">
-                        <span>👁 Ẩn/Hiện</span>
-                        <span>🔒 Khóa</span>
+                        <span className="flex items-center gap-1"><Eye className="w-3 h-3" /> Ẩn/Hiện</span>
+                        <span className="flex items-center gap-1"><Lock className="w-3 h-3" /> Khóa</span>
                         <span>2x Click = Đổi tên</span>
                         <span>Kéo = Sắp xếp</span>
                     </div>
@@ -517,10 +522,11 @@ export default function EditLayersPanel({
                             return filtered.map((obj: any) => {
                                 const isSelected = selectedObjectIds.includes(obj.id);
                                 const isHidden = hiddenObjectIds.includes(obj.id);
+                                const isLocked = lockedObjectIds.includes(obj.id);
                                 return (
                                     <div
                                         key={obj.id}
-                                        className={`flex items-center gap-1.5 p-2 text-xs cursor-pointer border-b border-slate-100 dark:border-zinc-700/50 hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${isHidden ? 'opacity-50' : ''}`}
+                                        className={`flex items-center gap-1.5 p-2 text-xs cursor-pointer border-b border-slate-100 dark:border-zinc-700/50 hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${isHidden ? 'opacity-50' : ''} ${isLocked ? 'opacity-60' : ''}`}
                                     >
                                         <button
                                             onClick={(e) => {
@@ -531,20 +537,38 @@ export default function EditLayersPanel({
                                             }}
                                             className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isHidden ? 'text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
                                             title={isHidden ? 'Hiện thành phần' : 'Ẩn thành phần'}
+                                            aria-label={isHidden ? 'Hiện thành phần' : 'Ẩn thành phần'}
                                         >
-                                            {isHidden ? '🙈' : '👁'}
+                                            {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                        </button>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setLockedObjectIds(prev =>
+                                                    prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                                                );
+                                                // Khi khóa object đang được chọn → nhả chọn để không thể transform
+                                                setSelectedObjectIds(prev => prev.filter(id => id !== obj.id));
+                                            }}
+                                            className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isLocked ? 'text-amber-500' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
+                                            title={isLocked ? 'Mở khóa thành phần' : 'Khóa thành phần'}
+                                            aria-label={isLocked ? 'Mở khóa thành phần' : 'Khóa thành phần'}
+                                        >
+                                            {isLocked ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
                                         </button>
                                         <input
                                             type="checkbox"
                                             checked={isSelected}
                                             readOnly
+                                            disabled={isLocked}
                                             onClick={(e) => {
                                                 e.stopPropagation();
+                                                if (isLocked) return;
                                                 setSelectedObjectIds(prev =>
                                                     prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
                                                 );
                                             }}
-                                            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3 h-3 cursor-pointer"
+                                            className={`rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3 h-3 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                                         />
                                         <span className={`font-mono text-[9px] w-8 shrink-0 ${{
                                             'text': 'text-blue-500',
@@ -554,9 +578,10 @@ export default function EditLayersPanel({
                                             {obj.type === 'text' ? 'T' : obj.type === 'image' ? '🖼' : obj.type === 'vector' ? '✏️' : '•'}
                                         </span>
                                         <span
-                                            className={`truncate flex-1 text-[11px] ${isHidden ? 'line-through text-slate-400' : ''}`}
+                                            className={`truncate flex-1 text-[11px] ${isHidden ? 'line-through text-slate-400' : ''} ${isLocked ? 'italic text-slate-400' : ''}`}
                                             title={obj.content || obj.type}
                                             onClick={() => {
+                                                if (isLocked) return;
                                                 setSelectedObjectIds(prev =>
                                                     prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
                                                 );
@@ -583,16 +608,16 @@ export default function EditLayersPanel({
                                 }
                             }}
                         >
-                            🗑️ Xóa {selectedObjectIds.length} Thành phần Đã Chọn
+                            <Trash2 className="w-4 h-4" /> Xóa {selectedObjectIds.length} Thành phần Đã Chọn
                         </Button>
                     </div>
 
             {/* Context Menu */}
             {contextMenu && (
                 <>
-                    <div className="fixed inset-0 z-[999]" onClick={() => setContextMenu(null)} />
+                    <div className="fixed inset-0 z-context-menu" onClick={() => setContextMenu(null)} />
                     <div 
-                        className="fixed z-[1000] bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl py-1 min-w-[160px] animate-fade-in"
+                        className="fixed z-context-menu bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl py-1 min-w-[160px] animate-fade-in"
                         style={{ left: contextMenu.x, top: contextMenu.y }}
                     >
                         <button 
@@ -605,7 +630,7 @@ export default function EditLayersPanel({
                             onClick={() => handleToggleLock(contextMenu.layer.id)}
                             className="w-full text-left px-3 py-1.5 text-[12px] text-slate-700 dark:text-zinc-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center gap-2"
                         >
-                            <span>{lockedOcgLayerIds.includes(contextMenu.layer.id) ? '🔓' : '🔒'}</span> 
+                            <span>{lockedOcgLayerIds.includes(contextMenu.layer.id) ? <LockOpen className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}</span> 
                             {lockedOcgLayerIds.includes(contextMenu.layer.id) ? 'Mở khóa' : 'Khóa'}
                         </button>
                         <div className="border-t border-slate-100 dark:border-zinc-700 my-1" />
@@ -620,7 +645,7 @@ export default function EditLayersPanel({
                             onClick={() => handleDeleteLayer(contextMenu.layer.id)}
                             className="w-full text-left px-3 py-1.5 text-[12px] text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 flex items-center gap-2"
                         >
-                            <span>🗑️</span> Xóa lớp
+                            <span><Trash2 className="w-3.5 h-3.5" /></span> Xóa lớp
                         </button>
                     </div>
                 </>

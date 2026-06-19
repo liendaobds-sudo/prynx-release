@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useRecentFiles, type RecentFile } from '../../lib/useRecentFiles';
 import ThumbnailView from './ThumbnailView';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
+import { toast } from '../ui/Toast';
 
 interface Props {
   onOpenFile: (file: File) => void;
@@ -73,7 +74,7 @@ export default function RecentFilesGrid({ onOpenFile, active = true }: Props) {
         
         onOpenFile(fileObj);
       } catch (err) {
-        alert('File might have been moved or deleted:\n' + rf.path);
+        toast.error('File might have been moved or deleted:\n' + rf.path);
         removeFile(rf.path);
       }
     }

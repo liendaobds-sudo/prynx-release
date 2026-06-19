@@ -76,7 +76,9 @@ extract.py
 find_res_bottom.py
 old_sticker_imposer.py
 scratch_rewrite.py
-test_*.py
+# Chỉ ignore scratch test_*.py ở gốc repo và gốc backend/ — KHÔNG ignore backend/tests/.
+/test_*.py
+/backend/test_*.py
 test_*.png
 test_*.js
 test_*.txt

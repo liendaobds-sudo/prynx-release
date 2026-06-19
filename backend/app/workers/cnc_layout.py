@@ -29,12 +29,16 @@ from app.workers.sticker_imposer_pkg.bin_packing import (
 )
 
 
-def _ratio_fill_layout(usable_w, usable_h, page_dims_qty, gap, allow_rotation=True):
+def _ratio_fill_layout(usable_w, usable_h, page_dims_qty, gap, allow_rotation=True,
+                       exclude_zones=None):
     """Lấp đầy MỘT tờ theo TRỌNG SỐ tỉ lệ SL — bounded theo sức chứa tờ.
 
     Mỗi vòng đặt mẫu đang "thiếu" nhất so với tỉ lệ mục tiêu (placed/weight nhỏ
     nhất) mà CÒN VỪA chỗ. Dừng khi không đặt thêm được. KHÔNG enumerate theo độ
-    lớn SL (tránh bùng nổ khi SL lớn như 20000)."""
+    lớn SL (tránh bùng nổ khi SL lớn như 20000).
+
+    exclude_zones: List[(x,y,w,h)] vùng cấm (boong) trong toạ độ packer — loại NGAY
+    lúc xếp để không phải xóa tem sau (tránh để lỗ lớn)."""
     n = len(page_dims_qty)
     qtys = []
     for _, _, _, q in page_dims_qty:
@@ -47,6 +51,9 @@ def _ratio_fill_layout(usable_w, usable_h, page_dims_qty, gap, allow_rotation=Tr
     weights = [(qtys[i] / total) if total > 0 else (1.0 / n) for i in range(n)]
 
     packer = _MaxRectsPacker(usable_w, usable_h)
+    if exclude_zones:
+        for zone in exclude_zones:
+            packer.exclude(*zone)
     placements = []
     placed = [0] * n
     MAX_ITEMS = 100000  # chặn an toàn
@@ -103,6 +110,7 @@ def build_cnc_front_layout(
     margin_bottom: float = 0.0,
     margin_top: float = 0.0,
     allow_rotation: bool = True,
+    exclude_zones=None,
 ) -> Dict[str, Any]:
     """Dựng layout trộn nhiều mẫu cho MỘT tờ Mặt trước.
 
@@ -111,6 +119,9 @@ def build_cnc_front_layout(
         usable_w/usable_h: vùng in (đã trừ lề), points.
         gap: khoảng cách giữa các ô, points.
         margin_left/bottom/top: lề tờ (points) để quy đổi sang toạ độ PDF tuyệt đối.
+        exclude_zones: List[(x,y,w,h)] vùng cấm boong (toạ độ packer). Nếu có → tem
+            được xếp TRÁNH vùng cấm ngay lúc packing (không xóa sau), và KHÔNG
+            re-center (giữ nguyên toạ độ packer để khớp đúng vị trí boong trên tờ).
 
     Returns:
         {placements, cells, items_per_sheet, placed_by_page, sheets_needed,
@@ -118,6 +129,14 @@ def build_cnc_front_layout(
     """
     if not page_dims_qty:
         return _empty_result()
+
+    # Làm tròn kích thước vùng in + gap về 6 chữ số (1e-6pt ≈ vô nghĩa thực tế) để
+    # TRIỆT TIÊU nhiễu dấu-phẩy-động do THỨ TỰ phép tính khác nhau giữa preview
+    # (frontend: (sheet-mL-mR)*k) và output (backend: sheet*k - mL*k - mR*k). Chênh
+    # ~1e-13 từng làm MaxRects lật số tem ở biên → preview ≠ output. (xác minh thực tế)
+    usable_w = round(float(usable_w), 6)
+    usable_h = round(float(usable_h), 6)
+    gap = round(float(gap), 6)
 
     total_qty = 0
     for _, _, _, q in page_dims_qty:
@@ -129,16 +148,19 @@ def build_cnc_front_layout(
             total_qty += qi
 
     # Có SL → lấp đầy theo TRỌNG SỐ tỉ lệ SL (bounded, không bùng nổ với SL lớn).
-    # Không SL → auto_fill (lấp đầy đều). Cả hai đều kín tờ.
+    # Không SL → auto_fill (lấp đầy đều). Cả hai đều kín tờ. Vùng cấm boong (nếu có)
+    # được LOẠI ngay lúc xếp (exclude_zones) thay vì xóa tem sau.
     try:
         if total_qty > 0:
-            res = _ratio_fill_layout(usable_w, usable_h, page_dims_qty, gap, allow_rotation)
+            res = _ratio_fill_layout(usable_w, usable_h, page_dims_qty, gap, allow_rotation,
+                                     exclude_zones=exclude_zones)
         else:
             page_dims = [(p, w, h) for p, w, h, _ in page_dims_qty]
             res = solve_auto_fill_mixed(
                 sheet_w=usable_w, sheet_h=usable_h,
                 page_dims=page_dims,
                 gap=gap, allow_rotation=allow_rotation,
+                exclude_zones=exclude_zones,
             )
     except Exception:
         return _empty_result()
@@ -147,14 +169,18 @@ def build_cnc_front_layout(
     if not raw:
         return _empty_result()
 
-    # Chuẩn hoá về gốc 0 (solver chèn gap/2 ở mép → min có thể > 0) để bbox căn giữa
-    # ĐỐI XỨNG; cells (preview) và placements (render) cùng gốc → preview == output.
+    # LUÔN căn giữa nội dung trên usable (nhất quán + KHỚP preview). Vùng cấm boong
+    # đã được packer LOẠI ở 4 góc; căn giữa chỉ dịch nội dung VỀ TÂM (ra XA góc boong)
+    # nên boong vẫn trống an toàn. (Nhánh has_zones "map trực tiếp không căn giữa" cũ
+    # khiến output dồn sát lề trên, khác preview — đã bỏ.)
     min_x = min(it['x'] for it in raw)
     min_y = min(it['y'] for it in raw)
     content_w = max((it['x'] - min_x + it['w'] for it in raw), default=0.0)
     content_h = max((it['y'] - min_y + it['h'] for it in raw), default=0.0)
     x_pad = (usable_w - content_w) / 2.0 if content_w < usable_w else 0.0
     y_pad = (usable_h - content_h) / 2.0 if content_h < usable_h else 0.0
+    out_overall_w = content_w
+    out_overall_h = content_h
 
     placements: List[Dict[str, Any]] = []
     cells: List[Dict[str, Any]] = []
@@ -164,8 +190,10 @@ def build_cnc_front_layout(
         pidx = it['page_idx']
 
         abs_x = margin_left + x_pad + x
-        # bin-pack y hướng xuống → quy đổi sang mép-đáy PDF (y lên), đã căn giữa.
-        original_cell_y = margin_bottom + y_pad + (content_h - y - h)
+        # original_cell_y = trim_rect.y0 mà place_one_artwork/show_pdf_page hiểu theo
+        # TOP-DOWN (y0 nhỏ = TRÊN). Packer y cũng top-down (y=0 = trên) → cùng chiều
+        # với cells (preview) → preview == output, KHÔNG lật dọc.
+        original_cell_y = margin_top + y_pad + y
 
         placements.append({
             'cluster_idx': 0,
@@ -207,9 +235,66 @@ def build_cnc_front_layout(
         'items_per_sheet': int(res.get('total_placed', len(raw))),
         'placed_by_page': placed,
         'sheets_needed': sheets_needed,
-        'overall_w': content_w,
-        'overall_h': content_h,
+        'overall_w': out_overall_w,
+        'overall_h': out_overall_h,
     }
+
+
+def build_cnc_gang_layout(
+    items,
+    usable_w: float,
+    usable_h: float,
+    gap: float,
+    margin_left: float = 0.0,
+    margin_bottom: float = 0.0,
+    margin_top: float = 0.0,
+    allow_rotation: bool = True,
+    exclude_zones=None,
+) -> Dict[str, Any]:
+    """Dựng layout gang nhiều mẫu từ DetectedShape (spec die-shape-detection-ssot R8).
+
+    `items`: List[(DetectedShape, qty)]. Khác `build_cnc_front_layout` (chỉ nhận
+    kích thước, DROP shape — RC-5), hàm này MANG THEO `shapeType`/`shapeProps`/`poly`
+    của từng mẫu vào mỗi cell + placement để render trang Khuôn và preview dùng
+    ĐÚNG hình thật thay vì coi mọi mẫu là chữ nhật.
+
+    Đóng gói (packing) hiện vẫn theo hình chữ nhật bao của `trim` (baseline an toàn),
+    nên số mẫu/tờ KHÔNG nhỏ hơn bin-pack chữ nhật (R8.5). Việc nâng mật độ bằng
+    nesting đa giác cho gang là cải tiến tương lai (không nằm trong phạm vi này).
+    """
+    if not items:
+        return _empty_result()
+
+    shapes_by_page = {}
+    page_dims_qty = []
+    for shape, qty in items:
+        page_dims_qty.append((shape.page, float(shape.trim.w), float(shape.trim.h), qty))
+        shapes_by_page[shape.page] = shape
+
+    res = build_cnc_front_layout(
+        page_dims_qty, usable_w, usable_h, gap,
+        margin_left=margin_left, margin_bottom=margin_bottom, margin_top=margin_top,
+        allow_rotation=allow_rotation,
+        exclude_zones=exclude_zones,
+    )
+
+    # Gắn shape metadata theo page_idx (R8.1, R8.3, R8.6) — render/preview dùng hình thật.
+    def _enrich(target, page_key):
+        sh = shapes_by_page.get(page_key)
+        if sh is None:
+            return
+        target['shapeType'] = sh.type.name
+        target['shapeProps'] = dict(sh.props or {})
+        target['poly'] = [list(pt) for pt in (sh.poly or ())]
+
+    for cell in res.get('cells', []):
+        _enrich(cell, cell.get('pageIdx'))
+    for pl in res.get('placements', []):
+        _enrich(pl, pl.get('src_page_idx'))
+        if isinstance(pl.get('cell'), dict):
+            _enrich(pl['cell'], pl.get('src_page_idx'))
+
+    return res
 
 
 def select_front_pages(page_count: int, two_sided: bool) -> Tuple[List[int], Dict[int, Any]]:

@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { ChevronUp, ChevronDown, X } from 'lucide-react';
 import { 
     ToolSectionLabel, ToolDivider, ToolCheckboxOption, 
     ToolNumberInput, ToolInfo 
@@ -135,13 +136,13 @@ export default function MergeTool({ settings, onChange }: Props) {
                                 settings.filesToMerge.map((f, i) => (
                                     <div key={i} className="flex items-center gap-2 bg-slate-50 dark:bg-zinc-800 p-1.5 rounded border border-slate-200 dark:border-white/5 group">
                                         <div className="flex flex-col gap-0">
-                                            <button onClick={() => moveFile(i, 'up')} disabled={i === 0} className="text-slate-400 hover:text-blue-500 disabled:opacity-30 leading-none">▲</button>
-                                            <button onClick={() => moveFile(i, 'down')} disabled={i === settings.filesToMerge.length - 1} className="text-slate-400 hover:text-blue-500 disabled:opacity-30 leading-none">▼</button>
+                                            <button onClick={() => moveFile(i, 'up')} disabled={i === 0} className="text-slate-400 hover:text-blue-500 disabled:opacity-30 leading-none"><ChevronUp className="w-3.5 h-3.5" /></button>
+                                            <button onClick={() => moveFile(i, 'down')} disabled={i === settings.filesToMerge.length - 1} className="text-slate-400 hover:text-blue-500 disabled:opacity-30 leading-none"><ChevronDown className="w-3.5 h-3.5" /></button>
                                         </div>
                                         <div className="flex-1 text-[11px] font-medium text-slate-700 dark:text-zinc-200 truncate" title={f.name}>
                                             {f.name}
                                         </div>
-                                        <button onClick={() => removeFile(i)} className="text-red-400 hover:text-red-600 px-1 opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                                        <button onClick={() => removeFile(i)} className="text-red-400 hover:text-red-600 px-1 opacity-0 group-hover:opacity-100 transition-opacity" title="Xóa" aria-label="Xóa file"><X className="w-3.5 h-3.5" /></button>
                                     </div>
                                 ))
                             )}

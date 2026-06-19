@@ -100,7 +100,7 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
                         cfg['widthUsed'] = 0
                         cfg['heightUsed'] = 0
                     if cfg['totalItems'] < original_n:
-                        logger.warning(f"[COLLISION_PRE_SORT] {strat} rot={rot}: {original_n} → {cfg['totalItems']} items (loại {original_n - cfg['totalItems']})")
+                        logger.debug(f"[COLLISION_PRE_SORT] {strat} rot={rot}: {original_n} → {cfg['totalItems']} items (loại {original_n - cfg['totalItems']})")
 
         elif shape_type == 'TRIANGLE':
             t1 = solve_advanced_triangle_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props, False)
@@ -238,14 +238,15 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
         # Debug: log all strategies and their item counts
         import logging
         _logger = logging.getLogger(__name__)
-        _logger.warning("========== LAYOUT SELECTION (Shape: %s) ==========", shape_type)
-        for cfg, rot, strat in configs:
-            score = cfg.get('_debug_score', (0, 0, 0))
-            msg = "[LAYOUT_CANDIDATES] %20s rot=%-5s items=%3d | score_items=%s bonus=%.4f area=%.1f" % (strat, rot, cfg['totalItems'], score[0], score[1], -score[2])
-            _logger.warning(msg)
-            
+        if _logger.isEnabledFor(logging.DEBUG):
+            _logger.debug("========== LAYOUT SELECTION (Shape: %s) ==========", shape_type)
+            for cfg, rot, strat in configs:
+                score = cfg.get('_debug_score', (0, 0, 0))
+                msg = "[LAYOUT_CANDIDATES] %20s rot=%-5s items=%3d | score_items=%s bonus=%.4f area=%.1f" % (strat, rot, cfg['totalItems'], score[0], score[1], -score[2])
+                _logger.debug(msg)
+
         winner_msg = "[LAYOUT_WINNER] >>> %s (rot=%s) items=%d shape=%s" % (best_strategy, is_rotated, best_config['totalItems'], shape_type)
-        _logger.warning(winner_msg)
+        _logger.debug(winner_msg)
         
         if is_rotated and best_strategy not in ('head_to_tail', 'l_shape', 'hammer_illustrator', 'dumbbell_illustrator', 'trapezoid_illustrator'):
             for item in best_config['items']:
@@ -273,10 +274,10 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
 
         # Config A: right fill spans full usable height, bottom fill spans only main block width
         right_items_a = []
-        _logger.warning(f"[FILL_DEBUG] right_avail_w={right_avail_w:.1f} bottom_avail_h={bottom_avail_h:.1f} min_dim={min(item_w, item_h):.1f}")
+        _logger.debug(f"[FILL_DEBUG] right_avail_w={right_avail_w:.1f} bottom_avail_h={bottom_avail_h:.1f} min_dim={min(item_w, item_h):.1f}")
         if right_avail_w >= min(item_w, item_h) - 0.01:
             fr = _best_fill_layout(item_w, item_h, right_avail_w, usable_h, gap_x, gap_y, p5_params, p6_params, p5_row_params, p6_row_params, p5_col_params, p6_col_params, shape_type, shape_props)
-            _logger.warning(f"[FILL_DEBUG] right_items_a generated: {fr['totalItems']} items, rot={fr.get('items', [{}])[0].get('isRotated') if fr['items'] else None}")
+            _logger.debug(f"[FILL_DEBUG] right_items_a generated: {fr['totalItems']} items, rot={fr.get('items', [{}])[0].get('isRotated') if fr['items'] else None}")
             for it in fr['items']:
                 right_items_a.append({**it, 'x': it['x'] + right_x})
         bottom_items_a = []

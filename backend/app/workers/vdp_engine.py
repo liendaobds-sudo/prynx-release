@@ -318,8 +318,8 @@ def process_chunk(args) -> str:
                             w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
                             guard += 1
 
-                    # To align Top-Left, draw at rl_y + f_rect['h'] - h
-                    p.drawOn(c, rl_x, rl_y + f_rect['h'] - h)
+                    # Canh GIỮA theo chiều dọc trong khung: chừa đều trên/dưới.
+                    p.drawOn(c, rl_x, rl_y + (f_rect['h'] - h) / 2.0)
             except Exception as e:
                 c.setFillColorRGB(1, 0, 0)
                 c.setFont("Helvetica", 7)

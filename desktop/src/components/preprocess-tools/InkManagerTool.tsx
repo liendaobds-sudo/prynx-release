@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 
@@ -91,7 +92,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
             <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
               🎨 KÊNH MỰC (INK CHANNELS)
             </span>
-            <span className={`text-[10px] text-slate-400 transition-transform duration-200 ${isInksOpen ? 'rotate-180' : ''}`}>▼</span>
+            <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isInksOpen ? 'rotate-180' : ''}`} />
           </button>
           <div className="flex items-center gap-2">
             {!loading && inks.length > 0 && (

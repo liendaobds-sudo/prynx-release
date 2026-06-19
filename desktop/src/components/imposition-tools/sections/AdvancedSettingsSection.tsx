@@ -57,10 +57,14 @@ function CollapsibleGroup({
     );
 }
 
-export default function AdvancedSettingsSection({ activeTool }: { activeTool: string }) {
+export default function AdvancedSettingsSection({ activeTool, sourceTotalPages = 0 }: { activeTool: string; sourceTotalPages?: number }) {
     const s = useImposerSettingsStore(useShallow(state => ({
         taskMode: state.taskMode,
         scaleMode: state.scaleMode,
+        // Bình 2 mặt (CNC) — Cạnh lật + Dấu canh in 2 mặt (chuyển vào đây cho gọn UI)
+        duplexFlow: state.duplexFlow, setDuplexFlow: state.setDuplexFlow,
+        cncFlipEdge: state.cncFlipEdge, setCncFlipEdge: state.setCncFlipEdge,
+        cncDuplexMarks: state.cncDuplexMarks, setCncDuplexMarks: state.setCncDuplexMarks,
         layoutType: state.layoutType, setLayoutType: state.setLayoutType,
         // Grouping Strategy
         groupingStrategy: state.groupingStrategy, setGroupingStrategy: state.setGroupingStrategy,
@@ -174,6 +178,42 @@ export default function AdvancedSettingsSection({ activeTool }: { activeTool: st
                 <div className="overflow-hidden">
                     <div className="p-4 flex flex-col gap-3 border-t border-slate-200 dark:border-white/10">
 
+
+                        {/* ══ BÌNH 2 MẶT (CNC) — In 2 mặt + Cạnh lật + Dấu canh in 2 mặt ══ */}
+                        {activeTool === 'cnc_imposer' && (
+                        <CollapsibleGroup title="🔻 Bình 2 mặt (CNC)" defaultOpen>
+                            <Checkbox
+                                checked={s.duplexFlow === 'double'}
+                                onChange={(v) => s.setDuplexFlow(v ? 'double' : 'normal')}
+                                label="In 2 mặt (lật gương mặt sau)"
+                            />
+                            {s.duplexFlow === 'double' && sourceTotalPages > 0 && sourceTotalPages % 2 !== 0 && (
+                                <div className="text-[11px] text-red-600 dark:text-red-400">
+                                    ⚠️ File có {sourceTotalPages} trang (lẻ) — bình 2 mặt cần số trang CHẴN.
+                                </div>
+                            )}
+                            {s.duplexFlow === 'double' && (
+                                <>
+                                    <div className="flex items-center gap-3">
+                                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">CẠNH LẬT</label>
+                                        <select
+                                            value={s.cncFlipEdge}
+                                            onChange={e => s.setCncFlipEdge(e.target.value)}
+                                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                        >
+                                            <option value="long">Cạnh dài (long-edge) — mặc định</option>
+                                            <option value="short">Cạnh ngắn (short-edge)</option>
+                                        </select>
+                                    </div>
+                                    <Checkbox
+                                        checked={s.cncDuplexMarks}
+                                        onChange={(v) => s.setCncDuplexMarks(v)}
+                                        label="Dấu canh in 2 mặt (vẽ cả 2 mặt)"
+                                    />
+                                </>
+                            )}
+                        </CollapsibleGroup>
+                        )}
 
                         {/* ══ NHÓM ① ĐỊNH VỊ & CẮT ══ */}
                         {stickerLike && (

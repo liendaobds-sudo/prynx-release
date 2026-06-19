@@ -84,8 +84,11 @@ class PlanExecutor:
                         back, global_cfg, total_src_pages
                     )
 
-            # Save output
-            output_filename = "imposed_plan_output.pdf"
+            # Save output — tên file UNIQUE (uuid) để 2 job booklet đồng thời / nhiều
+            # tab KHÔNG ghi đè cùng 1 file trong results/ (audit #C1). FileResponse trả
+            # theo NỘI DUNG file nên tên đĩa không ảnh hưởng phía client.
+            import uuid as _uuid
+            output_filename = f"imposed_plan_{_uuid.uuid4().hex[:8]}.pdf"
             output_path = os.path.join(output_dir, output_filename)
 
             logger.info(f"PlanExecutor: Saving output to {output_path}")
@@ -239,29 +242,34 @@ def _draw_marks_batched(page: pdf_lib.Page, marks: list, sheet_h: float):
     """
     Draw all marks on a page using pdf_lib.Shape for batched rendering.
     Groups marks by color to minimize finish() calls.
+
+    Marks giữ NGUYÊN màu CMYK do planner chỉ định (vd registration K-only
+    [0,0,0,1]) thay vì quy đổi sang RGB — để dấu xén/gấp xuất đúng trên bản
+    tách kẽm offset (ShapeBuilder.finish nhận tuple 4 phần tử → toán tử `K`).
     """
     if not marks:
         return
 
-    # Group marks by color for efficient rendering
+    # Group marks by CMYK color + thickness for efficient rendering
     color_groups: dict[tuple, list] = {}
     for mark in marks:
         cmyk = mark.get("color", [0, 0, 0, 1])
         thickness = mark.get("thickness_pt", 0.25)
+        # Chuẩn hoá về CMYK 4 phần tử (nếu thiếu → registration K-only).
+        if len(cmyk) == 4:
+            col = (round(float(cmyk[0]), 4), round(float(cmyk[1]), 4),
+                   round(float(cmyk[2]), 4), round(float(cmyk[3]), 4))
+        elif len(cmyk) == 3:
+            # RGB hiếm gặp → giữ nguyên 3 phần tử (finish ghi RG).
+            col = (round(float(cmyk[0]), 4), round(float(cmyk[1]), 4), round(float(cmyk[2]), 4))
+        else:
+            col = (0, 0, 0, 1)
 
-        # Convert CMYK to RGB for shape drawing
-        c_val, m_val, y_val, k_val = cmyk[0], cmyk[1], cmyk[2], cmyk[3]
-        r = (1 - c_val) * (1 - k_val)
-        g = (1 - m_val) * (1 - k_val)
-        b = (1 - y_val) * (1 - k_val)
+        key = (col, round(thickness, 3))
+        color_groups.setdefault(key, []).append(mark)
 
-        key = (round(r, 3), round(g, 3), round(b, 3), round(thickness, 3))
-        if key not in color_groups:
-            color_groups[key] = []
-        color_groups[key].append(mark)
-
-    # Render each color group in a single shape batch
-    for (r, g, b, thickness), group_marks in color_groups.items():
+    # Render each color group in a single shape batch (CMYK preserved)
+    for (col, thickness), group_marks in color_groups.items():
         shape = page.new_shape()
 
         for mark in group_marks:
@@ -277,5 +285,5 @@ def _draw_marks_batched(page: pdf_lib.Page, marks: list, sheet_h: float):
                 pdf_lib.Point(x2, y2_pike),
             )
 
-        shape.finish(color=(r, g, b), width=thickness)
+        shape.finish(color=col, width=thickness)
         shape.commit()

@@ -7,6 +7,7 @@
  * - Preview cây thư mục/tên file (WYSIWYG) trước khi ghi.
  */
 import React, { useState, useMemo, useEffect } from 'react';
+import { X } from 'lucide-react';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { buildSavePlan, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
 
@@ -60,6 +61,15 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
     }, [open, resultBlob, separateCut, cncMode, cncTwoSided, typesProp, labelNameText]);
 
     const types: SaveTypeInfo[] = (typesProp && typesProp.length) ? typesProp : (derivedTypes || []);
+
+    useEffect(() => {
+        if (!open) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [open, onClose]);
 
     const cfg: SavePlanConfig = {
         nameMode: savePrint.nameMode,
@@ -116,11 +126,11 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
     const totalSheets = types.reduce((s, t) => s + (t.sheetCount || 0), 0);
 
     return (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-[560px] max-h-[85vh] overflow-hidden flex flex-col border border-black/10 dark:border-white/10">
+        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div role="dialog" aria-modal="true" aria-label="Lưu file in" className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-[560px] max-h-[85vh] overflow-hidden flex flex-col border border-black/10 dark:border-white/10">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-white/10">
                     <h2 className="text-[16px] font-bold text-slate-800 dark:text-white">🖨️ Lưu file in</h2>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-white">✕</button>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-white" title="Đóng" aria-label="Đóng"><X className="w-4 h-4" /></button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">

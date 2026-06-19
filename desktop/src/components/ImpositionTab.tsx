@@ -6,10 +6,10 @@ import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory } from '../lib/toolR
 import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
-import { useEditSession } from '../hooks/useEditSession';
 import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
 import { Button } from './Button';
+import { Scissors, Settings, Star } from 'lucide-react';
 import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
@@ -26,6 +26,7 @@ import { getFileArrayBuffer, detectColorSpace } from '../lib/utils';
 import OutputPreviewTab, { type PlateOverlay } from './OutputPreviewTab';
 import DataMergeTool from './preprocess-tools/DataMergeTool';
 import NumberingTool from './preprocess-tools/NumberingTool';
+import CoverNumberingTool from './preprocess-tools/CoverNumberingTool';
 import StickTextNumberTool from './preprocess-tools/StickTextNumberTool';
 import SaveModal from './workspace/SaveModal';
 import SavePrintFilesModal from './workspace/SavePrintFilesModal';
@@ -88,6 +89,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         currentEditObjects,
         pdfOcgLayers, setPdfOcgLayers,
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
+        setLockedObjectIds,
         hiddenOcgLayerIds, setHiddenOcgLayerIds,
         selectionFileId, setSelectionFileId, vdpFields, setVdpFields,
         selectedVdpFieldIds, setSelectedVdpFieldIds,
@@ -112,6 +114,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         currentEditObjects: state.currentEditObjects,
         pdfOcgLayers: state.pdfOcgLayers, setPdfOcgLayers: state.setPdfOcgLayers,
         selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
+        setLockedObjectIds: state.setLockedObjectIds,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds,
         selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields,
         selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
@@ -169,7 +172,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 width: box.width,
                 height: box.height,
                 pageNum: box.pageNum,
-                alignment: 'left',
+                alignment: 'center',
                 fontSize: 13,
                 characterSpacing: 0,
                 lineHeight: 1,
@@ -449,12 +452,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setViewerPageRotations(undefined);
         setHighlightedIssue(null);
         setViewerDirty(false); // Clear any preflight highlights
-        setSelectionFileId(''); // Force re-upload for selection tool
+        setSelectionFileId(''); // Reset fid � object edit re-uploads on demand
         setHiddenObjectIds([]);
+        setLockedObjectIds([]);
     }, [file, originalFileName, onTitleChange]);
 
 
-    // --- SELECTION TOOL LOGIC ---
+    // --- OBJECT EDIT UPLOAD ---
     const uploadPromiseRef = useRef<Promise<any> | null>(null);
     const pdfObjectsCacheRef = useRef<Record<number, any[]>>({});
 
@@ -540,18 +544,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
     }, [file, setError, setPdfObjectsVersion, store]);
 
-    // Update objects when mode is toggled or page changes
-    useEffect(() => {
-        if (!isObjectEditMode) {
-            globalPdfObjectCache.clear(pdfUrl || '');
-            setPdfObjectsVersion(0);
-            setSelectedObjectIds([]);
-            setHiddenObjectIds([]);
-            setPdfOcgLayers([]);
-            setHiddenOcgLayerIds([]);
-        }
-    }, [isObjectEditMode]);
-
     // Refresh OCG layers on demand (from Layer Panel actions)
     useEffect(() => {
         const handleRefreshLayers = async () => {
@@ -583,23 +575,23 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             return;
         }
 
+        // alert(`Bắt đầu xóa ${objs.length} object trên trang ${pageNum}...`);
         setIsProcessing(true);
         setProcessStatus('Đang xóa đối tượng...');
         setError('');
         try {
-            // Prefer modern edit delete when in object edit mode (safer, accurate)
-            const endpoint = isObjectEditMode 
-                ? `${getApiUrl()}/edit/delete` 
-                : `${getApiUrl()}/preflight/delete-object`;
-
-            const body = isObjectEditMode 
-                ? { fid: selectionFileId, op: { page: pageNum - 1, kind: 'delete', targetIds: objs.map(o => o.id) } }
-                : { file_id: selectionFileId, page: pageNum, objects: objs.map(obj => ({ type: obj.type, bbox: obj.bbox })) };
-
-            const res = await authenticatedFetch(endpoint, {
+            const res = await authenticatedFetch(`${getApiUrl()}/preflight/delete-object`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
+                body: JSON.stringify({
+                    file_id: selectionFileId,
+                    page: pageNum,
+                    objects: objs.map(obj => ({
+                        type: obj.type,
+                        bbox: obj.bbox,
+                        xref: obj.xref
+                    }))
+                })
             });
             if (!res.ok) throw new Error('Xóa thất bại');
             const data = await res.json();
@@ -707,97 +699,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [file, pdfUrl, setHistory, setFile, setOriginalFileName, setPdfUrl, setFileSizeStr,
         setIsSaved, onTitleChange, setSelectionFileId, setError, selectionFileId, editHistory]);
 
-    // ─── PHIÊN CHỈNH SỬA TRONG BỘ NHỚ (spec `pdf-edit-session`) ─────────────────
-    // VÌ SAO: thay cho Legacy_Commit_Flow (mỗi Edit_Op ghi 1 Working_File ra đĩa →
-    // Rust mở lại file → render cả trang, ~5s), backend giữ một `pikepdf.Pdf` SỐNG
-    // theo phiên. ImpositionTab quản VÒNG ĐỜI phiên (mở khi vào edit mode, đóng khi
-    // thoát, commit khi lưu) — task 12.1. Việc áp Edit_Op + dán overlay clip do
-    // LivePageFrame đảm nhiệm (task 11.1), KHÔNG đụng tới ở đây.
-    //
-    // - onCommit (debounce tự động ~1.5s sau op cuối): vật chất hóa Working_File mới
-    //   rồi nối qua handleEditCommit để đổi tile thật + selectionFileId (Yêu cầu 5.3, 12.2).
-    // - onSessionFailed (HTTP 410 / mở phiên lỗi): LivePageFrame tự rơi về Legacy qua
-    //   onEditCommit; ở mức Tab chỉ cần buông trạng thái phiên (Yêu cầu 9.5, 11.1).
-    const editSession = useEditSession({
-        onCommit: (result) => {
-            if (result?.success && result.output_url) {
-                void handleEditCommit(
-                    result.output_url,
-                    result.output_filename || `Edited_${file?.name || 'document.pdf'}`,
-                    result.output_fid,
-                    result.output_path,
-                );
-            }
-        },
-        onSessionFailed: () => {
-            // Phiên không còn → fallback Legacy do tầng LivePageFrame xử lý. Tab không
-            // giữ lại trạng thái phiên (Yêu cầu 11.1).
-        },
-    });
-
-    // Mở/đóng phiên theo vòng đời edit mode (Yêu cầu 9.1, 11.1, 12.2).
-    //  - Vào edit mode + đã có `fid` (selectionFileId) → mở phiên MỘT lần; giữ phiên
-    //    qua các lần commit (commit tạo Working_File mới nhưng KHÔNG đóng phiên).
-    //  - Thoát edit mode → đóng phiên, giải phóng Live_Document khỏi RAM backend.
-    // `editSessionTriedRef` chặn mở lặp khi `fid` đổi giữa phiên (sau commit) và tránh
-    // spam mở lại khi phiên mở lỗi; reset khi rời edit mode để cho phép thử lại lần sau.
-    const editSessionTriedRef = useRef(false);
-    useEffect(() => {
-        if (isObjectEditMode) {
-            if (selectionFileId && !editSession.sessionId && !editSessionTriedRef.current) {
-                editSessionTriedRef.current = true;
-                void editSession.openSession(selectionFileId).then(() => {
-                    // Prefetch objects ngay sau khi session mở → lần đầu vào edit tool nhanh hơn nhiều
-                    // (backend sẽ dùng live pdf + cache). Prefetch trang đầu (0-based).
-                    if (selectionFileId) {
-                        void authenticatedFetch(`${getApiUrl()}/edit/objects/${selectionFileId}/0`).catch(() => {});
-                    }
-                });
-            }
-        } else {
-            editSessionTriedRef.current = false;
-            if (editSession.sessionId) void editSession.closeSession();
-        }
-    }, [isObjectEditMode, selectionFileId, editSession.sessionId, editSession.openSession, editSession.closeSession]);
-
-    // Đóng phiên khi unmount để không rò Live_Document trong RAM backend (Yêu cầu 9.1).
-    useEffect(() => () => { void editSession.closeSession(); }, []);
-
-    // Keyboard shortcuts for Selection mode (Delete, Escape, Ctrl+A)
-    useEffect(() => {
-        // Old selection keyboard delete removed; edit mode handles its own delete in LivePageFrame
-        if (!isObjectEditMode || !isActive) return;
-        const handler = (e: KeyboardEvent) => {
-            // Delete / Backspace => delete selected objects
-            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObjectIds.length > 0) {
-                e.preventDefault();
-                const pageEntries = Object.entries(globalPdfObjectCache.getAllObjects(pdfUrl || ''));
-                for (const [pageNumStr, objects] of pageEntries) {
-                    const objectsToDelete = objects.filter((o: any) => selectedObjectIds.includes(o.id));
-                    if (objectsToDelete.length > 0) {
-                        handleDeleteObjects(objectsToDelete, parseInt(pageNumStr));
-                        break;
-                    }
-                }
-            }
-            // Escape => deselect all
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                setSelectedObjectIds([]);
-            }
-            // Ctrl+A => select all on visible page
-            if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                const allIds: string[] = [];
-                Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).forEach((objects: any[]) => {
-                    objects.forEach(o => allIds.push(o.id));
-                });
-                setSelectedObjectIds(allIds);
-            }
-        };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [isObjectEditMode, selectedObjectIds, pdfObjectsVersion, handleDeleteObjects, isActive]);
     // ----------------------------
 
     const handleUndo = useCallback(() => {
@@ -1186,8 +1087,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setBleedView({ show: false, mm: 0 });
         setHighlightedIssue(null);
         setViewerDirty(false); // Clear any preflight highlights
-        setSelectionFileId(''); // Force re-upload for selection tool
+        setSelectionFileId(''); // Reset fid � object edit re-uploads on demand
         setHiddenObjectIds([]);
+        setLockedObjectIds([]);
         setShowCloseConfirm(false);
         setVdpFields([]); // Clear barcode/VDP fields
         setSelectedVdpFieldIds([]);
@@ -1270,47 +1172,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         if (!targetBlob) return;
 
-        // ── Commit phiên chỉnh sửa in-memory TRƯỚC khi lưu (Yêu cầu 5.2, 12.2) ──
-        // Nếu đang có Edit_Session với thay đổi chưa ghi (dirty), vật chất hóa
-        // Live_Document ra Working_File rồi dùng CHÍNH file đó làm nguồn lưu — tránh
-        // lưu nhầm trạng thái cũ khi op cuối chưa kịp debounce-commit. Commit thất bại
-        // → giữ nguyên phiên, báo lỗi, vẫn cho lưu trạng thái hiện có (Yêu cầu 10.5).
-        if (editSession.sessionId && editSession.dirty) {
-            setIsProcessing(true);
-            setProcessStatus('Đang lưu thay đổi chỉnh sửa...');
-            try {
-                const committed = await editSession.commit();
-                if (committed?.success) {
-                    // Đồng bộ con trỏ file in-memory + selectionFileId sang Working_File mới.
-                    await handleEditCommit(
-                        committed.output_url || '',
-                        committed.output_filename || targetName,
-                        committed.output_fid,
-                        committed.output_path,
-                    );
-                    // Nạp nguồn lưu từ Working_File vừa commit (không dùng `file` cũ stale).
-                    const isTauri = !!(window as any).__TAURI_INTERNALS__;
-                    if (isTauri && committed.output_path) {
-                        const { readFile } = (await import('@tauri-apps/plugin-fs')) as any;
-                        const bytes = await readFile(committed.output_path);
-                        targetBlob = new Blob([bytes], { type: 'application/pdf' });
-                    } else if (committed.output_url) {
-                        const base = getApiUrl().replace(/\/api\/?$/, '');
-                        const fullUrl = committed.output_url.startsWith('http')
-                            ? committed.output_url : `${base}${committed.output_url}`;
-                        const res = await authenticatedFetch(fullUrl);
-                        if (res.ok) targetBlob = await res.blob();
-                    }
-                    if (committed.output_filename) targetName = committed.output_filename;
-                }
-            } catch (err: any) {
-                setError('Lỗi commit phiên chỉnh sửa: ' + (err?.message || err));
-            } finally {
-                setIsProcessing(false);
-                setProcessStatus('');
-            }
-        }
-
         // File kết quả đã sinh sẵn (VDP/batch...) đã bake đủ — KHÔNG áp lại edits/VDP còn
         // sót trong store (tránh bị thêm tiền tố "Edited_"/"VDP_" sai khi chạy nhiều file).
         const isGeneratedResult = !!(file as any)?.isGenerated;
@@ -1383,6 +1244,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setSelectedVdpFieldIds([]);
             setSelectionFileId('');
             setHiddenObjectIds([]);
+            setLockedObjectIds([]);
         };
 
         try {
@@ -1449,7 +1311,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         } catch (e: any) {
             setError('Không thể lưu file: ' + e);
         }
-    }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange, editSession, handleEditCommit]);
+    }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange]);
 
     useEffect(() => {
         const handleTriggerSave = (e: any) => {
@@ -1517,6 +1379,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     //#endregion
 
+    // Quyết định hiển thị NHÃN CHỮ trong mini toolbar.
+    // - Khi KHÔNG có công cụ đang chọn: cột là w-full (rộng = sidebarWidth) → hiện nhãn nếu đủ rộng (>=120px).
+    // - Khi CÓ công cụ: giữ nguyên hành vi cũ theo isMiniToolbarExpanded (48px icon / 220px có nhãn).
+    const showMiniLabels = activeDashboardTool === 'none' ? sidebarWidth >= 120 : isMiniToolbarExpanded;
+
     //#region Render
     return (
         <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1c23]">
@@ -1556,7 +1423,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             {phase === 'workspace' && (
                 <div className="flex-1 flex flex-row overflow-hidden relative animate-fade-in">
                     {confirmBookletSettings && createPortal(
-                        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setConfirmBookletSettings(null)} onKeyDown={e => { if (e.key === 'Escape') setConfirmBookletSettings(null); }} tabIndex={-1} ref={el => el?.focus()}>
+                        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setConfirmBookletSettings(null)} onKeyDown={e => { if (e.key === 'Escape') setConfirmBookletSettings(null); }} tabIndex={-1} ref={el => el?.focus()}>
                             <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-slide-up" onClick={e => e.stopPropagation()}>
                                 <div className="p-5 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
                                     <h2 className="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
@@ -1689,7 +1556,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onObjectDelete={handleDeleteObjects}
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
                                     onEditCommit={handleEditCommit}
-                                    editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}
                                     toolbarExtra={(file && isOutputFile(file.name)) ? (
                                         <button
@@ -1697,7 +1563,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
                                             title="Gửi dữ liệu cắt tới máy bế"
                                         >
-                                            ✂️ Gửi Máy Bế
+                                            <Scissors className="w-4 h-4" /> Gửi Máy Bế
                                         </button>
                                     ) : undefined}
                                     rightPanel={(
@@ -1754,6 +1620,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 onClick={() => window.dispatchEvent(new CustomEvent('open-preset-modal'))}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
                                                                 title="Tải preset sản phẩm"
+                                                                aria-label="Tải preset sản phẩm"
                                                             >
                                                                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                                                             </button>
@@ -1764,6 +1631,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 onClick={() => { if (isObjectEditMode) editHistory.undo(); else handleUndo(); }}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
                                                                 title="Hoàn tác thao tác trước (Ctrl+Z)"
+                                                                aria-label="Hoàn tác thao tác trước"
                                                             >
                                                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
                                                             </button>
@@ -1776,6 +1644,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onClick={() => setIsSidebarOpen(false)}
                                                             className="w-7 h-7 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200 rounded transition-colors"
                                                             title="Thu gọn Menu"
+                                                            aria-label="Thu gọn Menu"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                                                         </button>
@@ -1845,6 +1714,28 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 }
                                                             }}
                                                         />
+                                                    ) : activeDashboardTool === 'cover_numbering' ? (
+                                                        <CoverNumberingTool
+                                                            pdfFile={file}
+                                                            getWorkingFile={getWorkingFile}
+                                                            vdpFields={vdpFields}
+                                                            setVdpFields={setVdpFields}
+                                                            selectedFieldIds={selectedVdpFieldIds}
+                                                            onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
+                                                            isActive={isActive}
+                                                            onBack={() => setActiveDashboardTool('none')}
+                                                            onApplyResult={(blob: Blob, name: string) => {
+                                                                commitWorkingFile(blob, name);
+                                                                setVdpFields([]);
+                                                                setSelectedVdpFieldIds([]);
+                                                                setActiveDashboardTool('none');
+                                                            }}
+                                                            onSpawnTab={(blob: Blob, name: string) => {
+                                                                const newFile = new File([blob], name, { type: 'application/pdf' });
+                                                                Object.defineProperty(newFile, 'isGenerated', { value: true });
+                                                                if (onSpawnTab) onSpawnTab(newFile);
+                                                            }}
+                                                        />
                                                     ) : activeDashboardTool === 'stick_text_number' ? (
                                                         <StickTextNumberTool
                                                             pdfFile={file}
@@ -1878,9 +1769,21 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         {(!isSidebarOpen || activeDashboardTool !== 'none') && (
                                             <div className={`relative h-full shrink-0 transition-all ${isDraggingSidebar ? 'duration-0' : 'duration-300'} ${activeDashboardTool !== 'none' ? (isMiniToolbarExpanded ? 'w-[220px]' : 'w-[48px]') : 'w-full'}`}>
                                                 <button
-                                                    onClick={() => setIsMiniToolbarExpanded(!isMiniToolbarExpanded)}
+                                                    onClick={() => {
+                                                        // KHÔNG có công cụ đang chọn: cột mini có độ rộng = sidebarWidth
+                                                        // (không đổi theo isMiniToolbarExpanded) → toggle mini chỉ thêm/bớt
+                                                        // nhãn, KHÔNG mở panel. Vì vậy mũi tên ở chế độ này MỞ THẲNG panel
+                                                        // cấu hình (giống kéo resizer) thay vì toggle nhãn.
+                                                        if (activeDashboardTool === 'none') {
+                                                            if (sidebarWidth < 280) setSidebarWidth(390);
+                                                            setIsSidebarOpen(true);
+                                                        } else {
+                                                            setIsMiniToolbarExpanded(!isMiniToolbarExpanded);
+                                                        }
+                                                    }}
                                                     className="absolute top-1/2 -left-[14px] -translate-y-1/2 w-7 h-7 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full flex items-center justify-center shadow-sm hover:bg-slate-50 dark:hover:bg-zinc-700 transition-colors z-[100] text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400"
                                                     title={isMiniToolbarExpanded ? "Thu gọn menu" : "Mở rộng menu"}
+                                                    aria-label={isMiniToolbarExpanded ? "Thu gọn menu" : "Mở rộng menu"}
                                                 >
                                                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                                                         {isMiniToolbarExpanded ? (
@@ -1898,11 +1801,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 if (sidebarWidth < 280) setSidebarWidth(390);
                                                                 setIsSidebarOpen(true);
                                                             }}
-                                                            className={`h-8 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 transition-colors rounded outline-none w-full ${isMiniToolbarExpanded ? 'justify-start px-2' : ''}`}
+                                                            className={`h-8 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 transition-colors rounded outline-none w-full ${showMiniLabels ? 'justify-start px-2' : ''}`}
                                                             title="Mở Bảng Cấu Hình"
+                                                            aria-label="Mở Bảng Cấu Hình"
                                                         >
-                                                            <span className="text-slate-500 dark:text-zinc-400">⚙️</span>
-                                                            {isMiniToolbarExpanded && <span className="ml-2 text-[13px] font-bold text-slate-700 dark:text-zinc-300">Công cụ</span>}
+                                                            <span className="text-slate-500 dark:text-zinc-400"><Settings className="w-4 h-4" /></span>
+                                                            {showMiniLabels && <span className="ml-2 text-[13px] font-bold text-slate-700 dark:text-zinc-300">Công cụ</span>}
                                                         </button>
                                                     </div>
                                                     
@@ -1919,9 +1823,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             
                                                             return (
                                                                 <div key="favorites" className="w-full flex flex-col items-center mb-1">
-                                                                    {isMiniToolbarExpanded ? (
+                                                                    {showMiniLabels ? (
                                                                         <div className="w-full px-2 mt-2 mb-1.5 flex items-center gap-2">
-                                                                            <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest">⭐ Yêu Thích</span>
+                                                                            <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1"><Star className="w-2.5 h-2.5" fill="currentColor" /> Yêu Thích</span>
                                                                             <div className="flex-1 h-px bg-amber-500 opacity-40" />
                                                                         </div>
                                                                     ) : (
@@ -1947,13 +1851,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         }
                                                                                     }}
                                                                                     className={`w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
-                                                                                        ${isMiniToolbarExpanded ? 'justify-start px-2' : 'justify-center'}
+                                                                                        ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
                                                                                         ${isActive ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shadow-sm border border-amber-300 dark:border-amber-700/50' : 'bg-amber-50/50 dark:bg-amber-900/20 text-slate-700 dark:text-zinc-300 border border-amber-200/50 dark:border-amber-700/30 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 hover:text-amber-900 dark:hover:text-amber-100'}`
                                                                                     }
                                                                                     title={tool.title}
                                                                                 >
                                                                                     <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-                                                                                    {isMiniToolbarExpanded && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>}
+                                                                                    {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>}
                                                                                 </button>
                                                                             );
                                                                         })}
@@ -1972,7 +1876,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             if (catTools.length === 0) return null;
                                                             return (
                                                                 <div key={cat.id} className="w-full flex flex-col items-center mb-1">
-                                                                    {isMiniToolbarExpanded ? (
+                                                                    {showMiniLabels ? (
                                                                         <div className="w-full px-2 mt-2 mb-1.5 flex items-center gap-2">
                                                                             <span className="text-[10px] font-bold text-indigo-800 dark:text-indigo-400 uppercase tracking-widest">{cat.title}</span>
                                                                             <div className="flex-1 h-px bg-indigo-800 dark:bg-indigo-400 opacity-40" />
@@ -2000,13 +1904,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         }
                                                                                     }}
                                                                                     className={`w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none
-                                                                                        ${isMiniToolbarExpanded ? 'justify-start px-2' : 'justify-center'}
+                                                                                        ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
                                                                                         ${isActive ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 shadow-sm border border-indigo-300 dark:border-indigo-700/50' : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 border border-transparent'}`
                                                                                     }
                                                                                     title={tool.title}
                                                                                 >
                                                                                     <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-                                                                                    {isMiniToolbarExpanded && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>}
+                                                                                    {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>}
                                                                                 </button>
                                                                             );
                                                                         })}
@@ -2080,7 +1984,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
             {/* Custom Close Confirm Modal */}
             {showCloseConfirm && createPortal(
-                <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans" onClick={() => setShowCloseConfirm(false)} onKeyDown={e => { if (e.key === 'Escape') setShowCloseConfirm(false); }} tabIndex={-1} ref={el => el?.focus()}>
+                <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans" onClick={() => setShowCloseConfirm(false)} onKeyDown={e => { if (e.key === 'Escape') setShowCloseConfirm(false); }} tabIndex={-1} ref={el => el?.focus()}>
                     <div className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10" onClick={e => e.stopPropagation()}>
                         <div className="p-6">
                             <h3 className="text-[16px] font-semibold text-slate-800 dark:text-white mb-2">

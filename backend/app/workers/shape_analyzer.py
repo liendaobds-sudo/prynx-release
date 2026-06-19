@@ -6,16 +6,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class ShapeType(Enum):
-    RECTANGLE = "Vuông/Chữ nhật"
-    CIRCLE_ELLIPSE = "Tròn/Elip"
-    TRIANGLE = "Tam giác"
-    PENTAGON = "Ngũ giác"
-    HEXAGON = "Lục giác"
-    ARROW = "Mũi tên"
-    DUMBBELL = "Tạ tay"
-    HAMMER = "Búa"
-    CUSTOM = "Đặc biệt"
+# ShapeType được định nghĩa DUY NHẤT tại shape_types.py (SSOT — R10.1/R10.3).
+# Import lại để giữ tương thích cho mọi tham chiếu `ShapeType.X` trong file này.
+from app.workers.shape_types import ShapeType  # noqa: E402,F401
 
 def detect_shape(mask_img: np.ndarray) -> ShapeType:
     """

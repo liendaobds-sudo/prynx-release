@@ -115,8 +115,8 @@ class Page:
                 break
         return get_pixmap(self._page, doc_path, page_idx, scale)
 
-    def show_pdf_page(self, rect, src_doc, page_idx, rotate=0, clip=None, keep_proportion=False, out_clip=None):
-        show_pdf_page(self.doc._pdf, self._page, rect, src_doc._pdf, page_idx, rotate, clip, keep_proportion, out_clip)
+    def show_pdf_page(self, rect, src_doc, page_idx, rotate=0, clip=None, keep_proportion=False, out_clip=None, mirror_x=False, mirror_y=False):
+        show_pdf_page(self.doc._pdf, self._page, rect, src_doc._pdf, page_idx, rotate, clip, keep_proportion, out_clip, mirror_x, mirror_y)
 
     def new_shape(self):
         return new_shape(self.doc._pdf, self._page)

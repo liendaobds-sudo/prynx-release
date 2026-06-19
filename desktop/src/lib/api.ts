@@ -142,6 +142,45 @@ export async function uploadPDF(file: File | any) {
   return res.json();
 }
 
+/**
+ * Xuất trang PDF ra ảnh (PNG/JPEG/TIFF). Backend render rồi ghi vào outputDir.
+ * Truyền fileId (đã upload) hoặc filePath (file trên đĩa, desktop).
+ */
+export async function exportImages(params: {
+  fileId?: string;
+  filePath?: string;
+  outputDir: string;
+  format: 'png' | 'jpeg' | 'tiff';
+  dpi: number;
+  colorMode: 'rgb' | 'gray';
+  pages?: number[] | null;
+  multipageTiff?: boolean;
+  jpegQuality?: number;
+  baseName?: string;
+}): Promise<{ ok: boolean; count: number; output_dir: string; files: string[] }> {
+  const res = await authenticatedFetch(`${API_BASE}/api/export/images`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      file_id: params.fileId ?? null,
+      file_path: params.filePath ?? null,
+      output_dir: params.outputDir,
+      format: params.format,
+      dpi: params.dpi,
+      color_mode: params.colorMode,
+      pages: params.pages ?? null,
+      multipage_tiff: params.multipageTiff ?? false,
+      jpeg_quality: params.jpegQuality ?? 90,
+      base_name: params.baseName ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Xuất ảnh thất bại' }));
+    throw new Error(typeof err.detail === 'string' ? err.detail : 'Xuất ảnh thất bại');
+  }
+  return res.json();
+}
+
 export async function createCompareJob(data: {
   file_a_id: string;
   file_b_id: string;

@@ -8,6 +8,7 @@ import { startVdpDrag } from '../../utils/vdpDrag';
 import { sortFieldsGeometrically, VdpSortMethod } from '@/lib/vdpUtils';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { useNumberingJobStore } from '@/stores/useNumberingJobStore';
 
 interface Props {
   pdfFile: File | null;
@@ -68,6 +69,15 @@ export default function NumberingTool({
 
     const viewerPageDimMm = useWorkspaceStore(s => s.viewerPageDimMm);
 
+    // PA1: khi liên kết với Mẹc Bìa, công bố dải số ruột lên job dùng chung để bìa khớp.
+    const jobLinked = useNumberingJobStore(s => s.linked);
+    const setSharedJob = useNumberingJobStore(s => s.setJob);
+    useEffect(() => {
+        if (jobLinked && genMethod === 'range') {
+            setSharedJob({ startNum, endNum, padding: padZero ? padLength : 0 });
+        }
+    }, [jobLinked, genMethod, startNum, endNum, padZero, padLength, setSharedJob]);
+
     const {
         updateSelectedField,
         deleteSelectedField,
@@ -93,15 +103,25 @@ export default function NumberingTool({
 
 
     const generateSequence = () => {
+        // Trần an toàn số phần tử để preview/sinh không làm đơ app với range/bộ quá lớn.
+        const MAX_SEQUENCE = 200000;
         let rawSequence: string[] = [];
         
         if (genMethod === 'range') {
-            for (let i = startNum; i <= endNum; i += increment) {
-                let numStr = i.toString();
-                if (padZero) {
-                    numStr = numStr.padStart(padLength, '0');
+            // GUARD chống TREO APP: hàm này chạy LIVE trong preview (useMemo) nên một
+            // bước nhảy ≤ 0 (vd người dùng gõ 0 hoặc xoá trống → Number('')===0) sẽ làm
+            // vòng for chạy VÔ HẠN → đơ toàn ứng dụng. Bước nhảy không hợp lệ → trả rỗng.
+            const step = Number(increment);
+            if (Number.isFinite(step) && step > 0 && Number.isFinite(startNum) && Number.isFinite(endNum)) {
+                for (let i = startNum; i <= endNum; i += step) {
+                    // Chặn TRÊN: range quá lớn (vd 1..1_000_000) cũng làm đơ preview.
+                    if (rawSequence.length >= MAX_SEQUENCE) break;
+                    let numStr = i.toString();
+                    if (padZero) {
+                        numStr = numStr.padStart(padLength, '0');
+                    }
+                    rawSequence.push(`${prefix}${numStr}${suffix}`);
                 }
-                rawSequence.push(`${prefix}${numStr}${suffix}`);
             }
         } else {
             // Set Mode
@@ -129,6 +149,7 @@ export default function NumberingTool({
             const startSetNum = isAlphaSet ? lettersToNumber(setStartStr) : (parseInt(setStartStr) || 1);
             
             for (let s = 0; s < setTotal; s++) {
+                if (rawSequence.length >= MAX_SEQUENCE) break;
                 let setValStr = "";
                 if (isAlphaSet) {
                     setValStr = numberToLetters(startSetNum + s, isLower);
@@ -138,6 +159,7 @@ export default function NumberingTool({
                 }
 
                 for (let q = 0; q < seqTotal; q++) {
+                    if (rawSequence.length >= MAX_SEQUENCE) break;
                     let qNum = seqStart + q;
                     let seqValStr = padZero ? qNum.toString().padStart(padLength, '0') : qNum.toString();
                     
@@ -381,7 +403,7 @@ export default function NumberingTool({
                                 </div>
                                 <div className="flex flex-col gap-1">
                                     <label className="text-[10px] font-medium text-slate-500">Bước nhảy</label>
-                                    <input type="number" value={increment} onChange={e => setIncrement(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
+                                    <input type="number" min={1} value={increment} onChange={e => setIncrement(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                             </div>
                         </div>

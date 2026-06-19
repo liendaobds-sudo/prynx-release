@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 
@@ -152,7 +153,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                 <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
                     🔍 CHẨN ĐOÁN (TÙY CHỌN)
                 </span>
-                <span className={`text-[10px] text-slate-400 transition-transform duration-200 ${isInspectOpen ? 'rotate-180' : ''}`}>▼</span>
+                <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isInspectOpen ? 'rotate-180' : ''}`} />
             </button>
             <button
                 onClick={() => {
@@ -296,7 +297,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
           <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
             🛠️ SỬA LỖI (CHẠY TRỰC TIẾP)
           </span>
-          <span className={`text-[10px] text-slate-400 transition-transform duration-200 ${isFixOpen ? 'rotate-180' : ''}`}>▼</span>
+          <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isFixOpen ? 'rotate-180' : ''}`} />
         </button>
 
         {isFixOpen && (

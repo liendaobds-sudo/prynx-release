@@ -85,7 +85,9 @@ export async function runProcessEngine(
                 align: settings.align || 'center',
                 cols: settings.cols, rows: settings.rows,
                 splitGap: (settings as any).splitGap,
-                isDieCutMode: isDieCut,
+                // CNC cũng là die-cut về bản chất → giữ cờ NHẤT QUÁN với UI (audit #C3).
+                // Routing backend vẫn theo imposerMode='cnc' (ưu tiên trước isDieCutMode).
+                isDieCutMode: isDieCut || isCnc,
                 cutType: isDieCut ? (settings as any).cutType : undefined, 
                 fillBlockGap: isDieCut ? (settings as any).fillBlockGap : undefined, 
                 pontType: caps.supportsPont ? (settings as any).pontType : undefined, 

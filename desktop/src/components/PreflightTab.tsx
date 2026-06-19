@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { useState, useCallback, useEffect } from 'react';
+import { X } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF, getFileUrl } from '../lib/api';
 import { PRESET_RULES } from '../lib/preprocessEngine/ShuffleEngine';
 import { getFileArrayBuffer } from '../lib/utils';
@@ -282,7 +283,7 @@ export default function PreflightTab() {
                         <h2 className="flex items-center gap-2"><span>🩺</span> PREFLIGHT CHUẨN IN</h2>
                         <div className="flex items-center gap-1">
                           <button onClick={() => setIsSidebarOpen(false)} className="w-6 h-6 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 rounded transition-colors" title="Thu gọn">▶</button>
-                          <button onClick={handleReset} className="w-6 h-6 flex items-center justify-center hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/20 rounded transition-colors" title="Đóng file">✕</button>
+                          <button onClick={handleReset} className="w-6 h-6 flex items-center justify-center hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/20 rounded transition-colors" title="Đóng file" aria-label="Đóng file"><X className="w-3.5 h-3.5" /></button>
                         </div>
                       </div>
 

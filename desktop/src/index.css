@@ -5,6 +5,25 @@
 /* Enable class-based dark mode in Tailwind v4 */
 @variant dark (&:is(.dark *));
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * THANG Z-INDEX NGỮ NGHĨA (app-level overlays)
+ * Dùng cho các lớp phủ cấp ứng dụng để đảm bảo thứ tự xếp chồng nhất quán.
+ * Thứ tự (thấp → cao):
+ *   context-menu  (1000)  menu chuột phải / popover
+ *   modal/dialog  (1100)  hộp thoại modal (backdrop + nội dung)
+ *   confirm       (1200)  hộp thoại xác nhận (luôn trên modal)
+ *   toast         (1300)  thông báo toast / cập nhật (trên cùng)
+ *
+ * LƯU Ý: KHÔNG dùng các token này cho stack nội bộ trong trang
+ * (LivePageFrame z-0..z-70, dropdown RichSelect z-50, banner lỗi absolute,
+ *  panel nổi OutputPreviewTab) — chúng là stacking context cục bộ riêng.
+ * ────────────────────────────────────────────────────────────────────────── */
+@utility z-context-menu { z-index: 1000; }
+@utility z-modal { z-index: 1100; }
+@utility z-dialog { z-index: 1100; }
+@utility z-confirm { z-index: 1200; }
+@utility z-toast { z-index: 1300; }
+
 :root {
   --gradient-primary: linear-gradient(135deg, #a855f7 0%, #ec4899 100%);
   --gradient-accent: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);

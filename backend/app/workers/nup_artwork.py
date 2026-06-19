@@ -149,10 +149,14 @@ def place_one_artwork(
     clip_off_x,
     clip_off_y,
     find_largest_die_path,
+    mirror_x=False,
+    mirror_y=False,
 ):
     """Đặt MỘT placement `p` lên `out_page`. Trả về (trim_rect, src_page_idx).
 
     Logic rút nguyên văn từ process_chunk — KHÔNG đổi hành vi.
+
+    mirror_x / mirror_y: lật gương nội dung quanh tâm ô (cho Mặt sau bình bế 2 mặt).
     """
     cell = p['cell']
     cluster_idx = p['cluster_idx']
@@ -271,31 +275,31 @@ def place_one_artwork(
             shift_x = trim_rect.x0 - (vis_h - rel_ty1)
             shift_y = trim_rect.y0 - rel_tx0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, mirror_x=mirror_x, mirror_y=mirror_y)
         elif cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_w - rel_tx1)
             shift_y = trim_rect.y0 - (vis_h - rel_ty1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, mirror_x=mirror_x, mirror_y=mirror_y)
         elif cell.get('isRotated', False):
             shift_x = trim_rect.x0 - rel_ty0
             shift_y = trim_rect.y0 - (vis_w - rel_tx1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, mirror_x=mirror_x, mirror_y=mirror_y)
         else:
             shift_x = trim_rect.x0 - rel_tx0
             shift_y = trim_rect.y0 - rel_ty0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, mirror_x=mirror_x, mirror_y=mirror_y)
     else:
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
-            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=270, out_clip=cell_out_clip)
+            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=270, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         elif cell.get('isRotated180', False):
-            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=180, out_clip=cell_out_clip)
+            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=180, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         elif cell.get('isRotated', False):
-            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=90, out_clip=cell_out_clip)
+            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=90, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         else:
-            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, out_clip=cell_out_clip)
+            out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)
 
     return trim_rect, src_page_idx
 

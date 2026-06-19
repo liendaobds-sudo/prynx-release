@@ -4,6 +4,7 @@ import {
     pageHeightPtFromDim,
     editScale,
     objectBboxNativeToCanvas,
+    clipRectPdfToCanvas,
     addBboxCanvasToNative,
     moveDeltaCanvasToPdf,
     snapRotation,
@@ -47,9 +48,59 @@ describe('objectBboxNativeToCanvas (lật y + offset CropBox)', () => {
     });
 });
 
+describe('clipRectPdfToCanvas (clip PDF point → canvas px, lật y + offset Page_Box + scale)', () => {
+    const pageHpt = 800;
+    it('không offset (bx0=by0=0), scale=1: quy đổi cơ bản + lật y đúng (Yêu cầu 4.1)', () => {
+        // clipRect native [x0=10, yb=700, x1=60, yt=720]
+        // left=10, right=60; top=800-720=80, bottom=800-700=100
+        const out = clipRectPdfToCanvas([10, 700, 60, 720], pageHpt, 0, 0, 1);
+        expect(out).toEqual([10, 80, 60, 100]);
+    });
+
+    it('CropBox lệch gốc (bx0,by0 != 0): trừ gốc TRƯỚC khi lật (Yêu cầu 4.2 — chống regression)', () => {
+        // Page_Box gốc (50,50). clip ở native [110,700,160,720].
+        // left=110-50=60, right=160-50=110
+        // top=800-(720-50)=130, bottom=800-(700-50)=150
+        const out = clipRectPdfToCanvas([110, 700, 160, 720], pageHpt, 50, 50, 1);
+        expect(out).toEqual([60, 130, 110, 150]);
+    });
+
+    it('scale != 1 (2.0): nhân scale đúng sau khi quy đổi (Yêu cầu 4.3)', () => {
+        // không offset; sau quy đổi [10,80,60,100] rồi ×2
+        const out = clipRectPdfToCanvas([10, 700, 60, 720], pageHpt, 0, 0, 2);
+        expect(out).toEqual([20, 160, 120, 200]);
+    });
+
+    it('offset CropBox + scale cùng lúc: trừ gốc rồi nhân scale (Yêu cầu 4.2, 4.3)', () => {
+        // Page_Box gốc (50,50), scale=2. clip native [110,700,160,720].
+        // left=(110-50)*2=120, right=(160-50)*2=220
+        // top=(800-(720-50))*2=260, bottom=(800-(700-50))*2=300
+        const out = clipRectPdfToCanvas([110, 700, 160, 720], pageHpt, 50, 50, 2);
+        expect(out).toEqual([120, 260, 220, 300]);
+    });
+
+    it('đảm bảo top<=bottom và left<=right bất kể thứ tự cạnh đầu vào', () => {
+        // Cạnh đảo ngược: x0>x1, yb>yt
+        const out = clipRectPdfToCanvas([60, 720, 10, 700], pageHpt, 0, 0, 1);
+        expect(out[0]).toBeLessThanOrEqual(out[2]); // left <= right
+        expect(out[1]).toBeLessThanOrEqual(out[3]); // top <= bottom
+        // Kết quả chuẩn hoá khớp với thứ tự đúng [10,80,60,100]
+        expect(out).toEqual([10, 80, 60, 100]);
+    });
+
+    it('round-trip xấp xỉ: objectBboxNativeToCanvas (point) khớp clipRect khi scale=1', () => {
+        // Cùng quy ước lật y + trừ gốc; với scale=1 hai hàm cho cùng hình học (point=px).
+        const bbox: BBox = [110, 700, 160, 720];
+        const viaObject = objectBboxNativeToCanvas(bbox, pageHpt, 50, 50);
+        const viaClip = clipRectPdfToCanvas(bbox, pageHpt, 50, 50, 1);
+        for (let i = 0; i < 4; i++) {
+            expect(viaClip[i]).toBeCloseTo(viaObject[i], 6);
+        }
+    });
+});
+
 describe('addBboxCanvasToNative (canvas → PDF native + offset CropBox)', () => {
-    it('round-trip với objectBboxNativeToCanvas (offset 0)', () => {
-        const pageHpt = 800;
+    it('round-trip với objectBboxNativeToCanvas (offset 0)', () => {        const pageHpt = 800;
         // Thêm tại canvas (x=30,yTop=120), kích thước 200x20.
         const nat = addBboxCanvasToNative(30, 120, 200, 20, pageHpt, 0, 0);
         // native bottom = 800-(120+20)=660 ; top = 800-120=680

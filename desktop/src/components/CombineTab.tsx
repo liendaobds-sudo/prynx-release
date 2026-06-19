@@ -8,6 +8,7 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
+import { toast } from './ui/Toast';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -516,7 +517,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
       if (onSpawnTab) onSpawnTab(finalFile);
 
     } catch (e: any) {
-      alert("Lỗi khi đan xen: " + (e?.message || e));
+      toast.error("Lỗi khi đan xen: " + (e?.message || e));
     } finally {
       setIsProcessing(false);
       setStatusMsg('');
@@ -601,7 +602,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
       if (onSpawnTab) onSpawnTab(finalFile);
 
     } catch (e: any) {
-      alert("Lỗi khi ghép file: " + (e?.message || e));
+      toast.error("Lỗi khi ghép file: " + (e?.message || e));
     } finally {
       setIsProcessing(false);
       setStatusMsg('');

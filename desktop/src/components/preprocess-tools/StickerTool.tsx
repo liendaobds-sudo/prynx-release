@@ -170,14 +170,9 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         
         if (productType === 'sticker') {
             const shapeType = response.headers.get('X-Sticker-Shape-Type');
-            const shapeParamsStr = response.headers.get('X-Sticker-Shape-Params');
+            const shapeParams = response.headers.get('X-Sticker-Shape-Params');
             setDetectedShapeType(shapeType);
-            try {
-                setDetectedShapeParams(shapeParamsStr ? JSON.parse(shapeParamsStr) : null);
-            } catch (e) {
-                console.error("Failed to parse shapeParams:", e);
-                setDetectedShapeParams(null);
-            }
+            setDetectedShapeParams(shapeParams);
         }
         
         return await response.blob();

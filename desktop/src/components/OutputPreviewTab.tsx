@@ -3,6 +3,7 @@ import { authenticatedFetch, getApiUrl } from '../lib/api';
 import pako from 'pako';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import SoftProofPanel from './SoftProofPanel';
+import { toast } from './ui/Toast';
 
 interface PlateInfo {
     name: string;
@@ -281,7 +282,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             });
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
-                alert(`Lỗi chuyển Spot → CMYK: ${errData.detail || res.statusText}`);
+                toast.error(`Lỗi chuyển Spot → CMYK: ${errData.detail || res.statusText}`);
                 setConvertingSpot('');
                 return;
             }
@@ -290,11 +291,11 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
                 onFileFixed(await dl.blob(), data.output_filename);
             } else if (!data.success) {
-                alert(`Chuyển Spot → CMYK không thành công: ${data.error || 'Unknown'}`);
+                toast.error(`Chuyển Spot → CMYK không thành công: ${data.error || 'Unknown'}`);
             }
         } catch (e: any) {
             console.error('Convert spot failed:', e);
-            alert(`Lỗi: ${e.message || 'Không kết nối được backend'}`);
+            toast.error(`Lỗi: ${e.message || 'Không kết nối được backend'}`);
         }
         setConvertingSpot('');
     }, [fileId, onFileFixed]);

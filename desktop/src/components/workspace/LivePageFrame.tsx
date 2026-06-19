@@ -11,6 +11,7 @@ import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsS
 import { useShallow } from 'zustand/react/shallow';
 import type { ObjType, BBox, EditOp } from './editTypes';
 import { FontSelector } from '../preprocess-tools/FontSelector';
+import { Lock, Check, X, RotateCcw, Plus, Image as ImageIcon, AlertTriangle } from 'lucide-react';
 import {
     pageWidthPtFromDim,
     editScale as calcEditScale,
@@ -314,21 +315,27 @@ const VdpAutoFitText = ({ field, scale, text, onAutoFit }: any) => {
     const fontPx = field.autoFit === false ? maxPx : fitPx;
     return (
         <span
-            ref={ref}
-            className="px-1 whitespace-pre-wrap break-words overflow-hidden w-full h-full"
-            style={{
-                color: field.fontColor || '#1e293b',
-                fontSize: `${fontPx}px`,
-                fontFamily: field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${field.fontName}", sans-serif` : 'inherit'),
-                fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
-                fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
-                lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
-                // Backend (ReportLab Paragraph) chưa hỗ trợ tracking → preview cũng bỏ qua để khớp output.
-                letterSpacing: 0,
-                textAlign: field.alignment || 'left'
-            }}
+            className="px-1 overflow-hidden w-full h-full"
+            style={{ display: 'flex', alignItems: 'center' }}
         >
-            {text}
+            <span
+                ref={ref}
+                className="whitespace-pre-wrap break-words"
+                style={{
+                    width: '100%',
+                    color: field.fontColor || '#1e293b',
+                    fontSize: `${fontPx}px`,
+                    fontFamily: field.fontName === 'Helvetica' ? 'Arial, sans-serif' : field.fontName === 'Times-Roman' ? '"Times New Roman", serif' : field.fontName === 'Courier' ? 'Courier, monospace' : (field.fontName ? `"${field.fontName}", sans-serif` : 'inherit'),
+                    fontWeight: field.fontStyle === 'bold' || field.fontStyle === 'bolditalic' ? 'bold' : 'normal',
+                    fontStyle: field.fontStyle === 'italic' || field.fontStyle === 'bolditalic' ? 'italic' : 'normal',
+                    lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
+                    // Backend (ReportLab Paragraph) chưa hỗ trợ tracking → preview cũng bỏ qua để khớp output.
+                    letterSpacing: 0,
+                    textAlign: field.alignment || 'left'
+                }}
+            >
+                {text}
+            </span>
         </span>
     );
 };
@@ -336,24 +343,34 @@ const VdpAutoFitText = ({ field, scale, text, onAutoFit }: any) => {
 export const LivePageFrame = (props: any) => {
     //#region Props & State
     const { originalPageNum, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
-        onObjectDelete, fetchObjectsForPage,
+        onObjectDelete,
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
-        setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit
+        setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage
     } = props;
+    // Trang ĐANG xem (active) trong danh sách ảo (Virtuoso). Chỉ frame active mới
+    // đẩy editObjects của mình lên store `currentEditObjects` → panel "Thành phần"
+    // luôn khớp ĐÚNG trang người dùng đang chỉnh. Trước đây mọi frame đều ghi đè
+    // currentEditObjects (frame chạy sau cùng thắng) nên panel có thể liệt kê object
+    // của TRANG KHÁC → tắt mắt một thành phần lại nhắm id không có trên trang active
+    // → /edit/preview-hide trả về trang nguyên vẹn → "không có gì thay đổi".
+    // Nếu prop không được truyền (consumer cũ) → coi như active để giữ hành vi cũ.
+    const isActiveFrame = isActivePage !== false;
 
     const {
-        isSelectionMode, isObjectEditMode, setCurrentEditObjects, pdfObjectsVersion, selectedObjectIds, selectionFileId, hiddenObjectIds, hiddenOcgLayerIds,
+        isObjectEditMode, setCurrentEditObjects, pdfObjectsVersion, selectionFileId, hiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds,
         separationPlates, vdpFields, selectedVdpFieldIds,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
-        setSelectedObjectIds, pdfUrl, setSelectedVdpFieldIds
+        pdfUrl, setSelectedVdpFieldIds, selectedObjectIds, setSelectedObjectIds,
+        isCropMode
     } = useWorkspaceStore(useShallow(state => ({
-        isSelectionMode: state.isSelectionMode,
         isObjectEditMode: state.isObjectEditMode,
         setCurrentEditObjects: state.setCurrentEditObjects,
         pdfObjectsVersion: state.pdfObjectsVersion,
-        selectedObjectIds: state.selectedObjectIds,
         selectionFileId: state.selectionFileId,
+        selectedObjectIds: state.selectedObjectIds,
+        setSelectedObjectIds: state.setSelectedObjectIds,
         hiddenObjectIds: state.hiddenObjectIds,
+        lockedObjectIds: state.lockedObjectIds,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds,
         separationPlates: state.separationPlates,
         vdpFields: state.vdpFields,
@@ -362,12 +379,11 @@ export const LivePageFrame = (props: any) => {
         gamutWarningUrl: state.gamutWarningUrl,
         tacHeatmapUrl: state.tacHeatmapUrl,
         overprintPreviewUrl: state.overprintPreviewUrl,
-        setSelectedObjectIds: state.setSelectedObjectIds,
         pdfUrl: state.pdfUrl,
-        setSelectedVdpFieldIds: state.setSelectedVdpFieldIds
+        setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
+        isCropMode: state.isCropMode
     })));
 
-    const onObjectSelect = setSelectedObjectIds;
     
     const watermarkPreview = useWorkspaceStore(s => s.watermarkPreview);
     // Migrated to imposer store per P1-T03
@@ -381,6 +397,10 @@ export const LivePageFrame = (props: any) => {
     // VDP Drag/Resize interaction state
     const [vdpInteraction, setVdpInteraction] = useState<{ type: 'move'|'resize', handle?: 'nw'|'ne'|'sw'|'se', fieldIds: string[], startX: number, startY: number, startFields: Record<string, {x: number, y: number, w: number, h: number}> } | null>(null);
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
+
+    // Crop PDF: vùng đã quét (px hệ hiển thị, gốc trên-trái) của TRANG này. Giữ hiển
+    // thị tới khi Enter (mở hộp thoại Set Page Boxes) hoặc Esc (huỷ).
+    const [cropSel, setCropSel] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
     const [editTextContent, setEditTextContent] = useState<string>('');
     // Font người dùng chọn khi sửa/thêm text (đường dẫn file .ttf/.otf trên máy);
     // rỗng = giữ font gốc nếu được, ngược lại fallback DejaVuSans (hành vi cũ).
@@ -471,9 +491,8 @@ export const LivePageFrame = (props: any) => {
     // ─── Edit PDF Object — Hit-test + overlay (task 10.1) ────────────────────
     // Nguồn dữ liệu object lấy từ GET /edit/objects (Geometry_Reader, PDFium read-only).
     // Tách biệt khỏi globalPdfObjectCache (luồng /preflight) vì khác hệ tọa độ + khác
-    // id-space → tránh phá vỡ delete/hide/SelectionLayersPanel hiện có.
+    // id-space → tránh phá vỡ delete/hide preflight hiện có.
     const [editObjects, setEditObjects] = useState<EditCanvasObj[]>([]);
-    const [editSelectedIds, setEditSelectedIds] = useState<string[]>([]);
 
     // ─── Edit PDF Object — move/resize/rotate + overlay real-time (task 10.2) ─
     // editInteraction: thao tác kéo đang diễn ra. Transform tạm (xem trước real-time)
@@ -559,12 +578,6 @@ export const LivePageFrame = (props: any) => {
         return () => clearTimeout(timeoutId);
     }, [zoom]);
 
-    useEffect(() => {
-        if (isSelectionMode && originalPageNum !== -1) {
-            fetchObjectsForPage?.(originalPageNum);
-        }
-    }, [isSelectionMode, originalPageNum, fetchObjectsForPage]);
-
     // ─── Edit PDF Object: nạp danh sách object từ /edit/objects (task 10.1) ───
     // Khi vào Selection_Mode, gọi GET /edit/objects/{fid}/{pageIndex} (0-based) để lấy
     // ObjMeta (bbox hệ PDF bottom-left) rồi convert sang hệ canvas top-left bằng
@@ -572,7 +585,7 @@ export const LivePageFrame = (props: any) => {
     useEffect(() => {
         if (!isObjectEditMode || originalPageNum === -1 || !selectionFileId || !pageDim?.h) {
             setEditObjects([]);
-            setEditSelectedIds([]);
+            setSelectedObjectIds([]);
             return;
         }
         const pageIndex = originalPageNum - 1; // /edit dùng chỉ số 0-based
@@ -582,8 +595,7 @@ export const LivePageFrame = (props: any) => {
         const cached = _editObjectsCache.get(cacheKey);
         if (cached) {
             setEditObjects(cached);
-            if (setCurrentEditObjects) setCurrentEditObjects(cached);
-            setEditSelectedIds([]);
+            setSelectedObjectIds([]);
             editCropOriginRef.current = _editCropOriginCache.get(cacheKey) || [0, 0];
             hideEditGhost();
             return;
@@ -623,14 +635,13 @@ export const LivePageFrame = (props: any) => {
                 _editObjectsCache.set(cacheKey, objs); // Lưu cache cho lần bật/tắt sau.
                 _editCropOriginCache.set(cacheKey, [bx0, by0]);
                 setEditObjects(objs);
-                if (setCurrentEditObjects) setCurrentEditObjects(objs);
-                setEditSelectedIds([]);
+                setSelectedObjectIds([]);
                 hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
             } catch (err) {
                 if (!cancelled) {
                     console.warn('[edit] Không tải được /edit/objects:', err);
                     setEditObjects([]);
-                    setEditSelectedIds([]);
+                    setSelectedObjectIds([]);
                     const m = err instanceof Error ? err.message : String(err);
                     // 404 = fid/file không còn trên backend (thường sau khi RESTART
                     // server, file tải lên cũ đã mất) → hướng dẫn mở lại file.
@@ -646,6 +657,17 @@ export const LivePageFrame = (props: any) => {
         return () => { cancelled = true; };
     }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h]);
 
+    // ─── Edit PDF Object: đồng bộ object của TRANG ACTIVE lên panel (fix tắt mắt) ─
+    // Panel "Thành phần" đọc store `currentEditObjects`. Vì danh sách trang là ảo
+    // (Virtuoso) nên có nhiều LivePageFrame cùng sống; CHỈ frame đang xem mới được
+    // đẩy editObjects của mình lên store → panel liệt kê đúng object trang active,
+    // nên khi tắt mắt một thành phần, id nhắm trúng trang active và /edit/preview-hide
+    // thực sự ẩn object (overlay preview đắp lên trang). Bỏ chọn cũ của trang khác.
+    useEffect(() => {
+        if (!isObjectEditMode || !isActiveFrame || !setCurrentEditObjects) return;
+        setCurrentEditObjects(editObjects);
+    }, [isObjectEditMode, isActiveFrame, editObjects, setCurrentEditObjects]);
+
     // ─── Edit PDF Object: Ctrl+A chọn tất cả / Esc bỏ chọn / Delete xóa (task 10.1) ─
     useEffect(() => {
         if (!isObjectEditMode || isVdpMode) return;
@@ -655,23 +677,23 @@ export const LivePageFrame = (props: any) => {
             if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
                 e.preventDefault();
-                setEditSelectedIds(editObjects.map(o => o.id));
+                setSelectedObjectIds(editObjects.filter(o => !lockedObjectIds.includes(o.id)).map(o => o.id));
             } else if (e.key === 'Delete' || e.key === 'Backspace') {
                 // Xóa tập object đang chọn → POST /edit/delete → Working_File mới.
-                if (editBusy || editSelectedIds.length === 0) return;
+                if (editBusy || selectedObjectIds.length === 0) return;
                 e.preventDefault();
                 const op: EditOp = {
                     page: originalPageNum - 1,
                     kind: 'delete',
-                    targetIds: [...editSelectedIds],
+                    targetIds: [...selectedObjectIds],
                 };
-                const idsToClear = [...editSelectedIds];
+                const idsToClear = [...selectedObjectIds];
                 void sendEditAndPreview(op, `${getApiUrl()}/edit/delete`).then(() => {
                     // Bỏ chọn sau khi đã commit (object cũ không còn trên trang mới).
-                    setEditSelectedIds(prev => prev.filter(id => !idsToClear.includes(id)));
+                    setSelectedObjectIds(prev => prev.filter(id => !idsToClear.includes(id)));
                 });
             } else if (e.key === 'Escape') {
-                setEditSelectedIds([]);
+                setSelectedObjectIds([]);
                 // task 10.3: thoát chế độ đặt object mới đang chờ (nếu có).
                 setEditAddMode(null);
                 setEditAddDraft(null);
@@ -679,14 +701,14 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isObjectEditMode, isVdpMode, editObjects, editSelectedIds, editBusy, originalPageNum, selectionFileId, onEditCommit]);
+    }, [isObjectEditMode, isVdpMode, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds]);
 
     // ─── Edit PDF Object: reset transform tạm + preview khi đổi lựa chọn (10.2) ─
     // Khi tập chọn thay đổi (hoặc bỏ chọn), bỏ transform tạm và ảnh preview cũ để
     // overlay không "dính" trạng thái của lần thao tác trước.
     useEffect(() => {
         editLiveTransformRef.current = null;
-    }, [editSelectedIds]);
+    }, [selectedObjectIds]);
 
     // ─── Edit PDF Object: dọn transform tạm khi Working_File MỚI render (task 12.1) ─
     // SAU commit, onEditCommit → commitWorkingFile đổi `pdfUrl` (Working_File mới đã
@@ -698,6 +720,8 @@ export const LivePageFrame = (props: any) => {
         // Working_File mới (commit) hoặc file mới → object cũ không còn đúng → xóa cache
         // /edit/objects để lần bật chế độ kế tiếp fetch lại dữ liệu khớp trang mới.
         clearEditObjectsCache();
+        // Bỏ selection cũ (trỏ object của file/trang trước) để không highlight chéo.
+        setSelectedObjectIds([]);
     }, [pdfUrl]);
 
     if (originalPageNum === -1) {
@@ -719,14 +743,6 @@ export const LivePageFrame = (props: any) => {
         }
 
         if (!selectionFileId) return;
-
-        // In object edit mode, component (thành phần) hides are handled by overlay filter on edit boxes.
-        // Skip legacy preview-hide to avoid 500s on mismatched data / legacy path. Clear any stale overlay.
-        if (isObjectEditMode && hiddenObjectIds.length > 0 && hiddenOcgLayerIds.length === 0) {
-            setPreviewImageUrl(null);
-            setIsPreviewLoading(false);
-            return;
-        }
 
         let isMounted = true;
         setIsPreviewLoading(true);
@@ -752,13 +768,30 @@ export const LivePageFrame = (props: any) => {
                     return; // Skip the hidden object fetch if we did OCG
                 }
 
-                // Fallback to hidden object preview
-                // In edit mode: use accurate editObjects (current bboxes/ids), but skip legacy preflight preview-hide
-                // (components hide is handled by overlay filter + real delete uses edit session). Avoids fragile legacy path + 500s.
+                // ─── Edit mode: ẩn HÌNH THẬT của object qua render read-only ───
+                // Gọi /edit/preview-hide (pikepdf xóa in-memory → PDFium render, KHÔNG
+                // ghi file). Ảnh trả về là TRANG ĐÃ LOẠI object bị ẩn → đắp overlay
+                // toàn trang khớp khung trang (objectFit:fill). hiddenObjectIds cùng
+                // id-space với /edit/objects nên truyền thẳng làm targetIds.
                 if (isObjectEditMode) {
-                    if (isMounted) setIsPreviewLoading(false);
+                    const res = await authenticatedFetch(`${getApiUrl()}/edit/preview-hide`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            fid: selectionFileId,
+                            page: originalPageNum - 1, // /edit dùng chỉ số 0-based
+                            targetIds: hiddenObjectIds,
+                        })
+                    });
+                    if (!res.ok) throw new Error(`/edit/preview-hide HTTP ${res.status}`);
+                    const data = await res.json();
+                    if (isMounted && data.image) {
+                        setPreviewImageUrl(data.image);
+                    }
                     return;
                 }
+
+                // Fallback to hidden object preview (legacy, ngoài edit mode)
                 const currentObjects = globalPdfObjectCache.getPageObjects(pdfUrl || '', originalPageNum);
                 const objectsToHide = currentObjects.filter((o: any) => hiddenObjectIds.includes(o.id));
                 
@@ -784,6 +817,7 @@ export const LivePageFrame = (props: any) => {
                 }
             } catch (err) {
                 console.error("Failed to fetch hidden layer preview:", err);
+                if (isMounted) setPreviewImageUrl(null);
             } finally {
                 if (isMounted) setIsPreviewLoading(false);
             }
@@ -954,6 +988,37 @@ export const LivePageFrame = (props: any) => {
     }, [isVdpMode, pageDim, displayWidth, onVdpBoxCreate, vdpFields.length, originalPageNum]);
 
     const displayHeight = pageDim && pageDim.w ? displayWidth * (pageDim.h / pageDim.w) : displayWidth * 1.414;
+
+    // Crop PDF: dọn vùng quét khi tắt chế độ crop.
+    useEffect(() => { if (!isCropMode) setCropSel(null); }, [isCropMode]);
+
+    // Crop PDF: Enter → mở hộp thoại Set Page Boxes với fractions vùng quét; Esc → huỷ.
+    // Chỉ frame ĐANG GIỮ vùng quét (cropSel) mới gắn listener → không trùng lặp.
+    useEffect(() => {
+        if (!isCropMode || !cropSel) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Enter') {
+                if (!pageDim?.w || !pageDim?.h) return;
+                const dW = displayWidth || 1;
+                const dH = displayHeight || 1;
+                const clamp = (v: number) => Math.max(0, Math.min(1, v));
+                const frac = {
+                    x0: clamp(cropSel.x / dW),
+                    y0: clamp(cropSel.y / dH),
+                    x1: clamp((cropSel.x + cropSel.w) / dW),
+                    y1: clamp((cropSel.y + cropSel.h) / dH),
+                };
+                e.preventDefault();
+                window.dispatchEvent(new CustomEvent('prynx-crop-open', {
+                    detail: { pageNum: originalPageNum, frac },
+                }));
+            } else if (e.key === 'Escape') {
+                setCropSel(null);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isCropMode, cropSel, pageDim, displayWidth, displayHeight, originalPageNum]);
     const renderWidth = actualWidth100 * renderZoom;
     
     const isRotated = (rotation || 0) % 180 !== 0;
@@ -980,7 +1045,7 @@ export const LivePageFrame = (props: any) => {
     // Trả về hộp bao (union) theo px canvas (gốc trên-trái) của các object được
     // chọn, dùng cho overlay transform + neo handle. `scale` = px/point.
     const getEditSelectionBoxPx = (scale: number): { left: number; top: number; width: number; height: number } | null => {
-        const sel = editObjects.filter(o => editSelectedIds.includes(o.id));
+        const sel = editObjects.filter(o => selectedObjectIds.includes(o.id));
         if (sel.length === 0) return null;
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const o of sel) {
@@ -1030,7 +1095,11 @@ export const LivePageFrame = (props: any) => {
     //  - rotate: rotateDeg backend dương = NGƯỢC chiều kim đồng hồ (hệ PDF y lên);
     //           góc đo trên màn (y xuống) dương theo chiều kim đồng hồ → đảo dấu.
     const commitEditTransform = async (lt: EditLiveTransform | null) => {
-        if (!lt || !selectionFileId || !pageDim?.w || editSelectedIds.length === 0) {
+        if (!lt || !selectionFileId || !pageDim?.w || selectedObjectIds.length === 0) {
+            return;
+        }
+        // Guard an toàn: nếu MỌI object đang chọn đều bị khóa → KHÔNG transform.
+        if (selectedObjectIds.every(id => lockedObjectIds.includes(id))) {
             return;
         }
         const scale = calcEditScale(displayWidth, pageWidthPtFromDim(pageDim.w)); // px canvas / POINT
@@ -1040,13 +1109,13 @@ export const LivePageFrame = (props: any) => {
         if (lt.kind === 'move') {
             if (Math.abs(lt.dx) < 0.5 && Math.abs(lt.dy) < 0.5) { return; }
             const delta = moveDeltaCanvasToPdf(lt.dx, lt.dy, scale);
-            op = { page, kind: 'move', targetIds: editSelectedIds, delta };
+            op = { page, kind: 'move', targetIds: selectedObjectIds, delta };
         } else if (lt.kind === 'resize') {
             if (Math.abs(lt.sx - 1) < 0.002 && Math.abs(lt.sy - 1) < 0.002) { return; }
-            op = { page, kind: 'resize', targetIds: editSelectedIds, scale: { sx: lt.sx, sy: lt.sy, anchor: lt.anchor } };
+            op = { page, kind: 'resize', targetIds: selectedObjectIds, scale: { sx: lt.sx, sy: lt.sy, anchor: lt.anchor } };
         } else {
             if (Math.abs(lt.rotateDeg) < 0.5) { return; }
-            op = { page, kind: 'rotate', targetIds: editSelectedIds, rotateDeg: rotationScreenToPdf(lt.rotateDeg) };
+            op = { page, kind: 'rotate', targetIds: selectedObjectIds, rotateDeg: rotationScreenToPdf(lt.rotateDeg) };
         }
 
         setEditBusy(true);
@@ -1178,10 +1247,11 @@ export const LivePageFrame = (props: any) => {
     };
 
     const handleMouseDown = (e: React.MouseEvent) => {
-        if ((!isSelectionMode && !isObjectEditMode && !isVdpMode) || !containerRef.current) return;
+        if ((!isObjectEditMode && !isVdpMode && !isCropMode) || !containerRef.current) return;
         const rect = containerRef.current.getBoundingClientRect();
         const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
         dragRef.current = { startX: coords.x, startY: coords.y, active: true };
+        if (isCropMode) setCropSel(null); // bắt đầu quét vùng mới → xoá vùng cũ
         if (marqueeRef.current) {
             marqueeRef.current.style.display = 'block';
             marqueeRef.current.style.left = `${coords.x}px`;
@@ -1305,9 +1375,9 @@ export const LivePageFrame = (props: any) => {
             return;
         }
 
-        if (!dragRef.current.active || (!isSelectionMode && !isObjectEditMode)) return;
+        if (!dragRef.current.active || (!isObjectEditMode && !isCropMode)) return;
         const { startX, startY } = dragRef.current;
-        // Direct DOM update â€” no React re-render
+        // Direct DOM update — no React re-render
         if (marqueeRef.current) {
             marqueeRef.current.style.left = `${Math.min(startX, curX)}px`;
             marqueeRef.current.style.top = `${Math.min(startY, curY)}px`;
@@ -1339,7 +1409,7 @@ export const LivePageFrame = (props: any) => {
             setVdpInteraction(null);
             return;
         }
-        if (!dragRef.current.active || (!isSelectionMode && !isObjectEditMode && !isVdpMode) || !containerRef.current) {
+        if (!dragRef.current.active || (!isObjectEditMode && !isVdpMode && !isCropMode) || !containerRef.current) {
             dragRef.current.active = false;
             if (marqueeRef.current) marqueeRef.current.style.display = 'none';
             return;
@@ -1359,6 +1429,13 @@ export const LivePageFrame = (props: any) => {
         const y1 = Math.min(startY, curY);
         const x2 = Math.max(startX, curX);
         const y2 = Math.max(startY, curY);
+
+        // ─── Crop PDF: chốt vùng quét (giữ hiển thị để nhấn Enter mở hộp thoại) ───
+        if (isCropMode) {
+            if (x2 - x1 < 5 || y2 - y1 < 5) { setCropSel(null); return; }
+            setCropSel({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+            return;
+        }
         
         // Tiny click = click on empty space => deselect all
         if (x2 - x1 < 5 && y2 - y1 < 5) {
@@ -1384,9 +1461,8 @@ export const LivePageFrame = (props: any) => {
                     setEditAddMode(null);
                     return;
                 }
-                setEditSelectedIds([]); return;
+                setSelectedObjectIds([]); return;
             }
-            if (isSelectionMode) onObjectSelect?.([]);
             if (isVdpMode) {
                 setSelectedVdpFieldIds([]);
                 onVdpBoxSelect?.([]);
@@ -1399,8 +1475,9 @@ export const LivePageFrame = (props: any) => {
             const pageWidthPt = pageDim?.w || 595;
             // bbox edit ở POINT → dùng editScale (px màn / point), KHÔNG dùng scale chung.
             const editScale = displayWidth / (pageWidthPt * 72 / 96);
-            const picked = [...editSelectedIds];
+            const picked = [...selectedObjectIds];
             editObjects.forEach((obj) => {
+                if (lockedObjectIds.includes(obj.id)) return; // object bị khóa: bỏ qua marquee
                 const [ox0, oy0, ox1, oy1] = obj.bbox;
                 const left = ox0 * editScale, top = oy0 * editScale;
                 const right = ox1 * editScale, bottom = oy1 * editScale;
@@ -1408,51 +1485,8 @@ export const LivePageFrame = (props: any) => {
                     picked.push(obj.id);
                 }
             });
-            setEditSelectedIds(picked);
+            setSelectedObjectIds(picked);
             return;
-        }
-
-        if (isSelectionMode) {
-            if (isVdpMode) {
-                // Select VDP fields instead of PDF objects
-                const pageWidthPt = pageDim?.w || 595;
-                const scale = displayWidth / pageWidthPt;
-                const newlySelectedIds = [...selectedVdpFieldIds];
-                vdpFields.forEach((field: any) => {
-                    if (field.pageNum !== originalPageNum) return;
-                    const left = (field.x / 25.4 * 72) * scale;
-                    const top = (field.y / 25.4 * 72) * scale;
-                    const right = left + (field.width / 25.4 * 72) * scale;
-                    const bottom = top + (field.height / 25.4 * 72) * scale;
-                    
-                    if (left < x2 && right > x1 && top < y2 && bottom > y1 && !newlySelectedIds.includes(field.id)) {
-                        newlySelectedIds.push(field.id);
-                    }
-                });
-                setSelectedVdpFieldIds(newlySelectedIds);
-                onVdpBoxSelect?.(newlySelectedIds);
-            } else {
-                const pageWidthPt = pageDim?.w || 595;
-                const scale = displayWidth / pageWidthPt;
-
-                const currentObjects = globalPdfObjectCache.getPageObjects(pdfUrl || '', originalPageNum);
-
-                const newlySelectedIds = [...selectedObjectIds];
-
-                currentObjects.forEach((obj: any) => {
-                    const [ox0, oy0, ox1, oy1] = obj.bbox;
-                    const left = ox0 * scale;
-                    const top = oy0 * scale;
-                    const right = ox1 * scale;
-                    const bottom = oy1 * scale;
-                    
-                    if (left < x2 && right > x1 && top < y2 && bottom > y1 && !newlySelectedIds.includes(obj.id)) {
-                        newlySelectedIds.push(obj.id);
-                    }
-                });
-                
-                onObjectSelect?.(newlySelectedIds);
-            }
         }
     };
 
@@ -1699,62 +1733,6 @@ export const LivePageFrame = (props: any) => {
                  return renderBox(box.bbox, 'single');
              })}
 
-             {/* Selection Tool Overlay */}
-             {isSelectionMode && pdfObjectsVersion !== undefined && pageDim && (() => {
-                 const currentObjects = globalPdfObjectCache.getPageObjects(pdfUrl || '', originalPageNum);
-                 if (!currentObjects || currentObjects.length === 0) return null;
-                 const pageWidthPt = pageDim.w;
-                 const scale = displayWidth / pageWidthPt;
-                 return (
-                     <>
-                             {[...currentObjects].sort((a: any, b: any) => {
-                                 const areaA = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
-                                 const areaB = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
-                                 return areaB - areaA; // Largest first (bottom), smallest last (top)
-                             }).map((obj: any) => {
-                                 const [x0, y0, x1, y1] = obj.bbox;
-                                 const isSelected = selectedObjectIds.includes(obj.id);
-                                 const isHidden = hiddenObjectIds.includes(obj.id);
-                                 const typeColor = obj.type === 'text' ? 'rgb(59,130,246)' : obj.type === 'image' ? 'rgb(168,85,247)' : 'rgb(234,179,8)';
-                             return (
-                                 <div
-                                     key={obj.id}
-                                     className={`absolute pointer-events-auto cursor-pointer z-30 transition-colors hover:bg-slate-400/20 hover:border-slate-400 border border-transparent ${isHidden ? 'opacity-30' : ''}`}
-                                     style={{ 
-                                         left: x0 * scale, top: y0 * scale, 
-                                         width: (x1 - x0) * scale, height: (y1 - y0) * scale,
-                                         border: isHidden ? `2px dashed rgba(239,68,68,0.6)` : isSelected ? `2px solid ${typeColor}` : undefined,
-                                         backgroundColor: isHidden ? 'rgba(239,68,68,0.08)' : isSelected ? `${typeColor}20` : undefined,
-                                         boxShadow: isSelected ? `0 0 0 1px ${typeColor}40` : 'none',
-                                     }}
-                                     title={`${obj.type.toUpperCase()}: ${obj.content || obj.id}`}
-                                     onMouseEnter={(e) => {
-                                         if (!isSelected && !isHidden) {
-                                             (e.currentTarget as HTMLDivElement).style.border = `1.5px solid ${typeColor}`;
-                                             (e.currentTarget as HTMLDivElement).style.backgroundColor = `${typeColor}08`;
-                                         }
-                                     }}
-                                     onMouseLeave={(e) => {
-                                         if (!isSelected && !isHidden) {
-                                             (e.currentTarget as HTMLDivElement).style.border = '1px solid transparent';
-                                             (e.currentTarget as HTMLDivElement).style.backgroundColor = 'transparent';
-                                         }
-                                     }}
-                                     onClick={(e) => {
-                                         e.stopPropagation();
-                                         if (e.shiftKey) {
-                                             onObjectSelect?.(isSelected ? selectedObjectIds.filter((id: string) => id !== obj.id) : [...selectedObjectIds, obj.id]);
-                                         } else {
-                                             onObjectSelect?.(isSelected && selectedObjectIds.length === 1 ? [] : [obj.id]);
-                                         }
-                                     }}
-                                 />
-                             );
-                         })}
-                     </>
-                 );
-             })()}
-
              {/* ─── Edit PDF Object — Selection Overlay (task 10.1) ───────────────
                  Nguồn object: GET /edit/objects (PDFium read-only). Bbox đã convert sang
                  hệ canvas top-left (point) ở effect nạp dữ liệu. Sắp xếp diện tích LỚN→NHỎ
@@ -1773,50 +1751,71 @@ export const LivePageFrame = (props: any) => {
                              return areaB - areaA; // lớn nhất trước (dưới cùng), nhỏ nhất sau (trên cùng)
                          }).map((obj) => {
                              const [x0, y0, x1, y1] = obj.bbox;
-                             const isSelected = editSelectedIds.includes(obj.id);
-                             const typeColor = obj.type === 'text' ? 'rgb(59,130,246)' : obj.type === 'image' ? 'rgb(168,85,247)' : 'rgb(234,179,8)';
+                             const isSelected = selectedObjectIds.includes(obj.id);
+                             const isLocked = lockedObjectIds.includes(obj.id);
+                             // Bộ ba RGB (KHÔNG bọc 'rgb()') để dựng được CẢ màu đặc lẫn rgba()
+                             // có alpha. Trước đây dùng `${typeColor}20` với typeColor='rgb(...)'
+                             // → ra chuỗi 'rgb(...)20' KHÔNG hợp lệ → trình duyệt BỎ QUA nền + shadow,
+                             // chỉ còn viền mảnh ở mép bbox (ảnh/vector lớn gần như vô hình + bị
+                             // overflow-hidden cắt). Dùng rgba() hợp lệ + RING INSET (vẽ vào trong,
+                             // không bị cắt) để MỌI loại object đều hiện highlight rõ.
+                             const typeRgb = obj.type === 'text' ? '59,130,246' : obj.type === 'image' ? '168,85,247' : '234,179,8';
+                             const typeColor = `rgb(${typeRgb})`;
                              return (
                                  <div
                                      key={obj.id}
-                                     className="absolute pointer-events-auto cursor-pointer z-30 transition-colors border border-transparent"
+                                     // HOVER thuần CSS (KHÔNG mutate .style → không bao giờ "kẹt style").
+                                     // Màu theo loại object truyền qua biến CSS `--obj` (bộ ba RGB), rồi
+                                     // class hover Tailwind arbitrary dựng viền + nền nhạt từ biến đó.
+                                     // CHỈ áp hover khi KHÔNG chọn & KHÔNG khóa; khi rời chuột CSS tự gỡ.
+                                     className={`absolute pointer-events-auto transition-colors border border-transparent ${isLocked ? 'cursor-not-allowed' : 'cursor-pointer'} ${isSelected ? 'z-[33]' : 'z-30'} ${(!isSelected && !isLocked) ? 'hover:border-[rgb(var(--obj))] hover:bg-[rgba(var(--obj),0.06)]' : ''}`}
                                      style={{
+                                         // Biến CSS cho hover (xem className). vd '59,130,246'.
+                                         ['--obj' as string]: typeRgb,
                                          left: x0 * scale, top: y0 * scale,
                                          width: (x1 - x0) * scale, height: (y1 - y0) * scale,
-                                         border: isSelected ? `2px solid ${typeColor}` : undefined,
-                                         backgroundColor: isSelected ? `${typeColor}20` : undefined,
-                                         boxShadow: isSelected ? `0 0 0 1px ${typeColor}40` : 'none',
-                                     }}
-                                     title={`${obj.type.toUpperCase()}: ${obj.id}`}
-                                     onMouseEnter={(e) => {
-                                         if (!isSelected) {
-                                             (e.currentTarget as HTMLDivElement).style.border = `1.5px solid ${typeColor}`;
-                                             (e.currentTarget as HTMLDivElement).style.backgroundColor = `${typeColor}08`;
-                                         }
-                                     }}
-                                     onMouseLeave={(e) => {
-                                         if (!isSelected) {
-                                             (e.currentTarget as HTMLDivElement).style.border = '1px solid transparent';
-                                             (e.currentTarget as HTMLDivElement).style.backgroundColor = 'transparent';
-                                         }
-                                     }}
+                                         // Object bị KHÓA: CHỈ hiện icon ổ khóa — KHÔNG viền, KHÔNG nền.
+                                         // Ép border='none' + backgroundColor='transparent' để chắc chắn
+                                         // không còn viền/nền nào sót lại (hover đã do CSS, nhưng giữ ép
+                                         // này cho rõ ràng trạng thái khóa).
+                                         border: isLocked ? 'none' : undefined,
+                                         backgroundColor: isLocked ? 'transparent' : undefined,
+                                         // Object đang chọn (và KHÔNG khóa): một viền MẢNH (outline vẽ vào
+                                         // trong, không đội kích thước). Báo chọn chính vẫn là HỘP TRANSFORM
+                                         // xanh (z-40) + handle.
+                                         outline: (isSelected && !isLocked) ? `1.5px solid ${typeColor}` : undefined,
+                                         outlineOffset: (isSelected && !isLocked) ? '-1.5px' : undefined,
+                                     } as React.CSSProperties}
+                                     title={isLocked ? `🔒 ĐÃ KHÓA — ${obj.type.toUpperCase()}: ${obj.id}` : `${obj.type.toUpperCase()}: ${obj.id}`}
                                      onClick={(e) => {
                                          e.stopPropagation();
+                                         if (isLocked) return; // object bị khóa: KHÔNG cho chọn
                                          if (e.shiftKey) {
-                                             setEditSelectedIds(prev => prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]);
+                                             setSelectedObjectIds(prev => prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]);
                                          } else {
-                                             setEditSelectedIds(prev => (prev.length === 1 && prev[0] === obj.id) ? [] : [obj.id]);
+                                             setSelectedObjectIds(prev => (prev.length === 1 && prev[0] === obj.id) ? [] : [obj.id]);
                                          }
                                      }}
                                      onDoubleClick={(e) => {
                                          // task 10.3: double-click object TEXT → mở editor inline.
                                          // Chỉ kích hoạt ở chế độ edit-object (KHÔNG VDP) để TÁI DÙNG
                                          // editingTextId/editTextContent mà không xung đột field VDP.
+                                         if (isLocked) return; // object bị khóa: KHÔNG mở editor
                                          if (obj.type === 'text' && !isVdpMode) {
                                              e.stopPropagation();
                                              openTextEditor(obj);
                                          }
                                      }}
                                  >
+                                     {/* Dấu hiệu khóa nhỏ ở góc trên-phải để người dùng biết object bị khóa. */}
+                                     {isLocked && (
+                                         <span
+                                             className="absolute top-0 right-0 leading-none px-0.5 bg-slate-700/70 text-white rounded-bl pointer-events-none select-none"
+                                             style={{ zIndex: 1 }}
+                                         >
+                                             <Lock className="w-2.5 h-2.5" />
+                                         </span>
+                                     )}
                                      {/* Editor text inline cho cụm text CÓ SẴN (8.5). Enter=commit,
                                          Shift+Enter=xuống dòng, Esc/blur rỗng=hủy. */}
                                      {editingTextId === obj.id && obj.type === 'text' && !isVdpMode && (
@@ -1839,22 +1838,22 @@ export const LivePageFrame = (props: any) => {
                                              />
                                              <div className="flex items-center gap-1 mt-1">
                                                  <button type="button"
-                                                     className="px-2 py-0.5 text-[11px] rounded bg-emerald-600 text-white font-semibold"
+                                                     className="px-2 py-0.5 text-[11px] rounded bg-emerald-600 text-white font-semibold inline-flex items-center gap-1"
                                                      onClick={(e) => {
                                                          e.stopPropagation();
                                                          const c = editTextContent;
                                                          setEditingTextId(null);
                                                          if (c.trim()) void commitEditObjectText(obj.id, c);
                                                      }}
-                                                 >✓ Áp dụng</button>
+                                                 ><Check className="w-3 h-3" /> Áp dụng</button>
                                                  <button type="button"
-                                                     className="px-2 py-0.5 text-[11px] rounded border border-slate-300 text-slate-600"
+                                                     className="px-2 py-0.5 text-[11px] rounded border border-slate-300 text-slate-600 inline-flex items-center gap-1"
                                                      onClick={(e) => { e.stopPropagation(); setEditingTextId(null); }}
-                                                 >✕ Hủy</button>
+                                                 ><X className="w-3 h-3" /> Hủy</button>
                                                  {editFontPath && (
-                                                     <button type="button" className="ml-auto text-[10px] text-slate-500 hover:text-rose-600"
+                                                     <button type="button" className="ml-auto text-[10px] text-slate-500 hover:text-rose-600 inline-flex items-center gap-1"
                                                          onClick={(e) => { e.stopPropagation(); setEditFontName(''); setEditFontPath(undefined); }}
-                                                     >↺ Bỏ font</button>
+                                                     ><RotateCcw className="w-3 h-3" /> Bỏ font</button>
                                                  )}
                                              </div>
                                          </div>
@@ -1958,13 +1957,13 @@ export const LivePageFrame = (props: any) => {
                      <button
                          type="button"
                          onClick={(e) => { e.stopPropagation(); setEditAddMode(m => m === 'text' ? null : 'text'); }}
-                         className={`px-2 py-0.5 text-[11px] rounded shadow-sm border ${editAddMode === 'text' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
-                     >➕ Text</button>
+                         className={`px-2 py-0.5 text-[11px] rounded shadow-sm border inline-flex items-center gap-1 ${editAddMode === 'text' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
+                     ><Plus className="w-3 h-3" /> Text</button>
                      <button
                          type="button"
                          onClick={(e) => { e.stopPropagation(); setEditAddMode(m => m === 'image' ? null : 'image'); }}
-                         className={`px-2 py-0.5 text-[11px] rounded shadow-sm border ${editAddMode === 'image' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
-                     >🖼 Ảnh</button>
+                         className={`px-2 py-0.5 text-[11px] rounded shadow-sm border inline-flex items-center gap-1 ${editAddMode === 'image' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
+                     ><ImageIcon className="w-3 h-3" /> Ảnh</button>
                      {editAddMode && (
                          <span className="px-1.5 py-0.5 text-[11px] rounded bg-black/70 text-white">
                              Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : 'ảnh'}…
@@ -1974,8 +1973,8 @@ export const LivePageFrame = (props: any) => {
              )}
              {editNotice && createPortal(
                  <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] max-w-md px-4 py-2 rounded-lg bg-amber-600 text-white text-[12px] font-medium shadow-2xl flex items-center gap-3">
-                     <span>⚠️ {editNotice}</span>
-                     <button onClick={() => setEditNotice(null)} className="font-bold text-white/90 hover:text-white">✕</button>
+                     <span className="flex items-center gap-1.5"><AlertTriangle className="w-4 h-4 shrink-0" /> {editNotice}</span>
+                     <button onClick={() => setEditNotice(null)} className="text-white/90 hover:text-white"><X className="w-4 h-4" /></button>
                  </div>,
                  document.body
              )}
@@ -2004,12 +2003,13 @@ export const LivePageFrame = (props: any) => {
                  từ vdpInteraction) + handle XOAY. Ghost dashed cập nhật theo THỜI GIAN
                  THỰC bằng CSS transform qua editGhostRef trong handleMouseMove — KHÔNG
                  setState mỗi frame (Yêu cầu 13.2); chỉ mouseup mới gửi /edit/transform. */}
-             {isObjectEditMode && pageDim && editSelectedIds.length > 0 && !(editingTextId && editingTextId !== EDIT_ADD_TEXT_ID) && (() => {
+             {isObjectEditMode && pageDim && selectedObjectIds.length > 0 && !(editingTextId && editingTextId !== EDIT_ADD_TEXT_ID) && (() => {
                  // scale = px màn / POINT (getEditSelectionBoxPx nhận px/point).
                  const scale = displayWidth / ((pageDim.w || 595) * 72 / 96);
                  const box = getEditSelectionBoxPx(scale);
                  if (!box) return null;
                  const accent = 'rgb(16,185,129)';
+                 const accentRgb = '16,185,129';
                  return (
                      <>
                          {/* Ghost: xem trước vị trí/kích thước/góc dự kiến (real-time).
@@ -2023,7 +2023,7 @@ export const LivePageFrame = (props: any) => {
                              style={{
                                  left: box.left, top: box.top, width: box.width, height: box.height,
                                  transform: 'none', transformOrigin: 'center center', display: 'none',
-                                 border: `2px dashed ${accent}`, backgroundColor: `${accent}14`,
+                                 border: `2px dashed ${accent}`, backgroundColor: `rgba(${accentRgb},0.08)`,
                              }}
                          />
                          {/* Hộp transform — vùng trong = kéo MOVE. */}
@@ -2039,8 +2039,8 @@ export const LivePageFrame = (props: any) => {
                                  // Double-click trên hộp transform (object đang chọn) → mở
                                  // editor text inline nếu object đó là TEXT (hộp z-40 vốn
                                  // che object div z-30 nên double-click trực tiếp không tới).
-                                 if (isVdpMode || editSelectedIds.length !== 1) return;
-                                 const sel = editObjects.find(o => o.id === editSelectedIds[0]);
+                                 if (isVdpMode || selectedObjectIds.length !== 1) return;
+                                 const sel = editObjects.find(o => o.id === selectedObjectIds[0]);
                                  if (sel && sel.type === 'text') {
                                      e.stopPropagation();
                                      openTextEditor(sel);
@@ -2564,12 +2564,24 @@ export const LivePageFrame = (props: any) => {
              })()}
 
              {/* Marquee Drag Box — always in DOM, visibility controlled by ref */}
-             {(isSelectionMode || isObjectEditMode) && (
+             {(isObjectEditMode || isCropMode) && (
                  <div 
                      ref={marqueeRef}
                      className="absolute border-2 border-blue-500 bg-blue-400/15 z-40 pointer-events-none"
                      style={{ display: 'none' }}
                  />
+             )}
+
+             {/* Crop PDF — vùng đã quét, giữ hiển thị chờ Enter/Esc */}
+             {isCropMode && cropSel && (
+                 <div
+                     className="absolute border-2 border-orange-500 bg-orange-400/10 z-40 pointer-events-none"
+                     style={{ left: cropSel.x, top: cropSel.y, width: cropSel.w, height: cropSel.h }}
+                 >
+                     <div className="absolute -top-6 left-0 text-[10px] font-semibold bg-orange-500 text-white px-1.5 py-0.5 rounded shadow whitespace-nowrap">
+                         Enter: cắt khổ • Esc: huỷ
+                     </div>
+                 </div>
              )}
             </div>
         </div>

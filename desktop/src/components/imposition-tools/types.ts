@@ -236,7 +236,7 @@ export const DEFAULT_REPORT_CONFIG: ReportDisplayConfig = {
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';
 
-export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'pageboxes' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover';
+export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover';
 
 export interface ImposerDashboardProps {
     tabId: string;

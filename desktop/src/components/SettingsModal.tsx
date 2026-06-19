@@ -9,6 +9,8 @@ import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey } from '../lib/to
 import { Button } from './Button';
 import { SettingRow } from './SettingRow';
 import CutterMachinesPanel from './imposition-tools/cut-export/CutterMachinesPanel';
+import { toast } from './ui/Toast';
+import { Star, X } from 'lucide-react';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -75,8 +77,8 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] bg-slate-900/40 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="glass-card w-full max-w-4xl h-[600px] flex flex-row rounded-2xl shadow-2xl relative border border-slate-200 animate-fade-in transition-colors overflow-hidden">
+    <div className="fixed inset-0 z-modal bg-slate-900/40 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+      <div role="dialog" aria-modal="true" aria-label="Cài đặt" className="glass-card w-full max-w-4xl h-[600px] flex flex-row rounded-2xl shadow-2xl relative border border-slate-200 animate-fade-in transition-colors overflow-hidden">
         
         {/* Left Sidebar */}
         <div className="w-64 bg-slate-50 dark:bg-zinc-800/80 border-r border-slate-200 dark:border-white/10 flex flex-col z-10 flex-shrink-0">
@@ -100,8 +102,10 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
           <button 
             onClick={onClose}
             className="absolute top-4 right-4 text-slate-400 dark:text-zinc-500 hover:text-slate-900 dark:hover:text-white w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center transition-colors z-20"
+            title="Đóng"
+            aria-label="Đóng"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
           
           <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
@@ -232,7 +236,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                     />
                     <Button 
                       variant="secondary" 
-                      onClick={() => alert('✅ Đã lưu API Key thành công!')}
+                      onClick={() => toast.success('✅ Đã lưu API Key thành công!')}
                     >
                       Lưu
                     </Button>
@@ -274,14 +278,14 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                                 <div className="flex items-center gap-3 ml-3">
                                   <button
                                     onClick={(e) => { e.preventDefault(); toggleFavoriteTool(uniqueKey); }}
-                                    className={`text-lg transition-all duration-200 hover:scale-110 active:scale-95 ${
+                                    className={`flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 ${
                                       favoriteTools.includes(uniqueKey)
-                                        ? 'drop-shadow-sm grayscale-0 opacity-100'
-                                        : 'grayscale opacity-30 hover:opacity-100 hover:grayscale-0'
+                                        ? 'text-amber-400'
+                                        : 'text-slate-300 dark:text-zinc-600 hover:text-amber-400'
                                     }`}
                                     title={favoriteTools.includes(uniqueKey) ? 'Bỏ yêu thích' : 'Thêm vào yêu thích'}
                                   >
-                                    ⭐
+                                    <Star className="w-5 h-5" fill={favoriteTools.includes(uniqueKey) ? 'currentColor' : 'none'} />
                                   </button>
                                   <div className="relative flex items-center group flex-shrink-0">
                                     <input 
@@ -339,8 +343,9 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                           variant="destructive" 
                           onClick={() => setDefaultExportPath(null)}
                           title="Xóa mặc định"
+                          aria-label="Xóa mặc định"
                         >
-                          ✕
+                          <X className="w-4 h-4" />
                         </Button>
                       )}
                     </div>

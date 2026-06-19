@@ -185,6 +185,7 @@ export default function LayerPanel() {
                         <button
                             onClick={(e) => { e.stopPropagation(); handleToggleExpand(layer.id); }}
                             className="w-4 h-4 flex items-center justify-center text-slate-400 dark:text-zinc-500 hover:text-slate-700 dark:hover:text-zinc-200 transition-colors shrink-0"
+                            aria-label={isExpanded ? 'Thu gọn lớp' : 'Mở rộng lớp'}
                         >
                             <svg className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -209,6 +210,7 @@ export default function LayerPanel() {
                                 : 'text-slate-500 dark:text-zinc-300 hover:text-blue-500 dark:hover:text-blue-400'
                         }`}
                         title={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
+                        aria-label={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
                     >
                         {isHidden ? (
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -231,6 +233,7 @@ export default function LayerPanel() {
                                 : 'text-slate-300 dark:text-zinc-700 hover:text-slate-500 dark:hover:text-zinc-400 opacity-0 group-hover/layer:opacity-100'
                         }`}
                         title={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
+                        aria-label={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
                     >
                         {isLocked ? (
                             <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
@@ -292,6 +295,7 @@ export default function LayerPanel() {
                                             });
                                         }}
                                         className="w-3.5 h-3.5 flex items-center justify-center shrink-0 hover:bg-black/5 dark:hover:bg-white/10 rounded transition-colors"
+                                        aria-label={isObjHidden ? 'Hiện đối tượng' : 'Ẩn đối tượng'}
                                     >
                                         {isObjHidden ? (
                                             <svg className="w-2.5 h-2.5 text-slate-300 dark:text-zinc-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -377,6 +381,7 @@ export default function LayerPanel() {
                 <button
                     onClick={() => setIsLayerPanelOpen(false)}
                     className="w-7 h-7 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200 transition-colors"
+                    aria-label="Đóng bảng lớp"
                 >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />

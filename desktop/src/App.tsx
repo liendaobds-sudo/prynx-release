@@ -16,6 +16,8 @@ import LoginScreen from './components/auth/LoginScreen';
 import LicenseLockOverlay from './components/auth/LicenseLockOverlay';
 import TrialExpiryBanner from './components/auth/TrialExpiryBanner';
 import { supabase } from './lib/supabase';
+import { ToastViewport, toast } from './components/ui/Toast';
+import { ConfirmDialogHost } from './components/ui/confirmDialog';
 
 type AppTabType = 'home' | AppToolId;
 
@@ -75,9 +77,11 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div
           className="w-12 h-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer group text-slate-700 dark:text-zinc-300"
           onClick={() => {
-            getCurrentWindow().minimize().catch((e: any) => alert("Min Error: " + (e.message || e)));
+            getCurrentWindow().minimize().catch((e: any) => toast.error("Min Error: " + (e.message || e)));
           }}
           title="Thu nhỏ"
+          role="button"
+          aria-label="Thu nhỏ cửa sổ"
         >
           <svg width="10" height="1" viewBox="0 0 10 1" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
             <rect width="10" height="1" fill="currentColor" />
@@ -86,9 +90,11 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div
           className="w-12 h-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer group text-slate-700 dark:text-zinc-300"
           onClick={() => {
-            getCurrentWindow().toggleMaximize().catch((e: any) => alert("Max Error: " + (e.message || e)));
+            getCurrentWindow().toggleMaximize().catch((e: any) => toast.error("Max Error: " + (e.message || e)));
           }}
           title="Phóng to"
+          role="button"
+          aria-label="Phóng to cửa sổ"
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
             <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" />
@@ -97,9 +103,11 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div
           className="w-12 h-full flex items-center justify-center hover:bg-red-500 text-slate-700 dark:text-zinc-300 hover:text-white transition-colors cursor-pointer group"
           onClick={() => {
-            getCurrentWindow().close().catch((e: any) => alert("Close Error: " + (e.message || e)));
+            getCurrentWindow().close().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
           }}
           title="Đóng (Alt+F4)"
+          role="button"
+          aria-label="Đóng cửa sổ"
         >
           <svg width="10" height="10" viewBox="0 0 14 14" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
             <path d="M1 1L13 13M1 13L13 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
@@ -137,6 +145,8 @@ export default function App() {
       <LicenseLockOverlay />
       {isAuthenticated && <TrialExpiryBanner />}
       <AppInner />
+      <ToastViewport />
+      <ConfirmDialogHost />
     </FileProvider>
   );
 }

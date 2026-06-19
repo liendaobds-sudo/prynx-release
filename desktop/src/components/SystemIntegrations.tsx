@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { toast } from './ui/Toast';
 
 export default function SystemIntegrations() {
 
@@ -32,7 +33,7 @@ export default function SystemIntegrations() {
                 files.push(fileObj);
             } catch (err) {
                 console.error("Failed to read system file:", path, err);
-                alert("Không thể đọc file: " + path + "\nLỗi: " + err);
+                toast.error("Không thể đọc file: " + path + "\nLỗi: " + err);
             }
         }
 

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Button } from '../Button';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
@@ -12,11 +12,21 @@ interface SaveModalProps {
 export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProps) {
     const { showSaveAsModal, setShowSaveAsModal, file, setReportMsg } = useWorkspaceStore();
     const { batchOutput } = useImposerSettingsStore();
+
+    useEffect(() => {
+        if (!showSaveAsModal) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setShowSaveAsModal(false);
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [showSaveAsModal, setShowSaveAsModal]);
+
     if (!showSaveAsModal) return null;
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-[#f3f4f6] dark:bg-[#1a1a1a] rounded shadow-2xl flex flex-col w-[800px] h-[580px] overflow-hidden border border-black/20 dark:border-white/10 animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+            <div role="dialog" aria-modal="true" aria-label="Lưu thành PDF" className="bg-[#f3f4f6] dark:bg-[#1a1a1a] rounded shadow-2xl flex flex-col w-[800px] h-[580px] overflow-hidden border border-black/20 dark:border-white/10 animate-in zoom-in-95 duration-200">
 
                 {/* HEADER */}
                 <div className="flex items-center justify-between px-6 py-4 bg-white dark:bg-[#252525] border-b border-gray-200 dark:border-gray-800">

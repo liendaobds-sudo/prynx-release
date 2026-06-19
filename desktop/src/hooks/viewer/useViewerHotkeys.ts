@@ -31,7 +31,6 @@ interface UseViewerHotkeysProps {
     // Tool modes
     toolMode: 'pointer' | 'hand';
     setToolMode: (m: 'pointer' | 'hand') => void;
-    isSelectionMode: boolean;
     isVdpMode: boolean;
     isThumbMenuOpen: boolean;
     isDeleteModalOpen: boolean;
@@ -42,7 +41,6 @@ interface UseViewerHotkeysProps {
     setExtractPagesStrForModal: React.Dispatch<React.SetStateAction<string>>;
     setContextMenu: React.Dispatch<React.SetStateAction<any>>;
     setIsSidebarOpen: (open: boolean) => void;
-    setIsSelectionMode: (mode: boolean) => void;
     // Guide system
     guides: any[];
     setGuides: React.Dispatch<React.SetStateAction<any[]>>;
@@ -68,9 +66,9 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         pageOrder, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
         setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
         pastStack, futureStack, setPastStack, setFutureStack,
-        toolMode, setToolMode, isSelectionMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
+        toolMode, setToolMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
         setIsDeleteModalOpen, setIsExtractModalOpen, setIsInsertModalOpen, setExtractPagesStrForModal, setContextMenu,
-        setIsSidebarOpen, setIsSelectionMode,
+        setIsSidebarOpen,
         guides, setGuides, guidesHistory, setGuidesHistory, selectedGuideId, setSelectedGuideId, toggleRulers,
         navigatePage,
         mainVirtuosoRef, internalScrollRef,
@@ -234,7 +232,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                 }
             } else if (e.key === 'Delete' || e.key === 'Backspace') {
                 if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-                if (isSelectionMode || isVdpMode) return;
+                if (isObjectEditMode || isVdpMode) return;
                 // Xóa khi có trang đang chọn trong thumbnail. Không phụ thuộc focus
                 // (trước đây yêu cầu focus nằm trong sidebar nên Delete hay bị chặn
                 // im lặng khi con trỏ ở vùng trang chính). Tab nền đã bị guard ở trên.
@@ -287,7 +285,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             document.removeEventListener('keydown', handleKeyDown);
             document.removeEventListener('keyup', handleKeyUp);
         };
-    }, [pastStack, futureStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, toolMode, isThumbMenuOpen, isDeleteModalOpen, activePage, numPages, undo, redo, isVdpMode, isSelectionMode, isObjectEditMode, onEditUndo, onEditRedo]);
+    }, [pastStack, futureStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, toolMode, isThumbMenuOpen, isDeleteModalOpen, activePage, numPages, undo, redo, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo]);
 
     // Escape key closes modals
     useEffect(() => {

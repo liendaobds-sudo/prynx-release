@@ -211,7 +211,7 @@ def new_shape(pdf: pikepdf.Pdf, pike_page: pikepdf.Page) -> ShapeBuilder:
 def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
                   rect: Rect, src_pdf: pikepdf.Pdf, page_idx: int,
                   rotate: int = 0, clip: Rect = None, keep_proportion: bool = False,
-                  out_clip: Rect = None):
+                  out_clip: Rect = None, mirror_x: bool = False, mirror_y: bool = False):
     """
     Place a source PDF page onto dest_page at the specified rect.
     Equivalent to pdf_wrapper's Page.show_pdf_page().
@@ -219,6 +219,11 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
     out_clip: nếu có, đây là rectangle (toạ độ output, y-down giống `rect`) dùng làm
     đường CLIP trên trang đích — tách biệt với `rect` (vùng đặt/scale). Dùng để clip
     bleed ở mép trong giữa 2 tem (mỗi bên nửa gap), tránh bleed chồng nhau.
+
+    mirror_x / mirror_y: PHẢN CHIẾU (lật gương) nội dung quanh TÂM của `rect`
+    (mirror_x = lật ngang, mirror_y = lật dọc). Dùng cho Mặt sau bình bế 2 mặt:
+    mặt sau die-cut phải là ẢNH PHẢN CHIẾU của mặt trước (không phải xoay), để khi
+    in duplex (lật giấy) artwork mặt sau trùng khít footprint mặt trước.
     """
     dest_h = page_height(dest_page)
     src_pike = src_pdf.pages[page_idx]
@@ -281,12 +286,28 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
     if not xobj_name_str.startswith("/"):
         xobj_name_str = "/" + xobj_name_str
 
+    # Phản chiếu (mirror) TOÀN TỜ quanh TÂM TRANG ĐÍCH (không phải tâm rect): mặt
+    # sau bình bế 2 mặt = ảnh phản chiếu của mặt trước quanh tâm tờ → vị trí + nội
+    # dung đều lật đúng, KHÔNG phụ thuộc đường bế lệch tâm trong trang nguồn.
+    if mirror_x or mirror_y:
+        pivot_x = page_width(dest_page) / 2.0
+        pivot_y = dest_h / 2.0
+        mx = -1.0 if mirror_x else 1.0
+        my = -1.0 if mirror_y else 1.0
+        mirror_prefix = (
+            f"1 0 0 1 {pivot_x:.4f} {pivot_y:.4f} cm\n"
+            f"{mx:.1f} 0 0 {my:.1f} 0 0 cm\n"
+            f"1 0 0 1 {-pivot_x:.4f} {-pivot_y:.4f} cm\n"
+        )
+    else:
+        mirror_prefix = ""
+
     if rotate != 0:
         rad = math.radians(rotate)
         cos_a = math.cos(rad)
         sin_a = math.sin(rad)
         stream_str = (
-            f"q\n{clip_prefix}"
+            f"q\n{clip_prefix}{mirror_prefix}"
             f"1 0 0 1 {cx:.4f} {cy:.4f} cm\n"
             f"{cos_a:.6f} {sin_a:.6f} {-sin_a:.6f} {cos_a:.6f} 0 0 cm\n"
             f"1 0 0 1 {-cx:.4f} {-cy:.4f} cm\n"
@@ -295,7 +316,7 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
         )
     else:
         stream_str = (
-            f"q\n{clip_prefix}"
+            f"q\n{clip_prefix}{mirror_prefix}"
             f"{scale_x:.6f} 0 0 {scale_y:.6f} {e:.4f} {f:.4f} cm\n"
             f"{xobj_name_str} Do\nQ\n"
         )

@@ -10,6 +10,10 @@ import { useAppSettingsStore } from '../stores/appSettingsStore';
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { LivePageFrame, clearTileUrlCache } from './workspace/LivePageFrame';
+import CropDialog from './workspace/CropDialog';
+import ExportImageModal from './workspace/ExportImageModal';
+import { uploadPDF } from '../lib/api';
+import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, ThumbSidebar, ViewerContextMenu, type Guide } from './acrobat';
 import LayerPanel from './acrobat/LayerPanel';
 
@@ -40,8 +44,8 @@ interface Props {
 export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, onViewerDirtyChange, editSession }: Props) {
     // ═══ Global Store ═══
     const {
-        file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue, isSelectionMode,
-        selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId, setIsSelectionMode,
+        file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue,
+        selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId,
         isObjectEditMode,
         hiddenOcgLayerIds, isLayerPanelOpen, setIsLayerPanelOpen,
         separationPlates, vdpFields, selectedVdpFieldIds,
@@ -63,9 +67,9 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         ocgPreviewUrl,
     } = useWorkspaceStore(useShallow(state => ({
         file: state.file, setFile: state.setFile, pdfUrl: state.pdfUrl, setPdfUrl: state.setPdfUrl, bleedView: state.bleedView, highlightedIssue: state.highlightedIssue,
-        isSelectionMode: state.isSelectionMode, selectedObjectIds: state.selectedObjectIds,
+        selectedObjectIds: state.selectedObjectIds,
         setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, selectionFileId: state.selectionFileId,
-        setIsSelectionMode: state.setIsSelectionMode, hiddenOcgLayerIds: state.hiddenOcgLayerIds,
+        hiddenOcgLayerIds: state.hiddenOcgLayerIds,
         isObjectEditMode: state.isObjectEditMode,
         isLayerPanelOpen: state.isLayerPanelOpen, setIsLayerPanelOpen: state.setIsLayerPanelOpen,
         separationPlates: state.separationPlates,
@@ -92,12 +96,48 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         setActiveDashboardTool: s.setActiveDashboardTool,
     })));
 
-    const isVdpMode = activeDashboardTool === 'datamerge' || activeDashboardTool === 'numbering' || activeDashboardTool === 'stick_text_number';
+    const isVdpMode = activeDashboardTool === 'datamerge' || activeDashboardTool === 'numbering' || activeDashboardTool === 'cover_numbering' || activeDashboardTool === 'stick_text_number';
     const { showRulers, toggleRulers, measurementUnit } = useAppSettingsStore();
 
     const highlightBoxes = highlightedIssue ? [highlightedIssue] : undefined;
+
+    // ── Crop PDF: lấy/đảm bảo file_id + áp kết quả crop vào viewer ──
+    const setSelectionFileId = useWorkspaceStore(s => s.setSelectionFileId);
+    const setIsCropMode = useWorkspaceStore(s => s.setIsCropMode);
+
+    const ensureCropFileId = useCallback(async () => {
+        if (selectionFileId) return selectionFileId;
+        if (!file) throw new Error('Chưa có file để cắt khổ');
+        const res = await uploadPDF(file);
+        setSelectionFileId(res.id);
+        return res.id;
+    }, [selectionFileId, file, setSelectionFileId]);
+
+    const handleCropApplied = useCallback((blob: Blob) => {
+        const newFile = new File([blob], (file?.name || 'cropped.pdf'), { type: 'application/pdf' });
+        setFile(newFile);
+        setPdfUrl(URL.createObjectURL(newFile));
+        setSelectionFileId(''); // buộc re-upload cho thao tác sau (output không có fid)
+        setIsCropMode(false);
+    }, [file, setFile, setPdfUrl, setSelectionFileId, setIsCropMode]);
     const onVdpBoxSelect = (fieldIds: string[]) => {}; // Handled directly in LivePageFrame now
     const onVdpFieldsChange = setVdpFields;
+
+    // ── Export ảnh (PNG/JPEG/TIFF) — tương tự Acrobat "Export To > Image" ──
+    const [isExportImageOpen, setIsExportImageOpen] = useState(false);
+    const [exportFileId, setExportFileId] = useState<string | undefined>(undefined);
+    const [exportFilePath, setExportFilePath] = useState<string | undefined>(undefined);
+    const openExportImage = useCallback(async () => {
+        if (!file) { toast.info('Chưa có file để xuất ảnh.'); return; }
+        try {
+            const p = (file as any)?.path;
+            if (p) { setExportFilePath(p); setExportFileId(undefined); }
+            else { const fid = await ensureCropFileId(); setExportFileId(fid); setExportFilePath(undefined); }
+            setIsExportImageOpen(true);
+        } catch (e) {
+            toast.error('Không chuẩn bị được file để xuất ảnh: ' + ((e as any)?.message || e));
+        }
+    }, [file, ensureCropFileId]);
 
     // ═══ DOM Refs ═══
     const containerRef = useRef<HTMLDivElement>(null);
@@ -213,9 +253,9 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         pageOrder, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
         setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
         pastStack, futureStack, setPastStack, setFutureStack,
-        toolMode, setToolMode, isSelectionMode: isSelectionMode || isObjectEditMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
+        toolMode, setToolMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
         setIsDeleteModalOpen, setIsExtractModalOpen, setIsInsertModalOpen, setExtractPagesStrForModal, setContextMenu,
-        setIsSidebarOpen, setIsSelectionMode: (v: boolean) => setIsSelectionMode(v),
+        setIsSidebarOpen,
         guides, setGuides, guidesHistory, setGuidesHistory, selectedGuideId, setSelectedGuideId, toggleRulers,
         navigatePage,
         mainVirtuosoRef, internalScrollRef,
@@ -245,7 +285,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
     useEffect(() => { if (pageOrder.length > 0 && activePage > pageOrder.length) setActivePage(pageOrder.length); }, [pageOrder.length, activePage]);
     useEffect(() => { setViewerPageRotations?.(pageRotations); }, [pageRotations]);
     useEffect(() => { setViewerDirty(pastStack.length > 0); }, [pastStack.length, setViewerDirty]);
-    useEffect(() => { if (isSelectionMode || isObjectEditMode || isVdpMode) setToolMode('pointer'); }, [isSelectionMode, isObjectEditMode, isVdpMode]);
+    useEffect(() => { if (isObjectEditMode || isVdpMode) setToolMode('pointer'); }, [isObjectEditMode, isVdpMode]);
     useEffect(() => { updatePageDimForPage(activePage, numPages); }, [pdfRef, activePage, numPages, updatePageDimForPage]);
 
     // Reset zoom state on new file
@@ -707,6 +747,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                         isBlankDoc={!!(file as any)?.isBlank}
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
                         editSession={editSession}
+                        isActivePage={originalPageNum === activePage}
                     />
                     {showOcgOverlay && (
                         <img
@@ -745,7 +786,20 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                 navigatePage={navigatePage}
                 applyFitWidth={applyFitWidth}
                 applyFitPage={applyFitPage}
-                extraActions={toolbarExtra}
+                extraActions={<>
+                    {file && (
+                        <button
+                            onClick={openExportImage}
+                            title="Xuất ảnh (PNG/JPEG/TIFF)"
+                            aria-label="Xuất ảnh"
+                            className="flex items-center gap-1.5 px-2.5 h-8 rounded text-[13px] font-medium text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                            Xuất ảnh
+                        </button>
+                    )}
+                    {toolbarExtra}
+                </>}
                 onOpenRotateModalOrTools={(type) => {
                     if ((type as string) === 'rotate') { setActiveDashboardTool('pages'); setIsSidebarOpen(true); }
                     else if ((type as string) === 'delete') { setIsDeleteModalOpen(true); }
@@ -876,6 +930,20 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
             {isDeleteModalOpen && <QuickDeleteModal selectedCount={selectedIndices.size} onConfirm={handleQuickDeleteConfirm} onClose={() => setIsDeleteModalOpen(false)} />}
             {isExtractModalOpen && <ExtractPagesModal pageCount={pageOrder.length} initialPagesStr={extractPagesStrForModal} onConfirm={handleExtractPages} onClose={() => setIsExtractModalOpen(false)} />}
             {isInsertModalOpen && <InsertBlankPageModal pageCount={pageOrder.length} onConfirm={handleInsertBlankPage} onClose={() => setIsInsertModalOpen(false)} />}
+
+            {/* Crop PDF dialog (Set Page Boxes) */}
+            <CropDialog ensureFileId={ensureCropFileId} onApplied={handleCropApplied} onClose={() => setIsCropMode(false)} />
+
+            {/* Export ảnh (PNG/JPEG/TIFF) */}
+            <ExportImageModal
+                open={isExportImageOpen}
+                onClose={() => setIsExportImageOpen(false)}
+                fileId={exportFileId}
+                filePath={exportFilePath}
+                numPages={numPages}
+                currentPage={activePage}
+                baseName={file?.name?.replace(/\.[^.]+$/, '') || 'page'}
+            />
 
             {/* Context Menu */}
             <ViewerContextMenu

@@ -115,6 +115,23 @@ class EditRequest(BaseModel):
     op: EditOp
 
 
+class PreviewHideReq(BaseModel):
+    """
+    Yêu cầu render preview TRANG SAU KHI ẨN (xóa hình thật) một tập object.
+
+    Dùng cho tính năng "Ẩn đối tượng" (tắt mắt) ở chế độ Edit: backend áp một thao
+    tác delete IN-MEMORY (pikepdf) rồi render trang read-only → FE đắp ảnh này làm
+    overlay để hình thật của object biến mất (không chỉ ẩn ô chọn). KHÔNG ghi file,
+    KHÔNG mutate file gốc.
+    """
+
+    fid: str = Field(description="ID file PDF đã upload (UploadedFile.id)")
+    page: int = Field(ge=0, description="Chỉ số trang 0-based cần render")
+    targetIds: list[str] = Field(
+        default_factory=list, description="Danh sách id object cần ẩn (xóa khỏi ảnh preview)"
+    )
+
+
 # ── Response schema ──────────────────────────────────────────────────────────
 class EditResponse(BaseModel):
     """Kết quả một thao tác edit + tham chiếu Working_File mới."""
@@ -593,6 +610,56 @@ def _render_preview_blocking(pdf_path: str, op: EditOp) -> PreviewResponse:
     )
 
 
+def _render_full_page_blocking(pdf_path: str, page: int) -> PreviewResponse:
+    """
+    Render READ-ONLY TOÀN TRANG `page` của file gốc (KHÔNG áp op nào) → PNG base64.
+
+    Dùng cho nhánh `preview-hide` khi danh sách targetIds rỗng (sau khi lọc id còn
+    tồn tại): vẫn trả về ảnh trang bình thường để FE đắp overlay khớp khung trang.
+    Đọc bytes vào RAM rồi render bằng PDFium (read-only) — KHÔNG ghi file, KHÔNG
+    tạo file tạm.
+    """
+    with open(pdf_path, "rb") as fh:
+        pdf_bytes = fh.read()
+    b64, width, height = _render_clip_blocking(
+        pdf_bytes, page, PREVIEW_DPI / 72.0, None
+    )
+    return PreviewResponse(
+        success=True,
+        image=f"data:image/png;base64,{b64}",
+        width=int(width),
+        height=int(height),
+        page=page,
+    )
+
+
+async def _execute_full_page_preview(pdf_path: str, page: int) -> PreviewResponse:
+    """Render full-page preview trong threadpool + map lỗi (đồng bộ `_execute_preview`)."""
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _render_full_page_blocking, pdf_path, page),
+            timeout=EDIT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Tạo preview vượt thời gian xử lý an toàn "
+                f"({EDIT_TIMEOUT_SECONDS:.0f}s). Đã HỦY (Yêu cầu 13.4)."
+            ),
+        )
+    except HTTPException:
+        raise
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except IndexError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Tạo preview full-page thất bại")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+
+
 async def _execute_preview(pdf_path: str, op: EditOp) -> PreviewResponse:
     """
     Chạy render preview trong threadpool với TRẦN THỜI GIAN an toàn (Yêu cầu 13.4)
@@ -950,6 +1017,46 @@ async def edit_preview(req: EditRequest):
     """
     pdf_path, _ = _get_file_info(req.fid)
     return await _execute_preview(pdf_path, req.op)
+
+
+@router.post("/edit/preview-hide", response_model=PreviewResponse)
+async def edit_preview_hide(req: PreviewHideReq):
+    """
+    Render ảnh preview (PNG base64) của trang SAU KHI ẨN (xóa hình thật) tập object
+    `targetIds` — phục vụ tính năng "Ẩn đối tượng" (tắt mắt) ở chế độ Edit.
+
+    Đường đi giống `/edit/preview` với op delete: pikepdf áp xóa IN-MEMORY (color-
+    safe) → `pdf.save(BytesIO)` → PDFium render READ-ONLY → PNG base64. KHÔNG ghi
+    file, KHÔNG đè file gốc (Yêu cầu 12.2).
+
+    Xử lý targetIds an toàn:
+      - LỌC trước các id còn tồn tại trên trang (qua Geometry_Reader). Id đã bị
+        xóa/đổi sẽ bị BỎ QUA thay vì làm hỏng cả preview bằng 404/409.
+      - Nếu sau khi lọc danh sách RỖNG (hoặc đầu vào rỗng) → render TRANG BÌNH
+        THƯỜNG (không áp op). Lý do: `EditOp(kind='delete')` từ chối targetIds rỗng
+        ở tầng validator, nên ta render full-page trực tiếp thay vì dựng op.
+    """
+    pdf_path, _ = _get_file_info(req.fid)
+
+    # Lọc id còn tồn tại để tránh 404/409 làm hỏng preview (bỏ qua id đã mất).
+    existing_ids: list[str] = []
+    if req.targetIds:
+        try:
+            metas = geometry_reader.list_objects(pdf_path, req.page)
+            present = {m.id for m in metas}
+            existing_ids = [tid for tid in req.targetIds if tid in present]
+        except IndexError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001 - lọc best-effort; lỗi → render full
+            logger.warning("preview-hide: liệt kê object để lọc thất bại: %s", exc)
+            existing_ids = []
+
+    # Không còn gì để ẩn → render trang bình thường (full page).
+    if not existing_ids:
+        return await _execute_full_page_preview(pdf_path, req.page)
+
+    op = EditOp(page=req.page, kind="delete", targetIds=existing_ids)
+    return await _execute_preview(pdf_path, op)
 
 
 # ── Session endpoints `/edit/session/*` (`pdf-edit-session`) ─────────────────

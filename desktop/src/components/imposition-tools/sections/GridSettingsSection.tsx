@@ -274,8 +274,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
             </div>
           )}
 
-          {/* === HÌNH DẠNG TEM (sticker_imposer only) === */}
-          {activeTool === "sticker_imposer" && (
+          {/* === HÌNH DẠNG TEM (sticker_imposer + cnc_imposer) === */}
+          {(activeTool === "sticker_imposer" || activeTool === "cnc_imposer") && (
             <div className="flex items-center gap-3">
               <label
                 className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]"

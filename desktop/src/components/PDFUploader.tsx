@@ -1,6 +1,7 @@
 import { useCallback, useState, useRef } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { toast } from './ui/Toast';
 
 interface PDFUploaderProps {
   label: string;
@@ -29,11 +30,11 @@ export default function PDFUploader({
       if (!files.length) return;
       const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
       if (!pdfs.length) {
-        alert('Vui lòng chọn hoặc thả file PDF');
+        toast.info('Vui lòng chọn hoặc thả file PDF');
         return;
       }
       if (pdfs[0].size > 500 * 1024 * 1024) {
-        alert('File quá lớn. Tối đa 500MB.');
+        toast.error('File quá lớn. Tối đa 500MB.');
         return;
       }
       onFileSelected(pdfs[0], pdfs);

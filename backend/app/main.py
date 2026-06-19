@@ -144,13 +144,14 @@ app.include_router(upload.router, prefix="/api", tags=["Upload"])
 app.include_router(compare.router, prefix="/api", tags=["Compare"])
 app.include_router(results.router, prefix="/api", tags=["Results"])
 app.include_router(qc.router, prefix="/api", tags=["QC"])
-from app.api.routes import system, imposition, preflight, vdp, pdf_tools, edit
+from app.api.routes import system, imposition, preflight, vdp, pdf_tools, edit, export
 app.include_router(system.router, prefix="/api", tags=["System"])
 app.include_router(imposition.router, prefix="/api", tags=["Imposition"])
 app.include_router(preflight.router, prefix="/api", tags=["Preflight"])
 app.include_router(vdp.router, prefix="/api/vdp", tags=["VDP"])
 app.include_router(pdf_tools.router, prefix="/api", tags=["PDF Tools"])
 app.include_router(edit.router, prefix="/api", tags=["Edit"])
+app.include_router(export.router, prefix="/api", tags=["Export"])
 app.include_router(ws.router, tags=["WebSocket"])
 
 # Cut Export (spec: gui-may-be) — module độc lập backend/app/workers/cut_export

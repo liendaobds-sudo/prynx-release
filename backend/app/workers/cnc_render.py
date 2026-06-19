@@ -30,11 +30,86 @@ from app.workers.nup_artwork import (
 )
 from app.workers.nup_marks import _draw_ponts_on_page
 from app.workers.cnc_marks import draw_duplex_marks
-from app.workers.cnc_layout import build_cnc_front_layout, select_front_pages
+from app.workers.cnc_layout import build_cnc_front_layout, build_cnc_gang_layout, select_front_pages
+from app.workers.die_detection import DetectedShape, Trim, MAX_TRIM_PT
+from app.workers.shape_types import coerce_shape_type
 
 logger = logging.getLogger(__name__)
 
 MM_TO_PTS = 2.83465
+
+
+def _resolve_cnc_collisions(placements, pont_config, sheet_w, sheet_h,
+                            margin_left, margin_bottom, src_doc, detected_shapes_by_page):
+    """Dời/loại tem đè vùng cấm boong (pont) — tái dùng pont_collision như Bình Tem Bế.
+
+    Trả placements đã giải va chạm (hoặc nguyên bản nếu không có boong / không va chạm).
+    S&R 1 mẫu: dùng polygon hình thật của trang. Gang nhiều mẫu khác trang: dùng
+    kiểm tra theo hình chữ nhật bao (base_poly=None) để an toàn.
+    """
+    if not placements or not pont_config or pont_config.get('disableCollision', False):
+        return placements
+    try:
+        from app.workers.pont_collision import (
+            calculate_forbidden_zones, detect_collisions, smart_resolve_collisions,
+            build_shapely_polygon_from_paths, MM_TO_PTS as PC_MM,
+        )
+    except Exception:
+        return placements
+
+    def _m(key, default_pt):
+        v = pont_config.get(key)
+        return v * PC_MM if v is not None else default_pt
+
+    margins = {
+        'top': _m('marginTop', margin_bottom),
+        'bottom': _m('marginBottom', margin_bottom),
+        'left': _m('marginLeft', margin_left),
+        'right': _m('marginRight', margin_left),
+    }
+    try:
+        zones = calculate_forbidden_zones(pont_config, margins, sheet_w, sheet_h)
+    except Exception:
+        return placements
+    if not zones:
+        return placements
+
+    base_poly = None
+    base_rect_pts = (0, 0, placements[0]['width'], placements[0]['height'])
+    src_pages = {p['src_page_idx'] for p in placements}
+    if len(src_pages) == 1:
+        only_idx = next(iter(src_pages))
+        shp = None
+        if detected_shapes_by_page:
+            shp = (detected_shapes_by_page.get(str(only_idx))
+                   or detected_shapes_by_page.get(only_idx))
+        try:
+            if shp == 'CIRCLE_ELLIPSE':
+                from shapely.geometry import Point
+                from shapely.affinity import scale
+                rx = placements[0]['width'] / 2.0
+                ry = placements[0]['height'] / 2.0
+                base_poly = scale(Point(0, 0).buffer(1.0, resolution=64), xfact=rx, yfact=ry)
+                base_rect_pts = (-rx, -ry, rx, ry)
+            else:
+                paths = src_doc[only_idx].extract_vector_paths()
+                if paths:
+                    bp = build_shapely_polygon_from_paths(paths, src_doc[only_idx].rect)
+                    if bp is not None:
+                        base_poly = bp
+                        base_rect_pts = bp.bounds
+        except Exception:
+            base_poly = None
+
+    try:
+        if not detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h):
+            return placements
+        resolved = smart_resolve_collisions(
+            placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins
+        )
+        return resolved or placements
+    except Exception:
+        return placements
 
 
 def _build_placements(items, usable_w, usable_h, margin_left, margin_bottom,
@@ -76,24 +151,23 @@ def _build_placements(items, usable_w, usable_h, margin_left, margin_bottom,
 def mirror_placements_multi(front_pl, sheet_w, sheet_h, flip_edge, back_of):
     """Lật gương CẢ CỤM Mặt trước (nhiều mẫu) → Mặt sau.
 
-    Khác `mirror_placements`: mỗi ô có thể thuộc MẪU khác nhau, nên src_page_idx
-    của mỗi ô Mặt sau lấy theo `back_of[src_page_idx_mặt_trước]` (= front+1).
-    Lật cả VỊ TRÍ (long/short) lẫn HƯỚNG XOAY (đảo chiều 90°, 180° giữ nguyên).
+    Mặt sau = ẢNH PHẢN CHIẾU toàn tờ của mặt trước quanh TÂM TỜ. Việc phản chiếu
+    (cả VỊ TRÍ lẫn NỘI DUNG) do `place_one_artwork`/`show_pdf_page` thực hiện bằng
+    mirror_x/mirror_y quanh tâm trang đích — nên ở ĐÂY KHÔNG dời abs_x/abs_y và
+    KHÔNG đổi góc xoay. (Trước đây vừa dời abs_x vừa mirror quanh tâm RECT trang
+    nguồn → khi đường bế lệch tâm trong trang, mặt sau bị dịch, mất đối xứng.)
     """
     out = []
     for p in front_pl:
         bp = dict(p)
         bp['cell'] = dict(p['cell'])
-        front_src = p['src_page_idx']
-        bp['src_page_idx'] = back_of.get(front_src)
-        # Lật hướng xoay: đảo chiều 90° (toggle isRotated180 khi isRotated), 180° giữ nguyên.
-        if bp['cell'].get('isRotated', False):
-            bp['cell']['isRotated180'] = not bp['cell'].get('isRotated180', False)
+        bp['src_page_idx'] = back_of.get(p['src_page_idx'])
         if flip_edge == 'short':
-            bp['original_cell_y'] = sheet_h - (p['original_cell_y'] + p['height'])
-            bp['abs_y'] = sheet_h - (p['abs_y'] + p['height'])
-        else:  # 'long' (mặc định)
-            bp['abs_x'] = sheet_w - (p['abs_x'] + p['width'])
+            bp['mirror_x'] = False
+            bp['mirror_y'] = True
+        else:  # 'long' (mặc định) — lật quanh cạnh dài (trục dọc) → mirror NGANG
+            bp['mirror_x'] = True
+            bp['mirror_y'] = False
         out.append(bp)
     return out
 
@@ -159,6 +233,7 @@ def _render_cnc_unit(out_doc, src_doc, front_pl, *, two_sided, flip_edge, back_o
                 die_items_cache=die_items_cache, max_geom_cache=max_geom_cache,
                 block_bbox=back_bbox, clip_off_x=clip_off_x, clip_off_y=clip_off_y,
                 find_largest_die_path=_find_largest_die_path,
+                mirror_x=p.get('mirror_x', False), mirror_y=p.get('mirror_y', False),
             )
         # Mặt sau KHÔNG vẽ boong; nhưng CÓ dấu canh 2 mặt (để canh chồng).
         if duplex_marks:
@@ -311,11 +386,16 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
             )
             
             items = layout.get('items', [])
-            total_placed = len(items)
             placements = _build_placements(
                 items, usable_w, usable_h, margin_left, margin_bottom, margin_top, fi
             )
-            
+            # Xử lý va chạm vùng cấm boong (như Bình Tem Bế) — dời/loại tem đè boong.
+            placements = _resolve_cnc_collisions(
+                placements, pont_config, sheet_w, sheet_h,
+                margin_left, margin_bottom, src_doc, detected_shapes_by_page,
+            )
+            total_placed = len(placements)
+
             target_qty = _qty_for(fi)
             sheets_needed = 1
             if target_qty > 0 and total_placed > 0:
@@ -331,15 +411,62 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
                 'overall_h': layout.get('heightUsed', usable_h),
             }
         else:
-            # Chế độ dàn nhiều mẫu -> dùng Bin-packing
-            pdq = []
+            # Dàn nhiều mẫu (gang) → dùng DetectedShape để GIỮ hình thật của từng
+            # mẫu (sửa RC-5: trước đây bin-pack chữ nhật làm mất hình). Packing vẫn
+            # theo chữ nhật bao của trim (baseline an toàn — R8.5), nhưng mỗi cell
+            # mang theo shapeType/shapeProps/poly để trang Khuôn + preview đúng hình.
+            gang_items = []
             for fi in sub_front_idxs:
                 tw, th = _trim_dims(src_doc[fi])
-                pdq.append((fi, tw, th, _qty_for(fi)))
-            return build_cnc_front_layout(
-                pdq, usable_w, usable_h, gap,
+                stype = (detected_shapes_by_page.get(str(fi))
+                         or detected_shapes_by_page.get(fi) or 'CUSTOM')
+                sprops = (detected_shape_params_by_page.get(str(fi))
+                          or detected_shape_params_by_page.get(fi) or {})
+                try:
+                    _stype = coerce_shape_type(stype)
+                except Exception:
+                    _stype = coerce_shape_type('CUSTOM')
+                _w = min(MAX_TRIM_PT, max(0.001, float(tw)))
+                _h = min(MAX_TRIM_PT, max(0.001, float(th)))
+                shape = DetectedShape(
+                    page=fi, type=_stype,
+                    props=dict(sprops) if isinstance(sprops, dict) else {},
+                    trim=Trim(_w, _h), poly=(),
+                    source='vector' if _stype is not coerce_shape_type('CUSTOM') else 'custom',
+                    confidence=1.0 if _stype is not coerce_shape_type('CUSTOM') else 0.0,
+                )
+                gang_items.append((shape, _qty_for(fi)))
+            # Va chạm boong: LOẠI vùng cấm NGAY lúc packing (thay vì xếp xong mới
+            # xóa → để lỗ lớn). Dùng helper CHUNG với preview → preview == output.
+            gang_exclude = []
+            if pont_config and not pont_config.get('disableCollision', False):
+                try:
+                    from app.workers.pont_collision import compute_packer_exclude_zones
+                    gang_exclude = compute_packer_exclude_zones(
+                        pont_config, sheet_w, sheet_h, usable_w, usable_h,
+                        margin_left, margin_bottom, gap,
+                    )
+                except Exception:
+                    gang_exclude = []
+            res = build_cnc_gang_layout(
+                gang_items, usable_w, usable_h, gap,
                 margin_left=margin_left, margin_bottom=margin_bottom, margin_top=margin_top,
+                exclude_zones=gang_exclude or None,
             )
+            # Tính số đếm theo placements thực (đã tránh boong lúc xếp).
+            res['items_per_sheet'] = len(res['placements'])
+            _pbp = {}
+            for _p in res['placements']:
+                _pbp[_p['src_page_idx']] = _pbp.get(_p['src_page_idx'], 0) + 1
+            res['placed_by_page'] = _pbp
+            _sn = 1
+            for fi in sub_front_idxs:
+                _cnt = _pbp.get(fi, 0)
+                _q = _qty_for(fi)
+                if _q > 0 and _cnt > 0:
+                    _sn = max(_sn, -(-_q // _cnt))
+            res['sheets_needed'] = _sn
+            return res
 
     # ── Dựng danh sách "đơn vị bình" ──
     #  - Bình trang (S&R): MỖI mẫu → 1 đơn vị (1 tờ riêng, lấp đầy bằng chính mẫu đó).
@@ -348,6 +475,30 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
         units = [([fi], _layout_for([fi])) for fi in front_idxs]
     else:
         units = [(list(front_idxs), _layout_for(front_idxs))]
+
+    # ── Guard "mẫu lớn hơn tờ" (Yêu cầu audit #3): nếu KHÔNG xếp được con nào trên
+    # bất kỳ đơn vị bình nào → báo lỗi RÕ thay vì xuất tờ trắng âm thầm. Kèm kích
+    # thước mẫu lớn nhất vs vùng in để người dùng biết cách xử (tăng khổ/giảm lề/xoay).
+    if not any(lay['placements'] for _, lay in units):
+        # Mẫu lớn nhất (theo bbox trim) để gợi ý.
+        _big = None
+        for fi in front_idxs:
+            tw, th = _trim_dims(src_doc[fi])
+            if _big is None or (tw * th) > (_big[0] * _big[1]):
+                _big = (tw, th)
+        src_doc.close()
+        out_doc.close()
+        _mm = lambda v: round(v / MM_TO_PTS, 1)
+        if _big:
+            raise ValueError(
+                f"Không xếp được mẫu nào lên tờ: mẫu lớn nhất ({_mm(_big[0])}×{_mm(_big[1])}mm) "
+                f"lớn hơn vùng in của tờ ({_mm(usable_w)}×{_mm(usable_h)}mm). "
+                f"Hãy tăng khổ tờ, giảm lề/khoảng hở, hoặc cho phép xoay mẫu."
+            )
+        raise ValueError(
+            f"Không xếp được mẫu nào lên vùng in ({_mm(usable_w)}×{_mm(usable_h)}mm). "
+            f"Hãy kiểm tra khổ tờ và lề."
+        )
 
     # ── Render từng đơn vị: Mặt trước → [Mặt sau lật gương] → Khuôn ──
     report_units = []  # (sub_front_idxs, layout, page_info)

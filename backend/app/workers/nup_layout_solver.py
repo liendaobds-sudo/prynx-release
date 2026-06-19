@@ -237,7 +237,7 @@ def solve_optimal_layout(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, strat
     try:
         cells = res.get('cells', [])
         rots = {bool(c.get('isRotated')) for c in cells}
-        logger.warning(
+        logger.debug(
             "[IMPOSITION_BUILD=grid-pref-v2] strategy=%s engine=%s items=%s uniform=%s",
             strategy, "rust" if _USE_RUST else "python", res.get('totalItems'), len(rots) <= 1,
         )

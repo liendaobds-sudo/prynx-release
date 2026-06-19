@@ -17,10 +17,12 @@ interface AppSettingsState {
   setPreviewQuality: (quality: 'high' | 'fast') => void;
   toggleRulers: () => void;
   toolMenuWidth: number;
+  homeToolMenuWidth: number;
   isToolMenuExpanded: boolean;
   isWorkspaceSidebarOpen: boolean;
   collapsedSections: Record<string, boolean>;
   setToolMenuWidth: (width: number) => void;
+  setHomeToolMenuWidth: (width: number) => void;
   setToolMenuExpanded: (expanded: boolean) => void;
   setWorkspaceSidebarOpen: (open: boolean) => void;
   toggleSection: (key: string) => void;
@@ -54,10 +56,12 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       setPreviewQuality: (quality) => set({ previewQuality: quality }),
       toggleRulers: () => set((state) => ({ showRulers: !state.showRulers })),
       toolMenuWidth: 390,
+      homeToolMenuWidth: 320,
       isToolMenuExpanded: false,
       isWorkspaceSidebarOpen: true,
       collapsedSections: {},
       setToolMenuWidth: (width) => set({ toolMenuWidth: width }),
+      setHomeToolMenuWidth: (width) => set({ homeToolMenuWidth: width }),
       setToolMenuExpanded: (expanded) => set({ isToolMenuExpanded: expanded }),
       setWorkspaceSidebarOpen: (open) => set({ isWorkspaceSidebarOpen: open }),
       toggleSection: (key) => set((state) => ({

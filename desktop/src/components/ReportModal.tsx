@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom';
 import { useEffect } from 'react';
+import { X } from 'lucide-react';
 import { useComparisonStore } from '../stores/comparisonStore';
 import { Button } from './Button';
 
@@ -40,13 +41,15 @@ export default function ReportModal({ onClose }: ReportModalProps) {
     overallStatus === 'FAIL' ? 'SAI LỆCH' : 'CẢNH BÁO';
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] bg-slate-900/40 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 transition-colors">
-      <div className="glass-card w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 rounded-2xl shadow-2xl relative border border-slate-200 animate-fade-in transition-colors">
+    <div className="fixed inset-0 z-modal bg-slate-900/40 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 transition-colors">
+      <div role="dialog" aria-modal="true" aria-label="Báo cáo Kiểm tra Bản In" className="glass-card w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 rounded-2xl shadow-2xl relative border border-slate-200 animate-fade-in transition-colors">
         <button 
           onClick={onClose}
           className="absolute top-4 right-4 text-slate-400 dark:text-zinc-500 hover:text-slate-900 dark:hover:text-white w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center transition-colors"
+          title="Đóng"
+          aria-label="Đóng"
         >
-          ✕
+          <X className="w-4 h-4" />
         </button>
 
         <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-1 transition-colors">📋 Báo cáo Kiểm tra Bản In</h2>

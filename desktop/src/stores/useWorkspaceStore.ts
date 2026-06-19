@@ -64,15 +64,17 @@ export interface WorkspaceState {
     tacHeatmapUrl: string | null;
     overprintPreviewUrl: string | null;
 
+    // ── Crop Mode (Crop PDF kiểu Acrobat: quét vùng → Enter → Set Page Boxes) ──
+    isCropMode: boolean;
+
     // ── Object Edit Mode (chế độ chỉnh sửa đối tượng) ──
     isObjectEditMode: boolean;
-    // Compat for old selection mode (deprecated, mutual exclusive with object edit)
-    isSelectionMode: boolean;
     // Current page components for layers-like panel in edit PDF (accurate from /edit/objects)
     currentEditObjects: any[];
     pdfObjectsVersion: number;
     selectedObjectIds: string[];
     hiddenObjectIds: string[];
+    lockedObjectIds: string[];
     selectionFileId: string;
 
     // ── OCG Layers ──
@@ -149,12 +151,13 @@ export interface WorkspaceState {
     setTacHeatmapUrl: (url: string | null) => void;
     setOverprintPreviewUrl: (url: string | null) => void;
 
-    setIsSelectionMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setIsObjectEditMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
+    setIsCropMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setCurrentEditObjects: (updater: any[] | ((prev: any[]) => any[])) => void;
     setPdfObjectsVersion: (updater: number | ((prev: number) => number)) => void;
     setSelectedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setHiddenObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
+    setLockedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setSelectionFileId: (id: string) => void;
 
     setPdfOcgLayers: (layers: any[]) => void;
@@ -232,12 +235,13 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     tacHeatmapUrl: null,
     overprintPreviewUrl: null,
 
-    isSelectionMode: false,
     isObjectEditMode: false,
+    isCropMode: false,
     currentEditObjects: [],
     pdfObjectsVersion: 0,
     selectedObjectIds: [],
     hiddenObjectIds: [],
+    lockedObjectIds: [],
     selectionFileId: '',
 
     pdfOcgLayers: [],
@@ -328,15 +332,13 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setTacHeatmapUrl: (url) => set({ tacHeatmapUrl: url }),
     setOverprintPreviewUrl: (url) => set({ overprintPreviewUrl: url }),
 
-    setIsSelectionMode: (v) => set((state) => {
-        const next = typeof v === 'function' ? v(state.isSelectionMode) : v;
-        // Loại trừ lẫn nhau: bật Selection Tool → tắt chế độ chỉnh sửa đối tượng.
-        return next ? { isSelectionMode: true, isObjectEditMode: false } : { isSelectionMode: false };
-    }),
     setIsObjectEditMode: (v) => set((state) => {
         const next = typeof v === 'function' ? v(state.isObjectEditMode) : v;
-        // Loại trừ lẫn nhau: bật chế độ chỉnh sửa đối tượng → tắt Selection Tool.
-        return next ? { isObjectEditMode: true, isSelectionMode: false } : { isObjectEditMode: false };
+        return { isObjectEditMode: next };
+    }),
+    setIsCropMode: (v) => set((state) => {
+        const next = typeof v === 'function' ? v(state.isCropMode) : v;
+        return { isCropMode: next };
     }),
     setCurrentEditObjects: (updater) => set((state) => ({
         currentEditObjects: typeof updater === 'function' ? updater(state.currentEditObjects) : updater,
@@ -350,7 +352,10 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setHiddenObjectIds: (updater) => set((state) => ({
         hiddenObjectIds: typeof updater === 'function' ? updater(state.hiddenObjectIds) : updater,
     })),
-    setSelectionFileId: (id) => set({ selectionFileId: id, selectedObjectIds: [], hiddenObjectIds: [] }),
+    setLockedObjectIds: (updater) => set((state) => ({
+        lockedObjectIds: typeof updater === 'function' ? updater(state.lockedObjectIds) : updater,
+    })),
+    setSelectionFileId: (id) => set({ selectionFileId: id, selectedObjectIds: [], hiddenObjectIds: [], lockedObjectIds: [] }),
 
     setPdfOcgLayers: (layers) => set({ pdfOcgLayers: layers }),
     setHiddenOcgLayerIds: (updater) => set((state) => ({

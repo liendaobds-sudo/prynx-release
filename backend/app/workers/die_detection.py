@@ -1,0 +1,795 @@
+"""
+die_detection.py — Lớp 1 (Detection / SSOT) cho nhận diện hình khuôn bế.
+
+Phase 0 (module này, phần đầu): định nghĩa contract dữ liệu chuẩn hoá
+`DetectedShape` cùng cấu hình, trạng thái, JSON schema, và mapping tương thích
+ngược với endpoint `/detect-shape` cũ.
+
+Phase 1 (bổ sung sau): hàm `detect_die_shapes()` — nguồn sự thật duy nhất gom
+toàn bộ heuristic chọn-path + phân loại + chuẩn hoá props về TRIM.
+
+Spec: .kiro/specs/die-shape-detection-ssot
+Requirements: 1.x, 4.6, 5.5, 7.5, 11.5, 14.1, 14.2, 14.3
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+from app.workers.shape_types import ShapeType, coerce_shape_type
+
+logger = logging.getLogger(__name__)
+
+# Giới hạn kích thước thành phẩm hợp lý (points). 14400pt = 200 inch (R1.6).
+MAX_TRIM_PT = 14400.0
+
+# Nguồn nhận diện hợp lệ cho trường `source` của DetectedShape.
+VALID_SOURCES: frozenset[str] = frozenset(
+    {"vector", "xobject", "separation", "raster_fallback", "custom"}
+)
+
+
+# =========================================================================
+#  Cấu hình & trạng thái (R1.2, R3.x, R5.3, R7.5, R11.5)
+# =========================================================================
+
+@dataclass(frozen=True)
+class DetectionConfig:
+    """Cấu hình nhận diện đường khuôn (Phase 0)."""
+    # Tên kênh Spot/Separation coi là đường khuôn — khớp full-name, case-insensitive (R3.6, R3.7).
+    die_channel_names: tuple[str, ...] = (
+        "CutContour", "Dieline", "Thru-cut", "Kiss", "Crease",
+    )
+    # Màu đường bế nhận diện kèm (ngoài tên kênh): bắt ca đường bế tô màu thuần,
+    # KHÔNG có kênh spot riêng. Mỗi phần tử là tuple màu: 4 số = CMYK, 3 số = RGB.
+    # Mặc định magenta 100% (quy ước phổ biến của thợ bế VN).
+    die_colors: tuple[tuple[float, ...], ...] = (
+        (0.0, 1.0, 0.0, 0.0),  # CMYK magenta
+        (1.0, 0.0, 1.0),       # RGB magenta
+    )
+    die_color_tol: float = 0.06       # dung sai khớp màu (0..1)
+    max_xobject_depth: int = 10        # giới hạn đệ quy Form XObject (R3.3, R3.4)
+    batch_size: int = 50               # ngưỡng xử lý theo lô, hợp lệ 10..500 (R5.3)
+    raster_fallback_dpi: int = 144     # DPI cho mask fallback (R3.8)
+    parity_tol_mm: float = 0.1         # dung sai parity mặc định (R7.3, R7.5)
+    parity_tol_deg: float = 0.01       # dung sai góc xoay (R7.3)
+    classifier_tol_mm: float = 0.01    # dung sai đối chiếu Rust==Python (R11.5)
+
+    def __post_init__(self):
+        # Ràng buộc batch_size trong [10, 500] (R5.3) — clamp + cảnh báo thay vì fail.
+        bs = self.batch_size
+        if bs < 10 or bs > 500:
+            clamped = min(500, max(10, bs))
+            logger.warning(
+                "[DETECT] batch_size=%s ngoài [10,500] → dùng %s.", bs, clamped
+            )
+            object.__setattr__(self, "batch_size", clamped)
+
+
+@dataclass(frozen=True)
+class PageDetectionStatus:
+    """Trạng thái nhận diện 1 trang để trả về frontend (R4.6, R5.5)."""
+    page: int                          # 0-based
+    ok: bool
+    source: str                        # thuộc VALID_SOURCES
+    error: Optional[str] = None
+
+
+# =========================================================================
+#  Contract DetectedShape (R1)
+# =========================================================================
+
+@dataclass(frozen=True)
+class Trim:
+    """Kích thước thành phẩm (points). 0 < w,h <= MAX_TRIM_PT (R1.6)."""
+    w: float
+    h: float
+
+
+@dataclass(frozen=True)
+class DetectedShape:
+    """Hợp đồng dữ liệu chuẩn hoá — nguồn sự thật duy nhất cho 1 trang (R1.1)."""
+    page: int                          # 0-based
+    type: ShapeType                    # đúng 1 giá trị enum thống nhất (R1.3)
+    props: dict[str, Any]              # đã chuẩn hoá về TRIM, round 3 số (R1.2)
+    trim: Trim
+    poly: tuple[tuple[float, float], ...]
+    source: str
+    confidence: float                  # [0.0, 1.0] (R1.5)
+
+    def __post_init__(self):
+        # Đủ 7 trường, không null (R1.1)
+        if self.page is None or self.page < 0:
+            raise ValueError(f"DetectedShape.page không hợp lệ: {self.page!r}")
+        if not isinstance(self.type, ShapeType):
+            raise ValueError(f"DetectedShape.type phải là ShapeType: {self.type!r}")
+        if self.props is None or not isinstance(self.props, dict):
+            raise ValueError("DetectedShape.props phải là dict không null")
+        if not isinstance(self.trim, Trim):
+            raise ValueError("DetectedShape.trim phải là Trim")
+        if self.poly is None:
+            raise ValueError("DetectedShape.poly không được null")
+        # confidence ∈ [0.0, 1.0] (R1.5)
+        if not (0.0 <= float(self.confidence) <= 1.0):
+            raise ValueError(
+                f"DetectedShape.confidence ngoài [0.0,1.0]: {self.confidence!r}"
+            )
+        # 0 < trim.w,h <= MAX_TRIM_PT (R1.6)
+        if not (0.0 < self.trim.w <= MAX_TRIM_PT and 0.0 < self.trim.h <= MAX_TRIM_PT):
+            raise ValueError(
+                f"DetectedShape.trim ngoài (0,{MAX_TRIM_PT}]: "
+                f"w={self.trim.w} h={self.trim.h}"
+            )
+        # source thuộc tập hợp lệ
+        if self.source not in VALID_SOURCES:
+            raise ValueError(
+                f"DetectedShape.source không hợp lệ: {self.source!r} "
+                f"(phải thuộc {sorted(VALID_SOURCES)})"
+            )
+
+
+def make_custom_shape(
+    page: int, trim_w: float, trim_h: float,
+    poly: tuple[tuple[float, float], ...] = (),
+    source: str = "custom",
+) -> DetectedShape:
+    """Tạo DetectedShape CUSTOM an toàn cho trang không phân loại được / lỗi (R1.4, R4.2)."""
+    safe_w = trim_w if (trim_w and 0.0 < trim_w <= MAX_TRIM_PT) else 1.0
+    safe_h = trim_h if (trim_h and 0.0 < trim_h <= MAX_TRIM_PT) else 1.0
+    return DetectedShape(
+        page=page,
+        type=ShapeType.CUSTOM,
+        props={},
+        trim=Trim(round(float(safe_w), 3), round(float(safe_h), 3)),
+        poly=tuple(poly),
+        source=source,
+        confidence=0.0,
+    )
+
+
+@dataclass(frozen=True)
+class DetectionResult:
+    """Kết quả nhận diện toàn file (R4.4, R5.5)."""
+    shapes: list[DetectedShape]
+    statuses: list[PageDetectionStatus]
+    total_pages: int
+    success_pages: int
+    failed_pages: tuple[int, ...] = field(default_factory=tuple)  # 1-based (R5.5)
+
+
+# =========================================================================
+#  JSON Schema + serialize/deserialize (R1, qua boundary process/HTTP)
+# =========================================================================
+
+DETECTED_SHAPE_JSON_SCHEMA: dict[str, Any] = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DetectedShape",
+    "type": "object",
+    "required": ["page", "type", "props", "trim", "poly", "source", "confidence"],
+    "additionalProperties": False,
+    "properties": {
+        "page": {"type": "integer", "minimum": 0},
+        "type": {"type": "string", "enum": [m.name for m in ShapeType]},
+        "props": {"type": "object"},
+        "trim": {
+            "type": "object",
+            "required": ["w", "h"],
+            "properties": {
+                "w": {"type": "number", "exclusiveMinimum": 0, "maximum": MAX_TRIM_PT},
+                "h": {"type": "number", "exclusiveMinimum": 0, "maximum": MAX_TRIM_PT},
+            },
+        },
+        "poly": {
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "number"},
+                      "minItems": 2, "maxItems": 2},
+        },
+        "source": {"type": "string", "enum": sorted(VALID_SOURCES)},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+    },
+}
+
+
+def shape_to_dict(shape: DetectedShape) -> dict[str, Any]:
+    """Serialize DetectedShape → dict JSON-an-toàn."""
+    return {
+        "page": shape.page,
+        "type": shape.type.name,
+        "props": shape.props,
+        "trim": {"w": shape.trim.w, "h": shape.trim.h},
+        "poly": [[float(x), float(y)] for (x, y) in shape.poly],
+        "source": shape.source,
+        "confidence": float(shape.confidence),
+    }
+
+
+def shape_from_dict(data: dict[str, Any]) -> DetectedShape:
+    """Deserialize dict → DetectedShape (validate qua __post_init__)."""
+    trim = data["trim"]
+    return DetectedShape(
+        page=int(data["page"]),
+        type=coerce_shape_type(data["type"]),
+        props=dict(data.get("props") or {}),
+        trim=Trim(float(trim["w"]), float(trim["h"])),
+        poly=tuple((float(p[0]), float(p[1])) for p in (data.get("poly") or [])),
+        source=str(data["source"]),
+        confidence=float(data["confidence"]),
+    )
+
+
+# =========================================================================
+#  Mapping tương thích ngược với /detect-shape cũ (R14)
+# =========================================================================
+
+def to_legacy_response(result: DetectionResult) -> dict[str, Any]:
+    """DetectionResult → response cũ (shapes/dimensions/shapeParams) + perPage (R14.1, R4.6)."""
+    return {
+        "shapes": [s.type.name for s in result.shapes],
+        "dimensions": [{"w": s.trim.w, "h": s.trim.h} for s in result.shapes],
+        "shapeParams": [s.props for s in result.shapes],
+        "perPage": [
+            {"page": st.page, "ok": st.ok, "source": st.source, "error": st.error}
+            for st in result.statuses
+        ],
+        "totalPages": result.total_pages,
+        "successPages": result.success_pages,
+        "failedPages": list(result.failed_pages),
+        # Luôn True khi hoàn tất; trang lỗi → CUSTOM, KHÔNG fail toàn cục (R4.7).
+        "success": True,
+    }
+
+
+class LegacyMappingError(ValueError):
+    """Lỗi ánh xạ dữ liệu legacy từ frontend → DetectedShape (R14.3)."""
+
+
+def from_legacy_settings(settings: dict[str, Any]) -> dict[int, DetectedShape]:
+    """Ánh xạ detectedShapesByPage/Params/Dimensions (frontend) → {page: DetectedShape} (R14.2).
+
+    Không loại bỏ trang nào. Dữ liệu không ánh xạ được → LegacyMappingError nêu
+    rõ trường gây lỗi (R14.3); caller giữ nguyên trạng thái job.
+    """
+    shapes_by_page = settings.get("detectedShapesByPage") or {}
+    params_by_page = settings.get("detectedShapeParamsByPage") or {}
+    dims_by_page = settings.get("detectedDimensionsByPage") or {}
+
+    out: dict[int, DetectedShape] = {}
+    for raw_key, raw_type in shapes_by_page.items():
+        try:
+            page = int(raw_key)
+        except (TypeError, ValueError) as exc:
+            raise LegacyMappingError(
+                f"detectedShapesByPage có khoá trang không hợp lệ: {raw_key!r}"
+            ) from exc
+        try:
+            shp_type = coerce_shape_type(raw_type)
+        except ValueError as exc:
+            raise LegacyMappingError(
+                f"detectedShapesByPage[{raw_key}] giá trị không hợp lệ: {raw_type!r}"
+            ) from exc
+
+        dim = dims_by_page.get(raw_key) or dims_by_page.get(page) or {}
+        try:
+            w = float(dim.get("w", 1.0)) if isinstance(dim, dict) else 1.0
+            h = float(dim.get("h", 1.0)) if isinstance(dim, dict) else 1.0
+        except (TypeError, ValueError) as exc:
+            raise LegacyMappingError(
+                f"detectedDimensionsByPage[{raw_key}] không hợp lệ: {dim!r}"
+            ) from exc
+        if not (0.0 < w <= MAX_TRIM_PT):
+            w = 1.0
+        if not (0.0 < h <= MAX_TRIM_PT):
+            h = 1.0
+
+        props = params_by_page.get(raw_key) or params_by_page.get(page) or {}
+        if not isinstance(props, dict):
+            raise LegacyMappingError(
+                f"detectedShapeParamsByPage[{raw_key}] phải là object: {props!r}"
+            )
+
+        out[page] = DetectedShape(
+            page=page,
+            type=shp_type,
+            props=dict(props),
+            trim=Trim(round(w, 3), round(h, 3)),
+            poly=(),
+            source="vector" if shp_type is not ShapeType.CUSTOM else "custom",
+            confidence=1.0 if shp_type is not ShapeType.CUSTOM else 0.0,
+        )
+    return out
+
+
+# =========================================================================
+#  Lớp 1 — detect_die_shapes (SSOT) — Phase 1
+#  Gom toàn bộ heuristic chọn-path về MỘT nơi (R3.1), phân loại đúng một lần,
+#  chuẩn hoá props/poly về TRIM, cô lập lỗi theo trang, phủ đủ trang.
+# =========================================================================
+
+def _page_dims_pt(page) -> tuple[float, float]:
+    """Kích thước trang (points) tính cả UserUnit, theo MediaBox."""
+    try:
+        box = page.mediabox or page.cropbox or page.trimbox or page.rect
+        w, h = float(box.width), float(box.height)
+    except Exception:
+        w, h = float(page.rect.width), float(page.rect.height)
+    try:
+        if "/UserUnit" in page._page:
+            uu = float(page._page["/UserUnit"])
+            w *= uu
+            h *= uu
+    except Exception:
+        pass
+    return w, h
+
+
+def _match_die_channel(spot_name, names_lower: frozenset) -> bool:
+    """Khớp tên kênh khuôn: full-name, case-insensitive, KHÔNG khớp chuỗi con (R3.7).
+
+    spot_name có thể là DeviceN nối '+' (vd 'Cut+Crease') → tách kiểm tra từng kênh.
+    Độc lập tên trùng Cyan/Magenta/Yellow/Black (R3.9) vì so khớp theo danh sách
+    cấu hình, không loại trừ theo CMYK.
+    """
+    if not spot_name or not names_lower:
+        return False
+    for part in str(spot_name).split("+"):
+        if part.strip().lower() in names_lower:
+            return True
+    return False
+
+
+# Tên colorspace process/không-phải-spot — KHÔNG coi là kênh bế dành riêng.
+_PROCESS_CS_NAMES: frozenset[str] = frozenset({
+    "cyan", "magenta", "yellow", "black", "all", "none",
+    "devicecmyk", "devicergb", "devicegray", "device-n", "devicen",
+    "red", "green", "blue", "gray", "grey", "white",
+})
+
+
+def _is_genuine_spot(spot_name) -> bool:
+    """spot_name là kênh Separation/DeviceN DÀNH RIÊNG (không phải tên process).
+
+    Đường bế trong prepress gần như luôn nằm trên 1 kênh spot riêng. Tên như
+    'C=0 M=100 Y=0 K=0' (Illustrator đặt theo công thức CMYK) VẪN là spot → coi
+    là ứng viên đường bế.
+    """
+    if not spot_name:
+        return False
+    for part in str(spot_name).split("+"):
+        if part.strip().lower() not in _PROCESS_CS_NAMES:
+            return True
+    return False
+
+
+def _color_matches_die(color, die_colors, tol: float) -> bool:
+    """Màu (RGB 3-tuple / CMYK 4-tuple) khớp một trong die_colors trong dung sai."""
+    if not color or not die_colors:
+        return False
+    try:
+        c = tuple(float(x) for x in color)
+    except (TypeError, ValueError):
+        return False
+    for tgt in die_colors:
+        if len(tgt) == len(c) and all(abs(a - b) <= tol for a, b in zip(c, tgt)):
+            return True
+    return False
+
+
+def _is_hairline(width, page_rect) -> bool:
+    """Nét mảnh (đường bế thường ≤ ~1pt, hoặc < 1% cạnh ngắn của trang)."""
+    try:
+        w = float(width or 0)
+    except (TypeError, ValueError):
+        return False
+    if w <= 0:
+        return False
+    short = min(page_rect.width, page_rect.height) or 1.0
+    return w <= 2.0 or w <= 0.01 * short
+
+
+def _score_die_candidate(path, page_rect, names_lower, die_colors, die_color_tol):
+    """Chấm điểm 1 path là ĐƯỜNG BẾ theo nhiều tín hiệu (xem bảng trong giải pháp P1).
+
+    Trả (score, matched_by_spot). matched_by_spot=True khi thắng nhờ kênh spot
+    (để gắn source='separation').
+    """
+    spot = path.get("spot_name")
+    color = path.get("color")
+    fill = path.get("fill")
+    ptype = path.get("type")
+    score = 0.0
+    by_spot = False
+
+    if _match_die_channel(spot, names_lower):
+        score += 1000.0
+        by_spot = True
+    elif _is_genuine_spot(spot):
+        score += 400.0
+        by_spot = True
+
+    if _color_matches_die(color, die_colors, die_color_tol) or \
+            _color_matches_die(fill, die_colors, die_color_tol):
+        score += 300.0
+
+    if ptype in ("s", "sf"):
+        score += 100.0
+    if _is_hairline(path.get("width"), page_rect):
+        score += 60.0
+    if path.get("closePath"):
+        score += 30.0
+
+    # Tie-break: ưu tiên contour bao quanh lớn (nhưng < trang) — tỉ lệ diện tích.
+    page_area = (page_rect.width * page_rect.height) or 1.0
+    r = path["rect"]
+    score += min(1.0, (r.width * r.height) / page_area) * 20.0
+    return score, by_spot
+
+
+def _select_from_paths(paths, page_rect, die_channel_names=(),
+                       die_colors=(), die_color_tol=0.06):
+    """Lõi chọn đường khuôn (thuần, KHÔNG IO) — dùng chung (R3.1, R3.2, R3.6, R3.10).
+
+    Chấm điểm đa tín hiệu (P1): tên kênh khuôn > kênh spot bất kỳ > màu bế cấu hình
+    > nét/hairline/khép kín > diện tích bao. Loại nền full-page. Điểm > 0 → chọn path
+    điểm cao nhất. Toàn bộ điểm 0 → fallback (stroke lớn nhất → path lớn nhất).
+    Trả (path_dict, matched_by_spot) hoặc (None, False).
+    """
+    if not paths:
+        return None, False
+
+    valid = [p for p in paths if p["rect"].width > 5 and p["rect"].height > 5]
+    if not valid:
+        return None, False
+
+    filtered = [
+        p for p in valid
+        if not (abs(p["rect"].width - page_rect.width) <= 2
+                and abs(p["rect"].height - page_rect.height) <= 2)
+    ]
+    if filtered:
+        valid = filtered
+
+    names_lower = frozenset(n.strip().lower() for n in (die_channel_names or ()))
+
+    # Chấm điểm tất cả ứng viên; chọn điểm cao nhất (tie-break: diện tích lớn hơn).
+    best = None  # (score, area, by_spot, path)
+    for p in valid:
+        sc, by_spot = _score_die_candidate(
+            p, page_rect, names_lower, die_colors, die_color_tol
+        )
+        area = p["rect"].width * p["rect"].height
+        cand = (sc, area, by_spot, p)
+        if best is None or (sc, area) > (best[0], best[1]):
+            best = cand
+
+    if best is not None and best[0] > 0:
+        return best[3], best[2]
+
+    # Fallback khi không có tín hiệu nào (điểm 0): nét → nếu không có thì path lớn nhất.
+    stroke = [
+        p for p in valid
+        if p.get("type") in ("s", "sf") or (p.get("fill") is None and p.get("color") is not None)
+    ]
+    target = stroke if stroke else valid
+    if not target:
+        return None, False
+    return max(target, key=lambda p: p["rect"].width * p["rect"].height), False
+
+
+def _die_group_key_spot(spot_name):
+    """Khoá nhóm theo kênh spot (tập tên đã chuẩn hoá), hoặc None nếu không phải spot."""
+    if not _is_genuine_spot(spot_name):
+        return None
+    return frozenset(s.strip().lower() for s in str(spot_name).split("+"))
+
+
+def _is_background(path, page_rect) -> bool:
+    r = path["rect"]
+    return (abs(r.width - page_rect.width) <= 2 and abs(r.height - page_rect.height) <= 2)
+
+
+def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.06):
+    """Gom MỌI path cùng "layer bế" với anchor → một khuôn (R3.5 mở rộng).
+
+    Mô hình đúng: 1 khuôn = tất cả nét cùng kênh spot (hoặc cùng màu bế), KHÔNG
+    phải 1 path đơn. Nhờ vậy khuôn nhiều vòng (chữ O / donut / nét cắt trong) giữ
+    đủ mọi vòng khi vẽ trang Khuôn và khi tính bbox.
+
+    Chỉ gộp khi anchor có TÍN HIỆU bế rõ (spot riêng, hoặc khớp màu bế) — tránh
+    nuốt nhầm nét artwork khi anchor chỉ là fallback "stroke lớn nhất".
+    """
+    anchor_spot_key = _die_group_key_spot(anchor.get("spot_name"))
+    anchor_col = anchor.get("color") if anchor.get("color") is not None else anchor.get("fill")
+    anchor_is_diecolor = _color_matches_die(anchor_col, die_colors, die_color_tol)
+
+    if anchor_spot_key is None and not anchor_is_diecolor:
+        return [anchor]  # không tín hiệu bế → giữ 1 path (an toàn)
+
+    members = []
+    for p in paths:
+        r = p["rect"]
+        if r.width <= 5 or r.height <= 5 or _is_background(p, page_rect):
+            if p is not anchor:
+                continue
+        if p is anchor:
+            members.append(p)
+            continue
+        if anchor_spot_key is not None:
+            if _die_group_key_spot(p.get("spot_name")) == anchor_spot_key:
+                members.append(p)
+        else:  # gộp theo màu bế
+            col = p.get("color") if p.get("color") is not None else p.get("fill")
+            if _color_matches_die(col, die_colors, die_color_tol):
+                members.append(p)
+    return members or [anchor]
+
+
+def _merge_die_paths(members):
+    """Hợp nhất nhiều path bế thành 1 dict path: gộp items, bbox bao tất cả.
+
+    Giữ color/width/type/spot của member đầu (anchor) cho việc vẽ nét; closePath
+    = True nếu bất kỳ member kín.
+    """
+    if not members:
+        return None
+    if len(members) == 1:
+        return members[0]
+    base = dict(members[0])
+    items = []
+    for m in members:
+        items.extend(m.get("items", []) or [])
+    base["items"] = items
+    r0 = members[0]["rect"]
+    Rect = type(r0)
+    x0 = min(m["rect"].x0 for m in members)
+    y0 = min(m["rect"].y0 for m in members)
+    x1 = max(m["rect"].x1 for m in members)
+    y1 = max(m["rect"].y1 for m in members)
+    base["rect"] = Rect(x0, y0, x1, y1)
+    base["closePath"] = any(m.get("closePath") for m in members)
+    return base
+
+
+def select_die_path(page, die_channel_names=(), die_colors=None, die_color_tol=0.06):
+    """Chọn đường khuôn (gom 1 chỗ — R3.1). Phiên bản tiện dụng cho layout: NUỐT
+    lỗi extract (trả None) để không làm sập solver. Detection dùng `_select_from_paths`
+    trực tiếp để lỗi extract nổi lên cơ chế cô lập lỗi theo trang.
+
+    Trả về path ĐÃ GỘP cả layer bế (mọi vòng cùng spot/màu) → trang Khuôn vẽ đủ
+    mọi vòng (vd chữ O 2 vòng), bbox bao trọn. die_colors mặc định =
+    DetectionConfig().die_colors → layout NHẤT QUÁN với detection.
+    """
+    if die_colors is None:
+        die_colors = DetectionConfig().die_colors
+    try:
+        paths = page.extract_vector_paths()
+    except Exception:
+        return None
+    anchor, _ = _select_from_paths(paths, page.rect, die_channel_names, die_colors, die_color_tol)
+    if anchor is None:
+        return None
+    members = _collect_die_group(paths, anchor, page.rect, die_colors, die_color_tol)
+    return _merge_die_paths(members)
+
+
+def _same_color_group_poly(page, target_color, paths=None):
+    """Hợp nhất (union) các subpath cùng màu thành 1 đa giác (R3.5).
+
+    Đường bế có thể bị chia thành nhiều subpath (vd contour + chi tiết) dùng
+    chung màu. Gộp lại để poly phản ánh đủ đường khuôn. `paths` (nếu truyền) được
+    tái dùng để khỏi trích vector 2 lần/trang (tối ưu).
+    """
+    try:
+        from app.workers.nup_diecut import _path_items_to_polygon
+        from shapely.ops import unary_union
+    except Exception:
+        return None
+    if paths is None:
+        try:
+            paths = page.extract_vector_paths()
+        except Exception:
+            return None
+    if not paths:
+        return None
+    polys = []
+    for p in paths:
+        if p.get("color") == target_color or p.get("fill") == target_color:
+            poly_part = _path_items_to_polygon(p.get("items", []))
+            if poly_part is not None and poly_part.is_valid and not poly_part.is_empty:
+                polys.append(poly_part)
+    if not polys:
+        return None
+    try:
+        merged = unary_union(polys)
+        if merged.is_empty:
+            return None
+        return merged
+    except Exception:
+        return None
+
+
+def _poly_to_trim_coords(geom) -> tuple[tuple[float, float], ...]:
+    """Lấy toạ độ exterior của polygon Shapely, dịch về gốc (0,0) (chuẩn hoá TRIM)."""
+    try:
+        g = geom
+        if g.geom_type == "MultiPolygon":
+            g = max(g.geoms, key=lambda x: x.area)
+        minx, miny, _, _ = g.bounds
+        return tuple(
+            (round(x - minx, 3), round(y - miny, 3))
+            for (x, y) in g.exterior.coords
+        )
+    except Exception:
+        return ()
+
+
+def _normalize_props(props: dict) -> dict:
+    """Làm tròn mọi giá trị số trong props về 3 chữ số (R1.2)."""
+    out: dict[str, Any] = {}
+    for k, v in (props or {}).items():
+        if isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, float)):
+            out[k] = round(float(v), 3)
+        else:
+            out[k] = v
+    return out
+
+
+def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
+                            die_colors=(), die_color_tol=0.06) -> Optional[DetectedShape]:
+    """Nhận diện 1 trang bằng phân tích vector. Trả None nếu không thấy đường bế.
+
+    Gọi extract_vector_paths TRỰC TIẾP (không nuốt lỗi) để lỗi trích xuất nổi
+    lên cơ chế cô lập lỗi theo trang ở detect_die_shapes (R4.2, R5.4).
+    """
+    paths = page.extract_vector_paths()
+    largest, matched_by_spot = _select_from_paths(
+        paths, page.rect, die_channel_names, die_colors, die_color_tol
+    )
+    if largest is None:
+        return None
+
+    from app.workers.shape_classifier import (
+        classify_shape, _sample_bezier_contour, _bounding_box,
+    )
+
+    items = largest.get("items", [])
+    result = classify_shape(items)
+    shape_type = coerce_shape_type(result["shape_type"].name)
+    props = _normalize_props(result.get("params", {}) or {})
+
+    # Kích thước thành phẩm từ contour đã sample (đồng nhất với route cũ).
+    try:
+        samples = _sample_bezier_contour(items)
+        if samples:
+            min_x, max_x, min_y, max_y = _bounding_box(samples)
+            visual_w = max_x - min_x
+            visual_h = max_y - min_y
+        else:
+            visual_w = largest["rect"].width
+            visual_h = largest["rect"].height
+    except Exception:
+        visual_w = largest["rect"].width
+        visual_h = largest["rect"].height
+
+    try:
+        rot = page.rotation
+    except Exception:
+        rot = 0
+    if rot in (90, 270):
+        visual_w, visual_h = visual_h, visual_w
+
+    # poly: ưu tiên union các subpath cùng màu (R3.5); fallback dùng samples.
+    target_color = largest.get("color") if largest.get("color") is not None else largest.get("fill")
+    poly = _same_color_group_poly(page, target_color, paths=paths)
+    poly_coords = _poly_to_trim_coords(poly) if poly is not None else ()
+    if not poly_coords:
+        try:
+            samples = _sample_bezier_contour(items)
+            if samples:
+                mnx = min(s[0] for s in samples)
+                mny = min(s[1] for s in samples)
+                poly_coords = tuple((round(sx - mnx, 3), round(sy - mny, 3)) for sx, sy in samples)
+        except Exception:
+            poly_coords = ()
+
+    w = max(0.001, round(float(visual_w), 3))
+    h = max(0.001, round(float(visual_h), 3))
+    return DetectedShape(
+        page=page_idx,
+        type=shape_type,
+        props=props,
+        trim=Trim(min(w, MAX_TRIM_PT), min(h, MAX_TRIM_PT)),
+        poly=poly_coords,
+        source="separation" if matched_by_spot else "vector",
+        confidence=1.0 if shape_type is not ShapeType.CUSTOM else 0.5,
+    )
+
+
+def build_shape_from_raster(page_idx: int, mask, spot_w: float, spot_h: float) -> DetectedShape:
+    """Phân loại 1 mask raster → DetectedShape (source=raster_fallback) (R3.8).
+
+    Dùng cho nhánh fallback khi không tìm được đường bế dạng vector. Toàn bộ
+    logic phân loại nằm trong module Detection (giữ SSOT); caller chỉ cấp mask.
+    """
+    from app.workers.shape_analyzer import detect_shape, extract_shape_properties
+
+    shape_enum = detect_shape(mask)
+    shape_type = coerce_shape_type(shape_enum.name)
+    props = _normalize_props(extract_shape_properties(mask))
+    if shape_type is ShapeType.HAMMER:
+        props["effective_body_w_ratio"] = 0.37
+    elif shape_type is ShapeType.DUMBBELL:
+        props["effective_body_w_ratio"] = 0.65
+
+    w = max(0.001, round(float(spot_w), 3))
+    h = max(0.001, round(float(spot_h), 3))
+    return DetectedShape(
+        page=page_idx,
+        type=shape_type,
+        props=props,
+        trim=Trim(min(w, MAX_TRIM_PT), min(h, MAX_TRIM_PT)),
+        poly=(),
+        source="raster_fallback",
+        confidence=0.5 if shape_type is not ShapeType.CUSTOM else 0.3,
+    )
+
+
+def detect_die_shapes(doc, config: DetectionConfig = DetectionConfig()) -> DetectionResult:
+    """NGUỒN SỰ THẬT DUY NHẤT cho hình học đường khuôn — vector (R2.1, R3.1).
+
+    - Xử lý MỌI trang (R5.1, R5.2): không giới hạn 30 trang.
+    - Mỗi trang trong scope cô lập lỗi (R4): lỗi 1 trang → CUSTOM, không dừng.
+    - Trả về đúng N DetectedShape theo thứ tự trang (R1.1, R5.1, R6.4).
+
+    Lưu ý: nhánh raster fallback (cần Ghostscript/IO bất đồng bộ) do caller thực
+    hiện và gọi `build_shape_from_raster` để giữ logic phân loại trong module này.
+    Trang không có đường bế vector trả về CUSTOM với source='custom' để caller
+    có thể thử raster.
+    """
+    try:
+        total = doc.page_count
+    except Exception:
+        total = len(doc)
+
+    shapes: list[DetectedShape] = []
+    statuses: list[PageDetectionStatus] = []
+    failed: list[int] = []
+
+    # Xử lý theo lô để phủ đủ trang mà không giữ quá nhiều state (R5.3).
+    bs = max(1, int(config.batch_size))
+    for batch_start in range(0, total, bs):
+        for page_idx in range(batch_start, min(batch_start + bs, total)):
+            try:
+                page = doc[page_idx]
+                shape = _detect_one_page_vector(
+                    page, page_idx, config.die_channel_names,
+                    config.die_colors, config.die_color_tol,
+                )
+                if shape is None:
+                    # Không thấy đường bế vector → CUSTOM(custom); caller có thể thử raster.
+                    pw, ph = _page_dims_pt(page)
+                    shapes.append(make_custom_shape(page_idx, pw, ph, source="custom"))
+                    statuses.append(PageDetectionStatus(page_idx, True, "custom"))
+                else:
+                    shapes.append(shape)
+                    statuses.append(PageDetectionStatus(page_idx, True, shape.source))
+            except Exception as exc:  # cô lập lỗi theo trang (R4.1, R4.2)
+                logger.error("[DETECT] Trang %d lỗi: %s", page_idx + 1, exc)
+                try:
+                    pw, ph = _page_dims_pt(doc[page_idx])
+                except Exception:
+                    pw, ph = 1.0, 1.0
+                shapes.append(make_custom_shape(page_idx, pw, ph, source="custom"))
+                statuses.append(PageDetectionStatus(page_idx, False, "custom", str(exc)))
+                failed.append(page_idx + 1)  # 1-based (R5.5)
+
+    return DetectionResult(
+        shapes=shapes,
+        statuses=statuses,
+        total_pages=total,
+        success_pages=total - len(failed),
+        failed_pages=tuple(failed),
+    )

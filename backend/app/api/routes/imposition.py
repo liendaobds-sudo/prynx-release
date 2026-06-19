@@ -21,11 +21,20 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # ── Allowed directories for file path inputs ──
+# Desktop (Tauri) chạy loopback-only như chính người dùng → mặc định cho phép mọi
+# .pdf local hợp lệ. Khi deploy web/đa người dùng, đặt env IMPOSITION_RESTRICT_PATHS=1
+# để BẬT allowlist (chống LFI). Thêm thư mục cho phép qua IMPOSITION_ALLOWED_DIRS
+# (ngăn cách bằng os.pathsep).
 _ALLOWED_DIRS = [
     os.path.abspath(UPLOAD_DIR),
     os.path.abspath(RESULTS_DIR),
     os.path.abspath(tempfile.gettempdir()),
 ]
+for _d in (os.environ.get("IMPOSITION_ALLOWED_DIRS", "") or "").split(os.pathsep):
+    if _d.strip():
+        _ALLOWED_DIRS.append(os.path.abspath(_d.strip()))
+
+_RESTRICT_PATHS = (os.environ.get("IMPOSITION_RESTRICT_PATHS", "") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _validate_file_path(path: str | None, must_exist: bool = True) -> str:
@@ -50,8 +59,15 @@ def _validate_file_path(path: str | None, must_exist: bool = True) -> str:
     if not resolved.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
-    # In Desktop App (Tauri) mode, the user accesses their own local files.
-    # Therefore, we remove the _ALLOWED_DIRS restriction to allow any valid local path.
+    # Desktop App (Tauri) mode: backend loopback-only, người dùng truy cập file local
+    # của chính mình → cho phép mọi path. Khi BẬT IMPOSITION_RESTRICT_PATHS (web/đa
+    # người dùng) → ép path nằm trong _ALLOWED_DIRS (defense-in-depth chống LFI).
+    if _RESTRICT_PATHS:
+        if not any(
+            os.path.commonpath([resolved, d]) == d
+            for d in _ALLOWED_DIRS
+        ):
+            raise HTTPException(status_code=403, detail="Invalid path: outside allowed directories.")
 
     if must_exist and not os.path.exists(resolved):
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
@@ -161,6 +177,14 @@ async def execute_plan_json(body: dict):
     # Validate source path if provided
     if source_override:
         source_override = _validate_file_path(source_override)
+    else:
+        # #B3: nếu không có override, đường nguồn lấy từ plan (do client gửi) → vẫn
+        # PHẢI validate (chống path traversal / đọc file ngoài phạm vi). Validate ở
+        # đây rồi truyền xuống PlanExecutor để bảo đảm đường hiệu dụng đã kiểm.
+        _plan_src = plan.get("source_pdf_path") if isinstance(plan, dict) else None
+        if not _plan_src:
+            raise HTTPException(status_code=400, detail="Missing source PDF path in plan.")
+        source_override = _validate_file_path(_plan_src)
     
     try:
         output_path = await PlanExecutor.execute(plan, source_override)
@@ -406,213 +430,174 @@ async def get_pdf_meta(body: dict):
         logging.getLogger(__name__).error(f"Failed to read PDF meta: {e}")
         raise HTTPException(status_code=500, detail=f"Cannot read PDF: {str(e)}")
 
+# Cache kết quả nhận diện theo (path tuyệt đối, mtime, size) → đổi công cụ / mở lại
+# cùng file trả tức thì, không tính lại. Bounded để tránh phình bộ nhớ.
+_DETECT_CACHE: dict = {}
+_DETECT_CACHE_MAX = 32
+
+
+async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
+    """Nhánh raster fallback (Ghostscript/IO bất đồng bộ) — gọi build_shape_from_raster.
+
+    Logic phân loại nằm trong module Detection (SSOT); route chỉ làm phần IO.
+    Trả DetectedShape (source=raster_fallback) hoặc None nếu không thấy spot.
+    """
+    import numpy as np
+    import base64
+    import zlib
+    from app.workers.die_detection import build_shape_from_raster
+
+    try:
+        sep_result = await engine.extract_separations(
+            file_path, page_num=page_idx + 1,
+            dpi=config.raster_fallback_dpi, use_ghostscript=True,
+        )
+    except Exception as e:
+        _logger.warning(f"Spot extraction on page {page_idx + 1} failed: {e}")
+        return None
+
+    for p in sep_result.get("plates", []):
+        # Bất kỳ plate KHÔNG phải process color (CMYK) → coi là kênh khuôn (spot).
+        if p["name"] in ("Cyan", "Magenta", "Yellow", "Black"):
+            continue
+        try:
+            raw_bytes = zlib.decompress(base64.b64decode(p["alpha_data"]))
+            h = sep_result["height"]
+            w = sep_result["width"]
+            mask = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w))
+            import cv2
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                solid = np.zeros_like(mask)
+                cv2.drawContours(solid, contours, -1, 255, cv2.FILLED)
+                mask = solid
+            ys, xs = np.where(mask > 0)
+            if len(ys) == 0:
+                continue
+            dpi = config.raster_fallback_dpi
+            spot_w = float((xs.max() - xs.min()) * 72.0 / dpi)
+            spot_h = float((ys.max() - ys.min()) * 72.0 / dpi)
+            return build_shape_from_raster(page_idx, mask, spot_w, spot_h)
+        except Exception as e:
+            _logger.warning(f"Raster classify page {page_idx + 1} failed: {e}")
+            return None
+    return None
+
+
 @router.post("/detect-shape")
 async def api_detect_shape(body: dict):
     """
     Detect the geometric shape of all pages (for die-cut stickers).
-    Uses vector path analysis (not bitmap) for accurate classification.
+
+    Nguồn sự thật duy nhất: app.workers.die_detection.detect_die_shapes (vector),
+    + raster fallback cho trang không có đường bế vector. Cô lập lỗi theo trang;
+    không còn fail toàn cục; xử lý mọi trang (bỏ giới hạn 30).
+    (Spec die-shape-detection-ssot — R3.1, R4, R5, R14.1.)
     """
-    import pypdfium2 as pdfium
-    from app.workers.shape_analyzer import detect_shape, extract_shape_properties
-    
+    import logging
+    _detect_logger = logging.getLogger(__name__)
+
     try:
-        file_id = body.get("fileId")
-        if not file_id:
-            raise ValueError("Missing fileId")
-        
-        import logging
-        _detect_logger = logging.getLogger(__name__)
-        
-        from app.database import SessionLocal
-        from app.models.job import UploadedFile as UploadedFileModel
-        db = SessionLocal()
-        try:
-            db_file = db.query(UploadedFileModel).filter(UploadedFileModel.id == file_id).first()
-            if not db_file:
-                raise ValueError(f"File not found in database: {file_id}")
-            file_path = db_file.file_path
-            _detect_logger.info(f"[DETECT_SHAPE] Resolved fileId={file_id} → file_path={file_path}")
-        finally:
-            db.close()
-        
+        # Tối ưu tốc độ (desktop): nhận diện ĐỌC TRỰC TIẾP file từ đường dẫn ổ đĩa
+        # nếu client gửi 'path' → KHÔNG cần upload (tránh đọc + POST cả file lớn).
+        # Web mode (không có path local) vẫn dùng 'fileId' → resolve từ DB như cũ.
+        path_in = body.get("path")
+        if path_in:
+            file_path = _validate_file_path(path_in)  # validate tồn tại + .pdf + chống traversal
+            _detect_logger.info(f"[DETECT_SHAPE] Direct path → {file_path}")
+        else:
+            file_id = body.get("fileId")
+            if not file_id:
+                raise ValueError("Missing 'path' or 'fileId'")
+
+            from app.database import SessionLocal
+            from app.models.job import UploadedFile as UploadedFileModel
+            db = SessionLocal()
+            try:
+                db_file = db.query(UploadedFileModel).filter(UploadedFileModel.id == file_id).first()
+                if not db_file:
+                    raise ValueError(f"File not found in database: {file_id}")
+                file_path = db_file.file_path
+                _detect_logger.info(f"[DETECT_SHAPE] Resolved fileId={file_id} → file_path={file_path}")
+            finally:
+                db.close()
+
         import os
         if not os.path.exists(file_path):
             raise ValueError(f"File not found on disk: {file_path}")
-            
-        doc = pdfium.PdfDocument(file_path)
-        
-        from app.core.separations import SeparationEngine
-        import numpy as np
-        import base64
-        import zlib
-        
-        engine = SeparationEngine()
-        tmp_path = file_path
-        shapes = []
-        dimensions = []
-        shape_params_list = []
-        max_pages = min(len(doc), 30)
-        
-        global_spot_w, global_spot_h = None, None
-        
-        # --- Open via pdf_wrapper for vector path analysis (original flow) ---
-        pike_doc = None
+
+        # Cache theo (path, mtime, size) — trả tức thì khi đổi công cụ / mở lại cùng file.
+        _cache_key = None
         try:
-            from app.workers import pdf_wrapper as pdf_lib
-            pike_doc = pdf_lib.open(file_path)
-        except Exception as e:
-            _detect_logger.warning(f"pdf_wrapper open failed: {e}")
-        
-        for page_idx in range(max_pages):
-            page = doc[page_idx]
-            
-            # Use pike_doc if available for accurate bounding box & UserUnit
-            if pike_doc is not None:
-                pike_page = pike_doc[page_idx]
-                src_box = pike_page.mediabox or pike_page.cropbox or pike_page.trimbox or pike_page.rect
-                page_w, page_h = src_box.width, src_box.height
-                
-                user_unit = 1.0
-                try:
-                    if "/UserUnit" in pike_page._page:
-                        user_unit = float(pike_page._page["/UserUnit"])
-                except Exception:
-                    pass
-                page_w *= user_unit
-                page_h *= user_unit
-            else:
-                page_w, page_h = page.get_size()
-            spot_w, spot_h = global_spot_w, global_spot_h
-            
-            # === PRIMARY: Vector path analysis via extract_vector_paths() + classify_shape() ===
-            path_classified = False
-            if pike_doc is not None:
-                try:
-                    pike_page = pike_doc[page_idx]
-                    paths = pike_page.extract_vector_paths()
-                    
-                    if paths:
-                        # Filter valid paths (>5pt) and exclude full-page backgrounds
-                        valid_paths = [p for p in paths if p['rect'].width > 5 and p['rect'].height > 5]
-                        filtered = [p for p in valid_paths
-                                    if not (abs(p['rect'].width - pike_page.rect.width) <= 2 
-                                            and abs(p['rect'].height - pike_page.rect.height) <= 2)]
-                        if filtered:
-                            valid_paths = filtered
-                        
-                        if valid_paths:
-                            # Prioritize stroke-only paths (die-cut boundary)
-                            stroke_paths = [p for p in valid_paths 
-                                            if p.get('type') == 's' or (p.get('fill') is None and p.get('color') is not None)]
-                            target_paths = stroke_paths if stroke_paths else valid_paths
-                            
-                            largest_path = max(target_paths, key=lambda p: p['rect'].width * p['rect'].height)
-                            
-                            from app.workers.shape_classifier import classify_shape, _sample_bezier_contour, _bounding_box
-                            
-                            # Get visual dimensions from sampled path points
-                            try:
-                                samples = _sample_bezier_contour(largest_path.get('items', []))
-                                if samples:
-                                    min_x, max_x, min_y, max_y = _bounding_box(samples)
-                                    visual_w = max_x - min_x
-                                    visual_h = max_y - min_y
-                                else:
-                                    visual_w = largest_path['rect'].width
-                                    visual_h = largest_path['rect'].height
-                            except Exception:
-                                visual_w = largest_path['rect'].width
-                                visual_h = largest_path['rect'].height
-                            
-                            result = classify_shape(largest_path.get('items', []))
-                            shapes.append(result['shape_type'].name)
-                            shape_params_list.append(result.get('params', {}))
-                            
-                            rot = pike_page.rotation
-                            if rot in (90, 270):
-                                visual_w, visual_h = visual_h, visual_w
-                            
-                            dimensions.append({
-                                "w": round(visual_w, 2),
-                                "h": round(visual_h, 2)
-                            })
-                            path_classified = True
-                            if page_idx == 0:
-                                _detect_logger.info(f"[DETECT_SHAPE] Vector path: {result['shape_type'].name}")
-                except Exception as e:
-                    _detect_logger.warning(f"Vector path analysis failed: {e}")
-            
-            if path_classified:
-                continue
-                
-            # === FALLBACK: Mask-based detect_shape() ===
-            ink_density = None
+            _st = os.stat(file_path)
+            _cache_key = (os.path.abspath(file_path), int(_st.st_mtime), _st.st_size)
+            _cached = _DETECT_CACHE.get(_cache_key)
+            if _cached is not None:
+                _detect_logger.info("[DETECT_SHAPE] cache hit")
+                return _cached
+        except Exception:
+            _cache_key = None
+
+        from app.workers import pdf_wrapper as pdf_lib
+        from app.workers.die_detection import (
+            detect_die_shapes, DetectionConfig, to_legacy_response,
+        )
+        from app.core.separations import SeparationEngine
+
+        config = DetectionConfig()
+        # Override tuỳ chọn từ client: cho phép người dùng chỉ định kênh/màu đường bế
+        # khi auto nhận diện trật (vd file dùng spot tên lạ hoặc màu bế riêng).
+        try:
+            _names = body.get("dieChannelNames")
+            _colors = body.get("dieColors")
+            _kw = {}
+            if isinstance(_names, list) and _names:
+                _kw["die_channel_names"] = tuple(str(n) for n in _names)
+            if isinstance(_colors, list) and _colors:
+                _kw["die_colors"] = tuple(
+                    tuple(float(x) for x in c) for c in _colors if isinstance(c, (list, tuple))
+                )
+            if _kw:
+                config = DetectionConfig(**_kw)
+        except Exception as _e:
+            _detect_logger.warning(f"[DETECT_SHAPE] override config bỏ qua: {_e}")
+        doc = pdf_lib.open(file_path)
+        try:
+            # === Lớp 1 — vector SSOT (mọi trang, cô lập lỗi) ===
+            result = detect_die_shapes(doc, config)
+
+            # === Raster fallback cho trang không có đường bế vector (source='custom') ===
+            engine = SeparationEngine()
+            for i, shape in enumerate(result.shapes):
+                if shape.source != "custom" or not result.statuses[i].ok:
+                    continue
+                fb = await _raster_fallback_shape(
+                    engine, file_path, shape.page, config, _detect_logger
+                )
+                if fb is not None:
+                    result.shapes[i] = fb
+                    result.statuses[i] = type(result.statuses[i])(
+                        page=fb.page, ok=True, source=fb.source, error=None
+                    )
+        finally:
             try:
-                sep_result = await engine.extract_separations(tmp_path, page_num=page_idx + 1, dpi=144, use_ghostscript=True)
-                for p in sep_result.get("plates", []):
-                    if p["name"] not in ("Cyan", "Magenta", "Yellow", "Black"):
-                        raw_bytes = zlib.decompress(base64.b64decode(p["alpha_data"]))
-                        h = sep_result["height"]
-                        w = sep_result["width"]
-                        ink_density = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w))
-                        import cv2
-                        contours, _ = cv2.findContours(ink_density, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        if contours:
-                            solid_mask = np.zeros_like(ink_density)
-                            cv2.drawContours(solid_mask, contours, -1, 255, cv2.FILLED)
-                            ink_density = solid_mask
-                        y, x = np.where(ink_density > 0)
-                        if len(y) > 0:
-                            spot_w = float((x.max() - x.min()) * 72 / 144)
-                            spot_h = float((y.max() - y.min()) * 72 / 144)
-                            _detect_logger.info(f"Spot color '{p['name']}' on page {page_idx + 1} found: {spot_w}x{spot_h} pt")
-                        break
-            except Exception as e:
-                _detect_logger.warning(f"Spot extraction on page {page_idx + 1} failed: {e}")
+                doc.close()
+            except Exception:
+                pass
 
-            if ink_density is not None:
-                shape_type_enum = detect_shape(ink_density)
-                shape_type_str = shape_type_enum.name
-                
-                shape_params = extract_shape_properties(ink_density)
-                
-                if shape_type_enum.name == 'HAMMER':
-                    shape_params['effective_body_w_ratio'] = 0.37
-                elif shape_type_enum.name == 'DUMBBELL':
-                    shape_params['effective_body_w_ratio'] = 0.65
-                    
-                shapes.append(shape_type_str)
-                shape_params_list.append(shape_params)
-                dimensions.append({
-                    "w": round(spot_w if spot_w else page_w, 2),
-                    "h": round(spot_h if spot_h else page_h, 2)
-                })
-                if page_idx == 0:
-                    _detect_logger.info(f"[DETECT_SHAPE] Mask fallback: {shape_type_str}")
-            else:
-                shapes.append("CUSTOM")
-                shape_params_list.append({})
-                dimensions.append({
-                    "w": round(page_w, 2),
-                    "h": round(page_h, 2)
-                })
+        _resp = to_legacy_response(result)
+        if _cache_key is not None:
+            if len(_DETECT_CACHE) >= _DETECT_CACHE_MAX:
+                _DETECT_CACHE.clear()
+            _DETECT_CACHE[_cache_key] = _resp
+        return _resp
 
-        if pike_doc:
-            pike_doc.close()
-        
-        return {
-            "shapes": shapes,
-            "dimensions": dimensions,
-            "shapeParams": shape_params_list,
-            "success": True
-        }
     except Exception as e:
         import traceback
-        with open("detect_shape_error.log", "w") as f:
-            f.write(traceback.format_exc())
-        import logging
-        logging.getLogger(__name__).error(f"Failed to detect shape: {e}")
-        return {"shapes": ["CUSTOM"], "success": False, "error": str(e)}
+        _detect_logger.error(f"Failed to detect shape: {e}\n{traceback.format_exc()}")
+        # Lỗi cấp file (vd không mở được PDF) — vẫn giữ contract cũ.
+        return {"shapes": ["CUSTOM"], "dimensions": [], "shapeParams": [],
+                "perPage": [], "success": False, "error": str(e)}
 
 # =========================================================================
 #  N-Up Backend Engine (pikepdf) — for high-volume imposition (50k+ pages)
@@ -784,23 +769,6 @@ async def download_nup_result(job_id: str, _: dict = Depends(require_license)):
 from pydantic import BaseModel, ConfigDict
 from typing import Dict, Any, Optional, List
 
-class DebugLogRequest(BaseModel):
-    source: str
-    data: Dict[str, Any]
-
-@router.post("/debug-log")
-async def write_debug_log(req: DebugLogRequest):
-    import json, os
-    desktop = os.path.join(os.environ["USERPROFILE"], "Desktop")
-    log_path = os.path.join(desktop, "debug_nup_l_shape.txt")
-    try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"\n--- LOG FROM {req.source} ---\n")
-            f.write(json.dumps(req.data, indent=2, ensure_ascii=False) + "\n")
-        return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
 class PreviewLayoutRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     
@@ -819,6 +787,7 @@ class PreviewLayoutRequest(BaseModel):
     margin_left: float = 0
     margin_bottom: float = 0
     file_id: Optional[str] = None
+    path: Optional[str] = None
     page_idx: int = 0
     bleed: float = 0.0
     layout_type: Optional[str] = None
@@ -938,7 +907,7 @@ async def preview_layout(req: PreviewLayoutRequest):
     to guarantee preview ≡ output.
     """
     
-    if req.file_id:
+    if req.file_id or req.path:
         # ═══ SINGLE SOURCE OF TRUTH PATH ═══
         # Uses compute_sticker_layout_for_page() — identical to nup_engine
         if True:
@@ -947,19 +916,24 @@ async def preview_layout(req: PreviewLayoutRequest):
             from app.models.job import UploadedFile as UploadedFileModel
             from app.workers.sticker_imposer_pkg.layout_compute import compute_sticker_layout_for_page
             
-            logger.debug("[PREVIEW] file_id=%s usable=%.2fx%.2f item=%.2fx%.2f gap=%.2fx%.2f strategy=%s shape=%s props=%s",
-                         req.file_id, req.usable_w, req.usable_h, req.item_w, req.item_h,
+            logger.debug("[PREVIEW] file_id=%s path=%s usable=%.2fx%.2f item=%.2fx%.2f gap=%.2fx%.2f strategy=%s shape=%s props=%s",
+                         req.file_id, req.path, req.usable_w, req.usable_h, req.item_w, req.item_h,
                          req.gap_x, req.gap_y, req.strategy, req.shape_type, req.shape_props)
             
-            db = SessionLocal()
-            try:
-                db_file = db.query(UploadedFileModel).filter(UploadedFileModel.id == req.file_id).first()
-                file_path = db_file.file_path if db_file else None
-            finally:
-                db.close()
+            # Desktop: đọc trực tiếp theo path (không cần upload → preview gang nhiều
+            # mẫu vẫn chạy mà không phụ thuộc selectionFileId). Web: resolve từ DB.
+            if req.path:
+                file_path = _validate_file_path(req.path)
+            else:
+                db = SessionLocal()
+                try:
+                    db_file = db.query(UploadedFileModel).filter(UploadedFileModel.id == req.file_id).first()
+                    file_path = db_file.file_path if db_file else None
+                finally:
+                    db.close()
             
             if not file_path or not os.path.exists(file_path):
-                raise ValueError(f"File not found: {req.file_id}")
+                raise ValueError(f"File not found: {req.file_id or req.path}")
             
             logger.debug("   file_path=%s", file_path)
             
@@ -1020,12 +994,31 @@ async def preview_layout(req: PreviewLayoutRequest):
                             th = pg.rect.height - 2 * bleed_pt
                         page_dims_qty.append((pi, tw, th, _qty_cnc(pi)))
 
+                    cnc_gap = max(req.gap_x, req.gap_y)
+                    # Va chạm boong: LOẠI vùng cấm lúc packing — DÙNG CHUNG helper với
+                    # cnc_render → preview gang KHỚP output (cùng exclude_zones).
+                    cnc_exclude = []
+                    _pc = getattr(req, 'pont_config', None)
+                    if _pc and not _pc.get('disableCollision', False):
+                        try:
+                            from app.workers.pont_collision import compute_packer_exclude_zones
+                            cnc_exclude = compute_packer_exclude_zones(
+                                _pc, getattr(req, 'sheet_w', 0) or 0, getattr(req, 'sheet_h', 0) or 0,
+                                req.usable_w, req.usable_h,
+                                getattr(req, 'margin_left', 0) or 0,
+                                getattr(req, 'margin_bottom', 0) or 0,
+                                cnc_gap,
+                            )
+                        except Exception:
+                            cnc_exclude = []
+
                     cnc_layout = build_cnc_front_layout(
                         page_dims_qty, req.usable_w, req.usable_h,
-                        gap=max(req.gap_x, req.gap_y),
+                        gap=cnc_gap,
                         margin_left=getattr(req, 'margin_left', 0) or 0,
                         margin_bottom=getattr(req, 'margin_bottom', 0) or 0,
                         margin_top=getattr(req, 'margin_top', 0) or 0,
+                        exclude_zones=cnc_exclude or None,
                     )
                     doc.close()
                     items = [{
@@ -1070,50 +1063,20 @@ async def preview_layout(req: PreviewLayoutRequest):
                 gap_y_pt = req.gap_y
                 
                 # ── Pre-compute forbidden zones from ốc/pont marks ──
-                # Convert from sheet-absolute PDF coords to usable-area top-down coords
+                # Dùng SSOT compute_packer_exclude_zones — KHỚP đúng output (nup_engine).
                 exclude_zones = []
                 pont_config = getattr(req, 'pont_config', None)
                 if pont_config and not pont_config.get('disableCollision', False) and getattr(req, 'sheet_w', None) and getattr(req, 'sheet_h', None):
                     try:
-                        from app.workers.pont_collision import calculate_forbidden_zones, MM_TO_PTS
-                        
-                        sheet_w_full = req.sheet_w
-                        sheet_h_full = req.sheet_h
-                        m_left_pt = getattr(req, 'margin_left', 0) or 0
-                        m_bottom_pt = getattr(req, 'margin_bottom', 0) or 0
-                        
-                        margins = {
-                            'top': pont_config.get('marginTop') * MM_TO_PTS if pont_config.get('marginTop') is not None else m_bottom_pt,
-                            'bottom': pont_config.get('marginBottom') * MM_TO_PTS if pont_config.get('marginBottom') is not None else m_bottom_pt,
-                            'left': pont_config.get('marginLeft') * MM_TO_PTS if pont_config.get('marginLeft') is not None else m_left_pt,
-                            'right': pont_config.get('marginRight') * MM_TO_PTS if pont_config.get('marginRight') is not None else m_left_pt,
-                        }
-                        
-                        zones = calculate_forbidden_zones(pont_config, margins, sheet_w_full, sheet_h_full)
-                        if zones:
-                            m_top_pt = margins.get('top', m_bottom_pt)
-                            for z in zones:
-                                # z is a Shapely Polygon/box in PDF coords (origin bottom-left, y-up)
-                                # .bounds → (minx, miny, maxx, maxy)
-                                zminx, zminy, zmaxx, zmaxy = z.bounds
-                                zw = zmaxx - zminx
-                                zh = zmaxy - zminy
-                                
-                                # Convert from sheet PDF coords to usable-area top-down coords
-                                # Usable area starts at (margin_left, margin_bottom) in PDF
-                                # Packer coords: origin at top-left of usable area, y increases downward
-                                px = zminx - m_left_pt
-                                py = req.usable_h - (zminy - m_bottom_pt + zh)
-                                
-                                # Expand zone slightly to include gap buffer
-                                gap_buf = max(gap_x_pt, gap_y_pt) / 2
-                                px -= gap_buf
-                                py -= gap_buf
-                                zw += gap_buf * 2
-                                zh += gap_buf * 2
-                                
-                                exclude_zones.append((px, py, zw, zh))
-                            
+                        from app.workers.pont_collision import compute_packer_exclude_zones
+                        exclude_zones = compute_packer_exclude_zones(
+                            pont_config, req.sheet_w, req.sheet_h,
+                            req.usable_w, req.usable_h,
+                            getattr(req, 'margin_left', 0) or 0,
+                            getattr(req, 'margin_bottom', 0) or 0,
+                            max(gap_x_pt, gap_y_pt),
+                        )
+                        if exclude_zones:
                             logger.debug("[BIN-PACK PREVIEW] %d exclude zones from pont/oc", len(exclude_zones))
                     except Exception as e:
                         import logging
@@ -1432,30 +1395,6 @@ async def preview_layout(req: PreviewLayoutRequest):
             "totalItems": len(items),
             "strategyUsed": result.get("strategyUsed", "")
         }
-    
-        try:
-            import json
-            from pathlib import Path
-            desktop = os.path.join(str(Path.home()), "Desktop")
-            log_path = os.path.join(desktop, "debug_nup_l_shape.txt")
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"\n--- LOG FROM PREVIEW_LAYOUT (BACKEND) ---\n")
-                f.write(f"REQUEST PARAMS:\n")
-                f.write(json.dumps(req.dict(), indent=2, ensure_ascii=False) + "\n")
-                f.write(f"INTERNAL SOLVER PARAMS:\n")
-                f.write(json.dumps({
-                    "compute_usable_w": req.usable_w,
-                    "compute_usable_h": req.usable_h,
-                    "trim_w": trim_w,
-                    "trim_h": trim_h,
-                    "gap_x": req.gap_x,
-                    "gap_y": req.gap_y,
-                    "strategy": req.strategy,
-                    "secondary_gap": getattr(req, 'split_gap', None)
-                }, indent=2) + "\n")
-                f.write(f"PREVIEW RESULTS (totalItems: {len(items)}, width: {ret_data['overallWidth']}, height: {ret_data['overallHeight']}):\n")
-        except Exception as e:
-            logger.error(f"Failed to write preview log: {e}")
     
         return ret_data
     

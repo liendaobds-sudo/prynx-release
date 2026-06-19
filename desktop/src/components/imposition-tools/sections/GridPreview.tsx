@@ -34,6 +34,7 @@ export interface GridPreviewProps {
   onCapacityChange?: (capacity: number) => void;
   onMixedPlacedByPage?: (m: Record<number, number>) => void;
   fileId?: string;
+  filePath?: string;
   pageIdx?: number;
   bleed?: number; // in mm
   groupingStrategy?: string;
@@ -580,6 +581,7 @@ export default function GridPreview(props: GridPreviewProps) {
     onCapacityChange,
     onMixedPlacedByPage,
     fileId,
+    filePath,
     pageIdx = 0,
     bleed = 0,
     groupingStrategy,
@@ -679,7 +681,7 @@ export default function GridPreview(props: GridPreviewProps) {
           sheet_h: sheetHeight * MM_TO_PT,
           margin_left: marginLeft * MM_TO_PT,
           margin_bottom: marginBottom * MM_TO_PT,
-          ...(fileId ? { file_id: fileId } : {}),
+          ...(filePath ? { path: filePath } : (fileId ? { file_id: fileId } : {})),
           page_idx: pageIdx,
           bleed: bleed * MM_TO_PT, // bleed in points to match nup_engine
           grouping_strategy: groupingStrategy,
@@ -801,6 +803,7 @@ export default function GridPreview(props: GridPreviewProps) {
     marginLeft,
     marginBottom,
     fileId,
+    filePath,
     pageIdx,
     bleed,
     groupingStrategy,
@@ -967,32 +970,21 @@ export default function GridPreview(props: GridPreviewProps) {
   const _cncShortFlip =
     _isCncPreview &&
     ((layoutResult as any)?.cncFlipEdge || cncFlipEdge) === "short";
-  // CNC: KHÔNG phản chiếu nội dung — lật VỊ TRÍ + ĐẢO CHIỀU XOAY ở mức từng ô
-  // (khớp output cnc_render). Duplex thường (booklet/nup) giữ scale(-1,1).
-  const backGroupTransform = _isCncPreview
-    ? ""
+  // CNC mặt sau = PHẢN CHIẾU thật, KHỚP output cnc_render (mirror_x/mirror_y):
+  //   long-edge → lật NGANG quanh tâm tờ; short-edge → lật DỌC.
+  // Phép scale ở mức GROUP phản chiếu CẢ vị trí lẫn nội dung (giống duplex thường),
+  // text được un-flip để vẫn đọc xuôi. KHÔNG lật vị trí / đảo xoay từng ô nữa
+  // (mô hình cũ làm preview lệch output & mặt sau mất đối xứng).
+  const backGroupTransform = _cncShortFlip
+    ? `translate(0, ${svgH}) scale(1, -1)`
     : `translate(${svgW}, 0) scale(-1, 1)`;
   const backTextUnflip = (cx: number, cy: number) =>
-    _isCncPreview
-      ? ""
+    _cncShortFlip
+      ? `translate(${cx}, ${cy}) scale(1, -1) translate(-${cx}, -${cy})`
       : `translate(${cx}, ${cy}) scale(-1, 1) translate(-${cx}, -${cy})`;
 
-  // Map 1 ô Mặt trước (SVG px) → ô Mặt sau cho CNC: lật vị trí quanh trục giữa tờ
-  // + đảo chiều xoay 90° (toggle is180 khi isRotated). 180° giữ nguyên.
-  const _sheetWpx = sheetWidth * scale;
-  const _sheetHpx = sheetHeight * scale;
-  const toCncBackCell = (c: any) => {
-    let bsx = c.sx;
-    let bsy = c.sy;
-    if (_cncShortFlip) {
-      bsy = 2 * pad + _sheetHpx - c.sy - c.sh;
-    } else {
-      bsx = 2 * pad + _sheetWpx - c.sx - c.sw;
-    }
-    const bIs180 = c.isRotated ? !c.is180 : c.is180;
-    return { ...c, sx: bsx, sy: bsy, is180: bIs180 };
-  };
-  const cncBackCells = _isCncPreview ? svgCells.map(toCncBackCell) : svgCells;
+  // Mặt sau dùng CHÍNH ô mặt trước — phản chiếu do backGroupTransform đảm nhiệm.
+  const cncBackCells = svgCells;
 
   // ── N-Up "Dàn nhiều mẫu": số ô vẽ trên tờ (đại diện) = min(tổng con, sức chứa). ──
   const _showCount =

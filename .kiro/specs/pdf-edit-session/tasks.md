@@ -76,7 +76,7 @@ Backend: **Python (FastAPI + pikepdf + pypdfium2)**. Frontend: **TypeScript/Reac
     - Trả về cấu trúc như `apply_op` (opResult + canUndo/canRedo) kèm render clip
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.6_
 
-  - [ ]* 4.2 Property test: Undo/Redo idempotent theo cặp
+  - [x]* 4.2 Property test: Undo/Redo idempotent theo cặp
     - Tạo `backend/tests/test_session_undo_redo_pbt.py`
     - **Property 4: Undo/Redo idempotent theo cặp (Round-trip)**
     - **Validates: Requirements 7.5**
@@ -99,7 +99,7 @@ Backend: **Python (FastAPI + pikepdf + pypdfium2)**. Frontend: **TypeScript/Reac
     - Sửa `backend/app/main.py`: thêm asyncio background task trong `lifespan` gọi `sweep_expired()` mỗi ~5 phút
     - _Requirements: 9.4_
 
-  - [ ]* 6.3 Property test: Op_Log nhất quán khi lỗi/timeout
+  - [x]* 6.3 Property test: Op_Log nhất quán khi lỗi/timeout
     - Tạo `backend/tests/test_session_oplog_consistency_pbt.py`
     - **Property 5: Op_Log nhất quán khi lỗi/timeout (Invariant)**
     - **Validates: Requirements 10.1, 10.2, 10.3**
@@ -112,7 +112,7 @@ Backend: **Python (FastAPI + pikepdf + pypdfium2)**. Frontend: **TypeScript/Reac
     - Giữ NGUYÊN các endpoint Legacy (`/edit/objects`, `/edit/delete`, `/edit/transform`, `/edit/text`, `/edit/add`, `/edit/preview`)
     - _Requirements: 1.1, 2.4, 5.1, 5.6, 9.5, 10.1, 10.2, 10.3, 11.1, 11.3_
 
-  - [ ]* 7.2 Integration test: undo/redo e2e + fallback 410
+  - [x]* 7.2 Integration test: undo/redo e2e + fallback 410
     - Tạo `backend/tests/test_session_undo_redo_e2e.py` (open→op×N→undo/redo→commit) và `backend/tests/test_session_fallback.py` (session-gone 410 → kết quả Legacy tương đương)
     - **Validates: Requirements 7.1–7.4, 9.5, 11.1, 11.2**
 
@@ -124,7 +124,7 @@ Backend: **Python (FastAPI + pikepdf + pypdfium2)**. Frontend: **TypeScript/Reac
     - Sửa `desktop/src/components/.../editGeometry.ts`: hàm thuần quy đổi clipRect PDF (point, bottom-left, trừ gốc Page_Box) → canvas px, tolerance ≤ 1.0pt
     - _Requirements: 4.1, 4.2, 4.3_
 
-  - [ ]* 9.2 Viết vitest cho `clipRectPdfToCanvas`
+  - [x]* 9.2 Viết vitest cho `clipRectPdfToCanvas`
     - Thêm ca test trong `editGeometry.test.ts` gồm CropBox lệch gốc chống regression tọa độ
     - _Requirements: 4.1, 4.2, 4.3_
 
@@ -135,7 +135,7 @@ Backend: **Python (FastAPI + pikepdf + pypdfium2)**. Frontend: **TypeScript/Reac
     - Trả `{preview, clipRect, opResult, canUndo, canRedo}` cho FE dán overlay + cập nhật overlay objects
     - _Requirements: 5.1, 5.3, 5.6, 9.5, 11.1, 12.2, 12.4_
 
-  - [ ]* 10.2 Viết vitest mock fetch cho hook
+  - [x]* 10.2 Viết vitest mock fetch cho hook
     - Test open/op/commit/fallback-410
     - _Requirements: 9.5, 11.1_
 

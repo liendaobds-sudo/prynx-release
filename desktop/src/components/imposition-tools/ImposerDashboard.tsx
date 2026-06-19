@@ -23,7 +23,7 @@ import ToolMenuList from './ToolMenuList';
 import PresetSelector from './PresetSelector';
 import { FlipbookDialog } from '../flipbook/FlipbookDialog';
 import { SheetViewerDialog } from '../flipbook/SheetViewerDialog';
-import { authenticatedFetch, getApiUrl } from '../../lib/api';
+import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { MergeSettings, defaultMergeSettings } from '../preprocess-tools/MergeTool';
 import MergeTool from '../preprocess-tools/MergeTool';
 
@@ -33,7 +33,6 @@ import AutoCatalogSection from './sections/AutoCatalogSection';
 import PreprocessingRouter from './sections/PreprocessingRouter';
 import GridSettingsSection from './sections/GridSettingsSection';
 import AdvancedSettingsSection from './sections/AdvancedSettingsSection';
-import CncSettingsSection from './sections/CncSettingsSection';
 import GridPreview from './sections/GridPreview';
 
 // Store & Types
@@ -43,6 +42,7 @@ export type { BookletSettings, NupSettings } from './types';
 export { PREDEFINED_SIZES } from './types';
 
 import type { ImpositionPreset } from '../../lib/presetManager';
+import { toast } from '../ui/Toast';
 
 
 export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles }: ImposerDashboardProps) {
@@ -55,7 +55,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         detectedShapesByPage, setDetectedShapesByPage,
         detectedDimensionsByPage, setDetectedDimensionsByPage,
         detectedShapeParamsByPage, setDetectedShapeParamsByPage, viewerActivePage, pdfUrl,
-        selectionFileId, hiddenOcgLayerIds
+        selectionFileId, setSelectionFileId, hiddenOcgLayerIds
     } = useWorkspaceStore(useShallow(state => ({
         isProcessing: state.isProcessing, error: state.error, file: state.file, viewerPageOrder: state.viewerPageOrder,
         setHighlightedIssue: state.setHighlightedIssue, setShowOutputPreview: state.setShowOutputPreview,
@@ -64,6 +64,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         detectedDimensionsByPage: state.detectedDimensionsByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage,
         detectedShapeParamsByPage: state.detectedShapeParamsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage, viewerActivePage: state.viewerActivePage, pdfUrl: state.pdfUrl,
         selectionFileId: state.selectionFileId,
+        setSelectionFileId: state.setSelectionFileId,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds
     })));
 
@@ -133,7 +134,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const { savedForms, handleSavePreset: _savePreset, handleUpdatePreset: _updatePreset, handleDeletePreset: _deletePreset } = usePaperPresets('printauto_saved_forms');
 
     const handleSavePreset = useCallback((name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number) => {
-        if (savedForms.some(f => f.name === name)) { alert('Tên "' + name + '" đã tồn tại.'); return; }
+        if (savedForms.some(f => f.name === name)) { toast.error('Tên "' + name + '" đã tồn tại.'); return; }
         const newId = _savePreset(name, w, h, mT, mB, mL, mR, mMode, classification, gripper);
         s.setFormsize(newId);
         s.setCustomSheetWidth(w); s.setCustomSheetHeight(h);
@@ -207,43 +208,86 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
 
     // Persistence is now handled automatically by Zustand persist middleware in useImposerSettingsStore.ts
 
-    // Auto shape detection — re-run whenever file changes
+    // Auto shape detection — chạy khi đổi file/công cụ.
+    // QUAN TRỌNG: nếu chưa có selectionFileId (vd file > 20MB không được pre-upload
+    // nền ở ImpositionTab), TỰ upload tại đây — không phụ thuộc kích thước — để nhận
+    // diện luôn chạy. Trước đây file lớn không upload → detect-shape không gọi →
+    // mọi trang hiển thị "Đặc biệt".
     useEffect(() => {
-        if ((activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer') && selectionFileId) {
-            const detectShapes = async () => {
-                // Reset shapes truoc de tranh giu shapes cu khi doi file
-                setDetectedShapesByPage({});
-                setDetectedDimensionsByPage({});
-                setDetectedShapeParamsByPage({});
-                setIsDetectingShape(true);
-                try {
-                    const res = await authenticatedFetch(`${getApiUrl()}/imposition/detect-shape`, { 
-                        method: 'POST', 
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ fileId: selectionFileId }) 
-                    });
-                    const data = await res.json();
-                    if (res.ok && data.success && data.shapes?.length > 0) {
-                        const newShapes: Record<number, string> = {};
-                        data.shapes.forEach((s: string, i: number) => { newShapes[i] = s; });
-                        if (data.dimensions) {
-                            const newDims: Record<number, { w: number, h: number }> = {};
-                            data.dimensions.forEach((d: any, i: number) => { newDims[i] = d; });
-                            setDetectedDimensionsByPage(newDims);
-                        }
-                        if (data.shapeParams) {
-                            const newParams: Record<number, any> = {};
-                            data.shapeParams.forEach((p: any, i: number) => { newParams[i] = p; });
-                            setDetectedShapeParamsByPage(newParams);
-                        }
-                        setDetectedShapesByPage(newShapes);
+        if (activeTool !== 'sticker_imposer' && activeTool !== 'cnc_imposer') return;
+        let cancelled = false;
+
+        const run = async () => {
+            // Chọn cách gửi: desktop (Tauri) → đọc TRỰC TIẾP theo path (KHÔNG upload,
+            // nhanh hơn nhiều với file lớn). Web → cần fileId (upload nếu chưa có).
+            const isTauri = !!(window as any).__TAURI_INTERNALS__;
+            const localPath = (pdfFile as any)?.path;
+            const isPdf = pdfFile && (pdfFile.type === 'application/pdf' || pdfFile.name?.toLowerCase().endsWith('.pdf'));
+
+            let reqBody: any = null;
+            if (isTauri && localPath && isPdf) {
+                reqBody = { path: localPath };
+            } else if (selectionFileId) {
+                reqBody = { fileId: selectionFileId };
+            } else {
+                // Web mode chưa có fileId → upload rồi để effect chạy lại để nhận diện.
+                if (isPdf) {
+                    try {
+                        setIsDetectingShape(true);
+                        const up = await uploadPDF(pdfFile);
+                        if (!cancelled && up?.id) setSelectionFileId(up.id);
+                    } catch (e) {
+                        console.error('Upload for shape detection failed:', e);
+                    } finally {
+                        if (!cancelled) setIsDetectingShape(false);
                     }
-                } catch (err) { console.error('Auto shape detection failed:', err); }
-                finally { setIsDetectingShape(false); }
-            };
-            detectShapes();
-        }
-    }, [activeTool, selectionFileId]);
+                }
+                return;
+            }
+
+            // Reset shapes truoc de tranh giu shapes cu khi doi file
+            setDetectedShapesByPage({});
+            setDetectedDimensionsByPage({});
+            setDetectedShapeParamsByPage({});
+            setIsDetectingShape(true);
+            try {
+                const res = await authenticatedFetch(`${getApiUrl()}/imposition/detect-shape`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(reqBody)
+                });
+                const data = await res.json();
+                // SSOT (die-shape-detection-ssot — R4.6): cập nhật ngay cả khi
+                // một số trang là CUSTOM. Backend chỉ trả success=false khi lỗi
+                // cấp file; còn lại luôn có mảng shapes (trang lỗi → 'CUSTOM').
+                if (!cancelled && res.ok && Array.isArray(data.shapes) && data.shapes.length > 0) {
+                    const newShapes: Record<number, string> = {};
+                    data.shapes.forEach((s: string, i: number) => { newShapes[i] = s; });
+                    if (data.dimensions) {
+                        const newDims: Record<number, { w: number, h: number }> = {};
+                        data.dimensions.forEach((d: any, i: number) => { newDims[i] = d; });
+                        setDetectedDimensionsByPage(newDims);
+                    }
+                    if (data.shapeParams) {
+                        const newParams: Record<number, any> = {};
+                        data.shapeParams.forEach((p: any, i: number) => { newParams[i] = p; });
+                        setDetectedShapeParamsByPage(newParams);
+                    }
+                    setDetectedShapesByPage(newShapes);
+                    if (Array.isArray(data.perPage)) {
+                        const failed = data.perPage.filter((p: any) => p && p.ok === false);
+                        if (failed.length > 0) {
+                            console.warn('[detect-shape] trang lỗi/CUSTOM:', failed);
+                        }
+                    }
+                }
+            } catch (err) { console.error('Auto shape detection failed:', err); }
+            finally { if (!cancelled) setIsDetectingShape(false); }
+        };
+
+        run();
+        return () => { cancelled = true; };
+    }, [activeTool, selectionFileId, pdfFile]);
 
     // Auto Catalog: fetch page dimensions + plan
     useEffect(() => {
@@ -597,7 +641,11 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     }, [s]);
 
     // ═══ Computed Values ═══
-    const isPreprocessing = ['shuffle','resize','split','preflight','pageboxes','hairlines','convertcolors','trapping','pdfx','ocr','optimize','sticker','bgremover','watermark','upscale','pages'].includes(activeTool);
+    const isPreprocessing = ['shuffle','resize','split','preflight','hairlines','convertcolors','trapping','pdfx','ocr','optimize','sticker','bgremover','watermark','upscale','pages'].includes(activeTool);
+    // Panel thiết lập BÌNH BÀI chỉ dành cho 4 chế độ bình thật. Trước đây gating bằng
+    // `!isPreprocessing` khiến tool 'merge' (không nằm trong isPreprocessing) lòi cả
+    // panel "Bình trang (S&R)" xuống dưới UI Ghép file → gây rối. Dùng whitelist tường minh.
+    const isImpositionMode = ['booklet', 'nup', 'sticker_imposer', 'cnc_imposer'].includes(activeTool);
     // CNC dùng chung render/preview die-cut với Bế tem (trừ pont — CNC dùng dấu canh riêng).
     const stickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
     const showPaperSection = s.taskMode !== 'booklet' || (s.taskMode === 'booklet' && s.scaleMode !== '100');
@@ -689,7 +737,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             )}
 
             {/* ═══ IMPOSITION SETTINGS ═══ */}
-            {!isPreprocessing && (
+            {isImpositionMode && (
                 <>
                     {/* ═══ IMPOSITION HEADER ═══ */}
                     {activeTool === 'booklet' && (
@@ -718,16 +766,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                             <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">🔻 BÌNH BẾ RỚT (CNC)</h2>
                             <p className="text-[11px] text-slate-500 mt-1">Cắt rời CNC: bình 2 mặt (lật gương), dấu canh CNC, xuất Trước/Sau/Khuôn.</p>
                         </div>
-                    )}
-
-                    {activeTool === 'cnc_imposer' && (
-                        <CncSettingsSection
-                            twoSided={s.duplexFlow === 'double'}
-                            setTwoSided={(v) => s.setDuplexFlow(v ? 'double' : 'normal')}
-                            cncFlipEdge={s.cncFlipEdge} setCncFlipEdge={s.setCncFlipEdge}
-                            cncDuplexMarks={s.cncDuplexMarks} setCncDuplexMarks={s.setCncDuplexMarks}
-                            sourceTotalPages={sourceTotalPages}
-                        />
                     )}
 
                     <Divider />
@@ -760,7 +798,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         </>
                     )}
 
-                    <AdvancedSettingsSection activeTool={activeTool} />
+                    <AdvancedSettingsSection activeTool={activeTool} sourceTotalPages={sourceTotalPages} />
 
                     {/* Grid preview for all modes */}
                     {(s.taskMode === 'nup' || s.taskMode === 'step_repeat' || s.taskMode === 'sticker_imposer') && (
@@ -829,14 +867,15 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 imposerMode={activeTool === 'cnc_imposer' ? 'cnc' : undefined}
                                 cncTwoSided={activeTool === 'cnc_imposer' && s.duplexFlow === 'double'}
                                 cncFlipEdge={s.cncFlipEdge}
-                                shapeParams={(() => { const params = detectedShapeParamsByPage[safePageIdx]; return params ? (typeof params === 'string' ? params : JSON.stringify(params)) : null; })()}
+                                shapeParams={(() => { const params = detectedShapeParamsByPage[safePageIdx]; return params ? JSON.stringify(params) : null; })()}
                                 shapesByPage={stickerLike ? detectedShapesByPage : undefined}
                                 shapeParamsByPage={stickerLike ? detectedShapeParamsByPage : undefined}
                                 isDetectingShape={isDetectingShape}
-                                pontType={s.pontType} pontConfig={(activeTool === 'sticker_imposer' && s.pontType !== 'none') ? s.pontConfig : null}
+                                pontType={s.pontType} pontConfig={(stickerLike && s.pontType !== 'none') ? s.pontConfig : null}
                                 onCapacityChange={(cap) => { s.setPreviewCapacity(cap); s.setPreviewCapacities({ ...s.previewCapacities, [safePageIdx]: cap }); }}
                                 onMixedPlacedByPage={(m) => s.setMixedPlacedByPage(m)}
                                 fileId={stickerLike ? selectionFileId : undefined}
+                                filePath={(stickerLike && (window as any).__TAURI_INTERNALS__) ? ((pdfFile as any)?.path || undefined) : undefined}
                                 pageIdx={safePageIdx}
                                 bleed={s.bleed}
                             />

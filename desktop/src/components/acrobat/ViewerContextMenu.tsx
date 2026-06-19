@@ -23,7 +23,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
 
     return (
         <div
-            className="fixed z-[999] min-w-[220px] bg-white dark:bg-[#1e1e1e] border border-slate-200 dark:border-white/10 shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-xl animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
+            className="fixed z-context-menu min-w-[220px] bg-white dark:bg-[#1e1e1e] border border-slate-200 dark:border-white/10 shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-xl animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-0.5"
             style={{ left: Math.min(contextMenu.x, window.innerWidth - 220), top: Math.min(contextMenu.y, window.innerHeight - 200) }}
             onClick={e => e.stopPropagation()}
             onContextMenu={e => e.preventDefault()}

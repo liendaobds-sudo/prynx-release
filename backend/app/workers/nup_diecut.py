@@ -332,7 +332,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         minx, miny, maxx, maxy = poly.bounds
 
-        logger.warning(f"[HEAD_TO_TAIL] poly bounds=({minx:.1f},{miny:.1f},{maxx:.1f},{maxy:.1f}) w={maxx-minx:.1f} h={maxy-miny:.1f}")
+        logger.debug(f"[HEAD_TO_TAIL] poly bounds=({minx:.1f},{miny:.1f},{maxx:.1f},{maxy:.1f}) w={maxx-minx:.1f} h={maxy-miny:.1f}")
 
         gap_px = gap_pt * zoom
 
@@ -350,7 +350,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         shape_props = class_result['params']
 
-        logger.warning(f"[HEAD_TO_TAIL] classify_shape: {shape_type.name} ({shape_type.value}), source={class_result['source']}, params={shape_props}")
+        logger.debug(f"[HEAD_TO_TAIL] classify_shape: {shape_type.name} ({shape_type.value}), source={class_result['source']}, params={shape_props}")
 
         def calc_params(base_poly, base_dilated, rotated_dilated):
 
@@ -439,7 +439,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
             if not candidates:
 
-                logger.warning(f"[CALC_PARAMS] Không tìm được candidate nào — dùng grid thường")
+                logger.debug("[CALC_PARAMS] Không tìm được candidate nào — dùng grid thường")
 
                 return {
 
@@ -595,11 +595,10 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
             all_results.sort(key=lambda x: x[0])
 
-            for i, (a, dx, dy, dxs, dys) in enumerate(all_results[:5]):
-
-                logger.warning(f"[CALC_NFP] #{i+1} area={a:.0f} dx={dx/zoom:.1f} dy={dy/zoom:.1f} dx_step={dxs/zoom:.1f} dy_step={dys/zoom:.1f}")
-
-            logger.warning(f"[CALC_NFP] WINNER: dx={best_dx/zoom:.1f} dy={best_dy/zoom:.1f} dx_outer={best_dx_outer/zoom:.1f} dy_outer={best_dy_outer/zoom:.1f}")
+            if logger.isEnabledFor(logging.DEBUG):
+                for i, (a, dx, dy, dxs, dys) in enumerate(all_results[:5]):
+                    logger.debug(f"[CALC_NFP] #{i+1} area={a:.0f} dx={dx/zoom:.1f} dy={dy/zoom:.1f} dx_step={dxs/zoom:.1f} dy_step={dys/zoom:.1f}")
+            logger.debug(f"[CALC_NFP] WINNER: dx={best_dx/zoom:.1f} dy={best_dy/zoom:.1f} dx_outer={best_dx_outer/zoom:.1f} dy_outer={best_dy_outer/zoom:.1f}")
 
             return {
 
@@ -621,7 +620,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         p5_params = calc_params(poly, poly_dilated, poly_rotated_dilated)
 
-        logger.warning(f"[HEAD_TO_TAIL] p5_params={p5_params}")
+        logger.debug(f"[HEAD_TO_TAIL] p5_params={p5_params}")
 
         b_minx, b_miny, b_maxx, b_maxy = poly.bounds
 
@@ -709,7 +708,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         p6_params = calc_params(poly90, poly90_dilated, poly90_rotated_dilated)
 
-        logger.warning(f"[HEAD_TO_TAIL] p6_params={p6_params}")
+        logger.debug(f"[HEAD_TO_TAIL] p6_params={p6_params}")
 
         b90_minx, b90_miny, b90_maxx, b90_maxy = poly90.bounds
 
@@ -792,32 +791,53 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
 def _find_largest_die_path(page):
 
-    """Extract the largest die-cut path from a page (shared helper)."""
+    """Extract the largest die-cut path from a page (shared helper).
 
-    paths = page.extract_vector_paths()
+    Ủy quyền sang die_detection.select_die_path (NGUỒN DUY NHẤT chọn-path — R3.1)
+    để layout và detection chọn CÙNG một đường khuôn (kèm ưu tiên tên kênh khuôn).
+    Import trễ để tránh phụ thuộc vòng.
+    """
 
-    if not paths:
+    try:
 
-        return None
+        from app.workers.die_detection import select_die_path, DetectionConfig
 
-    valid = [p for p in paths if p['rect'].width > 5 and p['rect'].height > 5]
+        return select_die_path(page, DetectionConfig().die_channel_names)
 
-    if not valid:
+    except Exception:
 
-        return None
+        # Fallback an toàn: heuristic cũ nội bộ (giữ layout không sập nếu import lỗi).
 
-    filtered = [p for p in valid
+        try:
 
-                if not (abs(p['rect'].width - page.rect.width) <= 2
+            paths = page.extract_vector_paths()
 
-                        and abs(p['rect'].height - page.rect.height) <= 2)]
+        except Exception:
 
-    if filtered:
+            return None
 
-        valid = filtered
+        if not paths:
 
-    stroke = [p for p in valid if p.get('type') == 's' or (p.get('fill') is None and p.get('color') is not None)]
+            return None
 
-    target = stroke if stroke else valid
+        valid = [p for p in paths if p['rect'].width > 5 and p['rect'].height > 5]
 
-    return max(target, key=lambda p: p['rect'].width * p['rect'].height)
+        if not valid:
+
+            return None
+
+        filtered = [p for p in valid
+
+                    if not (abs(p['rect'].width - page.rect.width) <= 2
+
+                            and abs(p['rect'].height - page.rect.height) <= 2)]
+
+        if filtered:
+
+            valid = filtered
+
+        stroke = [p for p in valid if p.get('type') == 's' or (p.get('fill') is None and p.get('color') is not None)]
+
+        target = stroke if stroke else valid
+
+        return max(target, key=lambda p: p['rect'].width * p['rect'].height)

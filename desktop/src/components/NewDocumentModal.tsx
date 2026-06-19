@@ -60,8 +60,11 @@ export default function NewDocumentModal({ isOpen, onClose, onCreate }: Props) {
     };
 
     return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm" onMouseDown={onClose}>
+        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/50 backdrop-blur-sm" onMouseDown={onClose}>
             <div
+                role="dialog"
+                aria-modal="true"
+                aria-label="Tạo tài liệu trắng mới"
                 className="bg-white dark:bg-zinc-800 p-6 rounded-xl shadow-2xl w-[420px] max-w-[92vw] border border-slate-200 dark:border-white/10"
                 onMouseDown={(e) => e.stopPropagation()}
             >

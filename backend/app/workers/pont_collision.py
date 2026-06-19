@@ -5,35 +5,58 @@ from shapely.geometry import Polygon, box
 
 MM_TO_PTS = 2.83464567
 
+# ── Hằng số vùng cấm boong/ốc (đơn vị: mm trừ khi ghi rõ) ──
+SAFETY_PADDING_MM = 3.0   # đệm an toàn quanh dấu boong để tem không sát mép
+DEFAULT_MARGIN_MM = 7.0   # lề mặc định khi pont_config KHÔNG có marginX và caller cũng không truyền margins
+MIN_OVERLAP_AREA_PT2 = 1.0  # diện tích giao tối thiểu (pt²) để coi là va chạm thật — bỏ qua "chạm" cực nhỏ do sai số
+
+
+def _resolve_margin_pt(pont_config: Dict[str, Any], margins: Dict[str, float],
+                       cfg_key: str, margins_key: str) -> float:
+    """Lề (points) cho 1 cạnh, theo thứ tự ưu tiên:
+       1) pont_config[cfg_key] (đơn vị mm) — nguồn chính, dùng cho hầu hết các luồng
+       2) margins[margins_key] (đơn vị points) — fallback caller truyền vào
+       3) DEFAULT_MARGIN_MM — chốt cuối
+    """
+    v = pont_config.get(cfg_key)
+    if v is not None:
+        return v * MM_TO_PTS
+    if margins:
+        mv = margins.get(margins_key)
+        if mv is not None:
+            return mv  # margins đã ở points
+    return DEFAULT_MARGIN_MM * MM_TO_PTS
+
+
 def calculate_forbidden_zones(pont_config: Dict[str, Any], margins: Dict[str, float], sheet_w: float, sheet_h: float) -> List[box]:
     """
-    oalculate 4 corner forbidden zones based on pontoonfig.
-    Returns a list of shapely box objects (Top-Left, Top-Right, Bottom-Left, Bottom-Right).
-    ooordinates are in points (0,0 at bottom-left).
+    Tính 4 vùng cấm ở góc dựa trên pont_config.
+    Trả về danh sách shapely box (Top-Left, Top-Right, Bottom-Left, Bottom-Right).
+    Toạ độ tính bằng points (gốc 0,0 ở đáy-trái).
+
+    `margins` (points) dùng làm FALLBACK lề khi pont_config thiếu marginTop/Bottom/Left/Right.
     """
-    if not pont_config or pont_config.get('disableoollision', False):
+    if not pont_config or pont_config.get('disableCollision', False):
         return []
     
     pont_type = pont_config.get('shape', 'circle')
     mark_size_mm = pont_config.get('size', 5.0)
-    safety_padding_mm = 3.0
+    safety_padding_mm = SAFETY_PADDING_MM
     
     radius_mm = mark_size_mm / 2.0 + safety_padding_mm
     radius_pt = radius_mm * MM_TO_PTS
     
-    # oalculate exact centers of the marks
-    # Note: in nup_engine, centers are:
-    # cx_L = m_left + radius_mark
-    # cx_R = sheet_w - m_right - radius_mark
-    # cy_T = m_top + radius_mark
-    # cy_B = sheet_h - m_bot - radius_mark
+    # Tính tâm chính xác của dấu boong. Tham chiếu nup_engine:
+    #   cx_L = m_left + radius_mark; cx_R = sheet_w - m_right - radius_mark
+    #   cy_T = m_top + radius_mark;  cy_B = sheet_h - m_bot - radius_mark
     
     mark_r_pt = (mark_size_mm / 2.0) * MM_TO_PTS
     
-    m_top = pont_config.get('marginTop', 7.0) * MM_TO_PTS
-    m_bot = pont_config.get('marginBottom', 7.0) * MM_TO_PTS
-    m_left = pont_config.get('marginLeft', 7.0) * MM_TO_PTS
-    m_right = pont_config.get('marginRight', 7.0) * MM_TO_PTS
+    margins = margins or {}
+    m_top = _resolve_margin_pt(pont_config, margins, 'marginTop', 'top')
+    m_bot = _resolve_margin_pt(pont_config, margins, 'marginBottom', 'bottom')
+    m_left = _resolve_margin_pt(pont_config, margins, 'marginLeft', 'left')
+    m_right = _resolve_margin_pt(pont_config, margins, 'marginRight', 'right')
     
     cx_L = m_left + mark_r_pt
     cx_R = sheet_w - m_right - mark_r_pt
@@ -45,7 +68,7 @@ def calculate_forbidden_zones(pont_config: Dict[str, Any], margins: Dict[str, fl
     zones = []
     
     if pont_type == 'circle':
-        # oreate circular polygons
+        # Tạo polygon hình tròn cho 4 góc
         zones.append(Point(cx_L, cy_T).buffer(radius_pt)) # Top-Left
         zones.append(Point(cx_R, cy_T).buffer(radius_pt)) # Top-Right
         zones.append(Point(cx_L, cy_B).buffer(radius_pt)) # Bottom-Left
@@ -61,6 +84,49 @@ def calculate_forbidden_zones(pont_config: Dict[str, Any], margins: Dict[str, fl
         zones.append(box(cx_R - half_box, cy_B - half_box, cx_R + half_box, cy_B + half_box))
         
     return zones
+
+def compute_packer_exclude_zones(pont_config, sheet_w, sheet_h, usable_w, usable_h,
+                                 margin_left_pt, margin_bottom_pt, gap):
+    """Quy đổi vùng cấm boong (pont) sang toạ độ PACKER (gốc góc trên-trái vùng in,
+    y hướng XUỐNG) để bin-pack LOẠI vùng cấm NGAY lúc xếp (thay vì xếp xong mới xóa).
+
+    NGUỒN CHÂN LÝ DUY NHẤT — dùng CHUNG cho cả preview (/preview-layout) lẫn output
+    (cnc_render) → preview luôn KHỚP output. Trả về List[(px, py, zw, zh)] (points)
+    hoặc [] nếu không có boong / tắt va chạm.
+    """
+    if (not pont_config or pont_config.get('disableCollision', False)
+            or not sheet_w or not sheet_h):
+        return []
+    margins = {
+        'top': pont_config.get('marginTop') * MM_TO_PTS if pont_config.get('marginTop') is not None else margin_bottom_pt,
+        'bottom': pont_config.get('marginBottom') * MM_TO_PTS if pont_config.get('marginBottom') is not None else margin_bottom_pt,
+        'left': pont_config.get('marginLeft') * MM_TO_PTS if pont_config.get('marginLeft') is not None else margin_left_pt,
+        'right': pont_config.get('marginRight') * MM_TO_PTS if pont_config.get('marginRight') is not None else margin_left_pt,
+    }
+    try:
+        zones = calculate_forbidden_zones(pont_config, margins, sheet_w, sheet_h)
+    except Exception:
+        return []
+    if not zones:
+        return []
+    gap_buf = (gap or 0) / 2.0
+    out = []
+    for z in zones:
+        # z: Shapely box/polygon toạ độ PDF tờ (gốc đáy-trái, y lên). .bounds → (minx,miny,maxx,maxy)
+        zminx, zminy, zmaxx, zmaxy = z.bounds
+        zw = zmaxx - zminx
+        zh = zmaxy - zminy
+        # PDF tờ → packer (gốc góc trên-trái vùng in, y xuống)
+        px = zminx - margin_left_pt
+        py = usable_h - (zminy - margin_bottom_pt + zh)
+        # Nới vùng cấm theo nửa gap để tem không sát mép boong
+        px -= gap_buf
+        py -= gap_buf
+        zw += gap_buf * 2
+        zh += gap_buf * 2
+        out.append((px, py, zw, zh))
+    return out
+
 
 def build_shapely_polygon_from_paths(paths, page_rect=None) -> Polygon:
     """Extract a shapely Polygon from PDF paths, ignoring background rectangles."""
@@ -203,7 +269,7 @@ def check_internal_collision(row_items: List[Dict], other_items: List[Dict], bas
                 ob = box(o_item['abs_x'], o_item['abs_y'], o_item['abs_x'] + o_item['width'], o_item['abs_y'] + o_item['height'])
                 if rb.intersects(ob):
                     # Shrink AABB slightly to avoid false positive touches
-                    if rb.intersection(ob).area > 1.0:
+                    if rb.intersection(ob).area > MIN_OVERLAP_AREA_PT2:
                         return True
         return False
 
@@ -223,7 +289,7 @@ def check_internal_collision(row_items: List[Dict], other_items: List[Dict], bas
     for rp in r_polys:
         for op in o_polys:
             if rp.intersects(op):
-                if rp.intersection(op).area > 1.0: # Ignore tiny touches
+                if rp.intersection(op).area > MIN_OVERLAP_AREA_PT2: # Ignore tiny touches
                     return True
     return False
 

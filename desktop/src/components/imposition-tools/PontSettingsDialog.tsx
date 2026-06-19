@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { PontConfig } from './types';
+import { toast } from '../ui/Toast';
 
 export const DEFAULT_PONT_CONFIG: PontConfig = {
     shape: 'circle',
@@ -65,13 +66,13 @@ export const PontSettingsDialog = ({
 
     const savePreset = () => {
         if (!presetName.trim()) {
-            alert('Vui lòng nhập tên mẫu trước khi lưu!');
+            toast.info('Vui lòng nhập tên mẫu trước khi lưu!');
             return;
         }
         const newPresets = [...presets.filter(p => p.name !== presetName.trim()), { name: presetName.trim(), config: localCfg }];
         setPresets(newPresets);
         localStorage.setItem('ps_pont_presets', JSON.stringify(newPresets));
-        alert('Đã lưu mẫu cấu hình "' + presetName.trim() + '" thành công!');
+        toast.success('Đã lưu mẫu cấu hình "' + presetName.trim() + '" thành công!');
     };
 
     const loadPreset = (e: React.ChangeEvent<HTMLSelectElement>) => {

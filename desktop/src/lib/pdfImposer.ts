@@ -454,78 +454,6 @@ export const imposeCatalogBatch = async (
 //    - File 2 trang ảnh 300DPI (500MB) → Backend Mode (tránh tràn RAM Webview)
 // =========================================================================
 
-/** Ngưỡng: file > 50MB sẽ tự động chuyển sang Backend Mode */
-const BACKEND_THRESHOLD_BYTES = 50 * 1024 * 1024; // 50MB
-
-/**
- * Smart wrapper: Tự động chọn Client hoặc Backend dựa trên dung lượng file.
- * 
- * - File ≤ 50MB → imposePdf() (Client Mode, pdf-lib trong Webview)
- * - File > 50MB → imposePdfViaBackend() (Backend Mode, pypdfium2 mmap)
- * 
- * Nếu Backend không chạy (lỗi kết nối), tự động fallback về Client Mode.
- */
-export const imposePdfSmart = async (
-    pdfFile: File,
-    settings: ProcessingSettings,
-    setStatus: (message: string) => void,
-    /** Đường dẫn tuyệt đối trên ổ cứng (chỉ cần cho Backend Mode) */
-    localFilePath?: string,
-): Promise<{ blob: Blob; report: string }> => {
-
-    const fileSizeMB = (pdfFile.size / (1024 * 1024)).toFixed(1);
-    const useBackend = pdfFile.size > BACKEND_THRESHOLD_BYTES && !!localFilePath;
-
-    if (useBackend) {
-        setStatus(`Đang chuyển sang chế độ xử lý luồng lớn (File ${fileSizeMB}MB)...`);
-        try {
-            const result = await imposePdfViaBackend(localFilePath!, settings, setStatus);
-            // Backend trả file trên ổ cứng, tạo Blob rỗng (file đã ở disk)
-            return { blob: new Blob(), report: result.report };
-        } catch (err: any) {
-            // Backend thất bại → fallback về Client Mode
-            setStatus(`⚠️ Kết nối xử lý luồng lớn bị gián đoạn. Đang thử lại với chế độ tiêu chuẩn...`);
-            console.warn('Backend Mode failed, falling back to Client:', err.message);
-            return imposePdf(pdfFile, settings, setStatus);
-        }
-    } else {
-        if (pdfFile.size > BACKEND_THRESHOLD_BYTES) {
-            setStatus(`Đang xử lý tập tin ở chế độ tiêu chuẩn (${fileSizeMB}MB)...`);
-        }
-        return imposePdf(pdfFile, settings, setStatus);
-    }
-};
-
-/**
- * Smart wrapper cho Catalog Batch: Tự động chọn mode dựa trên dung lượng file.
- */
-export const imposeCatalogBatchSmart = async (
-    pdfFile: File,
-    jobs: PlateJob[],
-    baseSettings: Partial<ProcessingSettings>,
-    setStatus: (message: string) => void,
-    /** Đường dẫn tuyệt đối trên ổ cứng (chỉ cần cho Backend Mode) */
-    localFilePath?: string,
-    outputDir?: string,
-): Promise<CatalogBatchResult[]> => {
-
-    const fileSizeMB = (pdfFile.size / (1024 * 1024)).toFixed(1);
-    const useBackend = pdfFile.size > BACKEND_THRESHOLD_BYTES && !!localFilePath && !!outputDir;
-
-    if (useBackend) {
-        setStatus(`Đang xử lý hàng loạt ${jobs.length} tấm kẽm (Chế độ luồng lớn)...`);
-        try {
-            return await imposeCatalogBatchViaBackend(localFilePath!, jobs, baseSettings, setStatus, outputDir!);
-        } catch (err: any) {
-            setStatus(`⚠️ Xử lý hàng loạt bị gián đoạn. Đang thử lại với chế độ tiêu chuẩn...`);
-            console.warn('Backend Batch failed, falling back to Client:', err.message);
-            return imposeCatalogBatch(pdfFile, jobs, baseSettings, setStatus);
-        }
-    } else {
-        return imposeCatalogBatch(pdfFile, jobs, baseSettings, setStatus);
-    }
-};
-
 // =========================================================================
 //  BACKEND-OFFLOADED IMPOSITION (Planner → Executor Architecture)
 //
@@ -672,7 +600,10 @@ export const imposePdfViaBackend = async (
 
     // ──── STEP 5: Nhận file output ────
     const outputBlob = await response.blob();
-    const outputPath = instructionSet.output_dir + '/imposed_plan_output.pdf';
+    // Backend đặt tên file UNIQUE (audit #C1) → KHÔNG suy đường dẫn theo tên cố định.
+    // `outputBlob` (nội dung trả về) mới là nguồn chuẩn; outputPath chỉ còn mang tính
+    // thông tin (output_dir). Caller hiện dùng blob/report, không đọc lại theo path.
+    const outputPath = instructionSet.output_dir || 'results';
 
     setStatus('✅ Hoàn tất! File kẽm đã được xuất thành công.');
     return { outputPath, report, blob: outputBlob };

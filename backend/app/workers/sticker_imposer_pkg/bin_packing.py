@@ -26,6 +26,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _q6(v: float) -> float:
+    """Làm tròn 6 chữ số (1e-6pt ≈ 3.5e-7mm — vô nghĩa thực tế) để TRIỆT TIÊU nhiễu
+    dấu-phẩy-động do KHÁC THỨ TỰ phép tính usable giữa frontend ((sheet-lề)*k) và
+    backend (sheet*k - lề*k). Chênh ~1e-13 từng làm packing biên lật số ô → preview
+    ≠ output (cả CNC lẫn Bình Tem Bế đều dùng solver này). Xác minh thực tế."""
+    try:
+        return round(float(v), 6)
+    except (TypeError, ValueError):
+        return v
+
+
 def solve_mixed_bin_pack(
     sheet_w: float,
     sheet_h: float,
@@ -54,6 +65,8 @@ def solve_mixed_bin_pack(
     """
     if not items:
         return {'placements': [], 'total_placed': 0, 'placed_by_page': {}}
+
+    sheet_w = _q6(sheet_w); sheet_h = _q6(sheet_h); gap = _q6(gap)
 
     # Build flat list of rectangles to place
     # Each rect: (page_idx, w_with_gap, h_with_gap, original_w, original_h)
@@ -116,6 +129,8 @@ def solve_auto_fill_mixed(
     """
     if not page_dims:
         return {'placements': [], 'total_placed': 0, 'placed_by_page': {}}
+
+    sheet_w = _q6(sheet_w); sheet_h = _q6(sheet_h); gap = _q6(gap)
 
     n_types = len(page_dims)
 
@@ -238,6 +253,8 @@ def solve_offset_mixed(
     """
     if not page_dims_qty:
         return {'placements': [], 'total_placed': 0, 'placed_by_page': {}, 'sheets_needed': 0}
+
+    sheet_w = _q6(sheet_w); sheet_h = _q6(sheet_h); gap = _q6(gap)
 
     # Find the GCD-reduced ratio
     quantities = [qty for _, _, _, qty in page_dims_qty]

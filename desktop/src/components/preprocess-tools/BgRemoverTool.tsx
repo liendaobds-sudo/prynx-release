@@ -2,6 +2,8 @@ import React, { useState, useRef, useCallback } from 'react';
 import { getApiUrl } from '../../lib/api';
 import BgRemoverOptions, { BgRemoverOptionsState } from './BgRemoverOptions';
 import { useBgRemoverStore, defaultTabState, type BatchItem } from './useBgRemoverStore';
+import { toast } from '../ui/Toast';
+import { RotateCcw } from 'lucide-react';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 interface Props {
@@ -146,8 +148,8 @@ async function saveBatch(tabId: string) {
             await writeFile(outPath, new Uint8Array(await item.resultBlob!.arrayBuffer()));
             saved++;
         }
-        alert(`✅ Đã lưu thành công ${saved} ảnh!`);
-    } catch (e) { console.error(e); alert('Lỗi khi lưu file.'); }
+        toast.success(`✅ Đã lưu thành công ${saved} ảnh!`);
+    } catch (e) { console.error(e); toast.error('Lỗi khi lưu file.'); }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -258,8 +260,8 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
                         </button>
                         {batchItems.find(i => i.id === selectedId)?.status === 'success' && (
                             <button onClick={() => selectedId && storeActions.undoItem(tabId, selectedId)} title="Hoàn tác để chỉnh sửa lại"
-                                className="px-4 h-11 rounded-xl text-[13px] font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-sm flex items-center justify-center transition-all">
-                                ↺ Hoàn tác
+                                className="px-4 h-11 rounded-xl text-[13px] font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-sm flex items-center justify-center gap-1.5 transition-all">
+                                <RotateCcw className="w-4 h-4" /> Hoàn tác
                             </button>
                         )}
                     </div>

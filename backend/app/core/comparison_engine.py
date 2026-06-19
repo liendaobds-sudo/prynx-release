@@ -89,7 +89,11 @@ def run_comparison_pipeline(
 
         # ── Compare page by page (10-90%) ──
         # Each iteration: render 1 page from A + 1 page from B → compare → save → discard
-        # RAM usage: ~52MB constant (2 pages × ~26MB) instead of N×26MB
+        # RAM KHÔNG tích luỹ tuyến tính theo SỐ TRANG (page A/B được giải phóng mỗi
+        # vòng), NHƯNG đỉnh per-page CAO và tỉ lệ với render DPI × kích thước trang:
+        # đo thực tế trang ảnh 1500px @150dpi (full RGB + CMYK + SSIM + diff) đạt đỉnh
+        # ~0.5–0.7GB và ~0.5s/trang. Guard MAX_PAGES=50 (route compare) chặn bùng nổ
+        # theo số trang nhưng KHÔNG giảm đỉnh per-page → máy RAM thấp cần cân nhắc DPI.
         pages_pass = pages_fail = pages_warning = 0
         total_diff_count = 0
         total_similarity = 0.0
@@ -124,6 +128,9 @@ def run_comparison_pipeline(
                     cmyk_a, cmyk_b, tolerance=tolerance,
                     rgb_a=img_a, rgb_b=img_b, config=config,
                 )
+                # CĂN TRANG 1:1: tiến con trỏ B sang trang kế (giống nhánh thường) —
+                # CMYK luôn so theo cặp trang, không có chế độ imposition.
+                current_b_idx = found_b_idx + 1
             elif img_a is not None and pages_b > 0:
                 for b_idx in range(current_b_idx, pages_b):
                     test_b = doc_b.render_page(b_idx)
@@ -145,16 +152,26 @@ def run_comparison_pipeline(
                     img_b = doc_b.render_page(current_b_idx)
                     result = comparator.compare(img_a, img_b, tolerance=tolerance, config=config)
                 else:
-                    current_b_idx = found_b_idx
+                    # CĂN TRANG 1:1 (sửa lỗi pin-về-B[0]): chế độ thường so A[i] với B[i],
+                    # nên sau khi khớp phải TIẾN con trỏ sang trang B kế tiếp. Trước đây
+                    # `current_b_idx = found_b_idx` (thiếu +1) khiến mọi trang A đều so với
+                    # cùng một trang B (B[0]) → báo khác biệt giả ở mọi trang sau trang 1.
+                    # Chế độ imposition (1 mẫu ↔ tờ N-up) GIỮ NGUYÊN: không tiến con trỏ vì
+                    # nhiều mẫu có thể nằm trên cùng một tờ.
+                    if getattr(result, "is_imposition_mode", False):
+                        current_b_idx = found_b_idx
+                    else:
+                        current_b_idx = found_b_idx + 1
                     
             # ── Augment with Text Semantic Diffs (Standard Mode only) ──
             if img_a is not None and img_b is not None and result is not None:
                 is_imposition = getattr(result, "is_imposition_mode", False)
                 if not is_imposition and len(result.diff_regions) > 0:
                     try:
-                        # Extract text blocks
+                        # Extract text blocks (B: dùng found_b_idx — trang B THỰC SỰ đã so,
+                        # KHÔNG dùng current_b_idx vì nó đã tiến sang trang kế sau khi khớp).
                         blocks_a = processor.extract_text_blocks(file_a.file_path, page_num)
-                        blocks_b = processor.extract_text_blocks(file_b.file_path, current_b_idx + 1)
+                        blocks_b = processor.extract_text_blocks(file_b.file_path, found_b_idx + 1)
                         
                         # OCR Fallback for Flattened/Rasterized PDFs
                         if len(blocks_a) == 0 and img_a is not None:
@@ -162,7 +179,7 @@ def run_comparison_pipeline(
                             blocks_a = OCREngine.extract_text_blocks(img_a, dpi=dpi)
                             
                         if len(blocks_b) == 0 and img_b is not None:
-                            logger.info(f"Page {current_b_idx + 1} of B has no text. Activating OCR Fallback...")
+                            logger.info(f"Page {found_b_idx + 1} of B has no text. Activating OCR Fallback...")
                             blocks_b = OCREngine.extract_text_blocks(img_b, dpi=dpi)
                         
                         text_diff = text_comparator.compare_blocks(blocks_a, blocks_b)

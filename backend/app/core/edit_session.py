@@ -142,6 +142,14 @@ def _discard_session_locked(session: EditSession) -> None:
         session.pdf.close()
     except Exception:  # noqa: BLE001 - đóng best-effort, không chặn dọn map
         logger.debug("Đóng Live_Document phiên %s gặp lỗi (bỏ qua).", session.session_id)
+    # Quan sát được việc MẤT sửa đổi CHƯA commit (TTL evict / mở lại cùng fid /
+    # đóng phiên khi dirty): trước đây mất âm thầm. Log WARNING để chẩn đoán
+    # (không chặn; frontend nên commit trước khi đóng).
+    if getattr(session, "dirty", False):
+        logger.warning(
+            "Discard Edit_Session %s khi đang DIRTY (có sửa đổi CHƯA commit) — "
+            "%d op trong op_log sẽ MẤT.", session.session_id, len(session.op_log),
+        )
     SESSIONS.pop(session.session_id, None)
     if by_fid.get(session.source_fid) == session.session_id:
         by_fid.pop(session.source_fid, None)
