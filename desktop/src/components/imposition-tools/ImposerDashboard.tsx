@@ -37,7 +37,7 @@ import GridPreview from './sections/GridPreview';
 
 // Store & Types
 import { useImposerSettingsStore } from './useImposerSettingsStore';
-import { PREDEFINED_SIZES, getImposerCapability, type ActiveToolType, type TaskMode, type ImposerDashboardProps } from './types';
+import { PREDEFINED_SIZES, getImposerCapability, WORKSPACE_TOOL_PANEL, type ActiveToolType, type TaskMode, type ImposerDashboardProps } from './types';
 export type { BookletSettings, NupSettings } from './types';
 export { PREDEFINED_SIZES } from './types';
 
@@ -641,11 +641,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     }, [s]);
 
     // ═══ Computed Values ═══
-    const isPreprocessing = ['shuffle','resize','split','preflight','hairlines','convertcolors','trapping','pdfx','ocr','optimize','sticker','bgremover','watermark','upscale','pages'].includes(activeTool);
-    // Panel thiết lập BÌNH BÀI chỉ dành cho 4 chế độ bình thật. Trước đây gating bằng
-    // `!isPreprocessing` khiến tool 'merge' (không nằm trong isPreprocessing) lòi cả
-    // panel "Bình trang (S&R)" xuống dưới UI Ghép file → gây rối. Dùng whitelist tường minh.
-    const isImpositionMode = ['booklet', 'nup', 'sticker_imposer', 'cnc_imposer'].includes(activeTool);
+    const panelKind = WORKSPACE_TOOL_PANEL[activeTool as ActiveToolType] ?? 'external';
+    const isPreprocessing = panelKind === 'preprocess';
+    // Panel thiết lập BÌNH BÀI chỉ dành cho 4 chế độ bình thật (kind 'imposition').
+    // Trước đây dùng `!isPreprocessing` khiến tool 'merge' lòi cả panel "Bình trang (S&R)".
+    // Nay lấy TỪ WORKSPACE_TOOL_PANEL (nguồn chân lý duy nhất) — không thể drift.
+    const isImpositionMode = panelKind === 'imposition';
     // CNC dùng chung render/preview die-cut với Bế tem (trừ pont — CNC dùng dấu canh riêng).
     const stickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
     const showPaperSection = s.taskMode !== 'booklet' || (s.taskMode === 'booklet' && s.scaleMode !== '100');

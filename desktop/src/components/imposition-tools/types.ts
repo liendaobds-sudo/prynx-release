@@ -236,7 +236,56 @@ export const DEFAULT_REPORT_CONFIG: ReportDisplayConfig = {
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';
 
-export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover';
+export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages';
+
+/**
+ * Loại panel mà một công cụ hiển thị trong workspace bình bài.
+ *   - 'none'       : chưa chọn tool → hiện ToolMenuList
+ *   - 'imposition' : panel bình bài (booklet/nup/sticker/cnc)
+ *   - 'merge'      : block Ghép/Trộn riêng (giữ state cục bộ)
+ *   - 'preprocess' : render qua PreprocessingRouter
+ *   - 'external'   : định tuyến sang component riêng ở ImpositionTab (không vào ImposerDashboard)
+ */
+export type WorkspacePanelKind = 'none' | 'imposition' | 'merge' | 'preprocess' | 'external';
+
+/**
+ * NGUỒN CHÂN LÝ DUY NHẤT cho routing panel của ImposerDashboard.
+ * Thay 3 danh sách rời rạc (isPreprocessing / khối merge / isImpositionMode) từng
+ * phải tự đồng bộ tay → gốc lỗi rò panel (merge lòi panel bình, pageboxes trống).
+ * `Record<ActiveToolType, …>` ép TypeScript kiểm tra ĐỦ KHÓA lúc biên dịch.
+ * Tập 'preprocess' được test `toolPanel.test.ts` chốt khớp PREPROCESS_ROUTER_TOOLS.
+ */
+export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = {
+    none: 'none',
+    // Bình bài thật
+    booklet: 'imposition',
+    nup: 'imposition',
+    sticker_imposer: 'imposition',
+    cnc_imposer: 'imposition',
+    // Ghép/Trộn (block riêng)
+    merge: 'merge',
+    // Định tuyến sang component riêng ở ImpositionTab (DataMerge/Numbering/CoverNumbering/StickText)
+    datamerge: 'external',
+    numbering: 'external',
+    cover_numbering: 'external',
+    stick_text_number: 'external',
+    // Tiền xử lý (render qua PreprocessingRouter) — PHẢI khớp PREPROCESS_ROUTER_TOOLS
+    shuffle: 'preprocess',
+    resize: 'preprocess',
+    split: 'preprocess',
+    pages: 'preprocess',
+    preflight: 'preprocess',
+    hairlines: 'preprocess',
+    convertcolors: 'preprocess',
+    trapping: 'preprocess',
+    pdfx: 'preprocess',
+    ocr: 'preprocess',
+    optimize: 'preprocess',
+    sticker: 'preprocess',
+    bgremover: 'preprocess',
+    watermark: 'preprocess',
+    upscale: 'preprocess',
+};
 
 export interface ImposerDashboardProps {
     tabId: string;

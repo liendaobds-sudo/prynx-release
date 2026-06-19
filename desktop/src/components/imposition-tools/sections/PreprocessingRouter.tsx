@@ -28,6 +28,7 @@ import WatermarkTool from '../../preprocess-tools/WatermarkTool';
 import UpscaleTool from '../../preprocess-tools/UpscaleTool';
 
 import PageToolsPanel from '../../preprocess-tools/PageToolsPanel';
+import { PREPROCESS_ROUTER_TOOLS } from './preprocessRouterTools';
 
 // ─── Tool Header Definitions ────────────────────────────────────────────────
 const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }> = {
@@ -82,6 +83,11 @@ export default function PreprocessingRouter({
     })));
 
     const header = TOOL_HEADERS[activeTool];
+
+    // Tự bảo vệ: chỉ render khi activeTool thực sự là công cụ tiền xử lý (SSOT).
+    // No-op trong thực tế (ImposerDashboard chỉ mount router cho kind 'preprocess'),
+    // nhưng chặn rò nếu sau này có tool lọt vào sai chỗ.
+    if (!(PREPROCESS_ROUTER_TOOLS as readonly string[]).includes(activeTool)) return null;
 
     return (
         <>
