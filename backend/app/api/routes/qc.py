@@ -134,5 +134,5 @@ async def extract_text(file: UploadFile = File(...), license_info: dict = Depend
 
     except Exception as e:
         logger.exception("Text extraction failed")
-        raise HTTPException(status_code=500, detail=f"Lỗi trích xuất: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi trích xuất ({type(e).__name__})")
 

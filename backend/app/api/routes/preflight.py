@@ -167,7 +167,7 @@ async def inspect_pdf(request: InspectByIdRequest):
         return resp
     except Exception as e:
         logger.exception("Preflight inspect failed")
-        raise HTTPException(status_code=500, detail=f"Lỗi kiểm tra: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi kiểm tra ({type(e).__name__})")
 
 
 @router.post("/preflight/inspect-upload", response_model=PreflightReportResponse)
@@ -190,7 +190,7 @@ async def inspect_uploaded_pdf(file: UploadFile = File(...)):
         return _report_to_response(report)
     except Exception as e:
         logger.exception("Preflight inspect-upload failed")
-        raise HTTPException(status_code=500, detail=f"Lỗi kiểm tra: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi kiểm tra ({type(e).__name__})")
 
 
 @router.post("/preflight/fix", response_model=FixResponse)
@@ -221,7 +221,7 @@ async def fix_pdf(request: FixRequest):
         )
     except Exception as e:
         logger.exception("Preflight fix failed")
-        raise HTTPException(status_code=500, detail=f"Lỗi sửa file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi sửa file ({type(e).__name__})")
 
 
 @router.post("/preflight/pipeline", response_model=FixResponse)
@@ -253,7 +253,7 @@ async def pipeline_fix(request: PipelineRequest):
         )
     except Exception as e:
         logger.exception("Preflight pipeline failed")
-        raise HTTPException(status_code=500, detail=f"Lỗi pipeline: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi pipeline ({type(e).__name__})")
 
 
 @router.get("/preflight/actions")
@@ -666,8 +666,10 @@ async def preview_layers_pdf(req: PreviewLayersRequest):
             try:
                 preview_b64 = engine.render_with_visibility(tmp_path, req.page, req.hidden_layer_ids)
             finally:
-                try: os.unlink(tmp_path)
-                except: pass
+                try:
+                    os.unlink(tmp_path)
+                except OSError as _e:
+                    logger.debug("Không xoá được temp %s: %s", tmp_path, _e)
         else:
             preview_b64 = engine.render_with_visibility(pdf_path, req.page, req.hidden_layer_ids)
         return {
@@ -1244,11 +1246,15 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
             finally:
                 import os
                 if tmp_normal_name and os.path.exists(tmp_normal_name):
-                    try: os.unlink(tmp_normal_name)
-                    except Exception: pass
+                    try:
+                        os.unlink(tmp_normal_name)
+                    except OSError as _e:
+                        logger.debug("Không xoá được temp %s: %s", tmp_normal_name, _e)
                 if tmp_overprint_name and os.path.exists(tmp_overprint_name):
-                    try: os.unlink(tmp_overprint_name)
-                    except Exception: pass
+                    try:
+                        os.unlink(tmp_overprint_name)
+                    except OSError as _e:
+                        logger.debug("Không xoá được temp %s: %s", tmp_overprint_name, _e)
 
         if not overprint_rendered:
             doc.close()

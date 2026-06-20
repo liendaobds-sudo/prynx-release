@@ -106,7 +106,7 @@ async def start_vdp_job(
         vdp_fields = [VdpField(**f) for f in fields_parsed]
     except Exception as e:
         logger.error("Error parsing input: %s", e)
-        raise HTTPException(status_code=400, detail=f"Invalid JSON data: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON data")
         
     if not data_parsed:
         raise HTTPException(status_code=400, detail="Data array is empty")
@@ -222,8 +222,13 @@ async def upload_file_for_processing(file: UploadFile = File(...), license_info:
     """Upload a PDF file and return its server-side path for backend processing."""
     file_id = uuid.uuid4().hex
     file_path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
+    content = await file.read()
+    # Chặn upload RỖNG/cụt: tránh ghi file 0 byte rồi vỡ với lỗi khó hiểu
+    # ("unable to find trailer dictionary") ở các bước đọc PDF sau này.
+    if not content:
+        raise HTTPException(status_code=400, detail="File rỗng (0 byte) — nội dung tải lên không hợp lệ.")
     with open(file_path, "wb") as f:
-        f.write(await file.read())
+        f.write(content)
     return {"path": os.path.abspath(file_path)}
 
 @router.get("/fonts")

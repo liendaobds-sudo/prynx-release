@@ -134,7 +134,8 @@ async def execute_plan_imposition(
     try:
         plan = json.loads(plan_json)
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON plan: {str(e)}")
+        logger.warning(f"Invalid JSON plan: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON plan")
     
     # Save uploaded file
     job_id = str(uuid.uuid4())
@@ -153,7 +154,7 @@ async def execute_plan_imposition(
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
     except Exception as e:
         logger.error(f"Plan execution failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
 
 @router.post("/execute-plan-json")
 async def execute_plan_json(body: dict):
@@ -198,7 +199,7 @@ async def execute_plan_json(body: dict):
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Plan execution failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
 
 @router.post("/quick-color-space")
 async def quick_color_space(body: dict):
@@ -311,7 +312,7 @@ async def get_pdf_layers(body: dict):
     except Exception as e:
         import logging
         logging.getLogger(__name__).exception("Failed to extract OCG layers")
-        raise HTTPException(status_code=500, detail=f"Cannot read PDF layers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
 
 @router.post("/pdf-layers/preview")
 async def preview_pdf_layers(body: dict):
@@ -338,7 +339,7 @@ async def preview_pdf_layers(body: dict):
     except Exception as e:
         import logging
         logging.getLogger(__name__).exception("Failed to render layer preview")
-        raise HTTPException(status_code=500, detail=f"Cannot render preview: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
 
 @router.post("/pdf-meta")
 async def get_pdf_meta(body: dict):
@@ -428,7 +429,7 @@ async def get_pdf_meta(body: dict):
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Failed to read PDF meta: {e}")
-        raise HTTPException(status_code=500, detail=f"Cannot read PDF: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
 
 # Cache kết quả nhận diện theo (path tuyệt đối, mtime, size) → đổi công cụ / mở lại
 # cùng file trả tức thì, không tính lại. Bounded để tránh phình bộ nhớ.

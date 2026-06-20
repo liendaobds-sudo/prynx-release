@@ -1,8 +1,6 @@
 use tauri::command;
 use std::process::Command;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -54,14 +52,16 @@ fn collect_hardware_fingerprint() -> Result<String, String> {
         return Err("Could not collect any hardware identifiers".to_string());
     }
     
-    // Combine all components into a single deterministic hash
+    // Combine all components into a single deterministic hash.
+    // SHA-256 (ổn định vĩnh viễn) thay cho DefaultHasher/SipHash — vốn KHÔNG được Rust
+    // đảm bảo ổn định giữa các bản toolchain (nâng cấp Rust có thể đổi mọi HWID → vỡ license).
+    // Lấy 8 byte đầu → 16 hex ký tự (giữ đúng độ dài định dạng HWID cũ).
+    use sha2::{Sha256, Digest};
     let combined = components.join("|");
-    let mut hasher = DefaultHasher::new();
-    combined.hash(&mut hasher);
-    let hash = hasher.finish();
-    
-    // Format as hex string (16 chars, deterministic per machine)
-    Ok(format!("{:016X}", hash))
+    let mut hasher = Sha256::new();
+    hasher.update(combined.as_bytes());
+    let digest = hasher.finalize();
+    Ok(hex::encode(&digest[..8]).to_uppercase())
 }
 
 #[command]
@@ -84,8 +84,27 @@ static VALIDATED_KEYS: std::sync::LazyLock<Mutex<HashMap<String, u64>>> =
 
 /// Called by frontend after successful Supabase RPC validation
 /// to register the key in Rust's in-memory cache.
+///
+/// F2 (defense-in-depth): nếu kèm `token` (Ed25519 do server ký) thì Rust TỰ verify
+/// trước khi cache → biến "Rust gate" từ theater thành lớp kiểm THẬT, độc lập với sidecar.
+/// Kẻ crack patch mỗi frontend không đủ: phải qua cả Rust (đây) lẫn sidecar.
+/// Token rỗng khi PRYNX_ENFORCE_LICENSE_TOKEN=true → từ chối, không cache.
+/// Token rỗng khi enforce=false (rollout/dev) → vẫn cache; sidecar là backstop.
 #[command]
-pub fn register_validated_key(license_key: String) -> Result<(), String> {
+pub fn register_validated_key(license_key: String, hwid: Option<String>, token: Option<String>) -> Result<(), String> {
+    let tok = token.unwrap_or_default();
+    let enforce = std::env::var("PRYNX_ENFORCE_LICENSE_TOKEN")
+        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
+        .unwrap_or(false);
+    if tok.is_empty() {
+        if enforce {
+            return Err("License token required but not provided (enforce mode)".to_string());
+        }
+        // enforce=false: cache mà không verify (rollout grace / dev mode)
+    } else {
+        let hw = hwid.unwrap_or_default();
+        verify_license_token_internal(&tok, &hw, &license_key)?; // sai token → KHÔNG cache
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -93,6 +112,171 @@ pub fn register_validated_key(license_key: String) -> Result<(), String> {
     let mut cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock error: {}", e))?;
     cache.insert(license_key, now);
     Ok(())
+}
+
+// ── F2: Ed25519 license-token verification (đối xứng với backend license_guard.py) ──
+// Public key TRUST ANCHOR — PHẢI KHỚP `_LICENSE_PUBLIC_KEY_B64` ở backend.
+const LICENSE_PUBLIC_KEY_B64: &str = "AxpiZnEFXady9wI01spdMRrTNtEthMD30W/90gi27Zk=";
+
+fn b64url_decode(s: &str) -> Result<Vec<u8>, String> {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    URL_SAFE_NO_PAD.decode(s).map_err(|e| format!("b64url: {}", e))
+}
+
+/// Verify token "<payload_b64url>.<sig_b64url>" (sig ký trên BYTES ASCII của payload_b64url).
+/// payload JSON: {"k":sha256(key)[:16],"m":hwid,"p":product,"exp":unix}. Kiểm sig + exp + m + k.
+fn verify_license_token_internal(token: &str, hwid: &str, license_key: &str) -> Result<(), String> {
+    verify_token_with_pubkey(token, hwid, license_key, LICENSE_PUBLIC_KEY_B64)
+}
+
+/// Lõi verify, nhận pubkey tham số (để unit-test bằng keypair test mà không cần private key thật).
+fn verify_token_with_pubkey(token: &str, hwid: &str, license_key: &str, pub_b64: &str) -> Result<(), String> {
+    use ed25519_dalek::{VerifyingKey, Signature, Verifier};
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let (payload_b64, sig_b64) = token.split_once('.').ok_or("malformed license token")?;
+
+    let pub_bytes = STANDARD.decode(pub_b64).map_err(|e| format!("pubkey b64: {}", e))?;
+    let pub_arr: [u8; 32] = pub_bytes.as_slice().try_into().map_err(|_| "pubkey length")?;
+    let vk = VerifyingKey::from_bytes(&pub_arr).map_err(|e| format!("pubkey: {}", e))?;
+
+    let sig_bytes = b64url_decode(sig_b64)?;
+    let sig = Signature::from_slice(&sig_bytes).map_err(|e| format!("sig: {}", e))?;
+    vk.verify(payload_b64.as_bytes(), &sig).map_err(|_| "invalid license token signature".to_string())?;
+
+    let payload_bytes = b64url_decode(payload_b64)?;
+    let payload: serde_json::Value =
+        serde_json::from_slice(&payload_bytes).map_err(|e| format!("payload json: {}", e))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let exp = payload.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
+    if exp < now { return Err("license token expired".to_string()); }
+
+    // DS-4: field "m" (machine id) BẮT BUỘC — đối xứng với backend license_guard.py:248.
+    // Token thiếu "m" KHÔNG được pass (chống token vạn năng dùng mọi máy).
+    let m = payload.get("m").and_then(|v| v.as_str())
+        .ok_or("license token missing required field: machine id")?;
+    if !hwid.is_empty() && m != hwid {
+        return Err("license token machine mismatch".to_string());
+    }
+
+    // DS-4: field "k" (key hash) BẮT BUỘC — đối xứng với backend license_guard.py:255.
+    let k = payload.get("k").and_then(|v| v.as_str())
+        .ok_or("license token missing required field: key hash")?;
+    if !license_key.is_empty() {
+        use sha2::{Sha256, Digest};
+        let mut h = Sha256::new();
+        h.update(license_key.as_bytes());
+        let kh = hex::encode(h.finalize());
+        if k != &kh[..16] { return Err("license token key mismatch".to_string()); }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+    use base64::{Engine, engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}};
+    use ed25519_dalek::{SigningKey, Signer};
+    use sha2::{Sha256, Digest};
+
+    fn mk_token(sk: &SigningKey, hwid: &str, key: &str, exp: i64) -> String {
+        let kh = { let mut h = Sha256::new(); h.update(key.as_bytes()); hex::encode(h.finalize()) };
+        let payload = serde_json::json!({ "k": &kh[..16], "m": hwid, "p": "prynx", "exp": exp });
+        let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let sig = sk.sign(payload_b64.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
+        format!("{}.{}", payload_b64, sig_b64)
+    }
+
+    #[test]
+    fn valid_token_passes() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let tok = mk_token(&sk, "HW123", "LIC-KEY", future);
+        assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_ok());
+    }
+
+    #[test]
+    fn tampered_signature_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let tok = mk_token(&sk, "HW123", "LIC-KEY", future);
+        // Đổi CHẮC CHẮN 1 ký tự đầu của phần sig (đảm bảo khác ký tự gốc).
+        let (p, s) = tok.split_once('.').unwrap();
+        let mut sb = s.as_bytes().to_vec();
+        sb[0] = if sb[0] == b'A' { b'B' } else { b'A' };
+        let tampered = format!("{}.{}", p, String::from_utf8(sb).unwrap());
+        assert!(verify_token_with_pubkey(&tampered, "HW123", "LIC-KEY", &pubk).is_err());
+    }
+
+    #[test]
+    fn wrong_signer_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let attacker = SigningKey::from_bytes(&[9u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes()); // trust anchor = sk
+        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let tok = mk_token(&attacker, "HW123", "LIC-KEY", future); // ký bằng khoá khác (keygen giả)
+        assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_err());
+    }
+
+    #[test]
+    fn expired_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let tok = mk_token(&sk, "HW123", "LIC-KEY", 1_000_000); // exp ở quá khứ
+        assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_err());
+    }
+
+    #[test]
+    fn machine_mismatch_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let tok = mk_token(&sk, "HW-A", "LIC-KEY", future);
+        assert!(verify_token_with_pubkey(&tok, "HW-B", "LIC-KEY", &pubk).is_err()); // token máy khác
+    }
+
+    #[test]
+    fn key_mismatch_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let tok = mk_token(&sk, "HW123", "LIC-A", future);
+        assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-B", &pubk).is_err()); // key khác
+    }
+
+    // DS-4: token ký hợp lệ nhưng THIẾU field "m" hoặc "k" phải bị từ chối
+    // (đối xứng với backend). Trước fix, nhánh `if let Some` cho token thiếu field PASS.
+    fn mk_token_payload(sk: &SigningKey, payload: serde_json::Value) -> String {
+        let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let sig = sk.sign(payload_b64.as_bytes());
+        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
+        format!("{}.{}", payload_b64, sig_b64)
+    }
+
+    #[test]
+    fn missing_machine_field_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        // payload không có "m"
+        let tok = mk_token_payload(&sk, serde_json::json!({ "k": "0123456789abcdef", "p": "prynx", "exp": future }));
+        assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_err());
+    }
+
+    #[test]
+    fn missing_key_field_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        // payload không có "k"
+        let tok = mk_token_payload(&sk, serde_json::json!({ "m": "HW123", "p": "prynx", "exp": future }));
+        assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_err());
+    }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -255,7 +439,11 @@ pub fn sign_api_request(url_path: String, license_key: String) -> Result<HashMap
             false
         };
         
-        if !is_valid && !license_key.is_empty() {
+        if !is_valid {
+            // F1 FIX: từ chối ký khi license CHƯA validate trong cache — KỂ CẢ key rỗng.
+            // Trước đây điều kiện `!is_valid && !license_key.is_empty()` cho key="" lọt qua.
+            // An toàn: getLicenseHeaders (api.ts) bắt lỗi này êm → dev (backend DEV_MODE) vẫn
+            // chạy không cần header ký; release từ chối đúng (không license = không truy cập).
             return Err("License not validated in Rust cache".to_string());
         }
     }

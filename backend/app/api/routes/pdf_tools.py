@@ -35,18 +35,32 @@ def _safe_watermark(pdf_path: str, license_info: dict) -> None:
     Non-blocking: mọi lỗi chỉ log, KHÔNG làm hỏng output. Bỏ qua ở dev mode
     (license_key == 'DEV_MODE') để output dev không bị đóng dấu rác.
     """
+    lk = (license_info or {}).get("license_key", "") or ""
+    if not lk or lk == "DEV_MODE":
+        return
+    hwid = (license_info or {}).get("hwid", "") or ""
+    tmp_path = None
     try:
-        lk = (license_info or {}).get("license_key", "") or ""
-        if not lk or lk == "DEV_MODE":
-            return
-        hwid = (license_info or {}).get("hwid", "") or ""
+        import tempfile
         import pikepdf
         from app.core.watermark import embed_watermark
         with pikepdf.Pdf.open(pdf_path, allow_overwriting_input=True) as pdf:
             embed_watermark(pdf, lk, hwid)
-            pdf.save(pdf_path)
+            # Ghi atomic: save ra temp cùng thư mục rồi os.replace, tránh hỏng
+            # output nếu process chết giữa chừng khi ghi đè in-place.
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(pdf_path) or ".")
+            os.close(fd)
+            pdf.save(tmp_path)
+        os.replace(tmp_path, pdf_path)
+        tmp_path = None
     except Exception as e:
         logger.error(f"[WATERMARK] pdf-tools failed (non-blocking): {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 async def save_upload(file: UploadFile) -> str:
@@ -290,7 +304,8 @@ async def ocr_searchable_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OCR thất bại: {str(e)}")
+        logger.exception("OCR thất bại")
+        raise HTTPException(status_code=500, detail=f"OCR thất bại ({type(e).__name__})")
     finally:
         try: os.remove(source_path)
         except OSError: pass
@@ -410,7 +425,8 @@ async def optimize_pdf_endpoint(
             }
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Tối ưu thất bại: {str(e)}")
+        logger.exception("Tối ưu thất bại")
+        raise HTTPException(status_code=500, detail=f"Tối ưu thất bại ({type(e).__name__})")
     finally:
         try: os.remove(source_path)
         except OSError: pass
