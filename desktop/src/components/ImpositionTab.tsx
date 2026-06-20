@@ -21,9 +21,14 @@ import { resizePages } from '../lib/preprocessEngine/PageResizer';
 import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
 import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
 import { getApiUrl, uploadPDF, startVdpJobBackend, pollVdpJob, authenticatedFetch } from '../lib/api';
+import { recipeRecorder } from '../lib/recipe/RecipeRecorder';
 import { isOutputFile } from '../lib/constants';
 import { getFileArrayBuffer, detectColorSpace } from '../lib/utils';
 import OutputPreviewTab, { type PlateOverlay } from './OutputPreviewTab';
+import RecipeRecordControl from './recipe/RecipeRecordControl';
+import RecipePanel from './recipe/RecipePanel';
+import { toast } from './ui/Toast';
+import type { Recipe } from '../lib/recipe/recipeTypes';
 import DataMergeTool from './preprocess-tools/DataMergeTool';
 import NumberingTool from './preprocess-tools/NumberingTool';
 import CoverNumberingTool from './preprocess-tools/CoverNumberingTool';
@@ -153,6 +158,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const [scaleConfirmModal, setScaleConfirmModal] = useState<{ msg: string, resolve: (v: boolean) => void } | null>(null);
     // Gửi Máy Bế (spec: gui-may-be) — chỉ hiện trên toolbar khi file là OUTPUT đã bình.
     const [showCutExport, setShowCutExport] = useState(false);
+    const [showRecipePanel, setShowRecipePanel] = useState(false);
 
     // Set initial report from props (once)
     useEffect(() => {
@@ -445,7 +451,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setFileSizeStr((newBlob.size / (1024 * 1024)).toFixed(2) + ' MB');
         setIsSaved(false);
         onTitleChange?.(displayName);
-        
+
+        // ─── Recipe record hook ───
+        // Ghép thao tác đã "công bố" (noteOperation) với commit này thành 1 Step.
+        // No-op khi không ghi. Extras (page order) đã chụp tại noteOperation.
+        recipeRecorder.noteCommit();
+
         detectColorSpace(newFile).then(cs => {
             if (cs) onTitleChange?.(`${displayName} (${cs})`);
         });
@@ -852,7 +863,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             file: file!,
             onSpawnTab,
             commitWorkingFile,
-            setError, setIsProcessing, setProcessStatus, setReportMsg, setBatchOutput,
+            // Bọc setError: khi một thao tác (đã noteOperation) BÁO LỖI (msg≠'') →
+            // dọn pending note để KHÔNG bị ghép nhầm vào commit của thao tác sau.
+            setError: (msg: string) => { if (msg) recipeRecorder.discardPending(); setError(msg); },
+            setIsProcessing, setProcessStatus, setReportMsg, setBatchOutput,
             viewerNumPages,
             getWorkingBytes: getWorkingBytesLocal,
         };
@@ -868,6 +882,31 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             });
         };
 
+        // ─── Recipe record hook ───
+        // Chỉ ghi khi commit vào working file (spawnNewTab=false). onConfirmScale
+        // là hàm → bị JSON.stringify loại khi clone params (an toàn để phát lại).
+        if (!spawnNewTab) {
+            const opId = settings.impositionMode === ImpositionMode.Booklet
+                ? 'booklet'
+                : (settings as any).imposerMode === 'cnc'
+                    ? 'cnc_imposer'
+                    : (settings as any).imposerMode === 'diecut'
+                        ? 'sticker_imposer'
+                        : 'nup';
+            let recordParams: any = settings;
+            if (opId === 'sticker_imposer' || opId === 'cnc_imposer') {
+                // KHÔNG lưu HÌNH per-file (detectedShapes*) / thứ tự trang / đếm theo trang:
+                // phát lại sẽ DÒ LẠI hình trên file tem mới → đúng cho từng sản phẩm.
+                const {
+                    detectedShapesByPage, detectedShapeParamsByPage, detectedDimensionsByPage,
+                    shapeType, shapeParams, targetQuantitiesByPage, pageOrder, pageRotations,
+                    ...rest
+                } = settings as any;
+                recordParams = rest;
+            }
+            recipeRecorder.noteOperation(opId, recordParams);
+        }
+
         const { runProcessEngine } = await import('../lib/processHandlers');
         await runProcessEngine(buildProcessContext(), settings, spawnNewTab);
     }, [file, buildProcessContext]);
@@ -880,27 +919,86 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     const handleStartShuffle = async (settings: any) => {
         if (!file) return;
+        if (!settings.spawnNewTab) recipeRecorder.noteOperation('shuffle', settings);
         const { runShuffle } = await import('../lib/processHandlers');
         await runShuffle(buildProcessContext(), settings);
     };
 
     const handleStartResize = async (settings: any) => {
         if (!file) return;
+        if (!settings.spawnNewTab) recipeRecorder.noteOperation('resize', settings);
         const { runResize } = await import('../lib/processHandlers');
         await runResize(buildProcessContext(), settings);
     };
 
     const handleStartSplit = useCallback(async (settings: any) => {
         if (!file) return;
+        if (!settings.spawnNewTab) recipeRecorder.noteOperation('split', settings);
         const { runSplit } = await import('../lib/processHandlers');
         await runSplit(buildProcessContext(), settings);
     }, [file, buildProcessContext]);
 
     const handleStartMerge = useCallback(async (settings: any) => {
         if (!file && settings.mode === 'insert_pages') return;
+        if (!settings.spawnNewTab) {
+            // KHÔNG lưu blob file ngoài vào recipe (Property 7) — chỉ lưu cấu hình ghép.
+            const { filesToMerge, oddFile, evenFile, ...mergeParams } = settings;
+            recipeRecorder.noteOperation('merge', mergeParams);
+        }
         const { runMerge } = await import('../lib/processHandlers');
         await runMerge(buildProcessContext(), settings);
     }, [file, buildProcessContext]);
+
+    // ─── Recipe playback (Task 9) ───
+    // Chuỗi working file CỤC BỘ trong 1 lần phát: getWorkingBytes/commitWorkingFile
+    // ghi đè để bước sau nhận output bước trước (tránh state `file` cũ trong closure).
+    const playRecipe = useCallback(async (recipe: Recipe) => {
+        if (!file) { toast.error('Hãy mở một file PDF trước khi phát lại.'); return; }
+        const base = buildProcessContext();
+        let currentBytes: Uint8Array;
+        try { currentBytes = await base.getWorkingBytes(); }
+        catch { currentBytes = new Uint8Array(await file.arrayBuffer()); }
+        let currentName = file.name;
+
+        const { runRecipe } = await import('../lib/recipe/PlaybackRunner');
+        const { RECIPE_RUNNERS } = await import('../lib/recipe/recipeRunners');
+
+        const requestExternalInput = (_step: any, kind: 'csv' | 'file') => new Promise<any>((resolve) => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = kind === 'csv' ? '.csv,text/csv' : 'application/pdf,.pdf';
+            input.onchange = async () => {
+                const f = input.files?.[0];
+                if (!f) { resolve(null); return; }
+                resolve(kind === 'csv' ? { csvFile: f, csvText: await f.text() } : { files: [f] });
+            };
+            (input as any).oncancel = () => resolve(null);
+            input.click();
+        });
+
+        const res = await runRecipe(recipe, {
+            buildContext: () => ({
+                ...base,
+                file: new File([currentBytes as any], currentName, { type: 'application/pdf' }),
+                getWorkingBytes: async () => currentBytes,
+                commitWorkingFile: async (blob: Blob, name: string) => {
+                    currentBytes = new Uint8Array(await blob.arrayBuffer());
+                    currentName = name;
+                    await commitWorkingFile(blob, name);
+                },
+            }) as any,
+            runners: RECIPE_RUNNERS,
+            requestExternalInput,
+            onProgress: ({ index, total, step }) => setProcessStatus(`Phát lại ${index + 1}/${total}: ${step.label}`),
+        });
+        setProcessStatus('');
+
+        if (res.ok) {
+            toast.success(`Phát lại xong: ${res.completed} bước${res.skipped ? `, bỏ qua ${res.skipped}` : ''}.`);
+        } else {
+            toast.error(`Dừng ở bước ${(res.failedStep?.index ?? 0) + 1}: ${res.failedStep?.error || 'lỗi'}`);
+        }
+    }, [file, buildProcessContext, commitWorkingFile]);
 
     const handleStartBooklet = useCallback((config: BookletSettings) => {
         // NOTE: For 'auto_100', sheet dimension will be dynamically resolved inside the Engine during Phase 2.
@@ -1425,6 +1523,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
             {phase === 'workspace' && (
                 <div className="flex-1 flex flex-row overflow-hidden relative animate-fade-in">
+                    <RecipePanel
+                        open={showRecipePanel}
+                        onClose={() => setShowRecipePanel(false)}
+                        onPlay={playRecipe}
+                        sourcePageCount={viewerNumPages}
+                        hasFile={!!file}
+                    />
                     {confirmBookletSettings && createPortal(
                         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setConfirmBookletSettings(null)} onKeyDown={e => { if (e.key === 'Escape') setConfirmBookletSettings(null); }} tabIndex={-1} ref={el => el?.focus()}>
                             <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-slide-up" onClick={e => e.stopPropagation()}>
@@ -1560,14 +1665,22 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
                                     onEditCommit={handleEditCommit}
                                     onVdpBoxCreate={handleVdpBoxCreate}
-                                    toolbarExtra={(file && isOutputFile(file.name)) ? (
-                                        <button
-                                            onClick={() => setShowCutExport(true)}
-                                            className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
-                                            title="Gửi dữ liệu cắt tới máy bế"
-                                        >
-                                            <Scissors className="w-4 h-4" /> Gửi Máy Bế
-                                        </button>
+                                    toolbarExtra={file ? (
+                                        <div className="flex items-center gap-2">
+                                            <RecipeRecordControl
+                                                onOpenPanel={() => setShowRecipePanel(true)}
+                                                sourcePageCount={viewerNumPages}
+                                            />
+                                            {isOutputFile(file.name) && (
+                                                <button
+                                                    onClick={() => setShowCutExport(true)}
+                                                    className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                                                    title="Gửi dữ liệu cắt tới máy bế"
+                                                >
+                                                    <Scissors className="w-4 h-4" /> Gửi Máy Bế
+                                                </button>
+                                            )}
+                                        </div>
                                     ) : undefined}
                                     rightPanel={(
                                         <div
@@ -1674,6 +1787,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={(blob: Blob, name: string) => {
+                                                                recipeRecorder.noteNonRecordable('datamerge');
                                                                 commitWorkingFile(blob, name);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
@@ -1701,6 +1815,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={(blob: Blob, name: string) => {
+                                                                recipeRecorder.noteNonRecordable('numbering');
                                                                 commitWorkingFile(blob, name);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
@@ -1728,6 +1843,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
                                                             onApplyResult={(blob: Blob, name: string) => {
+                                                                recipeRecorder.noteNonRecordable('cover_numbering');
                                                                 commitWorkingFile(blob, name);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);

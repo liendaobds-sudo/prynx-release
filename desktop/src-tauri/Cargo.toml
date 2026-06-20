@@ -40,6 +40,8 @@ imposition_core = { path = "../../imposition_core" }
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+# F2: verify token license ký Ed25519 ngay trong Rust (lớp gate thứ 2, độc lập sidecar).
+ed25519-dalek = "2"
 
 # webview2-com: cần cho block tắt DevTools release-only (lib.rs `use webview2_com::...`).
 # Pin đúng version mà tauri/wry resolve (xem Cargo.lock) để kiểu ICoreWebView2Controller

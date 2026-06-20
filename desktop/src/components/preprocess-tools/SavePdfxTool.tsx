@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 
 interface Props {
   pdfFile: File | null;
@@ -64,6 +65,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
     setExporting(true); setStatus('');
     try {
       const fid = await ensureUploaded();
+      recipeRecorder.noteOperation('pdfx', { standard });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/export-pdfx`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, standard }),
@@ -75,8 +77,8 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else setStatus(`❌ ${data.detail || 'Lỗi xuất PDF/X'}`);
-    } catch (e: any) { setStatus(`❌ ${e.message}`); }
+      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || 'Lỗi xuất PDF/X'}`); }
+    } catch (e: any) { recipeRecorder.discardPending(); setStatus(`❌ ${e.message}`); }
     setExporting(false);
   };
 

@@ -795,7 +795,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                             className="flex items-center gap-1.5 px-2.5 h-8 rounded text-[13px] font-medium text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
                         >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
-                            Xuất ảnh
+                            <span className="tb-label">Xuất ảnh</span>
                         </button>
                     )}
                     {toolbarExtra}

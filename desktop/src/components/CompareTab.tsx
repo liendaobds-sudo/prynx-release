@@ -101,8 +101,6 @@ export default function CompareTab() {
         file_b_id: store.fileB.id,
         comparison_mode: store.comparisonMode,
         is_packaging_mode: store.isPackagingMode,
-        llm_mode: store.llmMode,
-        llm_api_key: store.cloudApiKey,
         tolerance: store.tolerance,
         dpi: store.dpi,
       });

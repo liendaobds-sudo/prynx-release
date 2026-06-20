@@ -9,38 +9,12 @@
 // CUT = đen nét liền, CREASE = đỏ nét đứt
 // ============================================================
 
-import { DielineModel, PathSegment, Point2D, PathTag } from './types';
+import { DielineModel } from './types';
 import { jsPDF } from 'jspdf';
 import 'svg2pdf.js';
 import { toast } from 'sonner';
-
-/** Tolerance cho so sánh điểm (0.01mm) */
-function ptEq(a: Point2D, b: Point2D): boolean {
-    return Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01;
-}
-
-/** Lấy điểm đầu/cuối của segment */
-function segEndpoints(seg: PathSegment): [Point2D, Point2D] {
-    if (seg.type === 'bezier' && seg.controlPoints) {
-        return [seg.controlPoints[0], seg.controlPoints[3]];
-    }
-    return [seg.points[0], seg.points[seg.points.length - 1]];
-}
-
-/**
- * Chuyển 1 segment thành SVG commands (KHÔNG có M ở đầu — dùng khi nối chuỗi).
- * Trả về chuỗi bắt đầu bằng L hoặc C.
- */
-function segmentContinuation(seg: PathSegment): string {
-    if (seg.type === 'bezier' && seg.controlPoints) {
-        const [, cp1, cp2, p3] = seg.controlPoints;
-        return `C ${cp1.x},${cp1.y} ${cp2.x},${cp2.y} ${p3.x},${p3.y}`;
-    }
-    // Bỏ điểm đầu (đã là current point)
-    return seg.points.slice(1)
-        .map(p => `L ${p.x},${p.y}`)
-        .join(' ');
-}
+import { buildChains, chainToSvgD, computeEnvelopeDims } from './sharedGeometry';
+import { validateClosedContours, OpenContourWarning } from './contourValidator';
 
 /** Style cho từng tag */
 const TAG_STYLES: Record<string, { stroke: string; width: number; dashArray?: string }> = {
@@ -48,70 +22,6 @@ const TAG_STYLES: Record<string, { stroke: string; width: number; dashArray?: st
     CREASE: { stroke: '#ff0000', width: 0.2, dashArray: '2,1' },
     BLEED: { stroke: '#0000ff', width: 0.15, dashArray: '1,1' },
 };
-
-/**
- * Gom segments nối tiếp nhau (cùng tag, endpoint trùng)
- * thành các chains. Mỗi chain → 1 SVG `<path>` liên tục.
- * Dùng global search (không chỉ sequential) để tìm segment kế tiếp.
- */
-function buildChains(segments: PathSegment[]): { tag: PathTag; segs: PathSegment[] }[] {
-    const chains: { tag: PathTag; segs: PathSegment[] }[] = [];
-    const used = new Set<number>();
-
-    for (let i = 0; i < segments.length; i++) {
-        if (used.has(i)) continue;
-        const chain: PathSegment[] = [segments[i]];
-        used.add(i);
-
-        // Mở rộng chain: tìm segment bất kỳ có endpoint trùng + cùng tag
-        let extended = true;
-        while (extended) {
-            extended = false;
-            const [, chainEnd] = segEndpoints(chain[chain.length - 1]);
-            for (let j = 0; j < segments.length; j++) {
-                if (used.has(j)) continue;
-                if (segments[j].tag !== chain[0].tag) continue;
-                const [jStart] = segEndpoints(segments[j]);
-                if (ptEq(chainEnd, jStart)) {
-                    chain.push(segments[j]);
-                    used.add(j);
-                    extended = true;
-                    break;
-                }
-            }
-        }
-        chains.push({ tag: chain[0].tag, segs: chain });
-    }
-
-    return chains;
-}
-
-/**
- * Chuyển 1 chain thành SVG `d` attribute liên tục.
- * Ví dụ: "M 10,20 L 30,40 C ... L ... Z"
- */
-function chainToSvgD(chain: PathSegment[]): string {
-    if (chain.length === 0) return '';
-
-    // Segment đầu tiên: bắt đầu bằng M
-    const first = chain[0];
-    const [start] = segEndpoints(first);
-    let d = `M ${start.x},${start.y} ` + segmentContinuation(first);
-
-    // Các segment tiếp theo: chỉ thêm continuation (L/C)
-    for (let i = 1; i < chain.length; i++) {
-        d += ' ' + segmentContinuation(chain[i]);
-    }
-
-    // Kiểm tra đóng kín
-    const [chainStart] = segEndpoints(chain[0]);
-    const [, chainEnd] = segEndpoints(chain[chain.length - 1]);
-    if (ptEq(chainStart, chainEnd) && chain.length > 1) {
-        d += ' Z';
-    }
-
-    return d;
-}
 
 /**
  * Build complete SVG string từ DielineModel.
@@ -203,10 +113,8 @@ function buildDimensionSvg(model: DielineModel): string {
 
     // ── ENVELOPE ──
     if (boxType === 'envelope') {
-        const { envW, envH, envFH, envSF, envStyle, envFlapShape } = params;
-        const flapRef = envH;
-        const FH = envFH > 0 ? envFH : (envFlapShape === 'straight' ? 30 : Math.round(flapRef * 0.45));
-        const SF = envSF > 0 ? envSF : Math.max(10, Math.min(15, Math.round(flapRef * 0.12)));
+        const { envW, envH, envStyle } = params;
+        const { FH, SF } = computeEnvelopeDims(params);
         const rightX = bb.maxX + offset * 3;
         const topY = bb.maxY + offset * 3;
         let svg = '';
@@ -311,8 +219,50 @@ function buildDimensionSvg(model: DielineModel): string {
  *
  * Segments nối tiếp → gộp thành 1 path SVG liên tục (M L C L...)
  * → svg2pdf.js render vào PDF → true vector curves, liền mạch.
+ *
+ * CỔNG KIỂM TRA BIÊN DẠNG (Requirement 1):
+ *   1. Chạy `validateClosedContours(model)` trước khi ghi file.
+ *   2. Nếu mọi Cut_Piece khép kín (`allClosed === true`) → tạo file
+ *      ngay, không hỏi (Requirement 1.8).
+ *   3. Nếu có biên hở → hiển thị cảnh báo liệt kê panel + `gapMm`
+ *      (Requirement 1.2, 1.3) và chỉ ghi file khi `confirmOpenContours`
+ *      trả về `true` (Requirement 1.4). Không có callback → coi như
+ *      chưa xác nhận và KHÔNG ghi file.
+ *
+ * @param confirmOpenContours Callback xác nhận khi phát hiện biên hở;
+ *   nhận danh sách cảnh báo, trả `true` để tiếp tục ghi file.
  */
-export async function downloadPDF(model: DielineModel, filename?: string): Promise<void> {
+export async function downloadPDF(
+    model: DielineModel,
+    filename?: string,
+    confirmOpenContours?: (warnings: OpenContourWarning[]) => Promise<boolean>,
+): Promise<void> {
+    // ── Cổng kiểm tra biên dạng khép kín trước khi xuất ──
+    const validation = validateClosedContours(model);
+
+    if (!validation.allClosed) {
+        const warnings = validation.openContours;
+
+        // Cảnh báo cho người dùng trước khi tạo file (Requirement 1.3).
+        const detail = warnings
+            .map((w) => `• ${w.panelLabel || w.panelName}: hở ${w.gapMm.toFixed(3)}mm`)
+            .join('\n');
+        toast.warning(
+            `Phát hiện ${warnings.length} biên dạng cắt hở:\n${detail}`,
+        );
+
+        // Không có callback xác nhận → không ghi file (Requirement 1.4).
+        if (!confirmOpenContours) {
+            return;
+        }
+
+        // Chỉ ghi file khi người dùng xác nhận tường minh (Requirement 1.4).
+        const confirmed = await confirmOpenContours(warnings);
+        if (!confirmed) {
+            return;
+        }
+    }
+
     const toastId = toast.loading('Đang tạo PDF...');
 
     try {

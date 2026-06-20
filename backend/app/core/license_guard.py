@@ -206,12 +206,74 @@ if _is_dev_mode():
 
 
 def _enforce_license_token() -> bool:
-    """Bật cưỡng chế token khi đã triển khai xong edge function + client (rollout an toàn).
-
-    Mặc định TẮT: giai đoạn đầu chỉ verify-nếu-có (không chặn) để không gãy client cũ.
-    Đặt PRYNX_ENFORCE_LICENSE_TOKEN=true để bắt buộc token hợp lệ.
+    """Bật cưỡng chế token. V1 FIX (fail-CLOSED): khi chạy BINARY PRODUCTION
+    (không phải dev — xem `_is_dev_mode`), LUÔN cưỡng chế bất kể env. Chống kẻ gian
+    trích sidecar chạy trực tiếp rồi bỏ `PRYNX_ENFORCE_LICENSE_TOKEN` để tắt token check.
+    Dev (Python thông dịch, DEV_MODE=true) mới đọc env (mặc định tắt để không gãy luồng cũ).
     """
+    if not _is_dev_mode():
+        return True
     return os.environ.get("PRYNX_ENFORCE_LICENSE_TOKEN", "false").lower() in ("true", "1", "yes")
+
+
+# ── V2: chống lùi đồng hồ (anti-clockback) phía sidecar ──────────────────────
+_CLOCK_SKEW_SECONDS = 300  # dung sai NTP 5 phút
+
+
+def _clock_guard_path() -> str:
+    override = os.environ.get("PRYNX_CLOCK_GUARD_FILE", "")
+    if override:
+        return override
+    base = os.environ.get("APPDATA") or os.environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(base, "PrynX", ".clkguard")
+
+
+def _clk_read(path: str) -> Optional[int]:
+    """Đọc mốc thời gian lớn nhất đã thấy (ký HMAC bằng sidecar token).
+    Trả None nếu thiếu/không đọc được/CHỮ KÝ SAI (tamper) → coi như chưa có mốc."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+        ts_str, sig = raw.split(":", 1)
+        if not _SIDECAR_TOKEN:
+            return None
+        expected = hmac_mod.new(_SIDECAR_TOKEN.encode(), ts_str.encode(), hashlib.sha256).hexdigest()
+        if not hmac_mod.compare_digest(sig, expected):
+            return None  # tamper: không cho dùng giá trị → reset (không brick)
+        return int(ts_str)
+    except Exception:
+        return None
+
+
+def _clk_write(path: str, ts: int) -> None:
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        if not _SIDECAR_TOKEN:
+            return
+        sig = hmac_mod.new(_SIDECAR_TOKEN.encode(), str(ts).encode(), hashlib.sha256).hexdigest()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"{ts}:{sig}")
+    except Exception:
+        pass
+
+
+def _clock_guard() -> tuple[bool, str]:
+    """Monotonic clock guard: từ chối nếu đồng hồ bị LÙI quá xa so với mốc lớn nhất
+    đã thấy (chống replay token hết hạn bằng cách quay ngược giờ). Mốc ký HMAC bằng
+    sidecar token nên kẻ gian KHÔNG sửa được xuống giá trị thấp. Bỏ qua ở dev.
+    Thiếu/tamper file → reset (không brick), vẫn cập nhật mốc hiện tại.
+    """
+    if _is_dev_mode():
+        return True, ""
+    path = _clock_guard_path()
+    now = int(time.time())
+    stored = _clk_read(path)
+    if stored is not None and now + _CLOCK_SKEW_SECONDS < stored:
+        return False, "Clock rollback detected"
+    _clk_write(path, max(stored or 0, now))
+    return True, ""
 
 
 def _b64url_decode(s: str) -> bytes:
@@ -243,14 +305,20 @@ def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> t
     except (TypeError, ValueError):
         return False, "License token has invalid exp"
 
-    # Ràng buộc theo máy (token chỉ dùng được trên đúng HWID đã xác thực).
-    if hwid and payload.get("m") and not hmac_mod.compare_digest(str(payload["m"]), hwid):
+    # Ràng buộc theo máy — field "m" phải có trong token (không optional).
+    token_hwid = payload.get("m")
+    if not token_hwid:
+        return False, "License token missing required field: machine id"
+    if hwid and not hmac_mod.compare_digest(str(token_hwid), hwid):
         return False, "License token machine mismatch"
 
-    # Ràng buộc theo license key.
-    if license_key and payload.get("k"):
+    # Ràng buộc theo license key — field "k" phải có trong token (không optional).
+    token_key_hash = payload.get("k")
+    if not token_key_hash:
+        return False, "License token missing required field: key hash"
+    if license_key:
         kh = hashlib.sha256(license_key.encode()).hexdigest()[:16]
-        if not hmac_mod.compare_digest(str(payload["k"]), kh):
+        if not hmac_mod.compare_digest(str(token_key_hash), kh):
             return False, "License token key mismatch"
 
     return True, ""
@@ -278,6 +346,13 @@ async def require_license(request: Request) -> dict:
     )
     if not ok:
         raise HTTPException(status_code=403, detail=reason)
+
+    # ── Step 1b: V2 anti-clockback — chống lùi đồng hồ để replay token hết hạn (skip ở dev) ──
+    clk_ok, clk_reason = _clock_guard()
+    if not clk_ok:
+        logger.warning("[LICENSE_GUARD] %s | path=%s", clk_reason, request.url.path)
+        _security_log_to_file(f"CLOCK_ROLLBACK reason={clk_reason!r} path={request.url.path}")
+        raise HTTPException(status_code=403, detail="Clock manipulation detected")
     
     # ── Step 2: Extract license credentials ──
     license_key = request.headers.get("X-License-Key", "").strip()
@@ -332,10 +407,23 @@ async def require_license(request: Request) -> dict:
             raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
     except HTTPException:
         raise
+    except RuntimeError as e:
+        # DNS manipulation detected — hard fail, no grace
+        logger.error(f"[LICENSE_GUARD] Security violation (DNS/integrity): {e}")
+        _security_log_to_file(f"SECURITY_VIOLATION reason={e}")
+        raise HTTPException(status_code=403, detail="Security violation")
     except Exception as e:
-        # If Supabase is unreachable, allow through with warning (offline grace)
-        logger.warning(f"[LICENSE_GUARD] Supabase verification failed (offline grace): {e}")
-        _license_cache[cache_key] = (True, time.time() + 300)  # 5 min grace
+        import httpx as _httpx
+        if isinstance(e, (_httpx.TimeoutException, _httpx.ConnectError, _httpx.RemoteProtocolError)):
+            # Genuine network unavailability — offline grace 5 phút
+            logger.warning(f"[LICENSE_GUARD] Supabase unreachable (offline grace): {e}")
+            _security_log_to_file(f"OFFLINE_GRACE reason={type(e).__name__}")
+            _license_cache[cache_key] = (True, time.time() + 300)
+        else:
+            # Lỗi không xác định — fail closed
+            logger.error(f"[LICENSE_GUARD] Unexpected error during license check: {e}")
+            _security_log_to_file(f"LICENSE_CHECK_ERROR reason={type(e).__name__}")
+            raise HTTPException(status_code=403, detail="License check unavailable")
 
     return {"license_key": license_key, "hwid": hwid, "verified": True}
 
@@ -346,8 +434,16 @@ async def _verify_with_supabase(license_key: str, hwid: str) -> bool:
     supabase_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
     
     if not supabase_url or not supabase_key:
-        logger.debug("[LICENSE_GUARD] No Supabase credentials configured — skipping online verification")
-        return True  # Can't verify online, trust the token
+        # V5 FIX: KHÔNG còn "silent allow". Ở production, thiếu service key là CHỦ Ý
+        # (sidecar không giữ service key — chỉ edge function có); biên giới THẬT là token
+        # Ed25519 đã enforce+verify ở Step 2b (V1 ép enforce ở binary). Log rõ (không debug
+        # thầm lặng) để ops thấy; vẫn trust token đã verify thay vì gọi RPC bằng service key.
+        if not _is_dev_mode():
+            _security_log_to_file("SUPABASE_CREDS_MISSING relying_on_signed_token")
+            logger.info("[LICENSE_GUARD] No Supabase service creds — relying on verified Ed25519 token")
+        else:
+            logger.debug("[LICENSE_GUARD] dev: no Supabase creds — skipping online verification")
+        return True  # token đã là biên giới (V1 enforce); ở dev thì bỏ qua online
     
     # ── VECTOR #2 FIX: DNS manipulation detection ──
     # Verify Supabase host resolves to a public IP, not loopback/private.

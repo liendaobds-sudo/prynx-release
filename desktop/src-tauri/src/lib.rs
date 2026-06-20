@@ -630,11 +630,10 @@ fn verify_sidecar_integrity(sidecar_path: &std::path::Path) -> Result<(), String
     let expected_hash = option_env!("PRYNX_SIDECAR_HASH").unwrap_or("");
     
     if expected_hash.is_empty() {
-        // If no hash is set at build time, log warning but allow
-        // (first build won't have the hash yet)
-        log::warn!("[INTEGRITY] No sidecar hash configured. Skipping integrity check.");
-        log::warn!("[INTEGRITY] Set PRYNX_SIDECAR_HASH env var at build time to enable.");
-        return Ok(());
+        return Err(
+            "PRYNX_SIDECAR_HASH not set at build time. \
+             Set env var before running cargo build --release.".to_string()
+        );
     }
     
     // Không tìm/đọc được file → cảnh báo nhưng KHÔNG chặn khởi động (tránh brick app nếu
@@ -671,8 +670,10 @@ fn verify_frontend_integrity(app: &tauri::App) -> Result<(), String> {
     let expected_hash = option_env!("PRYNX_FRONTEND_HASH").unwrap_or("");
     
     if expected_hash.is_empty() {
-        log::warn!("[INTEGRITY] No frontend hash configured. Skipping frontend integrity check.");
-        return Ok(());
+        return Err(
+            "PRYNX_FRONTEND_HASH not set at build time. \
+             Set env var before running cargo build --release.".to_string()
+        );
     }
     
     // Frontend dist is in the resource directory

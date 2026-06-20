@@ -52,11 +52,15 @@ class Settings(BaseSettings):
     # Application
     APP_NAME: str = "PrynX Core"
     DEBUG: bool = False
-    DEV_MODE: bool = True  # True = SQLite + sync processing (no Docker needed)
+    # F3 FIX: fail-CLOSED mặc định. DEV_MODE=on tắt token+chữ ký guard nên phải bật
+    # CÓ CHỦ Ý (dev đặt qua backend/.env: DEV_MODE=true). Release: lib.rs spawn sidecar
+    # với env DEV_MODE=false + _is_dev_mode() trả False khi binary đã compile (__compiled__).
+    # DB vẫn dùng SQLite ở release nhờ IS_DESKTOP_APP (PRYNX_TOKEN_SOURCE=stdin), không phụ thuộc cờ này.
+    DEV_MODE: bool = False
     IS_DESKTOP_APP: bool = os.environ.get("PRYNX_TOKEN_SOURCE") == "stdin"
 
     # Database
-    DATABASE_URL: str = "postgresql://pdfuser:pdfpass@localhost:5432/pdfcompare"
+    DATABASE_URL: str = os.environ.get("DATABASE_URL", "")
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"

@@ -224,7 +224,12 @@ class PageBoxesEngine:
         for pnum in target_pages:
             if 1 <= pnum <= len(doc.pages):
                 page = doc.pages[pnum - 1]
-                trim = _get_page_box(page, "/TrimBox")
+                # TrimBox là chuẩn để cộng bleed. Nếu file CHƯA có TrimBox (vd vừa
+                # qua auto_trim — chỉ set CropBox), fallback sang CropBox rồi MediaBox.
+                # Trước đây fallback thẳng MediaBox → bỏ qua kết quả auto_trim (bù xén
+                # quanh CẢ trang gốc thay vì vùng đã xén lề trắng).
+                crop = _get_page_box(page, "/CropBox")
+                trim = _get_page_box(page, "/TrimBox", fallback=crop)
                 mb = _get_page_box(page, "/MediaBox")
 
                 bleed_rect = [

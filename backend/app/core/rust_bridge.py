@@ -323,8 +323,8 @@ class RustBridge:
 
             try:
                 os.unlink(tmp.name)
-            except Exception:
-                pass
+            except OSError as _e:
+                logger.debug("Không xoá được temp %s: %s", tmp.name, _e)
 
             return result
 

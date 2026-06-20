@@ -366,18 +366,32 @@ def _safe_watermark(pdf_path: str, license_info: dict | None) -> None:
 
     Bỏ qua ở dev mode (license_key == 'DEV_MODE') hoặc khi thiếu license_key.
     """
+    lk = (license_info or {}).get("license_key", "") or ""
+    if not lk or lk == "DEV_MODE":
+        return
+    hwid = (license_info or {}).get("hwid", "") or ""
+    tmp_path = None
     try:
-        lk = (license_info or {}).get("license_key", "") or ""
-        if not lk or lk == "DEV_MODE":
-            return
-        hwid = (license_info or {}).get("hwid", "") or ""
+        import tempfile
         import pikepdf
         from app.core.watermark import embed_watermark
         with pikepdf.Pdf.open(pdf_path, allow_overwriting_input=True) as pdf:
             embed_watermark(pdf, lk, hwid)
-            pdf.save(pdf_path)
+            # Ghi atomic: save ra temp cùng thư mục rồi os.replace, tránh hỏng
+            # output nếu process chết giữa chừng khi ghi đè in-place.
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(pdf_path) or ".")
+            os.close(fd)
+            pdf.save(tmp_path)
+        os.replace(tmp_path, pdf_path)
+        tmp_path = None
     except Exception as e:
         logger.error(f"[WATERMARK] edit output failed (non-blocking): {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def _build_output_response(output_path: str, op_result, license_info: dict | None = None) -> EditResponse:
@@ -431,7 +445,10 @@ async def _execute(blocking_fn, license_info: dict | None = None) -> EditRespons
         # Thiếu glyph và không có font dự phòng đủ (Yêu cầu 8.4).
         raise HTTPException(status_code=422, detail=str(exc))
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        # Không trả str(exc) ra client: nó chứa đường dẫn nội bộ. Log nội bộ,
+        # client nhận message generic.
+        logger.warning("Tài nguyên không tìm thấy: %s", exc)
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài nguyên yêu cầu.")
     except IndexError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as exc:
@@ -652,7 +669,10 @@ async def _execute_full_page_preview(pdf_path: str, page: int) -> PreviewRespons
     except HTTPException:
         raise
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        # Không trả str(exc) ra client: nó chứa đường dẫn nội bộ. Log nội bộ,
+        # client nhận message generic.
+        logger.warning("Tài nguyên không tìm thấy: %s", exc)
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài nguyên yêu cầu.")
     except IndexError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -686,7 +706,10 @@ async def _execute_preview(pdf_path: str, op: EditOp) -> PreviewResponse:
     except GlyphCoverageError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        # Không trả str(exc) ra client: nó chứa đường dẫn nội bộ. Log nội bộ,
+        # client nhận message generic.
+        logger.warning("Tài nguyên không tìm thấy: %s", exc)
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài nguyên yêu cầu.")
     except IndexError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as exc:
@@ -738,7 +761,10 @@ async def _execute_session(blocking_fn):
     except GlyphCoverageError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        # Không trả str(exc) ra client: nó chứa đường dẫn nội bộ. Log nội bộ,
+        # client nhận message generic.
+        logger.warning("Tài nguyên không tìm thấy: %s", exc)
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài nguyên yêu cầu.")
     except IndexError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except ValueError as exc:

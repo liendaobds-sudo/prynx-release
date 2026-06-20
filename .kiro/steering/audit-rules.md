@@ -215,3 +215,58 @@ sai. Quy tắc bắt buộc khi đụng layout/bình/nesting/render/preview:
       thuật toán + toạ độ + render.
 - [ ] (Float) Đã cân nhắc nhiễu order-of-operations ở quyết định rời rạc/biên.
 - [ ] Quan sát của user không bị bác bằng "log nói khớp" — nếu mâu thuẫn đã đo lại.
+
+---
+
+## 12. Production Readiness (audit go/no-go cho cả dự án)
+
+> Mục 0–11 dùng cho audit correctness một tính năng. Mục này dùng khi câu hỏi là
+> "dự án đã SẴN SÀNG PHÁT HÀNH chưa?". Vẫn áp dụng verify-to-ground-truth: mọi
+> nhãn 🔴/🟠 phải có bằng chứng (file:line / kết quả lệnh), tách
+> `[VERIFIED]`/`[SUSPECTED]`. Một mục "đạt" chỉ khi đã CHỨNG MINH, không phải
+> "thấy có vẻ ổn".
+
+### 12.1 Secrets & Config
+- Quét bí mật bị commit: `git ls-files | grep -iE '\.env$|secret|key|token|\.pem'`.
+  `.env` thật **không được** tracked; chỉ `.env.example` (toàn placeholder) được phép.
+  Nếu secret đã từng vào lịch sử → coi như **đã lộ**, phải xoay vòng key, không chỉ xoá file.
+- Mọi config production phải đến từ biến môi trường / file ngoài repo, không hardcode.
+- Phân biệt giá trị dev-default vs production-required; thiếu biến bắt buộc phải fail-fast khi khởi động.
+
+### 12.2 Dependencies & Supply Chain
+- Có lockfile và được commit? (`requirements.txt`/pinned, `package-lock.json`,
+  `Cargo.lock`, `poetry.lock`). Version thả nổi (`>=`, `*`) trên đường production = 🟠.
+- Quét lỗ hổng: `pip-audit`/`npm audit`/`cargo audit` nếu có; báo CVE mức cao.
+- Tàn dư thư viện đã bỏ (vd `fitz`/PyMuPDF) còn sót trong deps/`.pyc` (đã có ở mục 3).
+
+### 12.3 Build / Release / Anticrack
+- Build production tái lập được từ script sạch (`build_production.ps1`,
+  `release_update.ps1`) — không phụ thuộc trạng thái máy dev.
+- Cơ chế license/anticrack (xem `HYBRID_ANTICRACK_REPORT.md`,
+  `SECURITY_ARCHITECTURE.md`) phải được xác minh **chạy thật**, không chỉ tồn tại
+  trên giấy: thử bypass đường tắt rõ ràng, kiểm tra fail-closed (lỗi check → CẤM, không cho qua).
+- Artifact gửi khách (`DONG_GOI_GUI_KHACH.bat`) không kèm source nhạy cảm / secret / file tạm.
+
+### 12.4 Error Handling & Observability
+- Lỗi trên đường chạy thật được bắt và báo có ý nghĩa, không nuốt im (`except: pass`)
+  cũng không lộ stacktrace/đường dẫn nội bộ ra người dùng cuối.
+- Có nơi ghi log lỗi production (file/sink) để chẩn đoán sau sự cố.
+- Tài nguyên (file handle, temp, process con) được giải phóng trên cả nhánh lỗi.
+
+### 12.5 Tests & CI
+- Test có chạy được bằng venv dự án và **đang xanh** (`pytest`, `npm run typecheck/build`,
+  `cargo test`). Kết quả thật, dán output — không tự nhận "có test là đủ".
+- CI (`.github/`) có chặn merge khi fail không, hay chỉ trang trí.
+- Chỉ ra vùng lõi (imposition/parity/license) thiếu test hồi quy.
+
+### 12.6 Data Safety
+- Ghi đè / xoá dữ liệu người dùng có atomic + có đường khôi phục không.
+- Xử lý input độc/ca biên đã nêu ở mục 2 (file 0 byte, unicode, đa trang, file lớn).
+
+### 12.7 Kết luận GO / NO-GO
+Chấm theo từng nhóm 12.1–12.6: **PASS / WARN / FAIL** kèm bằng chứng. Quy ước:
+- **NO-GO** nếu có bất kỳ 🔴 nào: secret đã lộ, anticrack fail-open, mất/hỏng dữ liệu,
+  crash trên đường chạy chính, build không tái lập được.
+- **GO có điều kiện** nếu chỉ còn 🟠: liệt kê việc phải làm + mức rủi ro nếu ship luôn.
+- **GO** nếu mọi nhóm PASS và test lõi xanh.
+> Không được tuyên bố GO chỉ vì "không thấy lỗi" — phải đã CHỦ ĐỘNG kiểm từng nhóm trên.

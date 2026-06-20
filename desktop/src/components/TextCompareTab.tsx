@@ -1,14 +1,26 @@
-import { useState, useMemo } from 'react';
-import { diffChars } from 'diff';
+import { useState, useRef, useEffect } from 'react';
 import { Button } from './Button';
+
+// Ngưỡng cảnh báo: trên mức này nên dùng so theo DÒNG cho nhanh.
+const BIG_INPUT_CHARS = 300_000;
 
 export default function TextCompareTab() {
   const [textA, setTextA] = useState('');
   const [textB, setTextB] = useState('');
   const [ignoreSpaces, setIgnoreSpaces] = useState(false);
+  const [mode, setMode] = useState<'word' | 'line'>('word');
 
   const [differences, setDifferences] = useState<any[] | null>(null);
   const [isComparing, setIsComparing] = useState(false);
+  const [error, setError] = useState('');
+
+  const workerRef = useRef<Worker | null>(null);
+
+  // Dọn worker khi unmount.
+  useEffect(() => () => { workerRef.current?.terminate(); workerRef.current = null; }, []);
+
+  const totalLen = textA.length + textB.length;
+  const isBig = totalLen > BIG_INPUT_CHARS;
 
   // Clear results when user starts editing again
   const handleTextChangeA = (val: string) => {
@@ -23,21 +35,31 @@ export default function TextCompareTab() {
 
   const handleCompare = () => {
     if (!textA && !textB) return;
+    setError('');
     setIsComparing(true);
-    
-    // Use setTimeout to allow the React render cycle to show the loading spinner 
-    // before we block the thread with the heavy diffChars synchronous calculation.
-    setTimeout(() => {
-      try {
-        const aToCompare = ignoreSpaces ? textA.replace(/\s+/g, '') : textA;
-        const bToCompare = ignoreSpaces ? textB.replace(/\s+/g, '') : textB;
-        
-        const result = diffChars(aToCompare, bToCompare);
-        setDifferences(result);
-      } finally {
-        setIsComparing(false);
-      }
-    }, 50);
+
+    // Chạy diff trong Web Worker → KHÔNG khoá main thread (spinner mượt, không đơ).
+    // Tạo worker mới mỗi lần để tránh tích luỹ handler; terminate sau khi xong.
+    workerRef.current?.terminate();
+    const worker = new Worker(new URL('../workers/textDiffWorker.ts', import.meta.url), { type: 'module' });
+    workerRef.current = worker;
+
+    worker.onmessage = (e: MessageEvent) => {
+      const data = e.data;
+      if (data?.ok) setDifferences(data.parts);
+      else { setError(data?.error || 'Lỗi khi so sánh văn bản'); setDifferences(null); }
+      setIsComparing(false);
+      worker.terminate();
+      if (workerRef.current === worker) workerRef.current = null;
+    };
+    worker.onerror = (err) => {
+      setError('Lỗi xử lý nền: ' + (err.message || 'unknown'));
+      setIsComparing(false);
+      worker.terminate();
+      if (workerRef.current === worker) workerRef.current = null;
+    };
+
+    worker.postMessage({ a: textA, b: textB, mode, ignoreSpaces });
   };
 
   const hasDifferences = differences ? differences.length > 1 || (differences.length === 1 && (differences[0].added || differences[0].removed)) : false;
@@ -49,7 +71,7 @@ export default function TextCompareTab() {
   };
 
   return (
-    <div className="flex flex-col h-full gap-6 animate-fade-in relative">
+    <div className="flex flex-col h-full gap-6 animate-fade-in relative w-full max-w-5xl mx-auto px-6 lg:px-10 py-8 overflow-y-auto">
       <div className="text-center mb-6">
         <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">📝 So sánh Văn bản</h2>
         <p className="text-slate-600 dark:text-zinc-400 transition-colors">
@@ -81,6 +103,17 @@ export default function TextCompareTab() {
             placeholder="Dán nội dung phiên bản mới vào đây..."
           />
         </div>
+      </div>
+
+      {/* Tuỳ chọn so sánh + cảnh báo văn bản lớn */}
+      <div className="flex flex-wrap items-center justify-center gap-3 -mt-2">
+        <div className="flex items-center gap-1 bg-slate-100 dark:bg-zinc-800 rounded-lg p-0.5 text-[12px]">
+          <button onClick={() => { setMode('word'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'word' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>So theo Từ</button>
+          <button onClick={() => { setMode('line'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'line' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>So theo Dòng</button>
+        </div>
+        {isBig && (
+          <span className="text-[12px] text-amber-600 dark:text-amber-400">⚠️ Văn bản lớn (~{Math.round(totalLen / 1000)}K ký tự) — nên chọn "So theo Dòng" cho nhanh.</span>
+        )}
       </div>
 
       <div className="flex justify-center -mt-2 mb-2 relative z-10 w-full animate-fade-in">
@@ -160,7 +193,7 @@ export default function TextCompareTab() {
         <div className="w-full flex-1 bg-white dark:!bg-zinc-950 shadow-sm rounded-lg p-5 border border-slate-200 dark:!border-white/10 overflow-y-auto whitespace-pre-wrap font-mono text-[15px] leading-relaxed break-words text-slate-800 dark:!text-zinc-200 transition-colors">
           {isComparing ? (
             <div className="h-full flex items-center justify-center text-slate-400">
-               <span className="animate-pulse">Đang rà soát từng ký tự...</span>
+               <span className="animate-pulse">Đang rà soát nội dung...</span>
             </div>
           ) : !differences ? (
             <div className="h-full flex items-center justify-center text-slate-400 italic">

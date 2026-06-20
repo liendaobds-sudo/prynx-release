@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 
@@ -49,14 +49,27 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
         setPageInput(String(activePage));
     }
 
+    // Thu hẹp: đo bề rộng THẬT của toolbar (không theo cửa sổ) → khi hẹp thì gắn
+    // class 'tb-narrow' để CSS ẩn các nhãn chữ (.tb-label), chỉ còn icon → hết đè.
+    const barRef = useRef<HTMLDivElement>(null);
+    const [isNarrow, setIsNarrow] = useState(false);
+    useEffect(() => {
+        const el = barRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        const ro = new ResizeObserver((entries) => {
+            const w = entries[0]?.contentRect.width ?? 0;
+            setIsNarrow(w < 860);
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+
     return (
-        <div className="h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#323639] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-50 relative overflow-visible">
-            {extraActions && (
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2 z-10">
-                    {extraActions}
-                </div>
-            )}
-            <div className="flex items-center gap-1 mx-auto min-w-max">
+        <div ref={barRef} className={`h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#323639] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-50 relative overflow-visible gap-2 ${isNarrow ? 'tb-narrow' : ''}`}>
+            <style>{`.tb-narrow .tb-label{display:none!important;}`}</style>
+            {/* Spacer trái (co được) để nhóm tool nằm giữa */}
+            <div className="flex-1 min-w-0" />
+            <div className="flex items-center gap-1 min-w-max">
                 <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage - 1)} title="Previous Page" aria-label="Previous Page">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16V8m-3 3l3-3 3 3"/></svg>
                 </button>
@@ -196,7 +209,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                             {pageDisplayMode === 'two_fit' && <><rect x="2" y="4" width="9" height="16" rx="2" /><rect x="13" y="4" width="9" height="16" rx="2" /></>}
                             {pageDisplayMode === 'two_scroll' && <><rect x="2" y="2" width="9" height="9" rx="2" /><rect x="13" y="2" width="9" height="9" rx="2" /><rect x="2" y="13" width="9" height="9" rx="2" /><rect x="13" y="13" width="9" height="9" rx="2" /></>}
                         </svg>
-                        <span className="text-[13px] font-medium hidden md:block">Hiển thị</span>
+                        <span className="text-[13px] font-medium tb-label">Hiển thị</span>
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
                     </button>
                     {isDisplayMenuOpen && (
@@ -257,6 +270,12 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 </button>
 
+            </div>
+
+            {/* Spacer phải + actions phụ (Xuất ảnh / Ghi quy trình...) — trong flow,
+                KHÔNG absolute để không đè lên nhóm tool khi thu hẹp cửa sổ. */}
+            <div className="flex-1 min-w-0 flex items-center justify-end gap-2">
+                {extraActions}
             </div>
         </div>
     );

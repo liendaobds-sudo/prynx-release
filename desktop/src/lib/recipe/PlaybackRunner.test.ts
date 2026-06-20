@@ -1,0 +1,166 @@
+import { describe, it, expect, vi } from 'vitest';
+import { runRecipe, type PlaybackDeps, type RecipeRunner } from './PlaybackRunner';
+import { createRecipe, type RecipeStep } from './recipeTypes';
+import type { ProcessContext } from '../processHandlers';
+
+// ─── ProcessContext giả lập tối thiểu ───
+function makeCtx(overrides: Partial<ProcessContext> = {}): ProcessContext {
+    return {
+        file: new File([new Uint8Array([1])], 'in.pdf', { type: 'application/pdf' }),
+        commitWorkingFile: vi.fn(),
+        setError: vi.fn(),
+        setIsProcessing: vi.fn(),
+        setProcessStatus: vi.fn(),
+        setReportMsg: vi.fn(),
+        setBatchOutput: vi.fn(),
+        getWorkingBytes: async () => new Uint8Array([1]),
+        ...overrides,
+    };
+}
+
+function step(opId: RecipeStep['opId'], extra: Partial<RecipeStep> = {}): RecipeStep {
+    return { opId, label: opId, params: {}, recordable: true, ...extra };
+}
+
+function baseDeps(over: Partial<PlaybackDeps> = {}): PlaybackDeps {
+    return {
+        buildContext: () => makeCtx(),
+        runners: {},
+        ...over,
+    };
+}
+
+describe('PlaybackRunner — thứ tự & tuyến tính (P2/P3/P4)', () => {
+    it('gọi runner theo đúng thứ tự steps', async () => {
+        const calls: string[] = [];
+        const mk = (id: string): RecipeRunner => async () => { calls.push(id); };
+        const recipe = createRecipe('R', [step('convertcolors'), step('booklet'), step('optimize')]);
+        const res = await runRecipe(recipe, baseDeps({
+            runners: { convertcolors: mk('convertcolors'), booklet: mk('booklet'), optimize: mk('optimize') },
+        }));
+        expect(calls).toEqual(['convertcolors', 'booklet', 'optimize']);
+        expect(res.ok).toBe(true);
+        expect(res.completed).toBe(3);
+    });
+
+    it('ép onSpawnTab=undefined trong ctx truyền cho runner (P3)', async () => {
+        let seenSpawn: unknown = 'unset';
+        const recipe = createRecipe('R', [step('booklet')]);
+        await runRecipe(recipe, baseDeps({
+            buildContext: () => makeCtx({ onSpawnTab: vi.fn() }),
+            runners: { booklet: async (ctx) => { seenSpawn = ctx.onSpawnTab; } },
+        }));
+        expect(seenSpawn).toBeUndefined();
+    });
+
+    it('await tuần tự: bước kế chỉ bắt đầu sau khi bước trước resolve (P4)', async () => {
+        const events: string[] = [];
+        const slow: RecipeRunner = async () => {
+            events.push('start-A');
+            await new Promise(r => setTimeout(r, 20));
+            events.push('end-A');
+        };
+        const fast: RecipeRunner = async () => { events.push('start-B'); };
+        const recipe = createRecipe('R', [step('booklet'), step('optimize')]);
+        await runRecipe(recipe, baseDeps({ runners: { booklet: slow, optimize: fast } }));
+        expect(events).toEqual(['start-A', 'end-A', 'start-B']);
+    });
+});
+
+describe('PlaybackRunner — lọc an toàn (P6/P7)', () => {
+    it('bỏ qua step recordable=false + cảnh báo', async () => {
+        const onWarn = vi.fn();
+        const runner = vi.fn(async () => {});
+        const recipe = createRecipe('R', [
+            step('crop', { recordable: false }),
+            step('booklet'),
+        ]);
+        const res = await runRecipe(recipe, baseDeps({ runners: { booklet: runner, crop: runner }, onWarn }));
+        expect(runner).toHaveBeenCalledTimes(1); // chỉ booklet chạy
+        expect(res.skipped).toBe(1);
+        expect(res.skippedSteps[0].reason).toBe('non_recordable');
+        expect(onWarn).toHaveBeenCalledWith(expect.objectContaining({ opId: 'crop' }), 'non_recordable');
+    });
+
+    it('step cần input ngoài: gọi requestExternalInput; thiếu input → bỏ qua', async () => {
+        const runner = vi.fn(async () => {});
+        const recipe = createRecipe('R', [step('merge', { needsExternalInput: 'file' })]);
+        const res = await runRecipe(recipe, baseDeps({
+            runners: { merge: runner },
+            requestExternalInput: async () => null, // người dùng hủy
+        }));
+        expect(runner).not.toHaveBeenCalled();
+        expect(res.skippedSteps[0].reason).toBe('missing_input');
+    });
+
+    it('step cần input ngoài: có input → truyền ext vào runner', async () => {
+        const f = new File([new Uint8Array([2])], 'b.pdf');
+        let seen: unknown = null;
+        const recipe = createRecipe('R', [step('merge', { needsExternalInput: 'file' })]);
+        await runRecipe(recipe, baseDeps({
+            runners: { merge: async (_c, _p, ext) => { seen = ext; } },
+            requestExternalInput: async () => ({ files: [f] }),
+        }));
+        expect(seen).toEqual({ files: [f] });
+    });
+
+    it('opId không có runner → bỏ qua (unsupported_op)', async () => {
+        const recipe = createRecipe('R', [step('ocr')]);
+        const res = await runRecipe(recipe, baseDeps({ runners: {} }));
+        expect(res.skippedSteps[0].reason).toBe('unsupported_op');
+        expect(res.ok).toBe(true);
+    });
+});
+
+describe('PlaybackRunner — dừng sạch khi lỗi (P8)', () => {
+    it('runner throw → dừng, các bước kế không chạy', async () => {
+        const calls: string[] = [];
+        const recipe = createRecipe('R', [step('booklet'), step('optimize')]);
+        const res = await runRecipe(recipe, baseDeps({
+            runners: {
+                booklet: async () => { calls.push('booklet'); throw new Error('boom'); },
+                optimize: async () => { calls.push('optimize'); },
+            },
+        }));
+        expect(calls).toEqual(['booklet']);
+        expect(res.ok).toBe(false);
+        expect(res.failedStep?.index).toBe(0);
+        expect(res.failedStep?.error).toContain('boom');
+    });
+
+    it('runner báo lỗi qua ctx.setError → coi như thất bại, dừng', async () => {
+        const calls: string[] = [];
+        const recipe = createRecipe('R', [step('booklet'), step('optimize')]);
+        const res = await runRecipe(recipe, baseDeps({
+            runners: {
+                booklet: async (ctx) => { calls.push('booklet'); ctx.setError('Lỗi xử lý'); },
+                optimize: async () => { calls.push('optimize'); },
+            },
+        }));
+        expect(calls).toEqual(['booklet']);
+        expect(res.ok).toBe(false);
+        expect(res.failedStep?.error).toBe('Lỗi xử lý');
+    });
+
+    it('setError("") (xóa lỗi) KHÔNG bị coi là thất bại', async () => {
+        const recipe = createRecipe('R', [step('booklet')]);
+        const res = await runRecipe(recipe, baseDeps({
+            runners: { booklet: async (ctx) => { ctx.setError(''); } },
+        }));
+        expect(res.ok).toBe(true);
+        expect(res.completed).toBe(1);
+    });
+});
+
+describe('PlaybackRunner — tiến trình', () => {
+    it('onProgress báo index/total cho mỗi bước chạy', async () => {
+        const prog: number[] = [];
+        const recipe = createRecipe('R', [step('booklet'), step('crop', { recordable: false }), step('optimize')]);
+        await runRecipe(recipe, baseDeps({
+            runners: { booklet: async () => {}, optimize: async () => {} },
+            onProgress: ({ index, total }) => { prog.push(index); expect(total).toBe(3); },
+        }));
+        // crop (index 1) bị bỏ qua nên không báo progress
+        expect(prog).toEqual([0, 2]);
+    });
+});

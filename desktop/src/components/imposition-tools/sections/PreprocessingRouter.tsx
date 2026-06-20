@@ -43,7 +43,7 @@ const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }
     pdfx: { icon: '📄', title: 'Xuất PDF/X', desc: 'Kiểm tra & xuất chuẩn PDF/X-1a hoặc PDF/X-4.' },
     ocr: { icon: '🔍', title: 'OCR Searchable PDF', desc: 'Nhúng lớp text vô hình để tìm kiếm, bôi đen, copy chữ.' },
     optimize: { icon: '📦', title: 'Nén / Tối ưu PDF', desc: 'Giảm dung lượng file, nén ảnh, gỡ metadata thừa.' },
-    sticker: { icon: '🔪', title: 'Bù xén - tạo đường cắt', desc: 'Quét hình ảnh, tự động offset viền và tràn lề cho tem nhãn.' },
+    sticker: { icon: '🔪', title: 'Bù xén - Tạo đường cắt', desc: 'Quét hình ảnh, tự động offset viền và tràn lề cho tem nhãn.' },
     bgremover: { icon: '✨', title: 'Tách nền AI', desc: 'Sử dụng AI siêu nét để bóc tách nền tóc, lưới, chi tiết mảnh.' },
     datamerge: { icon: '🔤', title: 'Trộn dữ liệu VDP', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để kéo thả vùng in và nạp dữ liệu.' },
     numbering: { icon: '🔢', title: 'Nhảy số tự động', desc: 'Vui lòng sử dụng Không gian thiết kế ở màn hình bên phải để cấu hình số nhảy.' },

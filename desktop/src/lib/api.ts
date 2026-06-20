@@ -186,8 +186,6 @@ export async function createCompareJob(data: {
   file_b_id: string;
   comparison_mode?: string;
   is_packaging_mode?: boolean;
-  llm_mode?: string;
-  llm_api_key?: string;
   tolerance?: string;
   dpi?: number;
 }) {
@@ -201,8 +199,6 @@ export async function createCompareJob(data: {
       dpi: data.dpi || 150,
       comparison_mode: data.comparison_mode || 'full',
       is_packaging_mode: data.is_packaging_mode || false,
-      llm_mode: data.llm_mode || 'off',
-      llm_api_key: data.llm_api_key || '',
       highlight_color: '#FF0000',
     }),
   });
@@ -370,7 +366,11 @@ export async function downloadNupJob(jobId: string): Promise<Blob> {
 /** Upload a File to backend and get its server-side path */
 export async function uploadFileForNup(pdfFile: File): Promise<string> {
   const formData = new FormData();
-  formData.append('file', pdfFile);
+  // FIX: Tauri tạo File "giả" 0 byte (file.size bị spoof) → nếu append thẳng sẽ upload
+  // file RỖNG khiến server ghi 0 byte và pdf-meta lỗi "unable to find trailer dictionary".
+  // prepareFileForUpload đọc lại nội dung thật từ đĩa khi blob rỗng.
+  const realFile = await prepareFileForUpload(pdfFile);
+  formData.append('file', realFile, pdfFile.name);
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/upload`, {
     method: 'POST',
     body: formData,

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput, ToolInfo } from './ToolUI';
 
 interface Props {
@@ -50,6 +51,12 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
 
         try {
             const realFile = await prepareFileForUpload((await getWorkingFile()) || pdfFile);
+            recipeRecorder.noteOperation('optimize', {
+                preset,
+                image_dpi: imageDpi,
+                strip_metadata: stripMetadata,
+                grayscale,
+            });
             const formData = new FormData();
             formData.append('file', realFile, pdfFile.name);
             formData.append('preset', preset);
@@ -83,6 +90,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
                 onFileFixed(blob, newName);
             }
         } catch (e: any) {
+            recipeRecorder.discardPending();
             setError(e.message || 'Đã xảy ra lỗi không xác định.');
             setProgress('');
         } finally {

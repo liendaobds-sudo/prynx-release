@@ -38,7 +38,8 @@ if ((window as any).__TAURI__) {
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
-  sendDefaultPii: true,
+  // F8 FIX: KHÔNG gửi PII mặc định (IP, dữ liệu request...) lên Sentry — riêng tư khách hàng.
+  sendDefaultPii: false,
   // Add useful tags for desktop apps
   environment: import.meta.env.MODE || 'development',
 });

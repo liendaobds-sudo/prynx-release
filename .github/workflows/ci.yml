@@ -27,7 +27,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short || true
+        run: python -m pytest tests/ -v --tb=short
 
   preflight-qa:
     name: Preflight QA (golden + regression)
@@ -71,7 +71,58 @@ jobs:
         run: npm ci
 
       - name: TypeScript check
-        run: npx tsc --noEmit || true
+        run: npx tsc --noEmit
 
       - name: Lint
-        run: npm run lint || true
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: pip-audit backend
+        run: pip-audit -r backend/requirements.txt --progress-spinner off
+
+  release-integrity-gate:
+    name: Release Integrity Gate
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enforce PRYNX_SIDECAR_HASH
+        run: |
+          if [ -z "$PRYNX_SIDECAR_HASH" ]; then
+            echo "ERROR: PRYNX_SIDECAR_HASH is not set. Cannot build release without integrity hash."
+            exit 1
+          fi
+        env:
+          PRYNX_SIDECAR_HASH: ${{ secrets.PRYNX_SIDECAR_HASH }}
+
+      - name: Enforce PRYNX_FRONTEND_HASH
+        run: |
+          if [ -z "$PRYNX_FRONTEND_HASH" ]; then
+            echo "ERROR: PRYNX_FRONTEND_HASH is not set. Cannot build release without integrity hash."
+            exit 1
+          fi
+        env:
+          PRYNX_FRONTEND_HASH: ${{ secrets.PRYNX_FRONTEND_HASH }}

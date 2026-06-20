@@ -5,7 +5,8 @@
 
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { useBoxStore } from '../../store/useBoxStore';
-import { DielineModel, PathSegment, Panel, PathTag, Point2D } from '../../lib/dieline/types';
+import { DielineModel, PathSegment, Panel } from '../../lib/dieline/types';
+import { buildChains, chainToSvgD, computeEnvelopeDims, deriveLegendTags } from '../../lib/dieline/sharedGeometry';
 // Desktop: no auth/settings needed — all features available
 
 // Màu sắc và style cho từng loại nét
@@ -124,14 +125,18 @@ export default function DielineCanvas2D() {
                 <span className="dt-sheet-size">
                     Khổ trải: {dieline.boundingBox.width.toFixed(1)} × {dieline.boundingBox.height.toFixed(1)} mm
                 </span>
-                {/* Legend */}
+                {/* Legend — chỉ hiển thị tag thực sự có trong file (phương án B) */}
                 <div className="dt-legend">
-                    {Object.entries(PATH_STYLES).map(([tag, style]) => (
-                        <span key={tag} className="dt-legend-item">
-                            <span className="dt-legend-line" style={{ backgroundColor: style.stroke }} />
-                            {style.label}
-                        </span>
-                    ))}
+                    {[...deriveLegendTags(dieline)].map((tag) => {
+                        const style = PATH_STYLES[tag];
+                        if (!style) return null;
+                        return (
+                            <span key={tag} className="dt-legend-item">
+                                <span className="dt-legend-line" style={{ backgroundColor: style.stroke }} />
+                                {style.label}
+                            </span>
+                        );
+                    })}
                 </div>
             </div>
 
@@ -209,66 +214,7 @@ function PreviewThumbnail({ boxType }: { boxType: string }) {
     );
 }
 
-// ── Chain helpers (dùng chung logic với exportPDF.ts) ──
-const ptEq = (a: Point2D, b: Point2D) => Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01;
-
-function segEndpoints(seg: PathSegment): [Point2D, Point2D] {
-    if (seg.type === 'bezier' && seg.controlPoints) {
-        return [seg.controlPoints[0], seg.controlPoints[3]];
-    }
-    return [seg.points[0], seg.points[seg.points.length - 1]];
-}
-
-function segContinuation(seg: PathSegment): string {
-    if (seg.type === 'bezier' && seg.controlPoints) {
-        const [, cp1, cp2, p3] = seg.controlPoints;
-        return `C ${cp1.x},${cp1.y} ${cp2.x},${cp2.y} ${p3.x},${p3.y}`;
-    }
-    return seg.points.slice(1).map(p => `L ${p.x},${p.y}`).join(' ');
-}
-
-function buildChains(segments: PathSegment[]): { tag: PathTag; segs: PathSegment[] }[] {
-    const chains: { tag: PathTag; segs: PathSegment[] }[] = [];
-    const used = new Set<number>();
-
-    for (let i = 0; i < segments.length; i++) {
-        if (used.has(i)) continue;
-        const chain: PathSegment[] = [segments[i]];
-        used.add(i);
-
-        // Mở rộng chain: tìm segment tiếp theo có endpoint trùng + cùng tag
-        let extended = true;
-        while (extended) {
-            extended = false;
-            const [, chainEnd] = segEndpoints(chain[chain.length - 1]);
-            for (let j = 0; j < segments.length; j++) {
-                if (used.has(j)) continue;
-                if (segments[j].tag !== chain[0].tag) continue;
-                const [jStart] = segEndpoints(segments[j]);
-                if (ptEq(chainEnd, jStart)) {
-                    chain.push(segments[j]);
-                    used.add(j);
-                    extended = true;
-                    break;
-                }
-            }
-        }
-        chains.push({ tag: chain[0].tag, segs: chain });
-    }
-    return chains;
-}
-
-function chainToSvgD(chain: PathSegment[]): string {
-    const [start] = segEndpoints(chain[0]);
-    let d = `M ${start.x},${start.y} ` + segContinuation(chain[0]);
-    for (let i = 1; i < chain.length; i++) {
-        d += ' ' + segContinuation(chain[i]);
-    }
-    const [chainStart] = segEndpoints(chain[0]);
-    const [, chainEnd] = segEndpoints(chain[chain.length - 1]);
-    if (ptEq(chainStart, chainEnd) && chain.length > 1) d += ' Z';
-    return d;
-}
+// ── Chain helpers: dùng chung từ sharedGeometry.ts (buildChains / chainToSvgD) ──
 
 /** Renderer liền mạch — gom segments cùng tag + endpoint trùng thành 1 SVG path */
 function ChainedPathRenderer({ paths }: { paths: PathSegment[] }) {
@@ -604,11 +550,9 @@ function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: Dieline
 
     // ── ENVELOPE: dimensions riêng ──
     if (boxType === 'envelope') {
-        const { envW, envH, envFH, envSF, envStyle, envFlapShape } = dieline.params;
+        const { envW, envH, envStyle } = dieline.params;
         const isVertical = envStyle === 'pocket';
-        const flapRef = envH;
-        const FH = envFH > 0 ? envFH : (envFlapShape === 'straight' ? 30 : Math.round(flapRef * 0.45));
-        const SF = envSF > 0 ? envSF : Math.max(10, Math.min(15, Math.round(flapRef * 0.12)));
+        const { FH, SF } = computeEnvelopeDims(dieline.params);
         const rightX = bb.maxX + offset * 3;
         const topY = bb.maxY + offset * 3;
 

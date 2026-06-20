@@ -191,6 +191,9 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
     // Global flag
     React.useEffect(() => {
         (window as any).__isBgRemoverActive = true;
+        // Nạp sẵn model AI ngay khi mở công cụ (chạy nền) → lần bấm Tách Nền đầu
+        // không phải chờ cold-start ~25s. Fire-and-forget, lỗi bỏ qua.
+        fetch(`${getApiUrl()}/pdf-tools/remove-background/warmup`, { method: 'POST' }).catch(() => {});
         return () => { (window as any).__isBgRemoverActive = false; };
     }, []);
 

@@ -36,9 +36,14 @@ const ADVANCED_PARAMS: ParamConfig[] = [
 
 
 export default function ParamPanel() {
-    const { params, setParam, setParams, dieline, snapLockWarning, clampVersion, mockupTextureUrl, setMockupTextureUrl } = useBoxStore();
+    const { params, setParam, setParams, dieline, clampVersion, mockupTextureUrl, setMockupTextureUrl } = useBoxStore();
     const [showAdvanced, setShowAdvanced] = React.useState(false);
     const [showExtra, setShowExtra] = React.useState(false);
+
+    // Cảnh báo hiển thị được dẫn xuất DUY NHẤT từ model.warnings (Requirement 3.4)
+    const snapLockWarning = dieline?.warnings && dieline.warnings.length > 0
+        ? dieline.warnings.join('. ')
+        : null;
 
 
 

@@ -9,11 +9,12 @@ import { generatePizzaBox } from '../lib/dieline/PizzaBox';
 import { generateEnvelope } from '../lib/dieline/Envelope';
 import { generateMatchboxTray } from '../lib/dieline/MatchboxTray';
 import { validateParams } from '../lib/dieline/validateParams';
+import { attachWarnings } from '../lib/dieline/attachWarnings';
 import { NestingConfig, NestingResult, DEFAULT_NESTING_CONFIG } from '../lib/dieline/nestingTypes';
 import { calculateNesting } from '../lib/dieline/nestingEngine';
 
-/** Route sang đúng engine dựa vào boxType */
-function generateDieline(params: BoxParams): DielineModel {
+/** Route sang đúng engine dựa vào boxType (không gắn warnings) */
+function dispatchGenerator(params: BoxParams): DielineModel {
     switch (params.boxType) {
         case 'slb':
             return generateSnapLockBottom(params);
@@ -33,6 +34,22 @@ function generateDieline(params: BoxParams): DielineModel {
         default:
             return generateReverseTuckEnd(params);
     }
+}
+
+/**
+ * Lớp dispatch sinh dieline: kiểm tra params, sinh mô hình, rồi hợp nhất
+ * mọi cảnh báo (từ validateParams + snap-lock khi sinh) vào `model.warnings`.
+ *
+ * - Nếu `validateParams` ném lỗi → lan truyền lỗi cho phía gọi, KHÔNG tạo
+ *   model với `warnings` thiếu/sai (Requirement 3.7).
+ * - Sau khi chạy, `model.warnings` luôn là một mảng (rỗng nếu không có cảnh báo).
+ *
+ * _Requirements: 3.1, 3.2, 3.3, 3.5, 3.7_
+ */
+function generateDieline(rawParams: BoxParams, changedKey?: keyof BoxParams): DielineModel {
+    const { params, warnings } = validateParams(rawParams, changedKey);
+    const model = dispatchGenerator(params);
+    return attachWarnings(model, warnings);
 }
 
 /** Tính nesting từ dieline + config */
@@ -276,7 +293,6 @@ interface BoxStore {
     foldProgress: number;
     viewMode: '2d' | '3d' | 'split';
     isAnimating: boolean;
-    snapLockWarning: string | null;
     clampVersion: number;
     nestingConfig: NestingConfig;
     nestingResult: NestingResult | null;
@@ -303,7 +319,6 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
     foldProgress: 1,
     viewMode: 'split',
     isAnimating: false,
-    snapLockWarning: null,
     clampVersion: 0,
     nestingConfig: { ...DEFAULT_NESTING_CONFIG },
     nestingResult: recalcNesting(initialDieline, DEFAULT_NESTING_CONFIG),
@@ -356,9 +371,10 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
                 rawParams.sleeveGlue = 15;
             }
         }
-        const { params: validParams, warnings, wasClamped } = validateParams(rawParams, key);
-        const warning = warnings.length > 0 ? warnings.join('. ') : null;
-        const dieline = generateDieline(validParams);
+        const { params: validParams, wasClamped } = validateParams(rawParams, key);
+        // generateDieline tự kiểm tra lại (cùng changedKey) và hợp nhất warnings
+        // vào model.warnings — đây là nguồn cảnh báo DUY NHẤT cho UI (Requirement 3.4).
+        const dieline = generateDieline(rawParams, key);
 
         const forceRerender = key === 'boxType';
         const nestingConfig = get().nestingConfig;
@@ -374,7 +390,6 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
         set({
             params: validParams,
             dieline,
-            snapLockWarning: warning,
             clampVersion: (wasClamped || forceRerender) ? get().clampVersion + 1 : get().clampVersion,
             nestingResult: dualResult ? dualResult.tray : recalcNesting(dieline, nestingConfig),
             sleeveNestingResult: dualResult ? dualResult.sleeve : null,
@@ -383,9 +398,8 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
 
     setParams: (updates) => {
         const rawParams = { ...get().params, ...updates };
-        const { params: validParams, warnings } = validateParams(rawParams);
-        const warning = warnings.length > 0 ? warnings.join('. ') : null;
-        const dieline = generateDieline(validParams);
+        const { params: validParams } = validateParams(rawParams);
+        const dieline = generateDieline(rawParams);
 
         const nestingConfig = get().nestingConfig;
         const isTray = validParams.boxType === 'tray';
@@ -400,7 +414,6 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
         set({
             params: validParams,
             dieline,
-            snapLockWarning: warning,
             nestingResult: dualResult ? dualResult.tray : recalcNesting(dieline, nestingConfig),
             sleeveNestingResult: dualResult ? dualResult.sleeve : null,
         });

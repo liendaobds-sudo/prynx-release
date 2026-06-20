@@ -2,7 +2,9 @@
 FastAPI application entry point.
 """
 import logging
+import os
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -14,10 +16,35 @@ from app.database import engine, Base
 from app.api.routes import upload, compare, results, ws, qc
 
 # ── Logging ──
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# stdout (dev/console) + file xoay vòng (production: stdout mất khi process die).
+_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
+
+
+def _attach_file_log() -> None:
+    """Gắn RotatingFileHandler vào %APPDATA%/PrynX/logs/app.log (best-effort).
+
+    Cùng thư mục với security.log để ops gom 1 chỗ. Lỗi setup KHÔNG được làm
+    chết startup → nuốt, vẫn còn stdout.
+    """
+    try:
+        base = os.environ.get("APPDATA") or os.environ.get("HOME") or os.path.expanduser("~")
+        log_dir = os.path.join(base, "PrynX", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        handler = RotatingFileHandler(
+            os.path.join(log_dir, "app.log"),
+            maxBytes=5 * 1024 * 1024,  # 5 MB / file
+            backupCount=5,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+        handler.setLevel(logging.INFO)
+        logging.getLogger().addHandler(handler)
+    except Exception:  # pragma: no cover - best-effort, không chặn startup
+        logging.getLogger(__name__).warning("Không gắn được file log, chỉ dùng stdout", exc_info=True)
+
+
+_attach_file_log()
 logger = logging.getLogger(__name__)
 
 

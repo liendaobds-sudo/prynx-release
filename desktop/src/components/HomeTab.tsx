@@ -278,7 +278,12 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                         {/* TEXT */}
                         <div className="text-center xl:text-left flex-1 min-w-0">
                             <h2 className={`font-black text-slate-800 dark:text-white tracking-tight ${hasRecentFiles ? 'text-2xl mb-1' : 'text-2xl md:text-3xl mb-2 md:mb-3'}`}>Mở File PDF</h2>
-                            <p className="text-slate-500 dark:text-zinc-400 font-medium text-[13px] md:text-[14px] leading-relaxed w-full">Click chọn hoặc kéo thả File PDF vào vùng này để bắt đầu.<br />Không gian làm việc (Workspace) sẽ mở ra ngay lập tức.</p>
+                            <p className="text-slate-500 dark:text-zinc-400 font-medium text-[13px] md:text-[14px] leading-relaxed w-full">Click chọn hoặc kéo thả File PDF vào vùng này để bắt đầu.</p>
+                            <p className="mt-2 text-[12px] md:text-[13px] text-slate-400 dark:text-zinc-500 font-medium flex items-center gap-1.5 justify-center xl:justify-start">
+                                <span>Nhấn</span>
+                                <kbd className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-white/15 text-[11px] font-semibold text-slate-600 dark:text-zinc-300">Ctrl + N</kbd>
+                                <span>để tạo trang trắng mới.</span>
+                            </p>
                         </div>
                     </div>
 

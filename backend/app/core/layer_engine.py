@@ -909,8 +909,8 @@ class LayerEngine:
         finally:
             try:
                 os.unlink(tmp_path)
-            except Exception:
-                pass
+            except OSError as _e:
+                logger.debug("Không xoá được temp %s: %s", tmp_path, _e)
 
     def _strip_hidden_objects(self, doc, page_num: int, hidden_object_keys: list[str]):
         """

@@ -103,6 +103,15 @@ class ImageComparator:
         # Step 1.5: Ensure same dimensions if standard 1:1 mode
         img1, img2 = self._normalize_dimensions(img1, img2)
 
+        # Step 1.6: Căn chỉnh dịch chuyển (registration) — bù lệch vài px giữa A/B
+        # (render khác nhau, page box lệch...) để tránh absdiff bùng viền giả.
+        img2 = self._align_to(img1, img2)
+
+        # Ngưỡng diện tích nhiễu scale theo DPI (gốc 50px² @150DPI). Ở 300DPI mật độ
+        # pixel gấp 4 → ngưỡng ×4 để mức lọc nhiễu tương đương giữa các DPI.
+        dpi = (config or {}).get("dpi", 150) or 150
+        eff_min_area = max(1, int(min_contour_area * (dpi / 150.0) ** 2))
+
         # Step 2: Convert to grayscale for SSIM
         gray1 = cv2.cvtColor(img1, cv2.COLOR_RGB2GRAY) if len(img1.shape) == 3 else img1
         gray2 = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY) if len(img2.shape) == 3 else img2
@@ -155,7 +164,7 @@ class ImageComparator:
         regions = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < min_contour_area:
+            if area < eff_min_area:
                 continue
             x, y, w, h = cv2.boundingRect(contour)
             severity = self._classify_severity(area, total_pixels)
@@ -350,6 +359,32 @@ class ImageComparator:
         # Blend overlay
         result = cv2.addWeighted(overlay, overlay_alpha, image, 1 - overlay_alpha, 0)
         return result
+
+    def _align_to(self, ref: np.ndarray, mov: np.ndarray) -> np.ndarray:
+        """Căn chỉnh dịch chuyển `mov` cho khớp `ref` bằng phase correlation.
+
+        Chỉ bù DỊCH (translation) nhỏ — không xoay/co giãn — để tránh báo khác biệt
+        giả khi 2 trang lệch vài pixel. An toàn: bỏ qua nếu tương quan yếu (có thể là
+        2 trang khác nội dung) hoặc dịch quá lớn (vượt ngưỡng → không phải lệch nhỏ).
+        Dùng BORDER_REPLICATE để không tạo viền đen gây diff mới.
+        """
+        try:
+            g1 = cv2.cvtColor(ref, cv2.COLOR_RGB2GRAY) if ref.ndim == 3 else ref
+            g2 = cv2.cvtColor(mov, cv2.COLOR_RGB2GRAY) if mov.ndim == 3 else mov
+            h, w = g1.shape[:2]
+            (dx, dy), resp = cv2.phaseCorrelate(np.float32(g1), np.float32(g2))
+            max_shift = max(8.0, 0.02 * max(h, w))
+            if resp < 0.2:
+                return mov  # tương quan yếu → có thể khác nội dung, không ép dịch
+            if abs(dx) > max_shift or abs(dy) > max_shift:
+                return mov  # lệch quá lớn → không phải "lệch nhỏ", giữ nguyên
+            if abs(dx) < 0.5 and abs(dy) < 0.5:
+                return mov  # gần như không lệch
+            M = np.float32([[1, 0, -dx], [0, 1, -dy]])
+            return cv2.warpAffine(mov, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        except Exception as e:
+            logger.warning(f"Image alignment skipped: {e}")
+            return mov
 
     def _normalize_dimensions(
         self, img1: np.ndarray, img2: np.ndarray

@@ -24,8 +24,8 @@ class CompareRequest(BaseModel):
     dpi: int = Field(default=300, ge=72, le=600)
     highlight_color: str = Field(default="#FF0000")
     is_packaging_mode: bool = Field(default=False)
-    llm_mode: str = Field(default="off", pattern="^(off|gemini|openai|deepseek)$")
-    llm_api_key: str = Field(default="")
+    # (Đã gỡ llm_mode/llm_api_key: QC AI tách sang endpoint /qc/check-text, không
+    #  còn dùng trong luồng so sánh ảnh.)
 
 
 class JobResponse(BaseModel):

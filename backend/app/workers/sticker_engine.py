@@ -24,6 +24,78 @@ from app.workers.cutline_geometry import (  # noqa: E402
 )
 
 
+def _bleed_roi_bbox(mask, margin: int = 8):
+    """Bounding box (y0, y1, x0, x1) của vùng mask>0, nới thêm `margin` px và
+    kẹp trong biên ảnh. Trả None nếu mask rỗng.
+
+    Dùng để giới hạn tính toán bleed (distance_transform_edt / cv2.inpaint)
+    quanh mép hình thay vì chạy trên cả canvas (có nhiều vùng trống ở rìa).
+    """
+    ys, xs = np.where(mask > 0)
+    if ys.size == 0:
+        return None
+    h, w = mask.shape[:2]
+    y0 = max(0, int(ys.min()) - margin)
+    y1 = min(h, int(ys.max()) + 1 + margin)
+    x0 = max(0, int(xs.min()) - margin)
+    x1 = min(w, int(xs.max()) + 1 + margin)
+    return y0, y1, x0, x1
+
+
+def _downscale_factor(h: int, w: int, max_dim: int = 1000) -> int:
+    """Hệ số hạ mẫu để cạnh dài ≲ max_dim (1 = không hạ)."""
+    longest = max(h, w)
+    return int(math.ceil(longest / max_dim)) if longest > max_dim else 1
+
+
+def _nearest_color_fill(sub_src, sub_img, max_dim: int = 1000):
+    """Lấp màu nearest-neighbor từ vùng có màu (sub_src>0) ra toàn ROI
+    ('Kéo giãn mép ảnh'). Tự HẠ ĐỘ PHÂN GIẢI khi ROI lớn để tăng tốc EDT.
+
+    An toàn về thành phẩm: vùng bleed bị xén bỏ và artwork (vector) nằm TRÊN
+    (clip theo footprint) nên sai số mép do hạ mẫu không lộ ra bản in.
+    """
+    from scipy.ndimage import distance_transform_edt
+    sh, sw = sub_src.shape[:2]
+    f = _downscale_factor(sh, sw, max_dim)
+    if f > 1:
+        small_src = cv2.resize(sub_src, (max(1, sw // f), max(1, sh // f)), interpolation=cv2.INTER_NEAREST)
+        if np.count_nonzero(small_src) > 0:
+            small_img = cv2.resize(sub_img, (small_src.shape[1], small_src.shape[0]), interpolation=cv2.INTER_AREA)
+            _, idx = distance_transform_edt(small_src == 0, return_indices=True)
+            small_colors = small_img[idx[0], idx[1], :]
+            return cv2.resize(small_colors, (sw, sh), interpolation=cv2.INTER_LINEAR)
+    _, idx = distance_transform_edt(sub_src == 0, return_indices=True)
+    return sub_img[idx[0], idx[1], :]
+
+
+def _inpaint_color_fill(sub_img, sub_pmask, sub_csm, sub_bleed, max_dim: int = 900):
+    """Lấp màu bằng cv2.inpaint ('Làm mượt thông minh') trên ROI, có HẠ ĐỘ PHÂN
+    GIẢI khi lớn (inpaint là phép chậm nhất). Cùng lý do an toàn như trên."""
+    from scipy.ndimage import distance_transform_edt
+    sh, sw = sub_img.shape[:2]
+    f = _downscale_factor(sh, sw, max_dim)
+    if f > 1:
+        nw, nh = max(1, sw // f), max(1, sh // f)
+        s_img = cv2.resize(sub_img, (nw, nh), interpolation=cv2.INTER_AREA)
+        s_pmask = cv2.resize(sub_pmask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+        s_csm = cv2.resize(sub_csm, (nw, nh), interpolation=cv2.INTER_NEAREST)
+        s_bleed = cv2.resize(sub_bleed, (nw, nh), interpolation=cv2.INTER_NEAREST)
+    else:
+        s_img, s_pmask, s_csm, s_bleed = sub_img, sub_pmask, sub_csm, sub_bleed
+
+    bg_fill = (s_pmask == 0)
+    s_filled = s_img.copy()
+    if bg_fill.any() and (~bg_fill).any():
+        _, fi = distance_transform_edt(bg_fill, return_indices=True)
+        s_filled[bg_fill] = s_img[fi[0][bg_fill], fi[1][bg_fill]]
+    mask_for_inpaint = cv2.subtract(s_bleed, s_csm)
+    out = cv2.inpaint(s_filled, mask_for_inpaint, 3, cv2.INPAINT_NS)
+    if f > 1:
+        out = cv2.resize(out, (sw, sh), interpolation=cv2.INTER_LINEAR)
+    return out
+
+
 class StickerEngine:
     def __init__(self, dpi: int = 300, debug: bool = False):
         self.dpi = dpi
@@ -173,6 +245,7 @@ class StickerEngine:
                 mask_bytes_data = None
                 img_pil = None
                 bleed_ring = None
+                sticker_footprint = None
                 is_bleed_cmyk = False
                 
                 # ============================================================
@@ -385,22 +458,28 @@ class StickerEngine:
                         
                         is_bleed_cmyk = False
                         if bleed_color_type == "image":
-                            from scipy.ndimage import distance_transform_edt
-                            bg_mask = (color_source_mask == 0)
-                            dist, indices = distance_transform_edt(bg_mask, return_indices=True)
-                            bleed_colors = padded_img[indices[0], indices[1], :]
+                            # 'Kéo giãn mép ảnh' — nearest-color, chỉ chạy trên ROI + hạ mẫu khi lớn.
+                            roi = _bleed_roi_bbox(bleed_mask, margin=8)
+                            bleed_colors = np.zeros_like(padded_img)
+                            if roi is not None:
+                                y0, y1, x0, x1 = roi
+                                bleed_colors[y0:y1, x0:x1] = _nearest_color_fill(
+                                    color_source_mask[y0:y1, x0:x1], padded_img[y0:y1, x0:x1]
+                                )
+                            else:
+                                bleed_colors = _nearest_color_fill(color_source_mask, padded_img)
                         elif bleed_color_type == "inpaint":
-                            # Pre-fill padding area with nearest artwork colors to prevent
-                            # white fringe from the white padding pixels biasing cv2.inpaint
-                            from scipy.ndimage import distance_transform_edt
-                            bg_fill = (padded_mask == 0)
-                            _, fill_indices = distance_transform_edt(bg_fill, return_indices=True)
-                            padded_img_filled = padded_img.copy()
-                            padded_img_filled[bg_fill] = padded_img[fill_indices[0][bg_fill], fill_indices[1][bg_fill]]
-                            
-                            mask_for_inpaint = cv2.subtract(bleed_mask, color_source_mask)
-                            inpainted = cv2.inpaint(padded_img_filled, mask_for_inpaint, 3, cv2.INPAINT_NS)
-                            bleed_colors = inpainted
+                            # 'Làm mượt thông minh' — cv2.inpaint, chỉ chạy trên ROI + hạ mẫu khi lớn.
+                            roi = _bleed_roi_bbox(bleed_mask, margin=8)
+                            bleed_colors = np.zeros_like(padded_img)
+                            if roi is not None:
+                                y0, y1, x0, x1 = roi
+                                bleed_colors[y0:y1, x0:x1] = _inpaint_color_fill(
+                                    padded_img[y0:y1, x0:x1], padded_mask[y0:y1, x0:x1],
+                                    color_source_mask[y0:y1, x0:x1], bleed_mask[y0:y1, x0:x1],
+                                )
+                            else:
+                                bleed_colors = _inpaint_color_fill(padded_img, padded_mask, color_source_mask, bleed_mask)
                         else:
                             if len(solid_bleed_color) == 4:
                                 is_bleed_cmyk = True
@@ -483,51 +562,42 @@ class StickerEngine:
                     page_content_stream.append(f"{str(img_name)} Do")
                     page_content_stream.append("Q")
 
-                # LAYER 2 (TOP): Original artwork with transparency mask
-                if bleed_stream_data and padded_original_mask is not None:
-                    # Use raster artwork with SMask to make white bg transparent
-                    # This preserves artwork content while allowing bleed to show through
-                    from PIL import Image as PILImage
-                    art_byte_arr = io.BytesIO()
-                    art_pil = PILImage.fromarray(padded_img, mode='RGB')
-                    art_pil.save(art_byte_arr, format='JPEG', quality=95)
-                    art_stream_data = art_byte_arr.getvalue()
-                    
-                    art_mask_data = zlib.compress(sticker_footprint.tobytes())
-                    art_mask_obj = pikepdf.Stream(doc_out, art_mask_data)
-                    art_mask_obj.Type = pikepdf.Name.XObject
-                    art_mask_obj.Subtype = pikepdf.Name.Image
-                    art_mask_obj.Width = sticker_footprint.shape[1]
-                    art_mask_obj.Height = sticker_footprint.shape[0]
-                    art_mask_obj.ColorSpace = pikepdf.Name.DeviceGray
-                    art_mask_obj.BitsPerComponent = 8
-                    art_mask_obj.Filter = pikepdf.Name.FlateDecode
-                    
-                    art_obj = pikepdf.Stream(doc_out, art_stream_data)
-                    art_obj.Type = pikepdf.Name.XObject
-                    art_obj.Subtype = pikepdf.Name.Image
-                    art_obj.Width = art_pil.width
-                    art_obj.Height = art_pil.height
-                    art_obj.ColorSpace = pikepdf.Name.DeviceRGB
-                    art_obj.BitsPerComponent = 8
-                    art_obj.Filter = pikepdf.Name.DCTDecode
-                    art_obj.SMask = art_mask_obj
-                    
-                    art_name = page_out.add_resource(art_obj, pikepdf.Name.XObject)
-                    
-                    page_content_stream.append("q")
-                    page_content_stream.append(f"{img_w_pt:.4f} 0 0 {img_h_pt:.4f} {shift_x:.4f} {shift_y:.4f} cm")
-                    page_content_stream.append(f"{str(art_name)} Do")
-                    page_content_stream.append("Q")
-                else:
-                    # No bleed: use original form XObject (preserves vector quality)
-                    src_xobj = page_in_pike.as_form_xobject()
-                    src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
-                    
-                    page_content_stream.append("q")
-                    page_content_stream.append(f"1 0 0 1 {max_expansion_pts:.4f} {max_expansion_pts:.4f} cm")
-                    page_content_stream.append(f"{str(src_xobj_name)} Do")
-                    page_content_stream.append("Q")
+                # LAYER 2 (TOP): Artwork gốc — GIỮ NGUYÊN VECTOR, KHÔNG raster hoá.
+                # Trước đây artwork bị render thành JPEG 300 DPI (mất nét vector + lệch
+                # màu RGB). Nay luôn vẽ lại form XObject gốc. Khi có bleed: clip artwork
+                # vào đúng footprint (CÙNG biên với bleed_ring → không hở mép trắng),
+                # phần ngoài footprint để lộ bleed bên dưới.
+                src_xobj = page_in_pike.as_form_xobject()
+                src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
+
+                page_content_stream.append("q")
+                if bleed_stream_data and sticker_footprint is not None:
+                    # Trace footprint (đã đóng kín, hole-filled) thành đường clip vector.
+                    # footprint là raster trong KHÔNG GIAN ẢNH ĐỆM (padded); ánh xạ về
+                    # toạ độ trang giống vị trí đặt ảnh bleed: (shift_x + px/scale,
+                    # shift_y + (h - py)/scale). Nhờ vậy biên clip khớp tuyệt đối bleed_ring.
+                    fp_h_px = sticker_footprint.shape[0]
+                    fp_contours, _ = cv2.findContours(sticker_footprint, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    inv_scale = 1.0 / self.scale
+                    clip_ops = []
+                    for cnt in fp_contours:
+                        pts = cnt.reshape(-1, 2)
+                        if len(pts) < 3:
+                            continue
+                        x0 = shift_x + pts[0][0] * inv_scale
+                        y0 = shift_y + (fp_h_px - pts[0][1]) * inv_scale
+                        clip_ops.append(f"{x0:.3f} {y0:.3f} m")
+                        for px, py in pts[1:]:
+                            x = shift_x + px * inv_scale
+                            y = shift_y + (fp_h_px - py) * inv_scale
+                            clip_ops.append(f"{x:.3f} {y:.3f} l")
+                        clip_ops.append("h")
+                    if clip_ops:
+                        page_content_stream.extend(clip_ops)
+                        page_content_stream.append("W n")
+                page_content_stream.append(f"1 0 0 1 {max_expansion_pts:.4f} {max_expansion_pts:.4f} cm")
+                page_content_stream.append(f"{str(src_xobj_name)} Do")
+                page_content_stream.append("Q")
 
 
 

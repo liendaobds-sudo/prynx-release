@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 
 interface Props {
   pdfFile: File | null;
@@ -53,6 +54,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
     setConverting(true); setStatus('');
     try {
       const fid = await ensureUploaded();
+      recipeRecorder.noteOperation('spot_cmyk', { spot_name: spotName || null });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/convert-spot`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, spot_name: spotName || null }),
@@ -64,8 +66,8 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else setStatus(`❌ ${data.detail || 'Lỗi'}`);
-    } catch (e: any) { setStatus(`❌ ${e.message}`); }
+      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || 'Lỗi'}`); }
+    } catch (e: any) { recipeRecorder.discardPending(); setStatus(`❌ ${e.message}`); }
     setConverting(false);
   };
 

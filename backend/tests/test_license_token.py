@@ -165,3 +165,69 @@ def test_public_key_env_override(monkeypatch):
     tok = _make_token(sk, _payload())
     ok, reason = lg.verify_license_token(tok, "HW123", "ABCDE-FGHIJ-KLMNO")
     assert ok, reason
+
+
+# ── V3/V4/V7: token THIẾU field bắt buộc "m"/"k" → phải từ chối ───────────────
+def test_token_missing_machine_field(signing):
+    p = _payload()
+    del p["m"]
+    tok = _make_token(signing, p)
+    ok, reason = lg.verify_license_token(tok, "HW123", "ABCDE-FGHIJ-KLMNO")
+    assert not ok and "machine" in reason.lower()
+
+
+def test_token_missing_key_field(signing):
+    p = _payload()
+    del p["k"]
+    tok = _make_token(signing, p)
+    ok, reason = lg.verify_license_token(tok, "HW123", "ABCDE-FGHIJ-KLMNO")
+    assert not ok and "key" in reason.lower()
+
+
+# ── V1: enforce fail-CLOSED ở binary production ──────────────────────────────
+def test_enforce_token_production_fail_closed(monkeypatch):
+    monkeypatch.setattr(lg, "_is_dev_mode", lambda: False)
+    monkeypatch.delenv("PRYNX_ENFORCE_LICENSE_TOKEN", raising=False)
+    assert lg._enforce_license_token() is True  # production: luôn enforce dù env unset
+
+
+def test_enforce_token_dev_optional(monkeypatch):
+    monkeypatch.setattr(lg, "_is_dev_mode", lambda: True)
+    monkeypatch.delenv("PRYNX_ENFORCE_LICENSE_TOKEN", raising=False)
+    assert lg._enforce_license_token() is False  # dev: theo env (mặc định tắt)
+
+
+# ── V2: anti-clockback (monotonic clock guard) ───────────────────────────────
+@pytest.fixture
+def clk(monkeypatch, tmp_path):
+    monkeypatch.setattr(lg, "_is_dev_mode", lambda: False)
+    monkeypatch.setattr(lg, "_SIDECAR_TOKEN", "CLKTOKEN_TEST")
+    p = str(tmp_path / ".clkguard")
+    monkeypatch.setenv("PRYNX_CLOCK_GUARD_FILE", p)
+    return p
+
+
+def test_clock_guard_detects_rollback(clk):
+    lg._clk_write(clk, int(time.time()) + 100_000)  # đã thấy thời gian xa hơn
+    ok, reason = lg._clock_guard()                   # now lùi nhiều so với mốc
+    assert not ok and "rollback" in reason.lower()
+
+
+def test_clock_guard_allows_forward(clk):
+    lg._clk_write(clk, int(time.time()) - 100)  # mốc cũ → now tiến lên: hợp lệ
+    ok, _ = lg._clock_guard()
+    assert ok
+
+
+def test_clock_guard_tamper_resets(clk):
+    # Ghi giá trị tương lai NHƯNG chữ ký sai (tamper) → bị bỏ qua → không reject.
+    with open(clk, "w", encoding="utf-8") as f:
+        f.write(f"{int(time.time()) + 100_000}:badsig")
+    ok, _ = lg._clock_guard()
+    assert ok
+
+
+def test_clock_guard_dev_bypass(monkeypatch):
+    monkeypatch.setattr(lg, "_is_dev_mode", lambda: True)
+    ok, _ = lg._clock_guard()
+    assert ok

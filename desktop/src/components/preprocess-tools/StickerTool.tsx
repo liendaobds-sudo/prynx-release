@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput, ToolInfo } from './ToolUI';
 import { RichSelect, ToolItem } from '../imposition-tools/SharedUI';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
@@ -186,6 +187,12 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         setError('');
         setProgress('Đang chuẩn bị dữ liệu...');
 
+        // ─── Recipe record hook ─── (params tất định; phát lại dò contour lại trên file mới)
+        recipeRecorder.noteOperation('sticker_dieline', {
+            productType, cutMode, offsetMm, cornerStyle, fillHoles,
+            bleedMm, removeWhiteBg, bleedColorType, bleedColorHex,
+        });
+
         try {
             let resultBlob: Blob;
             
@@ -203,6 +210,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 setIsSuccess(true);
             }
         } catch (e: any) {
+            recipeRecorder.discardPending();
             setError(e.message || 'Đã xảy ra lỗi không xác định.');
             setProgress('');
         } finally {
@@ -410,6 +418,15 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                     options={BLEED_COLOR_MODES_RECTANGLE}
                                 />
                             </div>
+
+                            {bleedColorType === 'mirror' && (
+                                <div className="flex items-start gap-2 mb-2 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40">
+                                    <span className="text-amber-500 text-sm leading-none mt-0.5">⚠️</span>
+                                    <p className="text-[10.5px] text-amber-700 dark:text-amber-300 leading-snug">
+                                        Lật gương <strong>soi ngược nội dung sát mép</strong> ra vùng bù xén (vd chữ "n" → "m"). Nếu xén lệch vào trim, phần soi gương có thể lộ ra gây <strong>sai nội dung</strong>. Chỉ nên dùng cho nền trừu tượng/hoa văn. Ảnh có chữ/chi tiết nên chọn <strong>"Kéo giãn mép ảnh"</strong>.
+                                    </p>
+                                </div>
+                            )}
                             
                             {bleedColorType === 'solid' && (
                                 <div className="mt-3 flex flex-col gap-2 bg-white dark:bg-zinc-800 p-3 rounded-lg border border-slate-200 dark:border-zinc-700">
@@ -465,7 +482,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         </div>
                     </div>
                     <div className="flex flex-col gap-2">
-                        {productType === 'rectangle' && cutMode === 'none' && (
+                        {/* Rule in ấn: Xén vuông góc = cắt thẳng → bình guillotine (Booklet/N-Up).
+                            Bế tem nhãn = có đường bế contour → Bình Bế Tem.
+                            Route theo productType (KHÔNG theo cutMode vì cutMode dùng chung 2 tab). */}
+                        {productType === 'rectangle' && (
                             <>
                                 <ToolItem 
                                     icon="📚" label="Bình Sách & Tạp chí" desc="Khâu chỉ, lồng đôi, bù gáy"
@@ -479,7 +499,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 />
                             </>
                         )}
-                        {(productType === 'sticker' || (productType === 'rectangle' && cutMode !== 'none')) && (
+                        {productType === 'sticker' && (
                             <ToolItem 
                                 icon="✂️" label="Bình bài Bế Tem" desc="Xếp tem bế, tổ ong"
                                 onClick={() => { setActiveDashboardTool('sticker_imposer'); setTaskMode('sticker_imposer'); }} 

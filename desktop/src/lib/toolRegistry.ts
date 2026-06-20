@@ -222,7 +222,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
   },
   {
     id: 'imposition',
-    title: 'Tạo viền bế (Cutline)',
+    title: 'Bù xén - Tạo đường cắt',
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '🔪',
     description: 'Xóa nền trắng, offset tạo viền bế',

@@ -121,3 +121,57 @@ def test_process_pdf_none_mode_no_cutline(src_pdf, tmp_path):
     assert os.path.exists(out) and os.path.getsize(out) > 0
     with pikepdf.Pdf.open(out) as o:
         assert b"/CutContour CS" not in _read_all_content(o.pages[0])
+
+
+def test_process_pdf_bleed_preserves_vector_artwork(src_pdf, tmp_path):
+    """Khi CÓ bleed, artwork gốc phải GIỮ NGUYÊN VECTOR (Form XObject),
+    KHÔNG bị raster hoá thành ảnh JPEG.
+
+    REGRESSION cho yêu cầu 'bảo toàn hình gốc, không tự chuyển thành ảnh'.
+    Trước đây bleed_mm>0 khiến artwork bị render JPEG 300 DPI DeviceRGB (mất nét
+    vector + lệch màu). Nay artwork luôn vẽ lại bằng form XObject (vector), chỉ
+    vành bleed là ảnh.
+    """
+    out = str(tmp_path / "out_vec.pdf")
+    engine = StickerEngine(dpi=300)
+
+    success, _meta = engine.process_pdf(
+        input_path=src_pdf, output_path=out,
+        cut_mode="original", offset_mm=1.0, corner_style="round", bleed_mm=2.0,
+        bleed_color_type="image",
+    )
+
+    assert success is True and os.path.exists(out)
+    with pikepdf.Pdf.open(out) as o:
+        page = o.pages[0]
+        xobjs = page.obj.get("/Resources", {}).get("/XObject", {})
+        subtypes = [str(xobjs[k].get("/Subtype")) for k in xobjs.keys()]
+        # Phải có ÍT NHẤT 1 Form XObject = artwork gốc giữ vector.
+        assert "/Form" in subtypes, (
+            f"Artwork phải là Form XObject (vector), không raster hoá. Subtypes: {subtypes}"
+        )
+        # Vẫn có vẽ artwork lên trang (toán tử Do trong content).
+        assert b" Do" in _read_all_content(page)
+
+
+def test_nearest_color_fill_propagates_and_keeps_shape():
+    """_nearest_color_fill: lấp màu từ vùng có màu ra nền, giữ đúng kích thước —
+    cả đường thường (f=1) lẫn đường HẠ MẪU (f>1) cho ROI lớn."""
+    import numpy as np
+    from app.workers.sticker_engine import _nearest_color_fill, _downscale_factor
+
+    # Nhỏ → f=1: góc nền phải lấy đúng màu ô vuông (nearest, không nội suy).
+    src = np.zeros((100, 100), np.uint8); src[40:60, 40:60] = 255
+    img = np.zeros((100, 100, 3), np.uint8); img[40:60, 40:60] = (10, 20, 30)
+    assert _downscale_factor(100, 100) == 1
+    out = _nearest_color_fill(src, img)
+    assert out.shape == img.shape
+    assert tuple(int(v) for v in out[0, 0]) == (10, 20, 30)
+
+    # Lớn → f>1 (kích hoạt hạ mẫu): vẫn giữ shape & lấp màu (khác 0) ở nền.
+    big_src = np.zeros((1400, 1400), np.uint8); big_src[600:800, 600:800] = 255
+    big_img = np.zeros((1400, 1400, 3), np.uint8); big_img[600:800, 600:800] = (5, 60, 7)
+    assert _downscale_factor(1400, 1400) > 1
+    out2 = _nearest_color_fill(big_src, big_img)
+    assert out2.shape == big_img.shape
+    assert int(out2[0, 0].sum()) > 0

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 
 interface Props {
   pdfFile: File | null;
@@ -64,6 +65,12 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
     setRunning(true); setResult(null); setError('');
     try {
       const fid = await ensureUploaded();
+      recipeRecorder.noteOperation('convertcolors', {
+        conversions: Array.from(selectedConversions),
+        icc_profile: profile,
+        rendering_intent: intent,
+        preserve_black: preserveBlack,
+      });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/convert-colors`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -81,8 +88,8 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else setError(data.error || data.detail || 'Thất bại');
-    } catch (e: any) { setError(e.message); }
+      } else { recipeRecorder.discardPending(); setError(data.error || data.detail || 'Thất bại'); }
+    } catch (e: any) { recipeRecorder.discardPending(); setError(e.message); }
     setRunning(false);
   };
 

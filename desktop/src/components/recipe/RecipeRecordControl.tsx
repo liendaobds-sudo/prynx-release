@@ -1,0 +1,198 @@
+/**
+ * RecipeRecordControl — Nút Ghi/Dừng quy trình + badge trạng thái + dialog lưu.
+ *
+ * Spec: .kiro/specs/recipe-record-playback (Task 8).
+ * Tự chứa: đọc recorder store, lưu qua recipeStore. Không phụ thuộc ImpositionTab.
+ */
+import { useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Circle, Square, ListVideo, X } from 'lucide-react';
+import { useRecipeRecorder, recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { createRecipe } from '../../lib/recipe/recipeTypes';
+import { saveRecipe } from '../../lib/recipe/recipeStore';
+import { toast } from '../ui/Toast';
+import type { RecipeStep } from '../../lib/recipe/recipeTypes';
+
+interface Props {
+    /** Mở panel "Quy trình đã lưu". */
+    onOpenPanel: () => void;
+    /** Số trang file đang mở (gợi ý lưu vào recipe). */
+    sourcePageCount?: number;
+}
+
+export default function RecipeRecordControl({ onOpenPanel, sourcePageCount }: Props) {
+    const isRecording = useRecipeRecorder(s => s.isRecording);
+    const draftCount = useRecipeRecorder(s => s.draftSteps.length);
+    const [saveDialog, setSaveDialog] = useState<{ steps: RecipeStep[] } | null>(null);
+
+    const handleToggle = () => {
+        if (!isRecording) {
+            recipeRecorder.start();
+            toast.info('Bắt đầu ghi quy trình. Hãy thực hiện các bước xử lý.');
+            return;
+        }
+        const steps = recipeRecorder.stop();
+        if (steps.length === 0) {
+            toast.info('Chưa ghi được bước nào — đã hủy phiên ghi.');
+            return;
+        }
+        setSaveDialog({ steps });
+    };
+
+    return (
+        <>
+            <div className="flex items-center gap-1">
+                <button
+                    onClick={handleToggle}
+                    className={`h-7 px-2 flex items-center gap-1.5 rounded text-[11px] font-medium transition-colors ${
+                        isRecording
+                            ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-600 dark:text-rose-400'
+                            : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 dark:text-zinc-400'
+                    }`}
+                    title={isRecording
+                        ? 'Dừng ghi & lưu quy trình (Recipe)'
+                        : 'Ghi quy trình (Recipe): tự động lưu CHUỖI nhiều bước bạn thao tác để PHÁT LẠI lên file khác bằng 1 click. Khác với "Lưu preset" (chỉ nhớ 1 bộ thiết lập bình bài).'}
+                    aria-label={isRecording ? 'Dừng ghi quy trình' : 'Ghi quy trình'}
+                >
+                    {isRecording ? (
+                        <>
+                            <Square className="w-3 h-3 fill-current" />
+                            <span className="tb-label">Dừng ghi</span>
+                            <span className="ml-0.5 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white text-[10px] leading-none">
+                                {draftCount}
+                            </span>
+                        </>
+                    ) : (
+                        <>
+                            <Circle className="w-3 h-3 text-rose-500 fill-rose-500" />
+                            <span className="tb-label">Ghi quy trình</span>
+                        </>
+                    )}
+                </button>
+
+                <button
+                    onClick={onOpenPanel}
+                    className="w-7 h-7 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 hover:text-indigo-600 dark:text-zinc-400 dark:hover:text-indigo-400 rounded transition-colors"
+                    title="Quy trình đã lưu"
+                    aria-label="Quy trình đã lưu"
+                >
+                    <ListVideo className="w-4 h-4" />
+                </button>
+            </div>
+
+            {saveDialog && createPortal(
+                <SaveRecipeDialog
+                    steps={saveDialog.steps}
+                    sourcePageCount={sourcePageCount}
+                    onClose={() => setSaveDialog(null)}
+                />,
+                document.body,
+            )}
+        </>
+    );
+}
+
+// ─────────────────────────── Dialog lưu recipe ───────────────────────────
+
+function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
+    steps: RecipeStep[];
+    sourcePageCount?: number;
+    onClose: () => void;
+}) {
+    const [name, setName] = useState('');
+    const [description, setDescription] = useState('');
+    const [saving, setSaving] = useState(false);
+
+    const handleSave = async () => {
+        const trimmed = name.trim();
+        if (!trimmed) { toast.error('Vui lòng nhập tên quy trình.'); return; }
+        setSaving(true);
+        try {
+            const recipe = createRecipe(trimmed, steps, {
+                description: description.trim(),
+                hints: sourcePageCount ? { sourcePageCount } : undefined,
+            });
+            await saveRecipe(recipe);
+            toast.success(`Đã lưu quy trình "${trimmed}" (${steps.length} bước).`);
+            onClose();
+        } catch (e: any) {
+            toast.error('Lưu thất bại: ' + (e?.message || e));
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/40" onClick={onClose}>
+            <div
+                className="w-[440px] max-w-[92vw] bg-white dark:bg-zinc-900 rounded-xl shadow-2xl ring-1 ring-black/10 dark:ring-white/10 overflow-hidden"
+                onClick={e => e.stopPropagation()}
+            >
+                <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/10">
+                    <h3 className="text-sm font-semibold text-slate-800 dark:text-zinc-100">Lưu quy trình</h3>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200" aria-label="Đóng">
+                        <X className="w-4 h-4" />
+                    </button>
+                </div>
+
+                <div className="p-4 space-y-3">
+                    <div>
+                        <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1">Tên quy trình</label>
+                        <input
+                            autoFocus
+                            value={name}
+                            onChange={e => setName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleSave(); }}
+                            placeholder="Vd: Booklet 16 trang (doa nền + chuyển màu)"
+                            className="w-full px-2.5 py-1.5 text-[13px] rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1">Mô tả (tùy chọn)</label>
+                        <textarea
+                            value={description}
+                            onChange={e => setDescription(e.target.value)}
+                            rows={2}
+                            className="w-full px-2.5 py-1.5 text-[13px] rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+                        />
+                    </div>
+
+                    <div>
+                        <div className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1">
+                            {steps.length} bước đã ghi
+                        </div>
+                        <ol className="max-h-44 overflow-y-auto scroller-thin space-y-1 text-[12px]">
+                            {steps.map((s, i) => (
+                                <li key={i} className="flex items-center gap-2 px-2 py-1 rounded bg-slate-50 dark:bg-zinc-800/60">
+                                    <span className="text-slate-400 dark:text-zinc-500 tabular-nums">{i + 1}.</span>
+                                    <span className="flex-1 text-slate-700 dark:text-zinc-200 truncate">{s.label}</span>
+                                    {!s.recordable && (
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400">
+                                            không phát lại
+                                        </span>
+                                    )}
+                                </li>
+                            ))}
+                        </ol>
+                    </div>
+                </div>
+
+                <div className="flex justify-end gap-2 px-4 py-3 border-t border-black/5 dark:border-white/10">
+                    <button
+                        onClick={onClose}
+                        className="px-3 py-1.5 text-[12px] rounded-lg text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+                    >
+                        Hủy
+                    </button>
+                    <button
+                        onClick={handleSave}
+                        disabled={saving}
+                        className="px-3 py-1.5 text-[12px] rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium transition-colors disabled:opacity-60"
+                    >
+                        {saving ? 'Đang lưu...' : 'Lưu quy trình'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}

@@ -72,8 +72,6 @@ def create_comparison_job(
             "dpi": request.dpi,
             "highlight_color": request.highlight_color,
             "is_packaging_mode": request.is_packaging_mode,
-            "llm_mode": request.llm_mode,
-            "llm_api_key": request.llm_api_key,
         },
     )
     db.add(job)

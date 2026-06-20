@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 
 const I = {
   Scan: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" x2="17" y1="12" y2="12"/></svg>,
@@ -52,6 +53,7 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
     setRunning(true); setResult(null); setError('');
     try {
       const fid = await ensureUploaded();
+      recipeRecorder.noteOperation('hairlines', { threshold_pt: threshold, replace_pt: replaceWith });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/fix-hairlines`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, threshold_pt: threshold, replace_pt: replaceWith }),
@@ -63,8 +65,8 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else setError(data.error || data.detail || 'Thất bại');
-    } catch (e: any) { setError(e.message); }
+      } else { recipeRecorder.discardPending(); setError(data.error || data.detail || 'Thất bại'); }
+    } catch (e: any) { recipeRecorder.discardPending(); setError(e.message); }
     setRunning(false);
   };
 

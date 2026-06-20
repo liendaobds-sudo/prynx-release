@@ -224,7 +224,7 @@ async function checkConnectivity(): Promise<'online' | 'offline' | 'supabase_blo
   try {
     const { supabase: _sb } = await import('../lib/supabase');
     // Just check if the Supabase health endpoint responds
-    await fetch(`https://ryvyuxjgdcvoxujqmggm.supabase.co/rest/v1/`, {
+    await fetch(`${import.meta.env.VITE_SUPABASE_URL}/rest/v1/`, {
       method: 'HEAD', mode: 'no-cors', cache: 'no-store',
       signal: AbortSignal.timeout(5000),
     });
@@ -448,22 +448,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
         try {
           const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('register_validated_key', { licenseKey });
-        } catch { /* ignore in dev/web mode */ }
 
-        // Lấy token ngắn hạn do server ký (best-effort). Thất bại không ảnh hưởng xác thực
-        // (token=null; sidecar chỉ chặn khi đã bật cưỡng chế).
-        try {
-          const { data: tokData } = await supabase.functions.invoke('license-verify', {
-            body: { license_key: licenseKey, machine_id: hwid, product_id: 'prynx' },
-          });
-          if ((tokData as any)?.token) {
-            const tok = (tokData as any).token as string;
-            set({ licenseToken: tok });
-            // C-1: lưu token (DPAPI) để mở lại app offline vẫn dùng được tới khi hết hạn.
-            void saveTokenToDPAPI(tok);
-          }
-        } catch { /* ignore — token optional during rollout */ }
+          // Lấy token ngắn hạn do server ký TRƯỚC (để Rust verify Ed25519 khi register).
+          // Best-effort: thất bại không chặn xác thực (token=null; sidecar chỉ chặn khi enforce).
+          let freshToken = '';
+          try {
+            const { data: tokData } = await supabase.functions.invoke('license-verify', {
+              body: { license_key: licenseKey, machine_id: hwid, product_id: 'prynx' },
+            });
+            if ((tokData as any)?.token) {
+              freshToken = (tokData as any).token as string;
+              set({ licenseToken: freshToken });
+              void saveTokenToDPAPI(freshToken);
+            }
+          } catch { /* ignore — token optional during rollout */ }
+
+          // F2: register kèm token+hwid → Rust TỰ verify Ed25519 (lớp gate thứ 2, độc lập sidecar).
+          await invoke('register_validated_key', { licenseKey, hwid, token: freshToken });
+        } catch { /* ignore in dev/web mode */ }
       }
       set({
         licenseValid: isValid,

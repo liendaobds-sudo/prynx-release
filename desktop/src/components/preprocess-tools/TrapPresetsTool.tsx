@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import { 
     ToolSectionLabel, ToolDivider, ToolCardOption, 
     ToolCheckboxOption, ToolNumberInput, ToolWarning 
@@ -53,6 +54,10 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
     setRunning(true); setStatus('');
     try {
       const fid = await ensureUploaded();
+      recipeRecorder.noteOperation('trapping', {
+        action_id: 'SET_BLACK_OVERPRINT',
+        params: { trap_width: trapWidth, black_trap_width: blackTrapWidth, overprint_black: overprintBlack, preserve_overprint: preserveOverprint },
+      });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/set-overprint`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -67,8 +72,8 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else setStatus(`❌ ${data.error || 'Lỗi'}`);
-    } catch (e: any) { setStatus(`❌ ${e.message}`); }
+      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.error || 'Lỗi'}`); }
+    } catch (e: any) { recipeRecorder.discardPending(); setStatus(`❌ ${e.message}`); }
     setRunning(false);
   };
 

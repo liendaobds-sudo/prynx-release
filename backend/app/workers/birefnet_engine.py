@@ -1,5 +1,18 @@
+"""
+birefnet_engine — Tách nền bằng BiRefNet (chất lượng cao). Hỗ trợ 2 biến thể:
+
+  - 'full': BiRefNet-general (927MB) — chất lượng tối đa (tóc/lông/kính), NẶNG
+            (thường OOM trên GPU yếu VRAM → tự rớt CPU ~14s).
+  - 'lite': BiRefNet-general-lite swin-tiny (224MB) — gần bằng full, VỪA VRAM GPU,
+            nhanh hơn nhiều (CNN/transformer nhẹ). Dùng làm mặc định "chất lượng cao".
+
+Chạy ONNX trực tiếp (không qua rembg — rembg hỏng do pymatting→cupy). Có cơ chế
+GPU→CPU fallback (DirectML có thể OOM/treo) + env PRYNX_BG_FORCE_CPU=1 ép CPU.
+"""
 import os
 import logging
+import threading
+
 import httpx
 import onnxruntime as ort
 import numpy as np
@@ -7,103 +20,130 @@ from PIL import Image, ImageFilter
 
 logger = logging.getLogger(__name__)
 
-MODEL_URL = "https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.onnx"
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models")
-MODEL_PATH = os.path.join(MODEL_DIR, "BiRefNet-general-epoch_244.onnx")
+_DATA_MODELS = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models")
+_U2NET_HOME = os.path.expanduser(os.path.join("~", ".u2net"))
 
-_session = None
+# variant -> (url, local_path)
+MODELS = {
+    "full": (
+        "https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.onnx",
+        os.path.join(_DATA_MODELS, "BiRefNet-general-epoch_244.onnx"),
+    ),
+    "lite": (
+        "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx",
+        os.path.join(_U2NET_HOME, "birefnet-general-lite.onnx"),
+    ),
+}
 
-def _download_model_if_needed():
-    if not os.path.exists(MODEL_DIR):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-    if not os.path.exists(MODEL_PATH):
-        logger.info(f"Downloading BiRefNet ONNX model from {MODEL_URL}...")
-        with httpx.stream("GET", MODEL_URL, follow_redirects=True) as r:
+_sessions: dict = {}
+_session_lock = threading.Lock()
+# Ép CPU ngay từ đầu bằng env PRYNX_BG_FORCE_CPU=1 (bỏ qua GPU; tránh OOM/treo máy yếu).
+_force_cpu = os.environ.get('PRYNX_BG_FORCE_CPU', '').lower() in ('1', 'true', 'yes')
+
+
+def _build_providers():
+    if _force_cpu:
+        return ['CPUExecutionProvider']
+    available = ort.get_available_providers()
+    providers = []
+    if 'CUDAExecutionProvider' in available:
+        providers.append('CUDAExecutionProvider')
+    if 'DmlExecutionProvider' in available:
+        providers.append('DmlExecutionProvider')  # Windows DirectML
+    providers.append('CPUExecutionProvider')
+    return providers
+
+
+def _download_model_if_needed(variant: str):
+    url, path = MODELS[variant]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not os.path.exists(path):
+        logger.info("Downloading BiRefNet[%s] from %s ...", variant, url)
+        with httpx.stream("GET", url, follow_redirects=True) as r:
             r.raise_for_status()
-            with open(MODEL_PATH, "wb") as f:
+            with open(path, "wb") as f:
                 for chunk in r.iter_bytes(chunk_size=8192):
                     f.write(chunk)
-        logger.info("Download complete.")
+        logger.info("BiRefNet[%s] download complete.", variant)
 
-def _get_session():
-    global _session
-    if _session is None:
-        _download_model_if_needed()
-        logger.info("Loading BiRefNet ONNX session...")
-        
-        # Prioritize GPU providers to accelerate inference
-        available_providers = ort.get_available_providers()
-        providers = []
-        if 'CUDAExecutionProvider' in available_providers:
-            providers.append('CUDAExecutionProvider')
-        if 'DmlExecutionProvider' in available_providers:
-            providers.append('DmlExecutionProvider') # For Windows DirectML
-        providers.append('CPUExecutionProvider')
-        
-        _session = ort.InferenceSession(MODEL_PATH, providers=providers)
-    return _session
+
+def _get_session(variant: str = "full"):
+    s = _sessions.get(variant)
+    if s is not None:
+        return s
+    with _session_lock:
+        if _sessions.get(variant) is None:
+            _download_model_if_needed(variant)
+            _, path = MODELS[variant]
+            logger.info("Loading BiRefNet[%s] session (force_cpu=%s)...", variant, _force_cpu)
+            _sessions[variant] = ort.InferenceSession(path, providers=_build_providers())
+            logger.info("BiRefNet[%s] ready (providers=%s)", variant, _sessions[variant].get_providers())
+    return _sessions[variant]
+
+
+def _switch_to_cpu(variant: str):
+    """Dựng lại session CPU sau khi GPU lỗi (OOM 8007000E / device-hung 887A0007).
+    Sticky: mọi lần sau dùng CPU → tránh treo GPU lặp lại."""
+    global _force_cpu
+    with _session_lock:
+        _force_cpu = True
+        _, path = MODELS[variant]
+        logger.warning("Rebuilding BiRefNet[%s] on CPU only (GPU không ổn định).", variant)
+        _sessions[variant] = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
+    return _sessions[variant]
+
 
 def preprocess(image: Image.Image, size=(1024, 1024)):
-    """Preprocess image for BiRefNet: direct resize + ImageNet normalization."""
+    """Resize 1024 + chuẩn hoá ImageNet (chung cho cả full & lite)."""
     image = image.convert("RGB")
-    
-    # BiRefNet expects direct resize to 1024x1024 (no letterboxing!)
     img_resized = image.resize(size, Image.BILINEAR)
-    
-    # Convert to float [0, 1]
     img_arr = np.array(img_resized, dtype=np.float32) / 255.0
-    
-    # Normalize with ImageNet stats
     mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
     img_arr = (img_arr - mean) / std
-    
-    # HWC to NCHW format
     img_arr = np.transpose(img_arr, (2, 0, 1))
-    img_arr = np.expand_dims(img_arr, axis=0)
-    
-    return img_arr
+    return np.expand_dims(img_arr, axis=0)
 
-def remove_background(image: Image.Image) -> Image.Image:
-    """
-    Takes a PIL Image, runs BiRefNet to segment background, 
-    and returns a new PIL Image with a transparent background.
-    """
+
+def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
+    """Tách nền bằng BiRefNet (variant 'full' hoặc 'lite'), trả PIL RGBA."""
+    if variant not in MODELS:
+        variant = "full"
     orig_w, orig_h = image.size
-    
-    session = _get_session()
-    
-    # Input name
+    session = _get_session(variant)
     input_name = session.get_inputs()[0].name
-    
-    # Preprocess: direct resize to 1024x1024 (matches BiRefNet training)
     input_tensor = preprocess(image)
-    
-    # Inference
-    outputs = session.run(None, {input_name: input_tensor})
-    
-    # Single output: raw logits [1, 1, 1024, 1024]
+
+    try:
+        outputs = session.run(None, {input_name: input_tensor})
+    except Exception as e:
+        if not _force_cpu:
+            logger.warning("BiRefNet[%s] GPU lỗi (%s) → rớt về CPU.", variant, e)
+            session = _switch_to_cpu(variant)
+            input_name = session.get_inputs()[0].name
+            outputs = session.run(None, {input_name: input_tensor})
+        else:
+            raise
+
+    # Raw logits [1,1,1024,1024] → sigmoid → mask
     mask_logits = outputs[-1]
-    logger.debug(f"[BiRefNet] Raw logits range: min={mask_logits.min():.4f}, max={mask_logits.max():.4f}, mean={mask_logits.mean():.4f}")
-    
-    # Apply sigmoid to convert logits to probabilities [0, 1]
     mask_prob = 1.0 / (1.0 + np.exp(-mask_logits))
-    mask_prob = np.squeeze(mask_prob)  # shape (1024, 1024)
-    
-    logger.debug(f"[BiRefNet] Mask stats: min={mask_prob.min():.4f}, max={mask_prob.max():.4f}, mean={mask_prob.mean():.4f}")
-    
-    # Convert to PIL grayscale mask
+    mask_prob = np.squeeze(mask_prob)
+
     mask_img = Image.fromarray((mask_prob * 255).astype(np.uint8), mode="L")
-    
-    # Resize mask back to original image dimensions
     mask_final = mask_img.resize((orig_w, orig_h), Image.BILINEAR)
-    
-    # Anti-aliasing: slight Gaussian blur to soften edges
     mask_final = mask_final.filter(ImageFilter.GaussianBlur(radius=0.75))
-    
-    # Apply mask as alpha channel
+
     result_img = image.convert("RGBA")
     result_img.putalpha(mask_final)
-    
     return result_img
 
+
+def warmup(variant: str = "lite") -> bool:
+    """Nạp sẵn + 1 suy luận nhỏ (tự rớt CPU nếu GPU lỗi). Mặc định warm biến thể 'lite'."""
+    try:
+        remove_background(Image.new("RGB", (32, 32), (255, 255, 255)), variant=variant)
+        return True
+    except Exception as e:
+        logger.warning("BiRefNet[%s] warmup failed: %s", variant, e)
+        return False

@@ -1,0 +1,267 @@
+/**
+ * recipeRunners — Bảng runner mặc định cho PlaybackRunner.
+ *
+ * Spec: .kiro/specs/recipe-record-playback (Task 6/7 — lớp nối handler thật).
+ *
+ * Mỗi runner TÁI DÙNG đường xử lý hiện có (processHandlers.run* hoặc endpoint
+ * backend mà tool prepress đang gọi) → KHÔNG tạo đường ghi PDF mới (giữ invariant
+ * an toàn màu: pikepdf là đường ghi duy nhất; không ghi đè file gốc).
+ *
+ * Quy ước params:
+ *  - Imposition (booklet/nup/sticker/cnc): params = ProcessingSettings của runProcessEngine.
+ *  - Preprocess (shuffle/resize/split): params = settings của run* (ép spawnNewTab=false).
+ *  - Merge: params = settings; file thứ hai lấy từ ExternalInputValue.files.
+ *  - Prepress JSON (convertcolors/hairlines/trapping/pdfx/spot_cmyk): params = body POST
+ *    (KHÔNG gồm file_id — runner tự upload working file để lấy file_id).
+ *
+ * Ranh giới MVP: OCR (multipart) chưa nối; AI ảnh (bgremover/upscale) là công cụ
+ * tương tác theo lô ẢNH (store + preview riêng), KHÔNG nằm trong chuỗi working PDF
+ * nên không thuộc recipe tuyến tính (đã đánh recordable=false); overlay
+ * (watermark/stick_text_number) chưa nối. Các op vắng mặt trong registry sẽ được
+ * PlaybackRunner tự bỏ qua + cảnh báo (reason='unsupported_op').
+ *
+ * Tem bế (sticker_imposer/cnc_imposer/sticker_dieline) PHÁT LẠI ĐƯỢC: thay vì lưu
+ * hình, runner DÒ LẠI hình trên file mới mỗi lần phát (/imposition/detect-shape,
+ * /pdf-tools/sticker-dieline) → đúng trên sản phẩm tem mới.
+ */
+import type { RecipeRunner, RecipeRunnerRegistry } from './PlaybackRunner';
+import type { RecipeOpId } from './recipeTypes';
+import type { ProcessContext } from '../processHandlers';
+import { runProcessEngine, runShuffle, runResize, runSplit, runMerge } from '../processHandlers';
+import { authenticatedFetch, getApiUrl, uploadPDF, prepareFileForUpload } from '../api';
+
+// ─────────────── Imposition (qua runProcessEngine, ép spawnNewTab=false) ───────────────
+
+const runImposition: RecipeRunner = async (ctx, params) => {
+    await runProcessEngine(ctx, params as any, /* spawnNewTab */ false);
+};
+
+// ─────────────── Preprocess engine (ép spawnNewTab=false) ───────────────
+
+const runShuffleStep: RecipeRunner = async (ctx, params) => {
+    await runShuffle(ctx, { ...params, spawnNewTab: false });
+};
+const runResizeStep: RecipeRunner = async (ctx, params) => {
+    await runResize(ctx, { ...params, spawnNewTab: false });
+};
+const runSplitStep: RecipeRunner = async (ctx, params) => {
+    await runSplit(ctx, { ...params, spawnNewTab: false });
+};
+
+// ─────────────── Merge (file thứ hai từ input ngoài) ───────────────
+
+const runMergeStep: RecipeRunner = async (ctx, params, ext) => {
+    const files = ext?.files ?? [];
+    // mode mặc định 'merge_files'; chèn file ngoài vào filesToMerge.
+    await runMerge(ctx, { ...params, spawnNewTab: false, filesToMerge: files });
+};
+
+// ─────────────── Prepress JSON (upload → POST → download → commit) ───────────────
+
+/** Endpoint preflight theo opId (kiểu "POST {file_id, ...params} → output_filename"). */
+const PREFLIGHT_ENDPOINT: Partial<Record<RecipeOpId, string>> = {
+    convertcolors: 'preflight/convert-colors',
+    hairlines: 'preflight/fix-hairlines',
+    trapping: 'preflight/set-overprint',
+    pdfx: 'preflight/export-pdfx',
+    spot_cmyk: 'preflight/convert-spot',
+};
+
+function makePreflightRunner(endpoint: string): RecipeRunner {
+    return async (ctx: ProcessContext, params: Record<string, unknown>) => {
+        const { file, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+        setError(''); setIsProcessing(true); setProcessStatus('Đang xử lý (prepress)...');
+        try {
+            // Upload bản working hiện tại để lấy file_id (KHÔNG đụng file gốc trên đĩa).
+            const workingBytes = await getWorkingBytes();
+            const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+            const up = await uploadPDF(workingFile);
+
+            const res = await authenticatedFetch(`${getApiUrl()}/${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_id: up.id, ...params }),
+            });
+            const data = await res.json();
+            if (!data.success && !data.output_filename) {
+                setError(data.error || data.detail || 'Bước prepress thất bại');
+                return;
+            }
+            if (data.output_filename) {
+                const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+                const blob = await dl.blob();
+                commitWorkingFile(blob, data.output_filename);
+            }
+        } catch (e: any) {
+            setError('Lỗi prepress: ' + (e?.message || e));
+        } finally {
+            setIsProcessing(false); setProcessStatus('');
+        }
+    };
+}
+
+// ─────────────── Optimize (multipart /pdf-tools/optimize → blob trực tiếp) ───────────────
+
+const runOptimizeStep: RecipeRunner = async (ctx, params) => {
+    const { file, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+    setError(''); setIsProcessing(true); setProcessStatus('Đang nén / tối ưu PDF...');
+    try {
+        const p = params as any;
+        const workingBytes = await getWorkingBytes();
+        const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+        const realFile = await prepareFileForUpload(workingFile);
+
+        const formData = new FormData();
+        formData.append('file', realFile, file.name);
+        formData.append('preset', p.preset ?? 'ebook');
+        formData.append('image_dpi', String(p.image_dpi ?? 300));
+        formData.append('strip_metadata', p.strip_metadata === false ? 'false' : 'true');
+        formData.append('grayscale', p.grayscale ? 'true' : 'false');
+
+        const res = await authenticatedFetch(`${getApiUrl()}/pdf-tools/optimize`, { method: 'POST', body: formData });
+        if (!res.ok) {
+            const err = await res.json().catch(() => null);
+            setError(err?.detail || `Nén PDF thất bại (${res.status})`);
+            return;
+        }
+        const blob = await res.blob();
+        commitWorkingFile(blob, `optimized_${file.name}`);
+    } catch (e: any) {
+        setError('Lỗi nén PDF: ' + (e?.message || e));
+    } finally {
+        setIsProcessing(false); setProcessStatus('');
+    }
+};
+
+// ─── Bình tem/CNC: DÒ LẠI hình trên file mới rồi mới bình (không đóng băng hình cũ) ───
+// Chìa khoá phát lại tem ĐÚNG trên sản phẩm mới: /imposition/detect-shape là endpoint
+// tất định theo từng ảnh → mỗi lần phát lại sinh shape mới cho file mới.
+const runStickerImposition: RecipeRunner = async (ctx, params) => {
+    const { file, setError, setProcessStatus, getWorkingBytes } = ctx;
+    try {
+        setProcessStatus('Đang dò lại hình tem trên file mới...');
+        const workingBytes = await getWorkingBytes();
+        const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+        const up = await uploadPDF(workingFile);
+
+        const res = await authenticatedFetch(`${getApiUrl()}/imposition/detect-shape`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileId: up.id }),
+        });
+        const data = await res.json().catch(() => ({} as any));
+
+        const detectedShapesByPage: Record<number, string> = {};
+        const detectedShapeParamsByPage: Record<number, any> = {};
+        if (Array.isArray(data.shapes)) data.shapes.forEach((s: string, i: number) => { detectedShapesByPage[i] = s; });
+        if (Array.isArray(data.shapeParams)) data.shapeParams.forEach((p: any, i: number) => { detectedShapeParamsByPage[i] = p; });
+
+        // Ghép hình MỚI vào tham số đã ghi (khổ/grid/pont giữ nguyên) rồi bình.
+        const merged = { ...params, detectedShapesByPage, detectedShapeParamsByPage };
+        await runProcessEngine(ctx, merged as any, false);
+    } catch (e: any) {
+        setError('Lỗi bình tem (phát lại): ' + (e?.message || e));
+        setProcessStatus('');
+    }
+};
+
+// ─── Tạo đường cắt / bù xén tem (dò contour server-side mỗi file) ───
+const runStickerDieline: RecipeRunner = async (ctx, params) => {
+    const { file, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+    const p = params as any;
+    const productType: 'sticker' | 'rectangle' = p.productType === 'rectangle' ? 'rectangle' : 'sticker';
+    setError(''); setIsProcessing(true); setProcessStatus('Đang tạo đường cắt / bù xén...');
+    try {
+        const workingBytes = await getWorkingBytes();
+        let targetFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+        let resultBlob: Blob;
+
+        const autoTrim = async (f: File): Promise<File> => {
+            const up0 = await uploadPDF(f);
+            const trimRes = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_id: up0.id, pages: null, margin_mm: 0 }),
+            });
+            const trimData = await trimRes.json();
+            if (!trimData.success) throw new Error(trimData.detail || 'Lỗi xóa lề trắng');
+            const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${trimData.output_filename}`);
+            return new File([await dl.blob()], 'trimmed.pdf', { type: 'application/pdf' });
+        };
+
+        if (productType === 'rectangle' && p.bleedColorType === 'mirror') {
+            // Lật gương vector: (auto-trim) → add-bleed
+            let working = targetFile;
+            if (p.removeWhiteBg) working = await autoTrim(working);
+            const up = await uploadPDF(working);
+            const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/add-bleed`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_id: up.id, bleed_mm: p.bleedMm || 0, pages: null }),
+            });
+            const bleedData = await bleedRes.json();
+            if (!bleedData.success) throw new Error(bleedData.detail || 'Lỗi tạo bù xén Vector');
+            const finalRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${bleedData.output_filename}`);
+            resultBlob = await finalRes.blob();
+        } else {
+            if (productType === 'rectangle' && p.removeWhiteBg) targetFile = await autoTrim(targetFile);
+            const up = await uploadPDF(targetFile);
+            const fd = new FormData();
+            fd.append('file_id', up.id);
+            fd.append('cut_mode', productType === 'rectangle' ? 'none' : (p.cutMode || 'original'));
+            fd.append('offset_mm', productType === 'rectangle' ? '0' : String(p.offsetMm ?? 0));
+            fd.append('corner_style', productType === 'rectangle' ? 'miter' : (p.cornerStyle || 'round'));
+            fd.append('bleed_mm', String(p.bleedMm ?? 0));
+            fd.append('fill_holes', productType === 'rectangle' ? 'true' : (p.fillHoles ? 'true' : 'false'));
+            fd.append('remove_white_bg', productType === 'rectangle' ? 'false' : (p.removeWhiteBg ? 'true' : 'false'));
+            fd.append('draw_cut_contour', productType === 'rectangle' ? 'false' : ((p.cutMode && p.cutMode !== 'none') ? 'true' : 'false'));
+            fd.append('bleed_color_type', p.bleedColorType || 'image');
+            fd.append('bleed_color_hex', p.bleedColorHex || '#FFFFFF');
+            const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, { method: 'POST', body: fd });
+            if (!response.ok) {
+                const err = await response.json().catch(() => null);
+                throw new Error(err?.detail || `Lỗi server (${response.status})`);
+            }
+            resultBlob = await response.blob();
+        }
+
+        const baseName = file.name.replace(/\.[^/.]+$/, '');
+        const prefix = productType === 'rectangle' ? 'autobleed' : 'sticker';
+        commitWorkingFile(resultBlob, `${prefix}_${baseName}.pdf`);
+    } catch (e: any) {
+        setError('Lỗi tạo đường cắt: ' + (e?.message || e));
+    } finally {
+        setIsProcessing(false); setProcessStatus('');
+    }
+};
+
+// ─────────────── Registry ───────────────
+
+export const RECIPE_RUNNERS: RecipeRunnerRegistry = {
+    // Imposition page-based (tất định, phát lại được)
+    booklet: runImposition,
+    nup: runImposition,
+    // Tem/CNC: phát lại bằng cách DÒ LẠI hình trên file mới (không đóng băng hình cũ).
+    sticker_imposer: runStickerImposition,
+    cnc_imposer: runStickerImposition,
+    // Tạo đường cắt / bù xén tem (dò contour server-side mỗi file)
+    sticker_dieline: runStickerDieline,
+    // Preprocess
+    shuffle: runShuffleStep,
+    resize: runResizeStep,
+    split: runSplitStep,
+    // Merge
+    merge: runMergeStep,
+    // Prepress JSON
+    convertcolors: makePreflightRunner(PREFLIGHT_ENDPOINT.convertcolors!),
+    hairlines: makePreflightRunner(PREFLIGHT_ENDPOINT.hairlines!),
+    trapping: makePreflightRunner(PREFLIGHT_ENDPOINT.trapping!),
+    pdfx: makePreflightRunner(PREFLIGHT_ENDPOINT.pdfx!),
+    spot_cmyk: makePreflightRunner(PREFLIGHT_ENDPOINT.spot_cmyk!),
+    // Optimize (multipart)
+    optimize: runOptimizeStep,
+    // OCR (multipart), AI ảnh (bgremover/upscale), overlay: ngoài phạm vi chuỗi PDF v1.
+};
+
+/** Danh sách opId đã có runner thật (để UI hiển thị "phát lại được"). */
+export function isPlayableOp(opId: RecipeOpId): boolean {
+    return !!RECIPE_RUNNERS[opId];
+}

@@ -570,6 +570,7 @@ async def remove_background_endpoint(
     Takes JPG/PNG, applies post-processing, returns PNG.
     """
     from app.workers.image_postprocessor import apply_edge_shift, apply_auto_crop, apply_background
+    from fastapi.concurrency import run_in_threadpool
     from PIL import Image
     import io
 
@@ -596,40 +597,66 @@ async def remove_background_endpoint(
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"bg_removed_{job_id}.png")
 
-    try:
-        # Load image
+    # Suy luận AI nặng (BiRefNet ONNX ~927MB / rembg) là tác vụ ĐỒNG BỘ, CPU/GPU-bound.
+    # Phải chạy trong threadpool — KHÔNG chạy thẳng trong async endpoint, nếu không sẽ
+    # KHOÁ event loop → cả server "đứng hình" suốt lúc tách nền (đó là lý do "nặng/không chạy").
+    def _process_bg_removal():
         with Image.open(source_path) as img:
-            # Run AI Removal based on engine selection
-            if engine == 'hair':
-                from app.workers.rembg_engine import remove_background_rembg
-                result_img = remove_background_rembg(img)
+            img.load()
+            work = img
+            # Chặn OOM/treo với ảnh siêu lớn: mask AI luôn ở 1024px nên ảnh > 6000px
+            # không tăng chất lượng mà chỉ ngốn RAM. Hạ về 6000px cạnh dài (giữ tỷ lệ).
+            MAX_SIDE = 6000
+            if max(work.size) > MAX_SIDE:
+                ratio = MAX_SIDE / float(max(work.size))
+                work = work.resize((max(1, int(work.width * ratio)), max(1, int(work.height * ratio))), Image.LANCZOS)
+
+            if engine == 'fast':
+                # NHANH NHẤT (hàng loạt) — ISNet (~0.1s GPU / 0.6s CPU), chất lượng khá.
+                from app.workers.isnet_engine import remove_background as _remove
+                result_img = _remove(work)
+            elif engine in ('max', 'hair'):
+                # TỐI ĐA cho tóc/lông/kính — BiRefNet full (nặng, GPU yếu sẽ rớt CPU ~14s).
+                from app.workers.birefnet_engine import remove_background as _remove
+                result_img = _remove(work, variant='full')
             else:
-                from app.workers.birefnet_engine import remove_background as remove_background_birefnet
-                result_img = remove_background_birefnet(img)
-            
-            # Post-processing
+                # MẶC ĐỊNH "Chất lượng cao" — BiRefNet-lite (xịn, vừa VRAM GPU ~6s).
+                from app.workers.birefnet_engine import remove_background as _remove
+                result_img = _remove(work, variant='lite')
+
             if edge_shift != 0:
                 result_img = apply_edge_shift(result_img, edge_shift)
-            
             if auto_crop:
                 result_img = apply_auto_crop(result_img)
-                
             if bg_color != 'transparent':
                 result_img = apply_background(result_img, bg_color, custom_hex)
-                
-            # Save to output path
+
             result_img.save(output_path, format="PNG")
-        
+
+    try:
+        await run_in_threadpool(_process_bg_removal)
+
         return FileResponse(
             path=output_path,
             filename=f"bg_removed_{file.filename.split('.')[0]}.png" if file and file.filename else f"bg_removed_{job_id}.png",
             media_type="image/png"
         )
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        logger.error("remove-background thất bại: %s", e, exc_info=True)
+        # Lộ nguyên nhân thật (model/deps/OOM…) để chẩn đoán, thay vì che bằng thông báo chung.
+        detail = str(e).strip() or type(e).__name__
+        raise HTTPException(status_code=500, detail=f"Tách nền thất bại: {detail}")
     finally:
         if is_temp:
             try: os.remove(source_path)
             except OSError: pass
+
+
+@router.post("/remove-background/warmup")
+async def remove_background_warmup():
+    """Nạp sẵn model tách nền (chạy nền) để lần bấm đầu không phải chờ cold-start ~25s.
+    FE gọi khi mở công cụ; chạy trong threadpool nên không khoá event loop."""
+    from fastapi.concurrency import run_in_threadpool
+    from app.workers.birefnet_engine import warmup
+    ok = await run_in_threadpool(warmup, "lite")  # warm engine mặc định (chất lượng cao)
+    return {"ok": bool(ok)}

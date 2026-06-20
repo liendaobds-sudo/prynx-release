@@ -33,7 +33,15 @@ export interface NestingConfig {
     margin: { top: number; right: number; bottom: number; left: number };
     /** Lề cắn nhíp — 1 cạnh dài, máy in offset (mm) */
     gripperMargin: number;
-    /** Khoảng hở dao bế — offset polygon ra ngoài mỗi bên (mm) */
+    /**
+     * Khoảng hở dao bế (mm) — khoảng hở giữa bounding box của hai khuôn liền kề.
+     *
+     * LƯU Ý: Hiện tại `nestingEngine.ts` hiện thực `dieGap` như khoảng hở (gap)
+     * tính bằng mm giữa các bounding box của hai khuôn liền kề, KHÔNG phải phép
+     * offset polygon thực (offset đường biên polygon theo từng cạnh).
+     * Offset polygon thực là giới hạn đã biết (known limitation), dự kiến xử lý
+     * ở Giai đoạn 2.
+     */
     dieGap: number;
     /** Chế độ xoay: none (0°), 90°, auto (tối ưu 0° vs 90°) */
     rotation: RotationMode;

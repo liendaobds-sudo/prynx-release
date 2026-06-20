@@ -17,6 +17,41 @@ import {
   exportPresetAsFile, 
   importPresetFromFile 
 } from '../../lib/presetManager';
+import { toast } from '../ui/Toast';
+
+// Hiển thị read-only 1 nhóm thiết lập (paper/marks/booklet/nup).
+function DetailSection({ title, obj }: { title: string; obj?: Record<string, any> }) {
+  if (!obj) return null;
+  const entries = Object.entries(obj).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  if (entries.length === 0) return null;
+  return (
+    <div className="mb-2 last:mb-0">
+      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1">{title}</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+        {entries.map(([k, v]) => (
+          <div key={k} className="flex items-center justify-between gap-2 text-[11px]">
+            <span className="font-mono text-slate-400 dark:text-zinc-500 truncate" title={k}>{k}</span>
+            <span className="text-slate-700 dark:text-zinc-200 text-right truncate" title={String(v)}>{String(v)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PresetDetails({ preset }: { preset: ImpositionPreset }) {
+  return (
+    <div className="mt-2 p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-900/60 border border-slate-200 dark:border-white/10">
+      <div className="text-[11px] mb-2"><span className="text-slate-400">Chế độ: </span>
+        <span className="font-semibold text-slate-700 dark:text-zinc-200">{preset.taskMode === 'booklet' ? 'Bình sách (Booklet)' : 'Bình N-Up'}</span>
+      </div>
+      <DetailSection title="Giấy" obj={preset.paper} />
+      <DetailSection title="Dấu cắt" obj={preset.marks} />
+      {preset.taskMode === 'booklet' && <DetailSection title="Booklet" obj={preset.booklet} />}
+      {preset.taskMode === 'nup' && <DetailSection title="N-Up" obj={preset.nup} />}
+    </div>
+  );
+}
 
 interface Props {
   isOpen: boolean;
@@ -34,6 +69,8 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [confirmUpdateId, setConfirmUpdateId] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
@@ -91,6 +128,19 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
     await savePreset(preset);
     setPresets(await loadPresets());
     setEditingId(null);
+  };
+
+  // Cập nhật TẠI CHỖ: ghi đè thiết lập của preset bằng thiết lập hiện tại trên form
+  // (giữ id/tên/ghi chú/ngày tạo). Khác "Lưu thiết lập" (tạo preset mới).
+  const handleUpdateFromCurrent = async (preset: ImpositionPreset) => {
+    const settings = onGetCurrentSettings();
+    const updated: ImpositionPreset = {
+      ...preset, ...settings, updatedAt: new Date().toISOString(),
+    };
+    await savePreset(updated);
+    setPresets(await loadPresets());
+    setConfirmUpdateId(null);
+    toast.success(`Đã cập nhật preset "${preset.name}" bằng thiết lập hiện tại.`);
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -208,12 +258,31 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
                       {/* Action icons */}
                       {editingId !== preset.id && (
                         <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                          <button
+                            onClick={() => setExpandedId(expandedId === preset.id ? null : preset.id)}
+                            className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-indigo-600 transition-colors" title={expandedId === preset.id ? 'Thu gọn' : 'Xem chi tiết thiết lập'}
+                          >
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`transition-transform ${expandedId === preset.id ? 'rotate-90' : ''}`}><polyline points="9 18 15 12 9 6"/></svg>
+                          </button>
                           <button 
                             onClick={() => { setEditingId(preset.id); setEditName(preset.name); }}
                             className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-blue-600 transition-colors" title="Đổi tên"
                           >
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                           </button>
+                          {confirmUpdateId === preset.id ? (
+                            <div className="flex items-center gap-1.5 ml-1">
+                              <button onClick={() => handleUpdateFromCurrent(preset)} className="px-2 py-1 text-[11px] font-bold bg-indigo-600 text-white rounded-md whitespace-nowrap">Ghi đè</button>
+                              <button onClick={() => setConfirmUpdateId(null)} className="px-2 py-1 text-[11px] font-medium bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300 rounded-md">Huỷ</button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => setConfirmUpdateId(preset.id)}
+                              className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-indigo-600 transition-colors" title="Cập nhật preset bằng thiết lập hiện tại"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                            </button>
+                          )}
                           <button 
                             onClick={() => exportPresetAsFile(preset)}
                             className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-emerald-600 transition-colors" title="Xuất file JSON"
@@ -236,6 +305,11 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
                         </div>
                       )}
                     </div>
+                    {expandedId === preset.id && (
+                      <div onClick={e => e.stopPropagation()}>
+                        <PresetDetails preset={preset} />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
