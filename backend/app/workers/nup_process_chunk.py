@@ -160,6 +160,7 @@ def process_chunk(args):
     _die_items_cache = {}
     _die_path_cache = {}    # Cache _find_largest_die_path result per src_page_idx
     _layout_cache = {}      # Cache compute_sticker_layout_for_page result per src_page_idx
+    _base_poly_cache = {}   # Cache (base_poly, base_rect_pts) cho collision theo src_page_idx (mẫu)
 
     _MAX_GEOM_CACHE = 200  # Giới hạn để tránh memory leak
 
@@ -478,36 +479,43 @@ def process_chunk(args):
             if zones and placements:
 
                 # Try to extract shape from the first valid source page
-
                 first_src_idx = placements[0]['src_page_idx']
-                base_poly = None
-                base_rect_pts = (0, 0, placements[0]['width'], placements[0]['height'])
-                src_page = src_doc[first_src_idx]
-                
-                # Use mathematically perfect polygon for Circle/Ellipse
-                shape_type = (detected_shapes_by_page.get(str(first_src_idx)) or detected_shapes_by_page.get(first_src_idx, 'CUSTOM')) if is_die_cut else 'CUSTOM'
-                if shape_type == 'CIRCLE_ELLIPSE':
-                    from shapely.geometry import Point
-                    from shapely.affinity import scale
-                    rx = placements[0]['width'] / 2.0
-                    ry = placements[0]['height'] / 2.0
-                    base_poly = scale(Point(0,0).buffer(1.0, resolution=64), xfact=rx, yfact=ry)
-                    base_rect_pts = (-rx, -ry, rx, ry)
+
+                # ── CACHE base_poly theo MẪU (first_src_idx) ───────────────────────────
+                # base_poly là HÌNH của một con tem (bất biến giữa các tờ). Trước đây khối
+                # này gọi extract_vector_paths() + build_shapely_polygon_from_paths() LẠI
+                # MỖI TỜ (check cache cũ lệch kiểu key int↔str nên luôn miss) → mẫu phức
+                # tạp tốn ~1,4s × số tờ (đo thật: 1 chunk 7,27s). Cache kết quả theo mẫu ⇒
+                # extract 1 lần/mẫu/chunk; collision result KHÔNG đổi (cùng polygon, zones).
+                _bp_key = (first_src_idx, placements[0]['width'], placements[0]['height'])
+                if _bp_key in _base_poly_cache:
+                    base_poly, base_rect_pts = _base_poly_cache[_bp_key]
                 else:
-                    if first_src_idx in _die_items_cache:
-                        cached_paths = _die_items_cache[first_src_idx]
-                        paths = [cached_paths] if cached_paths else []
+                    base_poly = None
+                    base_rect_pts = (0, 0, placements[0]['width'], placements[0]['height'])
+                    src_page = src_doc[first_src_idx]
+
+                    # Use mathematically perfect polygon for Circle/Ellipse
+                    shape_type = (detected_shapes_by_page.get(str(first_src_idx)) or detected_shapes_by_page.get(first_src_idx, 'CUSTOM')) if is_die_cut else 'CUSTOM'
+                    if shape_type == 'CIRCLE_ELLIPSE':
+                        from shapely.geometry import Point
+                        from shapely.affinity import scale
+                        rx = placements[0]['width'] / 2.0
+                        ry = placements[0]['height'] / 2.0
+                        base_poly = scale(Point(0,0).buffer(1.0, resolution=64), xfact=rx, yfact=ry)
+                        base_rect_pts = (-rx, -ry, rx, ry)
                     else:
                         paths = src_page.extract_vector_paths()
-    
-                    if paths:
-                        base_poly = build_shapely_polygon_from_paths(paths, src_page.rect)
-                        if base_poly:
-                            minx, miny, maxx, maxy = base_poly.bounds
-                            base_rect_pts = (minx, miny, maxx, maxy)
+                        if paths:
+                            base_poly = build_shapely_polygon_from_paths(paths, src_page.rect)
+                            if base_poly:
+                                minx, miny, maxx, maxy = base_poly.bounds
+                                base_rect_pts = (minx, miny, maxx, maxy)
+
+                    _base_poly_cache[_bp_key] = (base_poly, base_rect_pts)
 
                 initial_cols = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
-                
+
 
                 if initial_cols:
                     original_len = len(placements)

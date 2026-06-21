@@ -251,14 +251,23 @@ def get_placements_bbox(placements: List[Dict]) -> Tuple[float, float, float, fl
     return min_x, min_y, max_x, max_y
 
 def apply_shift(placements: List[Dict], dx: float, dy: float) -> List[Dict]:
-    new_placements = copy.deepcopy(placements)
-    for p in new_placements:
-        p['abs_x'] += dx
-        p['abs_y'] += dy
-        p['original_cell_y'] -= dy  # original_cell_y is top-down, so adding to y (bottom-up) means subtracting from original_cell_y
+    # Shallow copy mỗi dict (chỉ đổi abs_x/abs_y/original_cell_y) thay vì deepcopy toàn
+    # bộ (gồm subdict 'cell') — apply_shift bị gọi tới 961×/hàng nên deepcopy là gánh
+    # nặng. 'cell' KHÔNG bị sửa ở downstream nên chia sẻ tham chiếu là an toàn (kết quả
+    # y hệt). original_cell_y top-down nên cộng y (bottom-up) = trừ original_cell_y.
+    new_placements = []
+    for p in placements:
+        np = dict(p)
+        np['abs_x'] = p['abs_x'] + dx
+        np['abs_y'] = p['abs_y'] + dy
+        np['original_cell_y'] = p['original_cell_y'] - dy
+        new_placements.append(np)
     return new_placements
 
-def check_internal_collision(row_items: List[Dict], other_items: List[Dict], base_poly: Polygon, safety_buffer_pt: float = 0.0) -> bool:
+def check_internal_collision(row_items: List[Dict], other_items: List[Dict], base_poly: Polygon, safety_buffer_pt: float = 0.0, other_polys: List[Polygon] = None) -> bool:
+    """`other_polys`: polygon các tem hàng-khác đã DỰNG SẴN. Khi quét nhiều phép dịch
+    của cùng một hàng, các tem khác KHÔNG đổi → truyền sẵn để khỏi dựng lại mỗi lần
+    (trước đây dựng lại 961× gây O(N²) Shapely → 30s). Kết quả không đổi."""
     if not base_poly:
         # Fallback to AABB if no polygon
         for r_item in row_items:
@@ -273,21 +282,18 @@ def check_internal_collision(row_items: List[Dict], other_items: List[Dict], bas
                         return True
         return False
 
-    from shapely.affinity import translate
-    
     r_polys = []
     for r in row_items:
         p = get_item_polygon(r, base_poly)
         if safety_buffer_pt > 0:
             p = p.buffer(safety_buffer_pt)
         r_polys.append(p)
-        
-    o_polys = []
-    for o in other_items:
-        o_polys.append(get_item_polygon(o, base_poly))
-        
+
+    if other_polys is None:
+        other_polys = [get_item_polygon(o, base_poly) for o in other_items]
+
     for rp in r_polys:
-        for op in o_polys:
+        for op in other_polys:
             if rp.intersects(op):
                 if rp.intersection(op).area > MIN_OVERLAP_AREA_PT2: # Ignore tiny touches
                     return True
@@ -313,7 +319,18 @@ def try_row_scenario(row_items: List[Dict], indices_to_delete: List[int], other_
     
     best_shifted = None
     min_dist = float('inf')
-    
+
+    # Polygon các tem hàng-khác bất biến qua mọi phép dịch của hàng hiện tại. Dựng
+    # LAZY + nhớ kết quả: chỉ tạo ở lần ĐẦU TIÊN thực sự cần (sau khi 1 phép dịch đã
+    # qua bounds+zone), tránh vừa dựng lại 961× (cũ) vừa dựng-thừa-khi-không-cần.
+    _other_polys_holder = []  # [list] sau khi tính; rỗng = chưa tính
+    def _get_other_polys():
+        if not base_poly:
+            return None
+        if not _other_polys_holder:
+            _other_polys_holder.append([get_item_polygon(o, base_poly) for o in other_items])
+        return _other_polys_holder[0]
+
     # Search for shifts to clear constraints.
     # Prioritize horizontal centering if it is safe (preserves grid aesthetics).
     # Otherwise fallback to minimal Euclidean distance shift (preserves honeycomb nesting).
@@ -362,7 +379,7 @@ def try_row_scenario(row_items: List[Dict], indices_to_delete: List[int], other_
             continue
             
         # Check internal collisions (ensuring safe gap)
-        if check_internal_collision(shifted_row, other_items, base_poly, safety_buffer):
+        if check_internal_collision(shifted_row, other_items, base_poly, safety_buffer, other_polys=_get_other_polys()):
             continue
             
         if is_center:
