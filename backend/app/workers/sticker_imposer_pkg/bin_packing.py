@@ -136,16 +136,24 @@ def solve_auto_fill_mixed(
 
     # Estimate max capacity per type if placed alone
     max_per_type = []
+    sum_type_area = 0.0
     for page_idx, w, h in page_dims:
         w_g = w + gap
         h_g = h + gap
         c1 = max(1, int(sheet_w / w_g)) * max(1, int(sheet_h / h_g))
         c2 = max(1, int(sheet_w / h_g)) * max(1, int(sheet_h / w_g))
         max_per_type.append(max(c1, c2))
+        sum_type_area += w_g * h_g
 
     # Phase 1: Binary search for max balanced qty per type
     best_qty = 1
-    lo, hi = 1, max(max_per_type)
+    # Cận trên CHẶT mà vẫn HỢP LỆ (≥ đáp án thật) → best_qty không đổi, chỉ ít vòng hơn:
+    #  • balanced cần `qty` bản của MỖI loại ⇒ qty ≤ min(sức chứa từng loại khi đứng riêng).
+    #    (dùng max(max_per_type) như cũ là cận lỏng, ép binary search dò vùng vô ích.)
+    #  • mỗi bộ cân bằng tốn ≥ Σ diện-tích-các-loại ⇒ qty ≤ sheet_area / Σ area.
+    area_bound = int((sheet_w * sheet_h) / sum_type_area) if sum_type_area > 0 else 1
+    hi = max(1, min(min(max_per_type), area_bound))
+    lo = 1
 
     for _ in range(20):
         qty = (lo + hi) // 2
@@ -267,7 +275,22 @@ def solve_offset_mixed(
     # Binary search for the largest multiplier that still fits
     best_result = None
     best_multiplier = 1
-    lo, hi = 1, max(quantities)
+    # Cận trên CHẶT mà vẫn HỢP LỆ (≥ mult thật, vốn đã bị chặn bởi max(quantities)):
+    #  • mỗi đơn-vị-mult đặt base_ratio[i] bản loại i ⇒ mult ≤ min(cap_i / base_ratio[i]).
+    #  • mỗi đơn-vị-mult tốn ≥ Σ(base_ratio[i]·area_i) ⇒ mult ≤ sheet_area / Σ.
+    cap_bound = None
+    area_per_unit = 0.0
+    for (p_idx, w, h, _), r in zip(page_dims_qty, base_ratios):
+        w_g = w + gap
+        h_g = h + gap
+        c1 = max(1, int(sheet_w / w_g)) * max(1, int(sheet_h / h_g))
+        c2 = max(1, int(sheet_w / h_g)) * max(1, int(sheet_h / w_g))
+        cap_i = max(c1, c2) // r if r > 0 else max(c1, c2)
+        cap_bound = cap_i if cap_bound is None else min(cap_bound, cap_i)
+        area_per_unit += r * w_g * h_g
+    area_bound = int((sheet_w * sheet_h) / area_per_unit) if area_per_unit > 0 else 1
+    hi = max(1, min(max(quantities), cap_bound if cap_bound is not None else 1, area_bound))
+    lo = 1
 
     for _ in range(20):
         mult = (lo + hi) // 2
@@ -442,68 +465,106 @@ class _MaxRectsPacker:
         """
         Split all free rects that overlap with the placed rect
         into maximal non-overlapping sub-rects.
+
+        Build the new list in the SAME interleaved order as a naive split
+        (per old rect: itself if untouched, else its ≤4 children) and record
+        which entries are freshly-created children via ``self._is_child``.
+        Order is preserved so BSSF tie-breaking in insert() is unchanged.
         """
         px, py, pw, ph = placed
         pr = px + pw  # right edge
         pt = py + ph  # top edge
 
         new_free = []
+        is_child = []  # True ⇔ entry is a freshly-split child (prune candidate)
 
         for fx, fy, fw, fh in self.free_rects:
             fr = fx + fw
             ft = fy + fh
 
-            # No overlap → keep as is
+            # No overlap → keep as is (untouched rects can never become
+            # contained in a child — see _prune_free_rects).
             if px >= fr or pr <= fx or py >= ft or pt <= fy:
                 new_free.append((fx, fy, fw, fh))
+                is_child.append(False)
                 continue
 
             # Overlap exists → split into up to 4 maximal sub-rects
 
             # Left side
             if px > fx:
-                new_free.append((fx, fy, px - fx, fh))
+                new_free.append((fx, fy, px - fx, fh)); is_child.append(True)
 
             # Right side
             if pr < fr:
-                new_free.append((pr, fy, fr - pr, fh))
+                new_free.append((pr, fy, fr - pr, fh)); is_child.append(True)
 
             # Bottom side
             if py > fy:
-                new_free.append((fx, fy, fw, py - fy))
+                new_free.append((fx, fy, fw, py - fy)); is_child.append(True)
 
             # Top side
             if pt < ft:
-                new_free.append((fx, pt, fw, ft - pt))
+                new_free.append((fx, pt, fw, ft - pt)); is_child.append(True)
 
         self.free_rects = new_free
+        self._is_child = is_child
 
     def _prune_free_rects(self):
         """
         Remove any free rect that is fully contained by another free rect.
-        This keeps the list small and prevents redundant checks.
+
+        Optimization (output-identical): by the maintained invariant that
+        ``self.free_rects`` is always mutually non-contained BEFORE a split,
+        an untouched rect can never end up contained in a freshly-created
+        child (a child ⊆ a rect that overlapped the placed item; if an
+        untouched rect were ⊆ that child it would have been ⊆ that overlapping
+        rect too, contradicting the invariant). So only CHILD entries need a
+        containment test — against the full pre-prune list, exactly as the
+        naive O(F²) version, but skipping the untouched rows. Iteration order
+        is preserved, so the surviving list is byte-identical to the naive one.
         """
+        is_child = getattr(self, "_is_child", None)
+        if is_child is None:
+            # Fallback: naive O(F²) over the whole list (safety; not expected).
+            rects = self.free_rects
+            n = len(rects)
+            pruned = []
+            for i in range(n):
+                ax, ay, aw, ah = rects[i]
+                if not any(
+                    j != i and ax >= rects[j][0] and ay >= rects[j][1]
+                    and ax + aw <= rects[j][0] + rects[j][2]
+                    and ay + ah <= rects[j][1] + rects[j][3]
+                    for j in range(n)
+                ):
+                    pruned.append(rects[i])
+            self.free_rects = pruned
+            return
+
+        rects = self.free_rects
+        n = len(rects)
         pruned = []
-        n = len(self.free_rects)
-
         for i in range(n):
-            ax, ay, aw, ah = self.free_rects[i]
+            if not is_child[i]:
+                pruned.append(rects[i])  # untouched → always survives
+                continue
+            ax, ay, aw, ah = rects[i]
+            ar = ax + aw
+            at = ay + ah
             contained = False
-
             for j in range(n):
-                if i == j:
+                if j == i:
                     continue
-                bx, by, bw, bh = self.free_rects[j]
-
-                # Check if rect[i] is fully inside rect[j]
-                if ax >= bx and ay >= by and ax + aw <= bx + bw and ay + ah <= by + bh:
+                bx, by, bw, bh = rects[j]
+                if ax >= bx and ay >= by and ar <= bx + bw and at <= by + bh:
                     contained = True
                     break
-
             if not contained:
-                pruned.append(self.free_rects[i])
+                pruned.append(rects[i])
 
         self.free_rects = pruned
+        self._is_child = None
 
 
 # ═══════════════════════════════════════════════════════════════

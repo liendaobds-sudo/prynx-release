@@ -23,8 +23,8 @@ class ShapeBuilder:
         self.page_height = page_height
         self.pdf = pdf
         self.pike_page = pike_page
-        self.stream = []
-        self._committed_len = 0
+        self.stream = []          # path ops đang chờ (kể từ finish() gần nhất)
+        self._committed = []      # các nhóm đã hoàn tất — CHỈ append (tránh O(N²))
 
     def draw_line(self, p1: Point, p2: Point):
         self.stream.append(f"{p1.x:.4f} {self.page_height - p1.y:.4f} m")
@@ -119,8 +119,7 @@ class ShapeBuilder:
         else:
             preamble.append("[] 0 d")
 
-        old_part = self.stream[:self._committed_len]
-        new_part = self.stream[self._committed_len:]
+        new_part = self.stream  # toàn bộ path ops vẽ kể từ finish() trước
 
         draw_op = "s" if not fill else "b"
         if not closePath:
@@ -135,8 +134,11 @@ class ShapeBuilder:
             oc_name = self._register_ocg(oc)
             wrapped = [f"/OC /{oc_name} BDC"] + wrapped + ["EMC"]
 
-        self.stream = old_part + wrapped
-        self._committed_len = len(self.stream)
+        # Append-only: gộp nhóm vừa hoàn tất vào _committed (O(k)). Trước đây làm
+        # `self.stream = old_part + wrapped` → nối lại TOÀN BỘ list tích lũy mỗi
+        # finish() → O(N²) khi vẽ nhiều tem/đường bế. Thứ tự ops giữ nguyên y hệt.
+        self._committed.extend(wrapped)
+        self.stream = []
 
     def _register_ocg(self, ocg_ref) -> str:
         """Register OCG reference in page /Properties and return the property name."""
@@ -166,10 +168,10 @@ class ShapeBuilder:
         return oc_name
 
     def commit(self):
-        content = ("\n".join(self.stream) + "\n").encode('latin-1', errors='replace')
+        content = ("\n".join(self._committed + self.stream) + "\n").encode('latin-1', errors='replace')
         self.pike_page.contents_add(pikepdf.Stream(self.pdf, content))
+        self._committed = []
         self.stream = []
-        self._committed_len = 0
 
 
 # =========================================================================
@@ -227,15 +229,47 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
     """
     dest_h = page_height(dest_page)
     src_pike = src_pdf.pages[page_idx]
-    xobj = src_pike.as_form_xobject()
-    # FIX: as_form_xobject() đặt /BBox = TrimBox → clip mất phần BLEED (ngoài trim).
-    # Ép BBox = MediaBox (full page) để bleed của file được render đầy đủ.
-    try:
-        _mb = src_pike.mediabox
-        xobj.BBox = pikepdf.Array([_mb[0], _mb[1], _mb[2], _mb[3]])
-    except Exception:
-        pass
-    xobj_name = dest_page.add_resource(xobj, pikepdf.Name.XObject)
+
+    # ── Embed-once XObject cache (HIỆU NĂNG) ──────────────────────────────
+    # Trước đây MỖI placement gọi as_form_xobject()+add_resource → copy TOÀN BỘ
+    # nội dung trang nguồn vào output MỘT LẦN/BẢN TEM. Với N bản (nhất là nhiều
+    # loại tem) output phình ~N lần và save() nghẹt. Mọi phép xoay/lật/scale/clip
+    # đều nằm ở content stream từng tem nên XObject DÙNG CHUNG được → nhúng 1 lần
+    # mỗi mẫu, tham chiếu rẻ N lần. Cache đặt trên pdf đích, khóa (id(src_pdf), page_idx);
+    # tên resource cố định ⇒ add_resource idempotent (không nhân đôi entry).
+    _cache = getattr(pdf, "_nup_xobj_cache", None)
+    if _cache is None:
+        _cache = {}
+        try:
+            pdf._nup_xobj_cache = _cache
+        except Exception:
+            _cache = None  # không gắn được cache → fallback hành vi cũ
+    _key = (id(src_pdf), page_idx)
+    _cached = _cache.get(_key) if _cache is not None else None
+    if _cached is not None:
+        xobj, _res_name = _cached
+    else:
+        xobj = src_pike.as_form_xobject()
+        # FIX: as_form_xobject() đặt /BBox = TrimBox → clip mất phần BLEED (ngoài trim).
+        # Ép BBox = MediaBox (full page) để bleed của file được render đầy đủ.
+        try:
+            _mb = src_pike.mediabox
+            xobj.BBox = pikepdf.Array([_mb[0], _mb[1], _mb[2], _mb[3]])
+        except Exception:
+            pass
+        if _cache is not None:
+            # Đưa XObject vào output MỘT LẦN (phần nặng = copy_foreign object graph).
+            if src_pdf is not pdf:
+                xobj = pdf.copy_foreign(xobj)
+            _res_name = pikepdf.Name(f"/NupXo{_key[0]}_{page_idx}")
+            _cache[_key] = (xobj, _res_name)
+        else:
+            _res_name = None
+
+    if _res_name is not None:
+        xobj_name = dest_page.add_resource(xobj, pikepdf.Name.XObject, name=_res_name)
+    else:
+        xobj_name = dest_page.add_resource(xobj, pikepdf.Name.XObject)
 
     src_w_full = float(src_pike.mediabox[2] - src_pike.mediabox[0])
     src_h_full = float(src_pike.mediabox[3] - src_pike.mediabox[1])
