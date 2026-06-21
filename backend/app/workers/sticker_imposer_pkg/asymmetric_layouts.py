@@ -67,7 +67,9 @@ def _py_solve_dumbbell_pair_col_layout(usable_w: float, usable_h: float, item_w:
                         'x': col_a_x, 'y': cy,
                         'width': w_orig, 'height': h_orig,
                         'isRotated': is_rotated_90,
-                        'isRotated180': not shape_props.get('bigEndFirst', True) if 'shape_props' in locals() and shape_props else False
+                        # Col A giữ hướng gốc (khớp Rust core::dumbbell_pair_col). Trước đây dòng này
+                        # tham chiếu `shape_props` không tồn tại trong scope hàm → luôn False (F7).
+                        'isRotated180': False
                     })
 
         # Col B (right side of pair, shifted by h_shift): rotated 180°, staggered vertically
@@ -476,10 +478,13 @@ def _py_solve_illustrator_dumbbell_layout(usable_w: float, usable_h: float, bb_w
             min_dx = math.sqrt(max(0, (cur_h + cur_gap_h)**2 - (row_pitch / 2.0)**2))
             min_pair_pitch_head = min_dx + h_shift + cur_w - cur_h
             min_pair_pitch_handle = h_shift + cur_w - cur_h + cur_gap_h
-            min_pair_pitch_small_heads = 0
-            if v_shift < effective_small_d + cur_gap_v:
-                min_pair_pitch_small_heads = h_shift + cur_w + cur_gap_h
-            new_pair_pitch = max(min_pair_pitch_head, min_pair_pitch_handle, min_pair_pitch_small_heads)
+            # FIX (lồng đầu-to giữa 2 cặp cột): KHÔNG dùng ràng buộc "small_heads" ở đây.
+            # Biên giữa 2 cặp kề nhau CHỈ có đầu TO gặp nhau (đầu nhỏ nằm ở mép trong mỗi cột).
+            # Guard cũ gán min_pair_pitch_small_heads = ĐÚNG default pair_pitch khi đầu nhỏ lớn
+            # (v_shift < small_d+gap) → triệt tiêu nén → 2 cặp cách nhau = gap (mất lồng so le).
+            # min_pair_pitch_head (công thức lồng tròn so le) đã đảm bảo đầu to cách nhau đủ gap;
+            # resolve_layout_collisions là chốt an toàn cuối cho mọi overlap còn sót.
+            new_pair_pitch = max(min_pair_pitch_head, min_pair_pitch_handle)
             if new_pair_pitch < pair_pitch:
                 pair_pitch = new_pair_pitch
                 
@@ -541,10 +546,9 @@ def _py_solve_illustrator_dumbbell_layout(usable_w: float, usable_h: float, bb_w
             min_dy = math.sqrt(max(0, (cur_w + cur_gap_v)**2 - (col_pitch / 2.0)**2))
             min_pair_v_pitch_head = min_dy + v_shift + cur_h - cur_w
             min_pair_v_pitch_handle = v_shift + cur_h - cur_w + cur_gap_v
-            min_pair_v_pitch_small_heads = 0
-            if h_shift < effective_small_d + cur_gap_h:
-                min_pair_v_pitch_small_heads = v_shift + cur_h + cur_gap_v
-            new_pair_v_pitch = max(min_pair_v_pitch_head, min_pair_v_pitch_handle, min_pair_v_pitch_small_heads)
+            # FIX (đối xứng branch pair-row): bỏ ràng buộc "small_heads" — xem giải thích ở branch pair-col.
+            # Biên giữa 2 cặp HÀNG chỉ có đầu TO gặp nhau; min_pair_v_pitch_head đã đủ an toàn.
+            new_pair_v_pitch = max(min_pair_v_pitch_head, min_pair_v_pitch_handle)
             if new_pair_v_pitch < pair_v_pitch:
                 pair_v_pitch = new_pair_v_pitch
                 
@@ -600,7 +604,7 @@ def _py_solve_illustrator_dumbbell_layout(usable_w: float, usable_h: float, bb_w
         for it in main_items:
             it['x'] -= bb_final['minX']
             it['y'] -= bb_final['minY']
-        return {'totalItems': len(main_items), 'items': main_items, 'widthUsed': bb_final['width'], 'heightUsed': bb_final['height'], 'strategyUsed': 'illustrator_hammer'}
+        return {'totalItems': len(main_items), 'items': main_items, 'widthUsed': bb_final['width'], 'heightUsed': bb_final['height'], 'strategyUsed': 'illustrator_dumbbell'}
 
     fill_items = []
     
@@ -657,25 +661,30 @@ def solve_dumbbell_pair_col_layout(usable_w: float, usable_h: float, item_w: flo
     if _HAS_RUST:
         try:
             return _native.shape_dumbbell_pair_col(usable_w, usable_h, item_w, item_h, gap_x, gap_y, big_end_axis_frac, is_rotated_90)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[shape_dumbbell_pair_col] Rust call failed, fallback Python: {type(e).__name__}")
     return _py_solve_dumbbell_pair_col_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, big_end_axis_frac, is_rotated_90)
 
 def solve_dumbbell_pair_row_layout(usable_w: float, usable_h: float, item_w: float, item_h: float, gap_x: float, gap_y: float, big_end_axis_frac: float = 0.65, is_rotated_90: bool = False) -> Dict[str, Any]:
     if _HAS_RUST:
         try:
             return _native.shape_dumbbell_pair_row(usable_w, usable_h, item_w, item_h, gap_x, gap_y, big_end_axis_frac, is_rotated_90)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[shape_dumbbell_pair_row] Rust call failed, fallback Python: {type(e).__name__}")
     return _py_solve_dumbbell_pair_row_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, big_end_axis_frac, is_rotated_90)
 
 def solve_illustrator_hammer_layout(usable_w: float, usable_h: float, bb_w: float, bb_h: float, gap_h: float, gap_v: float, shape_props: Dict[str, Any] = None, disable_l_shape: bool = False) -> Dict[str, Any]:
-    if _HAS_RUST:
+    # PARITY (F1): Rust core::hammer KHÔNG thực hiện bước L-shape fill nội bộ — nó chỉ trả
+    # khối chính. Vì vậy nó CHỈ khớp Python khi disable_l_shape=True. Với disable_l_shape=False
+    # (gọi top-level 1 lần/trang trong orchestrator), dùng Python để giữ đúng fill lồng ghép
+    # cho tem BÚA + đảm bảo parity (trước đây Rust trả ít item hơn → chọn chiến lược/yield lệch).
+    # Hot path (evaluate_unified_asymmetric, _best_fill_layout) luôn gọi disable_l_shape=True
+    # → vẫn được Rust tăng tốc.
+    if _HAS_RUST and disable_l_shape:
         try:
-            # Our shape_hammer function in rust mimics the Python solve_illustrator_hammer_layout logic
             return _native.shape_hammer(usable_w, usable_h, bb_w, bb_h, gap_h, gap_v, shape_props, disable_l_shape)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[shape_hammer] Rust call failed, fallback Python: {type(e).__name__}")
     return _py_solve_illustrator_hammer_layout(usable_w, usable_h, bb_w, bb_h, gap_h, gap_v, shape_props, disable_l_shape)
 
 def solve_illustrator_dumbbell_layout(usable_w: float, usable_h: float, bb_w: float, bb_h: float, gap_h: float, gap_v: float, shape_props: Dict[str, Any] = None, disable_l_shape: bool = False) -> Dict[str, Any]:

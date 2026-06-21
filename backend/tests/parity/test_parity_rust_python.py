@@ -134,3 +134,55 @@ def test_sticker_trapezoid_parity():
         assert _yield_of(py) == _yield_of(rs), (
             f"Trapezoid yield lệch (rot={rot}): Py={_yield_of(py)} vs Rust={_yield_of(rs)}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sticker HAMMER (búa) / DUMBBELL (tạ tay) — lỗ hổng parity trước đây không phủ.
+#  F1: Rust core::hammer KHÔNG làm L-shape fill nội bộ → chỉ khớp Python khi
+#  disable_l_shape=True. Wrapper phải định tuyến nhánh full-fill (False) sang Python.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HAMMER_SCENARIOS = [
+    # uw,    uh,     bw,   bh,    gh,  gv
+    (800.0, 1100.0, 60.0, 140.0, 6.0, 6.0),
+    (1000.0, 700.0, 90.0, 45.0, 4.0, 4.0),
+    (500.0, 900.0, 50.0, 120.0, 8.0, 8.0),
+]
+
+_HAMMER_PROPS = {
+    "bigEndFirst": True, "bodyW": 22.0, "smallD": 18.0, "smallAsymmOffset": 0.0,
+    "asymmOffset": 0.0, "safeInterlockPitch": 0.0, "waistRatio": 0.7, "smallHeadFrac": 0.15,
+}
+
+
+@pytest.mark.parametrize("uw,uh,bw,bh,gh,gv", _HAMMER_SCENARIOS)
+def test_sticker_hammer_parity_disable_lshape(uw, uh, bw, bh, gh, gv):
+    """disable_l_shape=True: Rust shape_hammer PHẢI khớp Python (khối chính, không fill)."""
+    from app.workers.sticker_imposer_pkg.asymmetric_layouts import _py_solve_illustrator_hammer_layout as pyh
+    py = pyh(uw, uh, bw, bh, gh, gv, _HAMMER_PROPS, True)
+    rs = pdfcompare_native.shape_hammer(uw, uh, bw, bh, gh, gv, _HAMMER_PROPS, True)
+    assert _yield_of(py) == _yield_of(rs), (
+        f"Hammer(disable=True) yield lệch: Py={_yield_of(py)} vs Rust={_yield_of(rs)}"
+    )
+    pw, ph = _dims_of(py)
+    rw, rh = _dims_of(rs)
+    assert math.isclose(pw, rw, abs_tol=ABS_TOL) and math.isclose(ph, rh, abs_tol=ABS_TOL)
+
+
+@pytest.mark.parametrize("uw,uh,bw,bh,gh,gv", _HAMMER_SCENARIOS)
+def test_hammer_wrapper_full_fill_uses_python(uw, uh, bw, bh, gh, gv):
+    """F1: wrapper với disable_l_shape=False phải trả kết quả Python (có L-shape fill),
+    KHÔNG phải Rust thô (vốn thiếu fill → ít item hơn). Bảo vệ chống regress."""
+    from app.workers.sticker_imposer_pkg.asymmetric_layouts import (
+        solve_illustrator_hammer_layout, _py_solve_illustrator_hammer_layout as pyh,
+    )
+    wrapped = solve_illustrator_hammer_layout(uw, uh, bw, bh, gh, gv, _HAMMER_PROPS, False)
+    py = pyh(uw, uh, bw, bh, gh, gv, _HAMMER_PROPS, False)
+    rs = pdfcompare_native.shape_hammer(uw, uh, bw, bh, gh, gv, _HAMMER_PROPS, False)
+    # Wrapper == Python (full-fill), và phải >= Rust thô.
+    assert _yield_of(wrapped) == _yield_of(py), (
+        f"Wrapper không dùng Python full-fill: wrapper={_yield_of(wrapped)} py={_yield_of(py)}"
+    )
+    assert _yield_of(wrapped) >= _yield_of(rs), (
+        f"Wrapper ({_yield_of(wrapped)}) không được kém Rust thô ({_yield_of(rs)})"
+    )

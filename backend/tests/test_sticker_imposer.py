@@ -313,3 +313,56 @@ class TestResolveLayoutCollisions:
         cleaned = resolve_layout_collisions(items, base_poly, gap_pt=2.0)
         assert len(cleaned) == 1
 
+
+
+# ═══════════════════════════════════════════════
+#  Tem BÚA (hammer) / TẠ TAY (dumbbell) — bất biến rotation & full-fill (F1/S1)
+# ═══════════════════════════════════════════════
+
+_HAMMER_PROPS = {
+    "bigEndFirst": True, "bodyW": 22.0, "smallD": 18.0, "smallAsymmOffset": 0.0,
+    "asymmOffset": 0.0, "safeInterlockPitch": 0.0, "waistRatio": 0.7, "smallHeadFrac": 0.15,
+}
+
+
+@pytest.mark.parametrize("bw,bh", [(60.0, 140.0), (90.0, 45.0), (50.0, 120.0)])
+def test_hammer_item_dims_consistent_with_rotation(bw, bh):
+    """S1: mỗi item phải có (width,height) khớp cờ isRotated —
+    isRotated=False → (bw,bh); isRotated=True → (bh,bw). Chống lỗi double-swap khi fill."""
+    from app.workers.sticker_imposer_pkg.asymmetric_layouts import _py_solve_illustrator_hammer_layout as pyh
+    res = pyh(800.0, 1100.0, bw, bh, 6.0, 6.0, _HAMMER_PROPS, False)
+    assert res['totalItems'] > 0
+    for it in res['items']:
+        w, h, rot = round(it['width'], 1), round(it['height'], 1), it.get('isRotated', False)
+        expect = (round(bh, 1), round(bw, 1)) if rot else (round(bw, 1), round(bh, 1))
+        assert (w, h) == expect, f"item dims {(w, h)} không khớp isRotated={rot}, expect {expect}"
+
+
+def test_hammer_full_fill_beats_main_only():
+    """F1: nhánh full-fill (disable_l_shape=False) phải cho >= nhánh khối-chính-only
+    (disable_l_shape=True) — fill nội bộ không được làm mất tem."""
+    from app.workers.sticker_imposer_pkg.asymmetric_layouts import _py_solve_illustrator_hammer_layout as pyh
+    full = pyh(800.0, 1100.0, 60.0, 140.0, 6.0, 6.0, _HAMMER_PROPS, False)
+    main_only = pyh(800.0, 1100.0, 60.0, 140.0, 6.0, 6.0, _HAMMER_PROPS, True)
+    assert full['totalItems'] >= main_only['totalItems']
+
+
+def test_dumbbell_pair_pitch_compresses_with_large_small_head():
+    """Regression: 2 cặp cột tạ tay phải LỒNG đầu-to (pair_pitch nén < default) ngay cả khi
+    đầu nhỏ lớn. Trước đây guard min_pair_pitch_small_heads ép pair_pitch = default →
+    2 cặp cách nhau đúng = gap (mất lồng so le). Xem asymmetric_layouts.py branch pair-col."""
+    from app.workers.sticker_imposer_pkg.asymmetric_layouts import _py_solve_illustrator_dumbbell_layout as dbl
+    cur_w, cur_h, gap = 140.0, 60.0, 6.0
+    big_end_axis_frac = 0.65
+    sp = {'bigEndFirst': True, 'bigEndAxisFrac': big_end_axis_frac, 'bodyW': 16.0,
+          'smallD': 40.0, 'smallAsymmOffset': 0.0, 'safeInterlockPitch': 0.0,
+          'waistRatio': 0.45, 'smallHeadFrac': 0.0}
+    res = dbl(800.0, 1100.0, cur_w, cur_h, gap, gap, sp, True)
+    xs = sorted(set(round(it['x'], 2) for it in res['items']))
+    assert len(xs) >= 3, f"cần >=2 cặp để đo pair_pitch, got xs={xs}"
+    pair_pitch = xs[2] - xs[0]            # khoảng cách giữa 2 pair start liên tiếp
+    h_shift = big_end_axis_frac * cur_w + gap
+    default_pp = cur_w + h_shift + gap    # pair_pitch khi KHÔNG nén
+    assert pair_pitch < default_pp - 1.0, (
+        f"pair_pitch={pair_pitch:.1f} không nén (default={default_pp:.1f}) — guard small_heads tái xuất?"
+    )

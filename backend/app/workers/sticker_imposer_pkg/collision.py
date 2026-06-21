@@ -23,8 +23,7 @@ def resolve_layout_collisions(items, base_poly, gap_pt):
     """
     from shapely.affinity import translate, scale, rotate
     import logging
-    import traceback
-    
+
     _logger = logging.getLogger(__name__)
     if not items or not base_poly:
         return items
@@ -146,7 +145,7 @@ def resolve_layout_collisions(items, base_poly, gap_pt):
         _logger.debug(f"[COLLISION_RESOLVER] Pruned {len(removed)} items, remaining {len(valid_items)}/{len(items)}")
         return valid_items
     except Exception as e:
-        _logger.warning(f"[COLLISION_RESOLVER] Error: {e}")
-        traceback.print_exc()
+        # F5: dùng logger.exception thay traceback.print_exc() (không rò stacktrace ra stdout)
+        _logger.exception(f"[COLLISION_RESOLVER] Error: {type(e).__name__}")
         return items
 

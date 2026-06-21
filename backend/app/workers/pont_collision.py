@@ -147,24 +147,27 @@ def build_shapely_polygon_from_paths(paths, page_rect=None) -> Polygon:
         return None
         
     largest_path = max(valid_paths, key=lambda p: p['rect'].width * p['rect'].height)
-    
-    pts = []
-    for item in largest_path.get('items', []):
-        if item[0] in ('l', 'c'):
-            for p in item[1:]:
-                pts.append((p.x, p.y))
-    
-    if len(pts) >= 3:
-        try:
-            poly = Polygon(pts)
+
+    # P1 FIX: dùng bộ trích sample bezier chuẩn (_path_items_to_polygon) thay vì append
+    # thẳng các điểm — bản cũ lấy CẢ điểm điều khiển bezier làm đỉnh polygon → phình ~15%
+    # diện tích ở hướng chéo cho tem bo tròn (đo thật) → xóa OAN tem gần pont góc.
+    # _path_items_to_polygon sample đường cong + gộp đa subpath (unary_union).
+    try:
+        from app.workers.nup_diecut import _path_items_to_polygon
+        poly = _path_items_to_polygon(largest_path.get('items', []))
+        if poly is not None and not poly.is_empty:
             if not poly.is_valid:
                 poly = poly.buffer(0)
             return poly
-        except Exception:
-            return None
+    except Exception:
+        pass
     return None
 
 def get_item_polygon(item: Dict, base_poly: Polygon, skip_transform: bool = False) -> Polygon:
+    # P4 (đã kiểm): CỐ Ý không xử lý mirror. Đường render live (nup_artwork.place_one_artwork)
+    # luôn nhận mirror_x=mirror_y=False; duplex mặt sau được xử lý bằng mirror abs_x + TOGGLE
+    # isRotated180 NGAY trên placement (nup_process_chunk:445-453) — cùng các cờ mà collision đọc.
+    # → collision và render dùng chung cờ, không bên nào mirror thật → đã nhất quán vị trí/hướng.
     from shapely.affinity import translate, rotate
     
     # Auto-detect math-created polygons (centered at origin, symmetric bounds)
@@ -342,8 +345,13 @@ def try_row_scenario(row_items: List[Dict], indices_to_delete: List[int], other_
     usable_max_x = bounds_max_x
     target_min_x = usable_min_x + (usable_max_x - usable_min_x - row_w) / 2.0
     center_dx = target_min_x - orig_min_x
-    
-    if abs(center_dx) > 0.5 * MM_TO_PTS:
+
+    # P2: chỉ căn-giữa khi đây là điều chỉnh NHỎ (hàng lưới mất 1 tem mép). Với layout SO LE
+    # (tạ tay/hex) mỗi mức y là "hàng mỏng" trải ngang; căn-giữa riêng nó = teleport ngang lớn
+    # → lệch canh cột với các mức y trên/dưới (phá interlock). Khi center_dx > ~1 bề rộng tem thì
+    # bỏ căn-giữa → rơi xuống tìm phép dịch tối thiểu (giữ canh, thường dịch 0).
+    row_ref_w = max((p['width'] for p in new_row), default=0.0)
+    if 0.5 * MM_TO_PTS < abs(center_dx) <= row_ref_w + 0.5 * MM_TO_PTS:
         shifts_to_try.append((center_dx, 0.0, True))
         
     steps = [0]
@@ -390,14 +398,225 @@ def try_row_scenario(row_items: List[Dict], indices_to_delete: List[int], other_
         
     return best_shifted
 
+def _try_whole_block_shift(placements: List[Dict], zones: List[box], base_poly: Polygon, base_rect_pts: Tuple[float,float,float,float], sheet_w: float, sheet_h: float, margins: Dict[str, float]) -> List[Dict]:
+    """Dịch CẢ KHỐI (mọi tem cùng một vector) ra xa các góc va chạm để GIỮ TRỌN tem (không xóa).
+
+    Chỉ nhận phép dịch khiến HẾT va chạm VÀ khối vẫn nằm trong vùng in. Trả phép dịch nhỏ nhất,
+    hoặc None nếu không có (vd va chạm 2 góc đối nhau, hoặc khối đã kín khổ). Khôi phục logic
+    'zoneSet → canh về phía đối diện, giữ nguyên N tem' của Illustrator gốc (bị lược khi port)."""
+    bmin_x, bmin_y, bmax_x, bmax_y = get_placements_bbox(placements)
+    lo_x = margins.get('left', 0.0); hi_x = sheet_w - margins.get('right', 0.0)
+    lo_y = margins.get('bottom', 0.0); hi_y = sheet_h - margins.get('top', 0.0)
+    # khoảng dịch hợp lệ để khối không tràn vùng in
+    min_dx, max_dx = lo_x - bmin_x, hi_x - bmax_x
+    min_dy, max_dy = lo_y - bmin_y, hi_y - bmax_y
+    steps = [0] + [v for k in range(1, 21) for v in (k, -k)]  # tới ±20mm
+    cands = []
+    for dx_mm in steps:
+        dx = dx_mm * MM_TO_PTS
+        if dx < min_dx - 0.5 or dx > max_dx + 0.5:
+            continue
+        for dy_mm in steps:
+            dy = dy_mm * MM_TO_PTS
+            if dy < min_dy - 0.5 or dy > max_dy + 0.5:
+                continue
+            cands.append((dx * dx + dy * dy, dx, dy))
+    cands.sort()  # thử phép dịch nhỏ trước
+    for _, dx, dy in cands:
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            continue  # (0,0) đã va chạm
+        shifted = apply_shift(placements, dx, dy)
+        if not detect_collisions(shifted, zones, base_poly, base_rect_pts, sheet_h):
+            return shifted
+    return None
+
+
+def _rotate_pair_180(placements: List[Dict], idxs: List[int], sheet_h: float) -> List[Dict]:
+    """Xoay 180° CỤC BỘ một nhóm tem (1 cặp hàng/cột) quanh tâm bbox của RIÊNG nhóm + toggle
+    isRotated180. Footprint nhóm không đổi → không đè phần còn lại; chỉ đảo nội bộ cặp (đưa cạnh
+    thụt / hàng thưa ra mép). Cập nhật abs_x/abs_y (collision) và original_cell_y (render)."""
+    xs0 = min(placements[i]['abs_x'] for i in idxs)
+    ys0 = min(placements[i]['abs_y'] for i in idxs)
+    xs1 = max(placements[i]['abs_x'] + placements[i]['width'] for i in idxs)
+    ys1 = max(placements[i]['abs_y'] + placements[i]['height'] for i in idxs)
+    sx, sy = xs0 + xs1, ys0 + ys1
+    iset = set(idxs)
+    out = []
+    for i, p in enumerate(placements):
+        if i not in iset:
+            out.append(p)
+            continue
+        q = dict(p)
+        q['abs_x'] = sx - (p['abs_x'] + p['width'])
+        q['abs_y'] = sy - (p['abs_y'] + p['height'])
+        q['original_cell_y'] = sheet_h - q['abs_y'] - p['height']
+        cell = p.get('cell')
+        if isinstance(cell, dict):
+            nc = dict(cell)
+            nc['isRotated180'] = not nc.get('isRotated180', False)
+            q['cell'] = nc
+        if 'isRotated180' in p:
+            q['isRotated180'] = not p.get('isRotated180', False)
+        out.append(q)
+    return out
+
+
+def _creates_sticker_overlap(placements: List[Dict], base_poly: Polygon, changed_idxs: List[int]) -> bool:
+    """True nếu BẤT KỲ tem trong changed_idxs ĐÈ (diện tích giao > 1pt²) lên tem khác — dùng polygon
+    THẬT. Bắt buộc kiểm sau mỗi phép xoay cặp: xoay quanh tâm cặp có thể phá khớp lồng với hàng kế →
+    sinh đè mà detect_collisions (chỉ đếm vùng cấm) KHÔNG thấy."""
+    if base_poly is None:
+        return True  # không có hình thật để kiểm an toàn → từ chối xoay (giữ nguyên, không mạo hiểm)
+    boxes = [(p['abs_x'], p['abs_y'], p['abs_x'] + p['width'], p['abs_y'] + p['height']) for p in placements]
+    cache: Dict[int, Any] = {}
+    def _poly(i):
+        if i not in cache:
+            cache[i] = get_item_polygon(placements[i], base_poly)
+        return cache[i]
+    cset = set(changed_idxs)
+    for i in changed_idxs:
+        bi = boxes[i]
+        for j in range(len(placements)):
+            if j == i or (j in cset and j < i):
+                continue
+            bj = boxes[j]
+            if bi[2] <= bj[0] or bi[0] >= bj[2] or bi[3] <= bj[1] or bi[1] >= bj[3]:
+                continue  # AABB rời nhau
+            pi, pj = _poly(i), _poly(j)
+            if pi.intersects(pj) and pi.intersection(pj).area > 1.0:
+                return True
+    return False
+
+
+def _interlocked_clusters(placements: List[Dict], axis: str, tol: float = 5.0) -> List[List[int]]:
+    """Nhận diện các CẶP LỒNG thật: gom hàng (axis='row', theo y) hoặc cột (axis='col', theo x)
+    thành cụm các nhóm có BBOX ĐÈ NHAU dọc trục → đó là 1 cặp lồng. Cụm tách rời (có khe) = ranh
+    giới cặp. Mỗi cặp lồng rời các cặp khác nên xoay nó quanh tâm KHÔNG đụng cặp khác.
+    Trả list cụm; mỗi cụm = (list index tem, số nhóm hàng/cột trong cụm)."""
+    import collections as _c
+    groups = _c.defaultdict(list)
+    for i, p in enumerate(placements):
+        key = round((p['abs_y'] if axis == 'row' else p['abs_x']) / tol) * tol
+        groups[key].append(i)
+    keys = sorted(groups)
+
+    def _rng(idxs):
+        if axis == 'row':
+            return (min(placements[i]['abs_y'] for i in idxs),
+                    max(placements[i]['abs_y'] + placements[i]['height'] for i in idxs))
+        return (min(placements[i]['abs_x'] for i in idxs),
+                max(placements[i]['abs_x'] + placements[i]['width'] for i in idxs))
+
+    clusters = []  # (idxs, n_groups)
+    cur_idx, cur_n, cur_hi = [], 0, None
+    for k in keys:
+        lo, hi = _rng(groups[k])
+        if cur_idx and lo < cur_hi - 0.5:   # bbox đè nhóm trước → cùng cặp lồng
+            cur_idx += groups[k]; cur_n += 1; cur_hi = max(cur_hi, hi)
+        else:
+            if cur_idx:
+                clusters.append((cur_idx, cur_n))
+            cur_idx, cur_n, cur_hi = list(groups[k]), 1, hi
+    if cur_idx:
+        clusters.append((cur_idx, cur_n))
+    return clusters
+
+
+def _cluster_unequal_groups(placements: List[Dict], idxs: List[int], axis: str = None, tol: float = 5.0) -> bool:
+    """True nếu trong cụm lồng, số tem 2 HƯỚNG (isRotated180 up/down) KHÁC nhau (cả 2 đều có mặt).
+    Đây là 'cặp lồng lệch số lượng' (= checkIfPentagonRowsAreEqual==false), đếm theo HƯỚNG chứ
+    KHÔNG theo vị trí y/x:
+      - ngũ giác: cặp 2 hàng up(4)+down(3) → 4≠3 → lệch.
+      - tam giác: 1 hàng DUDUDU lẻ (6 xuôi + 5 ngược) → 6≠5 → lệch. (Hàng chẵn 3=3 → bằng.)
+    Lệch → xoay 180° đổi được hướng tem ở mép vùng cấm; bằng → xoay = no-op → phải xóa."""
+    n_a = sum(1 for i in idxs if (placements[i].get('cell') or {}).get('isRotated180', False))
+    n_b = len(idxs) - n_a
+    return n_a > 0 and n_b > 0 and n_a != n_b
+
+
+def _try_local_pair_flips(placements: List[Dict], zones: List[box], base_poly: Polygon, base_rect_pts: Tuple[float,float,float,float], sheet_h: float) -> List[Dict]:
+    """Xoay 180° CỤC BỘ trọn CẶP LỒNG (nhận theo bbox đè nhau) CHỨA tem va chạm → đưa hàng/cột ít
+    tem (cạnh thụt) ra phía pont, GIỮ TRỌN tem. Vì các cặp lồng rời nhau, xoay 1 cặp không đụng cặp
+    khác. Lặp tham lam: chỉ nhận phép xoay vừa GIẢM va chạm vùng cấm VỪA không sinh tem-đè-tem."""
+    if base_poly is None:
+        return placements  # không có hình thật → không xoay
+    cur = placements
+    cols_now = detect_collisions(cur, zones, base_poly, base_rect_pts, sheet_h)
+    guard = 0
+    while cols_now and guard < 12:
+        guard += 1
+        improved = False
+        for axis in ('row', 'col'):
+            clusters = _interlocked_clusters(cur, axis)
+            idx2cl = {}
+            for ci, (idxs, _n) in enumerate(clusters):
+                for i in idxs:
+                    idx2cl[i] = ci
+            for ci in sorted({idx2cl[i] for i in cols_now if i in idx2cl}):
+                idxs, n_groups = clusters[ci]
+                # CHỈ xoay khi cặp lồng có 2 hàng/cột KHÁC số lượng (checkIfPentagonRowsAreEqual==false).
+                # Bằng số lượng → đối xứng → xoay 180° vẫn va chạm (no-op) → để tầng sau xóa+canh.
+                if not _cluster_unequal_groups(cur, idxs, axis):
+                    continue
+                cand = _rotate_pair_180(cur, idxs, sheet_h)
+                cand_cols = detect_collisions(cand, zones, base_poly, base_rect_pts, sheet_h)
+                if len(cand_cols) < len(cols_now) and not _creates_sticker_overlap(cand, base_poly, idxs):
+                    cur, cols_now, improved = cand, cand_cols, True
+                    break
+            if improved:
+                break
+        if not improved:
+            break
+    return cur
+
+
 def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly: Polygon, base_rect_pts: Tuple[float,float,float,float], sheet_w: float, sheet_h: float, margins: Dict[str, float]) -> List[Dict]:
+    """Giải va chạm tem với VÙNG CẤM (pont/ốc 4 góc), ưu tiên GIỮ nhiều tem nhất.
+
+    Thứ tự ưu tiên (chi tiết xem COLLISION_PLAYBOOK.md):
+      1. Có CẶP LỒNG LỆCH HƯỚNG (trong cụm lồng, 2 hướng up/down khác số tem) → XOAY 180° cục bộ
+         trọn cụm giáp vùng cấm → đưa hướng ít tem ra mép → giữ TRỌN tem. Chỉ nhận phép xoay vừa
+         giảm va chạm vừa KHÔNG sinh tem-đè (kiểm bằng polygon thật).
+      2. Xoay chưa hết → thử DỊCH CẢ KHỐI ra xa góc va chạm (giữ trọn).
+      3. Còn lại (đối xứng/cân bằng/không lồng — tròn, chữ nhật, tam giác chẵn, cặp bằng nhau...)
+         → xóa tối thiểu + canh giữa (_resolve_one_orientation).
+    """
+    if not placements:
+        return []
+    initial_cols = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
+    if not initial_cols:
+        return placements
+
+    # Chỉ xoay/dịch khi có CẶP LỒNG 2 hướng LỆCH số lượng (= checkIfPentagonRowsAreEqual==false).
+    # Tròn/chữ nhật/tam giác-chẵn/cặp-bằng-nhau → không có → giữ hành vi cũ (xóa + canh giữa).
+    has_flippable = any(_cluster_unequal_groups(placements, idxs, ax)
+                        for ax in ('row', 'col')
+                        for idxs, _n in _interlocked_clusters(placements, ax))
+    if not has_flippable:
+        return _resolve_one_orientation(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+
+    # 1) Xoay 180° cục bộ trọn cụm lồng giáp vùng cấm.
+    local = _try_local_pair_flips(placements, zones, base_poly, base_rect_pts, sheet_h)
+    if not detect_collisions(local, zones, base_poly, base_rect_pts, sheet_h):
+        return local
+
+    # 2) Dịch cả khối nếu xoay chưa hết va chạm.
+    block_shift = _try_whole_block_shift(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+    if block_shift is not None:
+        return block_shift
+
+    # 3) Xóa tối thiểu + canh giữa.
+    return _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+
+
+def _resolve_one_orientation(placements: List[Dict], zones: List[box], base_poly: Polygon, base_rect_pts: Tuple[float,float,float,float], sheet_w: float, sheet_h: float, margins: Dict[str, float]) -> List[Dict]:
     """
     Intelligently find the minimal set of deletions to resolve all collisions.
     Operates row-by-row: deletes items, centers row, and pushes vertically to avoid internal overlap.
     """
     if not placements:
         return []
-        
+
     initial_cols = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
     if not initial_cols:
         return placements
@@ -416,10 +635,15 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
         
     sorted_y_keys = sorted(rows.keys())
     final_placements = []
-    
-    for y_key in sorted_y_keys:
+
+    for yk_idx, y_key in enumerate(sorted_y_keys):
         row_items = rows[y_key]
-        other_items = [p for k, items in rows.items() if k != y_key for p in items]
+        # P3 FIX: other_items phản ánh trạng thái HIỆN TẠI — hàng đã xử lý dùng vị trí (có thể đã
+        # dịch) trong final_placements; hàng chưa xử lý dùng vị trí gốc. Trước đây luôn dùng vị trí
+        # gốc cho mọi hàng → khi dịch hàng sau, check va chạm nội bộ với hàng trước ĐÃ DỊCH bị sai
+        # (dùng vị trí cũ) → 2 hàng góc cùng dịch về giữa có thể đè nhau mà không phát hiện.
+        future_items = [p for k in sorted_y_keys[yk_idx + 1:] for p in rows[k]]
+        other_items = final_placements + future_items
         
         # Detect collisions for this row only
         row_cols = []

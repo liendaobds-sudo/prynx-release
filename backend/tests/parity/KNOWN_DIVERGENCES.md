@@ -13,6 +13,16 @@ Phát hiện khi cài `pdfcompare_native` (Rust ON) và chạy golden/parity.
 - Cùng SỐ LƯỢNG (vd 43, 157) nhưng sắp xếp ô khác nhau giữa Rust và Python.
 - Ảnh hưởng vị trí cụ thể từng tem dù sức chứa bằng nhau.
 
+## 3. `shape_hammer` (búa) — Rust thiếu L-shape fill nội bộ  → ĐÃ XỬ LÝ 2026-06-21
+- Rust `core::hammer` chỉ trả KHỐI CHÍNH; Python `_py_solve_illustrator_hammer_layout` khi
+  `disable_l_shape=False` còn thêm fill lồng ghép qua `evaluate_unified_asymmetric`.
+- Đo thật (búa 60×140, tấm 800×1100, gap 6): Rust=115 vs Python=122 item; widthUsed 724 vs 790.
+- Chỉ khớp khi `disable_l_shape=True` (115=115).
+- **Fix (F1):** wrapper `solve_illustrator_hammer_layout` chỉ gọi Rust khi `disable_l_shape=True`
+  (hot path fill); nhánh full-fill (top-level, 1 lần/trang) dùng Python → khôi phục fill cho búa
+  + đảm bảo parity. Thêm test `test_sticker_hammer_parity_disable_lshape` +
+  `test_hammer_wrapper_full_fill_uses_python`.
+
 ## Quyết định hiện tại
 - Golden baseline khóa theo **Rust ON** (cấu hình production thực ship).
 - Khi `IMPOSITION_ALLOW_PY_FALLBACK` được nối (Task 14), cần:
