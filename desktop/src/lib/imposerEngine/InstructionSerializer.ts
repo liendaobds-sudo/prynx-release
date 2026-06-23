@@ -258,6 +258,19 @@ export function serializeBookletPlan(
         );
     } else {
         // ── Đường thường: 1-up booklet, mỗi tờ kẽm = front + back của 1 virtual sheet ──
+        // Trim box THỰC của spread: lấy từ chính solvePageTransform (đồng bộ tuyệt đối
+        // với cách đặt trang — pull-to-spine, gutter…). Trim cố định mọi tờ (creep không
+        // dời trim) nên tính 1 lần với sheetIndex=0. Sửa lỗi dấu xén lệch ngang = bleed.
+        const _tL = solvePageTransform(context, true, true, 0, virtualMap.length,
+            bleedPt, paperThicknessPt, isSaddleOrThread, gutterPt, isCutStackSpread, 0, 'clustered', isSaddle);
+        const _tR = solvePageTransform(context, false, true, 0, virtualMap.length,
+            bleedPt, paperThicknessPt, isSaddleOrThread, gutterPt, isCutStackSpread, 0, 'clustered', isSaddle);
+        const spreadTrim = {
+            left: _tL.trimBox.x,
+            right: _tR.trimBox.x + _tR.trimBox.width,
+            bottom: _tL.trimBox.y,
+            top: _tL.trimBox.y + _tL.trimBox.height,
+        };
         for (let surfIdx = 0; surfIdx < surfaces.length; surfIdx += 2) {
             const frontSurf = surfaces[surfIdx];
             const backSurf = surfaces[surfIdx + 1];
@@ -265,8 +278,8 @@ export function serializeBookletPlan(
             const frontPlacements = buildSurfacePlacements(frontSurf);
             const backPlacements = buildSurfacePlacements(backSurf);
 
-            const frontMarks = serializeBookletMarks(context, bleedPt, markLenPt, markOffPt, markThickPt, markType);
-            const backMarks = serializeBookletMarks(context, bleedPt, markLenPt, markOffPt, markThickPt, markType);
+            const frontMarks = serializeBookletMarks(context, spreadTrim, markLenPt, markOffPt, markThickPt, markType);
+            const backMarks = serializeBookletMarks(context, spreadTrim, markLenPt, markOffPt, markThickPt, markType);
 
             const sheet: SheetInstruction = {
                 sheet_index: frontSurf?.sheetIndex ?? surfIdx / 2,
@@ -533,7 +546,7 @@ function rotatePlate90(plate: Phase2Plate, frameW: number, spreadW: number, spre
 
 function serializeBookletMarks(
     context: GeometricContext,
-    bleedPt: number,
+    spreadTrim: { left: number; right: number; bottom: number; top: number },
     markLenPt: number,
     markOffPt: number,
     markThickPt: number,
@@ -542,18 +555,12 @@ function serializeBookletMarks(
     if (!markType || markType === 'none') return [];
 
     const marks: MarkInstruction[] = [];
-    const trimW = context.actualDrawnWidth - 2 * bleedPt;
-    const trimH = context.actualDrawnHeight - 2 * bleedPt;
-    const marginX = (context.finalSheetWidth - context.actualDrawnWidth * 2) / 2;
-    const marginY = (context.finalSheetHeight - context.actualDrawnHeight) / 2;
-
-    // Spread trim box
-    const trimX = marginX + bleedPt;
-    const trimY = marginY + bleedPt;
-    const spreadTrimW = trimW * 2;
-    const spreadTrimH = trimH;
-    const right = trimX + spreadTrimW;
-    const top = trimY + spreadTrimH;
+    // Toạ độ trim LẤY TRỰC TIẾP từ trimBox thật của solvePageTransform → dấu xén
+    // luôn trùng mép cắt thực, đúng cả pull-to-spine/gutter (không còn lệch = bleed).
+    const trimX = spreadTrim.left;
+    const trimY = spreadTrim.bottom;
+    const right = spreadTrim.right;
+    const top = spreadTrim.top;
     const black: [number, number, number, number] = [0, 0, 0, 1];
     const red: [number, number, number, number] = [0, 1, 1, 0]; // Magenta+Yellow ≈ Red in CMYK
 
