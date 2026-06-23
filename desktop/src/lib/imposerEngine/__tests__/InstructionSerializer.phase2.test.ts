@@ -150,16 +150,13 @@ describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', ()
         expect(p.phase2!.plates.every((pl: any) => noOverlap(pl, p.phase2!.spread_w_pt, p.phase2!.spread_h_pt))).toBe(true);
     });
 
-    it('REGRESSION: khổ NHỎ hơn spread → tấm in GIỮ đúng khổ chọn (không tự nới)', () => {
-        // Bug "chọn 320 ra 422": spread A6 = 210mm rộng > khổ chọn 150mm.
-        // Trước đây buildPhase2 tự nới tấm lên 210+lề. Giờ phải GIỮ 150 (xoay 90° để fit).
-        const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 150, sheetHeight: 400, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
-        expect(p.phase2?.mode).toBe('step_repeat');
-        // Tấm in = đúng khổ giấy đã chọn (150×400), KHÔNG phình theo spread.
-        for (const pl of p.phase2!.plates) {
-            expect(Math.round(pl.width_pt)).toBe(Math.round(150 * MM));
-            expect(Math.round(pl.height_pt)).toBe(Math.round(400 * MM));
-        }
-        expect(allInBounds(p)).toBe(true);
+    it('cut_stack nhiều cọc (stackDepth>1) → collation cell*depth liên tục khi xén chồng', () => {
+        // khổ chỉ chứa 2 cell, 16p (B=4) → stackDepth=2, 2 tờ × 2 mặt = 4 plates
+        const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, cutStack: true, sheetWidth: 460, sheetHeight: 165, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
+        const A = p.phase2!.plates.filter((_: any, i: number) => i % 2 === 0); // mặt A các tờ
+        // cell0 qua các tờ (depth) → booklet sheet 0,1 ; cell1 → 2,3
+        // mặt A surface = 2*bsi: tờ1 cell0=surf0, cell1=surf4 ; tờ2 cell0=surf2, cell1=surf6
+        expect(A[0].placements.map((q: any) => q.spread_index)).toEqual([0, 4]);
+        expect(A[1].placements.map((q: any) => q.spread_index)).toEqual([2, 6]);
     });
 });

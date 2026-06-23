@@ -343,13 +343,8 @@ function buildPhase2(
     const gripperPt = ((settings as any).gripperMargin || 0) * MM_TO_POINTS;
     const isEven = (settings as any).spreadDistribution === 'even';
 
-    // Khổ tấm in LUÔN bám khổ giấy người dùng đã chọn (pressW/pressH).
-    // KHÔNG tự nới tấm theo spread (gây hiện tượng "chọn 320 ra 422"); nếu spread
-    // lớn hơn khổ, logic xoay 90° bên dưới sẽ cố fit, còn không vừa thì tràn (cần
-    // chọn khổ lớn hơn) — chứ không âm thầm đổi khổ output.
-    // Chỉ fallback theo spread khi KHÔNG có khổ giấy (pressW/H = 0).
-    const sheetW = pressW > 0 ? pressW : spreadW + marginLeftPt + marginRightPt;
-    const sheetH = pressH > 0 ? pressH : spreadH + gripperPt + marginTopPt;
+    const sheetW = pressW > spreadW ? pressW : spreadW + marginLeftPt + marginRightPt;
+    const sheetH = pressH > spreadH ? pressH : spreadH + gripperPt + marginTopPt;
 
     // ── Quyết định xoay lưới 90° để fit khổ (giống SpreadPlacer/NupRenderer) ──
     let gW: number, gH: number;

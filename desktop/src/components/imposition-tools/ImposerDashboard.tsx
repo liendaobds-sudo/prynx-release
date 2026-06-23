@@ -504,7 +504,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             
             onStartBooklet({
                 signatureMode: s.signatureMode, foliosize: s.foliosize,
-                formsize: s.formsize,
+                formsize: (s.scaleMode === '100') ? 'auto_100' : s.formsize,
                 customSheetWidth: effSheetW, customSheetHeight: effSheetH,
                 bleed: s.bleed, paperThickness: s.paperThickness, markType: s.markType,
                 markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness,
