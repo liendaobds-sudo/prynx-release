@@ -34,6 +34,7 @@ import PreprocessingRouter from './sections/PreprocessingRouter';
 import GridSettingsSection from './sections/GridSettingsSection';
 import AdvancedSettingsSection from './sections/AdvancedSettingsSection';
 import GridPreview from './sections/GridPreview';
+import ProductFirstPanel from './ProductFirstPanel';
 
 // Store & Types
 import { useImposerSettingsStore } from './useImposerSettingsStore';
@@ -648,6 +649,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // Trước đây dùng `!isPreprocessing` khiến tool 'merge' lòi cả panel "Bình trang (S&R)".
     // Nay lấy TỪ WORKSPACE_TOOL_PANEL (nguồn chân lý duy nhất) — không thể drift.
     const isImpositionMode = panelKind === 'imposition';
+    // ProductFirst (đề xuất theo sản phẩm — Phase 1: chỉ in nhanh).
+    const [showProductFirst, setShowProductFirst] = useState(false);
     // CNC dùng chung render/preview die-cut với Bế tem (trừ pont — CNC dùng dấu canh riêng).
     const stickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
     const showPaperSection = s.taskMode !== 'booklet' || (s.taskMode === 'booklet' && s.scaleMode !== '100');
@@ -771,11 +774,39 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     )}
 
                     <Divider />
-                    <AutoCatalogSection />
-                    <BookletSettingsSection />
-                    
-                    {s.taskMode === 'booklet' && (
-                        <div className="mt-2">{paperSectionJSX}</div>
+
+                    {/* ✨ Đề xuất theo sản phẩm — chỉ booklet + in nhanh (Phase 1) */}
+                    {s.taskMode === 'booklet' && s.paperClassification === 'in_nhanh' && (
+                        <button
+                            onClick={() => setShowProductFirst(v => !v)}
+                            className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${showProductFirst
+                                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10'
+                                : 'border-slate-200 dark:border-white/10 hover:border-indigo-400'}`}
+                        >
+                            <span className="text-[13px] font-semibold text-indigo-700 dark:text-indigo-400">✨ Đề xuất theo sản phẩm</span>
+                            <span className="block text-[11px] text-slate-500">
+                                {showProductFirst ? 'Đang bật — chọn sản phẩm để hệ thống tự tính. Bấm để tắt.' : 'Chọn sản phẩm + khổ giấy → tự đề xuất "1 tờ mấy con".'}
+                            </span>
+                        </button>
+                    )}
+
+                    {(s.taskMode === 'booklet' && s.paperClassification === 'in_nhanh' && showProductFirst) ? (
+                        <ProductFirstPanel
+                            pageCount={sourceTotalPages}
+                            finishedWidthMm={s.sourcePageDim ? Math.round(s.sourcePageDim.w * 0.352778) : undefined}
+                            finishedHeightMm={s.sourcePageDim ? Math.round(s.sourcePageDim.h * 0.352778) : undefined}
+                            onApplied={() => setShowProductFirst(false)}
+                            onOpenAdvanced={() => setShowProductFirst(false)}
+                        />
+                    ) : (
+                        <>
+                            <AutoCatalogSection />
+                            <BookletSettingsSection />
+
+                            {s.taskMode === 'booklet' && (
+                                <div className="mt-2">{paperSectionJSX}</div>
+                            )}
+                        </>
                     )}
 
                     {/* Grid Settings + Preview (N-Up / Step&Repeat / Sticker) */}
