@@ -548,7 +548,7 @@ export const createImposerSettingsStore = () => createStore<ImposerSettingsState
         }),
         {
             name: 'ps_imposer_settings',
-            version: 6,
+            version: 7,
             migrate: (persistedState: any, version: number) => {
                 if (version < 2) {
                     // v1 → v2: add pontConfig to persisted state
@@ -581,6 +581,19 @@ export const createImposerSettingsStore = () => createStore<ImposerSettingsState
                         cncFlipEdge: persistedState.cncFlipEdge || 'long',
                         cncDuplexMarks: persistedState.cncDuplexMarks ?? true,
                     };
+                }
+                if (version < 7) {
+                    // v6 → v7: thêm showGangCount + gangCount vào reportDisplay
+                    const rd = persistedState.reportDisplay || {};
+                    if (rd.showGangCount === undefined) rd.showGangCount = true;
+                    const fo = rd.fieldOrder || [];
+                    if (!fo.includes('gangCount')) {
+                        const idx = fo.indexOf('identifier');
+                        if (idx >= 0) fo.splice(idx + 1, 0, 'gangCount');
+                        else fo.push('gangCount');
+                    }
+                    rd.fieldOrder = fo;
+                    persistedState = { ...persistedState, reportDisplay: rd };
                 }
                 return persistedState;
             },

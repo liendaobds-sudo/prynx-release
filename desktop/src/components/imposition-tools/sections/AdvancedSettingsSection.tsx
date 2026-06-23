@@ -8,13 +8,14 @@ import { DEFAULT_MATERIALS, LAMINATION_OPTIONS, PREDEFINED_SIZES, type ReportFie
 import { buildReportPreview } from '../../../lib/reportPreview';
 
 const REPORT_FIELD_LABELS: Record<string, string> = {
-    orderCode: 'Mã đơn hàng', identifier: 'Mẫu/Trang', labelName: 'Tên nhãn',
+    orderCode: 'Mã đơn hàng', identifier: 'Mẫu/Trang', gangCount: 'Số mẫu ghép',
+    labelName: 'Tên nhãn',
     material: 'Chất liệu', lamination: 'Cán màng', labelsPerSheet: 'SL/tờ',
     actualQty: 'SL thực', sheetCount: 'Số tờ cần in', dimensions: 'Kích thước',
     paperSize: 'Khổ giấy', cutFileRef: 'File bế', modeLabel: 'Chế độ',
 };
 const REPORT_SHOW_KEYS: Array<[string, ReportFieldKey]> = [
-    ['showIdentifier', 'identifier'], ['showLabelName', 'labelName'], ['showMaterial', 'material'],
+    ['showIdentifier', 'identifier'], ['showGangCount', 'gangCount'], ['showLabelName', 'labelName'], ['showMaterial', 'material'],
     ['showLamination', 'lamination'], ['showLabelsPerSheet', 'labelsPerSheet'], ['showActualQty', 'actualQty'],
     ['showSheetCount', 'sheetCount'], ['showDimensions', 'dimensions'], ['showPaperSize', 'paperSize'],
     ['showModeLabel', 'modeLabel'],
@@ -524,6 +525,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                 requestedQty: s.targetQuantity,
                                                 material: s.reportMaterial,
                                                 laminationType: s.reportLamination,
+                                                laminationSides: s.reportLaminationSides,
                                                 modeLabel: activeTool === 'cnc_imposer' ? 'Bình bế rớt (CNC)' : 'Bế tem',
                                             });
                                             const posLabel = { top: 'mép trên', bottom: 'mép dưới', left: 'mép trái', right: 'mép phải' }[s.reportDisplay.position] || 'mép trên';

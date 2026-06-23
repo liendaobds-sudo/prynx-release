@@ -189,7 +189,7 @@ export interface NupSettings {
 
 // ═══ Cấu hình hiển thị Report sản phẩm (Product_Info) ═══
 export type ReportFieldKey =
-    | 'orderCode' | 'identifier' | 'labelName' | 'material' | 'lamination'
+    | 'orderCode' | 'identifier' | 'gangCount' | 'labelName' | 'material' | 'lamination'
     | 'labelsPerSheet' | 'actualQty' | 'sheetCount' | 'dimensions' | 'paperSize'
     | 'cutFileRef' | 'modeLabel';
 
@@ -197,6 +197,7 @@ export interface ReportDisplayConfig {
     enabled: boolean;
     fieldOrder: ReportFieldKey[];
     showIdentifier: boolean;
+    showGangCount: boolean;
     showLabelName: boolean;
     showDimensions: boolean;
     showPaperSize: boolean;
@@ -225,9 +226,9 @@ export const LAMINATION_OPTIONS: string[] = ['Không cán', 'Cán bóng', 'Cán 
 
 export const DEFAULT_REPORT_CONFIG: ReportDisplayConfig = {
     enabled: true,
-    fieldOrder: ['orderCode', 'identifier', 'labelName', 'material', 'lamination',
+    fieldOrder: ['orderCode', 'identifier', 'gangCount', 'labelName', 'material', 'lamination',
         'labelsPerSheet', 'actualQty', 'sheetCount', 'dimensions', 'paperSize', 'cutFileRef', 'modeLabel'],
-    showIdentifier: true, showLabelName: true, showDimensions: false, showPaperSize: false,
+    showIdentifier: true, showGangCount: true, showLabelName: true, showDimensions: false, showPaperSize: false,
     showLabelsPerSheet: true, showSheetCount: true, showActualQty: true,
     showMaterial: true, showLamination: true, showCutFileRef: false, showModeLabel: true,
     labelNameText: '',

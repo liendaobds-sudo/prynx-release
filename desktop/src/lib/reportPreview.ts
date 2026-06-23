@@ -21,6 +21,7 @@ function removeDiacritics(s: string): string {
 export interface ReportPreviewData {
     orderCode?: string;
     identifier?: string;
+    gangCount?: number;
     labelName?: string;
     widthMm?: number;
     heightMm?: number;
@@ -29,6 +30,7 @@ export interface ReportPreviewData {
     requestedQty?: number;
     material?: string;
     laminationType?: number;
+    laminationSides?: number;
     cutFileRef?: string;
     modeLabel?: string;
 }
@@ -55,11 +57,16 @@ function computeFields(data: ReportPreviewData): Record<string, string> {
     }
 
     const lamType = Number(data.laminationType || 0);
-    const lamination = lamType > 0 && lamType < LAMINATION_OPTIONS.length ? LAMINATION_OPTIONS[lamType] : '';
+    let lamination = lamType > 0 && lamType < LAMINATION_OPTIONS.length ? LAMINATION_OPTIONS[lamType] : '';
+    const lamSides = Number(data.laminationSides || 1);
+    if (lamination && lamSides >= 2) {
+        lamination = `${lamination} ${lamSides} mặt`;
+    }
 
     return {
         orderCode: data.orderCode || '',
         identifier: data.identifier || '',
+        gangCount: data.gangCount && data.gangCount > 0 ? `${data.gangCount} mẫu` : '',
         labelName: data.labelName || '',
         dimensions: dims,
         paperSize: data.paperSize || '',
@@ -75,6 +82,7 @@ function computeFields(data: ReportPreviewData): Record<string, string> {
 
 const SHOW_FLAG_KEY: Record<string, keyof ReportDisplayConfig> = {
     identifier: 'showIdentifier',
+    gangCount: 'showGangCount',
     labelName: 'showLabelName',
     dimensions: 'showDimensions',
     paperSize: 'showPaperSize',
