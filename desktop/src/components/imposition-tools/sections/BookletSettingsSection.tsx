@@ -177,18 +177,9 @@ export default function BookletSettingsSection() {
                     </div>
                 )}
 
-                {/* Vị trí trang trắng khi số trang lẻ (không bội số 4) */}
-                <div className="flex flex-col gap-2">
-                    <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">Vị trí trang trắng (khi trang lẻ)</label>
-                    <RichSelect
-                        value={s.blankPlacement}
-                        onChange={(v) => s.setBlankPlacement(v as 'end' | 'center')}
-                        options={[
-                            { value: 'end', title: 'Cuối sách (mặc định)', desc: 'Chèn trang trắng vào các trang cuối / bìa sau.' },
-                            { value: 'center', title: 'Giữa sách (ruột trong)', desc: 'Chèn trang trắng vào giữa cuốn (trong cùng) để bìa & trang đầu luôn có nội dung.' }
-                        ]}
-                    />
-                </div>
+                {/* Vị trí trang trắng: KHÔNG hiện ở đây. Logic chạy ngầm; khi phát hiện
+                    số trang không tròn tay (cần chèn trang trắng), dialog Xác nhận Bình
+                    Sách sẽ hỏi người dùng chọn Cuối/Giữa. */}
 
                 {/* Interleave */}
                 {!s.autoCatalog && s.paperClassification === 'offset' && (

@@ -159,6 +159,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Gửi Máy Bế (spec: gui-may-be) — chỉ hiện trên toolbar khi file là OUTPUT đã bình.
     const [showCutExport, setShowCutExport] = useState(false);
     const [showRecipePanel, setShowRecipePanel] = useState(false);
+    // Lựa chọn vị trí trang trắng — chỉ hỏi trong dialog Xác nhận khi số trang lẻ tay.
+    const [confirmBlankPlacement, setConfirmBlankPlacement] = useState<'end' | 'center'>('end');
 
     // Set initial report from props (once)
     useEffect(() => {
@@ -1076,6 +1078,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // Bypass confirmation if everything is perfectly aligned
             processEngine(settings, config.spawnNewTab);
         } else {
+            setConfirmBlankPlacement('end');
             setConfirmBookletSettings({
                 settings,
                 spawnNewTab: config.spawnNewTab,
@@ -1542,12 +1545,28 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 <div className="p-6">
                                     <p className="text-slate-700 dark:text-zinc-300 mb-4 text-[15px]">
                                         File pdf gốc gồm <strong>{confirmBookletSettings.totalPages} trang</strong>.
-                                        {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (
+                                        {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as any).bindingMode !== 'flush_mount' && (
                                             <span className="text-emerald-600 dark:text-emerald-400 font-medium ml-1">
-                                                (Máy đã lót thêm {confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages} trang trắng cuối sách để làm tròn thành {confirmBookletSettings.paddedPages} trang chẵn theo quy tắc gấp tay sách).
+                                                (Cần thêm {confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages} trang trắng để làm tròn thành {confirmBookletSettings.paddedPages} trang chẵn theo quy tắc gấp tay sách).
                                             </span>
                                         )}
                                     </p>
+                                    {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as any).bindingMode !== 'flush_mount' && (
+                                        <div className="mb-5">
+                                            <label className="text-[12px] text-slate-500 font-medium block mb-2">
+                                                Đặt {confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages} trang trắng ở đâu?
+                                            </label>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                {(([['end', 'Cuối sách', 'Dồn vào cuối / bìa sau (mặc định).'], ['center', 'Giữa sách', 'Nhét vào ruột trong cùng — bìa & trang đầu luôn có nội dung.']]) as const).map(([val, title, desc]) => (
+                                                    <button key={val} type="button" onClick={() => setConfirmBlankPlacement(val)}
+                                                        className={`text-left p-3 rounded-lg border-2 transition-colors ${confirmBlankPlacement === val ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30' : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20'}`}>
+                                                        <div className="text-[13px] font-bold text-slate-800 dark:text-white">{title}</div>
+                                                        <div className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5 leading-snug">{desc}</div>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
                                     {confirmBookletSettings.report && (
                                         <div className="mb-5 text-[13px] text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 p-3 rounded-lg leading-relaxed">
                                             {confirmBookletSettings.report}
@@ -1560,7 +1579,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 <div className="p-4 bg-slate-50 dark:bg-zinc-900/50 flex justify-end gap-3 border-t border-slate-200 dark:border-white/10 mt-2">
                                     <Button variant="secondary" onClick={() => setConfirmBookletSettings(null)}>Hủy bỏ</Button>
                                     <Button variant="primary" onClick={() => {
-                                        processEngine(confirmBookletSettings.settings, confirmBookletSettings.spawnNewTab);
+                                        const finalSettings = { ...(confirmBookletSettings.settings as any), blankPlacement: confirmBlankPlacement };
+                                        processEngine(finalSettings, confirmBookletSettings.spawnNewTab);
                                         setConfirmBookletSettings(null);
                                     }}>Đồng ý & Khởi chạy</Button>
                                 </div>
