@@ -822,7 +822,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                         {/* 3. Trim Marks */}
                         {s.taskMode !== 'offset' && !stickerLike && (
-                            <div className={`relative z-[20] transition-opacity ${s.taskMode === 'booklet' && s.scaleMode === '100' ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+                            <div className="relative z-[20]">
                                 <div className="flex items-center justify-between mb-2">
                                     <div className="flex items-center gap-2">
                                         <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">DẤU XÉN (TRIM MARKS)</label>
@@ -856,9 +856,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     </button>
                                 </div>
                                 <select
-                                    value={s.taskMode === 'booklet' && s.scaleMode === '100' ? 'none' : s.markType}
+                                    value={s.markType}
                                     onChange={e => s.setMarkType(e.target.value as any)}
-                                    disabled={s.taskMode === 'booklet' && s.scaleMode === '100'}
                                     className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium appearance-auto transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     <option value="none">Không vẽ dấu xén</option>
