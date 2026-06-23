@@ -125,8 +125,8 @@ export default function BookletSettingsSection() {
                             value={s.scaleMode}
                             onChange={(v) => s.setScaleMode(v as any)}
                             options={[
-                                { value: '100', title: '1 cuốn / tờ', desc: 'In đúng khổ, không nhân bản. Khổ giấy tự động theo file.' },
-                                { value: 'fit', title: '1 cuốn / tờ (canh giữa)', desc: 'Đặt giữa tờ giấy lớn hơn, giữ nguyên tỷ lệ, chèn 1 bộ Crop Marks.' },
+                                { value: '100', title: '1 cuốn / tờ (100%)', desc: 'Giữ nguyên kích thước trang. Không vừa khổ giấy → báo lỗi (không tự co).' },
+                                { value: 'fit', title: '1 cuốn / tờ (bóp vừa khổ)', desc: 'Thu nội dung cho vừa khổ giấy đã chọn, canh giữa.' },
                                 { value: 'chain_nup', title: 'Nhiều cuốn / tờ (Step & Repeat)', desc: 'Nhân bản nhiều cuốn giống hệt nhau lấp đầy tờ giấy lớn. Xén ra nhiều cuốn.' },
                                 ...(s.paperClassification === 'in_nhanh' && s.signatureMode !== 'cut_stacks' ? [{ value: 'cut_stack', title: 'Ghép nửa cuốn (Cut & Stack)', desc: '2 nửa cuốn trên 1 tờ, xén đôi ráp lại thành 1 cuốn hoàn chỉnh.' }] : [])
                             ]}

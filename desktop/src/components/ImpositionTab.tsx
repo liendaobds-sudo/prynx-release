@@ -413,7 +413,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Undo/Redo riêng cho chế độ chỉnh sửa đối tượng (Ctrl+Z + nút Undo).
     const editHistory = useObjectEditHistory();
 
-    const commitWorkingFile = useCallback(async (newBlob: Blob, newName: string) => {
+    const commitWorkingFile = useCallback(async (newBlob: Blob, newName: string, existingPath?: string) => {
         if (file) {
             setHistory(prev => [...prev, file]);
         }
@@ -426,17 +426,24 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         try {
             if ((window as any).__TAURI_INTERNALS__) {
                 let tempPath = '';
-                try {
-                    const { uploadFileForNup } = await import('../lib/api');
-                    tempPath = await uploadFileForNup(newFile);
-                } catch (err) {
-                    console.warn("HTTP upload failed for fix pdf, falling back to IPC");
-                    const { tempDir, join } = (await import('@tauri-apps/api/path')) as any;
-                    const { writeFile } = (await import('@tauri-apps/plugin-fs')) as any;
-                    const buffer = await newBlob.arrayBuffer();
-                    const tDir = await tempDir();
-                    tempPath = await join(tDir, `prynx_tmp_${Date.now()}_${newName}`);
-                    await writeFile(tempPath, new Uint8Array(buffer));
+                // VDP/job kết quả: backend đã ghi file thật ra đĩa và trả về đường dẫn
+                // (newBlob lúc này chỉ là blob "dummy" để skip download). Dùng thẳng
+                // path thật → tile native render đúng, KHÔNG ghi đè bằng blob rỗng.
+                if (existingPath) {
+                    tempPath = existingPath;
+                } else {
+                    try {
+                        const { uploadFileForNup } = await import('../lib/api');
+                        tempPath = await uploadFileForNup(newFile);
+                    } catch (err) {
+                        console.warn("HTTP upload failed for fix pdf, falling back to IPC");
+                        const { tempDir, join } = (await import('@tauri-apps/api/path')) as any;
+                        const { writeFile } = (await import('@tauri-apps/plugin-fs')) as any;
+                        const buffer = await newBlob.arrayBuffer();
+                        const tDir = await tempDir();
+                        tempPath = await join(tDir, `prynx_tmp_${Date.now()}_${newName}`);
+                        await writeFile(tempPath, new Uint8Array(buffer));
+                    }
                 }
                 
                 if (tempPath) {
@@ -1020,6 +1027,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             sheetHeight: sheetH,
             chainNup: config.scaleMode === 'chain_nup' || config.scaleMode === 'cut_stack',
             cutStack: config.scaleMode === 'cut_stack',
+            scaleMode: config.scaleMode,
             markType: config.markType,
             markOffset: config.markOffset,
             markLength: config.markLength,
@@ -1807,9 +1815,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
-                                                            onApplyResult={(blob: Blob, name: string) => {
+                                                            onApplyResult={(blob: Blob, name: string, path?: string) => {
                                                                 recipeRecorder.noteNonRecordable('datamerge');
-                                                                commitWorkingFile(blob, name);
+                                                                commitWorkingFile(blob, name, path);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
                                                                 setActiveDashboardTool('none');
@@ -1835,9 +1843,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
-                                                            onApplyResult={(blob: Blob, name: string) => {
+                                                            onApplyResult={(blob: Blob, name: string, path?: string) => {
                                                                 recipeRecorder.noteNonRecordable('numbering');
-                                                                commitWorkingFile(blob, name);
+                                                                commitWorkingFile(blob, name, path);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
                                                                 setActiveDashboardTool('none');
@@ -1863,15 +1871,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onSelectField={(ids) => setSelectedVdpFieldIds(ids)}
                                                             isActive={isActive}
                                                             onBack={() => setActiveDashboardTool('none')}
-                                                            onApplyResult={(blob: Blob, name: string) => {
+                                                            onApplyResult={(blob: Blob, name: string, path?: string) => {
                                                                 recipeRecorder.noteNonRecordable('cover_numbering');
-                                                                commitWorkingFile(blob, name);
+                                                                commitWorkingFile(blob, name, path);
                                                                 setVdpFields([]);
                                                                 setSelectedVdpFieldIds([]);
                                                                 setActiveDashboardTool('none');
                                                             }}
-                                                            onSpawnTab={(blob: Blob, name: string) => {
+                                                            onSpawnTab={(blob: Blob, name: string, path?: string) => {
                                                                 const newFile = new File([blob], name, { type: 'application/pdf' });
+                                                                if (path) {
+                                                                    Object.defineProperty(newFile, 'path', { value: path });
+                                                                }
                                                                 Object.defineProperty(newFile, 'isGenerated', { value: true });
                                                                 if (onSpawnTab) onSpawnTab(newFile);
                                                             }}

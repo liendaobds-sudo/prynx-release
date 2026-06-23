@@ -567,22 +567,30 @@ export const imposePdfViaBackend = async (
     const _fp = (settings as any).foldPattern;
     const _phase2 = !!(settings as any).chainNup || (!!_fp && _fp !== '');
 
-    // ── Booklet 1-up (non-phase2): XOAY KHỔ GIẤY cho vừa spread, KHÔNG xoay nội dung ──
-    // Spread 2 trang luôn nằm NGANG (vd 2×A4 = 420×297). Nếu khổ giấy chọn không chứa
-    // được spread ở hướng hiện tại nhưng chứa được khi HOÁN chiều (vd A3 297×420 → 420×297)
-    // thì xoay khổ giấy (hoán W/H) để spread lọt, 2 trang vẫn ĐỨNG (chữ đọc được).
-    // Không hướng nào lọt → CẢNH BÁO (không tự co/cắt/xoay nội dung).
+    // ── Booklet 1-up (non-phase2): chọn HƯỚNG KHỔ GIẤY cho vừa spread (xoay KHỔ,
+    // KHÔNG xoay nội dung — 2 trang luôn đứng đọc được). Hai chế độ:
+    //   • 'fit' : BÓP nội dung cho vừa khổ (thu nhỏ nếu lớn hơn), canh giữa.
+    //   • '100' : GIỮ NGUYÊN 100%. Nếu không vừa (kể cả xoay khổ) → CẢNH BÁO, không co.
+    const _scaleMode = (settings as any).scaleMode || '100';
     if (!_phase2 && reqSheetW > 0 && reqSheetH > 0) {
-        const EPS = 0.5; // mm
         const spreadWmm = (maxSrcW * 2) / MM_TO_POINTS;
         const spreadHmm = maxSrcH / MM_TO_POINTS;
-        const fitsAsIs = spreadWmm <= reqSheetW + EPS && spreadHmm <= reqSheetH + EPS;
-        const fitsRot = spreadWmm <= reqSheetH + EPS && spreadHmm <= reqSheetW + EPS;
-        if (!fitsAsIs && fitsRot) {
-            const t = reqSheetW; reqSheetW = reqSheetH; reqSheetH = t; // hoán chiều khổ giấy
-        } else if (!fitsAsIs && !fitsRot) {
-            const warn = `⚠ Khổ giấy ${Math.round(reqSheetW)}×${Math.round(reqSheetH)}mm không chứa nổi khổ trải 2 trang ${Math.round(spreadWmm)}×${Math.round(spreadHmm)}mm dù đã xoay. Hãy chọn khổ ≥ ${Math.round(spreadWmm)}×${Math.round(spreadHmm)}mm. Hệ thống KHÔNG tự co/cắt.`;
-            report = report ? `${report}\n${warn}` : warn;
+        const scaleAsIs = Math.min(reqSheetW / spreadWmm, reqSheetH / spreadHmm);
+        const scaleRot = Math.min(reqSheetH / spreadWmm, reqSheetW / spreadHmm);
+        const fitsAsIs = scaleAsIs >= 1 - 0.001;
+        const fitsRot = scaleRot >= 1 - 0.001;
+        if (fitsAsIs) {
+            // vừa 100% ở hướng hiện tại → giữ nguyên, không xoay khổ.
+        } else if (fitsRot) {
+            const t = reqSheetW; reqSheetW = reqSheetH; reqSheetH = t; // xoay khổ để vừa 100%
+        } else {
+            // Không hướng nào vừa ở 100%.
+            if (_scaleMode === 'fit') {
+                if (scaleRot > scaleAsIs) { const t = reqSheetW; reqSheetW = reqSheetH; reqSheetH = t; } // chọn hướng ít phải co hơn
+            } else {
+                const warn = `⚠ Trang trải ${Math.round(spreadWmm)}×${Math.round(spreadHmm)}mm KHÔNG vừa khổ ${Math.round(reqSheetW)}×${Math.round(reqSheetH)}mm ở 100% (dù đã xoay khổ). Hãy chọn khổ lớn hơn, hoặc dùng "1 cuốn/tờ (bóp vừa khổ)" để thu nội dung cho vừa. Hệ thống KHÔNG tự co ở chế độ 100%.`;
+                report = report ? `${report}\n${warn}` : warn;
+            }
         }
     }
 
@@ -598,8 +606,17 @@ export const imposePdfViaBackend = async (
     const isSaddleOrThread = bMode === 'saddle' || bMode === 'thread';
 
     // Không xoay nội dung: spread đặt bình thường (2 trang đứng cạnh nhau) trên khổ
-    // giấy ĐÃ được hoán chiều ở trên cho vừa. (Tránh hẳn applyGridRotation lỗi cũ.)
-    if (!_phase2) geoContext.isRotated = false;
+    // giấy ĐÃ chọn hướng ở trên. (Tránh hẳn applyGridRotation lỗi cũ.)
+    if (!_phase2) {
+        geoContext.isRotated = false;
+        // 'fit': BÓP nội dung cho vừa khổ (chỉ thu nhỏ, không phóng to). '100' giữ nguyên.
+        if (_scaleMode === 'fit' && geoContext.suggestedScaleFactor < 1) {
+            const sf = geoContext.suggestedScaleFactor;
+            geoContext.scaleFactor = sf;
+            geoContext.actualDrawnWidth = maxSrcW * sf;
+            geoContext.actualDrawnHeight = maxSrcH * sf;
+        }
+    }
 
     let thicknessInput = sanitizeNumber(settings.paperThickness);
     if (thicknessInput > 10) thicknessInput = thicknessInput / 1000;
