@@ -566,6 +566,26 @@ export const imposePdfViaBackend = async (
     // (khổ = 1 spread) rồi serializer sắp nhiều spread lên khổ kẽm lớn ở phase-2.
     const _fp = (settings as any).foldPattern;
     const _phase2 = !!(settings as any).chainNup || (!!_fp && _fp !== '');
+
+    // ── Booklet 1-up (non-phase2): XOAY KHỔ GIẤY cho vừa spread, KHÔNG xoay nội dung ──
+    // Spread 2 trang luôn nằm NGANG (vd 2×A4 = 420×297). Nếu khổ giấy chọn không chứa
+    // được spread ở hướng hiện tại nhưng chứa được khi HOÁN chiều (vd A3 297×420 → 420×297)
+    // thì xoay khổ giấy (hoán W/H) để spread lọt, 2 trang vẫn ĐỨNG (chữ đọc được).
+    // Không hướng nào lọt → CẢNH BÁO (không tự co/cắt/xoay nội dung).
+    if (!_phase2 && reqSheetW > 0 && reqSheetH > 0) {
+        const EPS = 0.5; // mm
+        const spreadWmm = (maxSrcW * 2) / MM_TO_POINTS;
+        const spreadHmm = maxSrcH / MM_TO_POINTS;
+        const fitsAsIs = spreadWmm <= reqSheetW + EPS && spreadHmm <= reqSheetH + EPS;
+        const fitsRot = spreadWmm <= reqSheetH + EPS && spreadHmm <= reqSheetW + EPS;
+        if (!fitsAsIs && fitsRot) {
+            const t = reqSheetW; reqSheetW = reqSheetH; reqSheetH = t; // hoán chiều khổ giấy
+        } else if (!fitsAsIs && !fitsRot) {
+            const warn = `⚠ Khổ giấy ${Math.round(reqSheetW)}×${Math.round(reqSheetH)}mm không chứa nổi khổ trải 2 trang ${Math.round(spreadWmm)}×${Math.round(spreadHmm)}mm dù đã xoay. Hãy chọn khổ ≥ ${Math.round(spreadWmm)}×${Math.round(spreadHmm)}mm. Hệ thống KHÔNG tự co/cắt.`;
+            report = report ? `${report}\n${warn}` : warn;
+        }
+    }
+
     const pseudoSettings = {
         formsize: (reqSheetW === 0 || _phase2) ? 'auto_100' : 'custom',
         customSheetWidth: reqSheetW,
@@ -577,20 +597,9 @@ export const imposePdfViaBackend = async (
     const geoContext = solveGeometry(maxSrcW, maxSrcH, pseudoSettings, {}, MM_TO_POINTS);
     const isSaddleOrThread = bMode === 'saddle' || bMode === 'thread';
 
-    // ── Booklet 1-up (non-phase2): GIỮ spread NẰM NGANG, 2 trang cạnh nhau. ──
-    // KHÔNG tự xoay 90° để "nhét" vào khổ dọc (gây xếp chồng + lệch + cắt như trước).
-    // KHÔNG tự co. Nếu khổ giấy nhỏ hơn khổ trải → CHỈ CẢNH BÁO, để người dùng tự
-    // chọn khổ lớn hơn hoặc xoay khổ giấy. (Theo yêu cầu: mọi trường hợp bám khổ chọn,
-    // khổ không đủ thì báo — không tự ý xử lý.)
-    if (!_phase2) {
-        geoContext.isRotated = false;
-        if (geoContext.needsScaleDown) {
-            const spreadWmm = Math.round((maxSrcW * 2) / MM_TO_POINTS);
-            const spreadHmm = Math.round(maxSrcH / MM_TO_POINTS);
-            const warn = `⚠ Khổ giấy ${Math.round(reqSheetW)}×${Math.round(reqSheetH)}mm nhỏ hơn khổ trải 2 trang ${spreadWmm}×${spreadHmm}mm → nội dung sẽ bị tràn/cắt mép. Hãy chọn khổ giấy ≥ ${spreadWmm}×${spreadHmm}mm (hoặc xoay khổ giấy cho phù hợp). Hệ thống KHÔNG tự co/xoay.`;
-            report = report ? `${report}\n${warn}` : warn;
-        }
-    }
+    // Không xoay nội dung: spread đặt bình thường (2 trang đứng cạnh nhau) trên khổ
+    // giấy ĐÃ được hoán chiều ở trên cho vừa. (Tránh hẳn applyGridRotation lỗi cũ.)
+    if (!_phase2) geoContext.isRotated = false;
 
     let thicknessInput = sanitizeNumber(settings.paperThickness);
     if (thicknessInput > 10) thicknessInput = thicknessInput / 1000;
