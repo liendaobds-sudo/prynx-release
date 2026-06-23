@@ -158,24 +158,10 @@ export default function BookletSettingsSection() {
                 </>
             )}
 
-            {/* ═══ FINE-TUNING (Interleave, Thickness, Bleed, Gap) ═══ */}
+            {/* ═══ FINE-TUNING (Interleave, Bleed, Gap) ═══ */}
             <div className="flex flex-col gap-5 animate-in fade-in duration-200">
-                {/* Bù gáy (Creep / Xẹp giấy) — chỉ cho kiểu gấp lồng (saddle / thread), không áp cho offset (tay bế sau khi gấp) */}
-                {(s.signatureMode === 'saddle' || s.signatureMode === 'thread') && s.paperClassification !== 'offset' && (
-                    <div className="flex flex-col gap-2">
-                        <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">Độ dày giấy — Bù gáy (Creep)</label>
-                        <div className="flex items-center gap-3">
-                            <input
-                                type="number" step="0.01" min="0" value={s.paperThickness}
-                                onChange={e => s.setPaperThickness(Math.max(0, Number(e.target.value) || 0))}
-                                className="w-24 h-8 px-3 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500"
-                            />
-                            <span className="text-[10px] text-slate-400 leading-tight">
-                                mm/tờ. Đẩy nội dung tờ trong về gáy để bù xẹp giấy khi gấp lồng. <strong>0 = tắt</strong> (vd. giấy 80gsm ≈ 0.1).
-                            </span>
-                        </div>
-                    </div>
-                )}
+                {/* Độ dày giấy/Creep: KHÔNG đặt ở đây (tránh trùng). Ô gốc nằm trong
+                    "THIẾT LẬP MỞ RỘNG" (AdvancedSettingsSection) cạnh Lề xén Bleed. */}
 
                 {/* Vị trí trang trắng: KHÔNG hiện ở đây. Logic chạy ngầm; khi phát hiện
                     số trang không tròn tay (cần chèn trang trắng), dialog Xác nhận Bình
