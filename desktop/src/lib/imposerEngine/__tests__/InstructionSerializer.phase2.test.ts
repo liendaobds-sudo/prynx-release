@@ -118,22 +118,22 @@ function noOverlap(plate: any, sw: number, sh: number): boolean {
 describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', () => {
     it('step_repeat khổ ngang → KHÔNG xoay (rot 0), trong khổ, không chồng', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 640, sheetHeight: 450, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
-        expect(p.phase2.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 0))).toBe(true);
+        expect(p.phase2!.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 0))).toBe(true);
         expect(allInBounds(p)).toBe(true);
-        expect(p.phase2.plates.every((pl: any) => noOverlap(pl, p.phase2.spread_w_pt, p.phase2.spread_h_pt))).toBe(true);
+        expect(p.phase2!.plates.every((pl: any) => noOverlap(pl, p.phase2!.spread_w_pt, p.phase2!.spread_h_pt))).toBe(true);
     });
 
     it('step_repeat khổ dọc → XOAY 90° (mọi placement rot 90), vẫn trong khổ', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 320, sheetHeight: 450, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
-        expect(p.phase2.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 90))).toBe(true);
+        expect(p.phase2!.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 90))).toBe(true);
         expect(allInBounds(p)).toBe(true);
         // khổ thật phải là khổ đặt (xoay chỉ ảnh hưởng nội dung, không đổi khổ tờ)
-        expect(Math.round(p.phase2.plates[0].width_pt)).toBe(Math.round(320 * MM));
+        expect(Math.round(p.phase2!.plates[0].width_pt)).toBe(Math.round(320 * MM));
     });
 
     it('fold_pattern khổ dọc → slot 0/180 cộng 90 thành 90/270', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, foldPattern: 'sig_16p', sheetWidth: 500, sheetHeight: 700, marginLeft: 10, marginRight: 10, marginTop: 10, gripperMargin: 10 });
-        const rots = new Set<number>(p.phase2.plates.flatMap((pl: any) => pl.placements.map((q: any) => q.rotation_deg)));
+        const rots = new Set<number>(p.phase2!.plates.flatMap((pl: any) => pl.placements.map((q: any) => q.rotation_deg)));
         expect(rots.has(90)).toBe(true);
         expect(rots.has(270)).toBe(true);
         expect(allInBounds(p)).toBe(true);
@@ -141,19 +141,19 @@ describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', ()
 
     it('cut_stack → mặt A (surface chẵn) + mặt B (surface lẻ), phủ đủ, không chồng', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, cutStack: true, sheetWidth: 450, sheetHeight: 320, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
-        expect(p.phase2.mode).toBe('cut_stack');
-        const fronts = p.phase2.plates.filter((_: any, i: number) => i % 2 === 0).flatMap((pl: any) => pl.placements.map((q: any) => q.spread_index));
-        const backs = p.phase2.plates.filter((_: any, i: number) => i % 2 === 1).flatMap((pl: any) => pl.placements.map((q: any) => q.spread_index));
+        expect(p.phase2!.mode).toBe('cut_stack');
+        const fronts = p.phase2!.plates.filter((_: any, i: number) => i % 2 === 0).flatMap((pl: any) => pl.placements.map((q: any) => q.spread_index));
+        const backs = p.phase2!.plates.filter((_: any, i: number) => i % 2 === 1).flatMap((pl: any) => pl.placements.map((q: any) => q.spread_index));
         expect(fronts.every((s: number) => s % 2 === 0)).toBe(true); // mặt A = surface chẵn (front spread)
         expect(backs.every((s: number) => s % 2 === 1)).toBe(true);  // mặt B = surface lẻ (back spread)
         expect(new Set([...fronts, ...backs]).size).toBe(8);         // phủ đủ 8 surface
-        expect(p.phase2.plates.every((pl: any) => noOverlap(pl, p.phase2.spread_w_pt, p.phase2.spread_h_pt))).toBe(true);
+        expect(p.phase2!.plates.every((pl: any) => noOverlap(pl, p.phase2!.spread_w_pt, p.phase2!.spread_h_pt))).toBe(true);
     });
 
     it('cut_stack nhiều cọc (stackDepth>1) → collation cell*depth liên tục khi xén chồng', () => {
         // khổ chỉ chứa 2 cell, 16p (B=4) → stackDepth=2, 2 tờ × 2 mặt = 4 plates
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, cutStack: true, sheetWidth: 460, sheetHeight: 165, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
-        const A = p.phase2.plates.filter((_: any, i: number) => i % 2 === 0); // mặt A các tờ
+        const A = p.phase2!.plates.filter((_: any, i: number) => i % 2 === 0); // mặt A các tờ
         // cell0 qua các tờ (depth) → booklet sheet 0,1 ; cell1 → 2,3
         // mặt A surface = 2*bsi: tờ1 cell0=surf0, cell1=surf4 ; tờ2 cell0=surf2, cell1=surf6
         expect(A[0].placements.map((q: any) => q.spread_index)).toEqual([0, 4]);
