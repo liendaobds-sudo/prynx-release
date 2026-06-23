@@ -19,7 +19,7 @@ export const drawSpreadMarks = (
 ) => {
     const markLength = ((settings?.markLength ?? 5.0) * MM_TO_POINTS);
     const markOffset = ((settings?.markOffset ?? 3.0) * MM_TO_POINTS);
-    const markThickness = ((settings?.paperThickness ?? 0.25) * MM_TO_POINTS);
+    const markThickness = ((settings?.markThickness ?? 0.25) * MM_TO_POINTS);
 
     const drawL = (x1: number, y1: number, x2: number, y2: number, color: any) => {
         outputPage.drawLine({start:{x:x1,y:y1}, end:{x:x2,y:y2}, thickness: markThickness, color});
@@ -117,7 +117,7 @@ export const renderBooklet = async (
     
     const markLength = (settings as any)?.markLength || 5;
     const markOffset = (settings as any)?.markOffset || 3;
-    const markThickness = (settings as any)?.paperThickness || 0.25;
+    const markThickness = (settings as any)?.markThickness || 0.25;
     
     // Flatten iteration plan based on Interleave Mode
     const surfaces: { sheetIndex: number, isFront: boolean, slots: any, sheet: VirtualSheet }[] = [];
@@ -183,7 +183,8 @@ export const renderBooklet = async (
                     gutterPt,
                     isCutStackSpread,
                     spineGapPt,
-                    distribution
+                    distribution,
+                    settings?.bindingMode === 'saddle'
                 );
 
                 trimBoxes.push(transform.trimBox);

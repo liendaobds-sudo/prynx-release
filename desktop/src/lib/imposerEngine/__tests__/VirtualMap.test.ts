@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { generateBindingMap, VirtualSheet } from '../VirtualMap';
+import { solvePageTransform, solveGeometry, GeometricContext } from '../GeometricSolver';
 
 // ─── Helper ─────────────────────────────────────────────────────────────────
 
@@ -174,3 +175,152 @@ describe('VirtualMap — Cut Stacks', () => {
         expect(indices).toHaveLength(6);
     });
 });
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FLUSH_MOUNT (Dán đối lưng — In 1 mặt, mở phẳng 180°)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('VirtualMap — Flush Mount', () => {
+    it('should produce front-only sheets (back is all null)', () => {
+        const { sheets } = generateBindingMap(6, 'flush_mount');
+        for (const s of sheets) {
+            // Back side must be entirely null
+            expect(s.back.left.srcIndex).toBeNull();
+            expect(s.back.right.srcIndex).toBeNull();
+        }
+    });
+
+    it('should pad to nearest even (not multiple of 4)', () => {
+        // 5 pages → padded to 6 → 3 sheets
+        const { sheets } = generateBindingMap(5, 'flush_mount');
+        expect(sheets).toHaveLength(3); // ceil(5/2)*2 = 6, 6/2 = 3
+        // Last page on last sheet should be blank
+        expect(sheets[2].front.right.srcIndex).toBeNull();
+    });
+
+    it('should map pages sequentially in pairs (1-2, 3-4, ...)', () => {
+        const { sheets } = generateBindingMap(8, 'flush_mount');
+        expect(sheets).toHaveLength(4);
+        // Sheet 0: front = [p1, p2]
+        expect(sheets[0].front.left.srcIndex).toBe(0);
+        expect(sheets[0].front.right.srcIndex).toBe(1);
+        // Sheet 1: front = [p3, p4]
+        expect(sheets[1].front.left.srcIndex).toBe(2);
+        expect(sheets[1].front.right.srcIndex).toBe(3);
+        // Sheet 2: front = [p5, p6]
+        expect(sheets[2].front.left.srcIndex).toBe(4);
+        expect(sheets[2].front.right.srcIndex).toBe(5);
+        // Sheet 3: front = [p7, p8]
+        expect(sheets[3].front.left.srcIndex).toBe(6);
+        expect(sheets[3].front.right.srcIndex).toBe(7);
+    });
+
+    it('should handle exactly 2 pages (minimum case)', () => {
+        const { sheets } = generateBindingMap(2, 'flush_mount');
+        expect(sheets).toHaveLength(1);
+        expect(sheets[0].front.left.srcIndex).toBe(0);
+        expect(sheets[0].front.right.srcIndex).toBe(1);
+    });
+
+    it('should cover all source pages without duplicates', () => {
+        const { sheets } = generateBindingMap(10, 'flush_mount');
+        const indices = allSrcIndices(sheets);
+        expect(new Set(indices).size).toBe(10);
+        expect(indices).toHaveLength(10);
+    });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  BLANK PLACEMENT (vị trí trang trắng khi số trang lẻ)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('VirtualMap — Blank placement', () => {
+    it("'end' (default) puts blanks on the outer/cover sheet for saddle", () => {
+        // 6 real pages padded to 8. End-placement → logical 7 & 8 (cover sheet) blank.
+        const { sheets } = generateBindingMap(6, 'saddle', 16, 'end');
+        expect(flattenSheet(sheets[0])).toEqual([null, 0, 1, null]); // cover sheet has blanks
+        expect(flattenSheet(sheets[1])).toEqual([5, 2, 3, 4]);        // inner sheet full
+    });
+
+    it("'center' keeps cover full and pushes blanks to the innermost sheet", () => {
+        const { sheets } = generateBindingMap(6, 'saddle', 16, 'center');
+        expect(flattenSheet(sheets[0])).toEqual([5, 0, 1, 4]); // cover sheet fully printed
+        expect(flattenSheet(sheets[1])).toEqual([3, 2, null, null]); // blanks land in the center
+    });
+
+    it("'center' still covers every source page exactly once", () => {
+        const { sheets } = generateBindingMap(10, 'saddle', 16, 'center');
+        const indices = allSrcIndices(sheets);
+        expect(new Set(indices).size).toBe(10);
+        expect(indices).toHaveLength(10);
+    });
+
+    it('default arg equals explicit end', () => {
+        const a = generateBindingMap(7, 'saddle');
+        const b = generateBindingMap(7, 'saddle', 16, 'end');
+        expect(a.sheets.map(flattenSheet)).toEqual(b.sheets.map(flattenSheet));
+    });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GEOMETRY — Creep & Gutter (GeometricSolver)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const baseCtx: GeometricContext = {
+    finalSheetWidth: 1000, finalSheetHeight: 500, scaleFactor: 1,
+    actualDrawnWidth: 400, actualDrawnHeight: 480, needsScaleDown: false,
+    suggestedScaleFactor: 1, margins: { top: 0, bottom: 0, left: 0, right: 0 }, isRotated: false,
+};
+
+describe('GeometricSolver — Creep', () => {
+    it('applies creep to content in EVEN distribution (regression: was ignored)', () => {
+        const t0L = solvePageTransform(baseCtx, true, true, 0, 4, 0, 3, true, 0, false, 0, 'even');
+        const t2L = solvePageTransform(baseCtx, true, true, 2, 4, 0, 3, true, 0, false, 0, 'even');
+        // Inner sheet (index 2) left page shifts toward spine (rightward) by thickness×index = 6
+        expect(t2L.rawX - t0L.rawX).toBeCloseTo(6);
+        // Right page shifts leftward by 6
+        const t0R = solvePageTransform(baseCtx, false, true, 0, 4, 0, 3, true, 0, false, 0, 'even');
+        const t2R = solvePageTransform(baseCtx, false, true, 2, 4, 0, 3, true, 0, false, 0, 'even');
+        expect(t2R.rawX - t0R.rawX).toBeCloseTo(-6);
+        // Trim marks stay FIXED (creep moves content only)
+        expect(t2L.trimBox.x).toBeCloseTo(t0L.trimBox.x);
+    });
+
+    it('matches legacy clustered creep formula', () => {
+        const t0 = solvePageTransform(baseCtx, true, true, 0, 4, 0, 3, true, 0, false, 0, 'clustered');
+        const t2 = solvePageTransform(baseCtx, true, true, 2, 4, 0, 3, true, 0, false, 0, 'clustered');
+        expect(t2.rawX - t0.rawX).toBeCloseTo(6);
+    });
+});
+
+describe('GeometricSolver — Gutter', () => {
+    it('honors gutter for THREAD but NOT for saddle (regression: thread was dropped)', () => {
+        const thread = solvePageTransform(baseCtx, true, true, 0, 4, 0, 0, true, 10, false, 0, 'clustered', false);
+        const saddle = solvePageTransform(baseCtx, true, true, 0, 4, 0, 0, true, 10, false, 0, 'clustered', true);
+        // Thread left page pushed away from spine (−10); saddle untouched → diff = 10
+        expect(saddle.rawX - thread.rawX).toBeCloseTo(10);
+    });
+
+    it('honors gutter for continuous (perfect bound)', () => {
+        const cont = solvePageTransform(baseCtx, true, true, 0, 4, 0, 0, false, 10, false, 0, 'clustered', false);
+        const none = solvePageTransform(baseCtx, true, true, 0, 4, 0, 0, false, 0, false, 0, 'clustered', false);
+        expect(none.rawX - cont.rawX).toBeCloseTo(10);
+    });
+});
+
+describe('GeometricSolver — Fit overflow detection', () => {
+    it('flags needsScaleDown when the sheet is smaller than the spread', () => {
+        const settings: any = {
+            formsize: 'custom', customSheetWidth: 100, customSheetHeight: 100,
+            bleed: 0, signatureMode: 'saddle', spreadDistribution: 'clustered',
+            marginTop: 0, marginBottom: 0, marginLeft: 0, marginRight: 0, markType: 'none',
+        };
+        const g = solveGeometry(400, 480, settings, {}, 2.83465);
+        expect(g.needsScaleDown).toBe(true);
+        expect(g.suggestedScaleFactor).toBeLessThan(1);
+    });
+});
+

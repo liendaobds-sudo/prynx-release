@@ -10,6 +10,7 @@ import type { VirtualSheet } from './VirtualMap';
 import type { GeometricContext } from './GeometricSolver';
 import { solvePageTransform } from './GeometricSolver';
 import type { ProcessingSettings } from '../pdfImposer';
+import { getSpreadPatternById, getPatternForPageCount, type SpreadFoldPattern } from './FoldPatterns';
 
 const MM_TO_POINTS = 2.83465;
 
@@ -74,6 +75,37 @@ export interface InstructionSet {
     /** Page details: native rotation angles for each source page */
     page_details: { angle: number; visual_w: number; visual_h: number }[];
     sheets: SheetInstruction[];
+    /**
+     * Phase-2 arrangement (Step & Repeat / Fold Pattern / Cut & Stack).
+     * Khi có: `sheets` là các "trang spread" trung gian (mỗi sheet = 1 mặt spread,
+     * chỉ dùng `front`). Backend render `sheets` ra doc tạm rồi đặt từng spread
+     * (theo `spread_index`) lên các tờ kẽm lớn theo `plates`.
+     */
+    phase2?: Phase2Set;
+}
+
+export interface Phase2Placement {
+    /** Index vào mảng `sheets` (mỗi sheet = 1 trang spread trung gian) */
+    spread_index: number;
+    x_pt: number;
+    y_pt: number;
+    /** 0 hoặc 180 (chưa hỗ trợ xoay lưới 90° trong phase-2) */
+    rotation_deg: number;
+}
+
+export interface Phase2Plate {
+    width_pt: number;
+    height_pt: number;
+    placements: Phase2Placement[];
+    marks: MarkInstruction[];
+    label?: string;
+}
+
+export interface Phase2Set {
+    mode: 'step_repeat' | 'fold_pattern' | 'cut_stack';
+    spread_w_pt: number;
+    spread_h_pt: number;
+    plates: Phase2Plate[];
 }
 
 // ==================== BOOKLET SERIALIZER ====================
@@ -99,6 +131,21 @@ export function serializeBookletPlan(
     const markLenPt = ((settings as any).markLength ?? 5.0) * MM_TO_POINTS;
     const markOffPt = ((settings as any).markOffset ?? 3.0) * MM_TO_POINTS;
     const markThickPt = ((settings as any).markThickness ?? 0.25) * MM_TO_POINTS;
+
+    // ── Spread-frame layout knobs (mirror Renderer.renderBooklet phase-1) ──
+    // Phase 1 luôn dùng clustered + spineGap=0 (gáy sát để gấp/khâu).
+    // Gutter (lề gáy) áp cho perfect/sewn; cut_stacks "Hút gáy" xoay 180° cọc phải.
+    const bindingMode = (settings as any).bindingMode;
+    const gutterPt = ((settings as any).gutterMargin || 0) * MM_TO_POINTS;
+    const isCutStackSpread = bindingMode === 'cut_stacks';
+    const isSaddle = bindingMode === 'saddle';
+    const cutStackDistribution = (settings as any).spreadDistribution || 'clustered';
+    const cutStackHutGay = cutStackDistribution !== 'even';
+    /** Cọc phải khi "Hút gáy & Xén úp" phải xoay 180° để 2 nửa đối xứng lề khi úp. */
+    const cutStackRotates = (isFront: boolean, isLeft: boolean): boolean => {
+        const isRightStack = isFront ? !isLeft : isLeft;
+        return isCutStackSpread && cutStackHutGay && isRightStack;
+    };
 
     // Build surface iteration order (same logic as Renderer.ts)
     const surfaces: { sheetIndex: number; isFront: boolean; slots: any; sheet: VirtualSheet }[] = [];
@@ -131,110 +178,114 @@ export function serializeBookletPlan(
         }
     }
 
+    // ── Helper: dựng 1 placement cho slot left/right của 1 surface (spread frame) ──
+    const makePlacement = (surf: any, isLeft: boolean): PlacementInstruction => {
+        const isFront = surf.isFront;
+        const slot = isLeft ? surf.slots.left : surf.slots.right;
+        const effSheetIndex = surf.sheet.sigLocalIndex ?? surf.sheetIndex;
+        const effTotalSheets = surf.sheet.sigTotalSheets ?? virtualMap.length;
+        const transform = solvePageTransform(
+            context, isLeft, isFront, effSheetIndex, effTotalSheets,
+            bleedPt, paperThicknessPt, isSaddleOrThread,
+            gutterPt, isCutStackSpread, 0, 'clustered', isSaddle
+        );
+        const srcIndex = slot.srcIndex;
+        const srcDetail = srcIndex !== null && srcIndex < srcPageDetails.length
+            ? srcPageDetails[srcIndex] : null;
+        // is180 = XOR(reverse_backs_180 trên mặt sau, cọc phải cut-stack hút gáy)
+        const rev180 = !isFront && interleaveMode === 'reverse_backs_180';
+        const rot180 = rev180 !== cutStackRotates(isFront, isLeft);
+        return {
+            source_page: srcIndex,
+            x_pt: transform.rawX,
+            y_pt: transform.rawY,
+            rotation_deg: rot180 ? 180 : 0,
+            scale: transform.scale,
+            creep_offset_pt: paperThicknessPt * ((effTotalSheets - 1) / 2 - effSheetIndex),
+            clip: {
+                x_pt: transform.clipX,
+                y_pt: transform.clipY,
+                w_pt: transform.clipW,
+                h_pt: transform.clipH,
+            },
+            native_angle: srcDetail?.angle ?? 0,
+        };
+    };
+    const buildSurfacePlacements = (surf: any): PlacementInstruction[] =>
+        (!surf || (surf as any).isEmpty) ? [] : [makePlacement(surf, true), makePlacement(surf, false)];
+
+    // ── Phát hiện chế độ phase-2 (Step&Repeat / Fold Pattern / Cut&Stack) ──
+    const fpId = (settings as any).foldPattern;
+    let foldPattern: SpreadFoldPattern | null = null;
+    if (fpId && fpId !== 'auto') {
+        foldPattern = getSpreadPatternById(fpId) ?? null;
+    } else if (fpId === 'auto' && virtualMap.length > 0) {
+        const firstSigSheets = virtualMap[0].sigTotalSheets ?? virtualMap.length;
+        foldPattern = getPatternForPageCount(firstSigSheets * 4) ?? null;
+    }
+    const wantChainNup = !!(settings as any).chainNup;
+    const wantCutStack = !!(settings as any).cutStack;
+    const phase2Mode: 'step_repeat' | 'fold_pattern' | 'cut_stack' | null =
+        foldPattern ? 'fold_pattern'
+            : (wantChainNup && wantCutStack) ? 'cut_stack'
+                : wantChainNup ? 'step_repeat'
+                    : null;
+
     const sheets: SheetInstruction[] = [];
+    let phase2: Phase2Set | undefined = undefined;
 
-    for (let surfIdx = 0; surfIdx < surfaces.length; surfIdx += 2) {
-        const frontSurf = surfaces[surfIdx];
-        const backSurf = surfaces[surfIdx + 1];
-
-        const frontPlacements: PlacementInstruction[] = [];
-        const backPlacements: PlacementInstruction[] = [];
-
-        // Process front side
-        if (frontSurf) {
-            for (const pos of ['left', 'right']) {
-                const isLeft = pos === 'left';
-                const slot = isLeft ? frontSurf.slots.left : frontSurf.slots.right;
-                const effSheetIndex = frontSurf.sheet.sigLocalIndex ?? frontSurf.sheetIndex;
-                const effTotalSheets = frontSurf.sheet.sigTotalSheets ?? virtualMap.length;
-
-                const transform = solvePageTransform(
-                    context, isLeft, true, effSheetIndex, effTotalSheets,
-                    bleedPt, paperThicknessPt, isSaddleOrThread
-                );
-
-                const srcIndex = slot.srcIndex;
-                const srcDetail = srcIndex !== null && srcIndex < srcPageDetails.length
-                    ? srcPageDetails[srcIndex] : null;
-
-                frontPlacements.push({
-                    source_page: srcIndex,
-                    x_pt: transform.rawX,
-                    y_pt: transform.rawY,
-                    rotation_deg: 0,
-                    scale: transform.scale,
-                    creep_offset_pt: paperThicknessPt * ((effTotalSheets - 1) / 2 - effSheetIndex),
-                    clip: {
-                        x_pt: transform.clipX,
-                        y_pt: transform.clipY,
-                        w_pt: transform.clipW,
-                        h_pt: transform.clipH,
-                    },
-                    native_angle: srcDetail?.angle ?? 0,
-                });
-            }
+    if (phase2Mode) {
+        // Phase-1: mỗi surface → 1 trang spread trung gian (front-only, KHÔNG marks).
+        // Backend render các trang này ra doc tạm rồi sắp lên kẽm lớn theo phase2.plates.
+        for (const surf of surfaces) {
+            sheets.push({
+                sheet_index: sheets.length,
+                width_pt: context.finalSheetWidth,
+                height_pt: context.finalSheetHeight,
+                front: { placements: buildSurfacePlacements(surf), marks: [] },
+                back: undefined as any,
+            });
         }
 
-        // Process back side
-        if (backSurf && !(backSurf as any).isEmpty) {
-            for (const pos of ['left', 'right']) {
-                const isLeft = pos === 'left';
-                const slot = isLeft ? backSurf.slots.left : backSurf.slots.right;
-                const effSheetIndex = backSurf.sheet.sigLocalIndex ?? backSurf.sheetIndex;
-                const effTotalSheets = backSurf.sheet.sigTotalSheets ?? virtualMap.length;
+        const spreadW = context.finalSheetWidth;
+        const spreadH = context.finalSheetHeight;
+        const pressW = ((settings as any).sheetWidth || 0) * MM_TO_POINTS;
+        const pressH = ((settings as any).sheetHeight || 0) * MM_TO_POINTS;
 
-                const transform = solvePageTransform(
-                    context, isLeft, false, effSheetIndex, effTotalSheets,
-                    bleedPt, paperThicknessPt, isSaddleOrThread
-                );
-
-                const srcIndex = slot.srcIndex;
-                const srcDetail = srcIndex !== null && srcIndex < srcPageDetails.length
-                    ? srcPageDetails[srcIndex] : null;
-
-                backPlacements.push({
-                    source_page: srcIndex,
-                    x_pt: transform.rawX,
-                    y_pt: transform.rawY,
-                    rotation_deg: (interleaveMode === 'reverse_backs_180') ? 180 : 0,
-                    scale: transform.scale,
-                    creep_offset_pt: paperThicknessPt * ((effTotalSheets - 1) / 2 - effSheetIndex),
-                    clip: {
-                        x_pt: transform.clipX,
-                        y_pt: transform.clipY,
-                        w_pt: transform.clipW,
-                        h_pt: transform.clipH,
-                    },
-                    native_angle: srcDetail?.angle ?? 0,
-                });
-            }
-        }
-
-        // Generate trim + fold marks
-        const frontMarks = serializeBookletMarks(
-            context, bleedPt, markLenPt, markOffPt, markThickPt, markType
+        phase2 = buildPhase2(
+            phase2Mode, foldPattern, surfaces.length, spreadW, spreadH,
+            pressW, pressH, bleedPt, markLenPt, markOffPt, markThickPt, markType, settings
         );
-        const backMarks = serializeBookletMarks(
-            context, bleedPt, markLenPt, markOffPt, markThickPt, markType
-        );
+    } else {
+        // ── Đường thường: 1-up booklet, mỗi tờ kẽm = front + back của 1 virtual sheet ──
+        for (let surfIdx = 0; surfIdx < surfaces.length; surfIdx += 2) {
+            const frontSurf = surfaces[surfIdx];
+            const backSurf = surfaces[surfIdx + 1];
 
-        const sheet: SheetInstruction = {
-            sheet_index: frontSurf?.sheetIndex ?? surfIdx / 2,
-            width_pt: context.finalSheetWidth,
-            height_pt: context.finalSheetHeight,
-            front: { placements: frontPlacements, marks: frontMarks },
-            back: (backSurf as any)?.isEmpty ? undefined : { placements: backPlacements, marks: backMarks },
-        } as any;
+            const frontPlacements = buildSurfacePlacements(frontSurf);
+            const backPlacements = buildSurfacePlacements(backSurf);
 
-        if (context.isRotated) {
-            const innerW = context.finalSheetWidth - context.margins.left - context.margins.right;
-            const innerH = context.finalSheetHeight - context.margins.top - context.margins.bottom;
-            const cx = context.margins.left + innerW / 2;
-            const cy = context.margins.bottom + innerH / 2;
-            applyGridRotation(sheet, cx, cy);
+            const frontMarks = serializeBookletMarks(context, bleedPt, markLenPt, markOffPt, markThickPt, markType);
+            const backMarks = serializeBookletMarks(context, bleedPt, markLenPt, markOffPt, markThickPt, markType);
+
+            const sheet: SheetInstruction = {
+                sheet_index: frontSurf?.sheetIndex ?? surfIdx / 2,
+                width_pt: context.finalSheetWidth,
+                height_pt: context.finalSheetHeight,
+                front: { placements: frontPlacements, marks: frontMarks },
+                back: (backSurf as any)?.isEmpty ? undefined : { placements: backPlacements, marks: backMarks },
+            } as any;
+
+            if (context.isRotated) {
+                const innerW = context.finalSheetWidth - context.margins.left - context.margins.right;
+                const innerH = context.finalSheetHeight - context.margins.top - context.margins.bottom;
+                const cx = context.margins.left + innerW / 2;
+                const cy = context.margins.bottom + innerH / 2;
+                applyGridRotation(sheet, cx, cy);
+            }
+
+            sheets.push(sheet);
         }
-
-        sheets.push(sheet);
     }
 
     return {
@@ -254,7 +305,228 @@ export function serializeBookletPlan(
             angle: d.angle, visual_w: d.visualW, visual_h: d.visualH,
         })),
         sheets,
+        ...(phase2 ? { phase2 } : {}),
     };
+}
+
+// ==================== PHASE-2 ARRANGEMENT BUILDER ====================
+
+/**
+ * Dựng các tờ kẽm lớn (plates) sắp xếp các trang spread trung gian.
+ * Toạ độ trả về theo gốc PDF bottom-left (backend tự đổi sang top-left).
+ *
+ * Giới hạn hiện tại (ghi rõ để không hiểu lầm là đã đủ):
+ *   - CHƯA xoay lưới 90° để fit khổ (chỉ đặt lưới theo đúng chiều spread).
+ *     Người dùng cần chọn khổ kẽm có chiều phù hợp với spread.
+ *   - rotation per-slot chỉ 0/180 (đúng theo SpreadFoldPattern).
+ */
+function buildPhase2(
+    mode: 'step_repeat' | 'fold_pattern' | 'cut_stack',
+    pattern: SpreadFoldPattern | null,
+    surfaceCount: number,
+    spreadW: number,
+    spreadH: number,
+    pressW: number,
+    pressH: number,
+    bleedPt: number,
+    markLenPt: number,
+    markOffPt: number,
+    markThickPt: number,
+    markType: string,
+    settings: ProcessingSettings,
+): Phase2Set {
+    const gapXPt = ((settings as any).gapX || 0) * MM_TO_POINTS;
+    const gapYPt = ((settings as any).gapY || 0) * MM_TO_POINTS;
+    const marginLeftPt = ((settings as any).marginLeft || 0) * MM_TO_POINTS;
+    const marginRightPt = ((settings as any).marginRight || 0) * MM_TO_POINTS;
+    const marginTopPt = ((settings as any).marginTop || 0) * MM_TO_POINTS;
+    const gripperPt = ((settings as any).gripperMargin || 0) * MM_TO_POINTS;
+    const isEven = (settings as any).spreadDistribution === 'even';
+
+    const sheetW = pressW > spreadW ? pressW : spreadW + marginLeftPt + marginRightPt;
+    const sheetH = pressH > spreadH ? pressH : spreadH + gripperPt + marginTopPt;
+
+    // ── Quyết định xoay lưới 90° để fit khổ (giống SpreadPlacer/NupRenderer) ──
+    let gW: number, gH: number;
+    if (mode === 'fold_pattern' && pattern) {
+        gW = pattern.cols * spreadW + (pattern.cols - 1) * gapXPt;
+        gH = pattern.rows * spreadH + (pattern.rows - 1) * gapYPt;
+    } else {
+        gW = spreadW; gH = spreadH;
+    }
+    const usableW0 = sheetW - marginLeftPt - marginRightPt;
+    const usableH0 = sheetH - gripperPt - marginTopPt;
+    const gridRatio = gW / gH;
+    const sheetRatio = usableW0 / usableH0;
+    let isRotated = false;
+    if (gridRatio < 1 && sheetRatio > 1.05) isRotated = true;
+    else if (gridRatio > 1 && sheetRatio < 0.95) isRotated = true;
+
+    // Khung dựng lưới (logic): nếu xoay thì hoán W/H tờ in.
+    const frameW = isRotated ? sheetH : sheetW;
+    const frameH = isRotated ? sheetW : sheetH;
+
+    const black: [number, number, number, number] = [0, 0, 0, 1];
+    const showMarks = !!markType && markType !== 'none';
+
+    // Trim marks 4 góc cho 1 cell (gốc bottom-left của khung dựng).
+    const cellTrimMarks = (cellX: number, cellY: number): MarkInstruction[] => {
+        if (!showMarks) return [];
+        const tx = cellX + bleedPt, ty = cellY + bleedPt;
+        const tw = spreadW - 2 * bleedPt, th = spreadH - 2 * bleedPt;
+        const r = tx + tw, t = ty + th;
+        const mk = (x1: number, y1: number, x2: number, y2: number): MarkInstruction =>
+            ({ type: 'trim_line', x1, y1, x2, y2, color: black, thickness_pt: markThickPt });
+        return [
+            mk(tx, t + markOffPt, tx, t + markOffPt + markLenPt),
+            mk(tx - markOffPt, t, tx - markOffPt - markLenPt, t),
+            mk(r, t + markOffPt, r, t + markOffPt + markLenPt),
+            mk(r + markOffPt, t, r + markOffPt + markLenPt, t),
+            mk(tx, ty - markOffPt, tx, ty - markOffPt - markLenPt),
+            mk(tx - markOffPt, ty, tx - markOffPt - markLenPt, ty),
+            mk(r, ty - markOffPt, r, ty - markOffPt - markLenPt),
+            mk(r + markOffPt, ty, r + markOffPt + markLenPt, ty),
+        ];
+    };
+
+    // Lưới đơn (step_repeat / cut_stack) trong khung.
+    const usableW = frameW - marginLeftPt - marginRightPt;
+    const usableH = frameH - gripperPt - marginTopPt;
+    const simpleCols = Math.max(1, Math.floor((usableW + gapXPt) / (spreadW + gapXPt)));
+    const simpleRows = Math.max(1, Math.floor((usableH + gapYPt) / (spreadH + gapYPt)));
+    const simpleGridW = simpleCols * spreadW + (simpleCols - 1) * gapXPt;
+    const simpleGridH = simpleRows * spreadH + (simpleRows - 1) * gapYPt;
+    const simpleOX = marginLeftPt + (usableW - simpleGridW) / 2;
+    const simpleOY = gripperPt + (usableH - simpleGridH) / 2;
+    const simpleCellPos = (c: number, r: number) => ({
+        x: simpleOX + c * (spreadW + gapXPt),
+        y: simpleOY + (simpleRows - 1 - r) * (spreadH + gapYPt),
+    });
+
+    let plates: Phase2Plate[] = [];
+
+    if (mode === 'fold_pattern' && pattern) {
+        const cols = pattern.cols, rows = pattern.rows;
+        const gridW = cols * spreadW + (cols - 1) * gapXPt;
+        const gridH = rows * spreadH + (rows - 1) * gapYPt;
+        const totalGridW = isEven ? usableW : gridW;
+        const totalGridH = isEven ? usableH : gridH;
+        const originX = marginLeftPt + (usableW - totalGridW) / 2;
+        const originY = gripperPt + (usableH - totalGridH) / 2;
+        const cellPos = (col: number, row: number): { x: number; y: number } => {
+            if (isEven) {
+                const cw = cols > 0 ? usableW / cols : usableW;
+                const ch = rows > 0 ? usableH / rows : usableH;
+                return {
+                    x: originX + col * cw + (cw - spreadW) / 2,
+                    y: originY + (rows - 1 - row) * ch + (ch - spreadH) / 2,
+                };
+            }
+            return { x: originX + col * (spreadW + gapXPt), y: originY + (rows - 1 - row) * (spreadH + gapYPt) };
+        };
+        const spreadsPerSig = pattern.spreadsPerSig;
+        const totalSigs = Math.ceil(surfaceCount / spreadsPerSig);
+        const sides: ('front' | 'back')[] = pattern.backPlate.length > 0 ? ['front', 'back'] : ['front'];
+        for (let sig = 0; sig < totalSigs; sig++) {
+            const sigOffset = sig * spreadsPerSig;
+            for (const side of sides) {
+                const slots = side === 'front' ? pattern.frontPlate : pattern.backPlate;
+                const placements: Phase2Placement[] = [];
+                const marks: MarkInstruction[] = [];
+                for (const slot of slots) {
+                    const spreadIndex = sigOffset + slot.spreadIndex;
+                    if (spreadIndex >= surfaceCount) continue;
+                    const { x, y } = cellPos(slot.col, slot.row);
+                    placements.push({ spread_index: spreadIndex, x_pt: x, y_pt: y, rotation_deg: slot.rotation });
+                    marks.push(...cellTrimMarks(x, y));
+                }
+                if (placements.length === 0) continue;
+                plates.push({
+                    width_pt: frameW, height_pt: frameH, placements, marks,
+                    label: `Tay ${sig + 1}${sides.length > 1 ? (side === 'front' ? 'A' : 'B') : ''}`,
+                });
+            }
+        }
+    } else if (mode === 'cut_stack') {
+        // Ghép nửa cuốn (Cut & Stack): mỗi tờ kẽm 2 mặt (front=surface chẵn, back=lẻ).
+        // Mặt sau mirror cột (duplex lật trái-phải). Thứ tự cards theo cut&stack:
+        // bookletSheet = cellIndex*stackDepth + depth → xén thành cols×rows cọc rồi
+        // chồng theo thứ tự → ra cuốn liền mạch.
+        const cells = simpleCols * simpleRows;
+        const B = Math.floor(surfaceCount / 2); // số tờ sách (cặp front/back surface)
+        const stackDepth = Math.max(1, Math.ceil(B / cells));
+        for (let depth = 0; depth < stackDepth; depth++) {
+            const front: Phase2Placement[] = [];
+            const back: Phase2Placement[] = [];
+            const fMarks: MarkInstruction[] = [];
+            const bMarks: MarkInstruction[] = [];
+            for (let cell = 0; cell < cells; cell++) {
+                const bsi = cell * stackDepth + depth;
+                if (bsi >= B) continue;
+                const c = cell % simpleCols, r = Math.floor(cell / simpleCols);
+                const pf = simpleCellPos(c, r);
+                front.push({ spread_index: 2 * bsi, x_pt: pf.x, y_pt: pf.y, rotation_deg: 0 });
+                fMarks.push(...cellTrimMarks(pf.x, pf.y));
+                const pb = simpleCellPos(simpleCols - 1 - c, r); // mirror cột cho mặt sau
+                back.push({ spread_index: 2 * bsi + 1, x_pt: pb.x, y_pt: pb.y, rotation_deg: 0 });
+                bMarks.push(...cellTrimMarks(pb.x, pb.y));
+            }
+            if (front.length) plates.push({ width_pt: frameW, height_pt: frameH, placements: front, marks: fMarks, label: `Tờ ${depth + 1} - Mặt A` });
+            if (back.length) plates.push({ width_pt: frameW, height_pt: frameH, placements: back, marks: bMarks, label: `Tờ ${depth + 1} - Mặt B` });
+        }
+    } else {
+        // step_repeat: mỗi surface → 1 tờ kẽm, nhân bản đầy lưới.
+        for (let si = 0; si < surfaceCount; si++) {
+            const placements: Phase2Placement[] = [];
+            const marks: MarkInstruction[] = [];
+            for (let r = 0; r < simpleRows; r++) {
+                for (let c = 0; c < simpleCols; c++) {
+                    const { x, y } = simpleCellPos(c, r);
+                    placements.push({ spread_index: si, x_pt: x, y_pt: y, rotation_deg: 0 });
+                    marks.push(...cellTrimMarks(x, y));
+                }
+            }
+            plates.push({ width_pt: frameW, height_pt: frameH, placements, marks, label: `Spread ${si + 1}` });
+        }
+    }
+
+    // ── Xoay lưới 90° CCW từ khung logic sang khổ thật (nếu cần) ──
+    if (isRotated) {
+        plates = plates.map(pl => rotatePlate90(pl, frameW, spreadW, spreadH));
+    }
+
+    return { mode, spread_w_pt: spreadW, spread_h_pt: spreadH, plates };
+}
+
+/**
+ * Xoay 1 plate 90° CCW từ khung logic (frameW×frameH) sang khổ thật.
+ * Map điểm: (x,y) → (frameH_logic? ...). Dùng CCW quanh gốc + tịnh tiến:
+ *   real(x,y) = (frameW - y, x); box (w,h) → (h,w); rotation += 90.
+ * Lưu ý: frameW ở đây = bề rộng khung LOGIC (= sheetH thật) ⇒ Rw = frameH_logic.
+ * Ta truyền frameW(logic) và suy Rw từ chiều cao plate cũ.
+ */
+function rotatePlate90(plate: Phase2Plate, frameW: number, spreadW: number, spreadH: number): Phase2Plate {
+    const Lw = plate.width_pt;   // = frameW (logic)
+    const Lh = plate.height_pt;  // = frameH (logic)
+    const Rw = Lh;               // khổ thật rộng
+    const Rh = Lw;               // khổ thật cao
+    void frameW;
+    const placements = plate.placements.map(p => {
+        const rotIs90 = (p.rotation_deg % 180) !== 0;
+        const boxH = rotIs90 ? spreadW : spreadH; // chiều cao box TRƯỚC khi xoay thêm
+        return {
+            spread_index: p.spread_index,
+            x_pt: Rw - p.y_pt - boxH,
+            y_pt: p.x_pt,
+            rotation_deg: (p.rotation_deg + 90) % 360,
+        };
+    });
+    const marks = plate.marks.map(m => ({
+        ...m,
+        x1: Rw - m.y1, y1: m.x1,
+        x2: Rw - m.y2, y2: m.x2,
+    }));
+    return { width_pt: Rw, height_pt: Rh, placements, marks, label: plate.label };
 }
 
 // ==================== MARKS SERIALIZER ====================

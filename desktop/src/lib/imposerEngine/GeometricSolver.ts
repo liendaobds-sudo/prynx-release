@@ -1,5 +1,5 @@
 // src/lib/imposerEngine/GeometricSolver.ts
-import { BookletSettings } from '../../components/imposition-tools/ImposerDashboard';
+import type { BookletSettings } from '../../components/imposition-tools/ImposerDashboard';
 
 export interface PageTransform {
     scale: number;
@@ -40,7 +40,6 @@ export const solveGeometry = (
     const spreadH = maxSrcH;
 
     const bleedPt = (settings.bleed || 0) * MM_TO_POINTS;
-    const isSaddleOrThread = settings.signatureMode === 'saddle' || settings.signatureMode === 'thread';
     const pullToSpine = settings.spreadDistribution !== 'even';
 
     if (settings.formsize === 'auto_100') {
@@ -134,7 +133,8 @@ export const solvePageTransform = (
     gutterPt: number = 0,
     isCutStackSpread: boolean = false,
     spineGapPt: number = 0,
-    spreadDistribution?: 'clustered' | 'even'
+    spreadDistribution?: 'clustered' | 'even',
+    isSaddle: boolean = false
 ): PageTransform => {
 
     const innerW = context.finalSheetWidth - context.margins.left - context.margins.right;
@@ -180,22 +180,30 @@ export const solvePageTransform = (
         // Bleeds that cross the center will be strictly clipped at halfSheetCenterX.
         if (isLeftSlot) {
             const baseX = halfSheetCenterX - spineGapPt / 2 - context.actualDrawnWidth + bleedPt;
-            pageX = baseX - creepShift;       // Content: shifted by creep
+            pageX = baseX;
             baseTrimX = baseX + bleedPt;      // Trim: fixed (no creep)
             clipX = baseX;
             clipW = halfSheetCenterX - baseX + 0.3; // clip up to the center spine
         } else {
             const baseX = halfSheetCenterX + spineGapPt / 2 - bleedPt;
-            pageX = baseX + creepShift;       // Content: shifted by creep
+            pageX = baseX;
             baseTrimX = baseX + bleedPt;      // Trim: fixed (no creep)
             clipX = halfSheetCenterX - 0.3;         // clip starting from the center spine
             clipW = context.actualDrawnWidth + (baseX - halfSheetCenterX) + 0.3;
         }
     }
 
-    // Gutter: dịch content ra xa spine cho keo gáy / khâu chỉ.
+    // Creep / Shingling — applied uniformly to CONTENT only (trim/clip stay fixed),
+    // so it works for BOTH 'clustered' (pull-to-spine) and 'even' distribution.
+    // Inner sheets (sheetIndex > 0) shift their image toward the spine.
+    if (isSaddleOrThread && creepShift !== 0) {
+        pageX += isLeftSlot ? -creepShift : creepShift;
+    }
+
+    // Gutter: dịch content ra xa spine cho keo gáy / khâu chỉ (perfect/sewn binding).
+    // Áp dụng cho 'continuous' VÀ 'thread'; KHÔNG áp cho saddle (gấp tại gáy) và cut_stacks.
     // Trang trái → dịch sang trái (xa spine). Trang phải → dịch sang phải.
-    if (gutterPt > 0 && !isSaddleOrThread) {
+    if (gutterPt > 0 && !isSaddle && !isCutStackSpread) {
         if (isLeftSlot) {
             pageX -= gutterPt;
         } else {

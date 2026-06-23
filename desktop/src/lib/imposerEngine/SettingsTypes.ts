@@ -57,6 +57,10 @@ export interface GuillotineSettings extends BaseSettings {
     separateCover?: boolean;
     coverPageCount?: number;
     chainNup?: boolean;
+    spreadDistribution?: 'clustered' | 'even';
+    foldPattern?: string;
+    gripperMargin?: number;
+    blankPlacement?: 'end' | 'center';
 }
 
 // ==========================================
@@ -145,8 +149,12 @@ export interface OffsetSettings extends BaseSettings {
     foldPattern?: string;                  // 'sig_8p' | 'sig_16p'
     isCover?: boolean;                     // Label hint for SpreadPlacer
     gripperMargin?: number;                // mm - Khoảng nhíp máy in
-    spreadDistribution?: 'clustered' | 'even'; 
+    spreadDistribution?: 'clustered' | 'even';
     isBookletSpread?: boolean;
+    separateCover?: boolean;
+    coverPageCount?: number;
+    gutterMargin?: number;
+    blankPlacement?: 'end' | 'center';
     
     markType?: 'none' | 'corners' | 'guillotine';
     markOffset?: number; 

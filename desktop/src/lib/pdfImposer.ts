@@ -133,8 +133,9 @@ export const imposePdf = async (
             let coverIndices: number[] = [];
             let bodyOrderedIndices = orderedIndices;
             
-            if ((settings as any).separateCover && orderedIndices.length >= 8) {
-                const coverCount = (settings as any).coverPageCount || 4;
+            const wantSeparateCover = (settings as any).separateCover;
+            const coverCount = (settings as any).coverPageCount || 4;
+            if (wantSeparateCover && orderedIndices.length >= coverCount + 4) {
                 const half = Math.floor(coverCount / 2);
                 // Trang bìa: half đầu + half cuối
                 const frontCover = orderedIndices.slice(0, half);
@@ -142,14 +143,16 @@ export const imposePdf = async (
                 coverIndices = [...frontCover, ...backCover];
                 bodyOrderedIndices = orderedIndices.slice(half, orderedIndices.length - half);
                 reportMsg += `Tách bìa: ${coverIndices.length} trang bìa sẽ xuất riêng cuối file. Ruột: ${bodyOrderedIndices.length} trang.\n`;
+            } else if (wantSeparateCover) {
+                reportMsg += `⚠ Đã bỏ qua "Tách bìa riêng": sách cần tối thiểu ${coverCount + 4} trang để tách ${coverCount} trang bìa (hiện có ${orderedIndices.length}).\n`;
             }
 
             setStatus('Giai đoạn 1: Đang thiết lập sơ đồ trang...');
             const bMode = (settings as any).bindingMode || 'saddle';
             const orderedLen = bodyOrderedIndices.length;
-            const mapResult = generateBindingMap(orderedLen, bMode, (settings as any).foliosize);
+            const mapResult = generateBindingMap(orderedLen, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
             const virtualMap = mapResult.sheets;
-            reportMsg = mapResult.report;
+            if (mapResult.report) reportMsg += (reportMsg ? '\n' : '') + mapResult.report;
 
             setStatus('Giai đoạn 2: Đang tính toán kích thước tự động...');
             const pseudoSettings = {
@@ -161,7 +164,13 @@ export const imposePdf = async (
             } as any;
             
             const geoContext = solveGeometry(maxSrcPageWidth, maxSrcPageHeight, pseudoSettings, {}, MM_TO_POINTS);
-            
+
+            // Cảnh báo tràn khổ: khổ giấy chọn nhỏ hơn khổ trải trang → nội dung sẽ bị cắt mép.
+            if (geoContext.needsScaleDown) {
+                const pct = Math.round(geoContext.suggestedScaleFactor * 100);
+                reportMsg += (reportMsg ? '\n' : '') + `⚠ Khổ giấy nhỏ hơn khổ trải trang: nội dung sẽ bị tràn/cắt ở mép. Hãy chọn khổ lớn hơn hoặc thu nhỏ file còn ~${pct}%.`;
+            }
+
             const isSaddleOrThread = bMode === 'saddle' || bMode === 'thread';
             
             if ((settings as any).chainNup) {
@@ -218,16 +227,20 @@ export const imposePdf = async (
                     foldPattern = getPatternForPageCount(pagesPerSig) ?? null;
                     if (foldPattern) {
                         setStatus(`Auto-detect: Chọn sơ đồ ${foldPattern.name} (${pagesPerSig} trang/tay)`);
+                        if (foldPattern.pagesPerSig !== pagesPerSig) {
+                            reportMsg += (reportMsg ? '\n' : '') + `⚠ Tay sách ${pagesPerSig} trang không có sơ đồ gấp khớp; tạm dùng "${foldPattern.name}" (${foldPattern.pagesPerSig} trang). Hãy chia tép theo bội số 4/8/16 để khớp sơ đồ.`;
+                        }
                     }
                 }
                 if (foldPattern) {
                     setStatus('Giai đoạn 6: Đang xếp trang lên khổ in theo sơ đồ...');
                     const spreadDetails = chainEmbeddedPages.map(ep => ({ width: ep.width, height: ep.height }));
-                    reportMsg = await placeSpreadsByFoldPattern(
+                    const spreadReport = await placeSpreadsByFoldPattern(
                         chainEmbeddedPages, spreadDetails, foldPattern,
                         reqSheetW * MM_TO_POINTS, reqSheetH * MM_TO_POINTS,
                         outputPdf, settings as any, setStatus
                     );
+                    if (spreadReport) reportMsg += (reportMsg ? '\n' : '') + spreadReport;
                 } else {
                     // Phase 2: Place booklet spreads onto the final sheet via NupRenderer.
                     // Two modes:
@@ -251,7 +264,7 @@ export const imposePdf = async (
             } else {
                 await renderBooklet(
                     virtualMap, embeddedPages, srcPageDetails, geoContext, outputPdf,
-                    bleed, paperThickness, isSaddleOrThread, (settings as any).markType, settings.interleave || 'normal', setStatus, settings as any, 0
+                    bleed, paperThickness, isSaddleOrThread, (settings as any).markType, settings.interleave || 'normal', setStatus, settings as any, gutterPt
                 );
             }
 
@@ -537,7 +550,7 @@ export const imposePdfViaBackend = async (
     // ──── STEP 2: Chạy Planner modules (thuần toán, 0 byte PDF trong RAM) ────
     setStatus('Đang thiết lập sơ đồ trang...');
             const bMode = (settings as any).bindingMode || 'saddle';
-            const mapResult = generateBindingMap(pageCount, bMode, (settings as any).foliosize);
+            const mapResult = generateBindingMap(pageCount, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
     const virtualMap = mapResult.sheets;
     const report = mapResult.report;
 
@@ -549,8 +562,12 @@ export const imposePdfViaBackend = async (
     // Vì SheetOptimizer đã tính toán fit trên khổ gốc (hoặc xoay).
     // Nếu tự động xoay ở đây, nó sẽ làm hỏng grid nếu grid chỉ vừa ở dạng Portrait.
     // (Offset printers usually want Landscape, but if it only fits Portrait, we must use Portrait).
+    // Phase-2 (chain_nup / fold pattern): phase-1 PHẢI dựng spread ở khung auto_100
+    // (khổ = 1 spread) rồi serializer sắp nhiều spread lên khổ kẽm lớn ở phase-2.
+    const _fp = (settings as any).foldPattern;
+    const _phase2 = !!(settings as any).chainNup || (!!_fp && _fp !== '');
     const pseudoSettings = {
-        formsize: (reqSheetW === 0 || (settings as any).chainNup) ? 'auto_100' : 'custom',
+        formsize: (reqSheetW === 0 || _phase2) ? 'auto_100' : 'custom',
         customSheetWidth: reqSheetW,
         customSheetHeight: reqSheetH,
         bleed: settings.bleed,

@@ -129,16 +129,19 @@ const SPREAD_8P: SpreadFoldPattern = {
 //    Spread 6 = Sheet3 Front = [T10| T7]
 //    Spread 7 = Sheet3 Back  = [T8 | T9]
 //
-//  Mặt Trước kẽm (2×2 grid):
-//    Row 0: [Spread4 ↻180°][Spread7 ↻180°] = [T5↻|T12↻] [T9↻|T8↻]
-//    Row 1: [Spread3   →0°][Spread0   →0°] = [T4 |T13 ] [T16|T1 ]
+//  Mặt Trước kẽm (2×2 grid) — THEO ĐÚNG CODE bên dưới:
+//    Row 0: [Spread1 ↻180°][Spread5 ↻180°] = [T2|T15]↻ [T6|T11]↻
+//    Row 1: [Spread2   →0°][Spread6   →0°] = [T14|T3]  [T10|T7]
 //
 //  Mặt Sau kẽm (2×2 grid):
-//    Row 0: [Spread6 ↻180°][Spread5 ↻180°] = [T7↻|T10↻] [T11↻|T6↻]
-//    Row 1: [Spread1   →0°][Spread2   →0°] = [T2 |T15 ] [T14 |T3 ]
+//    Row 0: [Spread4 ↻180°][Spread0 ↻180°] = [T12|T5]↻ [T16|T1]↻
+//    Row 1: [Spread7   →0°][Spread3   →0°] = [T8|T9]   [T4|T13]
 //
-//  Verify (front): T5+T12=17 ✓, T9+T8=17 ✓, T4+T13=17 ✓, T16+T1=17 ✓
-//  Verify (back):  T7+T10=17 ✓, T11+T6=17 ✓, T2+T15=17 ✓, T14+T3=17 ✓
+//  LƯU Ý: thứ tự Mặt Trước/Sau ở đây chỉ là NHÃN (sheetwise in cả 2 kẽm); điều
+//  quan trọng là mỗi kẽm gồm đúng tập spread {1,5,2,6} và {4,0,7,3}.
+//  Placements + xoay 0/180 đã được raster-verify (ink lật đúng nửa trên/dưới).
+//  CHƯA raster-verify "backup registration" (mặt trước úp khít mặt sau khi gấp
+//  tay 16 thật) — cần gấp mẫu/đối chiếu sơ đồ xưởng trước khi tin tuyệt đối.
 // =========================================================================
 const SPREAD_16P: SpreadFoldPattern = {
     id: 'sig_16p', name: 'Tay 16 Trang',

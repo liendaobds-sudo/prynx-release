@@ -63,26 +63,67 @@ class PlanExecutor:
             # Create output PDF
             output_doc = pdf_lib.open()
 
-            for sheet_data in sheets:
-                sheet_idx = sheet_data["sheet_index"]
-                sheet_w = sheet_data["width_pt"]
-                sheet_h = sheet_data["height_pt"]
+            phase2 = instruction_json.get("phase2")
+            temp_doc = None
 
-                # Render front side
-                front = sheet_data.get("front")
-                if front and (front.get("placements") or front.get("marks")):
-                    _render_side(
-                        output_doc, src_doc, sheet_w, sheet_h,
-                        front, global_cfg, total_src_pages
-                    )
+            if phase2:
+                # ── Phase-2 (Step&Repeat / Fold Pattern / Cut&Stack) ──
+                # 1) Render từng "spread" (mỗi sheet.front) ra doc tạm.
+                # 2) Đặt spread lên các tờ kẽm lớn (plates) qua show_pdf_page.
+                spread_w = float(phase2["spread_w_pt"])
+                spread_h = float(phase2["spread_h_pt"])
+                temp_doc = pdf_lib.open()
+                for sheet_data in sheets:
+                    front = sheet_data.get("front") or {"placements": [], "marks": []}
+                    tp = temp_doc.new_page(width=spread_w, height=spread_h)
+                    _render_placements(tp, src_doc, front, spread_h, total_src_pages)
 
-                # Render back side
-                back = sheet_data.get("back")
-                if back and (back.get("placements") or back.get("marks")):
-                    _render_side(
-                        output_doc, src_doc, sheet_w, sheet_h,
-                        back, global_cfg, total_src_pages
-                    )
+                n_spreads = len(sheets)
+                plates = phase2.get("plates", [])
+                logger.info(f"PlanExecutor: phase2={phase2.get('mode')} {n_spreads} spreads -> {len(plates)} plates.")
+                for plate in plates:
+                    pw = float(plate["width_pt"])
+                    ph = float(plate["height_pt"])
+                    op = output_doc.new_page(width=pw, height=ph)
+                    for pl in plate.get("placements", []):
+                        si = pl.get("spread_index")
+                        if si is None or si < 0 or si >= n_spreads:
+                            continue
+                        x = float(pl["x_pt"])
+                        y = float(pl["y_pt"])
+                        rot = int(pl.get("rotation_deg", 0)) % 360
+                        # Box bbox: xoay 90/270 thì hoán chiều rộng/cao.
+                        if rot in (90, 270):
+                            box_w, box_h = spread_h, spread_w
+                        else:
+                            box_w, box_h = spread_w, spread_h
+                        # x_pt/y_pt theo gốc PDF bottom-left của bbox → đổi sang top-left.
+                        pike_y = ph - y - box_h
+                        dest = pdf_lib.Rect(x, pike_y, x + box_w, pike_y + box_h)
+                        op.show_pdf_page(dest, temp_doc, si, rotate=rot, clip=None)
+                    if plate.get("marks"):
+                        _draw_marks_batched(op, plate["marks"], ph)
+            else:
+                for sheet_data in sheets:
+                    sheet_idx = sheet_data["sheet_index"]
+                    sheet_w = sheet_data["width_pt"]
+                    sheet_h = sheet_data["height_pt"]
+
+                    # Render front side
+                    front = sheet_data.get("front")
+                    if front and (front.get("placements") or front.get("marks")):
+                        _render_side(
+                            output_doc, src_doc, sheet_w, sheet_h,
+                            front, global_cfg, total_src_pages
+                        )
+
+                    # Render back side
+                    back = sheet_data.get("back")
+                    if back and (back.get("placements") or back.get("marks")):
+                        _render_side(
+                            output_doc, src_doc, sheet_w, sheet_h,
+                            back, global_cfg, total_src_pages
+                        )
 
             # Save output — tên file UNIQUE (uuid) để 2 job booklet đồng thời / nhiều
             # tab KHÔNG ghi đè cùng 1 file trong results/ (audit #C1). FileResponse trả
@@ -110,6 +151,8 @@ class PlanExecutor:
             # Cleanup
             src_doc.close()
             output_doc.close()
+            if temp_doc is not None:
+                temp_doc.close()
 
             logger.info(f"PlanExecutor: Done. Output at {output_path}")
             return os.path.abspath(output_path)
@@ -131,9 +174,18 @@ def _render_side(
     total_src_pages: int,
 ):
     """Render one side (front or back) of a press sheet using pikepdf."""
-
-    # Add a new blank page to the output
     out_page = output_doc.new_page(width=sheet_w, height=sheet_h)
+    _render_placements(out_page, src_doc, side_data, sheet_h, total_src_pages)
+
+
+def _render_placements(
+    out_page: pdf_lib.Page,
+    src_doc: pdf_lib.Document,
+    side_data: dict,
+    sheet_h: float,
+    total_src_pages: int,
+):
+    """Render source-page placements + marks onto an EXISTING output page."""
 
     placements = side_data.get("placements", [])
     marks = side_data.get("marks", [])

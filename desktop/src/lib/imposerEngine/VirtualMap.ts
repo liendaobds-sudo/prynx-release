@@ -25,20 +25,42 @@ export interface BindingMapResult {
 export const generateBindingMap = (
     effectivePageCount: number,
     bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount',
-    foliosize: number = 16
+    foliosize: number = 16,
+    blankPlacement: 'end' | 'center' = 'end'
 ): BindingMapResult => {
-    const paddedPageCount = bindingMode === 'flush_mount' 
-        ? Math.ceil(effectivePageCount / 2) * 2 
+    const paddedPageCount = bindingMode === 'flush_mount'
+        ? Math.ceil(effectivePageCount / 2) * 2
         : Math.ceil(effectivePageCount / 4) * 4;
-    const totalSheets = bindingMode === 'flush_mount' 
-        ? paddedPageCount / 2 
+    const totalSheets = bindingMode === 'flush_mount'
+        ? paddedPageCount / 2
         : paddedPageCount / 4;
     const sheets: VirtualSheet[] = [];
     let report = '';
 
+    // Map each 1-based logical reading slot → source page index (or null = blank padding).
+    // 'end'    : blanks go at the tail of the reading order (last pages / back cover).
+    // 'center' : blanks go at the innermost pages (physical center of the book), which is
+    //            the print-shop default so cover and early pages are never blank.
+    const blankCount = paddedPageCount - effectivePageCount;
+    const logicalToSrc: (number | null)[] = new Array(paddedPageCount);
+    if (blankPlacement === 'center' && blankCount > 0) {
+        const firstHalf = Math.ceil(effectivePageCount / 2);
+        let cursor = 0;
+        for (let i = 0; i < paddedPageCount; i++) {
+            if (i < firstHalf) logicalToSrc[i] = cursor++;
+            else if (i < firstHalf + blankCount) logicalToSrc[i] = null;
+            else logicalToSrc[i] = cursor++;
+        }
+    } else {
+        for (let i = 0; i < paddedPageCount; i++) {
+            logicalToSrc[i] = i < effectivePageCount ? i : null;
+        }
+    }
+
     const getSlot = (logical1Based: number): PageSlot => {
-        return { 
-            srcIndex: logical1Based <= effectivePageCount ? logical1Based - 1 : null,
+        const idx = logical1Based - 1;
+        return {
+            srcIndex: (idx >= 0 && idx < paddedPageCount) ? logicalToSrc[idx] : null,
             logicalIndex: logical1Based
         };
     };
