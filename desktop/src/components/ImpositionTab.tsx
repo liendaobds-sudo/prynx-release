@@ -1001,8 +1001,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [file, buildProcessContext, commitWorkingFile]);
 
     const handleStartBooklet = useCallback((config: BookletSettings) => {
-        // NOTE: For 'auto_100', sheet dimension will be dynamically resolved inside the Engine during Phase 2.
-        const actualFormsize = config.scaleMode === '100' ? 'auto_100' : config.formsize;
+        // Khổ output LUÔN bám khổ giấy đã chọn (không còn ép 'auto_100' cho chế độ
+        // "1 cuốn/tờ"). Khi chain_nup/fold pattern, phase-1 vẫn dựng spread trung gian
+        // ở khung auto_100 BÊN TRONG engine, còn tấm in cuối = đúng khổ này.
+        const actualFormsize = config.formsize;
         const isCustom = actualFormsize === 'custom' || actualFormsize.startsWith('custom_');
         const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[actualFormsize]?.w || config.customSheetWidth);
         const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[actualFormsize]?.h || config.customSheetHeight);

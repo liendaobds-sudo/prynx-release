@@ -577,6 +577,17 @@ export const imposePdfViaBackend = async (
     const geoContext = solveGeometry(maxSrcW, maxSrcH, pseudoSettings, {}, MM_TO_POINTS);
     const isSaddleOrThread = bMode === 'saddle' || bMode === 'thread';
 
+    // Output LUÔN = khổ giấy đã chọn. Nếu khổ trải (spread) lớn hơn khổ ở chế độ 1-up
+    // (non-phase2), THU nội dung cho vừa khổ thay vì để tràn/cắt mép — khổ tờ vẫn giữ
+    // đúng khổ chọn. Khổ ≥ spread → suggestedScaleFactor = 1.0 nên giữ nguyên 100%.
+    if (!_phase2 && geoContext.suggestedScaleFactor < 0.999) {
+        const sf = geoContext.suggestedScaleFactor;
+        geoContext.scaleFactor = sf;
+        geoContext.actualDrawnWidth = maxSrcW * sf;
+        geoContext.actualDrawnHeight = maxSrcH * sf;
+        setStatus(`Khổ giấy nhỏ hơn khổ trải — đã thu nội dung còn ${Math.round(sf * 100)}% để vừa khổ ${Math.round(reqSheetW)}×${Math.round(reqSheetH)}mm.`);
+    }
+
     let thicknessInput = sanitizeNumber(settings.paperThickness);
     if (thicknessInput > 10) thicknessInput = thicknessInput / 1000;
     const paperThicknessPt = thicknessInput * MM_TO_POINTS;

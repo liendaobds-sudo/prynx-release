@@ -89,8 +89,12 @@ export const solveGeometry = (
             requiredH += extraPt;
         }
 
-        const ratioW = innerSheetWidth / requiredW;
-        const ratioH = innerSheetHeight / requiredH;
+        // Fit check phải tính tới việc XOAY lưới 90°: khi isRotated, chiều rộng spread
+        // khớp với chiều CAO tờ và ngược lại (nếu không sẽ thu nhỏ thừa).
+        const fitW = isRotated ? innerSheetHeight : innerSheetWidth;
+        const fitH = isRotated ? innerSheetWidth : innerSheetHeight;
+        const ratioW = fitW / requiredW;
+        const ratioH = fitH / requiredH;
         const computedScale = Math.min(ratioW, ratioH, 1.0);
 
         scaleFactor = 1.0; // Default to 1.0 (do not implicitly scale)
