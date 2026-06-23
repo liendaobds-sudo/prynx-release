@@ -543,6 +543,7 @@ function rotatePlate90(plate: Phase2Plate, frameW: number, spreadW: number, spre
 }
 
 // ==================== MARKS SERIALIZER ====================
+// (dấu xén lấy từ trimBox thực của solvePageTransform — đồng bộ mép cắt)
 
 function serializeBookletMarks(
     context: GeometricContext,
