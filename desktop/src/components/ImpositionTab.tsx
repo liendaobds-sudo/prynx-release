@@ -1037,6 +1037,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             gutterMargin: config.gutterMargin,
             separateCover: config.separateCover,
             coverPageCount: config.coverPageCount,
+            blankPlacement: config.blankPlacement || 'end',
             pageOrder: viewerPageOrder,
             pageRotations: viewerPageRotations
         };
@@ -1048,7 +1049,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         const totalPages = viewerPageOrder ? viewerPageOrder.length : 0;
         const paddedPages = Math.ceil(totalPages / 4) * 4;
-        const mapResult = generateBindingMap(totalPages, (settings as any).bindingMode || 'saddle', effectiveFoliosize);
+        const mapResult = generateBindingMap(totalPages, (settings as any).bindingMode || 'saddle', effectiveFoliosize, (settings as any).blankPlacement || 'end');
 
         // Check if page sizes are consistent
         let sizesConsistent = true;

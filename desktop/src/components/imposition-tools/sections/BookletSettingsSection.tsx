@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * BookletSettingsSection — Booklet-specific settings UI.
  * 
@@ -28,6 +27,7 @@ export default function BookletSettingsSection() {
         gutterMargin: state.gutterMargin, setGutterMargin: state.setGutterMargin,
         separateCover: state.separateCover, setSeparateCover: state.setSeparateCover,
         coverPageCount: state.coverPageCount, setCoverPageCount: state.setCoverPageCount,
+        blankPlacement: state.blankPlacement, setBlankPlacement: state.setBlankPlacement,
         scaleMode: state.scaleMode, setScaleMode: state.setScaleMode,
         interleave: state.interleave, setInterleave: state.setInterleave,
         paperThickness: state.paperThickness, setPaperThickness: state.setPaperThickness,
@@ -63,9 +63,17 @@ export default function BookletSettingsSection() {
                     <div className="mt-1 p-3 flex items-center gap-3 rounded-lg bg-slate-50 dark:bg-zinc-800/40">
                         <label className="text-xs text-slate-600 dark:text-zinc-400">Số trang mỗi tép (Tay sách):</label>
                         <input
-                            type="number" step="4" min="4" value={s.foliosize} onChange={e => s.setFoliosize(Number(e.target.value))}
+                            type="number" step="4" min="4" value={s.foliosize}
+                            onChange={e => s.setFoliosize(Number(e.target.value))}
+                            onBlur={e => {
+                                // Tay sách bắt buộc là bội số của 4; tự làm tròn khi rời ô.
+                                const raw = Number(e.target.value);
+                                const snapped = Number.isFinite(raw) ? Math.max(4, Math.round(raw / 4) * 4) : 16;
+                                if (snapped !== s.foliosize) s.setFoliosize(snapped);
+                            }}
                             className="w-16 h-7 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500"
                         />
+                        <span className="text-[10px] text-slate-400">Bội số của 4</span>
                     </div>
                 )}
 
@@ -139,6 +147,7 @@ export default function BookletSettingsSection() {
                             options={[
                                 { value: '', title: '2-Up Classic (Mặc định)', desc: 'Nhân bản booklet 2-up lên khổ lớn. Không dùng sơ đồ gấp offset.' },
                                 ...(s.autoCatalog ? [{ value: 'auto', title: 'Tự động theo tay sách', desc: 'Tự chọn sơ đồ gấp phù hợp nhất cho từng tay sách (4p/8p/16p).' }] : []),
+                                { value: 'sig_4p_1up', title: 'Tay 4 Trang (1 Bộ, khổ lớn)', desc: 'In 1 bộ tự trở lật nhíp (Work & Tumble). Dành cho sách khổ lớn in trên kẽm nhỏ.' },
                                 { value: 'sig_4p_2up', title: 'Tay 4 Trang (Nhân bản 2-Up)', desc: 'Lưới 2×2 spreads (8 con/mặt). In 2 tay 4 trang trên 1 tờ kẽm.' },
                                 { value: 'sig_8p', title: 'Tay 8 Trang (Tự trở)', desc: 'Lưới 2×2 spreads (8 con/mặt). Tự trở lật ngang, 1 tờ kẽm = 1 tay 8.' },
                                 { value: 'sig_16p', title: 'Tay 16 Trang (In 2 mặt)', desc: 'Lưới 2×2 spreads (8 con/mặt). Tiêu chuẩn công nghiệp.' },
@@ -151,6 +160,36 @@ export default function BookletSettingsSection() {
 
             {/* ═══ FINE-TUNING (Interleave, Thickness, Bleed, Gap) ═══ */}
             <div className="flex flex-col gap-5 animate-in fade-in duration-200">
+                {/* Bù gáy (Creep / Xẹp giấy) — chỉ cho kiểu gấp lồng (saddle / thread), không áp cho offset (tay bế sau khi gấp) */}
+                {(s.signatureMode === 'saddle' || s.signatureMode === 'thread') && s.paperClassification !== 'offset' && (
+                    <div className="flex flex-col gap-2">
+                        <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">Độ dày giấy — Bù gáy (Creep)</label>
+                        <div className="flex items-center gap-3">
+                            <input
+                                type="number" step="0.01" min="0" value={s.paperThickness}
+                                onChange={e => s.setPaperThickness(Math.max(0, Number(e.target.value) || 0))}
+                                className="w-24 h-8 px-3 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500"
+                            />
+                            <span className="text-[10px] text-slate-400 leading-tight">
+                                mm/tờ. Đẩy nội dung tờ trong về gáy để bù xẹp giấy khi gấp lồng. <strong>0 = tắt</strong> (vd. giấy 80gsm ≈ 0.1).
+                            </span>
+                        </div>
+                    </div>
+                )}
+
+                {/* Vị trí trang trắng khi số trang lẻ (không bội số 4) */}
+                <div className="flex flex-col gap-2">
+                    <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">Vị trí trang trắng (khi trang lẻ)</label>
+                    <RichSelect
+                        value={s.blankPlacement}
+                        onChange={(v) => s.setBlankPlacement(v as 'end' | 'center')}
+                        options={[
+                            { value: 'end', title: 'Cuối sách (mặc định)', desc: 'Chèn trang trắng vào các trang cuối / bìa sau.' },
+                            { value: 'center', title: 'Giữa sách (ruột trong)', desc: 'Chèn trang trắng vào giữa cuốn (trong cùng) để bìa & trang đầu luôn có nội dung.' }
+                        ]}
+                    />
+                </div>
+
                 {/* Interleave */}
                 {!s.autoCatalog && s.paperClassification === 'offset' && (
                     <div className="flex flex-col gap-2 relative z-[40]">

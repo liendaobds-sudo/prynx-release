@@ -101,6 +101,7 @@ export interface BookletSettings {
     gutterMargin?: number;
     separateCover?: boolean;
     coverPageCount?: number;
+    blankPlacement?: 'end' | 'center';
     spawnNewTab: boolean;
 }
 

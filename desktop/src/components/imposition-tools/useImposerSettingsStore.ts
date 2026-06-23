@@ -132,6 +132,8 @@ export interface ImposerSettingsState {
     setSeparateCover: (v: boolean) => void;
     coverPageCount: number;
     setCoverPageCount: (v: number) => void;
+    blankPlacement: 'end' | 'center';
+    setBlankPlacement: (v: 'end' | 'center') => void;
     scaleMode: '100' | 'fit' | 'chain_nup' | 'cut_stack';
     setScaleMode: (v: '100' | 'fit' | 'chain_nup' | 'cut_stack') => void;
     interleave: 'normal' | 'all_fronts_first' | 'reverse_backs' | 'reverse_backs_180';
@@ -407,6 +409,8 @@ export const createImposerSettingsStore = () => createStore<ImposerSettingsState
             setSeparateCover: (v) => set({ separateCover: v }),
             coverPageCount: 4,
             setCoverPageCount: (v) => set({ coverPageCount: v }),
+            blankPlacement: 'end',
+            setBlankPlacement: (v) => set({ blankPlacement: v }),
             scaleMode: '100',
             setScaleMode: (v) => set({ scaleMode: v }),
             interleave: 'normal',
@@ -606,6 +610,7 @@ export const createImposerSettingsStore = () => createStore<ImposerSettingsState
                 autoCatalog: state.autoCatalog, catalogHasCover: state.catalogHasCover,
                 catalogMasterSigOverride: state.catalogMasterSigOverride, catalogRemainderPlacement: state.catalogRemainderPlacement,
                 gutterMargin: state.gutterMargin, separateCover: state.separateCover, coverPageCount: state.coverPageCount,
+                blankPlacement: state.blankPlacement,
                 toolProfiles: state.toolProfiles,
                 exportUniqueSheets: state.exportUniqueSheets, reportDisplay: state.reportDisplay,
                 customMaterials: state.customMaterials, reportMaterial: state.reportMaterial,

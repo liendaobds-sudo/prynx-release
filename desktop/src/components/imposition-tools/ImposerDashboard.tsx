@@ -519,6 +519,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 gutterMargin: (s.signatureMode === 'continuous' || s.signatureMode === 'thread') ? s.gutterMargin : undefined,
                 separateCover: s.separateCover && (s.signatureMode === 'continuous' || s.signatureMode === 'thread') ? true : undefined,
                 coverPageCount: s.separateCover ? s.coverPageCount : undefined,
+                blankPlacement: s.blankPlacement,
             });
         } else {
             let finalFormsize = s.formsize;
