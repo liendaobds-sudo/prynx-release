@@ -552,7 +552,7 @@ export const imposePdfViaBackend = async (
             const bMode = (settings as any).bindingMode || 'saddle';
             const mapResult = generateBindingMap(pageCount, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
     const virtualMap = mapResult.sheets;
-    const report = mapResult.report;
+    let report = mapResult.report;
 
     setStatus('Đang tính toán kích thước tự động...');
     let reqSheetW = sanitizeNumber(settings.sheetWidth);
@@ -576,6 +576,21 @@ export const imposePdfViaBackend = async (
 
     const geoContext = solveGeometry(maxSrcW, maxSrcH, pseudoSettings, {}, MM_TO_POINTS);
     const isSaddleOrThread = bMode === 'saddle' || bMode === 'thread';
+
+    // ── Booklet 1-up (non-phase2): GIỮ spread NẰM NGANG, 2 trang cạnh nhau. ──
+    // KHÔNG tự xoay 90° để "nhét" vào khổ dọc (gây xếp chồng + lệch + cắt như trước).
+    // KHÔNG tự co. Nếu khổ giấy nhỏ hơn khổ trải → CHỈ CẢNH BÁO, để người dùng tự
+    // chọn khổ lớn hơn hoặc xoay khổ giấy. (Theo yêu cầu: mọi trường hợp bám khổ chọn,
+    // khổ không đủ thì báo — không tự ý xử lý.)
+    if (!_phase2) {
+        geoContext.isRotated = false;
+        if (geoContext.needsScaleDown) {
+            const spreadWmm = Math.round((maxSrcW * 2) / MM_TO_POINTS);
+            const spreadHmm = Math.round(maxSrcH / MM_TO_POINTS);
+            const warn = `⚠ Khổ giấy ${Math.round(reqSheetW)}×${Math.round(reqSheetH)}mm nhỏ hơn khổ trải 2 trang ${spreadWmm}×${spreadHmm}mm → nội dung sẽ bị tràn/cắt mép. Hãy chọn khổ giấy ≥ ${spreadWmm}×${spreadHmm}mm (hoặc xoay khổ giấy cho phù hợp). Hệ thống KHÔNG tự co/xoay.`;
+            report = report ? `${report}\n${warn}` : warn;
+        }
+    }
 
     let thicknessInput = sanitizeNumber(settings.paperThickness);
     if (thicknessInput > 10) thicknessInput = thicknessInput / 1000;
