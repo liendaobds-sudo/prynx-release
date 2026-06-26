@@ -17,8 +17,8 @@ interface Props {
     selectedFieldIds?: string[];
     onSelectField?: (ids: string[]) => void;
     onBack?: () => void;
-    onSpawnTab?: (blob: Blob, name: string) => void;
-    onApplyResult?: (blob: Blob, name: string) => void;
+    onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
+    onApplyResult?: (blob: Blob, name: string, path?: string) => void;
     isActive?: boolean;
 }
 
@@ -183,11 +183,11 @@ export default function CoverNumberingTool({
             setStatus(`Đang đẩy lên máy chủ (${csvData.length} tờ in)...`);
             const jobId = await startVdpJobBackend(template, cloned, csvData);
             pollAbortRef.current = new AbortController();
-            const result = await pollVdpJob(jobId, setStatus, false, pollAbortRef.current.signal);
+            const result = await pollVdpJob(jobId, setStatus, true, pollAbortRef.current.signal);
             if (!result.blob) throw new Error('Không nhận được file kết quả.');
             const outName = `MecBia_${pdfFile.name}`;
-            if (spawnNewTab && onSpawnTab) { onSpawnTab(result.blob, outName); setStatus('Hoàn thành! Đã tạo tab mới.'); }
-            else if (onApplyResult) { onApplyResult(result.blob, outName); setStatus('Hoàn thành!'); }
+            if (spawnNewTab && onSpawnTab) { onSpawnTab(result.blob, outName, result.path ?? undefined); setStatus('Hoàn thành! Đã tạo tab mới.'); }
+            else if (onApplyResult) { onApplyResult(result.blob, outName, result.path ?? undefined); setStatus('Hoàn thành!'); }
         } catch (e: any) {
             setStatus('Lỗi: ' + (e?.message || String(e)));
         } finally {

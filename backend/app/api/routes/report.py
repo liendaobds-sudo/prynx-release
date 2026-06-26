@@ -23,6 +23,35 @@ from app.core.license_guard import require_license
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
+def _safe_watermark(pdf_path: str, license_info: dict | None) -> None:
+    """Nhúng stealth watermark (XMP + invisible text) vào PDF report xuất ra.
+
+    Non-blocking: mọi lỗi đều nuốt (report vẫn tải được). Bỏ qua khi không có
+    thông tin license (dev mode / thiếu credential). Đồng nhất với _safe_watermark
+    ở pdf_tools.py / edit.py để forensics phủ CẢ report phát hành ra ngoài.
+    """
+    try:
+        if not license_info:
+            return
+        lk = license_info.get("license_key", "")
+        hwid = license_info.get("hwid", "")
+        if not lk or lk == "DEV_MODE":
+            return
+        import tempfile
+        import pikepdf
+        from app.core.watermark import embed_watermark
+        with pikepdf.Pdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+            embed_watermark(pdf, lk, hwid)
+            # Ghi atomic: save ra temp cùng thư mục rồi os.replace, tránh hỏng
+            # output nếu process chết giữa chừng khi ghi đè in-place.
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(pdf_path) or ".")
+            os.close(fd)
+            pdf.save(tmp_path)
+        os.replace(tmp_path, pdf_path)
+    except Exception as e:  # noqa: BLE001 - watermark không bao giờ chặn luồng report
+        logger.error(f"Report watermark failed: {e}")
+
 # Try to register a Unicode font for Vietnamese text in PDF reports.
 # Priority: Bundled DejaVuSans (cross-platform) → Windows Arial → Helvetica (no Vietnamese)
 _FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts")
@@ -108,6 +137,10 @@ def download_pdf_report(job_id: str, db: Session = Depends(get_db), license_info
     
     if not report_path.exists():
         _generate_pdf_report(job, str(report_path))
+        # Đóng dấu bản quyền (stealth) lên report MỚI sinh — report là PDF có thể
+        # phát hành ra ngoài nên cần forensics như các output khác. Chỉ watermark
+        # khi tạo mới (bản cache đã được đóng dấu từ lần tạo đầu).
+        _safe_watermark(str(report_path), license_info)
         
     return FileResponse(
         path=report_path,

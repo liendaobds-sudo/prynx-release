@@ -18,7 +18,9 @@ def _draw_ponts_on_page(page, placements, pont_config, sheet_w, sheet_h, margin_
     p_size = pont_config.get('size', 5.0) * MM_TO_PTS
     p_thick = pont_config.get('thickness', 0.5) * MM_TO_PTS
     radius = p_size / 2
-    color = (0, 0, 0)
+    # Registration color (in trên MỌI kẽm) cho dấu định vị/ốc — không dùng RGB đen
+    # (RGB chỉ lên kẽm K, lệch hệ màu khi in tách màu).
+    color = (1, 1, 1, 1)
     
     # We do NOT use item_name from config if passed explicitly (because cut page has its own)
     if not item_name:

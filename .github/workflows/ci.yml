@@ -101,6 +101,60 @@ jobs:
       - name: pip-audit backend
         run: pip-audit -r backend/requirements.txt --progress-spinner off
 
+  security-guards:
+    name: Security Regression Guards
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Chặn TÁI PHÁT các lỗ fail-open / rò trinh sát đã từng vá.
+      # Mỗi check fail = một regression bảo mật → chặn merge vào main.
+
+      - name: DEV_MODE must default fail-closed (False)
+        run: |
+          if grep -Eq 'DEV_MODE:[[:space:]]*bool[[:space:]]*=[[:space:]]*True' backend/app/config.py; then
+            echo "ERROR: config.py DEV_MODE default is True (fail-open). Must be False; dev bật qua .env."
+            exit 1
+          fi
+          echo "OK: DEV_MODE default fail-closed."
+
+      - name: Updater signature verification must stay enabled (pubkey present)
+        run: |
+          if ! grep -Eq '"pubkey"[[:space:]]*:[[:space:]]*"[A-Za-z0-9+/=]{40,}"' desktop/src-tauri/tauri.conf.json; then
+            echo "ERROR: tauri.conf.json thiếu updater pubkey (non-empty). Update sẽ KHÔNG verify chữ ký."
+            exit 1
+          fi
+          echo "OK: updater pubkey present."
+
+      - name: Release config must create signed updater artifacts
+        run: |
+          if ! grep -Eq '"createUpdaterArtifacts"[[:space:]]*:[[:space:]]*true' desktop/src-tauri/tauri.release.conf.json; then
+            echo "ERROR: tauri.release.conf.json thiếu createUpdaterArtifacts=true → release không sinh .sig."
+            exit 1
+          fi
+          echo "OK: createUpdaterArtifacts enabled."
+
+      - name: CSP must not re-introduce external script / eval
+        run: |
+          if grep -Eiq 'cdnjs|unsafe-eval' desktop/src-tauri/tauri.conf.json; then
+            echo "ERROR: CSP chứa cdnjs hoặc unsafe-eval → mở lại bề mặt supply-chain/XSS."
+            exit 1
+          fi
+          echo "OK: CSP không có nguồn script ngoài/eval."
+
+      - name: Release sidecar spawn must enforce token + DEV_MODE=false
+        run: |
+          if ! grep -q 'PRYNX_ENFORCE_LICENSE_TOKEN", "true"' desktop/src-tauri/src/lib.rs; then
+            echo "ERROR: lib.rs không còn ép PRYNX_ENFORCE_LICENSE_TOKEN=true khi spawn sidecar."
+            exit 1
+          fi
+          if ! grep -q '"DEV_MODE", "false"' desktop/src-tauri/src/lib.rs; then
+            echo "ERROR: lib.rs không còn ép DEV_MODE=false khi spawn sidecar."
+            exit 1
+          fi
+          echo "OK: release spawn enforce token + DEV_MODE=false."
+
   release-integrity-gate:
     name: Release Integrity Gate
     runs-on: ubuntu-latest

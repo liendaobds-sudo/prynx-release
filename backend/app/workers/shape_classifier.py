@@ -77,18 +77,6 @@ def _sample_bezier_contour(path_items) -> List[Tuple[float, float]]:
                 for t_i in range(1, interp_steps):
                     tt = t_i / interp_steps
                     samples.append((p1x + (p2x - p1x) * tt, p1y + (p2y - p1y) * tt))
-        elif item[0] == 're':
-            r = item[1]
-            pts = [(r.tl.x, r.tl.y), (r.tr.x, r.tr.y), (r.br.x, r.br.y), (r.bl.x, r.bl.y)]
-            for i in range(4):
-                p1x, p1y = pts[i]
-                p2x, p2y = pts[(i+1)%4]
-                samples.append((p1x, p1y))
-                seg_len = math.sqrt((p2x - p1x)**2 + (p2y - p1y)**2)
-                interp_steps = max(8, int(math.ceil(seg_len / 3)))
-                for t_i in range(1, interp_steps):
-                    tt = t_i / interp_steps
-                    samples.append((p1x + (p2x - p1x) * tt, p1y + (p2y - p1y) * tt))
     return samples
 
 
@@ -168,19 +156,6 @@ def _extract_straight_edges(path_items, tolerance=1e-4):
         elif item[0] == 'qu':
             q = item[1]
             pts = [q.ul, q.ur, q.lr, q.ll]
-            for i in range(4):
-                p1, p2 = pts[i], pts[(i+1)%4]
-                dx, dy = p2.x - p1.x, p2.y - p1.y
-                length = math.sqrt(dx*dx + dy*dy)
-                if length > tolerance:
-                    edges.append({
-                        'dx': dx, 'dy': dy, 'length': length,
-                        'p1': (p1.x, p1.y), 'p2': (p2.x, p2.y)
-                    })
-                    total_length += length
-        elif item[0] == 're':
-            r = item[1]
-            pts = [r.tl, r.tr, r.br, r.bl]
             for i in range(4):
                 p1, p2 = pts[i], pts[(i+1)%4]
                 dx, dy = p2.x - p1.x, p2.y - p1.y

@@ -6,6 +6,7 @@
 import React, { useState, Suspense, lazy, Component, ErrorInfo, ReactNode } from 'react';
 import DielineGallery from './DielineGallery';
 import ParamPanel from './ParamPanel';
+import MockupPanel from './MockupPanel';
 import DielineCanvas2D from './DielineCanvas2D';
 import NestingPanel from './NestingPanel';
 import NestingCanvas from './NestingCanvas';
@@ -45,7 +46,7 @@ class Scene3DErrorBoundary extends Component<{ children: ReactNode }, { hasError
 
 export default function DielineTool() {
     const [view, setView] = useState<'gallery' | 'editor'>('gallery');
-    const [activeTab, setActiveTab] = useState<'2d' | '3d' | 'nesting'>('2d');
+    const [activeTab, setActiveTab] = useState<'2d' | '3d' | 'split' | 'nesting'>('2d');
     const { dieline, nestingResult, nestingConfig, setParam } = useBoxStore();
 
     // User selects a box type from the gallery → switch to editor
@@ -68,24 +69,17 @@ export default function DielineTool() {
         <main className="dieline-tool">
             {/* Left Panel — Params or Nesting Config */}
             <aside className="dt-sidebar">
-                <div className="dt-sidebar-header">
-                    <div className="dt-sidebar-header-row">
-                        <button
-                            className="dt-back-btn"
-                            onClick={() => setView('gallery')}
-                            title="Quay lại chọn loại hộp"
-                        >
-                            ← Chọn lại
-                        </button>
-                    </div>
-                    <h1 className="dt-app-title">
-                        <span className="dt-title-icon">📦</span>
-                        Khuôn bế Bao bì
-                    </h1>
-                    <p className="dt-app-subtitle">Dieline Generator — Tham số</p>
-                </div>
                 <div className="dt-sidebar-scroll">
-                    {activeTab === 'nesting' ? <NestingPanel /> : <ParamPanel />}
+                    {activeTab === 'nesting' ? (
+                        <NestingPanel />
+                    ) : activeTab === '3d' || activeTab === 'split' ? (
+                        <>
+                            <ParamPanel onBack={() => setView('gallery')} />
+                            <MockupPanel />
+                        </>
+                    ) : (
+                        <ParamPanel onBack={() => setView('gallery')} />
+                    )}
                 </div>
             </aside>
 
@@ -108,13 +102,21 @@ export default function DielineTool() {
                         Mô phỏng 3D
                     </button>
                     <button
+                        className={`dt-tab ${activeTab === 'split' ? 'active' : ''}`}
+                        onClick={() => setActiveTab('split')}
+                        title="Xem đồng thời bản vẽ 2D và mô phỏng 3D"
+                    >
+                        <span className="dt-tab-icon">🔲</span>
+                        Chia đôi
+                    </button>
+                    <button
                         className={`dt-tab ${activeTab === 'nesting' ? 'active' : ''}`}
                         onClick={() => setActiveTab('nesting')}
                     >
                         <span className="dt-tab-icon">📋</span>
                         Xếp khuôn
                     </button>
-                    {activeTab === '2d' && dieline && (
+                    {(activeTab === '2d' || activeTab === 'split') && dieline && (
                         <button
                             className="dt-export-tab"
                             onClick={() => downloadPDF(dieline)}
@@ -139,6 +141,21 @@ export default function DielineTool() {
                         <DielineCanvas2D />
                     ) : activeTab === 'nesting' ? (
                         <NestingCanvas />
+                    ) : activeTab === 'split' ? (
+                        <DielineCanvas2D
+                            rightSlot={
+                                <Scene3DErrorBoundary>
+                                    <Suspense fallback={
+                                        <div className="dt-scene-loading">
+                                            <div className="dt-loading-spinner" />
+                                            <p>Đang tải mô phỏng 3D...</p>
+                                        </div>
+                                    }>
+                                        <DielineScene3D />
+                                    </Suspense>
+                                </Scene3DErrorBoundary>
+                            }
+                        />
                     ) : (
                         <Scene3DErrorBoundary>
                             <Suspense fallback={

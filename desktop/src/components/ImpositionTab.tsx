@@ -22,8 +22,9 @@ import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
 import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
 import { getApiUrl, uploadPDF, startVdpJobBackend, pollVdpJob, authenticatedFetch } from '../lib/api';
 import { recipeRecorder } from '../lib/recipe/RecipeRecorder';
-import { isOutputFile } from '../lib/constants';
+import { isOutputFile, isImposedOutputFile } from '../lib/constants';
 import { getFileArrayBuffer, detectColorSpace } from '../lib/utils';
+import { saveVdpTemplate, loadVdpTemplate } from '../lib/vdpTemplate';
 import OutputPreviewTab, { type PlateOverlay } from './OutputPreviewTab';
 import RecipeRecordControl from './recipe/RecipeRecordControl';
 import RecipePanel from './recipe/RecipePanel';
@@ -381,6 +382,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     // Routing panel-PHẢI: quyết định tường minh qua hàm thuần (test ở toolPanel.test.ts).
     const rightPanelKind = resolveRightPanel(activeDashboardTool, isObjectEditMode);
+
+    // ─── Lưu / Tải MẪU bố cục VDP (dùng cho datamerge / numbering / cover) ───
+    const isVdpPanel = rightPanelKind === 'datamerge' || rightPanelKind === 'numbering' || rightPanelKind === 'cover_numbering';
+    const handleSaveVdpTemplate = () => saveVdpTemplate(vdpFields, file?.name, (m) => toast.info(m));
+    const handleLoadVdpTemplate = async () => {
+        const fields = await loadVdpTemplate((m) => toast.info(m));
+        if (fields) {
+            setVdpFields(fields);
+            setSelectedVdpFieldIds([]);
+        }
+    };
 
     const isDirty = useMemo(() => {
         if (isSaved) return false;
@@ -1317,27 +1329,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }
         }
 
-        // Bake VDP Fields into the PDF (giữ nguyên tên file gốc, không thêm tiền tố).
-        if (!isGeneratedResult && vdpFields && vdpFields.length > 0 && file) {
-            setIsProcessing(true);
-            setProcessStatus('Đang nhúng các trường VDP vào file...');
-            try {
-                const currentFile = new File([targetBlob as any], targetName, { type: 'application/pdf' });
-                const jobId = await startVdpJobBackend(currentFile, vdpFields, []);
-                const vdpResult = await pollVdpJob(jobId, (msg) => setProcessStatus(msg));
-                const vdpBlob = vdpResult.blob;
-                if (vdpBlob) {
-                    targetBlob = vdpBlob;
-                    didBake = true;
-                }
-            } catch (err: any) {
-                setError('Lỗi khi nhúng VDP: ' + err.message);
-                return;
-            } finally {
-                setIsProcessing(false);
-                setProcessStatus('');
-            }
-        }
+        // ─── KHÔNG nướng (bake) VDP khi Lưu ───
+        // Lưu chỉ lưu tài liệu hiện tại; field VDP là lớp phủ ĐANG SOẠN → giữ nguyên
+        // trên canvas để tiếp tục sửa / chạy merge. Muốn xuất bản có field thì dùng
+        // nút "Chạy/Generate". (Trước đây Lưu chạy job VDP với data rỗng → lỗi
+        // "Data array is empty" và xoá mất field sau khi lưu.)
 
         // Cập nhật in-memory sau khi lưu thành công: bake blob mới (giữ TÊN GỐC),
         // xoá visual edits/VDP đã bake, đánh dấu ĐÃ LƯU (không còn dirty).
@@ -1353,8 +1349,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setViewerPageOrder(undefined);
             setViewerPageRotations(undefined);
             setViewerDirty(false);
-            setVdpFields([]);
-            setSelectedVdpFieldIds([]);
+            // KHÔNG xoá vdpFields/selection ở đây: giữ lớp phủ field VDP để người dùng
+            // tiếp tục soạn/chạy merge sau khi lưu (tránh "lưu xong mất placeholder").
             setSelectionFileId('');
             setHiddenObjectIds([]);
             setLockedObjectIds([]);
@@ -1366,7 +1362,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 const { writeFile } = await import('@tauri-apps/plugin-fs');
                 
                 let path: string | null = null;
-                if (!isSaveAs && (file as any).path) {
+                // File kết quả sinh sẵn (VDP/batch) nằm ở thư mục tạm + blob in-memory chỉ
+                // là placeholder → KHÔNG ghi đè vào temp, luôn hỏi vị trí lưu.
+                if (!isSaveAs && (file as any).path && !isGeneratedResult) {
                     path = (file as any).path; // Overwrite original
                 } else {
                     path = await save({
@@ -1377,9 +1375,27 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 }
 
                 if (path) {
-                    const arrBuffer = await targetBlob.arrayBuffer();
+                    // Bytes THẬT để ghi: nếu KHÔNG bake và file có path trên đĩa (kết quả VDP
+                    // có blob in-memory chỉ là placeholder 5 byte, hoặc file mở từ OS có body
+                    // rỗng) → đọc bytes thật từ đĩa qua lệnh Rust (không vướng fs scope).
+                    // Ngược lại dùng blob đã bake (edits/VDP nhúng).
+                    let writeData: Uint8Array;
+                    if (!didBake && (file as any).path) {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        const resp: any = await invoke('read_system_file', { path: (file as any).path });
+                        writeData = resp instanceof Uint8Array ? resp : new Uint8Array(resp);
+                    } else {
+                        writeData = new Uint8Array(await targetBlob.arrayBuffer());
+                    }
+                    // Lưu đè đúng file nguồn mà không có gì để bake → đã là chính nó, bỏ qua.
+                    if (path === (file as any).path && !didBake) {
+                        const fileName = path.split(/[\\/]/).pop() || targetName;
+                        setIsSaved(true);
+                        onTitleChange?.(fileName);
+                        return;
+                    }
                     try {
-                        await writeFile(path, new Uint8Array(arrBuffer));
+                        await writeFile(path, writeData);
                         const fileName = path.split(/[\\/]/).pop() || targetName;
                         if (didBake) _bakeInMemory(targetBlob, fileName, path);
                         setIsSaved(true);
@@ -1392,7 +1408,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 title: 'Select save location (Original path restricted)'
                             });
                             if (fallbackPath) {
-                                await writeFile(fallbackPath, new Uint8Array(arrBuffer));
+                                await writeFile(fallbackPath, writeData);
                                 const fileName = fallbackPath.split(/[\\/]/).pop() || targetName;
                                 if (didBake) _bakeInMemory(targetBlob, fileName, fallbackPath);
                                 setIsSaved(true);
@@ -1499,7 +1515,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     //#region Render
     return (
-        <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1c23]">
+        <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
             {phase === 'upload' && (
                 <div className="flex-1 flex flex-col items-center justify-center py-12 px-6">
                     <div className="text-center mb-10 animate-fade-in">
@@ -1700,7 +1716,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 onOpenPanel={() => setShowRecipePanel(true)}
                                                 sourcePageCount={viewerNumPages}
                                             />
-                                            {isOutputFile(file.name) && (
+                                            {isImposedOutputFile(file.name) && (
                                                 <button
                                                     onClick={() => setShowCutExport(true)}
                                                     className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
@@ -1741,7 +1757,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         {isSidebarOpen && (
                                             <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-200 dark:border-zinc-800">
                                                 {/* Sidebar Header */}
-                                                <div className="px-4 h-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-slate-100 dark:bg-[#1a1c23] shrink-0 shadow-sm relative z-10">
+                                                <div className="px-4 h-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-slate-100 dark:bg-[#1a1a1a] shrink-0 shadow-sm relative z-10">
                                                     <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-1.5 uppercase tracking-wide">
                                                         {activeDashboardTool === 'bgremover' ? (
                                                             <button 
@@ -1760,6 +1776,28 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         )}
                                                     </h2>
                                                     <div className="flex items-center gap-1">
+                                                        {isVdpPanel && (
+                                                            <>
+                                                                <button
+                                                                    onClick={handleSaveVdpTemplate}
+                                                                    disabled={!vdpFields || vdpFields.length === 0}
+                                                                    className="w-7 h-7 flex items-center justify-center hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                    title="Lưu mẫu bố cục field (.json)"
+                                                                    aria-label="Lưu mẫu bố cục"
+                                                                >
+                                                                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                                                </button>
+                                                                <button
+                                                                    onClick={handleLoadVdpTemplate}
+                                                                    className="w-7 h-7 flex items-center justify-center hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 rounded transition-colors"
+                                                                    title="Tải mẫu bố cục field (.json)"
+                                                                    aria-label="Tải mẫu bố cục"
+                                                                >
+                                                                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1"/><polyline points="8 12 12 16 16 12"/><line x1="12" y1="4" x2="12" y2="16"/></svg>
+                                                                </button>
+                                                                <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700 mx-0.5" />
+                                                            </>
+                                                        )}
                                                         {(activeDashboardTool === 'booklet' || activeDashboardTool === 'nup' || activeDashboardTool === 'sticker_imposer') && (
                                                             <button
                                                                 onClick={() => window.dispatchEvent(new CustomEvent('open-preset-modal'))}

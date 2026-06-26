@@ -153,6 +153,15 @@ fn verify_token_with_pubkey(token: &str, hwid: &str, license_key: &str, pub_b64:
     let exp = payload.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
     if exp < now { return Err("license token expired".to_string()); }
 
+    // V3 (đối xứng backend license_guard.py): cận trên tuổi thọ token — chống replay token
+    // cũ bằng cách LÙI đồng hồ hệ thống. Token TTL 2h nên (exp - now) hợp lệ luôn ≤ TTL;
+    // vượt cận (TTL + dư + skew) ⇒ đồng hồ đã bị lùi xa lúc cấp token. Không phụ thuộc file
+    // trên đĩa nên không thể vô hiệu bằng cách xoá state.
+    const MAX_TOKEN_LIFETIME_SECS: i64 = 3 * 60 * 60 + 300; // TTL 2h + 1h dư + skew 5'
+    if exp - now > MAX_TOKEN_LIFETIME_SECS {
+        return Err("license token lifetime implausible (clock rollback?)".to_string());
+    }
+
     // DS-4: field "m" (machine id) BẮT BUỘC — đối xứng với backend license_guard.py:248.
     // Token thiếu "m" KHÔNG được pass (chống token vạn năng dùng mọi máy).
     let m = payload.get("m").and_then(|v| v.as_str())

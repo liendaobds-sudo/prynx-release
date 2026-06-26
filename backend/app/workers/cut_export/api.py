@@ -1,13 +1,14 @@
 """
-api.py — FastAPI router cho cut_export (ĐỘC LẬP, CHƯA đăng ký vào app).
+api.py — FastAPI router cho cut_export.
 
-Requirements: 6.2, 7.1. Để kích hoạt, thêm 1 dòng vào nơi gắn router của app
-(task 11.2 — phần CHẠM FILE CÓ SẴN, cần duyệt diff):
+Requirements: 6.2, 7.1. Router ĐÃ được đăng ký vào app tại
+backend/app/main.py:
 
     from app.workers.cut_export.api import router as cut_export_router
-    app.include_router(cut_export_router)
+    app.include_router(cut_export_router, prefix="/api", tags=["Cut Export"])
 
-Router KHÔNG tự gắn — import file này không ảnh hưởng app hiện tại.
+⟹ Các endpoint sống dưới tiền tố /api/imposition/* (vd /api/imposition/cut-export).
+Mọi route yêu cầu license qua Depends(require_license).
 """
 
 from __future__ import annotations

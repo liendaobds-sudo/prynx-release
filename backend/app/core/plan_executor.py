@@ -45,8 +45,11 @@ class PlanExecutor:
         try:
             version = instruction_json.get("version", "1.0")
             src_path = source_pdf_path or instruction_json["source_pdf_path"]
-            output_dir = instruction_json.get("output_dir", "results")
-            global_cfg = instruction_json["global"]
+            # Ép TUYỆT ĐỐI: output_path được trả về frontend và Rust native renderer
+            # (cwd khác backend) mở để hiển thị. Mặc định "results" tương đối sẽ gây
+            # "cannot find path" ở Rust. Mặc định dùng settings.RESULTS_DIR (đã tuyệt đối).
+            from app.config import settings as _settings
+            output_dir = os.path.abspath(instruction_json.get("output_dir") or _settings.RESULTS_DIR)
             sheets = instruction_json["sheets"]
 
             if not os.path.exists(src_path):
@@ -114,7 +117,7 @@ class PlanExecutor:
                     if front and (front.get("placements") or front.get("marks")):
                         _render_side(
                             output_doc, src_doc, sheet_w, sheet_h,
-                            front, global_cfg, total_src_pages
+                            front, total_src_pages
                         )
 
                     # Render back side
@@ -122,7 +125,7 @@ class PlanExecutor:
                     if back and (back.get("placements") or back.get("marks")):
                         _render_side(
                             output_doc, src_doc, sheet_w, sheet_h,
-                            back, global_cfg, total_src_pages
+                            back, total_src_pages
                         )
 
             # Save output — tên file UNIQUE (uuid) để 2 job booklet đồng thời / nhiều
@@ -141,10 +144,15 @@ class PlanExecutor:
             if _wm_license:
                 try:
                     import pikepdf
+                    import os as _os, tempfile as _tempfile
                     from app.core.watermark import embed_watermark
                     with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as _wm_pdf:
                         embed_watermark(_wm_pdf, _wm_license, _wm_hwid)
-                        _wm_pdf.save(output_path)
+                        # Ghi atomic: temp cùng thư mục rồi os.replace.
+                        _fd, _tmp = _tempfile.mkstemp(suffix=".pdf", dir=_os.path.dirname(output_path) or ".")
+                        _os.close(_fd)
+                        _wm_pdf.save(_tmp)
+                    _os.replace(_tmp, output_path)
                 except Exception as _wm_e:
                     logger.warning(f"PlanExecutor watermark failed: {_wm_e}")
 
@@ -170,7 +178,6 @@ def _render_side(
     sheet_w: float,
     sheet_h: float,
     side_data: dict,
-    global_cfg: dict,
     total_src_pages: int,
 ):
     """Render one side (front or back) of a press sheet using pikepdf."""
@@ -203,11 +210,16 @@ def _render_placements(
         native_angle = placement.get("native_angle", 0)
         clip_data = placement.get("clip")
 
-        # Get source page dimensions (TrimBox > CropBox > MediaBox)
+        # Get source page dimensions.
+        # PARITY (audit 🔴): /imposition/pdf-meta báo kích thước theo **MediaBox**
+        # (imposition.py get_pdf_meta) để giữ phần bleed; TS Planner dựng toàn bộ
+        # hình học/scale theo kích thước đó. Ở đây PHẢI dùng CÙNG MediaBox, nếu không
+        # PDF in sẵn (TrimBox < MediaBox) sẽ bị vẽ nhỏ hơn kế hoạch → lệch gáy/dấu xén
+        # và preview ≠ output. Thứ tự: MediaBox > CropBox > TrimBox > rect.
         src_page = src_doc[src_page_idx]
-        
-        # In pdf_wrapper, Page has trimbox, cropbox properties
-        src_box = src_page.trimbox or src_page.cropbox or src_page.mediabox or src_page.rect
+
+        # In pdf_wrapper, Page has mediabox, cropbox, trimbox properties
+        src_box = src_page.mediabox or src_page.cropbox or src_page.trimbox or src_page.rect
         src_w = src_box.width
         src_h = src_box.height
         

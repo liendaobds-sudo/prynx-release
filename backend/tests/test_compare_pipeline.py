@@ -84,3 +84,81 @@ def test_summary_reflects_single_changed_page(tmp_path):
     assert s["pages_fail"] + s["pages_warning"] == 1   # đúng 1 trang có vấn đề
     assert s["pages_pass"] == 2
     assert s["overall_status"] in ("FAIL", "WARNING")
+
+
+# ── Căn trang khi LỆCH SỐ TRANG (audit so-sánh #4) ──
+
+def _draw_kind(d, kind):
+    """Vẽ 1 trang theo 'kind' (0/1/2 = 3 mẫu khác nhau rõ rệt; 'X' = trang lạ)."""
+    from app.workers import pdf_wrapper as pdf_lib
+    pg = d.new_page(width=300, height=400)
+    sh = pg.new_shape()
+    boxes = {
+        0: (20, 20, 140, 120),      # góc trên-trái
+        1: (160, 20, 280, 120),     # góc trên-phải
+        2: (20, 280, 280, 380),     # dải dưới
+        "X": (120, 160, 200, 240),  # ô giữa (trang chèn, khác hẳn)
+    }
+    x0, y0, x1, y1 = boxes[kind]
+    sh.draw_rect(pdf_lib.Rect(x0, y0, x1, y1))
+    sh.finish(color=(0, 0, 0), fill=(0, 0, 0))
+    sh.commit()
+
+
+def _mkpdf_kinds(path, kinds):
+    import io as _io
+    from app.workers import pdf_wrapper as pdf_lib
+    d = pdf_lib.open()
+    for k in kinds:
+        _draw_kind(d, k)
+    buf = _io.BytesIO(); d.save(buf); d.close()
+    open(path, "wb").write(buf.getvalue())
+
+
+def _run_pipeline_files(tmp_path, kinds_a, kinds_b):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.database import Base
+    from app.models.job import UploadedFile, ComparisonJob, PageResult
+    from app.core.comparison_engine import run_comparison_pipeline
+
+    pa = str(tmp_path / "A.pdf"); pb = str(tmp_path / "B.pdf")
+    _mkpdf_kinds(pa, kinds_a)
+    _mkpdf_kinds(pb, kinds_b)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'cmp2.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        fa = UploadedFile(filename="A.pdf", original_name="A.pdf", file_path=pa, page_count=len(kinds_a))
+        fb = UploadedFile(filename="B.pdf", original_name="B.pdf", file_path=pb, page_count=len(kinds_b))
+        db.add(fa); db.add(fb); db.commit(); db.refresh(fa); db.refresh(fb)
+        job = ComparisonJob(file_a_id=fa.id, file_b_id=fb.id,
+                            config={"comparison_mode": "full", "tolerance": "NORMAL", "dpi": 100})
+        db.add(job); db.commit(); db.refresh(job)
+        jid = job.id
+        run_comparison_pipeline(jid, db)
+        results = db.query(PageResult).filter(PageResult.job_id == jid).order_by(PageResult.page_number).all()
+        job = db.query(ComparisonJob).filter(ComparisonJob.id == jid).first()
+        return job, {r.page_number: r for r in results}
+    finally:
+        db.close()
+
+
+def test_inserted_page_does_not_cascade_false_diffs(tmp_path):
+    """B chèn thêm 1 trang lạ ở giữa → các trang khớp vẫn SẠCH (không cascade),
+    chỉ trang chèn bị báo 'được THÊM'. Trước khi có căn trang: mọi trang sau điểm
+    chèn đều báo khác biệt giả."""
+    # A: 3 mẫu ; B: chèn trang 'X' vào sau mẫu 0 → [0, X, 1, 2]
+    job, pages = _run_pipeline_files(tmp_path, [0, 1, 2], [0, "X", 1, 2])
+    assert job.status == "completed"
+    assert len(pages) == 4
+
+    # Thứ tự căn: (0,0)=sạch, (None,1)=X thêm, (1,2)=sạch, (2,3)=sạch
+    assert pages[1].diff_count == 0, "Mẫu 0 phải khớp sạch"
+    assert pages[3].diff_count == 0, "Mẫu 1 phải khớp sạch (không bị lệch do trang chèn)"
+    assert pages[4].diff_count == 0, "Mẫu 2 phải khớp sạch (không cascade)"
+
+    added = pages[2]
+    assert added.status == "fail"
+    assert "THÊM" in added.diff_regions[0]["description"]

@@ -240,7 +240,7 @@ export default function UpscaleTool({ pdfFile, onFileFixed }: Props) {
                 <select
                     value={scaleFactor}
                     onChange={(e) => setScaleFactor(parseInt(e.target.value) as 2 | 4)}
-                    className="w-full h-10 mt-1 bg-white dark:bg-[#2d3748] border border-slate-200 dark:border-white/10 rounded-lg px-3 text-[13px] font-medium text-slate-700 dark:text-zinc-200 outline-none"
+                    className="w-full h-10 mt-1 bg-white dark:bg-[#27272a] border border-slate-200 dark:border-white/10 rounded-lg px-3 text-[13px] font-medium text-slate-700 dark:text-zinc-200 outline-none"
                 >
                     <option value={2}>Gấp 2 lần (2x)</option>
                     <option value={4}>Gấp 4 lần (4x)</option>

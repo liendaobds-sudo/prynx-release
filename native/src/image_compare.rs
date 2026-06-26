@@ -49,7 +49,7 @@ pub fn fast_diff_mask_gray<'py>(
         });
     }
     
-    Ok(result.into_pyarray_bound(py))
+    Ok(result.into_pyarray(py))
 }
 
 pub fn register_module(m: &Bound<'_, PyModule>) -> PyResult<()> {

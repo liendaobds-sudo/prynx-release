@@ -68,22 +68,32 @@ interface ToolNumberInputProps {
     onChange: (val: number) => void;
     suffix?: string;
     step?: number;
+    min?: number;
+    max?: number;
     className?: string;
 }
 
-export const ToolNumberInput = ({ label, value, onChange, suffix, step = 1, className = '' }: ToolNumberInputProps) => (
+export const ToolNumberInput = ({ label, value, onChange, suffix, step = 1, min, max, className = '' }: ToolNumberInputProps) => {
+    const clamp = (v: number) => {
+        let r = v;
+        if (typeof min === 'number' && r < min) r = min;
+        if (typeof max === 'number' && r > max) r = max;
+        return r;
+    };
+    return (
     <div className={className}>
         <span className="text-[11px] font-medium text-slate-500 block mb-1">{label}</span>
         <div className="flex items-center gap-1.5">
             <input 
-                type="number" step={step} value={value}
-                onChange={e => onChange(parseFloat(e.target.value) || 0)}
+                type="number" step={step} min={min} max={max} value={value}
+                onChange={e => onChange(clamp(parseFloat(e.target.value) || 0))}
                 className="flex-1 min-w-0 h-8 px-2.5 text-[12px] font-semibold text-center bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/20 transition-all" 
             />
             {suffix && <span className="text-[11px] font-medium text-slate-400 shrink-0">{suffix}</span>}
         </div>
     </div>
-);
+    );
+};
 
 interface ToolWarningProps {
     title: string;

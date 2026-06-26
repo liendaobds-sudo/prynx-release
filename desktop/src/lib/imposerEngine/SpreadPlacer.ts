@@ -2,7 +2,7 @@
 // Xếp booklet spreads lên tờ kẽm offset theo SpreadFoldPattern.
 // Thay thế OffsetRenderer.ts — chỉ xử lý bước 2 (step & repeat theo fold pattern).
 
-import { PDFDocument, rgb, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees, StandardFonts } from 'pdf-lib';
+import { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees, StandardFonts } from 'pdf-lib';
 import { SpreadFoldPattern } from './FoldPatterns';
 import { OffsetSettings } from './SettingsTypes';
 import { drawRegistrationMarks, drawColorBar, drawPlateLabel, drawCenterMarks, drawCollationMark, drawStarTarget, drawSideIndicator, drawFolioMarks } from './MarksRenderer';
@@ -19,7 +19,7 @@ const drawTrimMarks = (
     omitBottomVert: boolean = false, omitTopVert: boolean = false,
     omitLeftHoriz: boolean = false, omitRightHoriz: boolean = false
 ) => {
-    const color = rgb(0, 0, 0);
+    const color = cmyk(1, 1, 1, 1); // Registration (in trên mọi kẽm), không dùng RGB
     const draw = (x1: number, y1: number, x2: number, y2: number) => {
         page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: markThick, color });
     };
@@ -47,8 +47,8 @@ const drawFoldMarks = (
     totalW: number, totalH: number, markLen: number, markOff: number, markThick: number,
     gapXPt: number, gapYPt: number, isEven: boolean
 ) => {
-    const colorFold = rgb(1, 0, 0); // Red for fold marks
-    const colorSlit = rgb(0, 0, 0); // Black for slit/division marks
+    const colorFold = cmyk(0, 1, 1, 0); // Đỏ (CMYK) cho dấu gấp
+    const colorSlit = cmyk(1, 1, 1, 1); // Registration cho dấu xẻ/chia
     const draw = (x1: number, y1: number, x2: number, y2: number, color: any) => {
         page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: markThick, color });
     };
@@ -259,7 +259,7 @@ export async function placeSpreadsByFoldPattern(
                     outputPage.drawRectangle({
                         x: cellX, y: cellY,
                         width: spreadW, height: spreadH,
-                        color: rgb(1, 1, 1),
+                        color: cmyk(0, 0, 0, 0),
                     });
                     continue;
                 }
@@ -308,6 +308,17 @@ export async function placeSpreadsByFoldPattern(
 
             // Marks (Fold and Trim per column)
             if (showTrim) {
+                // Clustered (Hút sát gáy): các đường bên trong là GẤP/XẺ, chỉ cần dấu xén
+                // ở 4 GÓC NGOÀI của cả khối tay sách. (Even mode đã vẽ dấu xén từng spread
+                // trong vòng lặp ở trên.) Trước đây clustered KHÔNG vẽ bộ này → mất dấu xén.
+                if (!isEven) {
+                    drawTrimMarks(
+                        outputPage,
+                        gridOriginX + bleedPt, gridOriginY + bleedPt,
+                        totalGridW - 2 * bleedPt, totalGridH - 2 * bleedPt,
+                        markLenPt, markOffPt, markThickPt
+                    );
+                }
                 // Draw Red Fold & Black Slit Marks
                 drawFoldMarks(
                     outputPage, gridOriginX, gridOriginY,

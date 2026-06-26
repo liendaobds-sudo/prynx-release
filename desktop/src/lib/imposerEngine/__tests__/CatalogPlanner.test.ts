@@ -9,8 +9,7 @@
  * - Page allocation completeness
  */
 import { describe, it, expect } from 'vitest';
-import { planCatalog, verifyCatalogPlan, planCatalogFull, type PlanConfig, type PlateJob } from '../CatalogPlanner';
-import type { ImpositionInput } from '../ImpositionTypes';
+import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../CatalogPlanner';
 
 // ─── Helper ─────────────────────────────────────────────────────────────────
 
@@ -274,95 +273,5 @@ describe('verifyCatalogPlan — Verification', () => {
             const errors = verifyCatalogPlan(config, result);
             expect(errors).toHaveLength(0);
         }
-    });
-});
-
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  planCatalogFull() — Full Spec Engine
-// ═══════════════════════════════════════════════════════════════════════════
-
-function makeInput(totalPages: number, overrides: Partial<ImpositionInput> = {}): ImpositionInput {
-    return {
-        total_pages_physical: totalPages,
-        numbering_mode: 'includes_cover',
-        cover_mode: 'separate_stock',
-        cover_pages: 4,
-        quantity_books: 1000,
-        spoilage_policy: { method: 'flat', default_rate: 0.05 },
-        preferred_signature_sizes: [16, 8, 4],
-        template_profile_id: 'default',
-        stock_groups: [
-            { id: 'cover', type: 'cover', stock_code: 'C300', pages: 4 },
-            { id: 'text', type: 'text', stock_code: 'M150', pages: totalPages - 4 },
-        ],
-        gripper_edge: 'bottom',
-        turn_policy: 'sheetwise',
-        press_mode: 'single_sided',
-        allow_padding_blanks: true,
-        remainder_placement: 'outside',
-        ...overrides,
-    };
-}
-
-describe('planCatalogFull — Full Spec E2E', () => {
-    it('should produce valid ImpositionOutput for 80 pages', () => {
-        const output = planCatalogFull(makeInput(80));
-
-        expect(output.normalized_publication.total_pages_physical).toBe(80);
-        expect(output.normalized_publication.cover_pages).toBe(4);
-        expect(output.normalized_publication.text_pages).toBe(76);
-        expect(output.signatures.length).toBeGreaterThanOrEqual(1);
-        expect(output.forms.length).toBeGreaterThanOrEqual(1);
-        expect(output.report).toBeTruthy();
-    });
-
-    it('should pass validation for 80 pages', () => {
-        const output = planCatalogFull(makeInput(80));
-        expect(output.validation_status.ok).toBe(true);
-        expect(output.validation_status.page_coverage_valid).toBe(true);
-        expect(output.validation_status.no_duplicates_valid).toBe(true);
-    });
-
-    it('should include cover signature when cover_mode=separate_stock', () => {
-        const output = planCatalogFull(makeInput(48));
-        const coverSig = output.signatures.find(s => s.is_cover);
-        expect(coverSig).toBeDefined();
-        expect(coverSig!.size).toBe(4);
-        expect(coverSig!.stock_group).toBe('cover');
-    });
-
-    it('should not include cover when cover_mode=same_stock', () => {
-        const output = planCatalogFull(makeInput(48, { cover_mode: 'same_stock', cover_pages: 0 }));
-        const coverSig = output.signatures.find(s => s.is_cover);
-        expect(coverSig).toBeUndefined();
-    });
-
-    it('should compute production metrics for all forms', () => {
-        const output = planCatalogFull(makeInput(80));
-        expect(output.sheets_required_per_form.length).toBe(output.forms.length);
-        for (const m of output.sheets_required_per_form) {
-            expect(m.sheets_required).toBeGreaterThan(0);
-            expect(m.impressions).toBeGreaterThan(0);
-        }
-    });
-
-    it('should compute yield balance with bottleneck form', () => {
-        const output = planCatalogFull(makeInput(80));
-        expect(output.yield_balance.max_deliverable_sets).toBeGreaterThan(0);
-        expect(output.yield_balance.bottleneck_form).toBeTruthy();
-    });
-
-    it('should handle padding when text pages are not a multiple of 4', () => {
-        // 47 pages: 4 cover + 43 text → padded to 44
-        const output = planCatalogFull(makeInput(47));
-        expect(output.normalized_publication.padding_blanks).toBeGreaterThan(0);
-        expect(output.validation_status.ok).toBe(true);
-    });
-
-    it('should throw when padding is needed but not allowed', () => {
-        expect(() => {
-            planCatalogFull(makeInput(47, { allow_padding_blanks: false }));
-        }).toThrow();
     });
 });

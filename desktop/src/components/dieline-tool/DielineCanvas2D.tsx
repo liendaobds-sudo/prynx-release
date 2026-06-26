@@ -3,10 +3,12 @@
 // Hỗ trợ Zoom/Pan, phân biệt CUT/CREASE/BLEED bằng màu & nét
 // ============================================================
 
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { useBoxStore } from '../../store/useBoxStore';
+import { useMockupStore } from '../../store/useMockupStore';
 import { DielineModel, PathSegment, Panel } from '../../lib/dieline/types';
 import { buildChains, chainToSvgD, computeEnvelopeDims, deriveLegendTags } from '../../lib/dieline/sharedGeometry';
+import { tracePerimeter } from '../../lib/dieline/tracePerimeter';
 // Desktop: no auth/settings needed — all features available
 
 // Màu sắc và style cho từng loại nét
@@ -17,7 +19,7 @@ const PATH_STYLES: Record<string, { stroke: string; dashArray: string; width: nu
     BLEED: { stroke: '#4488ff', dashArray: '1,1', width: 0.3, label: 'Tràn lề' },
 };
 
-export default function DielineCanvas2D() {
+export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.ReactNode } = {}) {
     const { dieline } = useBoxStore();
     const isAdmin = true; // Desktop app: all features enabled
     const svgRef = useRef<SVGSVGElement>(null);
@@ -28,6 +30,136 @@ export default function DielineCanvas2D() {
     const [showPanelLabels, setShowPanelLabels] = useState(false);
     const [showSegmentLabels, setShowSegmentLabels] = useState(false);
     const [showAnnotations, setShowAnnotations] = useState(true);
+
+    // ─── Ảnh in (mockup) — canh chỉnh trực tiếp trên khuôn phẳng ───
+    const mockupTextureUrl = useBoxStore((s) => s.mockupTextureUrl);
+    const outerUrl = useMockupStore((s) => s.artwork.outer.url);
+    const artTransform = useMockupStore((s) => s.artwork.outer.transform);
+    const setArtTransform = useMockupStore((s) => s.setOuterArtworkTransform);
+    const setOuterArtworkUrl = useMockupStore((s) => s.setOuterArtworkUrl);
+    const artworkUrl = outerUrl ?? mockupTextureUrl;
+    const [showArtwork, setShowArtwork] = useState(true);
+    const dragArtRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+
+    const onUploadArtwork = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+        const f = e.target.files?.[0];
+        if (f) setOuterArtworkUrl(URL.createObjectURL(f));
+        e.target.value = '';
+    }, [setOuterArtworkUrl]);
+
+    // Hình chữ nhật vùng ảnh (toạ độ mm khuôn) khớp ánh xạ UV aligned-to-dieline.
+    const artRect = useMemo(() => {
+        if (!dieline || !artworkUrl) return null;
+        const bb = dieline.boundingBox;
+        const sc = (artTransform.scalePct || 100) / 100;
+        const offX = (artTransform.offsetXPct || 0) / 100;
+        const offY = (artTransform.offsetYPct || 0) / 100;
+        const w = sc * bb.width;
+        const h = sc * bb.height;
+        const cx = bb.minX + (0.5 + sc * offX) * bb.width;
+        const cy = bb.minY + (0.5 + sc * offY) * bb.height;
+        return { x: cx - w / 2, y: cy - h / 2, w, h, cx, cy, rot: artTransform.rotationDeg || 0 };
+    }, [dieline, artworkUrl, artTransform]);
+
+    // Đa giác clip = vùng phủ của MỌI mặt khuôn. Panel nào không khai báo
+    // `outline` (tai bụi, đáy, tai đút…) thì DÒ chu vi từ `paths` (giống lớp 3D)
+    // để ảnh phủ TRỌN bề mặt trải, KHÔNG bị các mặt đó che mất.
+    const clipPolys = useMemo(() => {
+        if (!dieline) return [] as string[];
+        const polys: string[] = [];
+        for (const p of dieline.panels) {
+            const pts = (p.outline && p.outline.length >= 3)
+                ? p.outline
+                : tracePerimeter(p.paths);
+            if (pts && pts.length >= 3) {
+                polys.push(pts.map((q) => `${q.x},${q.y}`).join(' '));
+            }
+        }
+        return polys;
+    }, [dieline]);
+
+    // ── Gizmo biến đổi trực tiếp trên ảnh (kéo/scale/xoay như editor VDP) ──
+    // Toạ độ gizmo tính ở KHÔNG GIAN MÀN HÌNH (px svg-local) để núm có kích
+    // thước cố định, không bị zoom. Chiếu điểm mm→px: (tx+mx·s, ty−my·s).
+    const gizmo = useMemo(() => {
+        if (!showArtwork || !artworkUrl || !artRect) return null;
+        const { cx, cy, w, h, rot } = artRect;
+        const rotA = (-rot * Math.PI) / 180;
+        const ca = Math.cos(rotA);
+        const sa = Math.sin(rotA);
+        const toPx = (mx: number, my: number) => ({
+            x: transform.x + mx * transform.scale,
+            y: transform.y - my * transform.scale,
+        });
+        // 4 góc hình ảnh (image-space) qua flip Y + xoay quanh tâm.
+        const corner = (sx: number, sy: number) => {
+            const px = sx * (w / 2);
+            const py = -(sy * (h / 2)); // scale(1,-1)
+            const rx = px * ca - py * sa;
+            const ry = px * sa + py * ca;
+            return toPx(cx + rx, cy + ry);
+        };
+        const corners = [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)];
+        const center = toPx(cx, cy);
+        const sorted = [...corners].sort((a, b) => a.y - b.y);
+        const topMid = { x: (sorted[0].x + sorted[1].x) / 2, y: (sorted[0].y + sorted[1].y) / 2 };
+        const dx = topMid.x - center.x;
+        const dy = topMid.y - center.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const rotHandle = { x: topMid.x + (dx / d) * 30, y: topMid.y + (dy / d) * 30 };
+        return { corners, center, topMid, rotHandle };
+    }, [showArtwork, artworkUrl, artRect, transform]);
+
+    const toLocal = useCallback((clientX: number, clientY: number) => {
+        const r = svgRef.current?.getBoundingClientRect();
+        return { x: clientX - (r?.left ?? 0), y: clientY - (r?.top ?? 0) };
+    }, []);
+
+    // Kéo góc → scale đồng đều quanh tâm (theo tỉ lệ khoảng cách tới tâm).
+    const beginScale = useCallback((e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!gizmo) return;
+        const c = gizmo.center;
+        const l0 = toLocal(e.clientX, e.clientY);
+        const startDist = Math.hypot(l0.x - c.x, l0.y - c.y) || 1;
+        const startScale = artTransform.scalePct || 100;
+        const move = (ev: MouseEvent) => {
+            const ll = toLocal(ev.clientX, ev.clientY);
+            const d = Math.hypot(ll.x - c.x, ll.y - c.y);
+            const next = Math.max(10, Math.min(1000, startScale * (d / startDist)));
+            setArtTransform({ ...artTransform, scalePct: next });
+        };
+        const up = () => {
+            window.removeEventListener('mousemove', move);
+            window.removeEventListener('mouseup', up);
+        };
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', up);
+    }, [gizmo, artTransform, setArtTransform, toLocal]);
+
+    // Kéo núm xoay → đổi rotationDeg theo góc con trỏ quanh tâm.
+    const beginRotate = useCallback((e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!gizmo) return;
+        const c = gizmo.center;
+        const l0 = toLocal(e.clientX, e.clientY);
+        const startA = Math.atan2(l0.y - c.y, l0.x - c.x);
+        const startRot = artTransform.rotationDeg ?? 0;
+        const move = (ev: MouseEvent) => {
+            const ll = toLocal(ev.clientX, ev.clientY);
+            const a = Math.atan2(ll.y - c.y, ll.x - c.x);
+            let deg = startRot - ((a - startA) * 180) / Math.PI;
+            while (deg > 180) deg -= 360;
+            while (deg < -180) deg += 360;
+            setArtTransform({ ...artTransform, rotationDeg: deg });
+        };
+        const up = () => {
+            window.removeEventListener('mousemove', move);
+            window.removeEventListener('mouseup', up);
+        };
+        window.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', up);
+    }, [gizmo, artTransform, setArtTransform, toLocal]);
 
     // Auto-fit on dieline change
     useEffect(() => {
@@ -84,6 +216,23 @@ export default function DielineCanvas2D() {
     }, [transform]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent) => {
+        const drag = dragArtRef.current;
+        if (drag && dieline) {
+            const bb = dieline.boundingBox;
+            const sc = (artTransform.scalePct || 100) / 100 || 1;
+            const dxPx = e.clientX - drag.sx;
+            const dyPx = e.clientY - drag.sy;
+            // px → mm (chia zoom) → chuẩn hoá theo bbox → offsetPct (chia tỉ lệ ảnh).
+            const dOffX = (((dxPx / transform.scale) / bb.width) / sc) * 100;
+            // Màn hình kéo xuống (dyPx+) ⇒ khuôn −y ⇒ offset Y giảm.
+            const dOffY = ((-(dyPx / transform.scale) / bb.height) / sc) * 100;
+            setArtTransform({
+                ...artTransform,
+                offsetXPct: drag.ox + dOffX,
+                offsetYPct: drag.oy + dOffY,
+            });
+            return;
+        }
         if (isPanning) {
             setTransform((prev) => ({
                 ...prev,
@@ -91,10 +240,11 @@ export default function DielineCanvas2D() {
                 y: e.clientY - panStart.y,
             }));
         }
-    }, [isPanning, panStart]);
+    }, [isPanning, panStart, dieline, artTransform, transform.scale, setArtTransform]);
 
     const handleMouseUp = useCallback(() => {
         setIsPanning(false);
+        dragArtRef.current = null;
     }, []);
 
     if (!dieline) {
@@ -138,8 +288,43 @@ export default function DielineCanvas2D() {
                         );
                     })}
                 </div>
+
+                {/* Ảnh in (mockup) — canh chỉnh trực tiếp trên khuôn */}
+                <span className="dt-toolbar-sep" />
+                <label className="dt-toolbar-btn" title="Tải ảnh in lên khuôn" style={{ cursor: 'pointer' }}>
+                    🖼 Ảnh in
+                    <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: 'none' }} onChange={onUploadArtwork} />
+                </label>
+                {artworkUrl && (
+                    <>
+                        <button onClick={() => setShowArtwork((v) => !v)} className="dt-toolbar-btn" title="Ẩn/hiện ảnh in">
+                            {showArtwork ? '👁️' : '🚫'} Ảnh
+                        </button>
+                        <label className="dt-art-ctl" title="Tỉ lệ ảnh">
+                            ⤢
+                            <input type="range" min={10} max={400} step={1}
+                                value={artTransform.scalePct}
+                                onChange={(e) => setArtTransform({ ...artTransform, scalePct: parseFloat(e.target.value) })}
+                                style={{ width: 80, verticalAlign: 'middle', accentColor: 'var(--dt-accent)' }} />
+                        </label>
+                        <label className="dt-art-ctl" title="Xoay ảnh">
+                            ⟳
+                            <input type="range" min={-180} max={180} step={1}
+                                value={artTransform.rotationDeg ?? 0}
+                                onChange={(e) => setArtTransform({ ...artTransform, rotationDeg: parseFloat(e.target.value) })}
+                                style={{ width: 80, verticalAlign: 'middle', accentColor: 'var(--dt-accent)' }} />
+                        </label>
+                        <button
+                            onClick={() => setArtTransform({ scalePct: 100, offsetXPct: 0, offsetYPct: 0, rotationDeg: 0 })}
+                            className="dt-toolbar-btn" title="Đặt lại vị trí ảnh">↺ Reset ảnh</button>
+                    </>
+                )}
             </div>
 
+            {/* Vùng vẽ: SVG bên trái + slot phải (vd 3D khi chia đôi). Toolbar
+                ở trên giữ NGUYÊN full chiều rộng. */}
+            <div className="dt-canvas-2d-body" style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+            <div className="dt-canvas-2d-pane" style={{ flex: 1, minWidth: 0, position: 'relative', display: 'flex' }}>
             {/* SVG Canvas */}
             <svg
                 ref={svgRef}
@@ -167,6 +352,41 @@ export default function DielineCanvas2D() {
 
                 {/* Paths — chain segments liền mạch */}
                 <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale}, ${-transform.scale})`}>
+                    {/* Ảnh in: clip theo các mặt khuôn, ánh xạ khớp aligned-to-dieline */}
+                    {showArtwork && artworkUrl && artRect && clipPolys.length > 0 && (
+                        <>
+                            <defs>
+                                <clipPath id="dt-artwork-clip" clipPathUnits="userSpaceOnUse">
+                                    {clipPolys.map((pts, i) => (
+                                        <polygon key={i} points={pts} />
+                                    ))}
+                                </clipPath>
+                            </defs>
+                            <g clipPath="url(#dt-artwork-clip)">
+                                {/* Lật Y + xoay quanh tâm để ảnh đứng đúng chiều trong group y-up */}
+                                <g transform={`translate(${artRect.cx}, ${artRect.cy}) rotate(${-artRect.rot}) scale(1,-1) translate(${-artRect.cx}, ${-artRect.cy})`}>
+                                    <image
+                                        href={artworkUrl}
+                                        x={artRect.x}
+                                        y={artRect.y}
+                                        width={artRect.w}
+                                        height={artRect.h}
+                                        preserveAspectRatio="none"
+                                        opacity={0.95}
+                                        style={{ cursor: 'move' }}
+                                        onMouseDown={(e) => {
+                                            e.stopPropagation();
+                                            dragArtRef.current = {
+                                                sx: e.clientX, sy: e.clientY,
+                                                ox: artTransform.offsetXPct, oy: artTransform.offsetYPct,
+                                            };
+                                        }}
+                                    />
+                                </g>
+                            </g>
+                        </>
+                    )}
+
                     <ChainedPathRenderer paths={dieline.allPaths} />
 
                     {/* Dimension Annotations */}
@@ -181,10 +401,48 @@ export default function DielineCanvas2D() {
                     {/* Segment Labels — đánh tên từng đoạn khi bật chi tiết */}
                     {showSegmentLabels && <SegmentLabels dieline={dieline} scale={transform.scale} />}
                 </g>
-            </svg>
 
-            {/* 3D Preview Thumbnail — top-right corner */}
-            <PreviewThumbnail boxType={dieline.params.boxType} />
+                {/* Gizmo biến đổi ảnh (px màn hình, núm cố định kích thước) */}
+                {gizmo && (
+                    <g>
+                        <polygon
+                            points={gizmo.corners.map((c) => `${c.x},${c.y}`).join(' ')}
+                            fill="none"
+                            stroke="var(--dt-accent, #7c5cff)"
+                            strokeWidth={1.3}
+                            strokeDasharray="5,3"
+                            pointerEvents="none"
+                        />
+                        <line
+                            x1={gizmo.topMid.x} y1={gizmo.topMid.y}
+                            x2={gizmo.rotHandle.x} y2={gizmo.rotHandle.y}
+                            stroke="var(--dt-accent, #7c5cff)" strokeWidth={1.3} pointerEvents="none"
+                        />
+                        <circle
+                            cx={gizmo.rotHandle.x} cy={gizmo.rotHandle.y} r={6.5}
+                            fill="#ffffff" stroke="var(--dt-accent, #7c5cff)" strokeWidth={1.6}
+                            style={{ cursor: 'grab' }}
+                            onMouseDown={beginRotate}
+                        />
+                        {gizmo.corners.map((c, i) => (
+                            <rect
+                                key={i}
+                                x={c.x - 5} y={c.y - 5} width={10} height={10}
+                                fill="#ffffff" stroke="var(--dt-accent, #7c5cff)" strokeWidth={1.6}
+                                style={{ cursor: 'nwse-resize' }}
+                                onMouseDown={beginScale}
+                            />
+                        ))}
+                    </g>
+                )}
+            </svg>
+            </div>
+            {rightSlot && (
+                <div className="dt-canvas-2d-pane" style={{ flex: 1, minWidth: 0, position: 'relative', borderLeft: '1px solid var(--dt-border)' }}>
+                    {rightSlot}
+                </div>
+            )}
+            </div>
         </div>
     );
 }

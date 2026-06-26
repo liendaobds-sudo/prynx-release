@@ -1,5 +1,5 @@
 // src/lib/imposerEngine/Renderer.ts
-import { PDFDocument, rgb, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees, scale } from 'pdf-lib';
+import { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees, scale } from 'pdf-lib';
 import { VirtualSheet } from './VirtualMap';
 import type { GuillotineSettings, OffsetSettings } from './SettingsTypes';
 export type BookletSettings = GuillotineSettings | OffsetSettings;
@@ -25,7 +25,7 @@ export const drawSpreadMarks = (
         outputPage.drawLine({start:{x:x1,y:y1}, end:{x:x2,y:y2}, thickness: markThickness, color});
     };
     
-    const trimColor = rgb(0, 0, 0);
+    const trimColor = cmyk(1, 1, 1, 1); // Registration (mọi kẽm), không dùng RGB
 
     const drawBoxMarks = (box: { x: number, y: number, width: number, height: number }) => {
         const right = box.x + box.width;
@@ -74,7 +74,7 @@ export const drawSpreadMarks = (
         );
         
         if (top > 0 && bottom !== Infinity) {
-            const centerMarkColor = isFoldable ? rgb(1, 0, 0) : trimColor;
+            const centerMarkColor = isFoldable ? cmyk(0, 1, 1, 0) : trimColor;
             drawL(centerX, top + markOffset, centerX, top + markOffset + markLength, centerMarkColor);
             drawL(centerX, bottom - markOffset, centerX, bottom - markOffset - markLength, centerMarkColor);
         }
@@ -91,7 +91,7 @@ export const drawSpreadMarks = (
         const bottom = spreadTrimBox.y;
 
         // Center spine mark: Red = fold (saddle/thread), Black = slit/cut (continuous/cut_stacks)
-        const spineColor = isFoldable ? rgb(1, 0, 0) : trimColor;
+        const spineColor = isFoldable ? cmyk(0, 1, 1, 0) : trimColor;
         const centerX = sheetWidth / 2;
 
         drawL(centerX, top + markOffset, centerX, top + markOffset + markLength, spineColor);

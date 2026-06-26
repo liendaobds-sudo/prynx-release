@@ -53,7 +53,8 @@ const { toastMock } = vi.hoisted(() => ({
 vi.mock('sonner', () => ({ toast: toastMock }));
 
 // Import SAU khi khai báo mock (vi.mock được hoisted).
-import { downloadPDF } from './exportPDF';
+import { downloadPDF, decideExportGate } from './exportPDF';
+import type { ContourValidationResult, OpenContourWarning } from './contourValidator';
 
 // ── Helpers ──
 
@@ -161,5 +162,99 @@ describe('downloadPDF — cổng xác nhận xuất file', () => {
 
         expect(saveMock).not.toHaveBeenCalled();
         expect(toastMock.warning).toHaveBeenCalledTimes(1);
+    });
+});
+
+// ============================================================
+// Example test cho HÀM THUẦN `decideExportGate` (exportPDF.ts)
+//
+// `decideExportGate(result, confirmed)` là điểm quan sát được của
+// cổng xuất, tách khỏi luồng ghi file để test trực tiếp quyết định:
+//   - allClosed → { kind: 'created' }                       (Req 3.2)
+//   - biên ngoài hở + confirmed=false → { kind: 'cancelled' }(Req 3.3, 3.5)
+//   - biên ngoài hở + confirmed=true  → { kind: 'created' }  (Req 3.5)
+//
+// _Requirements: 3.2, 3.3, 3.5_
+// ============================================================
+
+/** Kết quả validation "mọi biên ngoài khép kín". */
+function allClosedResult(): ContourValidationResult {
+    return { allClosed: true, openContours: [] };
+}
+
+/** Một cảnh báo biên ngoài hở mẫu. */
+function sampleWarning(): OpenContourWarning {
+    return {
+        panelName: 'panel1',
+        panelLabel: 'Mặt 1',
+        gapMm: 10,
+        cutPieceIndex: 0,
+    };
+}
+
+/** Kết quả validation có Open_Outer_Boundary. */
+function openResult(): ContourValidationResult {
+    return { allClosed: false, openContours: [sampleWarning()] };
+}
+
+describe('decideExportGate — hàm thuần quyết định cổng xuất', () => {
+    it('allClosed → { kind: "created" }, không cần xác nhận (Req 3.2)', () => {
+        // Dù confirmed=false, allClosed vẫn cho phép tạo file.
+        const decision = decideExportGate(allClosedResult(), false);
+
+        expect(decision).toEqual({ kind: 'created' });
+    });
+
+    it('biên ngoài hở + confirmed=FALSE → { kind: "cancelled" } kèm cảnh báo (Req 3.3, 3.5)', () => {
+        const result = openResult();
+        const decision = decideExportGate(result, false);
+
+        expect(decision.kind).toBe('cancelled');
+        if (decision.kind === 'cancelled') {
+            expect(decision.warnings).toEqual(result.openContours);
+            expect(decision.warnings[0]).toHaveProperty('panelName', 'panel1');
+            expect(decision.warnings[0].gapMm).toBeGreaterThan(0.01);
+        }
+    });
+
+    it('biên ngoài hở + confirmed=TRUE → { kind: "created" } (người dùng xác nhận ghi) (Req 3.5)', () => {
+        const decision = decideExportGate(openResult(), true);
+
+        expect(decision).toEqual({ kind: 'created' });
+    });
+
+    it('chỉ ĐỌC result, KHÔNG biến đổi đầu vào', () => {
+        const result = openResult();
+        const before = JSON.stringify(result);
+
+        decideExportGate(result, false);
+
+        expect(JSON.stringify(result)).toBe(before);
+    });
+});
+
+// ============================================================
+// Luồng cổng end-to-end qua `downloadPDF` (mock writer + callback)
+// bổ sung khẳng định KHÔNG ghi file một phần khi hủy (Req 3.6).
+// ============================================================
+
+describe('downloadPDF — không ghi file một phần khi cổng cancelled (Req 3.6)', () => {
+    it('biên hở + confirm FALSE → save KHÔNG được gọi (không có đầu ra một phần)', async () => {
+        const confirm = vi.fn().mockResolvedValue(false);
+
+        await downloadPDF(makeModel(openSegments()), 'partial.pdf', confirm);
+
+        // Không một lời gọi ghi nào → không có file một phần.
+        expect(saveMock).not.toHaveBeenCalled();
+        expect(svgMock).not.toHaveBeenCalled();
+    });
+
+    it('biên hở + confirm TRUE → ghi file đầy đủ (Req 3.5)', async () => {
+        const confirm = vi.fn().mockResolvedValue(true);
+
+        await downloadPDF(makeModel(openSegments()), 'confirmed.pdf', confirm);
+
+        expect(saveMock).toHaveBeenCalledTimes(1);
+        expect(saveMock).toHaveBeenCalledWith('confirmed.pdf');
     });
 });

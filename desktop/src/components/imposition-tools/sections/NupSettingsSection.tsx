@@ -41,7 +41,7 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                         <label className="text-[11px] font-bold text-slate-600 tracking-wide shrink-0 w-[65px]">SỐ MẶT</label>
                         <select
                             value={s.duplexFlow} onChange={(e) => s.setDuplexFlow(e.target.value as 'normal' | 'double')}
-                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-slate-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                         >
                             <option value="normal">1 Mặt</option>
                             <option value="double">2 Mặt</option>
@@ -61,7 +61,7 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                         <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[65px]">SỐ MẶT</label>
                         <select
                             value={s.duplexFlow} onChange={(e) => s.setDuplexFlow(e.target.value as 'normal' | 'double')}
-                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-slate-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                         >
                             <option value="normal">1 Mặt</option>
                             <option value="double">2 Mặt</option>

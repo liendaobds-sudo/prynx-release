@@ -497,7 +497,9 @@ export function generateReverseTuckEnd(params: BoxParams): DielineModel {
 
 
     // --- E1. Tuck Flap trên (nối tiếp Closure trên) ---
-    const tuckTopBase = snap(closureTopY + closureH);
+    // Đáy lưỡi đút phải TRÙNG cạnh trên của nắp (tuckTopCreaseY), không phải
+    // closureTopY+closureH (lệch T → lưỡi đút nhảy lên, hở khỏi nắp).
+    const tuckTopBase = tuckTopCreaseY;
     const tuckTopPaths: PathSegment[] = buildTuckFlap(
         xFrontL + tuckInset,    // xLeft
         tuckTopBase,            // yBase
@@ -519,7 +521,8 @@ export function generateReverseTuckEnd(params: BoxParams): DielineModel {
     });
 
     // --- E2. Tuck Flap dưới (nối tiếp Closure dưới) — NGƯỢC CHIỀU ---
-    const tuckBotBase = snap(closureBotY - closureH);
+    // Đáy lưỡi đút trùng cạnh dưới của nắp (tuckBotCreaseY) — không hở.
+    const tuckBotBase = tuckBotCreaseY;
     const tuckBotPaths: PathSegment[] = buildTuckFlap(
         xBackL + tuckInset,     // xLeft
         tuckBotBase,            // yBase

@@ -98,6 +98,17 @@ unsafe impl Sync for SyncPdfium {}
 static PDFIUM_STATIC: OnceLock<SyncPdfium> = OnceLock::new();
 static DOC_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedDocument>>>> = OnceLock::new();
 
+/// Bind thư viện pdfium MỘT LẦN (OnceLock). Tách hàm để vừa dùng trong các lệnh
+/// render vừa dùng cho WARMUP lúc khởi động (tránh cold-start ~2-3s ở lần mở file đầu).
+fn ensure_pdfium() -> &'static Pdfium {
+    PDFIUM_STATIC.get_or_init(|| {
+        let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./bin/"))
+            .or_else(|_| Pdfium::bind_to_system_library())
+            .unwrap();
+        SyncPdfium(Box::leak(Box::new(Pdfium::new(bindings))))
+    }).0
+}
+
 // In-Memory LRU Tile Cache (Stores ~200 last rendered JPEGs)
 struct TileCache {
     map: HashMap<String, Vec<u8>>,
@@ -155,12 +166,7 @@ fn append_perf_log(app_handle: tauri::AppHandle, msg: String) {
 async fn get_pdf_metadata(app_handle: tauri::AppHandle, file_path: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
         let start_time = std::time::Instant::now();
-        let pdfium = PDFIUM_STATIC.get_or_init(|| {
-            let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./bin/"))
-                .or_else(|_| Pdfium::bind_to_system_library())
-                .unwrap();
-            SyncPdfium(Box::leak(Box::new(Pdfium::new(bindings))))
-        }).0;
+        let pdfium = ensure_pdfium();
         
         let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         let mut cache = cache_lock.lock().map_err(|_| "Cache lock error")?;
@@ -293,12 +299,7 @@ fn render_tile_jpeg(
         }
     }
 
-    let pdfium = PDFIUM_STATIC.get_or_init(|| {
-        let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./bin/"))
-            .or_else(|_| Pdfium::bind_to_system_library())
-            .unwrap();
-        SyncPdfium(Box::leak(Box::new(Pdfium::new(bindings))))
-    }).0;
+    let pdfium = ensure_pdfium();
     
     let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache_lock.lock().map_err(|_| "Cache lock error")?;

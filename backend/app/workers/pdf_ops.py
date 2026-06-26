@@ -52,7 +52,7 @@ class ShapeBuilder:
         )
 
     def insert_text(self, point: Point, text: str, fontsize=11, fontname="helv",
-                    color=(0, 0, 0), oc=None):
+                    color=(0, 0, 0, 1), oc=None):
         if not text or fontsize <= 0:
             return
         pdf_fontname = "Helvetica"
@@ -67,9 +67,17 @@ class ShapeBuilder:
         escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         x = point.x
         y = self.page_height - point.y
-        r, g, b = (color[0], color[1], color[2]) if len(color) >= 3 else (0, 0, 0)
+        # Hỗ trợ đủ hệ màu theo độ dài tuple: 4 = CMYK (k), 1 = Gray (g), còn lại = RGB (rg).
+        # Trước đây cắt cụt về RGB → mất kênh K nếu caller truyền CMYK (lỗi hệ màu khi in).
+        col = tuple(color) if color else (0, 0, 0)
+        if len(col) == 4:
+            color_op = f"{col[0]} {col[1]} {col[2]} {col[3]} k"
+        elif len(col) == 1:
+            color_op = f"{col[0]} g"
+        else:
+            color_op = f"{col[0]} {col[1]} {col[2]} rg"
         self.stream.append("BT")
-        self.stream.append(f"{r} {g} {b} rg")
+        self.stream.append(color_op)
         self.stream.append(f"/{font_key} {fontsize:.2f} Tf")
         self.stream.append(f"{x:.4f} {y:.4f} Td")
         self.stream.append(f"({escaped}) Tj")
@@ -101,7 +109,7 @@ class ShapeBuilder:
         })
         return font_key
 
-    def finish(self, color=(0, 0, 0), width=1, closePath=False, fill=None, dashes=None, oc=None, item_name=None):
+    def finish(self, color=(0, 0, 0, 1), width=1, closePath=False, fill=None, dashes=None, oc=None, item_name=None):
         preamble = []
         if fill:
             if len(fill) == 4:
@@ -360,7 +368,7 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
 
 def insert_text(pdf: pikepdf.Pdf, pike_page: pikepdf.Page,
                 point: Point = None, text: str = "", fontsize: float = 11,
-                fontname: str = "helv", color=(0, 0, 0), render_mode: int = 0, oc=None):
+                fontname: str = "helv", color=(0, 0, 0, 1), render_mode: int = 0, oc=None):
     """Insert text into the page."""
     if not text:
         return 0

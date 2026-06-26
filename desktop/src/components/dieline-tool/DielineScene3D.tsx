@@ -1,56 +1,40 @@
 // ============================================================
-// DielineScene3D — Recursive Panel Folding Engine
+// DielineScene3D — Recursive Panel Folding Engine (3D branch)
 // Generic 3D folding cho TẤT CẢ loại hộp dựa trên cây Panel
+//
+// Task 10.1 — Wiring lớp render mockup 3D vào nhánh xem 3D:
+//   - MockupCanvas  : vỏ Canvas + tone mapping ACESFilmic + guard WebGL
+//                     (useWebGLSupport + WebGLFallback) (Yêu cầu 3.4, 8.4)
+//   - EnvironmentRig: HDRI/IBL + phản chiếu + fallback đèn studio (Yêu cầu 3.1)
+//   - CameraRig     : 4 preset camera, chuyển cảnh ≤500ms (Yêu cầu 7.1)
+//   - ShadowFloor   : contact/soft shadow + preset nền/sàn (Yêu cầu 3.5)
+//   - SolidPanelMesh: panel solid có độ dày thay FlatPanelMesh
+//   - DimensionOverlay: overlay kích thước L×W×H (Yêu cầu 7.7)
+//
+// Nhánh 2D (DielineCanvas2D), generator và đường dẫn dieline KHÔNG bị
+// chạm tới. Component này chỉ render khi tab "Mô phỏng 3D" được chọn.
+//
+// _Requirements: 3.1, 3.5, 7.1, 8.4, 9.3_
 // ============================================================
 
 import React, { useMemo, useRef, useEffect } from 'react';
-import { Canvas, useFrame, useLoader } from '@react-three/fiber';
-import { OrbitControls, Environment, Html } from '@react-three/drei';
+import { useLoader } from '@react-three/fiber';
+import { OrbitControls, GizmoHelper, GizmoViewcube } from '@react-three/drei';
 import * as THREE from 'three';
 import { useBoxStore } from '../../store/useBoxStore';
-import { Panel, Point2D, PathSegment, DielineModel } from '../../lib/dieline/types';
-import { tracePerimeter } from '../../lib/dieline/tracePerimeter';
+import { useMockupStore } from '../../store/useMockupStore';
+import { Panel } from '../../lib/dieline/types';
+import MockupCanvas from './MockupCanvas';
+import EnvironmentRig from './EnvironmentRig';
+import CameraRig from './CameraRig';
+import ShadowFloor from './ShadowFloor';
+import DimensionOverlay from './DimensionOverlay';
+import SolidPanelMesh from './SolidPanelMesh';
+import GussetMesh from './GussetMesh';
+import { computeConeWarp } from '../../lib/mockup3d/cupSleeveCone';
+import { useSceneExport } from './useSceneExport';
 
 // ─── Helpers ───────────────────────────────────────────────
-
-/** Tính outline shape từ panel paths (gom tất cả CUT và CREASE) */
-function panelToShape(panel: Panel): THREE.Shape | null {
-    let perimeterPoints: Point2D[] = [];
-    
-    // Ưu tiên sử dụng outline khai báo rõ ràng (stable, không lỗi earcut)
-    if (panel.outline && panel.outline.length >= 3) {
-        perimeterPoints = panel.outline;
-    } else {
-        // Fallback cho các box cũ chưa khai báo outline
-        perimeterPoints = tracePerimeter(panel.paths);
-    }
-    
-    if (!perimeterPoints || perimeterPoints.length === 0) return null;
-
-    const shape = new THREE.Shape();
-    
-    // Start point
-    shape.moveTo(perimeterPoints[0].x, perimeterPoints[0].y);
-
-    for (let i = 1; i < perimeterPoints.length; i++) {
-        shape.lineTo(perimeterPoints[i].x, perimeterPoints[i].y);
-    }
-
-    if (panel.holes) {
-        panel.holes.forEach(holePts => {
-            if (holePts && holePts.length >= 3) {
-                const holePath = new THREE.Path();
-                holePath.moveTo(holePts[0].x, holePts[0].y);
-                for (let i = 1; i < holePts.length; i++) {
-                    holePath.lineTo(holePts[i].x, holePts[i].y);
-                }
-                shape.holes.push(holePath);
-            }
-        });
-    }
-
-    return shape;
-}
 
 /** Tính depth (level) trong cây panel → dùng cho auto foldPhase */
 function computeDepths(panels: Panel[]): Map<string, number> {
@@ -80,259 +64,67 @@ function maxDepth(depthMap: Map<string, number>): number {
     return max;
 }
 
-/** Lấy góc gập thực tế tại foldProgress cho 1 panel */
-function getEffectiveFoldAngle(
-    panel: Panel,
-    foldProgress: number,
-    depth: number,
-    maxD: number,
-): number {
-    if (panel.foldAngle === 0) return 0;
-
-    let phaseStart: number, phaseEnd: number;
-    if (panel.foldPhase) {
-        [phaseStart, phaseEnd] = panel.foldPhase;
-    } else {
-        // Auto-phase based on depth: deeper panels fold later
-        const step = maxD > 0 ? 1 / (maxD + 1) : 1;
-        phaseStart = depth * step;
-        phaseEnd = (depth + 1) * step;
-    }
-
-    // Clamp progress to this panel's phase
-    const localProgress = Math.max(0, Math.min(1,
-        (foldProgress - phaseStart) / (phaseEnd - phaseStart)
-    ));
-
-    // Ease in-out for smooth animation
-    const eased = localProgress < 0.5
-        ? 2 * localProgress * localProgress
-        : 1 - Math.pow(-2 * localProgress + 2, 2) / 2;
-
-    return panel.foldAngle * eased * (panel.foldDirection || 1);
-}
-
-/** Convert degrees to radians */
-const deg2rad = (d: number) => d * Math.PI / 180;
-
-// ─── Recursive Panel Component ─────────────────────────────
-
-interface FlatPanelProps {
-    panel: Panel;
-    allPanels: Panel[];
-    foldProgress: number;
-    depthMap: Map<string, number>;
-    maxD: number;
-    thickness: number;
-    materialColor: string;
-    texture: THREE.Texture | null;
-    globalBBox: { minX: number; minY: number; width: number; height: number };
-}
-
-// Helper: Compute absolute transformation matrix for a panel
-function getPanelMatrix(
-    panel: Panel,
-    allPanels: Panel[],
-    foldProgress: number,
-    depthMap: Map<string, number>,
-    maxD: number,
-    thickness: number
-): THREE.Matrix4 {
-    const m = new THREE.Matrix4(); // Identity
-    let current: Panel | null = panel;
-
-    while (current) {
-        if (current.pivotEdge && current.parent) {
-            const depth = depthMap.get(current.name) || 0;
-            const foldAngleDeg = getEffectiveFoldAngle(current, foldProgress, depth, maxD);
-            const foldRad = deg2rad(foldAngleDeg);
-
-            const [p1, p2] = current.pivotEdge;
-            const midX = (p1.x + p2.x) / 2;
-            const midY = (p1.y + p2.y) / 2;
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
-            const angle = Math.atan2(dy, dx);
-
-            let foldShiftY = 0;
-            if (current.name.includes('tuck')) {
-                const sign = current.name.includes('bot') ? 1 : -1;
-                const progress = Math.min(1, Math.abs(foldAngleDeg) / 90);
-                foldShiftY = sign * thickness * progress;
-            }
-
-            const mat = new THREE.Matrix4();
-            mat.multiply(new THREE.Matrix4().makeTranslation(midX, midY, 0));
-            mat.multiply(new THREE.Matrix4().makeRotationZ(angle));
-            mat.multiply(new THREE.Matrix4().makeRotationX(foldRad));
-            mat.multiply(new THREE.Matrix4().makeRotationZ(-angle));
-            mat.multiply(new THREE.Matrix4().makeTranslation(-midX, -midY, 0));
-            
-            if (foldShiftY !== 0) {
-                mat.multiply(new THREE.Matrix4().makeTranslation(0, foldShiftY, 0));
-            }
-
-            // Premultiply to apply parent transformations after child transformations
-            m.premultiply(mat);
-        }
-        const parentName: string | undefined = current.parent ?? undefined;
-        current = allPanels.find(p => p.name === parentName) || null;
-    }
-
-    return m;
-}
-
-function FlatPanelMesh({
-    panel, allPanels, foldProgress, depthMap, maxD, thickness, materialColor, texture, globalBBox
-}: FlatPanelProps) {
-    const groupRef = useRef<THREE.Group>(null);
-
-    // 1. Tạo shape từ panel paths
-    const shape = useMemo(() => panelToShape(panel), [panel]);
-
-    // 2. Tính toán ma trận biến đổi (Fold Matrix)
-    const matrix = useMemo(() => {
-        return getPanelMatrix(panel, allPanels, foldProgress, depthMap, maxD, thickness);
-    }, [panel, allPanels, foldProgress, depthMap, maxD, thickness]);
-
-    // Apply matrix directly to Group
-    useEffect(() => {
-        if (groupRef.current) {
-            groupRef.current.matrix.copy(matrix);
-        }
-    }, [matrix]);
-
-    // Geometry: Flat ShapeGeometry instead of heavy ExtrudeGeometry
-    const geometry = useMemo(() => {
-        if (!shape) return null;
-        const geo = new THREE.ShapeGeometry(shape);
-        
-        // Post-process UVs to map globally across the 2D sheet
-        const posAttribute = geo.attributes.position;
-        const uvAttribute = geo.attributes.uv;
-        for (let i = 0; i < posAttribute.count; i++) {
-            const x = posAttribute.getX(i);
-            const y = posAttribute.getY(i);
-            let u = (x - globalBBox.minX) / globalBBox.width;
-            let v = (y - globalBBox.minY) / globalBBox.height;
-            uvAttribute.setXY(i, u, v);
-        }
-        uvAttribute.needsUpdate = true;
-        
-        return geo;
-    }, [shape, globalBBox]);
-
-    // CAD Lines Geometry (from actual paths)
-    const lineGeometries = useMemo(() => {
-        const cutGeo = new THREE.BufferGeometry();
-        const creaseGeo = new THREE.BufferGeometry();
-        const cutPts: THREE.Vector3[] = [];
-        const creasePts: THREE.Vector3[] = [];
-
-        panel.paths.forEach(seg => {
-            const arr = seg.tag === 'CREASE' ? creasePts : cutPts;
-            if (seg.type === 'line') {
-                arr.push(new THREE.Vector3(seg.points[0].x, seg.points[0].y, 0));
-                arr.push(new THREE.Vector3(seg.points[1].x, seg.points[1].y, 0));
-            } else if (seg.type === 'bezier' && seg.controlPoints && seg.controlPoints.length >= 4) {
-                const curve = new THREE.CubicBezierCurve3(
-                    new THREE.Vector3(seg.points[0].x, seg.points[0].y, 0),
-                    new THREE.Vector3(seg.controlPoints[1].x, seg.controlPoints[1].y, 0),
-                    new THREE.Vector3(seg.controlPoints[2].x, seg.controlPoints[2].y, 0),
-                    new THREE.Vector3(seg.points[1].x, seg.points[1].y, 0)
-                );
-                const pts = curve.getPoints(12);
-                for (let i = 0; i < pts.length - 1; i++) {
-                    arr.push(pts[i]);
-                    arr.push(pts[i + 1]);
-                }
-            }
-        });
-
-        cutGeo.setFromPoints(cutPts);
-        creaseGeo.setFromPoints(creasePts);
-        return { cutGeo, creaseGeo };
-    }, [panel.paths]);
-
-    if (!shape || !geometry) {
-        return null; // Không render nếu panel không có diện tích
-    }
-
-    const offsetZ = thickness / 2;
-
-    return (
-        <group ref={groupRef} matrixAutoUpdate={false}>
-            {/* Outer panel mesh (Faces Z+) */}
-            <mesh geometry={geometry} position={[0, 0, offsetZ]} castShadow receiveShadow>
-                {texture ? (
-                    <meshStandardMaterial map={texture} roughness={0.4} metalness={0.1} side={THREE.FrontSide} />
-                ) : (
-                    <meshStandardMaterial color={materialColor} roughness={0.4} metalness={0.1} side={THREE.FrontSide} />
-                )}
-            </mesh>
-
-            {/* Inner panel mesh (Faces Z-) - BackSide to avoid having to flip the geometry vertices */}
-            <mesh geometry={geometry} position={[0, 0, -offsetZ]} castShadow receiveShadow>
-                <meshStandardMaterial color="#cca075" roughness={0.9} metalness={0.0} side={THREE.BackSide} />
-            </mesh>
-            
-            {/* CAD Lines Overlay (Front) */}
-            <lineSegments geometry={lineGeometries.cutGeo} position={[0, 0, offsetZ]}>
-                <lineBasicMaterial color="#ffffff" transparent opacity={0.3} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
-            </lineSegments>
-            <lineSegments geometry={lineGeometries.creaseGeo} position={[0, 0, offsetZ]}>
-                <lineBasicMaterial color="#ffffff" transparent opacity={0.15} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
-            </lineSegments>
-
-            {/* CAD Lines Overlay (Back) */}
-            <lineSegments geometry={lineGeometries.cutGeo} position={[0, 0, -offsetZ]}>
-                <lineBasicMaterial color="#000000" transparent opacity={0.2} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
-            </lineSegments>
-            <lineSegments geometry={lineGeometries.creaseGeo} position={[0, 0, -offsetZ]}>
-                <lineBasicMaterial color="#000000" transparent opacity={0.1} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
-            </lineSegments>
-        </group>
-    );
-}
+// Placeholder 1x1 trong suốt để useLoader luôn có nguồn hợp lệ khi
+// người dùng chưa tải ảnh nghệ thuật (giữ hook ổn định, không request mạng).
+const BLANK_TEXTURE =
+    'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 // ─── Scene Component ───────────────────────────────────────
 
 function BoxScene() {
     const { dieline, foldProgress, mockupTextureUrl } = useBoxStore();
+    // Nguồn ảnh nghệ thuật hợp nhất: ưu tiên ảnh từ panel Mockup (có transform
+    // chỉnh được + view canh chỉnh 2D), fallback ảnh tải nhanh ở ParamPanel.
+    const outerArtworkUrl = useMockupStore((s) => s.artwork.outer.url);
+    const textureUrl = outerArtworkUrl ?? mockupTextureUrl;
 
-    // Load texture conditionally
-    const texture = useLoader(THREE.TextureLoader, mockupTextureUrl || 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7') as THREE.Texture;
+    // Load texture conditionally (placeholder khi chưa có ảnh).
+    const texture = useLoader(
+        THREE.TextureLoader,
+        textureUrl || BLANK_TEXTURE,
+    ) as THREE.Texture;
 
     // Setup texture color space and wrapping
     useEffect(() => {
-        if (texture && mockupTextureUrl) {
+        if (texture && textureUrl) {
             texture.colorSpace = THREE.SRGBColorSpace;
             texture.generateMipmaps = true;
             texture.minFilter = THREE.LinearMipmapLinearFilter;
-            // Dieline uses standard Y-down or Y-up coords, we may need to flip Y
             texture.flipY = true;
         }
-    }, [texture, mockupTextureUrl]);
+    }, [texture, textureUrl]);
 
-    if (!dieline || dieline.panels.length === 0) {
-        return null;
-    }
-
-    const { panels, params } = dieline;
-    const thickness = params.T || 0.5;
-
-    // Compute depth map for auto-phasing
+    // Compute depth map for auto-phasing (cần cho SolidPanelMesh / foldCompensation).
+    const panels = dieline?.panels ?? [];
     const depthMap = useMemo(() => computeDepths(panels), [panels]);
     const maxD = useMemo(() => maxDepth(depthMap), [depthMap]);
 
-    // Find root panels (no parent)
-    const rootPanels = useMemo(
-        () => panels.filter(p => !p.parent),
-        [panels]
-    );
+    // Bọc ly: tham số cuộn nón cụt cho panel `body` (chỉ khi là khuôn bọc ly).
+    // Memo theo thông số ly để ổn định tham chiếu (tránh dựng lại geometry thừa).
+    const isCupSleeve = dieline?.standardCode === 'CUP-SLEEVE';
+    const coneWarp = useMemo(() => {
+        if (!isCupSleeve || !dieline) return null;
+        const p = dieline.params;
+        return computeConeWarp({
+            cupD1: p.cupD1,
+            cupD2: p.cupD2,
+            cupH: p.cupH,
+            cupHeightType: p.cupHeightType,
+            cupCoverage: p.cupCoverage,
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        isCupSleeve,
+        dieline?.params.cupD1,
+        dieline?.params.cupD2,
+        dieline?.params.cupH,
+        dieline?.params.cupHeightType,
+        dieline?.params.cupCoverage,
+    ]);
 
-    // Center the model
+    // Center the model around world origin.
     const center = useMemo(() => {
+        if (!dieline) return { x: 0, y: 0 };
         const bb = dieline.boundingBox;
         return {
             x: bb.minX + bb.width / 2,
@@ -340,37 +132,77 @@ function BoxScene() {
         };
     }, [dieline]);
 
-    // Material color based on box type
-    const materialColor = useMemo(() => {
-        const colors: Record<string, string> = {
-            rte: '#d4a574',      // Kraft brown
-            slb: '#c9956b',
-            gable: '#b8845a',
-            paper_bag: '#dbb896', // Light kraft
-            cup_sleeve: '#e8d5c0',
-            pizza: '#c4a882',
-            envelope: '#f0e6d8', // White paper
-            tray: '#ccb897',
-        };
-        return colors[params.boxType] || '#d4a574';
-    }, [params.boxType]);
+    if (!dieline || dieline.panels.length === 0) {
+        return null;
+    }
+
+    const { params } = dieline;
+    // Bì thư là GIẤY MỎNG: render độ dày nhỏ để các mặt gập áp phẳng 180° không
+    // lộ rõ chỗ xuyên/khe của khối dày (1.5mm board) — trông phẳng sát như thật.
+    const thickness = dieline.standardCode === 'ENV' ? 0.25 : (params.T || 0.5);
+
+    // ── Hộp diêm: LỒNG khay vào vỏ ở cuối hoạt ảnh ──
+    // Khi có `nesting`, dồn toàn bộ GẬP vào [0, NEST_START], rồi dùng đoạn
+    // [NEST_START, 1] để TRƯỢT khay vào lòng vỏ. Hộp khác giữ nguyên (foldT =
+    // foldProgress).
+    const NEST_START = 0.8;
+    const nesting = dieline.nesting;
+    const foldT = nesting ? Math.min(foldProgress / NEST_START, 1) : foldProgress;
+    let nestK = 0;
+    if (nesting) {
+        const raw = Math.max(0, Math.min(1, (foldProgress - NEST_START) / (1 - NEST_START)));
+        nestK = raw < 0.5 ? 2 * raw * raw : 1 - Math.pow(-2 * raw + 2, 2) / 2; // ease in-out
+    }
+    const trayShift: [number, number, number] = nesting
+        ? [nesting.x * nestK, nesting.y * nestK, nesting.z * nestK]
+        : [0, 0, 0];
+    const isSleeve = (name: string) => name.startsWith('sleeve_');
+    const trayPanels = nesting ? panels.filter((p) => !isSleeve(p.name)) : panels;
+    const sleevePanels = nesting ? panels.filter((p) => isSleeve(p.name)) : [];
+
+    const renderPanel = (panel: Panel) => (
+        panel.gusset ? (
+            <GussetMesh
+                key={panel.name}
+                panel={panel}
+                allPanels={panels}
+                foldProgress={foldT}
+                depthMap={depthMap}
+                maxD={maxD}
+                thickness={thickness}
+            />
+        ) : (
+            <SolidPanelMesh
+                key={panel.name}
+                panel={panel}
+                allPanels={panels}
+                foldProgress={foldT}
+                depthMap={depthMap}
+                maxD={maxD}
+                thickness={thickness}
+                globalBBox={dieline.boundingBox}
+                texture={textureUrl ? texture : null}
+                coneWarp={isCupSleeve ? coneWarp : null}
+                conePaths={panel.name === 'body' && isCupSleeve ? dieline.allPaths : null}
+                conePatchOnly={isCupSleeve && panel.name !== 'body'}
+                hideCadLines={dieline.standardCode === 'ENV'}
+                roundFolds={dieline.params.boxType === 'pizza'}
+            />
+        )
+    );
 
     return (
         <group position={[-center.x, -center.y, 0]}>
-            {panels.map(panel => (
-                <FlatPanelMesh
-                    key={panel.name}
-                    panel={panel}
-                    allPanels={panels}
-                    foldProgress={foldProgress}
-                    depthMap={depthMap}
-                    maxD={maxD}
-                    thickness={thickness}
-                    materialColor={materialColor}
-                    texture={mockupTextureUrl ? texture : null}
-                    globalBBox={dieline.boundingBox}
-                />
-            ))}
+            {/* Khay (trượt vào vỏ khi đóng) */}
+            <group position={trayShift}>
+                {trayPanels.map(renderPanel)}
+            </group>
+            {/* Vỏ (đứng yên) */}
+            {sleevePanels.length > 0 && (
+                <group>
+                    {sleevePanels.map(renderPanel)}
+                </group>
+            )}
         </group>
     );
 }
@@ -421,6 +253,13 @@ function FoldControls() {
             >
                 {isAnimating ? '⏸' : '▶'}
             </button>
+            <button
+                className="dt-fold-step-btn"
+                onClick={() => { setIsAnimating(false); setFoldProgress(0); }}
+                title="Trải phẳng (0%)"
+            >
+                ⟱ Trải
+            </button>
             <input
                 type="range"
                 min={0}
@@ -433,17 +272,95 @@ function FoldControls() {
                 }}
                 className="dt-fold-slider"
             />
-            <span className="dt-fold-value">
-                {Math.round(foldProgress * 100)}%
+            <button
+                className="dt-fold-step-btn"
+                onClick={() => { setIsAnimating(false); setFoldProgress(1); }}
+                title="Gập hoàn tất (100%)"
+            >
+                ⟰ Gập
+            </button>
+            <span className="dt-fold-value" style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={Math.round(foldProgress * 100)}
+                    onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        if (!Number.isNaN(v)) {
+                            setIsAnimating(false);
+                            setFoldProgress(Math.max(0, Math.min(1, v / 100)));
+                        }
+                    }}
+                    className="dt-num-input"
+                    style={{ width: 48 }}
+                    title="Nhập % gập chính xác"
+                />
+                %
             </span>
         </div>
     );
+}
+
+// ─── Scene Exporter Bridge ─────────────────────────────────
+//
+// useSceneExport PHẢI chạy bên trong <Canvas> (truy cập renderer/scene/
+// camera qua useThree). Các nút xuất nằm ở MockupPanel (DOM, ngoài
+// Canvas) nên không gọi hook trực tiếp được. Component cầu nối này lắng
+// nghe `exportPngNonce`/`exportGlbNonce` trong store; khi nonce tăng
+// (người dùng bấm nút), nó thực thi exportPNG()/exportGLB() tương ứng.
+// exportPNG đọc hệ số phóng đại từ `useMockupStore.exportScale` (Yêu cầu 6.2).
+//
+// _Requirements: 6.1, 6.2, 6.6_
+
+function SceneExporter() {
+    const { exportPNG, exportBatchPNG, exportGLB } = useSceneExport();
+    const pngNonce = useMockupStore((s) => s.exportPngNonce);
+    const glbNonce = useMockupStore((s) => s.exportGlbNonce);
+    const batchNonce = useMockupStore((s) => s.exportBatchNonce);
+
+    // Bỏ qua lần render đầu để nonce khởi tạo (0) không kích hoạt xuất.
+    const pngInit = useRef(true);
+    const glbInit = useRef(true);
+    const batchInit = useRef(true);
+
+    useEffect(() => {
+        if (pngInit.current) {
+            pngInit.current = false;
+            return;
+        }
+        void exportPNG();
+        // exportPNG đọc exportScale từ store nên không cần truyền tham số.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pngNonce]);
+
+    useEffect(() => {
+        if (batchInit.current) {
+            batchInit.current = false;
+            return;
+        }
+        void exportBatchPNG();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [batchNonce]);
+
+    useEffect(() => {
+        if (glbInit.current) {
+            glbInit.current = false;
+            return;
+        }
+        void exportGLB();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [glbNonce]);
+
+    return null;
 }
 
 // ─── Main Export ────────────────────────────────────────────
 
 export default function DielineScene3D() {
     const { dieline, isStanding } = useBoxStore();
+    const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
 
     if (!dieline) {
         return (
@@ -453,86 +370,71 @@ export default function DielineScene3D() {
         );
     }
 
-    // Camera distance based on bounding box
-    const camDist = Math.max(dieline.boundingBox.width, dieline.boundingBox.height) * 1.5;
+    // Camera distance + scene scale based on bounding box.
+    const bbExtent = Math.max(dieline.boundingBox.width, dieline.boundingBox.height);
+    const camDist = bbExtent * 1.5;
     const yOffset = dieline.boundingBox.height / 2;
 
     return (
-        <div className="dt-scene-3d-container" style={{ position: 'relative' }}>
-            <Canvas
-                shadows
+        <div className="dt-scene-3d-container" style={{ position: 'relative', width: '100%', height: '100%' }}>
+            <MockupCanvas
+                className="dt-mockup-canvas-wrap"
+                style={{ width: '100%', height: '100%' }}
                 camera={{
                     position: [camDist * 0.5, camDist * 0.7, camDist], // Standard isometric view
                     fov: 45,
                     near: 0.1,
                     far: camDist * 10,
                 }}
-                style={{ background: '#0A0A0A' }}
+                background="#0A0A0A"
             >
-                {/* Premium Studio Environment matching boxcraft-3d */}
-                <color attach="background" args={['#0A0A0A']} />
-                
-                {/* Ambient Light */}
-                <ambientLight intensity={0.55} />
-                
-                {/* Studio Keylight */}
-                <directionalLight
-                    position={[camDist * 0.4, camDist * 0.9, camDist * 0.5]}
-                    intensity={0.85}
-                    castShadow
-                    shadow-mapSize={[1024, 1024]}
-                    shadow-bias={-0.001}
-                />
-                
-                {/* Soft backlight for packaging reflections */}
-                <directionalLight
-                    position={[-camDist * 0.4, camDist * 0.4, -camDist * 0.4]}
-                    intensity={0.45}
-                    color="#e0f2fe"
-                />
-                
-                {/* Subtle floor light bouncing */}
-                <directionalLight
-                    position={[0, -camDist * 0.6, 0]}
-                    intensity={0.2}
-                    color="#ffedd5"
-                />
+                {/* ── HDRI/IBL + phản chiếu, fallback đèn studio (Yêu cầu 3.1) ── */}
+                <EnvironmentRig />
 
-                {/* Sleek dark mirror floor with shadow reception */}
-                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -camDist * 0.3, 0]} receiveShadow>
-                    <planeGeometry args={[camDist * 3, camDist * 3]} />
-                    <shadowMaterial opacity={0.12} />
-                </mesh>
-
-                {/* Grid helper for precise desktop feel */}
-                <gridHelper
-                    args={[camDist * 2, 40, '#2d2e33', '#1e1f22']}
-                    position={[0, -camDist * 0.3 + 1, 0]}
-                />
+                {/* ── Contact/soft shadow + preset nền/sàn (Yêu cầu 3.5, 7.3) ── */}
+                <ShadowFloor floorY={-yOffset} size={bbExtent} />
 
                 {/* Box layout orientation */}
-                <group 
+                <group
                     position={isStanding ? [0, yOffset, 0] : [0, 0, 0]}
                     rotation={isStanding ? [0, 0, 0] : [-Math.PI / 2, 0, 0]}
                 >
                     <BoxScene />
+                    {/* Overlay kích thước L×W×H (Yêu cầu 7.7) */}
+                    <DimensionOverlay />
                 </group>
 
-                {/* Controls */}
+                {/* ── Camera preset rig: 4 preset, chuyển cảnh ≤500ms (Yêu cầu 7.1) ── */}
+                <CameraRig center={[0, 0, 0]} distance={camDist} />
+
+                {/* ── Cầu nối xuất PNG/GLB phía client (Yêu cầu 6.1, 6.6) ── */}
+                <SceneExporter />
+
+                {/* ── View cube định hướng (góc dưới-phải) — bấm mặt để xoay nhanh ── */}
+                <GizmoHelper alignment="bottom-right" margin={[64, 64]}>
+                    <GizmoViewcube
+                        color="#e2e8f0"
+                        textColor="#0f172a"
+                        strokeColor="#94a3b8"
+                        hoverColor="#8b5cf6"
+                    />
+                </GizmoHelper>
+
+                {/* Controls (makeDefault để CameraRig đồng bộ target) */}
                 <OrbitControls
-                    enablePan
+                    enablePan={!artworkEditMode}
                     enableZoom
-                    enableRotate
+                    enableRotate={!artworkEditMode}
                     enableDamping
                     dampingFactor={0.05}
                     makeDefault
-                    maxPolarAngle={Math.PI / 2 + 0.15} // Prevent camera from going too far under ground
+                    maxPolarAngle={Math.PI / 2 + 0.15}
                     minDistance={camDist * 0.2}
                     maxDistance={camDist * 5}
                 />
-            </Canvas>
+            </MockupCanvas>
 
-            {/* Fold slider overlay */}
+            {/* Fold slider overlay — DOM thường, đặt cạnh canvas (ngoài cây R3F) */}
             <FoldControls />
         </div>
     );

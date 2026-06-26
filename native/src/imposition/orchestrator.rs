@@ -2,7 +2,7 @@
 //! (Task 6 / Req 1.2). Chỉ chuyển đổi kiểu.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyList};
 use imposition_core::orchestrator as core;
 use imposition_core::sticker::{ClusterParams, ColAltParams, RowAltParams};
 
@@ -71,10 +71,9 @@ pub fn generate_layout_candidates(
     );
 
     let out = PyList::empty(py);
-    #[allow(deprecated)]
     for c in &candidates {
         let d = candidate_to_pydict(py, c)?;
-        let t = PyTuple::new(py, &[d, c.rotated.into_py(py), c.strategy.clone().into_py(py)])?;
+        let t = (d, c.rotated, c.strategy.clone()).into_pyobject(py)?;
         out.append(t)?;
     }
     Ok(out.into())

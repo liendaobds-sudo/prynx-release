@@ -83,8 +83,11 @@ if (-not $SkipNuitka) {
         $PDFIUM_FLAG = "--include-data-files=$PDFIUM_DLL=pdfium.dll"
         Write-Host "  pdfium.dll found: $PDFIUM_DLL" -ForegroundColor DarkGray
     } else {
-        Write-Host "  WARNING: pdfium.dll not found at $PDFIUM_DLL" -ForegroundColor Yellow
-        Write-Host "  pdfcompare_native may fail at runtime." -ForegroundColor Yellow
+        Write-Host "ERROR: pdfium.dll not found at $PDFIUM_DLL" -ForegroundColor Red
+        Write-Host "  pdfcompare_native REQUIRES pdfium.dll at runtime (core PDF ops)." -ForegroundColor Red
+        Write-Host "  Build aborted to avoid shipping a broken artifact." -ForegroundColor Red
+        Pop-Location
+        exit 1
     }
 
     & $VENV_PYTHON -m nuitka `
@@ -118,6 +121,11 @@ if (-not $SkipNuitka) {
         --include-package=pdfplumber `
         --include-package=pytesseract `
         --include-package=celery `
+        --include-package=pypdf `
+        --include-package=fontTools `
+        --include-package=uharfbuzz `
+        --include-package=onnxruntime `
+        --include-package-data=onnxruntime `
         --include-data-dir=app/assets=app/assets `
         $PDFIUM_FLAG `
         --nofollow-import-to=tkinter `
@@ -176,7 +184,10 @@ if (Test-Path $GS_SRC) {
     Copy-Item -Recurse -Force "$GS_SRC\*" $GS_DEST
     Write-Host "  Ghostscript bundled." -ForegroundColor Green
 } else {
-    Write-Host "  WARNING: Local Ghostscript not found at $GS_SRC. It will not be bundled." -ForegroundColor Yellow
+    Write-Host "ERROR: Ghostscript not found at $GS_SRC." -ForegroundColor Red
+    Write-Host "  Ghostscript is REQUIRED for CMYK separations / PDF-X export." -ForegroundColor Red
+    Write-Host "  Install Ghostscript 10.04.0 or update GS_SRC path. Build aborted." -ForegroundColor Red
+    exit 1
 }
 
 # Copy Tesseract

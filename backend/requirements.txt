@@ -1,4 +1,15 @@
-fastapi[standard]==0.115.14
+﻿# SECURITY: bump 0.115.14 -> 0.138.1 để kéo starlette 1.3.1 (transitive, nằm dưới
+# MỌI request). Vá chuỗi CVE starlette 0.46.2: CVE-2025-54121, CVE-2025-62727,
+# PYSEC-2026-161, CVE-2026-48818, CVE-2026-48817, CVE-2026-54282, CVE-2026-54283.
+# fastapi 0.115.x ghim starlette<0.47 nên KHÔNG thể pin starlette vá trực tiếp ->
+# buộc bump fastapi (vẫn 0.x, không phải major). pydantic đã 2.12.5 nên không bị
+# ép nâng. LƯU Ý: extra [standard] phiên bản mới kéo thêm fastapi-cloud-cli +
+# sentry-sdk (xem ghi chú rủi ro chuỗi cung ứng trong báo cáo audit).
+fastapi[standard]==0.138.1
+# SECURITY: pin starlette TƯỜNG MINH lên 1.3.1. fastapi 0.138.1 chỉ yêu cầu
+# starlette>=0.46.0 (KHÔNG có cận trên) nên pip giữ nguyên 0.46.2 đã cài (vẫn dính
+# CVE) — phải ép pin để thực sự vá. 1.3.1 thoả ràng buộc fastapi, không xung đột.
+starlette==1.3.1
 uvicorn[standard]==0.30.0
 pydantic-settings==2.5.0
 sqlalchemy==2.0.35
@@ -8,7 +19,11 @@ celery[redis]==5.4.0
 redis==5.1.0
 websockets==13.0
 pypdfium2==4.30.0
-pdfplumber==0.11.0
+# SECURITY: bump 0.11.0 -> 0.11.9 để kéo pdfminer.six==20251230 (transitive, parse
+# PDF live). Vá CVE-2025-64512 (fix 20251107) + CVE-2025-70559 (fix 20251230).
+# Chọn 0.11.9 (KHÔNG 0.11.10) vì 0.11.10 ép pypdfium2>=5.9.0 (nhảy major 4->5);
+# 0.11.9 vẫn giữ pypdfium2>=4.18.0 nên pin pypdfium2==4.30.0 bên dưới không đổi.
+pdfplumber==0.11.9
 pypdf==6.13.3
 opencv-python-headless==4.10.0.84
 scikit-image==0.24.0
@@ -20,12 +35,26 @@ uharfbuzz==0.55.0
 aiofiles==24.1.0
 python-dotenv==1.2.2
 httpx==0.27.0
-pytest==8.3.0
-pytest-asyncio==0.24.0
+# SECURITY: bump pytest 8.3.0 -> 9.0.3 vá CVE-2025-71176 (chỉ dev/test, không nằm
+# trên đường runtime live). pytest-asyncio 0.24.0 -> 1.4.0 để tương thích pytest 9
+# (0.24.0 ghim pytest<9). Config asyncio_mode=auto vẫn được 1.x hỗ trợ.
+pytest==9.0.3
+pytest-asyncio==1.4.0
 pytesseract==0.3.13
 pikepdf==9.5.0
 
-qrcode==8.2
+segno==1.6.6
 python-barcode==0.16.1
 shapely==2.0.6
 scipy==1.12.0
+
+# Background removal (route /pdf-tools remove-background -> isnet/birefnet engines).
+# HARD import trong birefnet_engine.py/isnet_engine.py — BẮT BUỘC có để feature chạy
+# trong bản đóng gói (trước đây chỉ cài ad-hoc trong venv, không khai báo → Nuitka sót).
+onnxruntime==1.24.4
+
+# Serial transport cho Cut Export (spec gui-may-be 5.3/5.5 — gửi lệnh cắt qua cổng COM).
+# serial_port.py import lazy; thiếu -> kênh serial trả lỗi "missing pyserial".
+pyserial==3.5
+
+

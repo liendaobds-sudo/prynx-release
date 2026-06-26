@@ -3,6 +3,7 @@ Comparison job API endpoints.
 Supports both Celery (production) and synchronous (DEV_MODE) processing.
 """
 import logging
+import os
 import threading
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -16,12 +17,23 @@ from app.core.license_guard import require_license
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Giới hạn số job SO SÁNH chạy ĐỒNG THỜI ở chế độ thread (DEV/Desktop). Mỗi job đỉnh
+# RAM ~0.5–0.7GB/trang; chạy nhiều job song song dễ tràn RAM. Job vượt giới hạn sẽ
+# XẾP HÀNG (thread chờ semaphore) thay vì cùng ngốn RAM. Cấu hình qua biến môi trường.
+_MAX_CONCURRENT_COMPARES = max(1, int(os.environ.get("PRYNX_MAX_COMPARE_JOBS", "2") or "2"))
+_COMPARE_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_COMPARES)
+
 
 def run_comparison_sync(job_id: str):
-    """Run comparison synchronously in a background thread (DEV_MODE)."""
+    """Run comparison synchronously in a background thread (DEV_MODE).
+
+    Giới hạn đồng thời bằng semaphore: job vượt mức sẽ chờ tới lượt (xếp hàng) để
+    không bùng nổ RAM khi mở nhiều job so sánh cùng lúc.
+    """
     from app.database import SessionLocal
     from app.core.comparison_engine import run_comparison_pipeline
 
+    _COMPARE_SEMAPHORE.acquire()
     db = SessionLocal()
     try:
         run_comparison_pipeline(job_id, db)
@@ -35,6 +47,7 @@ def run_comparison_sync(job_id: str):
             db.commit()
     finally:
         db.close()
+        _COMPARE_SEMAPHORE.release()
 
 
 @router.post("/jobs/compare", response_model=JobCreateResponse)

@@ -359,7 +359,7 @@ export function generateEnvelope(params: BoxParams): DielineModel {
             line(pt(xRight, y1), pt(xLeft, y1), 'CREASE'),
         ];
         allPaths.push(...backPaths);
-        panels.push({ name: 'back', label: 'Mặt sau', paths: backPaths, parent: null, pivotEdge: null, foldAngle: 0, foldDirection: 1 });
+        panels.push({ name: 'back', label: 'Mặt sau', paths: backPaths, parent: 'front', pivotEdge: [pt(xLeft, y1), pt(xRight, y1)], foldAngle: 180, foldDirection: 1, foldPhase: [0.4, 0.7], stackZ: -3 });
 
         // ── Thumb-cut (khoét bán nguyệt bên trong mặt sau — nắp nhọn + nắp tròn) ──
         // Vị trí: đối xứng với đỉnh nắp khi gập xuống → y = FH
@@ -389,7 +389,7 @@ export function generateEnvelope(params: BoxParams): DielineModel {
             line(pt(xLeft, y2), pt(xLeft, y1), 'CREASE'),
         ];
         allPaths.push(...frontPaths);
-        panels.push({ name: 'front', label: 'Mặt trước', paths: frontPaths, parent: 'back', pivotEdge: [pt(xLeft, y1), pt(xRight, y1)], foldAngle: 180, foldDirection: 1 });
+        panels.push({ name: 'front', label: 'Mặt trước', paths: frontPaths, parent: null, pivotEdge: null, foldAngle: 0, foldDirection: 1 });
 
         // ── C. SIDE FLAPS ──
         const glueVat = snap(SF * 0.6);
@@ -403,7 +403,7 @@ export function generateEnvelope(params: BoxParams): DielineModel {
             line(pt(xGlueL, snap(y2 - glueVat)), pt(xGlueL, snap(y1 + glueVat)), 'CUT'),
         ];
         allPaths.push(...sideLeftPaths);
-        panels.push({ name: 'side_left', label: 'Tai hông trái', paths: sideLeftPaths, parent: 'front', pivotEdge: [pt(xLeft, y1), pt(xLeft, y2)], foldAngle: 90, foldDirection: 1 });
+        panels.push({ name: 'side_left', label: 'Tai hông trái', paths: sideLeftPaths, parent: 'front', pivotEdge: [pt(xLeft, y1), pt(xLeft, y2)], foldAngle: 180, foldDirection: -1, foldPhase: [0, 0.35], stackZ: -1 });
 
         const sideRightPaths: PathSegment[] = [
             line(pt(xRight, y1), pt(xGlueR, snap(y1 + glueVat)), 'CUT'),
@@ -412,12 +412,12 @@ export function generateEnvelope(params: BoxParams): DielineModel {
             line(pt(xRight, y2), pt(xRight, y1), 'CREASE'),
         ];
         allPaths.push(...sideRightPaths);
-        panels.push({ name: 'side_right', label: 'Tai hông phải', paths: sideRightPaths, parent: 'front', pivotEdge: [pt(xRight, y1), pt(xRight, y2)], foldAngle: -90, foldDirection: -1 });
+        panels.push({ name: 'side_right', label: 'Tai hông phải', paths: sideRightPaths, parent: 'front', pivotEdge: [pt(xRight, y1), pt(xRight, y2)], foldAngle: 180, foldDirection: 1, foldPhase: [0, 0.35], stackZ: -1 });
 
         // ── D. SEAL FLAP ──
         const sealPaths = buildSealFlap(xLeft, xRight, y2, FH, envFlapShape);
         allPaths.push(...sealPaths);
-        panels.push({ name: 'seal_flap', label: 'Nắp dán', paths: sealPaths, parent: 'front', pivotEdge: [pt(xLeft, y2), pt(xRight, y2)], foldAngle: 180, foldDirection: 1 });
+        panels.push({ name: 'seal_flap', label: 'Nắp dán', paths: sealPaths, parent: 'front', pivotEdge: [pt(xLeft, y2), pt(xRight, y2)], foldAngle: 180, foldDirection: -1, foldPhase: [0.7, 1.0], stackZ: -5 });
 
     } else {
         // ═══════════════════════════════════════════════════════
@@ -484,7 +484,7 @@ export function generateEnvelope(params: BoxParams): DielineModel {
             line(pt(x1, y1), pt(x1, y0), 'CREASE'),
         ];
         allPaths.push(...backPaths);
-        panels.push({ name: 'back', label: 'Mặt sau', paths: backPaths, parent: null, pivotEdge: null, foldAngle: 0, foldDirection: 1 });
+        panels.push({ name: 'back', label: 'Mặt sau', paths: backPaths, parent: 'front', pivotEdge: [pt(x1, y0), pt(x1, y1)], foldAngle: 180, foldDirection: -1, foldPhase: [0.4, 0.7], stackZ: -3 });
 
         // ── Thumb-cut (bên trong mặt sau — nắp nhọn + nắp tròn) ──
         // Nắp ở trên front → khi gập xuống, tip ở y = H - FH
@@ -514,12 +514,12 @@ export function generateEnvelope(params: BoxParams): DielineModel {
             line(pt(x2, y0), pt(x1, y0), 'CREASE'),         // crease dưới nối tai dưới
         ];
         allPaths.push(...frontPaths);
-        panels.push({ name: 'front', label: 'Mặt trước', paths: frontPaths, parent: 'back', pivotEdge: [pt(x1, y0), pt(x1, y1)], foldAngle: 180, foldDirection: 1 });
+        panels.push({ name: 'front', label: 'Mặt trước', paths: frontPaths, parent: null, pivotEdge: null, foldAngle: 0, foldDirection: 1 });
 
         // ── C. SEAL FLAP (trên front — theo trục Y, dùng buildSealFlap) ──
         const sealPaths = buildSealFlap(x1, x2, y1, FH, envFlapShape);
         allPaths.push(...sealPaths);
-        panels.push({ name: 'seal_flap', label: 'Nắp dán', paths: sealPaths, parent: 'front', pivotEdge: [pt(x1, y1), pt(x2, y1)], foldAngle: 180, foldDirection: 1 });
+        panels.push({ name: 'seal_flap', label: 'Nắp dán', paths: sealPaths, parent: 'front', pivotEdge: [pt(x1, y1), pt(x2, y1)], foldAngle: 180, foldDirection: -1, foldPhase: [0.7, 1.0], stackZ: -5 });
 
         // ── D. SIDE FLAP PHẢI (bên phải front) ──
         const glueVat = snap(SF * 0.6);
@@ -532,7 +532,7 @@ export function generateEnvelope(params: BoxParams): DielineModel {
             line(pt(x2, y1), pt(x2, y0), 'CREASE'),
         ];
         allPaths.push(...sideRightPaths);
-        panels.push({ name: 'side_right', label: 'Tai hông phải', paths: sideRightPaths, parent: 'front', pivotEdge: [pt(x2, y0), pt(x2, y1)], foldAngle: -90, foldDirection: -1 });
+        panels.push({ name: 'side_right', label: 'Tai hông phải', paths: sideRightPaths, parent: 'front', pivotEdge: [pt(x2, y0), pt(x2, y1)], foldAngle: 180, foldDirection: 1, foldPhase: [0, 0.35], stackZ: -1 });
 
         // ── E. SIDE FLAP DƯỚI (dưới front) ──
         const yGlueBot = snap(y0 - SF);
@@ -544,7 +544,7 @@ export function generateEnvelope(params: BoxParams): DielineModel {
             line(pt(snap(x1 + glueVat), yGlueBot), pt(snap(x2 - glueVat), yGlueBot), 'CUT'),
         ];
         allPaths.push(...sideBotPaths);
-        panels.push({ name: 'side_left', label: 'Tai hông dưới', paths: sideBotPaths, parent: 'front', pivotEdge: [pt(x1, y0), pt(x2, y0)], foldAngle: 90, foldDirection: 1 });
+        panels.push({ name: 'side_left', label: 'Tai hông dưới', paths: sideBotPaths, parent: 'front', pivotEdge: [pt(x1, y0), pt(x2, y0)], foldAngle: 180, foldDirection: 1, foldPhase: [0, 0.35], stackZ: -1 });
     }
 
     // ── E. Bounding Box & Return ───────────────────────────

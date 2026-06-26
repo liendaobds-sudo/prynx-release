@@ -53,7 +53,7 @@ export interface ToolDefinition {
 // ─── Lazy Component Imports ───
 const CompareTab = lazy(() => import('../components/CompareTab'));
 const TextCompareTab = lazy(() => import('../components/TextCompareTab'));
-const AiQcTab = lazy(() => import('../components/AiQcTab'));
+const AiQcTab = lazy(() => import('../components/AiQcTab')); // eslint-disable-line @typescript-eslint/no-unused-vars -- TẠM KHOÁ: entry ai_qc trong TOOL_REGISTRY đang bị comment (xem ghi chú). Giữ import để bật lại nhanh.
 const ImpositionTab = lazy(() => import('../components/ImpositionTab'));
 const PreflightTab = lazy(() => import('../components/PreflightTab'));
 const CombineTab = lazy(() => import('../components/CombineTab'));
@@ -449,23 +449,32 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     bgIcon: 'bg-emerald-100 dark:bg-emerald-500/10',
     textIcon: 'text-emerald-600',
   },
-  {
-    id: 'imposition',
-    title: 'Nhận dạng chữ (OCR)',
-    tabTitle: 'Bình bài (Chưa có file)',
-    icon: '🔍',
-    description: 'Nhúng text ẩn để tìm kiếm, copy chữ',
-    longDescription: 'Chạy OCR nhận diện chữ trên ảnh scan, tạo lớp text ẩn giúp copy, tìm kiếm dễ dàng.',
-    category: 'util',
-    component: ImpositionTab,
-    isEnabled: true,
-    defaultPayload: { focusFeature: 'ocr' },
-    hoverColor: 'hover:border-cyan-500 hover:text-cyan-600 text-slate-800 dark:text-white',
-    hoverBorder: 'hover:border-cyan-500',
-    hoverShadow: 'hover:shadow-[0_8px_30px_rgb(6,182,212,0.15)]',
-    bgIcon: 'bg-cyan-100 dark:bg-cyan-500/10',
-    textIcon: 'text-cyan-600',
-  },
+  // ─── OCR (Nhận dạng chữ → Searchable PDF) — TẠM ẨN (phát triển lại sau) ───
+  // Lý do (audit 2026-06-26): lớp text ẩn nhúng qua insert_text(render_mode=3) encode
+  // bằng latin-1 + font base-14 Helvetica → KÝ TỰ TIẾNG VIỆT bị thay bằng '?' (đã chạy
+  // chứng minh). ⇒ Ctrl+F / bôi đen / copy tiếng Việt KHÔNG hoạt động (chỉ chạy đúng cho
+  // English/ASCII). Nhận diện (Tesseract vie+eng) thì OK — lỗi nằm ở khâu NHÚNG text.
+  // Giữ nguyên: OcrTool.tsx, route /pdf-tools/ocr-searchable, OCREngine, routing
+  // (WORKSPACE_TOOL_PANEL/PREPROCESS_ROUTER_TOOLS) để bật lại nhanh.
+  // ĐỂ HIỆN LẠI: bỏ comment khối dưới SAU KHI nhúng font TrueType Unicode (DejaVuSans đã
+  // có ở backend/app/assets/fonts) dạng CID + ToUnicode CMap thay cho latin-1/Helvetica.
+  // {
+  //   id: 'imposition',
+  //   title: 'Nhận dạng chữ (OCR)',
+  //   tabTitle: 'Bình bài (Chưa có file)',
+  //   icon: '🔍',
+  //   description: 'Nhúng text ẩn để tìm kiếm, copy chữ',
+  //   longDescription: 'Chạy OCR nhận diện chữ trên ảnh scan, tạo lớp text ẩn giúp copy, tìm kiếm dễ dàng.',
+  //   category: 'util',
+  //   component: ImpositionTab,
+  //   isEnabled: true,
+  //   defaultPayload: { focusFeature: 'ocr' },
+  //   hoverColor: 'hover:border-cyan-500 hover:text-cyan-600 text-slate-800 dark:text-white',
+  //   hoverBorder: 'hover:border-cyan-500',
+  //   hoverShadow: 'hover:shadow-[0_8px_30px_rgb(6,182,212,0.15)]',
+  //   bgIcon: 'bg-cyan-100 dark:bg-cyan-500/10',
+  //   textIcon: 'text-cyan-600',
+  // },
   {
     id: 'imposition',
     title: 'Xuất PDF/X chuẩn',
@@ -551,22 +560,27 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     bgIcon: 'bg-purple-100 dark:bg-purple-500/10',
     textIcon: 'text-purple-600',
   },
-  {
-    id: 'ai_qc',
-    title: 'Soát lỗi AI',
-    tabTitle: 'Soát lỗi AI',
-    icon: '🧬',
-    description: 'Kiểm tra chính tả bằng AI',
-    longDescription: 'LLM soát lỗi chính tả, phân biệt ngữ pháp địa phương, tư vấn an toàn cho in ấn.',
-    category: 'qc',
-    component: AiQcTab,
-    isEnabled: true,
-    hoverColor: 'hover:border-indigo-500 hover:text-indigo-600 text-slate-800 dark:text-white',
-    hoverBorder: 'hover:border-indigo-500',
-    hoverShadow: 'hover:shadow-[0_8px_30px_rgb(99,102,241,0.15)]',
-    bgIcon: 'bg-indigo-100 dark:bg-indigo-500/10',
-    textIcon: 'text-indigo-600',
-  },
+  // ─── AI QC (Soát lỗi AI) — TẠM KHOÁ & ẨN (phát triển lại sau) ───
+  // Lý do: audit phát hiện rủi ro bảo mật (rò rỉ API key qua message lỗi/log khi
+  // gọi Gemini), gửi nội dung file khách lên bên thứ ba không cảnh báo, thiếu giới
+  // hạn kích thước/chi phí. Giữ nguyên component (AiQcTab.tsx) + backend (/qc/*)
+  // để phát triển lại. Để HIỆN lại: bỏ comment khối dưới + import AiQcTab ở trên.
+  // {
+  //   id: 'ai_qc',
+  //   title: 'Soát lỗi AI',
+  //   tabTitle: 'Soát lỗi AI',
+  //   icon: '🧬',
+  //   description: 'Kiểm tra chính tả bằng AI',
+  //   longDescription: 'LLM soát lỗi chính tả, phân biệt ngữ pháp địa phương, tư vấn an toàn cho in ấn.',
+  //   category: 'qc',
+  //   component: AiQcTab,
+  //   isEnabled: true,
+  //   hoverColor: 'hover:border-indigo-500 hover:text-indigo-600 text-slate-800 dark:text-white',
+  //   hoverBorder: 'hover:border-indigo-500',
+  //   hoverShadow: 'hover:shadow-[0_8px_30px_rgb(99,102,241,0.15)]',
+  //   bgIcon: 'bg-indigo-100 dark:bg-indigo-500/10',
+  //   textIcon: 'text-indigo-600',
+  // },
 ];
 
 // ─── Helper Functions ───

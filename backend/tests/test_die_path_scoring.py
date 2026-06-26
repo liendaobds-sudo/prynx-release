@@ -91,3 +91,27 @@ def test_channel_name_dominates_spot():
                                          CFG.die_colors, CFG.die_color_tol)
     assert chosen is cut
     assert by_spot is True
+
+
+def test_spot_fill_does_not_steal_from_die_stroke():
+    # audit #8: mảng TÔ trên kênh spot (vd logo Pantone) KHÔNG được nuốt đường bế.
+    # Đường bế là NÉT mảnh, không trùng tên-kênh/màu cấu hình; mảng tô spot lớn hơn.
+    # Trước khi vá: fill-spot (+400) > stroke (~190) → chọn nhầm. Sau vá: fill-spot
+    # chỉ +80 (không phải nét) → đường bế thắng.
+    spot_fill = _path(220.0, 200.0, type='f', spot='Gold-Pantone',
+                      fill=(0.1, 0.2, 0.3, 0.0), width=1.0, close=True)
+    die = _path(150.0, 130.0, type='s', spot=None, color=(0.0, 0.0, 0.0), width=0.5, close=True)
+    chosen, by_spot = _select_from_paths([spot_fill, die], PAGE, CFG.die_channel_names,
+                                         CFG.die_colors, CFG.die_color_tol)
+    assert chosen is die
+    assert by_spot is False
+
+
+def test_spot_stroke_still_wins_after_fix():
+    # Bảo toàn: đường bế là NÉT trên kênh spot vẫn thắng mảng tô không-spot lớn hơn.
+    bg_fill = _path(220.0, 200.0, type='f', spot=None, fill=(0.2, 0.2, 0.2), width=1.0)
+    die = _path(150.0, 130.0, type='s', spot='Gold-Pantone', color=(1, 1, 1), width=0.8)
+    chosen, by_spot = _select_from_paths([bg_fill, die], PAGE, CFG.die_channel_names,
+                                         CFG.die_colors, CFG.die_color_tol)
+    assert chosen is die
+    assert by_spot is True

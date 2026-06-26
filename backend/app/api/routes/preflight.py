@@ -906,6 +906,52 @@ async def add_bleed(req: AddBleedRequest):
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
 
 
+def _safe_watermark_preflight(pdf_path: str, license_info: dict | None) -> None:
+    """Nhúng stealth watermark vào output (non-blocking, bỏ qua DEV_MODE).
+
+    Giữ tính nhất quán với các endpoint pdf-tools: output phát hành đều có dấu
+    truy vết. Mọi lỗi chỉ log, không làm hỏng file kết quả.
+    """
+    lk = (license_info or {}).get("license_key", "") or ""
+    if not lk or lk == "DEV_MODE":
+        return
+    hwid = (license_info or {}).get("hwid", "") or ""
+    tmp_path = None
+    try:
+        import tempfile
+        from app.core.watermark import embed_watermark
+        with pikepdf.Pdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+            embed_watermark(pdf, lk, hwid)
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(pdf_path) or ".")
+            os.close(fd)
+            pdf.save(tmp_path)
+        os.replace(tmp_path, pdf_path)
+        tmp_path = None
+    except Exception as e:
+        logger.error(f"[WATERMARK] preflight mirror-bleed failed (non-blocking): {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+@router.post("/preflight/mirror-bleed")
+async def mirror_bleed(req: AddBleedRequest, license_info: dict = Depends(require_license)):
+    """Tạo bù xén bằng cách LẬT GƯƠNG nội dung mép ra vùng bleed (giữ vector)."""
+    file_path = _get_file_path(req.file_id)
+    from app.core.page_boxes import PageBoxesEngine
+    engine = PageBoxesEngine()
+    try:
+        output = engine.add_mirror_bleed(file_path, req.bleed_mm, req.pages)
+        _safe_watermark_preflight(output, license_info)
+        return {"success": True, "output_filename": Path(output).name}
+    except Exception as e:
+        logger.error("mirror-bleed thất bại: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+
+
 # ══════════════════════════════════════════════════════════════
 #  FIX HAIRLINES
 # ══════════════════════════════════════════════════════════════

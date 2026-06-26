@@ -23,7 +23,6 @@ export interface PlacementInstruction {
     y_pt: number;
     rotation_deg: number;
     scale: number;
-    creep_offset_pt: number;
     /** Clipping rectangle, null = no clip */
     clip: {
         x_pt: number;
@@ -201,7 +200,6 @@ export function serializeBookletPlan(
             y_pt: transform.rawY,
             rotation_deg: rot180 ? 180 : 0,
             scale: transform.scale,
-            creep_offset_pt: paperThicknessPt * ((effTotalSheets - 1) / 2 - effSheetIndex),
             clip: {
                 x_pt: transform.clipX,
                 y_pt: transform.clipY,

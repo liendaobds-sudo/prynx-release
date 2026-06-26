@@ -14,8 +14,9 @@
 // ============================================================
 
 import fc from 'fast-check';
-import { BoxParams, DEFAULT_PARAMS } from './types';
+import { BoxParams, DEFAULT_PARAMS, Point2D } from './types';
 import { validateParams } from './validateParams';
+import { snap } from './utils';
 
 /** Loại hộp được hỗ trợ bởi 8 generator. */
 export type GeneratorBoxType = BoxParams['boxType'];
@@ -248,4 +249,116 @@ export function arbBoxParams(boxType: GeneratorBoxType): fc.Arbitrary<BoxParams>
             throw new Error(`arbBoxParams: boxType không hỗ trợ: ${_exhaustive}`);
         }
     }
+}
+
+// ============================================================
+// Polygon arbitraries (Workstream B — Polygon Offset)
+//
+// Sinh `Die_Outline` dạng `Point2D[]` (đơn vị mm) cho các property
+// test offset (Property 5–8, 12). Mọi đa giác sinh ra:
+//   - có ≥ 3 đỉnh phân biệt và diện tích bao > 0,
+//   - là đa giác ĐƠN (không tự cắt) — dùng dựng hình "sao quanh tâm"
+//     (star-shaped): các đỉnh sắp theo góc tăng dần quanh một điểm
+//     kernel nên vòng luôn đơn,
+//   - tọa độ đã snap theo quy ước của module (0,001 mm).
+//
+// Dùng bởi polygonOffset.test.ts.
+// ============================================================
+
+/**
+ * Đa giác hình sao (star-shaped) quanh tâm — LUÔN đơn (không tự cắt) vì
+ * các đỉnh được đặt tại các góc tăng dần nghiêm ngặt quanh một điểm kernel.
+ *
+ * @param nMin/nMax  số đỉnh
+ * @param rMin/rMax  bán kính từ tâm tới đỉnh (mm)
+ */
+function arbStarPolygon(
+    nMin: number,
+    nMax: number,
+    rMin: number,
+    rMax: number,
+): fc.Arbitrary<Point2D[]> {
+    return fc.integer({ min: nMin, max: nMax }).chain((n) => {
+        const step = (2 * Math.PI) / n;
+        return fc
+            .record({
+                cx: fc.integer({ min: -50, max: 50 }),
+                cy: fc.integer({ min: -50, max: 50 }),
+                // jitter ∈ (−0,4·step, 0,4·step) giữ thứ tự góc tăng dần nghiêm ngặt
+                jitters: fc.array(fc.double({ min: -0.4, max: 0.4, noNaN: true }), {
+                    minLength: n,
+                    maxLength: n,
+                }),
+                radii: fc.array(fc.double({ min: rMin, max: rMax, noNaN: true }), {
+                    minLength: n,
+                    maxLength: n,
+                }),
+            })
+            .map(({ cx, cy, jitters, radii }) => {
+                const pts: Point2D[] = [];
+                for (let i = 0; i < n; i++) {
+                    const angle = i * step + jitters[i] * step;
+                    const r = radii[i];
+                    pts.push({ x: snap(cx + r * Math.cos(angle)), y: snap(cy + r * Math.sin(angle)) });
+                }
+                return pts;
+            });
+    });
+}
+
+/**
+ * Đa giác ĐƠN tổng quát (lồi hoặc lõm nhẹ), 3–10 đỉnh, bán kính 20–80 mm.
+ * Star-shaped ⇒ luôn không tự cắt, diện tích > 0.
+ */
+export function arbSimplePolygon(): fc.Arbitrary<Point2D[]> {
+    return arbStarPolygon(3, 10, 20, 80);
+}
+
+/**
+ * Đa giác LÕM (non-convex) — hình "sao nhiều cánh": xen kẽ bán kính ngoài
+ * lớn và bán kính trong nhỏ tạo ≥ 1 đỉnh lõm (reflex). Vẫn star-shaped quanh
+ * tâm nên không tự cắt. `spikes` cánh ⇒ `2·spikes` đỉnh.
+ */
+export function arbConcavePolygon(): fc.Arbitrary<Point2D[]> {
+    return fc.integer({ min: 2, max: 6 }).chain((spikes) => {
+        const n = spikes * 2;
+        const step = (2 * Math.PI) / n;
+        return fc
+            .record({
+                cx: fc.integer({ min: -40, max: 40 }),
+                cy: fc.integer({ min: -40, max: 40 }),
+                outer: fc.double({ min: 50, max: 90, noNaN: true }),
+                inner: fc.double({ min: 12, max: 30, noNaN: true }),
+                jitters: fc.array(fc.double({ min: -0.3, max: 0.3, noNaN: true }), {
+                    minLength: n,
+                    maxLength: n,
+                }),
+            })
+            .map(({ cx, cy, outer, inner, jitters }) => {
+                const pts: Point2D[] = [];
+                for (let i = 0; i < n; i++) {
+                    const r = i % 2 === 0 ? outer : inner; // ngoài/trong xen kẽ ⇒ lõm
+                    const angle = i * step + jitters[i] * step;
+                    pts.push({ x: snap(cx + r * Math.cos(angle)), y: snap(cy + r * Math.sin(angle)) });
+                }
+                return pts;
+            });
+    });
+}
+
+/** Hình chữ nhật (CCW) với gốc và kích thước ngẫu nhiên (mm). */
+export function arbRectangle(): fc.Arbitrary<Point2D[]> {
+    return fc
+        .record({
+            x: fc.integer({ min: -50, max: 50 }),
+            y: fc.integer({ min: -50, max: 50 }),
+            w: fc.integer({ min: 5, max: 300 }),
+            h: fc.integer({ min: 5, max: 300 }),
+        })
+        .map(({ x, y, w, h }) => [
+            { x: snap(x), y: snap(y) },
+            { x: snap(x + w), y: snap(y) },
+            { x: snap(x + w), y: snap(y + h) },
+            { x: snap(x), y: snap(y + h) },
+        ]);
 }

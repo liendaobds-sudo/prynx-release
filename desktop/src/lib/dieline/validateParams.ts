@@ -168,13 +168,13 @@ export function validateParams(
         warnings.push(`Tai đút quá cao, đã giảm về ${p.TH}mm`);
     }
 
-    // --- 8. Ràng buộc Paper Bag: BF ≤ D/2 ---
+    // --- 8. Ràng buộc Paper Bag: chiều cao đáy BF ≤ 85% độ rộng hông (W) ---
     if (p.boxType === 'paper_bag' && p.BF > 0) {
-        const maxBF = Math.floor(p.D / 2);
+        const maxBF = Math.floor(p.W * 0.85);
         if (p.BF > maxBF) {
             p.BF = maxBF;
             wasClamped = true;
-            warnings.push(`Chiều cao đáy quá lớn, đã giảm về ${p.BF}mm`);
+            warnings.push(`Chiều cao đáy không vượt quá 85% rộng hông, đã giảm về ${p.BF}mm`);
         }
     }
 

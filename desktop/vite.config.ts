@@ -24,6 +24,12 @@ export default defineConfig({
     },
   },
   // Force Vite restart timestamp: 1234567890
+  build: {
+    // HARDENING: KHONG xuat source map cho ban production -> khong lo ma nguon
+    // frontend cho ke trinh sat. (Mac dinh Vite da false; chot tuong minh de
+    // tranh vo tinh bat sau nay.)
+    sourcemap: false,
+  },
   worker: {
     format: 'es',
   },

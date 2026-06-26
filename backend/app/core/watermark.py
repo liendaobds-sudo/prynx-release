@@ -95,12 +95,18 @@ def embed_watermark(doc, license_key: str, hwid: str = "") -> bool:
         tag = f"PX_{lid}_{hid}_{ts}"
 
         # ── Layer 1: XMP Metadata ──
-        xmp_packet = _build_xmp_packet(lid, hid, ts)
-        # pikepdf stores XMP as a stream on the document catalog
-        with pdf.open_metadata(set_pikepdf_as_editor=False) as meta:
-            meta["prynx:lid"] = lid
-            meta["prynx:hid"] = hid
-            meta["prynx:ts"] = ts
+        # Ghi THẲNG gói XMP đã dựng vào catalog /Metadata, thay vì dùng API typed
+        # của pikepdf (open_metadata[...] suy luận kiểu cho khoá lạ → log ERROR
+        # "prynx:ts should be set to a list of strings" mỗi lần chạy và có thể bỏ
+        # qua giá trị). Cách này không gây lỗi và nhúng đúng lid/hid/ts.
+        try:
+            xmp_packet = _build_xmp_packet(lid, hid, ts)
+            meta_stream = pdf.make_stream(xmp_packet.encode('utf-8'))
+            meta_stream[pikepdf.Name("/Type")] = pikepdf.Name("/Metadata")
+            meta_stream[pikepdf.Name("/Subtype")] = pikepdf.Name("/XML")
+            pdf.Root[pikepdf.Name("/Metadata")] = meta_stream
+        except Exception as e:
+            logger.debug(f"[WATERMARK] XMP write skipped: {e}")
 
         # ── Layer 2: Invisible text on each page ──
         for page in pdf.pages:
@@ -151,13 +157,23 @@ def verify_watermark(pdf_path: str) -> dict:
     try:
         pdf = pikepdf.Pdf.open(pdf_path)
 
-        # Check XMP metadata
-        with pdf.open_metadata() as meta:
-            lid = meta.get("prynx:lid", "")
-            hid = meta.get("prynx:hid", "")
-            ts = meta.get("prynx:ts", "")
-            if lid:
-                result = {"lid": lid, "hid": hid, "ts": ts, "source": "xmp"}
+        # Check XMP metadata — đọc THẲNG packet raw rồi regex theo namespace
+        # px:* (không phụ thuộc ánh xạ prefix của pikepdf, khớp _build_xmp_packet).
+        try:
+            xmp_obj = pdf.Root.get("/Metadata")
+            if xmp_obj is not None:
+                raw_xmp = bytes(xmp_obj.read_bytes()).decode('utf-8', errors='replace')
+                import re as _re
+                def _xmp(attr):
+                    m = _re.search(rf'px:{attr}="([^"]*)"', raw_xmp)
+                    return m.group(1) if m else ""
+                lid = _xmp("lid")
+                hid = _xmp("hid")
+                ts = _xmp("ts")
+                if lid:
+                    result = {"lid": lid, "hid": hid, "ts": ts, "source": "xmp"}
+        except Exception:
+            pass
 
         # Check invisible text (Layer 2) on first page
         if not result and len(pdf.pages) > 0:

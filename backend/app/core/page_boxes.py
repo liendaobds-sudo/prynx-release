@@ -259,3 +259,91 @@ class PageBoxesEngine:
 
         logger.info(f"Added {bleed_mm}mm bleed on {len(target_pages)} pages → {output_path}")
         return output_path
+
+    def add_mirror_bleed(self, file_path: str, bleed_mm: float = 3, pages: list[int] | None = None) -> str:
+        """
+        Tạo vùng bù xén bằng cách LẬT GƯƠNG (mirror/reflect) nội dung sát mép trang
+        ra ngoài vùng bleed — giữ nguyên 100% vector, không raster hoá.
+
+        Khác hẳn add_bleed_from_trim (chỉ set BleedBox). Hàm này thực sự vẽ nội dung
+        phản chiếu vào 4 dải cạnh + 4 góc quanh trim box, đúng kỹ thuật "mirror bleed"
+        của prepress, nên vùng bleed luôn có hình (không lộ viền trắng sau khi xén).
+
+        Trim box lấy theo CropBox (kết quả auto_trim) → TrimBox → MediaBox.
+        Lưu ý: không xử lý trang có /Rotate ≠ 0 (giữ nguyên, chỉ set bleed box).
+        """
+        doc = pikepdf.Pdf.open(file_path)
+        target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
+        bleed_pt = bleed_mm * PT_PER_MM
+
+        for pnum in target_pages:
+            if not (1 <= pnum <= len(doc.pages)):
+                continue
+            page = doc.pages[pnum - 1]
+
+            mb = _get_page_box(page, "/MediaBox")
+            crop = _get_page_box(page, "/CropBox", fallback=mb)
+            trim = _get_page_box(page, "/TrimBox", fallback=crop)
+            x0, y0, x1, y1 = trim
+            b = bleed_pt
+
+            # Trang xoay: kỹ thuật mirror theo trục thẳng sẽ sai → fallback set box.
+            rotate = int(page.get("/Rotate", 0) or 0) % 360
+            if rotate != 0 or bleed_pt <= 0:
+                bleed_rect = [x0 - b, y0 - b, x1 + b, y1 + b]
+                new_mb = [
+                    min(mb[0], bleed_rect[0]), min(mb[1], bleed_rect[1]),
+                    max(mb[2], bleed_rect[2]), max(mb[3], bleed_rect[3]),
+                ]
+                page[pikepdf.Name("/MediaBox")] = pikepdf.Array(new_mb)
+                page[pikepdf.Name("/CropBox")] = pikepdf.Array(new_mb)
+                page[pikepdf.Name("/BleedBox")] = pikepdf.Array(bleed_rect)
+                page[pikepdf.Name("/TrimBox")] = pikepdf.Array(trim)
+                continue
+
+            # Snapshot nội dung trang hiện tại thành Form XObject (vector nguyên bản).
+            fx = page.as_form_xobject()
+            fx_name = page.add_resource(fx, pikepdf.Name.XObject)
+
+            def _draw(clip, matrix):
+                cx, cy, cw, ch = clip
+                a, bb, c, d, e, f = matrix
+                return [
+                    "q",
+                    f"{cx:.4f} {cy:.4f} {cw:.4f} {ch:.4f} re W n",
+                    f"{a:.6f} {bb:.6f} {c:.6f} {d:.6f} {e:.4f} {f:.4f} cm",
+                    f"{fx_name} Do",
+                    "Q",
+                ]
+
+            ops = []
+            # 1) Nội dung gốc (identity), clip trong trim để không đè dải mirror.
+            ops += _draw((x0, y0, x1 - x0, y1 - y0), (1, 0, 0, 1, 0, 0))
+            # 2) 4 cạnh — phản chiếu qua trục cạnh tương ứng.
+            ops += _draw((x0 - b, y0, b, y1 - y0), (-1, 0, 0, 1, 2 * x0, 0))   # trái  (x=x0)
+            ops += _draw((x1, y0, b, y1 - y0),     (-1, 0, 0, 1, 2 * x1, 0))   # phải  (x=x1)
+            ops += _draw((x0, y0 - b, x1 - x0, b), (1, 0, 0, -1, 0, 2 * y0))   # dưới  (y=y0)
+            ops += _draw((x0, y1, x1 - x0, b),     (1, 0, 0, -1, 0, 2 * y1))   # trên  (y=y1)
+            # 3) 4 góc — phản chiếu qua cả hai trục.
+            ops += _draw((x0 - b, y0 - b, b, b), (-1, 0, 0, -1, 2 * x0, 2 * y0))  # BL
+            ops += _draw((x1, y0 - b, b, b),     (-1, 0, 0, -1, 2 * x1, 2 * y0))  # BR
+            ops += _draw((x0 - b, y1, b, b),     (-1, 0, 0, -1, 2 * x0, 2 * y1))  # TL
+            ops += _draw((x1, y1, b, b),         (-1, 0, 0, -1, 2 * x1, 2 * y1))  # TR
+
+            new_content = pikepdf.Stream(doc, "\n".join(ops).encode("ascii"))
+            page[pikepdf.Name("/Contents")] = new_content
+
+            bleed_rect = [x0 - b, y0 - b, x1 + b, y1 + b]
+            page[pikepdf.Name("/MediaBox")] = pikepdf.Array(bleed_rect)
+            page[pikepdf.Name("/CropBox")] = pikepdf.Array(bleed_rect)
+            page[pikepdf.Name("/BleedBox")] = pikepdf.Array(bleed_rect)
+            page[pikepdf.Name("/TrimBox")] = pikepdf.Array(trim)
+            page[pikepdf.Name("/ArtBox")] = pikepdf.Array(trim)
+
+        output_name = f"{Path(file_path).stem}_mirror_{uuid.uuid4().hex[:6]}.pdf"
+        output_path = str(self.output_dir / output_name)
+        doc.save(output_path)
+        doc.close()
+
+        logger.info(f"Mirror-bleed {bleed_mm}mm on {len(target_pages)} pages → {output_path}")
+        return output_path

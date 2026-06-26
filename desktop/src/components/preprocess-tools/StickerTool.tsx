@@ -59,8 +59,21 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     // Shared State
     const [bleedMm, setBleedMm] = useState<number>(() => getSaved('bleedMm', 0.0));
     const [removeWhiteBg, setRemoveWhiteBg] = useState<boolean>(() => getSaved('removeWhiteBg', true));
+    // Tab "Xén vuông góc" dùng cờ RIÊNG: "Xóa lề trắng thừa" (auto-trim) khác hẳn
+    // ngữ nghĩa "Bỏ nền trắng" (lọc mask dò viền) của tab Bế tem. Không dùng chung.
+    const [trimWhiteEdge, setTrimWhiteEdge] = useState<boolean>(() => getSaved('trimWhiteEdge', true));
     const [bleedColorType, setBleedColorType] = useState(() => getSaved('bleedColorType', 'image')); // 'mirror', 'image', 'inpaint', 'solid'
     const [bleedColorHex, setBleedColorHex] = useState(() => getSaved('bleedColorHex', '#FFFFFF'));
+
+    // Đổi kiểu màu nền: khi chọn "Đổ màu trơn" mà giá trị hiện tại chưa ở dạng CMYK
+    // ("C,M,Y,K"), khởi tạo về "0,0,0,0" để khung CMYK và giá trị gửi backend khớp
+    // nhau (tránh hiển thị 0,0,0,0 nhưng lại gửi RGB #FFFFFF).
+    const handleBleedColorTypeChange = (v: string) => {
+        setBleedColorType(v);
+        if (v === 'solid' && bleedColorHex.split(',').length !== 4) {
+            setBleedColorHex('0,0,0,0');
+        }
+    };
 
     // Save to localStorage whenever state changes
     useEffect(() => {
@@ -70,14 +83,16 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         localStorage.setItem('ps_sticker_fillHoles', JSON.stringify(fillHoles));
         localStorage.setItem('ps_sticker_bleedMm', JSON.stringify(bleedMm));
         localStorage.setItem('ps_sticker_removeWhiteBg', JSON.stringify(removeWhiteBg));
+        localStorage.setItem('ps_sticker_trimWhiteEdge', JSON.stringify(trimWhiteEdge));
         localStorage.setItem('ps_sticker_bleedColorType', JSON.stringify(bleedColorType));
         localStorage.setItem('ps_sticker_bleedColorHex', JSON.stringify(bleedColorHex));
-    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex]);
+    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
     const [progress, setProgress] = useState('');
     const [error, setError] = useState('');
+    const [warning, setWarning] = useState('');
     const [isSuccess, setIsSuccess] = useState(false);
 
     const runVectorMirror = async () => {
@@ -87,7 +102,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         let currentFid = uploadRes.id;
         
         // Step 2: Auto Trim (if requested)
-        if (removeWhiteBg) {
+        if (trimWhiteEdge) {
             setProgress('Đang xén bỏ lề trắng...');
             const trimRes = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -106,8 +121,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             currentFid = reUploadRes.id;
         }
         
-        setProgress('Đang xử lý lật gương tạo vùng bù xén...');
-        const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/add-bleed`, {
+        setProgress('Đang lật gương nội dung mép ra vùng bù xén...');
+        const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/mirror-bleed`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ file_id: currentFid, bleed_mm: bleedMm, pages: null }),
         });
@@ -124,7 +139,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         let currentFid = '';
         let targetFile = (await getWorkingFile()) || pdfFile!;
         
-        if (productType === 'rectangle' && removeWhiteBg) {
+        if (productType === 'rectangle' && trimWhiteEdge) {
             setProgress('Đang xén bỏ lề trắng...');
             const uploadRes = await uploadPDF(targetFile);
             currentFid = uploadRes.id;
@@ -175,6 +190,13 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             setDetectedShapeType(shapeType);
             setDetectedShapeParams(shapeParams);
         }
+
+        // Cảnh báo nghiệp vụ (vd một số trang không dò được hình) — header được
+        // percent-encode ở backend để giữ tiếng Việt.
+        const warnHeader = response.headers.get('X-Sticker-Warning');
+        if (warnHeader) {
+            try { setWarning(decodeURIComponent(warnHeader)); } catch { setWarning(warnHeader); }
+        }
         
         return await response.blob();
     };
@@ -185,12 +207,13 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         setIsSuccess(false);
         setIsProcessing(true);
         setError('');
+        setWarning('');
         setProgress('Đang chuẩn bị dữ liệu...');
 
         // ─── Recipe record hook ─── (params tất định; phát lại dò contour lại trên file mới)
         recipeRecorder.noteOperation('sticker_dieline', {
             productType, cutMode, offsetMm, cornerStyle, fillHoles,
-            bleedMm, removeWhiteBg, bleedColorType, bleedColorHex,
+            bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex,
         });
 
         try {
@@ -233,6 +256,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             <div className="flex bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-xl shadow-inner border border-slate-200 dark:border-white/5 relative z-10">
                 <button
                     onClick={() => handleProductTypeChange('sticker')}
+                    aria-pressed={productType === 'sticker'}
                     className={`flex-1 flex flex-row items-center justify-center gap-2 py-2.5 rounded-lg text-[11px] font-bold transition-all relative z-10 ${
                         productType === 'sticker'
                             ? 'bg-white dark:bg-zinc-800 text-indigo-600 dark:text-indigo-400 shadow-md ring-1 ring-indigo-100 dark:ring-indigo-500/30'
@@ -244,6 +268,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 </button>
                 <button
                     onClick={() => handleProductTypeChange('rectangle')}
+                    aria-pressed={productType === 'rectangle'}
                     className={`flex-1 flex flex-row items-center justify-center gap-2 py-2.5 rounded-lg text-[11px] font-bold transition-all relative z-10 ${
                         productType === 'rectangle'
                             ? 'bg-white dark:bg-zinc-800 text-indigo-600 dark:text-indigo-400 shadow-md ring-1 ring-indigo-100 dark:ring-indigo-500/30'
@@ -278,6 +303,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                         onChange={setOffsetMm}
                                         suffix="mm"
                                         step={0.5}
+                                        min={-10}
+                                        max={10}
                                         className="w-[90px] shrink-0"
                                     />
                                     <div className="flex gap-1.5 flex-1">
@@ -285,6 +312,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                             <button
                                                 key={opt.id}
                                                 onClick={() => setCornerStyle(opt.id)}
+                                                aria-pressed={cornerStyle === opt.id}
                                                 className={`flex-1 h-[32px] rounded border text-[12px] transition-all flex items-center justify-center font-bold ${
                                                     cornerStyle === opt.id
                                                         ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
@@ -310,11 +338,13 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 onChange={setBleedMm}
                                 suffix="mm"
                                 step={0.5}
+                                min={0}
                                 className="w-[90px] shrink-0"
                             />
                             <div className="flex gap-1.5 flex-1">
                                 <button
                                     onClick={() => setFillHoles(!fillHoles)}
+                                    aria-pressed={fillHoles}
                                     title="Bỏ qua các lỗ rỗng bên trong khối hình. Máy bế chỉ cắt viền ngoài cùng."
                                     className={`flex-1 h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-1 whitespace-nowrap overflow-hidden ${
                                         fillHoles
@@ -326,6 +356,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 </button>
                                 <button
                                     onClick={() => setRemoveWhiteBg(!removeWhiteBg)}
+                                    aria-pressed={removeWhiteBg}
                                     title="Chỉ dò viền của chi tiết, bỏ qua mảng nền trắng."
                                     className={`flex-1 h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-1 whitespace-nowrap overflow-hidden ${
                                         removeWhiteBg
@@ -344,7 +375,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 <div className="flex flex-col gap-1.5 mb-2 relative z-[50]">
                                     <RichSelect
                                         value={bleedColorType}
-                                        onChange={(v) => setBleedColorType(v)}
+                                        onChange={handleBleedColorTypeChange}
                                         options={BLEED_COLOR_MODES_STICKER}
                                     />
                                 </div>
@@ -392,19 +423,21 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 onChange={setBleedMm}
                                 suffix="mm"
                                 step={0.5}
+                                min={0}
                                 className="w-[90px] shrink-0"
                             />
                             <div className="flex-1">
                                 <button
-                                    onClick={() => setRemoveWhiteBg(!removeWhiteBg)}
+                                    onClick={() => setTrimWhiteEdge(!trimWhiteEdge)}
+                                    aria-pressed={trimWhiteEdge}
                                     title="Tự động thu gọn các khoảng trắng vô dụng xung quanh hình trước khi bù xén. Giữ nguyên chất lượng vector gốc của file."
                                     className={`w-full h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-2 whitespace-nowrap overflow-hidden ${
-                                        removeWhiteBg
+                                        trimWhiteEdge
                                             ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
                                             : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
                                     }`}
                                 >
-                                    {removeWhiteBg ? '✅ Xóa lề trắng thừa' : 'Xóa lề trắng thừa'}
+                                    {trimWhiteEdge ? '✅ Xóa lề trắng thừa' : 'Xóa lề trắng thừa'}
                                 </button>
                             </div>
                         </div>
@@ -414,7 +447,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             <div className="flex flex-col gap-1.5 mb-2 relative z-[50]">
                                 <RichSelect
                                     value={bleedColorType}
-                                    onChange={(v) => setBleedColorType(v)}
+                                    onChange={handleBleedColorTypeChange}
                                     options={BLEED_COLOR_MODES_RECTANGLE}
                                 />
                             </div>
@@ -521,6 +554,13 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 <div className="flex items-center gap-3 bg-rose-50 dark:bg-rose-900/20 p-3 rounded-lg border border-rose-200 dark:border-rose-800/50 mt-2">
                     <div className="w-5 h-5 rounded-full border-2 border-rose-500 border-t-transparent animate-spin shrink-0" />
                     <span className="text-[12px] text-rose-700 dark:text-rose-300 font-medium">{progress}</span>
+                </div>
+            )}
+
+            {/* Warning (nghiệp vụ, không phải lỗi chặn) */}
+            {warning && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200 dark:border-amber-800/50 mt-2">
+                    <span className="text-[12px] text-amber-700 dark:text-amber-300 font-medium">⚠️ {warning}</span>
                 </div>
             )}
 

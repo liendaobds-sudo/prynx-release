@@ -324,7 +324,7 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
     nestingResult: recalcNesting(initialDieline, DEFAULT_NESTING_CONFIG),
     sleeveNestingResult: null,
     mockupTextureUrl: null,
-    isStanding: true,
+    isStanding: !['pizza', 'tray'].includes(DEFAULT_PARAMS.boxType),
 
     setIsStanding: (v) => set({ isStanding: v }),
 
@@ -393,6 +393,9 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
             clampVersion: (wasClamped || forceRerender) ? get().clampVersion + 1 : get().clampVersion,
             nestingResult: dualResult ? dualResult.tray : recalcNesting(dieline, nestingConfig),
             sleeveNestingResult: dualResult ? dualResult.sleeve : null,
+            // Định hướng mặc định trong 3D: pizza và khay/diêm NẰM (úp đáy xuống
+            // sàn), các loại khác dựng đứng. Chỉ áp khi đổi loại khuôn.
+            ...(forceRerender ? { isStanding: !['pizza', 'tray'].includes(validParams.boxType) } : {}),
         });
     },
 

@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
                 "will be rejected (403). The Tauri host must pass the token via stdin/PRYNX_TOKEN_FILE."
             )
         else:
-            logger.info("🔒 [SECURITY] DEV_MODE=OFF, sidecar token loaded — guard active.")
+            logger.debug("🔒 [SECURITY] DEV_MODE=OFF, sidecar token loaded — guard active.")
 
     # Notice: Job recovery is now handled via the POST /api/system/recover-jobs endpoint.
     logger.info("ℹ️ System ready. Use /api/system/recover-jobs to handle stuck jobs.")

@@ -14,7 +14,46 @@ import { jsPDF } from 'jspdf';
 import 'svg2pdf.js';
 import { toast } from 'sonner';
 import { buildChains, chainToSvgD, computeEnvelopeDims } from './sharedGeometry';
-import { validateClosedContours, OpenContourWarning } from './contourValidator';
+import {
+    validateClosedContours,
+    OpenContourWarning,
+    ContourValidationResult,
+} from './contourValidator';
+
+/**
+ * Kết quả quyết định của cổng xuất (Export_Gate) — Requirement 3.2, 3.6.
+ *
+ *   - `created`   : mọi biên ngoài (Outer_Silhouette) khép kín HOẶC người
+ *                   dùng đã xác nhận tường minh ⇒ tiến hành ghi file.
+ *   - `cancelled` : tồn tại Open_Outer_Boundary chưa được xác nhận ⇒ KHÔNG
+ *                   ghi bất kỳ đầu ra nào; kèm danh sách cảnh báo quan sát được.
+ */
+export type ExportGateDecision =
+    | { kind: 'created' }
+    | { kind: 'cancelled'; warnings: OpenContourWarning[] };
+
+/**
+ * Hàm THUẦN quyết định cổng xuất — điểm quan sát được cho test cổng mà
+ * không phá vỡ chữ ký công khai `Promise<void>` của `downloadPDF`.
+ *
+ * Quy tắc (Requirement 3.1, 3.2, 3.5, 3.6):
+ *   - `result.allClosed === true` ⇒ `created` (tạo file không hỏi).
+ *   - có biên ngoài hở:
+ *       • `confirmed === true`  ⇒ `created` (người dùng xác nhận ghi).
+ *       • `confirmed === false` ⇒ `cancelled` kèm danh sách cảnh báo
+ *         (không callback / callback trả `false`).
+ *
+ * Hàm chỉ đọc `result`, không biến đổi đầu vào.
+ */
+export function decideExportGate(
+    result: ContourValidationResult,
+    confirmed: boolean,
+): ExportGateDecision {
+    if (result.allClosed || confirmed) {
+        return { kind: 'created' };
+    }
+    return { kind: 'cancelled', warnings: result.openContours };
+}
 
 /** Style cho từng tag */
 const TAG_STYLES: Record<string, { stroke: string; width: number; dashArray?: string }> = {
@@ -220,14 +259,18 @@ function buildDimensionSvg(model: DielineModel): string {
  * Segments nối tiếp → gộp thành 1 path SVG liên tục (M L C L...)
  * → svg2pdf.js render vào PDF → true vector curves, liền mạch.
  *
- * CỔNG KIỂM TRA BIÊN DẠNG (Requirement 1):
+ * CỔNG KIỂM TRA BIÊN DẠNG (Requirement 3):
  *   1. Chạy `validateClosedContours(model)` trước khi ghi file.
  *   2. Nếu mọi Cut_Piece khép kín (`allClosed === true`) → tạo file
- *      ngay, không hỏi (Requirement 1.8).
+ *      ngay, không hỏi (Requirement 3.1, 3.2).
  *   3. Nếu có biên hở → hiển thị cảnh báo liệt kê panel + `gapMm`
- *      (Requirement 1.2, 1.3) và chỉ ghi file khi `confirmOpenContours`
- *      trả về `true` (Requirement 1.4). Không có callback → coi như
- *      chưa xác nhận và KHÔNG ghi file.
+ *      (Requirement 3.3) và chỉ ghi file khi `confirmOpenContours`
+ *      trả về `true` (Requirement 3.5). Không có callback / callback
+ *      trả `false` → cổng kết thúc `cancelled`, KHÔNG ghi file và model
+ *      không đổi (Requirement 3.6).
+ *
+ *   Quyết định cổng được tập trung trong hàm thuần `decideExportGate`
+ *   để quan sát được mà không đổi chữ ký công khai của `downloadPDF`.
  *
  * @param confirmOpenContours Callback xác nhận khi phát hiện biên hở;
  *   nhận danh sách cảnh báo, trả `true` để tiếp tục ghi file.
@@ -238,12 +281,15 @@ export async function downloadPDF(
     confirmOpenContours?: (warnings: OpenContourWarning[]) => Promise<boolean>,
 ): Promise<void> {
     // ── Cổng kiểm tra biên dạng khép kín trước khi xuất ──
+    // Quyết định cổng được tập trung vào hàm thuần `decideExportGate` để
+    // vừa quan sát được (created / cancelled) vừa giữ chữ ký `Promise<void>`.
     const validation = validateClosedContours(model);
 
+    let confirmed = false;
     if (!validation.allClosed) {
         const warnings = validation.openContours;
 
-        // Cảnh báo cho người dùng trước khi tạo file (Requirement 1.3).
+        // Cảnh báo cho người dùng trước khi tạo file (Requirement 3.3).
         const detail = warnings
             .map((w) => `• ${w.panelLabel || w.panelName}: hở ${w.gapMm.toFixed(3)}mm`)
             .join('\n');
@@ -251,16 +297,18 @@ export async function downloadPDF(
             `Phát hiện ${warnings.length} biên dạng cắt hở:\n${detail}`,
         );
 
-        // Không có callback xác nhận → không ghi file (Requirement 1.4).
-        if (!confirmOpenContours) {
-            return;
+        // Chỉ xác nhận khi có callback và callback trả về `true` (Requirement 3.5).
+        // Không có callback → coi như chưa xác nhận (Requirement 3.6).
+        if (confirmOpenContours) {
+            confirmed = await confirmOpenContours(warnings);
         }
+    }
 
-        // Chỉ ghi file khi người dùng xác nhận tường minh (Requirement 1.4).
-        const confirmed = await confirmOpenContours(warnings);
-        if (!confirmed) {
-            return;
-        }
+    // Không ghi bất kỳ đầu ra nào khi cổng kết thúc ở trạng thái `cancelled`
+    // (Requirement 3.6) — model không bị biến đổi vì luồng ghi chưa chạy.
+    const decision = decideExportGate(validation, confirmed);
+    if (decision.kind === 'cancelled') {
+        return;
     }
 
     const toastId = toast.loading('Đang tạo PDF...');

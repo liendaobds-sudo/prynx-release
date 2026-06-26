@@ -7,7 +7,13 @@
 // phần tử so với baseline đã ghi, và mỗi tọa độ điểm tương ứng lệch
 // không quá 0.001 mm; sinh hai lần cùng params cho kết quả đồng nhất.
 //
-// **Validates: Requirements 7.3**
+// **Validates: Requirements 7.3** (Giai đoạn 1)
+//
+// Giai đoạn 2 — Task 10.1 TÁI DÙNG chính baseline golden-master này
+// làm cổng bất biến hình học generator: **Validates: Requirements 4.1,
+// 4.4** (panels/allPaths của cả 8 generator giữ `tag`/`type`/số điểm và
+// mỗi tọa độ lệch ≤ 0.001 mm so với baseline; chứng minh thay đổi Giai
+// đoạn 2 KHÔNG làm đổi hình học generator).
 //
 // Khác với goldenMaster.test.ts (task 2.5) — vốn chụp chuỗi SVG `d` của
 // Shared_Geometry_Module — test này KHOÁ trực tiếp cấu trúc hình học do

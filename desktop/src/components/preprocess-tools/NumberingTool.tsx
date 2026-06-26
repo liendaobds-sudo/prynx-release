@@ -18,8 +18,8 @@ interface Props {
   selectedFieldIds?: string[];
   onSelectField?: (ids: string[]) => void;
   onBack?: () => void;
-  onSpawnTab?: (blob: Blob, name: string) => void;
-  onApplyResult?: (blob: Blob, name: string) => void;
+  onSpawnTab?: (blob: Blob, name: string, path?: string) => void;
+  onApplyResult?: (blob: Blob, name: string, path?: string) => void;
   isActive?: boolean;
 }
 
@@ -267,16 +267,17 @@ export default function NumberingTool({
             const jobId = await startVdpJobBackend(templateFile, vdpFields, csvData);
             
             pollAbortRef.current = new AbortController();
-            const result = await pollVdpJob(jobId, setStatusMessage, false, pollAbortRef.current.signal);
+            const result = await pollVdpJob(jobId, setStatusMessage, true, pollAbortRef.current.signal);
             const blob = result.blob;
+            const path = result.path;
             if (!blob) throw new Error('Không nhận được file kết quả từ máy chủ');
             const outName = `Numbered_${pdfFile.name}`;
             
             if (spawnNewTab && onSpawnTab) {
-                onSpawnTab(blob, outName);
+                onSpawnTab(blob, outName, path ?? undefined);
                 setStatusMessage(`Hoàn thành! Đã tạo Tab PDF mới.`);
             } else if (onApplyResult) {
-                onApplyResult(blob, outName);
+                onApplyResult(blob, outName, path ?? undefined);
                 setStatusMessage(`Hoàn thành! Đã ghi đè file hiện tại.`);
             }
         } catch (error: any) {

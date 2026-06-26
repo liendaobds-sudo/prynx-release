@@ -11,6 +11,11 @@ src-tauri/target/
 # Version control
 .git/
 
+# Secrets — NEVER ship .env into any image (contains Supabase/payment keys)
+.env
+*.env
+!.env.example
+
 # OS files
 .DS_Store
 Thumbs.db
@@ -32,6 +37,15 @@ data/
 # Poppler binaries (bundled for desktop, not needed in Docker)
 poppler/
 poppler.zip
+
+# Internal documentation — NEVER ship to production
+# (contains core algorithm logic, architecture secrets)
+**/*PLAYBOOK*.md
+**/*ARCHITECTURE*.md
+**/*AUDIT*.md
+**/*SECURITY*.md
+**/KNOWN_DIVERGENCES.md
+**/QA_CHECKLIST.md
 
 # Uploads and results (mounted as volumes)
 backend/uploads/

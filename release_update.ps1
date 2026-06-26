@@ -5,11 +5,13 @@
 #  ASCII-only (Windows PowerShell parse .ps1 theo ANSI khi khong BOM).
 #
 #  Vi du:
-#    .\release_update.ps1 -Version 1.0.1 -ReleaseRepo "liendaobds-sudo/pdfcompare-releases"
+#    .\release_update.ps1 -Version 1.0.1
+#    (Repo phat hanh TU DONG suy tu endpoint updater trong tauri.conf.json -- khong con go tay,
+#     tranh phat hanh nham repo khien client khong nhan duoc update.)
 # ============================================================
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    [Parameter(Mandatory = $true)][string]$ReleaseRepo,   # vd: owner/pdfcompare-releases (PUBLIC)
+    [string]$ReleaseRepo = "",                            # (TUY CHON) override; mac dinh SUY TU endpoint updater. Neu dat ma KHAC endpoint -> dung.
     [string]$KeyPassword = "",                            # mat khau cua ~/.tauri/prynx.key (de trong neu khong dat)
     [string]$Notes = "",
     [switch]$SkipNuitka,                                  # Bo qua bien dich backend (dung lai sidecar cu khi backend khong doi)
@@ -18,6 +20,35 @@ param(
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
+$CONF_PATH = "$ROOT\desktop\src-tauri\tauri.conf.json"
+
+# ---- NGUON CHAN LY DUY NHAT cho repo phat hanh ----
+# App khach da nung cung endpoint updater trong tauri.conf.json; bao mat/cap nhat chi chay
+# neu PHAT HANH dung repo do. Vi vay suy repo tu chinh endpoint, thay vi go tay (de nham
+# -> client poll repo cu -> khong bao gio nhan update, ke ca ban va bao mat khan cap).
+function Get-EndpointRepo {
+    param([string]$ConfPath)
+    if (-not (Test-Path $ConfPath)) { throw "Khong thay tauri.conf.json: $ConfPath" }
+    $conf = Get-Content $ConfPath -Raw | ConvertFrom-Json
+    $endpoints = $conf.plugins.updater.endpoints
+    if (-not $endpoints -or $endpoints.Count -lt 1) { throw "tauri.conf.json: thieu plugins.updater.endpoints" }
+    $ep = [string]$endpoints[0]
+    if ($ep -notmatch 'github\.com/([^/]+/[^/]+)/releases') {
+        throw "Endpoint updater khong phai GitHub releases hop le: $ep"
+    }
+    return $Matches[1]
+}
+
+$endpointRepo = Get-EndpointRepo -ConfPath $CONF_PATH
+if ([string]::IsNullOrWhiteSpace($ReleaseRepo)) {
+    $ReleaseRepo = $endpointRepo
+    Write-Host "  [OK] Repo phat hanh suy tu endpoint: $ReleaseRepo" -ForegroundColor Green
+}
+elseif ($ReleaseRepo -ne $endpointRepo) {
+    throw ("Repo phat hanh '$ReleaseRepo' KHAC repo trong endpoint updater '$endpointRepo'.`n" +
+           "App khach CHI nhan update tu '$endpointRepo'. Bo tham so -ReleaseRepo (de tu suy), " +
+           "hoac sua endpoint trong tauri.conf.json cho khop.")
+}
 
 Write-Host ""
 Write-Host "  === PrynX Release v$Version -> $ReleaseRepo ===" -ForegroundColor Cyan
@@ -99,12 +130,21 @@ $latest | ConvertTo-Json -Depth 6 | Set-Content $latestPath -Encoding utf8
 Write-Host "  [OK] Da tao latest.json (url -> $downloadUrl)" -ForegroundColor Green
 
 # ---- 6. Publish len GitHub Releases ----
-Write-Host "  [..] Tao release $tag tren $ReleaseRepo va upload..." -ForegroundColor Yellow
-# Xoa release cu cung tag neu co (tranh trung), bo qua loi neu chua ton tai
-& gh release delete $tag --repo $ReleaseRepo --yes *> $null
-& gh release create $tag --repo $ReleaseRepo --title "PrynX $Version" --notes $Notes `
-    "$($setup.FullName)" "$sigFile" "$latestPath"
-if ($LASTEXITCODE -ne 0) { throw "gh release create that bai." }
+Write-Host "  [..] Tao/cap nhat release $tag tren $ReleaseRepo va upload..." -ForegroundColor Yellow
+# AN TOAN: KHONG xoa release cu truoc (tranh khoang trong neu create loi -> client mat 'latest').
+# Neu tag da ton tai -> ghi de asset (--clobber); neu chua -> tao moi.
+& gh release view $tag --repo $ReleaseRepo *> $null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  [..] Release $tag da ton tai -> ghi de asset (clobber)..." -ForegroundColor Yellow
+    & gh release upload $tag --repo $ReleaseRepo --clobber `
+        "$($setup.FullName)" "$sigFile" "$latestPath"
+    if ($LASTEXITCODE -ne 0) { throw "gh release upload (clobber) that bai." }
+}
+else {
+    & gh release create $tag --repo $ReleaseRepo --title "PrynX $Version" --notes $Notes `
+        "$($setup.FullName)" "$sigFile" "$latestPath"
+    if ($LASTEXITCODE -ne 0) { throw "gh release create that bai." }
+}
 
 Write-Host ""
 Write-Host "  === PHAT HANH XONG. App khach se tu thay ban $Version. ===" -ForegroundColor Green

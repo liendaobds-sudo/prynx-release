@@ -1002,6 +1002,21 @@ function calculateInterlockingParallelogramLayoutFn(
     return { id: blockId, cols: 0, rows: 0, startX: offsetX, startY: offsetY, width: bb.width, height: bb.height, isRotated: false, cells: bestItems };
 }
 
+/**
+ * @deprecated ORPHAN cho luồng tem/CNC. Từ "Imposition Engine Unification",
+ * MỌI job N-up (tem bế / CNC / guillotine / nup) đi BACKEND qua /nup-start →
+ * nguồn chân lý là `imposition_core` (Rust, parity-locked với Python
+ * `sticker_imposer_pkg`). Xem processHandlers.runProcessEngine (nhánh
+ * impositionMode === NUp) và ImpositionTab (sticker/cnc set impositionMode=NUp).
+ *
+ * Các nhánh shape-cụ-thể bên dưới (HAMMER/DUMBBELL/HEXAGON/TRIANGLE/PENTAGON/
+ * CIRCLE_ELLIPSE/TRAPEZOID/PARALLELOGRAM dưới strategy 'optimal_auto') KHÔNG nằm
+ * trên đường output của tem/CNC nữa — chỉ còn được gọi bởi `ProductAdvisor`
+ * (dùng 'simple_auto' → bỏ qua các nhánh này) và đường legacy `imposePdf`.
+ * KHÔNG mở rộng logic shape ở đây; sửa ở `imposition_core` (Rust) thay thế.
+ * Lưu ý: thiếu nhánh 'ARROW' (Rust orchestrator gộp 'PENTAGON'|'ARROW') — minh
+ * chứng cho việc bản TS đã drift; giữ lại chỉ để tương thích đường legacy.
+ */
 export function solveOptimalNupLayout(
     usableW: number, usableH: number, 
     origW: number, origH: number, 

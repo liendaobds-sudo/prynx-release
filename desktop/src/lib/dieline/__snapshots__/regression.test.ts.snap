@@ -724,11 +724,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
   "panelCount": 6,
   "panels": [
     {
-      "foldAngle": 0,
+      "foldAngle": 180,
       "foldDirection": 1,
       "label": "Mặt sau",
       "name": "back",
-      "parent": null,
+      "parent": "front",
       "paths": [
         {
           "points": [
@@ -892,11 +892,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
+      "foldAngle": 0,
       "foldDirection": 1,
       "label": "Mặt trước",
       "name": "front",
-      "parent": "back",
+      "parent": null,
       "paths": [
         {
           "points": [
@@ -957,8 +957,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 90,
-      "foldDirection": 1,
+      "foldAngle": 180,
+      "foldDirection": -1,
       "label": "Tai hông trái",
       "name": "side_left",
       "parent": "front",
@@ -1022,8 +1022,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": -90,
-      "foldDirection": -1,
+      "foldAngle": 180,
+      "foldDirection": 1,
       "label": "Tai hông phải",
       "name": "side_right",
       "parent": "front",
@@ -1088,7 +1088,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 180,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Nắp dán",
       "name": "seal_flap",
       "parent": "front",
@@ -1465,7 +1465,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 311.713,
         },
         {
-          "x": 113.333,
+          "x": 122.392,
           "y": 311.713,
         },
       ],
@@ -1475,19 +1475,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 113.333,
+          "x": 122.392,
           "y": 311.713,
         },
         {
-          "x": 117.936,
+          "x": 126.995,
           "y": 311.713,
         },
         {
-          "x": 121.667,
+          "x": 130.726,
           "y": 307.982,
         },
         {
-          "x": 121.667,
+          "x": 130.726,
           "y": 303.379,
         },
       ],
@@ -1497,11 +1497,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 121.667,
+          "x": 130.726,
           "y": 303.379,
         },
         {
-          "x": 130,
+          "x": 137.188,
           "y": 318.728,
         },
       ],
@@ -1511,11 +1511,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 130,
+          "x": 137.188,
           "y": 318.728,
         },
         {
-          "x": 230,
+          "x": 222.812,
           "y": 318.728,
         },
       ],
@@ -1525,11 +1525,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 230,
+          "x": 222.812,
           "y": 318.728,
         },
         {
-          "x": 238.333,
+          "x": 229.274,
           "y": 303.379,
         },
       ],
@@ -1539,19 +1539,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 238.333,
+          "x": 229.274,
           "y": 303.379,
         },
         {
-          "x": 238.333,
+          "x": 229.274,
           "y": 307.982,
         },
         {
-          "x": 242.064,
+          "x": 233.005,
           "y": 311.713,
         },
         {
-          "x": 246.667,
+          "x": 237.608,
           "y": 311.713,
         },
       ],
@@ -1561,7 +1561,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 246.667,
+          "x": 237.608,
           "y": 311.713,
         },
         {
@@ -1793,7 +1793,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 311.713,
         },
         {
-          "x": 353.333,
+          "x": 362.392,
           "y": 311.713,
         },
       ],
@@ -1803,19 +1803,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 353.333,
+          "x": 362.392,
           "y": 311.713,
         },
         {
-          "x": 357.936,
+          "x": 366.995,
           "y": 311.713,
         },
         {
-          "x": 361.667,
+          "x": 370.726,
           "y": 307.982,
         },
         {
-          "x": 361.667,
+          "x": 370.726,
           "y": 303.379,
         },
       ],
@@ -1825,11 +1825,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 361.667,
+          "x": 370.726,
           "y": 303.379,
         },
         {
-          "x": 370,
+          "x": 377.188,
           "y": 318.728,
         },
       ],
@@ -1839,11 +1839,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 370,
+          "x": 377.188,
           "y": 318.728,
         },
         {
-          "x": 470,
+          "x": 462.812,
           "y": 318.728,
         },
       ],
@@ -1853,11 +1853,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 470,
+          "x": 462.812,
           "y": 318.728,
         },
         {
-          "x": 478.333,
+          "x": 469.274,
           "y": 303.379,
         },
       ],
@@ -1867,19 +1867,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 478.333,
+          "x": 469.274,
           "y": 303.379,
         },
         {
-          "x": 478.333,
+          "x": 469.274,
           "y": 307.982,
         },
         {
-          "x": 482.064,
+          "x": 473.005,
           "y": 311.713,
         },
         {
-          "x": 486.667,
+          "x": 477.608,
           "y": 311.713,
         },
       ],
@@ -1889,7 +1889,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 486.667,
+          "x": 477.608,
           "y": 311.713,
         },
         {
@@ -2118,11 +2118,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 58.5,
-          "y": 220,
+          "y": 248.832,
         },
         {
           "x": 58.5,
-          "y": 258.251,
+          "y": 279.645,
         },
       ],
       "tag": "CUT",
@@ -2132,19 +2132,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 58.5,
-          "y": 258.251,
+          "y": 279.645,
         },
         {
           "x": 58.5,
-          "y": 259.079,
+          "y": 280.473,
         },
         {
           "x": 59.172,
-          "y": 259.751,
+          "y": 281.145,
         },
         {
           "x": 60,
-          "y": 259.751,
+          "y": 281.145,
         },
       ],
       "tag": "CUT",
@@ -2154,19 +2154,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 60,
-          "y": 259.751,
+          "y": 281.145,
         },
         {
           "x": 60.828,
-          "y": 259.751,
+          "y": 281.145,
         },
         {
           "x": 61.5,
-          "y": 259.079,
+          "y": 280.473,
         },
         {
           "x": 61.5,
-          "y": 258.251,
+          "y": 279.645,
         },
       ],
       "tag": "CUT",
@@ -2176,11 +2176,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 61.5,
-          "y": 258.251,
+          "y": 279.645,
         },
         {
           "x": 61.5,
-          "y": 220,
+          "y": 248.832,
         },
       ],
       "tag": "CUT",
@@ -2190,11 +2190,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 61.5,
-          "y": 220,
+          "y": 248.832,
         },
         {
           "x": 58.5,
-          "y": 220,
+          "y": 248.832,
         },
       ],
       "tag": "CUT",
@@ -2254,11 +2254,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 298.5,
-          "y": 220,
+          "y": 248.832,
         },
         {
           "x": 298.5,
-          "y": 258.251,
+          "y": 279.645,
         },
       ],
       "tag": "CUT",
@@ -2268,19 +2268,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 298.5,
-          "y": 258.251,
+          "y": 279.645,
         },
         {
           "x": 298.5,
-          "y": 259.079,
+          "y": 280.473,
         },
         {
           "x": 299.172,
-          "y": 259.751,
+          "y": 281.145,
         },
         {
           "x": 300,
-          "y": 259.751,
+          "y": 281.145,
         },
       ],
       "tag": "CUT",
@@ -2290,19 +2290,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 300,
-          "y": 259.751,
+          "y": 281.145,
         },
         {
           "x": 300.828,
-          "y": 259.751,
+          "y": 281.145,
         },
         {
           "x": 301.5,
-          "y": 259.079,
+          "y": 280.473,
         },
         {
           "x": 301.5,
-          "y": 258.251,
+          "y": 279.645,
         },
       ],
       "tag": "CUT",
@@ -2312,11 +2312,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 301.5,
-          "y": 258.251,
+          "y": 279.645,
         },
         {
           "x": 301.5,
-          "y": 220,
+          "y": 248.832,
         },
       ],
       "tag": "CUT",
@@ -2326,11 +2326,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 301.5,
-          "y": 220,
+          "y": 248.832,
         },
         {
           "x": 298.5,
-          "y": 220,
+          "y": 248.832,
         },
       ],
       "tag": "CUT",
@@ -3168,7 +3168,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 311.713,
             },
             {
-              "x": 113.333,
+              "x": 122.392,
               "y": 311.713,
             },
           ],
@@ -3178,19 +3178,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 113.333,
+              "x": 122.392,
               "y": 311.713,
             },
             {
-              "x": 117.936,
+              "x": 126.995,
               "y": 311.713,
             },
             {
-              "x": 121.667,
+              "x": 130.726,
               "y": 307.982,
             },
             {
-              "x": 121.667,
+              "x": 130.726,
               "y": 303.379,
             },
           ],
@@ -3200,11 +3200,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 121.667,
+              "x": 130.726,
               "y": 303.379,
             },
             {
-              "x": 130,
+              "x": 137.188,
               "y": 318.728,
             },
           ],
@@ -3214,11 +3214,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 130,
+              "x": 137.188,
               "y": 318.728,
             },
             {
-              "x": 230,
+              "x": 222.812,
               "y": 318.728,
             },
           ],
@@ -3228,11 +3228,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 230,
+              "x": 222.812,
               "y": 318.728,
             },
             {
-              "x": 238.333,
+              "x": 229.274,
               "y": 303.379,
             },
           ],
@@ -3242,19 +3242,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 238.333,
+              "x": 229.274,
               "y": 303.379,
             },
             {
-              "x": 238.333,
+              "x": 229.274,
               "y": 307.982,
             },
             {
-              "x": 242.064,
+              "x": 233.005,
               "y": 311.713,
             },
             {
-              "x": 246.667,
+              "x": 237.608,
               "y": 311.713,
             },
           ],
@@ -3264,7 +3264,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 246.667,
+              "x": 237.608,
               "y": 311.713,
             },
             {
@@ -3442,7 +3442,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 311.713,
             },
             {
-              "x": 353.333,
+              "x": 362.392,
               "y": 311.713,
             },
           ],
@@ -3452,19 +3452,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 353.333,
+              "x": 362.392,
               "y": 311.713,
             },
             {
-              "x": 357.936,
+              "x": 366.995,
               "y": 311.713,
             },
             {
-              "x": 361.667,
+              "x": 370.726,
               "y": 307.982,
             },
             {
-              "x": 361.667,
+              "x": 370.726,
               "y": 303.379,
             },
           ],
@@ -3474,11 +3474,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 361.667,
+              "x": 370.726,
               "y": 303.379,
             },
             {
-              "x": 370,
+              "x": 377.188,
               "y": 318.728,
             },
           ],
@@ -3488,11 +3488,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 370,
+              "x": 377.188,
               "y": 318.728,
             },
             {
-              "x": 470,
+              "x": 462.812,
               "y": 318.728,
             },
           ],
@@ -3502,11 +3502,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 470,
+              "x": 462.812,
               "y": 318.728,
             },
             {
-              "x": 478.333,
+              "x": 469.274,
               "y": 303.379,
             },
           ],
@@ -3516,19 +3516,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 478.333,
+              "x": 469.274,
               "y": 303.379,
             },
             {
-              "x": 478.333,
+              "x": 469.274,
               "y": 307.982,
             },
             {
-              "x": 482.064,
+              "x": 473.005,
               "y": 311.713,
             },
             {
-              "x": 486.667,
+              "x": 477.608,
               "y": 311.713,
             },
           ],
@@ -3538,7 +3538,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 486.667,
+              "x": 477.608,
               "y": 311.713,
             },
             {
@@ -6576,10 +6576,10 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     "width": 575,
   },
   "name": "Paper Bag SOS",
-  "panelCount": 5,
+  "panelCount": 15,
   "panels": [
     {
-      "foldAngle": 90,
+      "foldAngle": -90,
       "foldDirection": 1,
       "label": "Mí dán",
       "name": "glue_flap",
@@ -6589,25 +6589,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 0,
-              "y": 9,
+              "y": 84.5,
             },
             {
               "x": 0,
-              "y": 341,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 0,
-              "y": 341,
-            },
-            {
-              "x": 15,
-              "y": 350,
+              "y": 335.5,
             },
           ],
           "tag": "CUT",
@@ -6617,20 +6603,132 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 15,
-              "y": 0,
+              "y": 84.5,
+            },
+            {
+              "x": 15,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 85,
+            },
+            {
+              "x": 15,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 85,
+            },
+            {
+              "x": 15.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15.5,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 335,
+            },
+            {
+              "x": 15.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 85,
+            },
+            {
+              "x": 15.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15.5,
+              "y": 85.5,
+            },
+            {
+              "x": 14.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15.5,
+              "y": 135,
             },
             {
               "x": 0,
-              "y": 9,
+              "y": 135,
             },
           ],
-          "tag": "CUT",
+          "tag": "CREASE",
           "type": "line",
         },
       ],
     },
     {
-      "foldAngle": 90,
+      "foldAngle": -90,
       "foldDirection": 1,
       "label": "Hông 1",
       "name": "side1",
@@ -6673,6 +6771,188 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
             {
               "x": 15,
               "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 84.5,
+            },
+            {
+              "x": 15,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 85,
+            },
+            {
+              "x": 15,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115.5,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 335,
+            },
+            {
+              "x": 115.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 85,
+            },
+            {
+              "x": 115.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 65,
+              "y": 335.5,
+            },
+            {
+              "x": 65,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 65,
+              "y": 135,
+            },
+            {
+              "x": 14.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 65,
+              "y": 135,
+            },
+            {
+              "x": 115.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 65,
+              "y": 135,
+            },
+            {
+              "x": 14.5,
+              "y": 135,
             },
           ],
           "tag": "CREASE",
@@ -6729,6 +7009,1084 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "tag": "CREASE",
           "type": "line",
         },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 114.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295.5,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 335,
+            },
+            {
+              "x": 295.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 85,
+            },
+            {
+              "x": 295.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 85.5,
+            },
+            {
+              "x": 115.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295.5,
+              "y": 85.5,
+            },
+            {
+              "x": 294.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 176,
+              "y": 310,
+            },
+            {
+              "x": 175.952,
+              "y": 310.488,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 175.952,
+              "y": 310.488,
+            },
+            {
+              "x": 175.81,
+              "y": 310.957,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 175.81,
+              "y": 310.957,
+            },
+            {
+              "x": 175.579,
+              "y": 311.389,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 175.579,
+              "y": 311.389,
+            },
+            {
+              "x": 175.268,
+              "y": 311.768,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 175.268,
+              "y": 311.768,
+            },
+            {
+              "x": 174.889,
+              "y": 312.079,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 174.889,
+              "y": 312.079,
+            },
+            {
+              "x": 174.457,
+              "y": 312.31,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 174.457,
+              "y": 312.31,
+            },
+            {
+              "x": 173.988,
+              "y": 312.452,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 173.988,
+              "y": 312.452,
+            },
+            {
+              "x": 173.5,
+              "y": 312.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 173.5,
+              "y": 312.5,
+            },
+            {
+              "x": 173.012,
+              "y": 312.452,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 173.012,
+              "y": 312.452,
+            },
+            {
+              "x": 172.543,
+              "y": 312.31,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 172.543,
+              "y": 312.31,
+            },
+            {
+              "x": 172.111,
+              "y": 312.079,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 172.111,
+              "y": 312.079,
+            },
+            {
+              "x": 171.732,
+              "y": 311.768,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171.732,
+              "y": 311.768,
+            },
+            {
+              "x": 171.421,
+              "y": 311.389,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171.421,
+              "y": 311.389,
+            },
+            {
+              "x": 171.19,
+              "y": 310.957,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171.19,
+              "y": 310.957,
+            },
+            {
+              "x": 171.048,
+              "y": 310.488,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171.048,
+              "y": 310.488,
+            },
+            {
+              "x": 171,
+              "y": 310,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171,
+              "y": 310,
+            },
+            {
+              "x": 171.048,
+              "y": 309.512,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171.048,
+              "y": 309.512,
+            },
+            {
+              "x": 171.19,
+              "y": 309.043,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171.19,
+              "y": 309.043,
+            },
+            {
+              "x": 171.421,
+              "y": 308.611,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171.421,
+              "y": 308.611,
+            },
+            {
+              "x": 171.732,
+              "y": 308.232,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 171.732,
+              "y": 308.232,
+            },
+            {
+              "x": 172.111,
+              "y": 307.921,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 172.111,
+              "y": 307.921,
+            },
+            {
+              "x": 172.543,
+              "y": 307.69,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 172.543,
+              "y": 307.69,
+            },
+            {
+              "x": 173.012,
+              "y": 307.548,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 173.012,
+              "y": 307.548,
+            },
+            {
+              "x": 173.5,
+              "y": 307.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 173.5,
+              "y": 307.5,
+            },
+            {
+              "x": 173.988,
+              "y": 307.548,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 173.988,
+              "y": 307.548,
+            },
+            {
+              "x": 174.457,
+              "y": 307.69,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 174.457,
+              "y": 307.69,
+            },
+            {
+              "x": 174.889,
+              "y": 307.921,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 174.889,
+              "y": 307.921,
+            },
+            {
+              "x": 175.268,
+              "y": 308.232,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 175.268,
+              "y": 308.232,
+            },
+            {
+              "x": 175.579,
+              "y": 308.611,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 175.579,
+              "y": 308.611,
+            },
+            {
+              "x": 175.81,
+              "y": 309.043,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 175.81,
+              "y": 309.043,
+            },
+            {
+              "x": 175.952,
+              "y": 309.512,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 175.952,
+              "y": 309.512,
+            },
+            {
+              "x": 176,
+              "y": 310,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 239,
+              "y": 310,
+            },
+            {
+              "x": 238.952,
+              "y": 310.488,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 238.952,
+              "y": 310.488,
+            },
+            {
+              "x": 238.81,
+              "y": 310.957,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 238.81,
+              "y": 310.957,
+            },
+            {
+              "x": 238.579,
+              "y": 311.389,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 238.579,
+              "y": 311.389,
+            },
+            {
+              "x": 238.268,
+              "y": 311.768,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 238.268,
+              "y": 311.768,
+            },
+            {
+              "x": 237.889,
+              "y": 312.079,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 237.889,
+              "y": 312.079,
+            },
+            {
+              "x": 237.457,
+              "y": 312.31,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 237.457,
+              "y": 312.31,
+            },
+            {
+              "x": 236.988,
+              "y": 312.452,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 236.988,
+              "y": 312.452,
+            },
+            {
+              "x": 236.5,
+              "y": 312.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 236.5,
+              "y": 312.5,
+            },
+            {
+              "x": 236.012,
+              "y": 312.452,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 236.012,
+              "y": 312.452,
+            },
+            {
+              "x": 235.543,
+              "y": 312.31,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 235.543,
+              "y": 312.31,
+            },
+            {
+              "x": 235.111,
+              "y": 312.079,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 235.111,
+              "y": 312.079,
+            },
+            {
+              "x": 234.732,
+              "y": 311.768,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234.732,
+              "y": 311.768,
+            },
+            {
+              "x": 234.421,
+              "y": 311.389,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234.421,
+              "y": 311.389,
+            },
+            {
+              "x": 234.19,
+              "y": 310.957,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234.19,
+              "y": 310.957,
+            },
+            {
+              "x": 234.048,
+              "y": 310.488,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234.048,
+              "y": 310.488,
+            },
+            {
+              "x": 234,
+              "y": 310,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234,
+              "y": 310,
+            },
+            {
+              "x": 234.048,
+              "y": 309.512,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234.048,
+              "y": 309.512,
+            },
+            {
+              "x": 234.19,
+              "y": 309.043,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234.19,
+              "y": 309.043,
+            },
+            {
+              "x": 234.421,
+              "y": 308.611,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234.421,
+              "y": 308.611,
+            },
+            {
+              "x": 234.732,
+              "y": 308.232,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 234.732,
+              "y": 308.232,
+            },
+            {
+              "x": 235.111,
+              "y": 307.921,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 235.111,
+              "y": 307.921,
+            },
+            {
+              "x": 235.543,
+              "y": 307.69,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 235.543,
+              "y": 307.69,
+            },
+            {
+              "x": 236.012,
+              "y": 307.548,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 236.012,
+              "y": 307.548,
+            },
+            {
+              "x": 236.5,
+              "y": 307.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 236.5,
+              "y": 307.5,
+            },
+            {
+              "x": 236.988,
+              "y": 307.548,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 236.988,
+              "y": 307.548,
+            },
+            {
+              "x": 237.457,
+              "y": 307.69,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 237.457,
+              "y": 307.69,
+            },
+            {
+              "x": 237.889,
+              "y": 307.921,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 237.889,
+              "y": 307.921,
+            },
+            {
+              "x": 238.268,
+              "y": 308.232,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 238.268,
+              "y": 308.232,
+            },
+            {
+              "x": 238.579,
+              "y": 308.611,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 238.579,
+              "y": 308.611,
+            },
+            {
+              "x": 238.81,
+              "y": 309.043,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 238.81,
+              "y": 309.043,
+            },
+            {
+              "x": 238.952,
+              "y": 309.512,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 238.952,
+              "y": 309.512,
+            },
+            {
+              "x": 239,
+              "y": 310,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
       ],
     },
     {
@@ -6775,6 +8133,216 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
             {
               "x": 295,
               "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 294.5,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 294.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395.5,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 294.5,
+              "y": 335,
+            },
+            {
+              "x": 395.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 294.5,
+              "y": 85,
+            },
+            {
+              "x": 395.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 345,
+              "y": 335.5,
+            },
+            {
+              "x": 345,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 345,
+              "y": 135,
+            },
+            {
+              "x": 294.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 345,
+              "y": 135,
+            },
+            {
+              "x": 395.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 345,
+              "y": 135,
+            },
+            {
+              "x": 395.5,
+              "y": 135,
             },
           ],
           "tag": "CREASE",
@@ -6831,6 +8399,3036 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "tag": "CREASE",
           "type": "line",
         },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 394.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 335,
+            },
+            {
+              "x": 575,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 335,
+            },
+            {
+              "x": 575,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 335.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 85,
+            },
+            {
+              "x": 575,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 85,
+            },
+            {
+              "x": 575,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 85.5,
+            },
+            {
+              "x": 395.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 135,
+            },
+            {
+              "x": 575,
+              "y": 135,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 85,
+            },
+            {
+              "x": 574.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 456,
+              "y": 310,
+            },
+            {
+              "x": 455.952,
+              "y": 310.488,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 455.952,
+              "y": 310.488,
+            },
+            {
+              "x": 455.81,
+              "y": 310.957,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 455.81,
+              "y": 310.957,
+            },
+            {
+              "x": 455.579,
+              "y": 311.389,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 455.579,
+              "y": 311.389,
+            },
+            {
+              "x": 455.268,
+              "y": 311.768,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 455.268,
+              "y": 311.768,
+            },
+            {
+              "x": 454.889,
+              "y": 312.079,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 454.889,
+              "y": 312.079,
+            },
+            {
+              "x": 454.457,
+              "y": 312.31,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 454.457,
+              "y": 312.31,
+            },
+            {
+              "x": 453.988,
+              "y": 312.452,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 453.988,
+              "y": 312.452,
+            },
+            {
+              "x": 453.5,
+              "y": 312.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 453.5,
+              "y": 312.5,
+            },
+            {
+              "x": 453.012,
+              "y": 312.452,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 453.012,
+              "y": 312.452,
+            },
+            {
+              "x": 452.543,
+              "y": 312.31,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 452.543,
+              "y": 312.31,
+            },
+            {
+              "x": 452.111,
+              "y": 312.079,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 452.111,
+              "y": 312.079,
+            },
+            {
+              "x": 451.732,
+              "y": 311.768,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451.732,
+              "y": 311.768,
+            },
+            {
+              "x": 451.421,
+              "y": 311.389,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451.421,
+              "y": 311.389,
+            },
+            {
+              "x": 451.19,
+              "y": 310.957,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451.19,
+              "y": 310.957,
+            },
+            {
+              "x": 451.048,
+              "y": 310.488,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451.048,
+              "y": 310.488,
+            },
+            {
+              "x": 451,
+              "y": 310,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451,
+              "y": 310,
+            },
+            {
+              "x": 451.048,
+              "y": 309.512,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451.048,
+              "y": 309.512,
+            },
+            {
+              "x": 451.19,
+              "y": 309.043,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451.19,
+              "y": 309.043,
+            },
+            {
+              "x": 451.421,
+              "y": 308.611,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451.421,
+              "y": 308.611,
+            },
+            {
+              "x": 451.732,
+              "y": 308.232,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 451.732,
+              "y": 308.232,
+            },
+            {
+              "x": 452.111,
+              "y": 307.921,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 452.111,
+              "y": 307.921,
+            },
+            {
+              "x": 452.543,
+              "y": 307.69,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 452.543,
+              "y": 307.69,
+            },
+            {
+              "x": 453.012,
+              "y": 307.548,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 453.012,
+              "y": 307.548,
+            },
+            {
+              "x": 453.5,
+              "y": 307.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 453.5,
+              "y": 307.5,
+            },
+            {
+              "x": 453.988,
+              "y": 307.548,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 453.988,
+              "y": 307.548,
+            },
+            {
+              "x": 454.457,
+              "y": 307.69,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 454.457,
+              "y": 307.69,
+            },
+            {
+              "x": 454.889,
+              "y": 307.921,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 454.889,
+              "y": 307.921,
+            },
+            {
+              "x": 455.268,
+              "y": 308.232,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 455.268,
+              "y": 308.232,
+            },
+            {
+              "x": 455.579,
+              "y": 308.611,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 455.579,
+              "y": 308.611,
+            },
+            {
+              "x": 455.81,
+              "y": 309.043,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 455.81,
+              "y": 309.043,
+            },
+            {
+              "x": 455.952,
+              "y": 309.512,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 455.952,
+              "y": 309.512,
+            },
+            {
+              "x": 456,
+              "y": 310,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 519,
+              "y": 310,
+            },
+            {
+              "x": 518.952,
+              "y": 310.488,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 518.952,
+              "y": 310.488,
+            },
+            {
+              "x": 518.81,
+              "y": 310.957,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 518.81,
+              "y": 310.957,
+            },
+            {
+              "x": 518.579,
+              "y": 311.389,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 518.579,
+              "y": 311.389,
+            },
+            {
+              "x": 518.268,
+              "y": 311.768,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 518.268,
+              "y": 311.768,
+            },
+            {
+              "x": 517.889,
+              "y": 312.079,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 517.889,
+              "y": 312.079,
+            },
+            {
+              "x": 517.457,
+              "y": 312.31,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 517.457,
+              "y": 312.31,
+            },
+            {
+              "x": 516.988,
+              "y": 312.452,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 516.988,
+              "y": 312.452,
+            },
+            {
+              "x": 516.5,
+              "y": 312.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 516.5,
+              "y": 312.5,
+            },
+            {
+              "x": 516.012,
+              "y": 312.452,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 516.012,
+              "y": 312.452,
+            },
+            {
+              "x": 515.543,
+              "y": 312.31,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 515.543,
+              "y": 312.31,
+            },
+            {
+              "x": 515.111,
+              "y": 312.079,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 515.111,
+              "y": 312.079,
+            },
+            {
+              "x": 514.732,
+              "y": 311.768,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514.732,
+              "y": 311.768,
+            },
+            {
+              "x": 514.421,
+              "y": 311.389,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514.421,
+              "y": 311.389,
+            },
+            {
+              "x": 514.19,
+              "y": 310.957,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514.19,
+              "y": 310.957,
+            },
+            {
+              "x": 514.048,
+              "y": 310.488,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514.048,
+              "y": 310.488,
+            },
+            {
+              "x": 514,
+              "y": 310,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514,
+              "y": 310,
+            },
+            {
+              "x": 514.048,
+              "y": 309.512,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514.048,
+              "y": 309.512,
+            },
+            {
+              "x": 514.19,
+              "y": 309.043,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514.19,
+              "y": 309.043,
+            },
+            {
+              "x": 514.421,
+              "y": 308.611,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514.421,
+              "y": 308.611,
+            },
+            {
+              "x": 514.732,
+              "y": 308.232,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 514.732,
+              "y": 308.232,
+            },
+            {
+              "x": 515.111,
+              "y": 307.921,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 515.111,
+              "y": 307.921,
+            },
+            {
+              "x": 515.543,
+              "y": 307.69,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 515.543,
+              "y": 307.69,
+            },
+            {
+              "x": 516.012,
+              "y": 307.548,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 516.012,
+              "y": 307.548,
+            },
+            {
+              "x": 516.5,
+              "y": 307.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 516.5,
+              "y": 307.5,
+            },
+            {
+              "x": 516.988,
+              "y": 307.548,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 516.988,
+              "y": 307.548,
+            },
+            {
+              "x": 517.457,
+              "y": 307.69,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 517.457,
+              "y": 307.69,
+            },
+            {
+              "x": 517.889,
+              "y": 307.921,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 517.889,
+              "y": 307.921,
+            },
+            {
+              "x": 518.268,
+              "y": 308.232,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 518.268,
+              "y": 308.232,
+            },
+            {
+              "x": 518.579,
+              "y": 308.611,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 518.579,
+              "y": 308.611,
+            },
+            {
+              "x": 518.81,
+              "y": 309.043,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 518.81,
+              "y": 309.043,
+            },
+            {
+              "x": 518.952,
+              "y": 309.512,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 518.952,
+              "y": 309.512,
+            },
+            {
+              "x": 519,
+              "y": 310,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": 1,
+      "label": "Đáy Hông 1",
+      "name": "bottom_side1",
+      "parent": "side1",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 0,
+            },
+            {
+              "x": 15,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 0,
+            },
+            {
+              "x": 15,
+              "y": 85,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 0,
+            },
+            {
+              "x": 14.5,
+              "y": 0.3,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 0,
+            },
+            {
+              "x": 15,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 85,
+            },
+            {
+              "x": 15,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 85,
+            },
+            {
+              "x": 115.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 0,
+            },
+            {
+              "x": 115.5,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 65,
+              "y": 85.5,
+            },
+            {
+              "x": 65,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15.5,
+              "y": 85.5,
+            },
+            {
+              "x": 14.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 85.5,
+            },
+            {
+              "x": 115.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": 1,
+      "label": "Đáy Mặt trước",
+      "name": "bottom_front",
+      "parent": "front",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 0,
+            },
+            {
+              "x": 115,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 0,
+            },
+            {
+              "x": 115,
+              "y": 85,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 85,
+            },
+            {
+              "x": 295.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 0,
+            },
+            {
+              "x": 295.5,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 85,
+            },
+            {
+              "x": 115,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 85.5,
+            },
+            {
+              "x": 200,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295.5,
+              "y": 85.5,
+            },
+            {
+              "x": 210,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": 1,
+      "label": "Đáy Hông 2",
+      "name": "bottom_side2",
+      "parent": "side2",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 0,
+            },
+            {
+              "x": 295,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 0,
+            },
+            {
+              "x": 295,
+              "y": 85,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 294.5,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 294.5,
+              "y": 85,
+            },
+            {
+              "x": 395.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 294.5,
+              "y": 0,
+            },
+            {
+              "x": 395.5,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 85,
+            },
+            {
+              "x": 295,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 345,
+              "y": 85.5,
+            },
+            {
+              "x": 345,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295.5,
+              "y": 85.5,
+            },
+            {
+              "x": 294.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 85.5,
+            },
+            {
+              "x": 395.5,
+              "y": 84.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": 1,
+      "label": "Đáy Mặt sau",
+      "name": "bottom_back",
+      "parent": "back",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 575,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 85,
+            },
+            {
+              "x": 575,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 0,
+            },
+            {
+              "x": 395,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 0,
+            },
+            {
+              "x": 395,
+              "y": 85,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 575,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 85,
+            },
+            {
+              "x": 575,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 85,
+            },
+            {
+              "x": 575,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 0,
+            },
+            {
+              "x": 575,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 85,
+            },
+            {
+              "x": 575,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 85,
+            },
+            {
+              "x": 395,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 85.5,
+            },
+            {
+              "x": 480,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 85,
+            },
+            {
+              "x": 490,
+              "y": 0,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": 1,
+      "label": "Đáy mí dán",
+      "name": "bottom_glue_flap",
+      "parent": "glue_flap",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 85,
+            },
+            {
+              "x": 15,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 9,
+            },
+            {
+              "x": 0,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 0,
+            },
+            {
+              "x": 0,
+              "y": 9,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 0,
+            },
+            {
+              "x": 15,
+              "y": 85.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 85,
+            },
+            {
+              "x": 15,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 85,
+            },
+            {
+              "x": 15.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 85,
+            },
+            {
+              "x": 15.5,
+              "y": 85,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 0,
+            },
+            {
+              "x": 15.5,
+              "y": 0,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15.5,
+              "y": 85.5,
+            },
+            {
+              "x": 0,
+              "y": 70,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 180,
+      "foldDirection": -1,
+      "label": "Mí miệng Mí dán",
+      "name": "lip_glue_flap",
+      "parent": "glue_flap",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 350,
+            },
+            {
+              "x": 0,
+              "y": 341,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 341,
+            },
+            {
+              "x": 0,
+              "y": 335,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 334.5,
+            },
+            {
+              "x": 0,
+              "y": 341,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 341,
+            },
+            {
+              "x": 15,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 334.5,
+            },
+            {
+              "x": 15,
+              "y": 350,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15.5,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 0,
+              "y": 335,
+            },
+            {
+              "x": 15.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 350,
+            },
+            {
+              "x": 15.5,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 180,
+      "foldDirection": -1,
+      "label": "Mí miệng Hông 1",
+      "name": "lip_side1",
+      "parent": "side1",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 350,
+            },
+            {
+              "x": 15,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 350,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 349.7,
+            },
+            {
+              "x": 15,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 334.5,
+            },
+            {
+              "x": 15,
+              "y": 350,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 334.5,
+            },
+            {
+              "x": 115,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 15,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115.5,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 14.5,
+              "y": 335,
+            },
+            {
+              "x": 115.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 15,
+              "y": 350,
+            },
+            {
+              "x": 115.5,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 350,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 65,
+              "y": 350,
+            },
+            {
+              "x": 65,
+              "y": 334.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 180,
+      "foldDirection": -1,
+      "label": "Mí miệng Mặt trước",
+      "name": "lip_front",
+      "parent": "front",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 350,
+            },
+            {
+              "x": 115,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 350,
+            },
+            {
+              "x": 115,
+              "y": 335,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 334.5,
+            },
+            {
+              "x": 115,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 114.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 334.5,
+            },
+            {
+              "x": 295,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295.5,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 335,
+            },
+            {
+              "x": 295.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 114.5,
+              "y": 350,
+            },
+            {
+              "x": 295.5,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 115,
+              "y": 335,
+            },
+            {
+              "x": 115,
+              "y": 350,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 350,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 180,
+      "foldDirection": -1,
+      "label": "Mí miệng Hông 2",
+      "name": "lip_side2",
+      "parent": "side2",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 350,
+            },
+            {
+              "x": 295,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 350,
+            },
+            {
+              "x": 295,
+              "y": 335,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 334.5,
+            },
+            {
+              "x": 295,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 294.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 334.5,
+            },
+            {
+              "x": 395,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395.5,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 294.5,
+              "y": 335,
+            },
+            {
+              "x": 395.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 294.5,
+              "y": 350,
+            },
+            {
+              "x": 395.5,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 295,
+              "y": 335,
+            },
+            {
+              "x": 295,
+              "y": 350,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 350,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 345,
+              "y": 350,
+            },
+            {
+              "x": 345,
+              "y": 334.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 180,
+      "foldDirection": -1,
+      "label": "Mí miệng Mặt sau",
+      "name": "lip_back",
+      "parent": "back",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 575,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 335,
+            },
+            {
+              "x": 575,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 350,
+            },
+            {
+              "x": 395,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 350,
+            },
+            {
+              "x": 395,
+              "y": 335,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 334.5,
+            },
+            {
+              "x": 395,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 394.5,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 334.5,
+            },
+            {
+              "x": 575,
+              "y": 335,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 335,
+            },
+            {
+              "x": 575,
+              "y": 335,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 394.5,
+              "y": 350,
+            },
+            {
+              "x": 575,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 575,
+              "y": 335,
+            },
+            {
+              "x": 575,
+              "y": 350,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 395,
+              "y": 335,
+            },
+            {
+              "x": 395,
+              "y": 350,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
       ],
     },
   ],
@@ -6840,7 +11438,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
 
 exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs baseline) > giữ nguyên số lượng/thứ tự/tọa độ panels & allPaths cho pizza (Pizza Box FEFCO 0426) 1`] = `
 {
-  "allPathCount": 138,
+  "allPathCount": 155,
   "allPaths": [
     {
       "points": [
@@ -7519,6 +12117,62 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
+          "x": 120,
+          "y": -1.55,
+        },
+        {
+          "x": 180,
+          "y": -1.55,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 180,
+          "y": -1.55,
+        },
+        {
+          "x": 180,
+          "y": -0.05,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 180,
+          "y": -0.05,
+        },
+        {
+          "x": 120,
+          "y": -0.05,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 120,
+          "y": -0.05,
+        },
+        {
+          "x": 120,
+          "y": -1.55,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
           "x": 0.5,
           "y": 300,
         },
@@ -7603,7 +12257,271 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 0,
+          "x": 78.5,
+          "y": 490,
+        },
+        {
+          "x": 78.5,
+          "y": 491.657,
+        },
+        {
+          "x": 77.157,
+          "y": 493,
+        },
+        {
+          "x": 75.5,
+          "y": 493,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 75.5,
+          "y": 493,
+        },
+        {
+          "x": 73.843,
+          "y": 493,
+        },
+        {
+          "x": 72.5,
+          "y": 491.657,
+        },
+        {
+          "x": 72.5,
+          "y": 490,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 72.5,
+          "y": 490,
+        },
+        {
+          "x": 72.5,
+          "y": 488.343,
+        },
+        {
+          "x": 73.843,
+          "y": 487,
+        },
+        {
+          "x": 75.5,
+          "y": 487,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 75.5,
+          "y": 487,
+        },
+        {
+          "x": 77.157,
+          "y": 487,
+        },
+        {
+          "x": 78.5,
+          "y": 488.343,
+        },
+        {
+          "x": 78.5,
+          "y": 490,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 153,
+          "y": 490,
+        },
+        {
+          "x": 153,
+          "y": 491.657,
+        },
+        {
+          "x": 151.657,
+          "y": 493,
+        },
+        {
+          "x": 150,
+          "y": 493,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 150,
+          "y": 493,
+        },
+        {
+          "x": 148.343,
+          "y": 493,
+        },
+        {
+          "x": 147,
+          "y": 491.657,
+        },
+        {
+          "x": 147,
+          "y": 490,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 147,
+          "y": 490,
+        },
+        {
+          "x": 147,
+          "y": 488.343,
+        },
+        {
+          "x": 148.343,
+          "y": 487,
+        },
+        {
+          "x": 150,
+          "y": 487,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 150,
+          "y": 487,
+        },
+        {
+          "x": 151.657,
+          "y": 487,
+        },
+        {
+          "x": 153,
+          "y": 488.343,
+        },
+        {
+          "x": 153,
+          "y": 490,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 227.5,
+          "y": 490,
+        },
+        {
+          "x": 227.5,
+          "y": 491.657,
+        },
+        {
+          "x": 226.157,
+          "y": 493,
+        },
+        {
+          "x": 224.5,
+          "y": 493,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 224.5,
+          "y": 493,
+        },
+        {
+          "x": 222.843,
+          "y": 493,
+        },
+        {
+          "x": 221.5,
+          "y": 491.657,
+        },
+        {
+          "x": 221.5,
+          "y": 490,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 221.5,
+          "y": 490,
+        },
+        {
+          "x": 221.5,
+          "y": 488.343,
+        },
+        {
+          "x": 222.843,
+          "y": 487,
+        },
+        {
+          "x": 224.5,
+          "y": 487,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 224.5,
+          "y": 487,
+        },
+        {
+          "x": 226.157,
+          "y": 487,
+        },
+        {
+          "x": 227.5,
+          "y": 488.343,
+        },
+        {
+          "x": 227.5,
+          "y": 490,
+        },
+      ],
+      "tag": "CUT",
+      "type": "bezier",
+    },
+    {
+      "points": [
+        {
+          "x": 1,
           "y": 679.5,
         },
         {
@@ -7621,6 +12539,34 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 680,
         },
         {
+          "x": 120,
+          "y": 680,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 120,
+          "y": 680,
+        },
+        {
+          "x": 180,
+          "y": 680,
+        },
+      ],
+      "tag": "CREASE",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 180,
+          "y": 680,
+        },
+        {
           "x": 299.5,
           "y": 680,
         },
@@ -7635,7 +12581,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 680,
         },
         {
-          "x": 300,
+          "x": 299,
           "y": 679.5,
         },
       ],
@@ -7645,11 +12591,53 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 300,
+          "x": 120,
+          "y": 680,
+        },
+        {
+          "x": 120,
+          "y": 696,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 120,
+          "y": 696,
+        },
+        {
+          "x": 180,
+          "y": 696,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 180,
+          "y": 696,
+        },
+        {
+          "x": 180,
+          "y": 680,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 299,
           "y": 640,
         },
         {
-          "x": 300,
+          "x": 299,
           "y": 679.5,
         },
       ],
@@ -7659,19 +12647,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 300,
+          "x": 299,
           "y": 679.5,
         },
         {
-          "x": 309.484,
+          "x": 308.484,
           "y": 679.5,
         },
         {
-          "x": 318.652,
+          "x": 317.652,
           "y": 676.088,
         },
         {
-          "x": 325.828,
+          "x": 324.828,
           "y": 669.886,
         },
       ],
@@ -7681,19 +12669,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 325.828,
+          "x": 324.828,
           "y": 669.886,
         },
         {
-          "x": 333.003,
+          "x": 332.003,
           "y": 663.685,
         },
         {
-          "x": 337.708,
+          "x": 336.708,
           "y": 655.109,
         },
         {
-          "x": 339.083,
+          "x": 338.083,
           "y": 645.725,
         },
       ],
@@ -7703,19 +12691,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 339.083,
+          "x": 338.083,
           "y": 645.725,
         },
         {
-          "x": 339.525,
+          "x": 338.525,
           "y": 642.707,
         },
         {
-          "x": 337.186,
+          "x": 336.186,
           "y": 640,
         },
         {
-          "x": 334.136,
+          "x": 333.136,
           "y": 640,
         },
       ],
@@ -7725,25 +12713,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 334.136,
+          "x": 333.136,
           "y": 640,
         },
         {
-          "x": 300,
-          "y": 640,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 300,
-          "y": 640,
-        },
-        {
-          "x": 299.5,
+          "x": 299,
           "y": 640,
         },
       ],
@@ -7753,11 +12727,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 0,
+          "x": 1,
           "y": 640,
         },
         {
-          "x": 0,
+          "x": 1,
           "y": 679.5,
         },
       ],
@@ -7767,19 +12741,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 0,
+          "x": 1,
           "y": 679.5,
         },
         {
-          "x": -9.484,
+          "x": -8.484,
           "y": 679.5,
         },
         {
-          "x": -18.652,
+          "x": -17.652,
           "y": 676.088,
         },
         {
-          "x": -25.828,
+          "x": -24.828,
           "y": 669.886,
         },
       ],
@@ -7789,19 +12763,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": -25.828,
+          "x": -24.828,
           "y": 669.886,
         },
         {
-          "x": -33.003,
+          "x": -32.003,
           "y": 663.685,
         },
         {
-          "x": -37.708,
+          "x": -36.708,
           "y": 655.109,
         },
         {
-          "x": -39.083,
+          "x": -38.083,
           "y": 645.725,
         },
       ],
@@ -7811,19 +12785,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": -39.083,
+          "x": -38.083,
           "y": 645.725,
         },
         {
-          "x": -39.525,
+          "x": -38.525,
           "y": 642.707,
         },
         {
-          "x": -37.186,
+          "x": -36.186,
           "y": 640,
         },
         {
-          "x": -34.136,
+          "x": -33.136,
           "y": 640,
         },
       ],
@@ -7833,25 +12807,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": -34.136,
+          "x": -33.136,
           "y": 640,
         },
         {
-          "x": 0,
-          "y": 640,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 0,
-          "y": 640,
-        },
-        {
-          "x": 0.5,
+          "x": 1,
           "y": 640,
         },
       ],
@@ -8245,8 +13205,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 638,
         },
         {
-          "x": 0.646,
-          "y": 639.646,
+          "x": 1,
+          "y": 640,
         },
       ],
       "tag": "CUT",
@@ -8359,39 +13319,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 638,
         },
         {
-          "x": 299.354,
-          "y": 639.646,
+          "x": 299,
+          "y": 640,
         },
       ],
       "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -40,
-          "y": 0,
-        },
-        {
-          "x": -40,
-          "y": 300,
-        },
-      ],
-      "tag": "CREASE",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -41,
-          "y": 0.5,
-        },
-        {
-          "x": -41,
-          "y": 299.5,
-        },
-      ],
-      "tag": "CREASE",
       "type": "line",
     },
     {
@@ -8415,179 +13347,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 0,
         },
         {
-          "x": -41,
-          "y": 0.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -41,
-          "y": 0.5,
-        },
-        {
-          "x": -80.5,
-          "y": 0.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -80.5,
-          "y": 0.5,
-        },
-        {
-          "x": -80.5,
-          "y": 45,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -80.5,
-          "y": 45,
-        },
-        {
-          "x": -82,
-          "y": 45,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -82,
-          "y": 45,
-        },
-        {
-          "x": -82,
-          "y": 90,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -82,
-          "y": 90,
-        },
-        {
-          "x": -80.5,
-          "y": 90,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -80.5,
-          "y": 90,
-        },
-        {
-          "x": -80.5,
-          "y": 210,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -80.5,
-          "y": 210,
-        },
-        {
-          "x": -82,
-          "y": 210,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -82,
-          "y": 210,
-        },
-        {
-          "x": -82,
-          "y": 255,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -82,
-          "y": 255,
-        },
-        {
-          "x": -80.5,
-          "y": 255,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -80.5,
-          "y": 255,
-        },
-        {
-          "x": -80.5,
-          "y": 299.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -80.5,
-          "y": 299.5,
-        },
-        {
-          "x": -41,
-          "y": 299.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": -41,
-          "y": 299.5,
-        },
-        {
           "x": -40,
           "y": 300,
         },
       ],
-      "tag": "CUT",
+      "tag": "CREASE",
       "type": "line",
     },
     {
@@ -8607,12 +13371,26 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 340,
+          "x": -40,
           "y": 0,
         },
         {
-          "x": 340,
-          "y": 300,
+          "x": -41,
+          "y": 0.5,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -41,
+          "y": 0.5,
+        },
+        {
+          "x": -41,
+          "y": 299.5,
         },
       ],
       "tag": "CREASE",
@@ -8621,15 +13399,169 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     {
       "points": [
         {
-          "x": 341,
+          "x": -41,
+          "y": 299.5,
+        },
+        {
+          "x": -40,
+          "y": 300,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -41,
           "y": 0.5,
         },
         {
-          "x": 341,
+          "x": -80.5,
+          "y": 0.5,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -80.5,
+          "y": 0.5,
+        },
+        {
+          "x": -80.5,
+          "y": 45,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -80.5,
+          "y": 45,
+        },
+        {
+          "x": -82,
+          "y": 43,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -82,
+          "y": 43,
+        },
+        {
+          "x": -82,
+          "y": 92,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -82,
+          "y": 92,
+        },
+        {
+          "x": -80.5,
+          "y": 90,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -80.5,
+          "y": 90,
+        },
+        {
+          "x": -80.5,
+          "y": 210,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -80.5,
+          "y": 210,
+        },
+        {
+          "x": -82,
+          "y": 208,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -82,
+          "y": 208,
+        },
+        {
+          "x": -82,
+          "y": 257,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -82,
+          "y": 257,
+        },
+        {
+          "x": -80.5,
+          "y": 255,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -80.5,
+          "y": 255,
+        },
+        {
+          "x": -80.5,
           "y": 299.5,
         },
       ],
-      "tag": "CREASE",
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": -80.5,
+          "y": 299.5,
+        },
+        {
+          "x": -41,
+          "y": 299.5,
+        },
+      ],
+      "tag": "CUT",
       "type": "line",
     },
     {
@@ -8653,179 +13585,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "y": 0,
         },
         {
-          "x": 341,
-          "y": 0.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 341,
-          "y": 0.5,
-        },
-        {
-          "x": 380.5,
-          "y": 0.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 380.5,
-          "y": 0.5,
-        },
-        {
-          "x": 380.5,
-          "y": 45,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 380.5,
-          "y": 45,
-        },
-        {
-          "x": 382,
-          "y": 45,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 382,
-          "y": 45,
-        },
-        {
-          "x": 382,
-          "y": 90,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 382,
-          "y": 90,
-        },
-        {
-          "x": 380.5,
-          "y": 90,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 380.5,
-          "y": 90,
-        },
-        {
-          "x": 380.5,
-          "y": 210,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 380.5,
-          "y": 210,
-        },
-        {
-          "x": 382,
-          "y": 210,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 382,
-          "y": 210,
-        },
-        {
-          "x": 382,
-          "y": 255,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 382,
-          "y": 255,
-        },
-        {
-          "x": 380.5,
-          "y": 255,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 380.5,
-          "y": 255,
-        },
-        {
-          "x": 380.5,
-          "y": 299.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 380.5,
-          "y": 299.5,
-        },
-        {
-          "x": 341,
-          "y": 299.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 341,
-          "y": 299.5,
-        },
-        {
           "x": 340,
           "y": 300,
         },
       ],
-      "tag": "CUT",
+      "tag": "CREASE",
       "type": "line",
     },
     {
@@ -8837,6 +13601,202 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "x": 300.914,
           "y": 300,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 340,
+          "y": 0,
+        },
+        {
+          "x": 341,
+          "y": 0.5,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 341,
+          "y": 0.5,
+        },
+        {
+          "x": 341,
+          "y": 299.5,
+        },
+      ],
+      "tag": "CREASE",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 341,
+          "y": 299.5,
+        },
+        {
+          "x": 340,
+          "y": 300,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 341,
+          "y": 0.5,
+        },
+        {
+          "x": 380.5,
+          "y": 0.5,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 380.5,
+          "y": 0.5,
+        },
+        {
+          "x": 380.5,
+          "y": 45,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 380.5,
+          "y": 45,
+        },
+        {
+          "x": 382,
+          "y": 43,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 382,
+          "y": 43,
+        },
+        {
+          "x": 382,
+          "y": 92,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 382,
+          "y": 92,
+        },
+        {
+          "x": 380.5,
+          "y": 90,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 380.5,
+          "y": 90,
+        },
+        {
+          "x": 380.5,
+          "y": 210,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 380.5,
+          "y": 210,
+        },
+        {
+          "x": 382,
+          "y": 208,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 382,
+          "y": 208,
+        },
+        {
+          "x": 382,
+          "y": 257,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 382,
+          "y": 257,
+        },
+        {
+          "x": 380.5,
+          "y": 255,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 380.5,
+          "y": 255,
+        },
+        {
+          "x": 380.5,
+          "y": 299.5,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 380.5,
+          "y": 299.5,
+        },
+        {
+          "x": 341,
+          "y": 299.5,
         },
       ],
       "tag": "CUT",
@@ -8954,45 +13914,17 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "tag": "CUT",
       "type": "bezier",
     },
-    {
-      "points": [
-        {
-          "x": 299.5,
-          "y": 640,
-        },
-        {
-          "x": 299.354,
-          "y": 639.646,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
-    {
-      "points": [
-        {
-          "x": 0.5,
-          "y": 640,
-        },
-        {
-          "x": 0.646,
-          "y": 639.646,
-        },
-      ],
-      "tag": "CUT",
-      "type": "bezier",
-    },
   ],
   "boundingBox": {
-    "height": 720,
+    "height": 736,
     "maxX": 382,
-    "maxY": 680,
+    "maxY": 696,
     "minX": -82,
     "minY": -40,
     "width": 464,
   },
   "name": "Pizza Box",
-  "panelCount": 15,
+  "panelCount": 20,
   "panels": [
     {
       "foldAngle": 0,
@@ -9106,6 +14038,62 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
             },
           ],
           "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 120,
+              "y": -1.55,
+            },
+            {
+              "x": 180,
+              "y": -1.55,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 180,
+              "y": -1.55,
+            },
+            {
+              "x": 180,
+              "y": -0.05,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 180,
+              "y": -0.05,
+            },
+            {
+              "x": 120,
+              "y": -0.05,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 120,
+              "y": -0.05,
+            },
+            {
+              "x": 120,
+              "y": -1.55,
+            },
+          ],
+          "tag": "CUT",
           "type": "line",
         },
       ],
@@ -9222,7 +14210,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 0,
+              "x": 1,
               "y": 679.5,
             },
             {
@@ -9240,6 +14228,34 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 680,
             },
             {
+              "x": 120,
+              "y": 680,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 120,
+              "y": 680,
+            },
+            {
+              "x": 180,
+              "y": 680,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 180,
+              "y": 680,
+            },
+            {
               "x": 299.5,
               "y": 680,
             },
@@ -9254,8 +14270,59 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 680,
             },
             {
-              "x": 300,
+              "x": 299,
               "y": 679.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": 1,
+      "label": "Lưỡi gài",
+      "name": "front_lock_tab",
+      "parent": "secondary_lid",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 120,
+              "y": 680,
+            },
+            {
+              "x": 120,
+              "y": 696,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 120,
+              "y": 696,
+            },
+            {
+              "x": 180,
+              "y": 696,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 180,
+              "y": 696,
+            },
+            {
+              "x": 180,
+              "y": 680,
             },
           ],
           "tag": "CUT",
@@ -9273,19 +14340,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 300,
+              "x": 299,
               "y": 679.5,
             },
             {
-              "x": 309.484,
+              "x": 308.484,
               "y": 679.5,
             },
             {
-              "x": 318.652,
+              "x": 317.652,
               "y": 676.088,
             },
             {
-              "x": 325.828,
+              "x": 324.828,
               "y": 669.886,
             },
           ],
@@ -9295,19 +14362,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 325.828,
+              "x": 324.828,
               "y": 669.886,
             },
             {
-              "x": 333.003,
+              "x": 332.003,
               "y": 663.685,
             },
             {
-              "x": 337.708,
+              "x": 336.708,
               "y": 655.109,
             },
             {
-              "x": 339.083,
+              "x": 338.083,
               "y": 645.725,
             },
           ],
@@ -9317,19 +14384,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 339.083,
+              "x": 338.083,
               "y": 645.725,
             },
             {
-              "x": 339.525,
+              "x": 338.525,
               "y": 642.707,
             },
             {
-              "x": 337.186,
+              "x": 336.186,
               "y": 640,
             },
             {
-              "x": 334.136,
+              "x": 333.136,
               "y": 640,
             },
           ],
@@ -9339,11 +14406,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 334.136,
+              "x": 333.136,
               "y": 640,
             },
             {
-              "x": 300,
+              "x": 299,
               "y": 640,
             },
           ],
@@ -9362,19 +14429,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": 0,
+              "x": 1,
               "y": 679.5,
             },
             {
-              "x": -9.484,
+              "x": -8.484,
               "y": 679.5,
             },
             {
-              "x": -18.652,
+              "x": -17.652,
               "y": 676.088,
             },
             {
-              "x": -25.828,
+              "x": -24.828,
               "y": 669.886,
             },
           ],
@@ -9384,19 +14451,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": -25.828,
+              "x": -24.828,
               "y": 669.886,
             },
             {
-              "x": -33.003,
+              "x": -32.003,
               "y": 663.685,
             },
             {
-              "x": -37.708,
+              "x": -36.708,
               "y": 655.109,
             },
             {
-              "x": -39.083,
+              "x": -38.083,
               "y": 645.725,
             },
           ],
@@ -9406,19 +14473,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": -39.083,
+              "x": -38.083,
               "y": 645.725,
             },
             {
-              "x": -39.525,
+              "x": -38.525,
               "y": 642.707,
             },
             {
-              "x": -37.186,
+              "x": -36.186,
               "y": 640,
             },
             {
-              "x": -34.136,
+              "x": -33.136,
               "y": 640,
             },
           ],
@@ -9428,11 +14495,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
         {
           "points": [
             {
-              "x": -34.136,
+              "x": -33.136,
               "y": 640,
             },
             {
-              "x": 0,
+              "x": 1,
               "y": 640,
             },
           ],
@@ -9941,8 +15008,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 638,
             },
             {
-              "x": 0.646,
-              "y": 639.646,
+              "x": 1,
+              "y": 640,
             },
           ],
           "tag": "CUT",
@@ -10050,8 +15117,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 638,
             },
             {
-              "x": 299.354,
-              "y": 639.646,
+              "x": 299,
+              "y": 640,
             },
           ],
           "tag": "CUT",
@@ -10066,34 +15133,6 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "name": "side_left",
       "parent": "bottom",
       "paths": [
-        {
-          "points": [
-            {
-              "x": -40,
-              "y": 0,
-            },
-            {
-              "x": -40,
-              "y": 300,
-            },
-          ],
-          "tag": "CREASE",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -41,
-              "y": 0.5,
-            },
-            {
-              "x": -41,
-              "y": 299.5,
-            },
-          ],
-          "tag": "CREASE",
-          "type": "line",
-        },
         {
           "points": [
             {
@@ -10115,179 +15154,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 0,
             },
             {
-              "x": -41,
-              "y": 0.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -41,
-              "y": 0.5,
-            },
-            {
-              "x": -80.5,
-              "y": 0.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -80.5,
-              "y": 0.5,
-            },
-            {
-              "x": -80.5,
-              "y": 45,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -80.5,
-              "y": 45,
-            },
-            {
-              "x": -82,
-              "y": 45,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -82,
-              "y": 45,
-            },
-            {
-              "x": -82,
-              "y": 90,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -82,
-              "y": 90,
-            },
-            {
-              "x": -80.5,
-              "y": 90,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -80.5,
-              "y": 90,
-            },
-            {
-              "x": -80.5,
-              "y": 210,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -80.5,
-              "y": 210,
-            },
-            {
-              "x": -82,
-              "y": 210,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -82,
-              "y": 210,
-            },
-            {
-              "x": -82,
-              "y": 255,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -82,
-              "y": 255,
-            },
-            {
-              "x": -80.5,
-              "y": 255,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -80.5,
-              "y": 255,
-            },
-            {
-              "x": -80.5,
-              "y": 299.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -80.5,
-              "y": 299.5,
-            },
-            {
-              "x": -41,
-              "y": 299.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": -41,
-              "y": 299.5,
-            },
-            {
               "x": -40,
               "y": 300,
             },
           ],
-          "tag": "CUT",
+          "tag": "CREASE",
           "type": "line",
         },
         {
@@ -10321,40 +15192,226 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": -90,
+      "foldAngle": 90,
       "foldDirection": 1,
-      "label": "Hông phải",
-      "name": "side_right",
-      "parent": "bottom",
+      "label": "Gờ hông trái",
+      "name": "side_left_rim",
+      "parent": "side_left",
       "paths": [
         {
           "points": [
             {
-              "x": 340,
+              "x": -40,
               "y": 0,
             },
             {
-              "x": 340,
-              "y": 300,
+              "x": -41,
+              "y": 0.5,
             },
           ],
-          "tag": "CREASE",
+          "tag": "CUT",
           "type": "line",
         },
         {
           "points": [
             {
-              "x": 341,
+              "x": -41,
               "y": 0.5,
             },
             {
-              "x": 341,
+              "x": -41,
               "y": 299.5,
             },
           ],
           "tag": "CREASE",
           "type": "line",
         },
+        {
+          "points": [
+            {
+              "x": -41,
+              "y": 299.5,
+            },
+            {
+              "x": -40,
+              "y": 300,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": 1,
+      "label": "Cuộn hông trái",
+      "name": "side_left_roll",
+      "parent": "side_left_rim",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": -41,
+              "y": 0.5,
+            },
+            {
+              "x": -80.5,
+              "y": 0.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -80.5,
+              "y": 0.5,
+            },
+            {
+              "x": -80.5,
+              "y": 45,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -80.5,
+              "y": 45,
+            },
+            {
+              "x": -82,
+              "y": 43,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -82,
+              "y": 43,
+            },
+            {
+              "x": -82,
+              "y": 92,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -82,
+              "y": 92,
+            },
+            {
+              "x": -80.5,
+              "y": 90,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -80.5,
+              "y": 90,
+            },
+            {
+              "x": -80.5,
+              "y": 210,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -80.5,
+              "y": 210,
+            },
+            {
+              "x": -82,
+              "y": 208,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -82,
+              "y": 208,
+            },
+            {
+              "x": -82,
+              "y": 257,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -82,
+              "y": 257,
+            },
+            {
+              "x": -80.5,
+              "y": 255,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -80.5,
+              "y": 255,
+            },
+            {
+              "x": -80.5,
+              "y": 299.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": -80.5,
+              "y": 299.5,
+            },
+            {
+              "x": -41,
+              "y": 299.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": -90,
+      "foldDirection": 1,
+      "label": "Hông phải",
+      "name": "side_right",
+      "parent": "bottom",
+      "paths": [
         {
           "points": [
             {
@@ -10376,179 +15433,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
               "y": 0,
             },
             {
-              "x": 341,
-              "y": 0.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 341,
-              "y": 0.5,
-            },
-            {
-              "x": 380.5,
-              "y": 0.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 380.5,
-              "y": 0.5,
-            },
-            {
-              "x": 380.5,
-              "y": 45,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 380.5,
-              "y": 45,
-            },
-            {
-              "x": 382,
-              "y": 45,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 382,
-              "y": 45,
-            },
-            {
-              "x": 382,
-              "y": 90,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 382,
-              "y": 90,
-            },
-            {
-              "x": 380.5,
-              "y": 90,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 380.5,
-              "y": 90,
-            },
-            {
-              "x": 380.5,
-              "y": 210,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 380.5,
-              "y": 210,
-            },
-            {
-              "x": 382,
-              "y": 210,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 382,
-              "y": 210,
-            },
-            {
-              "x": 382,
-              "y": 255,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 382,
-              "y": 255,
-            },
-            {
-              "x": 380.5,
-              "y": 255,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 380.5,
-              "y": 255,
-            },
-            {
-              "x": 380.5,
-              "y": 299.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 380.5,
-              "y": 299.5,
-            },
-            {
-              "x": 341,
-              "y": 299.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 341,
-              "y": 299.5,
-            },
-            {
               "x": 340,
               "y": 300,
             },
           ],
-          "tag": "CUT",
+          "tag": "CREASE",
           "type": "line",
         },
         {
@@ -10578,6 +15467,220 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           ],
           "tag": "CUT",
           "type": "bezier",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": -1,
+      "label": "Gờ hông phải",
+      "name": "side_right_rim",
+      "parent": "side_right",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 340,
+              "y": 0,
+            },
+            {
+              "x": 341,
+              "y": 0.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 341,
+              "y": 0.5,
+            },
+            {
+              "x": 341,
+              "y": 299.5,
+            },
+          ],
+          "tag": "CREASE",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 341,
+              "y": 299.5,
+            },
+            {
+              "x": 340,
+              "y": 300,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+      ],
+    },
+    {
+      "foldAngle": 90,
+      "foldDirection": -1,
+      "label": "Cuộn hông phải",
+      "name": "side_right_roll",
+      "parent": "side_right_rim",
+      "paths": [
+        {
+          "points": [
+            {
+              "x": 341,
+              "y": 0.5,
+            },
+            {
+              "x": 380.5,
+              "y": 0.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 380.5,
+              "y": 0.5,
+            },
+            {
+              "x": 380.5,
+              "y": 45,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 380.5,
+              "y": 45,
+            },
+            {
+              "x": 382,
+              "y": 43,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 382,
+              "y": 43,
+            },
+            {
+              "x": 382,
+              "y": 92,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 382,
+              "y": 92,
+            },
+            {
+              "x": 380.5,
+              "y": 90,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 380.5,
+              "y": 90,
+            },
+            {
+              "x": 380.5,
+              "y": 210,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 380.5,
+              "y": 210,
+            },
+            {
+              "x": 382,
+              "y": 208,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 382,
+              "y": 208,
+            },
+            {
+              "x": 382,
+              "y": 257,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 382,
+              "y": 257,
+            },
+            {
+              "x": 380.5,
+              "y": 255,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 380.5,
+              "y": 255,
+            },
+            {
+              "x": 380.5,
+              "y": 299.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 380.5,
+              "y": 299.5,
+            },
+            {
+              "x": 341,
+              "y": 299.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
         },
       ],
     },
@@ -11606,11 +16709,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 75.75,
-          "y": 260,
+          "y": 259.5,
         },
         {
           "x": 75.75,
-          "y": 272,
+          "y": 271.5,
         },
       ],
       "tag": "CUT",
@@ -11620,19 +16723,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 75.75,
-          "y": 272,
+          "y": 271.5,
         },
         {
           "x": 75.75,
-          "y": 273.657,
+          "y": 273.157,
         },
         {
           "x": 77.093,
-          "y": 275,
+          "y": 274.5,
         },
         {
           "x": 78.75,
-          "y": 275,
+          "y": 274.5,
         },
       ],
       "tag": "CUT",
@@ -11642,11 +16745,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 78.75,
-          "y": 275,
+          "y": 274.5,
         },
         {
           "x": 171.25,
-          "y": 275,
+          "y": 274.5,
         },
       ],
       "tag": "CUT",
@@ -11656,19 +16759,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 171.25,
-          "y": 275,
+          "y": 274.5,
         },
         {
           "x": 172.907,
-          "y": 275,
+          "y": 274.5,
         },
         {
           "x": 174.25,
-          "y": 273.657,
+          "y": 273.157,
         },
         {
           "x": 174.25,
-          "y": 272,
+          "y": 271.5,
         },
       ],
       "tag": "CUT",
@@ -11678,11 +16781,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 174.25,
-          "y": 272,
+          "y": 271.5,
         },
         {
           "x": 174.25,
-          "y": 260,
+          "y": 259.5,
         },
       ],
       "tag": "CUT",
@@ -11692,11 +16795,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 235.75,
-          "y": -60,
+          "y": -59.5,
         },
         {
           "x": 235.75,
-          "y": -72,
+          "y": -71.5,
         },
       ],
       "tag": "CUT",
@@ -11706,19 +16809,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 235.75,
-          "y": -72,
+          "y": -71.5,
         },
         {
           "x": 235.75,
-          "y": -73.657,
+          "y": -73.157,
         },
         {
           "x": 237.093,
-          "y": -75,
+          "y": -74.5,
         },
         {
           "x": 238.75,
-          "y": -75,
+          "y": -74.5,
         },
       ],
       "tag": "CUT",
@@ -11728,11 +16831,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 238.75,
-          "y": -75,
+          "y": -74.5,
         },
         {
           "x": 331.25,
-          "y": -75,
+          "y": -74.5,
         },
       ],
       "tag": "CUT",
@@ -11742,19 +16845,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 331.25,
-          "y": -75,
+          "y": -74.5,
         },
         {
           "x": 332.907,
-          "y": -75,
+          "y": -74.5,
         },
         {
           "x": 334.25,
-          "y": -73.657,
+          "y": -73.157,
         },
         {
           "x": 334.25,
-          "y": -72,
+          "y": -71.5,
         },
       ],
       "tag": "CUT",
@@ -11764,11 +16867,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 334.25,
-          "y": -72,
+          "y": -71.5,
         },
         {
           "x": 334.25,
-          "y": -60,
+          "y": -59.5,
         },
       ],
       "tag": "CUT",
@@ -11776,11 +16879,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
   ],
   "boundingBox": {
-    "height": 350,
+    "height": 349,
     "maxX": 335,
-    "maxY": 275,
+    "maxY": 274.5,
     "minX": 0,
-    "minY": -75,
+    "minY": -74.5,
     "width": 335,
   },
   "name": "Reverse Tuck End",
@@ -12922,11 +18025,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 75.75,
-              "y": 260,
+              "y": 259.5,
             },
             {
               "x": 75.75,
-              "y": 272,
+              "y": 271.5,
             },
           ],
           "tag": "CUT",
@@ -12936,19 +18039,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 75.75,
-              "y": 272,
+              "y": 271.5,
             },
             {
               "x": 75.75,
-              "y": 273.657,
+              "y": 273.157,
             },
             {
               "x": 77.093,
-              "y": 275,
+              "y": 274.5,
             },
             {
               "x": 78.75,
-              "y": 275,
+              "y": 274.5,
             },
           ],
           "tag": "CUT",
@@ -12958,11 +18061,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 78.75,
-              "y": 275,
+              "y": 274.5,
             },
             {
               "x": 171.25,
-              "y": 275,
+              "y": 274.5,
             },
           ],
           "tag": "CUT",
@@ -12972,19 +18075,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 171.25,
-              "y": 275,
+              "y": 274.5,
             },
             {
               "x": 172.907,
-              "y": 275,
+              "y": 274.5,
             },
             {
               "x": 174.25,
-              "y": 273.657,
+              "y": 273.157,
             },
             {
               "x": 174.25,
-              "y": 272,
+              "y": 271.5,
             },
           ],
           "tag": "CUT",
@@ -12994,11 +18097,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 174.25,
-              "y": 272,
+              "y": 271.5,
             },
             {
               "x": 174.25,
-              "y": 260,
+              "y": 259.5,
             },
           ],
           "tag": "CUT",
@@ -13017,11 +18120,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 235.75,
-              "y": -60,
+              "y": -59.5,
             },
             {
               "x": 235.75,
-              "y": -72,
+              "y": -71.5,
             },
           ],
           "tag": "CUT",
@@ -13031,19 +18134,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 235.75,
-              "y": -72,
+              "y": -71.5,
             },
             {
               "x": 235.75,
-              "y": -73.657,
+              "y": -73.157,
             },
             {
               "x": 237.093,
-              "y": -75,
+              "y": -74.5,
             },
             {
               "x": 238.75,
-              "y": -75,
+              "y": -74.5,
             },
           ],
           "tag": "CUT",
@@ -13053,11 +18156,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 238.75,
-              "y": -75,
+              "y": -74.5,
             },
             {
               "x": 331.25,
-              "y": -75,
+              "y": -74.5,
             },
           ],
           "tag": "CUT",
@@ -13067,19 +18170,19 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 331.25,
-              "y": -75,
+              "y": -74.5,
             },
             {
               "x": 332.907,
-              "y": -75,
+              "y": -74.5,
             },
             {
               "x": 334.25,
-              "y": -73.657,
+              "y": -73.157,
             },
             {
               "x": 334.25,
-              "y": -72,
+              "y": -71.5,
             },
           ],
           "tag": "CUT",
@@ -13089,11 +18192,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 334.25,
-              "y": -72,
+              "y": -71.5,
             },
             {
               "x": 334.25,
-              "y": -60,
+              "y": -59.5,
             },
           ],
           "tag": "CUT",
@@ -18195,11 +23298,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 254,
-          "y": -69.5,
+          "y": -15.5,
         },
         {
           "x": 346,
-          "y": -69.5,
+          "y": -15.5,
         },
       ],
       "tag": "CUT",
@@ -18209,11 +23312,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 346,
-          "y": -69.5,
+          "y": -15.5,
         },
         {
           "x": 350.5,
-          "y": -54.5,
+          "y": -0.5,
         },
       ],
       "tag": "CUT",
@@ -18223,11 +23326,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 350.5,
-          "y": -54.5,
+          "y": -0.5,
         },
         {
           "x": 249.5,
-          "y": -54.5,
+          "y": -0.5,
         },
       ],
       "tag": "CREASE",
@@ -18237,11 +23340,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": -54.5,
+          "y": -0.5,
         },
         {
           "x": 254,
-          "y": -69.5,
+          "y": -15.5,
         },
       ],
       "tag": "CUT",
@@ -18251,11 +23354,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": -54.5,
+          "y": -0.5,
         },
         {
           "x": 249.5,
-          "y": 6.5,
+          "y": 60.5,
         },
       ],
       "tag": "CUT",
@@ -18265,11 +23368,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": 6.5,
+          "y": 60.5,
         },
         {
           "x": 350.5,
-          "y": 6.5,
+          "y": 60.5,
         },
       ],
       "tag": "CREASE",
@@ -18279,11 +23382,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 350.5,
-          "y": 6.5,
+          "y": 60.5,
         },
         {
           "x": 350.5,
-          "y": -54.5,
+          "y": -0.5,
         },
       ],
       "tag": "CUT",
@@ -18293,11 +23396,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 350.5,
-          "y": -54.5,
+          "y": -0.5,
         },
         {
           "x": 249.5,
-          "y": -54.5,
+          "y": -0.5,
         },
       ],
       "tag": "CREASE",
@@ -18307,11 +23410,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": 6.5,
+          "y": 60.5,
         },
         {
           "x": 249.5,
-          "y": 37.5,
+          "y": 91.5,
         },
       ],
       "tag": "CUT",
@@ -18321,11 +23424,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": 37.5,
+          "y": 91.5,
         },
         {
           "x": 350.5,
-          "y": 37.5,
+          "y": 91.5,
         },
       ],
       "tag": "CREASE",
@@ -18335,11 +23438,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 350.5,
-          "y": 37.5,
+          "y": 91.5,
         },
         {
           "x": 350.5,
-          "y": 6.5,
+          "y": 60.5,
         },
       ],
       "tag": "CUT",
@@ -18349,11 +23452,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 350.5,
-          "y": 6.5,
+          "y": 60.5,
         },
         {
           "x": 249.5,
-          "y": 6.5,
+          "y": 60.5,
         },
       ],
       "tag": "CREASE",
@@ -18363,11 +23466,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": 37.5,
+          "y": 91.5,
         },
         {
           "x": 249.5,
-          "y": 98.5,
+          "y": 152.5,
         },
       ],
       "tag": "CUT",
@@ -18377,11 +23480,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": 98.5,
+          "y": 152.5,
         },
         {
           "x": 350.5,
-          "y": 98.5,
+          "y": 152.5,
         },
       ],
       "tag": "CREASE",
@@ -18391,11 +23494,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 350.5,
-          "y": 98.5,
+          "y": 152.5,
         },
         {
           "x": 350.5,
-          "y": 37.5,
+          "y": 91.5,
         },
       ],
       "tag": "CUT",
@@ -18405,11 +23508,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 350.5,
-          "y": 37.5,
+          "y": 91.5,
         },
         {
           "x": 249.5,
-          "y": 37.5,
+          "y": 91.5,
         },
       ],
       "tag": "CREASE",
@@ -18419,11 +23522,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": 98.5,
+          "y": 152.5,
         },
         {
           "x": 249.5,
-          "y": 129.5,
+          "y": 183.5,
         },
       ],
       "tag": "CUT",
@@ -18433,25 +23536,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 249.5,
-          "y": 129.5,
+          "y": 183.5,
         },
         {
           "x": 350.5,
-          "y": 129.5,
-        },
-      ],
-      "tag": "CUT",
-      "type": "line",
-    },
-    {
-      "points": [
-        {
-          "x": 350.5,
-          "y": 129.5,
-        },
-        {
-          "x": 350.5,
-          "y": 98.5,
+          "y": 183.5,
         },
       ],
       "tag": "CUT",
@@ -18461,11 +23550,25 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       "points": [
         {
           "x": 350.5,
-          "y": 98.5,
+          "y": 183.5,
+        },
+        {
+          "x": 350.5,
+          "y": 152.5,
+        },
+      ],
+      "tag": "CUT",
+      "type": "line",
+    },
+    {
+      "points": [
+        {
+          "x": 350.5,
+          "y": 152.5,
         },
         {
           "x": 249.5,
-          "y": 98.5,
+          "y": 152.5,
         },
       ],
       "tag": "CREASE",
@@ -18473,9 +23576,9 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
   ],
   "boundingBox": {
-    "height": 237,
+    "height": 272,
     "maxX": 350.5,
-    "maxY": 148.5,
+    "maxY": 183.5,
     "minX": -89.5,
     "minY": -88.5,
     "width": 440,
@@ -18628,7 +23731,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
+      "foldAngle": 90,
       "foldDirection": 1,
       "label": "Dầm trước",
       "name": "front_beam",
@@ -18679,7 +23782,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
+      "foldAngle": 90,
       "foldDirection": 1,
       "label": "Vách phụ trước",
       "name": "front_sec",
@@ -18730,7 +23833,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 90,
+      "foldAngle": -90,
       "foldDirection": 1,
       "label": "Mí trước",
       "name": "front_tab",
@@ -18904,7 +24007,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
+      "foldAngle": 90,
       "foldDirection": -1,
       "label": "Dầm sau",
       "name": "back_beam",
@@ -18955,7 +24058,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
+      "foldAngle": 90,
       "foldDirection": -1,
       "label": "Vách phụ sau",
       "name": "back_sec",
@@ -19006,7 +24109,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 90,
+      "foldAngle": -90,
       "foldDirection": -1,
       "label": "Mí sau",
       "name": "back_tab",
@@ -19102,7 +24205,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Vách phải",
       "name": "right_wall",
       "parent": "bottom",
@@ -19180,8 +24283,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
-      "foldDirection": 1,
+      "foldAngle": 90,
+      "foldDirection": -1,
       "label": "Dầm phải",
       "name": "right_beam",
       "parent": "right_wall",
@@ -19231,8 +24334,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
-      "foldDirection": 1,
+      "foldAngle": 90,
+      "foldDirection": -1,
       "label": "Vách phụ phải",
       "name": "right_sec",
       "parent": "right_beam",
@@ -19282,8 +24385,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 90,
-      "foldDirection": 1,
+      "foldAngle": -90,
+      "foldDirection": -1,
       "label": "Mí phải",
       "name": "right_tab",
       "parent": "right_sec",
@@ -19378,7 +24481,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Vách trái",
       "name": "left_wall",
       "parent": "bottom",
@@ -19456,8 +24559,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
-      "foldDirection": -1,
+      "foldAngle": 90,
+      "foldDirection": 1,
       "label": "Dầm trái",
       "name": "left_beam",
       "parent": "left_wall",
@@ -19507,8 +24610,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 180,
-      "foldDirection": -1,
+      "foldAngle": 90,
+      "foldDirection": 1,
       "label": "Vách phụ trái",
       "name": "left_sec",
       "parent": "left_beam",
@@ -19558,8 +24661,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 90,
-      "foldDirection": -1,
+      "foldAngle": -90,
+      "foldDirection": 1,
       "label": "Mí trái",
       "name": "left_tab",
       "parent": "left_sec",
@@ -20416,7 +25519,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Khóa sau-trái",
       "name": "lock_bl",
       "parent": "back_sec",
@@ -20667,7 +25770,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Khóa sau-phải",
       "name": "lock_br",
       "parent": "back_sec",
@@ -20917,8 +26020,8 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
       ],
     },
     {
-      "foldAngle": 0,
-      "foldDirection": 1,
+      "foldAngle": 90,
+      "foldDirection": -1,
       "label": "Mí dán keo (vỏ)",
       "name": "sleeve_glue",
       "parent": "sleeve_front",
@@ -20927,11 +26030,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 254,
-              "y": -69.5,
+              "y": -15.5,
             },
             {
               "x": 346,
-              "y": -69.5,
+              "y": -15.5,
             },
           ],
           "tag": "CUT",
@@ -20941,11 +26044,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 346,
-              "y": -69.5,
+              "y": -15.5,
             },
             {
               "x": 350.5,
-              "y": -54.5,
+              "y": -0.5,
             },
           ],
           "tag": "CUT",
@@ -20955,11 +26058,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 350.5,
-              "y": -54.5,
+              "y": -0.5,
             },
             {
               "x": 249.5,
-              "y": -54.5,
+              "y": -0.5,
             },
           ],
           "tag": "CREASE",
@@ -20969,11 +26072,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": -54.5,
+              "y": -0.5,
             },
             {
               "x": 254,
-              "y": -69.5,
+              "y": -15.5,
             },
           ],
           "tag": "CUT",
@@ -20992,11 +26095,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": -54.5,
+              "y": -0.5,
             },
             {
               "x": 249.5,
-              "y": 6.5,
+              "y": 60.5,
             },
           ],
           "tag": "CUT",
@@ -21006,11 +26109,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": 6.5,
+              "y": 60.5,
             },
             {
               "x": 350.5,
-              "y": 6.5,
+              "y": 60.5,
             },
           ],
           "tag": "CREASE",
@@ -21020,11 +26123,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 350.5,
-              "y": 6.5,
+              "y": 60.5,
             },
             {
               "x": 350.5,
-              "y": -54.5,
+              "y": -0.5,
             },
           ],
           "tag": "CUT",
@@ -21034,11 +26137,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 350.5,
-              "y": -54.5,
+              "y": -0.5,
             },
             {
               "x": 249.5,
-              "y": -54.5,
+              "y": -0.5,
             },
           ],
           "tag": "CREASE",
@@ -21057,11 +26160,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": 6.5,
+              "y": 60.5,
             },
             {
               "x": 249.5,
-              "y": 37.5,
+              "y": 91.5,
             },
           ],
           "tag": "CUT",
@@ -21071,11 +26174,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": 37.5,
+              "y": 91.5,
             },
             {
               "x": 350.5,
-              "y": 37.5,
+              "y": 91.5,
             },
           ],
           "tag": "CREASE",
@@ -21085,11 +26188,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 350.5,
-              "y": 37.5,
+              "y": 91.5,
             },
             {
               "x": 350.5,
-              "y": 6.5,
+              "y": 60.5,
             },
           ],
           "tag": "CUT",
@@ -21099,11 +26202,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 350.5,
-              "y": 6.5,
+              "y": 60.5,
             },
             {
               "x": 249.5,
-              "y": 6.5,
+              "y": 60.5,
             },
           ],
           "tag": "CREASE",
@@ -21122,11 +26225,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": 37.5,
+              "y": 91.5,
             },
             {
               "x": 249.5,
-              "y": 98.5,
+              "y": 152.5,
             },
           ],
           "tag": "CUT",
@@ -21136,11 +26239,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": 98.5,
+              "y": 152.5,
             },
             {
               "x": 350.5,
-              "y": 98.5,
+              "y": 152.5,
             },
           ],
           "tag": "CREASE",
@@ -21150,11 +26253,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 350.5,
-              "y": 98.5,
+              "y": 152.5,
             },
             {
               "x": 350.5,
-              "y": 37.5,
+              "y": 91.5,
             },
           ],
           "tag": "CUT",
@@ -21164,11 +26267,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 350.5,
-              "y": 37.5,
+              "y": 91.5,
             },
             {
               "x": 249.5,
-              "y": 37.5,
+              "y": 91.5,
             },
           ],
           "tag": "CREASE",
@@ -21187,11 +26290,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": 98.5,
+              "y": 152.5,
             },
             {
               "x": 249.5,
-              "y": 129.5,
+              "y": 183.5,
             },
           ],
           "tag": "CUT",
@@ -21201,25 +26304,11 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 249.5,
-              "y": 129.5,
+              "y": 183.5,
             },
             {
               "x": 350.5,
-              "y": 129.5,
-            },
-          ],
-          "tag": "CUT",
-          "type": "line",
-        },
-        {
-          "points": [
-            {
-              "x": 350.5,
-              "y": 129.5,
-            },
-            {
-              "x": 350.5,
-              "y": 98.5,
+              "y": 183.5,
             },
           ],
           "tag": "CUT",
@@ -21229,11 +26318,25 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
           "points": [
             {
               "x": 350.5,
-              "y": 98.5,
+              "y": 183.5,
+            },
+            {
+              "x": 350.5,
+              "y": 152.5,
+            },
+          ],
+          "tag": "CUT",
+          "type": "line",
+        },
+        {
+          "points": [
+            {
+              "x": 350.5,
+              "y": 152.5,
             },
             {
               "x": 249.5,
-              "y": 98.5,
+              "y": 152.5,
             },
           ],
           "tag": "CREASE",

@@ -102,22 +102,93 @@ def run_comparison_pipeline(
         total_imposition_instances = 0
         failed_imposition_instances = 0
 
-        for page_idx in range(total_pages):
-            page_num = page_idx + 1
-            progress = 10 + int((page_idx / total_pages) * 80)
+        # ── Căn trang theo NỘI DUNG khi 2 file LỆCH SỐ TRANG (chèn/xoá) ──
+        # An toàn: CHỈ bật khi pages_a != pages_b và KHÔNG phải CMYK. Số trang bằng
+        # nhau → giữ nguyên ghép tuần tự + hunting imposition như cũ (không đổi hành
+        # vi đường phổ biến). Lỗi bất kỳ ở bước căn → fallback ghép tuần tự.
+        use_alignment = (pages_a != pages_b) and (not is_cmyk_mode) and pages_a > 0 and pages_b > 0
+        align_pairs = None
+        if use_alignment:
+            try:
+                import numpy as _np
+                import cv2 as _cv2
+                from app.core.page_aligner import (
+                    align_pages, thumbnail_similarity, text_similarity, normalize_text,
+                )
 
-            notify(progress, current_page=page_num, total_pages=total_pages,
-                   message=f"Đang so sánh trang {page_num}/{total_pages}...")
+                def _fingerprints(path, n):
+                    sigs = []
+                    for p in range(1, n + 1):
+                        im = processor.convert_single_page(path, p, dpi=36)
+                        if im is None:
+                            sigs.append(_np.zeros((32, 32), dtype=_np.uint8))
+                            continue
+                        g = _cv2.cvtColor(im, _cv2.COLOR_RGB2GRAY) if getattr(im, "ndim", 2) == 3 else im
+                        sigs.append(_cv2.resize(g, (32, 32), interpolation=_cv2.INTER_AREA))
+                    return sigs
 
-            # Render page A on demand (or None if out of range)
-            img_a = doc_a.render_page(page_idx) if page_idx < pages_a else None
+                def _page_texts(path, n):
+                    """Text chuẩn hoá mỗi trang (rỗng nếu trang ảnh/không có text)."""
+                    out = []
+                    for p in range(1, n + 1):
+                        try:
+                            blocks = processor.extract_text_blocks(path, p)
+                            t = " ".join(b.get("text", "") for b in blocks)
+                        except Exception:
+                            t = ""
+                        out.append(normalize_text(t))
+                    return out
 
-            # Smart Imposition Hunting Logic — render B pages on demand
+                _sig_a = _fingerprints(file_a.file_path, pages_a)
+                _sig_b = _fingerprints(file_b.file_path, pages_b)
+                _txt_a = _page_texts(file_a.file_path, pages_a)
+                _txt_b = _page_texts(file_b.file_path, pages_b)
+
+                def _sim(i, j):
+                    # Hình thu nhỏ + (nếu CẢ HAI trang đủ chữ) text-hash. Tài liệu nhiều
+                    # chữ trông na ná nhau → text giúp ghép đúng; trang ảnh → chỉ dùng hình.
+                    vis = thumbnail_similarity(_sig_a[i], _sig_b[j])
+                    ta, tb = _txt_a[i], _txt_b[j]
+                    if len(ta) >= 20 and len(tb) >= 20:
+                        return 0.5 * vis + 0.5 * text_similarity(ta, tb)
+                    return vis
+
+                align_pairs = align_pages(pages_a, pages_b, _sim)
+                logger.info(f"Job {job_id}: căn trang BẬT ({pages_a}≠{pages_b} trang) → {len(align_pairs)} mục")
+            except Exception as e:
+                logger.warning(f"Job {job_id}: căn trang lỗi, fallback ghép tuần tự: {e}")
+                align_pairs = None
+                use_alignment = False
+
+        if use_alignment and align_pairs is not None:
+            work_seq = align_pairs
+        else:
+            use_alignment = False
+            work_seq = [(i, None) for i in range(total_pages)]
+        total_work = len(work_seq) or 1
+
+        for out_idx, (a_idx, b_idx) in enumerate(work_seq):
+            page_num = out_idx + 1
+            progress = 10 + int((out_idx / total_work) * 80)
+
+            notify(progress, current_page=page_num, total_pages=total_work,
+                   message=f"Đang so sánh trang {page_num}/{total_work}...")
+
+            # Render page A (None nếu không có A — vd trang chỉ được THÊM ở B)
+            page_idx = a_idx if a_idx is not None else -1
+            img_a = doc_a.render_page(a_idx) if (a_idx is not None and a_idx < pages_a) else None
+
             img_b = None
-            found_b_idx = current_b_idx
+            found_b_idx = b_idx if b_idx is not None else current_b_idx
             result = None
 
-            if is_cmyk_mode and img_a is not None and pages_b > 0:
+            if use_alignment:
+                # Cặp trang đã được căn theo nội dung → so 1:1 đúng cặp. Trang thêm/xoá
+                # (a_idx hoặc b_idx = None) rơi vào nhánh "missing" với nhãn rõ ràng.
+                if a_idx is not None and b_idx is not None:
+                    img_b = doc_b.render_page(b_idx)
+                    result = comparator.compare(img_a, img_b, tolerance=tolerance, config=config)
+            elif is_cmyk_mode and img_a is not None and pages_b > 0:
                 # ── CMYK Channel-by-Channel Comparison ──
                 cmyk_a = doc_a.render_page_cmyk(page_idx)
                 b_idx = min(current_b_idx, pages_b - 1)
@@ -168,9 +239,10 @@ def run_comparison_pipeline(
                 is_imposition = getattr(result, "is_imposition_mode", False)
                 if not is_imposition and len(result.diff_regions) > 0:
                     try:
-                        # Extract text blocks (B: dùng found_b_idx — trang B THỰC SỰ đã so,
-                        # KHÔNG dùng current_b_idx vì nó đã tiến sang trang kế sau khi khớp).
-                        blocks_a = processor.extract_text_blocks(file_a.file_path, page_num)
+                        # Extract text blocks (A: a_idx+1 = trang A THỰC SỰ; B: found_b_idx+1
+                        # = trang B THỰC SỰ đã so. Ở chế độ căn trang, page_num là thứ tự
+                        # XUẤT nên KHÔNG dùng cho A).
+                        blocks_a = processor.extract_text_blocks(file_a.file_path, a_idx + 1)
                         blocks_b = processor.extract_text_blocks(file_b.file_path, found_b_idx + 1)
                         
                         # OCR Fallback for Flattened/Rasterized PDFs
@@ -228,13 +300,19 @@ def run_comparison_pipeline(
                     except Exception as e:
                         logger.warning(f"Text comparison failed on page {page_num}: {e}")
 
-            # Handle missing pages
+            # Handle missing pages (out-of-range positional, hoặc trang thêm/xoá khi căn trang)
             if img_a is None or img_b is None or result is None:
+                if use_alignment and a_idx is None and b_idx is not None:
+                    miss_desc = f"Trang được THÊM (chỉ có ở bản sửa — trang {b_idx + 1})"
+                elif use_alignment and b_idx is None and a_idx is not None:
+                    miss_desc = f"Trang bị XOÁ (chỉ có ở bản gốc — trang {a_idx + 1})"
+                else:
+                    miss_desc = "Trang bị thiếu"
                 page_result = PageResult(
                     job_id=job.id, page_number=page_num, status="fail",
                     similarity_score=0.0, diff_count=1,
                     diff_regions=[{
-                        "description": "Trang bị thiếu", "severity": "high",
+                        "description": miss_desc, "severity": "high",
                         "type": "layout", "x": 0, "y": 0,
                         "width": 1, "height": 1, "b_page": found_b_idx + 1,
                         "nx": 0, "ny": 0, "nw": 1, "nh": 1,
@@ -264,10 +342,15 @@ def run_comparison_pipeline(
                 )
 
             # Determine page status
-            if result.diff_count == 0 or result.similarity_score >= 99.9:
+            if result.diff_count == 0:
                 status = "pass"
                 pages_pass += 1
             else:
+                # CÓ vùng khác biệt (đã qua lọc nhiễu theo diện tích + morphology) ⇒
+                # KHÔNG được đánh PASS chỉ vì SSIM toàn cục cao. SSIM là độ tương đồng
+                # TOÀN CỤC: một sửa đổi nhỏ nhưng THẬT (vd đổi 1 chữ số giá) chỉ chiếm
+                # <0.1% pixel → SSIM ~99.9% nhưng vẫn là lỗi cần soát. Tối thiểu là
+                # 'warning' để không bỏ lọt (audit so-sánh #1).
                 has_high = any(r.severity == "high" for r in result.diff_regions)
                 if has_high or result.similarity_score < 95.0:
                     status = "fail"
@@ -277,7 +360,10 @@ def run_comparison_pipeline(
                     pages_warning += 1
 
             # Normalize diff regions for frontend
-            h, w = img_b.shape[:2]
+            # Dùng KÍCH THƯỚC RENDER của kết quả (có thể khác img_b gốc khi đã co giãn
+            # Case A) để toạ độ chuẩn hoá luôn khớp vùng khác biệt (tránh lệch toạ độ).
+            h = result.render_h or img_b.shape[0]
+            w = result.render_w or img_b.shape[1]
             diff_regions_normalized = renderer.generate_diff_overlay_data(
                 result.diff_regions, w, h
             )

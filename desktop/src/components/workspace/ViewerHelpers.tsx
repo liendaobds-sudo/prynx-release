@@ -14,11 +14,13 @@ export const VdpPreviewImage = ({ field }: { field: any }) => {
         const generate = async () => {
             try {
                 if (field.type === 'qrcode') {
+                    // Lề trắng vẽ bằng container (padding) → sinh ảnh QR không margin, nền trong suốt.
+                    const style = { ...(field.qrStyle || DEFAULT_QR_STYLE), margin: 0, transparentBg: true };
                     const blob = await getQRBlob({
                         data: "https://www.printsolutions.vn/",
                         size: 400,
                         errorCorrection: field.errorCorrection || 'M',
-                        style: field.qrStyle || DEFAULT_QR_STYLE
+                        style
                     }, 'png');
                     const url = await new Promise<string>((resolve) => {
                         const reader = new FileReader();
@@ -44,10 +46,10 @@ export const VdpPreviewImage = ({ field }: { field: any }) => {
                         scale: 3,
                         height: field.barHeight || 12,
                         barColor: field.barColor || '#000000',
-                        bgColor: field.bgColor || '#FFFFFF',
-                        transparentBg: field.transparentBg || false,
+                        // Lề trắng + nền vẽ bằng container → sinh mã không margin, nền trong suốt.
+                        transparentBg: true,
                         showText: field.showText !== false,
-                        quietZone: field.quietZone ?? 2,
+                        quietZone: 0,
                         rotation: field.rotation || 0,
                         fontSize: field.fontSize || 10,
                         textAlign: field.textAlign || 'center'
@@ -60,7 +62,16 @@ export const VdpPreviewImage = ({ field }: { field: any }) => {
         };
         generate();
         return () => { isMounted = false; };
-    }, [field]);
+        // CHỈ regen ảnh khi thuộc tính NỘI DUNG đổi — KHÔNG phụ thuộc x/y/width/height.
+        // Nếu phụ thuộc cả `field` thì mỗi lần kéo/di chuyển/resize sẽ render lại QR/
+        // barcode từng pixel → giật nặng. Kích thước khung do CSS lo (object-fit + padding).
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        field.type, field.errorCorrection, field.qrStyle,
+        field.barcodeType, field.barHeight, field.barColor,
+        field.bgColor, field.transparentBg, field.showText,
+        field.quietZone, field.rotation, field.fontSize, field.textAlign,
+    ]);
 
     if (!dataUrl) {
         return (
@@ -70,11 +81,31 @@ export const VdpPreviewImage = ({ field }: { field: any }) => {
         );
     }
 
-    // Barcode: backend kéo giãn lấp đầy khung (stretch) → preview cũng phải 'fill'
-    // để khớp cả khung xanh lẫn file output. QR: scale đều + canh giữa → 'contain'.
+    // Lề trắng (quiet zone): vẽ bằng padding theo % kích thước khung (không phụ thuộc zoom),
+    // khớp chính xác backend (inset theo mm "Lề trắng").
+    const qz = field.quietZone ?? 2;
+    const padX = field.width ? Math.min(49, (qz / field.width) * 100) : 0;
+    const padY = field.height ? Math.min(49, (qz / field.height) * 100) : 0;
+    const transparent = field.type === 'qrcode'
+        ? (field.qrStyle?.transparentBg ?? false)
+        : (field.transparentBg ?? false);
+    const bg = field.type === 'qrcode'
+        ? (field.qrStyle?.bgColor || '#FFFFFF')
+        : (field.bgColor || '#FFFFFF');
+
+    // Barcode: lấp đầy vùng trong (stretch) như backend. QR: scale đều + canh giữa.
     const fitClass = field.type === 'barcode' ? 'object-fill' : 'object-contain';
     return (
-        <img src={dataUrl} alt="VDP Preview" className={`w-full h-full ${fitClass} pointer-events-none`} />
+        <div
+            className="w-full h-full"
+            style={{
+                background: transparent ? 'transparent' : bg,
+                padding: `${padY}% ${padX}%`,
+                boxSizing: 'border-box',
+            }}
+        >
+            <img src={dataUrl} alt="VDP Preview" className={`w-full h-full ${fitClass} pointer-events-none`} />
+        </div>
     );
 };
 

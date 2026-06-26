@@ -519,6 +519,10 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             draw_cut_contour=do_draw_cut_contour
         )
         if not success or not os.path.exists(output_path):
+            # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
+            biz_err = meta.get("error") if isinstance(meta, dict) else None
+            if biz_err:
+                raise HTTPException(status_code=422, detail=biz_err)
             raise RuntimeError("Lỗi lưu file kết quả. (File not found)")
 
         _safe_watermark(output_path, license_info)
@@ -537,6 +541,10 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             if "pages" in meta:
                 import json
                 headers["X-Sticker-Pages"] = json.dumps(meta["pages"])
+        if isinstance(meta, dict) and meta.get("warning"):
+            import urllib.parse
+            # Header value phải ASCII → percent-encode để giữ được tiếng Việt.
+            headers["X-Sticker-Warning"] = urllib.parse.quote(meta["warning"])
             
         return FileResponse(
             path=output_path,
@@ -547,10 +555,13 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     except HTTPException:
         raise
     except Exception as e:
-        # Lộ nguyên nhân thật ra frontend: engine đã đính kèm "[debug_step] message"
-        # trong RuntimeError → giúp chẩn đoán crash thay vì chỉ thấy "Lỗi hệ thống".
+        # Log đầy đủ (kèm [debug_step]) ở server để chẩn đoán; KHÔNG lộ chi tiết
+        # nội bộ ra client (tránh rò rỉ thông tin hệ thống).
         logger.error("sticker-dieline thất bại: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Lỗi tạo viền bế: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Lỗi tạo viền bế. Vui lòng thử lại hoặc kiểm tra lại file đầu vào."
+        )
     finally:
         try: os.remove(source_path)
         except OSError: pass
@@ -643,9 +654,10 @@ async def remove_background_endpoint(
         )
     except Exception as e:
         logger.error("remove-background thất bại: %s", e, exc_info=True)
-        # Lộ nguyên nhân thật (model/deps/OOM…) để chẩn đoán, thay vì che bằng thông báo chung.
-        detail = str(e).strip() or type(e).__name__
-        raise HTTPException(status_code=500, detail=f"Tách nền thất bại: {detail}")
+        # Anti-recon: KHÔNG trả str(e) ra client (có thể lộ path model ~/.u2net / URL / deps).
+        # Chi tiết đã ghi log nội bộ (exc_info) để chẩn đoán; client nhận generic + type name
+        # (nhất quán với chuẩn xử lý lỗi toàn backend).
+        raise HTTPException(status_code=500, detail=f"Tách nền thất bại ({type(e).__name__})")
     finally:
         if is_temp:
             try: os.remove(source_path)

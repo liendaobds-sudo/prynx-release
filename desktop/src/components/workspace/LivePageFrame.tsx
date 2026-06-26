@@ -395,7 +395,106 @@ export const LivePageFrame = (props: any) => {
     const stickPreviewParams = useWorkspaceStore(s => s.stickPreviewParams);
 
     // VDP Drag/Resize interaction state
-    const [vdpInteraction, setVdpInteraction] = useState<{ type: 'move'|'resize', handle?: 'nw'|'ne'|'sw'|'se', fieldIds: string[], startX: number, startY: number, startFields: Record<string, {x: number, y: number, w: number, h: number}> } | null>(null);
+    const [vdpInteraction, setVdpInteraction] = useState<{ type: 'move'|'resize', handle?: 'nw'|'ne'|'sw'|'se'|'n'|'s'|'e'|'w', fieldIds: string[], startX: number, startY: number, startFields: Record<string, {x: number, y: number, w: number, h: number}> } | null>(null);
+
+    // ─── VDP drag/resize: áp dụng theo THỜI GIAN THỰC qua listener WINDOW ───────
+    // Bắt sự kiện ở window (không phải div trang) → con trỏ ra ngoài khung vẫn theo
+    // dõi (không "dừng giữa chừng"), thả chuột luôn kết thúc (không "dính chuột").
+    // Gộp cập nhật store theo requestAnimationFrame để giảm giật.
+    // (Đặt ở vùng hooks đầu component để KHÔNG bị các early-return phía dưới làm
+    //  lệch số lượng hook giữa các lần render.)
+    const vdpRafRef = useRef<number | null>(null);
+    const vdpPendingRef = useRef<{ curX: number; curY: number } | null>(null);
+    const vdpInteractionRef = useRef(vdpInteraction);
+    useEffect(() => { vdpInteractionRef.current = vdpInteraction; }, [vdpInteraction]);
+
+    const applyVdpDrag = (curX: number, curY: number) => {
+        const interaction = vdpInteractionRef.current;
+        if (!interaction || !onVdpFieldsChange || !pageDim) return;
+        const dx = curX - interaction.startX;
+        const dy = curY - interaction.startY;
+        const scale = (actualWidth100 * zoom) / pageDim.w; // = displayWidth / pageDim.w
+        const dxMM = (dx / scale) / 72 * 25.4;
+        const dyMM = (dy / scale) / 72 * 25.4;
+
+        // Biên trang theo cùng đơn vị "CSS-mm" với field (pageDim ở px@96).
+        const pageWmm = pageDim.w * 25.4 / 72;
+        const pageHmm = pageDim.h * 25.4 / 72;
+        const clampPos = (v: number, size: number, max: number) => Math.max(0, Math.min(v, Math.max(0, max - size)));
+
+        onVdpFieldsChange((prev: any[]) => prev.map((f: any) => {
+            if (!interaction.fieldIds.includes(f.id)) return f;
+            const startData = interaction.startFields[f.id];
+            if (!startData) return f;
+
+            if (interaction.type === 'move') {
+                // Giữ khung nằm trong trang để nội dung không bị MediaBox cắt.
+                const x = clampPos(startData.x + dxMM, startData.w, pageWmm);
+                const y = clampPos(startData.y + dyMM, startData.h, pageHmm);
+                return { ...f, x, y };
+            } else if (interaction.type === 'resize') {
+                const handle = interaction.handle || 'se';
+                let newX = startData.x, newY = startData.y;
+                let newW = startData.w, newH = startData.h;
+                if (handle.includes('e')) newW = startData.w + dxMM;
+                if (handle.includes('w')) newW = startData.w - dxMM;
+                if (handle.includes('s')) newH = startData.h + dyMM;
+                if (handle.includes('n')) newH = startData.h - dyMM;
+                newW = Math.max(5, newW);
+                newH = Math.max(5, newH);
+                if (f.type === 'qrcode') {
+                    const size = Math.max(newW, newH);
+                    newW = size;
+                    newH = size;
+                }
+                if (handle.includes('w')) newX = startData.x + (startData.w - newW);
+                if (handle.includes('n')) newY = startData.y + (startData.h - newH);
+                // Không cho khung vượt biên trang (tránh QR/nội dung tràn rồi bị cắt).
+                newX = Math.max(0, newX);
+                newY = Math.max(0, newY);
+                newW = Math.min(newW, pageWmm - newX);
+                newH = Math.min(newH, pageHmm - newY);
+                if (f.type === 'qrcode') { const s = Math.max(5, Math.min(newW, newH)); newW = s; newH = s; }
+                else { newW = Math.max(5, newW); newH = Math.max(5, newH); }
+                return { ...f, x: newX, y: newY, width: newW, height: newH };
+            }
+            return f;
+        }));
+    };
+
+    useEffect(() => {
+        if (!vdpInteraction) return;
+        const flush = () => {
+            vdpRafRef.current = null;
+            const p = vdpPendingRef.current;
+            if (p) applyVdpDrag(p.curX, p.curY);
+        };
+        const onMove = (e: PointerEvent) => {
+            if (!containerRef.current) return;
+            const rect = containerRef.current.getBoundingClientRect();
+            const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
+            vdpPendingRef.current = { curX: coords.x, curY: coords.y };
+            if (vdpRafRef.current == null) vdpRafRef.current = requestAnimationFrame(flush);
+        };
+        const onUp = () => {
+            if (vdpRafRef.current != null) { cancelAnimationFrame(vdpRafRef.current); vdpRafRef.current = null; }
+            const p = vdpPendingRef.current;
+            if (p) applyVdpDrag(p.curX, p.curY);
+            vdpPendingRef.current = null;
+            setVdpInteraction(null);
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onUp);
+        return () => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+            window.removeEventListener('pointercancel', onUp);
+            if (vdpRafRef.current != null) { cancelAnimationFrame(vdpRafRef.current); vdpRafRef.current = null; }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [vdpInteraction]);
+
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
     // Crop PDF: vùng đã quét (px hệ hiển thị, gốc trên-trái) của TRANG này. Giữ hiển
@@ -1331,47 +1430,9 @@ export const LivePageFrame = (props: any) => {
             return;
         }
 
-        if (vdpInteraction && onVdpFieldsChange && pageDim) {
-            const dx = curX - vdpInteraction.startX;
-            const dy = curY - vdpInteraction.startY;
-            
-            const pageWidthPt = pageDim.w;
-            const scale = displayWidth / pageWidthPt;
-            
-            // Convert pixel delta to mm delta
-            const dxMM = (dx / scale) / 72 * 25.4;
-            const dyMM = (dy / scale) / 72 * 25.4;
-            
-            onVdpFieldsChange((prev: any[]) => prev.map(f => {
-                if (!vdpInteraction.fieldIds.includes(f.id)) return f;
-                const startData = vdpInteraction.startFields[f.id];
-                if (!startData) return f;
-                
-                if (vdpInteraction.type === 'move') {
-                    return { ...f, x: startData.x + dxMM, y: startData.y + dyMM };
-                } else if (vdpInteraction.type === 'resize') {
-                    // Resize theo góc đang kéo (nw/ne/sw/se), giữ cạnh đối diện cố định.
-                    const handle = vdpInteraction.handle || 'se';
-                    let newX = startData.x, newY = startData.y;
-                    let newW = startData.w, newH = startData.h;
-                    if (handle.includes('e')) newW = startData.w + dxMM;
-                    if (handle.includes('w')) newW = startData.w - dxMM;
-                    if (handle.includes('s')) newH = startData.h + dyMM;
-                    if (handle.includes('n')) newH = startData.h - dyMM;
-                    newW = Math.max(5, newW);
-                    newH = Math.max(5, newH);
-                    if (f.type === 'qrcode') {
-                        const size = Math.max(newW, newH);
-                        newW = size;
-                        newH = size;
-                    }
-                    // Khi kéo từ cạnh trái/trên, dời gốc để cạnh phải/dưới đứng yên.
-                    if (handle.includes('w')) newX = startData.x + (startData.w - newW);
-                    if (handle.includes('n')) newY = startData.y + (startData.h - newH);
-                    return { ...f, x: newX, y: newY, width: newW, height: newH };
-                }
-                return f;
-            }));
+        if (vdpInteraction) {
+            // VDP move/resize được xử lý qua listener WINDOW (xem useEffect bên dưới)
+            // để không bị mất sự kiện khi con trỏ rời khung → mượt + không kẹt.
             return;
         }
 
@@ -1492,7 +1553,8 @@ export const LivePageFrame = (props: any) => {
 
     const handleMouseLeave = () => {
         dragRef.current.active = false;
-        setVdpInteraction(null);
+        // KHÔNG huỷ vdpInteraction khi rời khung: thao tác VDP do listener window quản
+        // lý (kết thúc bằng pointerup ở bất kỳ đâu) → kéo ra ngoài khung vẫn mượt.
         // Edit PDF Object (10.2): rời khung khi đang kéo → HỦY thao tác (chưa gọi
         // backend), bỏ transform tạm để overlay không kẹt trạng thái dở dang.
         if (editInteraction) {
@@ -2369,7 +2431,6 @@ export const LivePageFrame = (props: any) => {
                                      });
                                  }
                                  
-                                 (e.target as HTMLElement).releasePointerCapture(e.pointerId);
                              }}
                          >
                              <div className={`absolute -top-6 left-0 bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow whitespace-nowrap pointer-events-none transition-opacity z-[70] ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
@@ -2443,16 +2504,28 @@ export const LivePageFrame = (props: any) => {
                                  )}
                              </div>
                              
-                             {/* Resize Handles (4 góc) */}
-                             {isSelected && (['nw','ne','sw','se'] as const).map((handle) => {
-                                 const posCls = handle === 'nw' ? '-left-1.5 -top-1.5 cursor-nw-resize'
-                                     : handle === 'ne' ? '-right-1.5 -top-1.5 cursor-ne-resize'
-                                     : handle === 'sw' ? '-left-1.5 -bottom-1.5 cursor-sw-resize'
-                                     : '-right-1.5 -bottom-1.5 cursor-se-resize';
-                                 return (
+                             {/* Resize Handles: 4 góc + 4 cạnh (giống Illustrator) */}
+                             {isSelected && (() => {
+                                 const isQr = field.type === 'qrcode';
+                                 // QR khoá tỉ lệ vuông → chỉ cho kéo 4 góc. Còn lại đủ 8 điểm.
+                                 const handles = isQr
+                                     ? (['nw','ne','sw','se'] as const)
+                                     : (['nw','n','ne','e','se','s','sw','w'] as const);
+                                 const posMap: Record<string, string> = {
+                                     nw: '-left-1.5 -top-1.5 cursor-nw-resize',
+                                     n:  'left-1/2 -translate-x-1/2 -top-1.5 cursor-n-resize',
+                                     ne: '-right-1.5 -top-1.5 cursor-ne-resize',
+                                     e:  '-right-1.5 top-1/2 -translate-y-1/2 cursor-e-resize',
+                                     se: '-right-1.5 -bottom-1.5 cursor-se-resize',
+                                     s:  'left-1/2 -translate-x-1/2 -bottom-1.5 cursor-s-resize',
+                                     sw: '-left-1.5 -bottom-1.5 cursor-sw-resize',
+                                     w:  '-left-1.5 top-1/2 -translate-y-1/2 cursor-w-resize',
+                                 };
+                                 const isEdge = (h: string) => h.length === 1;
+                                 return handles.map((handle) => (
                                      <div
                                          key={handle}
-                                         className={`absolute ${posCls} w-3 h-3 bg-white border-2 border-blue-500 rounded-full shadow-sm hover:scale-150 transition-transform z-[65]`}
+                                         className={`absolute ${posMap[handle]} w-3 h-3 bg-white border-2 border-blue-500 ${isEdge(handle) ? 'rounded-sm' : 'rounded-full'} shadow-sm hover:scale-150 transition-transform z-[65]`}
                                          onPointerDown={(e) => {
                                              e.stopPropagation();
                                              if (!containerRef.current) return;
@@ -2467,11 +2540,10 @@ export const LivePageFrame = (props: any) => {
                                                      [field.id]: { x: field.x, y: field.y, w: field.width, h: field.height }
                                                  }
                                              });
-                                             (e.target as HTMLElement).releasePointerCapture(e.pointerId);
                                          }}
                                      />
-                                 );
-                             })}
+                                 ));
+                             })()}
                          </div>
                      );
                  });

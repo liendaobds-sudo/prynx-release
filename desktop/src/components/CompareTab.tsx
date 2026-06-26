@@ -142,7 +142,15 @@ export default function CompareTab() {
           const isDone = await pollJob();
           if (isDone) clearInterval(pollInterval);
         }, 2000);
-        setTimeout(() => clearInterval(pollInterval), 600000);
+        // Hết thời gian chờ tối đa (10 phút): dừng poll VÀ báo lỗi rõ ràng thay vì
+        // để UI kẹt mãi ở "đang xử lý" (audit so-sánh: poll dừng âm thầm).
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          if (useComparisonStore.getState().jobStatus !== 'completed') {
+            setError('Quá thời gian chờ xử lý (10 phút). File có thể quá lớn hoặc máy chủ đang bận — thử lại với DPI thấp hơn hoặc chia nhỏ file PDF.');
+            setPhase('upload');
+          }
+        }, 600000);
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Không thể tạo job');

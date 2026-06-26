@@ -189,11 +189,13 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
         };
 
         if (productType === 'rectangle' && p.bleedColorType === 'mirror') {
-            // Lật gương vector: (auto-trim) → add-bleed
+            // Lật gương vector: (auto-trim) → mirror-bleed (phản chiếu nội dung mép)
             let working = targetFile;
-            if (p.removeWhiteBg) working = await autoTrim(working);
+            // Tương thích recipe cũ: ưu tiên trimWhiteEdge, fallback removeWhiteBg.
+            const doTrim = p.trimWhiteEdge ?? p.removeWhiteBg;
+            if (doTrim) working = await autoTrim(working);
             const up = await uploadPDF(working);
-            const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/add-bleed`, {
+            const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/mirror-bleed`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ file_id: up.id, bleed_mm: p.bleedMm || 0, pages: null }),
             });
@@ -202,7 +204,7 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
             const finalRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${bleedData.output_filename}`);
             resultBlob = await finalRes.blob();
         } else {
-            if (productType === 'rectangle' && p.removeWhiteBg) targetFile = await autoTrim(targetFile);
+            if (productType === 'rectangle' && (p.trimWhiteEdge ?? p.removeWhiteBg)) targetFile = await autoTrim(targetFile);
             const up = await uploadPDF(targetFile);
             const fd = new FormData();
             fd.append('file_id', up.id);

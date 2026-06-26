@@ -65,7 +65,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
     }, []);
 
     return (
-        <div ref={barRef} className={`h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#323639] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-50 relative overflow-visible gap-2 ${isNarrow ? 'tb-narrow' : ''}`}>
+        <div ref={barRef} className={`h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#1e1e1e] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-50 relative overflow-visible gap-2 ${isNarrow ? 'tb-narrow' : ''}`}>
             <style>{`.tb-narrow .tb-label{display:none!important;}`}</style>
             {/* Spacer trái (co được) để nhóm tool nằm giữa */}
             <div className="flex-1 min-w-0" />

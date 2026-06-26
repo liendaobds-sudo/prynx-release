@@ -148,6 +148,8 @@ class StickerEngine:
             bleed_pts = bleed_mm * mm_to_pts
             
             all_pages_meta = []
+            any_dieline_found = False
+            pages_no_dieline = []
             
             for page_idx in range(len(doc_in_pdfium)):
                 debug_step = f"Rasterize Page {page_idx}"
@@ -267,7 +269,9 @@ class StickerEngine:
                         contour = contour - 1
                         contour_pts = contour[:, [1, 0]] * poly_scale
                         
-                        if len(contour_pts) >= 10:
+                        # Chỉ làm mượt khi góc TRÒN. Với góc nhọn/vuông (miter),
+                        # smoothing sẽ bo mềm các góc đáng lẽ phải sắc → sai kiểu góc.
+                        if corner_style == "round" and len(contour_pts) >= 10:
                             window = min(200, max(15, len(contour_pts) // 30))
                             padded = np.pad(contour_pts, ((window, window), (0, 0)), mode='wrap')
                             kernel = np.ones(window) / window
@@ -635,6 +639,7 @@ class StickerEngine:
                 
                 page_meta = {}
                 if dieline_poly is not None and not getattr(dieline_poly, 'is_empty', True):
+                    any_dieline_found = True
                     minx, miny, maxx, maxy = dieline_poly.bounds
                     pdf_miny = page_in_height - maxy
                     pdf_maxy = page_in_height - miny
@@ -709,6 +714,9 @@ class StickerEngine:
                         "shape_type": shape_type_str,
                         "shape_params": shape_params_str
                     }
+                elif cut_mode != "none":
+                    # Yêu cầu tạo đường cắt nhưng không dò được hình trên trang này.
+                    pages_no_dieline.append(page_idx + 1)
                 
                 all_pages_meta.append(page_meta)
                     
@@ -725,7 +733,27 @@ class StickerEngine:
             if len(all_pages_meta) > 0 and all_pages_meta[0]:
                 final_meta = all_pages_meta[0].copy()
             final_meta["pages"] = all_pages_meta
-                
+
+            # Yêu cầu vẽ đường cắt nhưng KHÔNG dò được hình trên BẤT KỲ trang nào →
+            # trả lỗi nghiệp vụ rõ ràng (route → 422) thay vì file "thành công" rỗng.
+            if cut_mode != "none" and not any_dieline_found:
+                try:
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                except OSError:
+                    pass
+                return False, {
+                    "error": (
+                        "Không dò được hình để tạo đường cắt. Hãy bật 'Bỏ nền trắng' "
+                        "nếu nền màu trắng, hoặc kiểm tra lại file (hình quá nhạt/trống)."
+                    )
+                }
+            if pages_no_dieline:
+                final_meta["warning"] = (
+                    "Một số trang không dò được hình để tạo đường cắt: "
+                    + ", ".join(str(p) for p in pages_no_dieline)
+                )
+
             return True, final_meta
             
         except Exception as e:

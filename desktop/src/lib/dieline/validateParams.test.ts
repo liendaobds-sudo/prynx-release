@@ -122,12 +122,12 @@ describe('validateParams', () => {
 
     // ─── Paper bag constraints ──────────────────────────────
 
-    it('clamps BF when bottom fold exceeds D/2 for paper bag', () => {
+    it('clamps BF to 85% of W for paper bag', () => {
         const { params, wasClamped } = validateParams(
-            make({ boxType: 'paper_bag', D: 60, BF: 50 })
+            make({ boxType: 'paper_bag', W: 40, BF: 50 })
         );
         expect(wasClamped).toBe(true);
-        expect(params.BF).toBeLessThanOrEqual(Math.floor(params.D / 2));
+        expect(params.BF).toBeLessThanOrEqual(Math.floor(params.W * 0.85));
     });
 
     // ─── Cup sleeve constraints ──────────────────────────────

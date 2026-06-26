@@ -270,7 +270,7 @@ def _build_overlay_pdf_bytes(report_str: str, page_w_pt: float, page_h_pt: float
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(page_w_pt, page_h_pt))
     c.setFont(font, font_size)
-    c.setFillColorRGB(0, 0, 0)
+    c.setFillColorCMYK(0, 0, 0, 1)  # pure-K cho chữ báo cáo (không dùng RGB)
 
     off_x = offset_x_mm * MM_TO_PT
     off_y = offset_y_mm * MM_TO_PT

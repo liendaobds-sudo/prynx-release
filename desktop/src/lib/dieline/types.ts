@@ -52,6 +52,41 @@ export interface Panel {
      *  VD: [0, 0.4] = panel này gập trong 40% đầu tiên.
      *  Nếu không set → tự động tính theo độ sâu trong cây panel. */
     foldPhase?: [number, number];
+    /** (Chỉ 3D) Dịch panel theo pháp tuyến mặt phẳng khuôn (trục Z thế giới)
+     *  một lượng mm SAU khi gập — dùng để XẾP LỚP các mặt gập phẳng (vd bì thư:
+     *  tai dán/mặt sau/nắp gập áp 180° về cùng phía nhưng tách lớp để không
+     *  đồng phẳng gây z-fighting và xếp đúng thứ tự chồng). */
+    stackZ?: number;
+    /** (CHỈ 3D — KHÔNG ảnh hưởng path/outline 2D) Dịch panel một lượng mm dọc
+     *  trục Z TRONG HỆ QUY CHIẾU CỦA PANEL CHA (sau khi áp ma trận gập của
+     *  chính panel này, trước khi áp ma trận cha). Dùng để đẩy hẳn một mí gập
+     *  180° (vd MÍ MIỆNG túi giấy) về phía SAU mặt tường (vào lòng túi) bằng
+     *  hình học THẬT — tường (finish) che kín từ ngoài, không lộ mặt sau giấy,
+     *  không phụ thuộc may rủi của polygonOffset khi hai mặt đồng phẳng.
+     *  Giá trị ÂM = đẩy về phía trong (−z cục bộ của tường). */
+    renderZShift?: number;
+    /** (CHỈ 3D — KHÔNG ảnh hưởng path/outline 2D) Dữ liệu render miếng đệm góc
+     *  khay. Miếng góc là MỘT tờ giấy gồm 2 tam giác (a,d,c) và (a,c,dP) nối
+     *  liền dọc NẾP GẬP CHÉO a→c (đúng đường nhấn đỏ ở giữa khuôn 2D). Khi gập:
+     *  tam giác (a,d,c) đi theo vách trước/sau; tam giác (a,c,dP) gập quanh nếp
+     *  chéo để bám vách hông → 2 nửa luôn dính nhau dọc a→c (không cắt rời),
+     *  đồng thời kéo 2 vách dựng lên. Toạ độ ở hệ phẳng (chưa gập). */
+    gusset?: {
+        /** Vách trước/sau mà tam giác (a,d,c) bám vào. */
+        frontWall: string;
+        /** Vách hông mà tam giác (a,c,dP) gập áp vào. */
+        sideWall: string;
+        /** Góc neo (giao 2 bản lề vách). */
+        a: Point2D;
+        /** Đỉnh dọc cạnh đứng vách trước/sau. */
+        d: Point2D;
+        /** Đỉnh nhọn (cuối nếp gập chéo). */
+        c: Point2D;
+        /** Đỉnh phía vách hông (đối xứng d qua a→c). */
+        dP: Point2D;
+        /** Tâm hộp (x,y) để chọn chiều lật hướng vào trong. */
+        center: Point2D;
+    };
 }
 
 /** Mô hình khuôn bế hoàn chỉnh */
@@ -79,6 +114,10 @@ export interface DielineModel {
     params: BoxParams;
     /** Cảnh báo về kích thước / khả năng sản xuất */
     warnings?: string[];
+    /** (Chỉ hộp diêm tray+sleeve) Vector tịnh tiến (hệ phẳng-đã-gập) để KHAY
+     *  LỒNG vào VỎ ở cuối hoạt ảnh kéo đóng. Lớp render dồn toàn bộ gập vào
+     *  [0, NEST_START] rồi trượt khay theo vector này trong [NEST_START, 1]. */
+    nesting?: { x: number; y: number; z: number };
 }
 
 /** Thông số hộp đầu vào */
@@ -191,6 +230,16 @@ export interface BoxParams {
     /** Rộng mí dán keo của vỏ bao (mm), mặc định 15.
      *  Độc lập với dầm khay (G). */
     sleeveGlue: number;
+
+    // ── Pizza Box (FEFCO 0426) params ──
+    /** Bật/tắt lỗ thông hơi trên nắp */
+    pizzaVent: boolean;
+    /** Đường kính lỗ thông hơi (mm), 0 = tự động (~6mm) */
+    pizzaVentD: number;
+    /** Bật/tắt khóa nắp phía trước (ngàm gài nắp) */
+    pizzaFrontLock: boolean;
+    /** Bật/tắt chấu khóa góc (xếp chồng / tăng cứng) */
+    pizzaCornerLock: boolean;
 }
 
 /** Giá trị mặc định cho BoxParams */
@@ -244,6 +293,10 @@ export const DEFAULT_PARAMS: BoxParams = {
     envWindowY: 15,
     trayTongueW: 15,
     sleeveGlue: 15,
+    pizzaVent: true,
+    pizzaVentD: 0,
+    pizzaFrontLock: true,
+    pizzaCornerLock: true,
 };
 
 /** Thông tin metadata của loại hộp (để build thư viện) */

@@ -442,7 +442,7 @@ def draw_tile_cut_marks(
         tick_h(hy, min_x - mark_off, min_x - mark_off - mark_len)
         tick_h(hy, max_x + mark_off, max_x + mark_off + mark_len)
 
-    shape.finish(color=(0, 0, 0), fill=None, width=mark_thickness)
+    shape.finish(color=(1, 1, 1, 1), fill=None, width=mark_thickness)  # registration (mọi kẽm)
     shape.commit()  # commit to page
 
     logger.info(

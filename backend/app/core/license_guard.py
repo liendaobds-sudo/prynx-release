@@ -29,14 +29,37 @@ from fastapi import Request, HTTPException
 logger = logging.getLogger(__name__)
 
 
+def _security_diag_enabled() -> bool:
+    """Ghi security.log ra đĩa CHỈ khi dev CHỦ ĐỘNG bật để xác minh bản release.
+
+    Mặc định TẮT trên máy khách: tránh để lại 'bản đồ trinh sát' (trạng thái enforce,
+    nguồn pubkey, lý do từ chối token...) cho kẻ tấn công đọc file. Telemetry bảo mật
+    thật vẫn đi qua Supabase `security_logs` (không phụ thuộc file cục bộ này).
+
+    Bật bằng MỘT trong hai (để verify trên bản đã cài):
+      - đặt biến môi trường PRYNX_SECURITY_DIAG=1 trước khi mở app, HOẶC
+      - tạo file rỗng %APPDATA%\\PrynX\\logs\\.security_diag
+    """
+    try:
+        if os.environ.get("PRYNX_SECURITY_DIAG", "").strip().lower() in ("1", "true", "yes"):
+            return True
+        base = os.environ.get("APPDATA") or os.environ.get("HOME") or os.path.expanduser("~")
+        return os.path.isfile(os.path.join(base, "PrynX", "logs", ".security_diag"))
+    except Exception:
+        return False
+
+
 def _security_log_to_file(msg: str) -> None:
     """Ghi 1 dòng trạng thái bảo mật ra file để DEV kiểm chứng trên bản cài (release).
 
-    - Thầm lặng: KHÔNG hiển thị cho người dùng cuối (file nằm trong %APPDATA%\\PrynX\\logs).
+    - CHỈ ghi khi diagnostic được bật (`_security_diag_enabled`) → mặc định KHÔNG để
+      lại file trên máy khách (giảm rò thông tin cho kẻ trinh sát).
     - KHÔNG ghi dữ liệu nhạy cảm (license key/token thô) — chỉ cờ trạng thái + lý do generic.
     - Best-effort: mọi lỗi đều nuốt, không bao giờ ảnh hưởng luồng xử lý.
     """
     try:
+        if not _security_diag_enabled():
+            return
         base = os.environ.get("APPDATA") or os.environ.get("HOME") or os.path.expanduser("~")
         log_dir = os.path.join(base, "PrynX", "logs")
         os.makedirs(log_dir, exist_ok=True)
@@ -111,10 +134,11 @@ def _load_token_from_file():
 # Load token at import time
 _load_token_from_file()
 
-# #1: Log rõ trạng thái cưỡng chế token + nguồn token lúc khởi động để KIỂM CHỨNG
-# trên bản release (xác nhận PRYNX_ENFORCE_LICENSE_TOKEN thực sự có hiệu lực).
+# #1: trạng thái cưỡng chế token + nguồn token lúc khởi động — dùng logger.DEBUG để
+# KHÔNG rò posture (enforce/dev_mode/pubkey) vào app.log mặc định. security.log (gated
+# bởi _security_diag_enabled) là kênh xác minh khi dev bật diagnostic.
 try:
-    logger.info(
+    logger.debug(
         "[LICENSE_GUARD] startup: enforce_license_token=%s, dev_mode=%s, sidecar_token=%s, pubkey_source=%s",
         os.environ.get("PRYNX_ENFORCE_LICENSE_TOKEN", "false"),
         _is_dev_mode(),
@@ -219,6 +243,17 @@ def _enforce_license_token() -> bool:
 # ── V2: chống lùi đồng hồ (anti-clockback) phía sidecar ──────────────────────
 _CLOCK_SKEW_SECONDS = 300  # dung sai NTP 5 phút
 
+# V3 (deletion-proof): cận trên tuổi thọ token. Token do edge function ký có TTL 2h;
+# tuổi thọ hợp lệ (exp - now) LUÔN ≤ TTL ngay sau khi cấp và giảm dần về 0. Nếu
+# (exp - now) VƯỢT cận này nghĩa là đồng hồ đã bị LÙI xa so với lúc token được cấp
+# → replay token cũ bằng cách quay ngược giờ. Khác với `_clock_guard` (dựa trên file
+# có thể bị XOÁ để reset mốc), kiểm tra này KHÔNG có trạng thái trên đĩa nên không
+# thể vô hiệu bằng cách xoá file. Để dư 1h trên TTL nhằm không false-positive nếu
+# chính sách TTL đổi nhẹ; phải LUÔN ≥ TTL token thật. Có thể chỉnh qua env (dev/test).
+_MAX_TOKEN_LIFETIME_SECONDS = int(
+    os.environ.get("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", str(3 * 60 * 60))  # mặc định 3h (TTL 2h + 1h dư)
+)
+
 
 def _clock_guard_path() -> str:
     override = os.environ.get("PRYNX_CLOCK_GUARD_FILE", "")
@@ -304,6 +339,18 @@ def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> t
             return False, "License token expired"
     except (TypeError, ValueError):
         return False, "License token has invalid exp"
+
+    # V3 (deletion-proof anti-rollback): token KHÔNG được "tươi" quá tuổi thọ tối đa.
+    # Nếu exp xa hiện tại hơn _MAX_TOKEN_LIFETIME_SECONDS → đồng hồ đã bị lùi xa so với
+    # lúc cấp token (replay token cũ). Không phụ thuộc file trên đĩa nên không thể bypass
+    # bằng cách xoá `.clkguard`. Bỏ qua ở dev (đồng hồ/clock test không ràng buộc).
+    if not _is_dev_mode():
+        try:
+            exp_val = int(payload.get("exp", 0))
+            if exp_val - int(time.time()) > _MAX_TOKEN_LIFETIME_SECONDS + _CLOCK_SKEW_SECONDS:
+                return False, "License token lifetime implausible (clock rollback?)"
+        except (TypeError, ValueError):
+            return False, "License token has invalid exp"
 
     # Ràng buộc theo máy — field "m" phải có trong token (không optional).
     token_hwid = payload.get("m")

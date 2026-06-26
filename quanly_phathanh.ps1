@@ -14,6 +14,20 @@ if (Test-Path $CONFIG) {
 }
 function Save-Config { @{ Repo = $txtRepo.Text; Version = $txtVer.Text } | ConvertTo-Json | Set-Content $CONFIG -Encoding utf8 }
 
+# ---- NGUON CHAN LY DUY NHAT: suy repo phat hanh tu endpoint updater trong tauri.conf.json ----
+# Khong cho go tay (tranh phat hanh nham repo -> client khong nhan update).
+function Get-EndpointRepo {
+    $confPath = Join-Path $ROOT "desktop\src-tauri\tauri.conf.json"
+    if (-not (Test-Path $confPath)) { return "" }
+    try {
+        $conf = Get-Content $confPath -Raw | ConvertFrom-Json
+        $ep = [string]$conf.plugins.updater.endpoints[0]
+        if ($ep -match 'github\.com/([^/]+/[^/]+)/releases') { return $Matches[1] }
+    } catch {}
+    return ""
+}
+$DerivedRepo = Get-EndpointRepo
+
 # ---- Form ----
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "PrynX — Quản lý phát hành"
@@ -37,8 +51,11 @@ function New-Box($x, $y, $w, $pwd) {
 New-Label "Phiên bản mới:" 15 18 | Out-Null
 $txtVer = New-Box 150 15 120; $txtVer.Text = $cfg.Version
 
-New-Label "Repo phát hành (owner/repo, PUBLIC):" 15 50 | Out-Null
-$txtRepo = New-Box 280 47 330; $txtRepo.Text = $cfg.Repo
+New-Label "Repo phát hành (TỰ ĐỘNG từ tauri.conf.json):" 15 50 | Out-Null
+$txtRepo = New-Box 320 47 290
+# Suy tu endpoint updater -> chi doc (single source of truth). Fallback config cu neu khong doc duoc.
+if ($DerivedRepo) { $txtRepo.Text = $DerivedRepo; $txtRepo.ReadOnly = $true }
+else { $txtRepo.Text = $cfg.Repo }
 
 New-Label "Mật khẩu khóa ký (bỏ trống nếu không đặt):" 15 82 | Out-Null
 $txtPwd = New-Box 300 79 200 $true
@@ -127,7 +144,8 @@ $btnPublish.Add_Click({
     $notes = $txtNotes.Text -replace '"', "'"
     $relScript = Join-Path $ROOT "release_update.ps1"
     $skipArg = if ($chkSkipNuitka.Checked) { " -SkipNuitka" } else { "" }
-    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$relScript`" -Version `"$($txtVer.Text)`" -ReleaseRepo `"$($txtRepo.Text)`" -Notes `"$notes`"$skipArg"
+    # KHONG truyen -ReleaseRepo: release_update.ps1 tu suy tu endpoint (nguon chan ly duy nhat).
+    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$relScript`" -Version `"$($txtVer.Text)`" -Notes `"$notes`"$skipArg"
     Start-Process powershell -ArgumentList $argList
     Log "Da khoi chay build+phat hanh trong cua so rieng. Theo doi tien do o cua so do."
 })

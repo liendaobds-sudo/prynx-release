@@ -61,6 +61,10 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                 setFileId(fid);
                 const res = await authenticatedFetch(`${getApiUrl()}/preflight/page-boxes/${fid}/${detail.pageNum}`);
                 const data: PageBoxesResponse = await res.json();
+                // Backend trả 500 → data = {detail:...} (không có cropbox). Phải báo lỗi thay vì set rồi crash.
+                if (!res.ok || !data || !data.cropbox) {
+                    throw new Error((data as any)?.detail || `Không đọc được khổ trang (HTTP ${res.status})`);
+                }
                 setBoxes(data);
                 // Lề (mm) từ fractions × kích thước CropBox hiện tại (vùng hiển thị = CropBox).
                 const cb = data.cropbox;
@@ -107,7 +111,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
 
     // Lề (mm) hiện tại + rect tuyệt đối (mm) theo CropBox gốc.
     const computeRectMm = useCallback(() => {
-        if (!boxes) return null;
+        if (!boxes || !boxes.cropbox) return null;
         const cb = boxes.cropbox;
         const leftMm = toMm(margins.left, unit);
         const rightMm = toMm(margins.right, unit);

@@ -157,6 +157,9 @@ export default function DataMergeTool({
 }: Props) {
     const [csvData, setCsvData] = useState<Record<string, string>[]>([]);
     const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+    const [dataMode, setDataMode] = useState<'csv' | 'manual'>('csv');
+    const [manualText, setManualText] = useState('');
+    const [manualColName, setManualColName] = useState('Noidung');
     const [statusMessage, setStatusMessage] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
     const [systemFonts, setSystemFonts] = useState<{name: string, path: string}[]>([]);
@@ -216,6 +219,22 @@ export default function DataMergeTool({
         if (files.length > 1) {
             setStatusMessage(`Đã chọn ${files.length} file. Map trường với cột rồi bấm "Chạy ${files.length} file".`);
         }
+    };
+
+    // Nhập tay: mỗi DÒNG = 1 bản ghi, gộp dưới một cột (mặc định "Noidung").
+    // 1 dòng → 1 trang; nhiều dòng → nhiều trang. Field nào muốn dùng thì map vào cột này.
+    const applyManualData = (text: string, colRaw: string) => {
+        const col = ((colRaw || '').trim()) || 'Noidung';
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+        setBatchFiles([]); // chế độ nhập tay không dùng chạy hàng loạt
+        if (lines.length === 0) {
+            setCsvHeaders([]); setCsvData([]);
+            setStatusMessage('Nhập tay: chưa có nội dung (mỗi dòng = 1 bản ghi).');
+            return;
+        }
+        setCsvHeaders([col]);
+        setCsvData(lines.map(l => ({ [col]: l })));
+        setStatusMessage(`Nhập tay: ${lines.length} bản ghi (cột "${col}").`);
     };
 
     const updateSelectedField = (changes: any) => {
@@ -306,6 +325,9 @@ export default function DataMergeTool({
     const [splitMode, setSplitMode] = useState('whole'); // whole | ws | - | , | ; | / | custom
     const [splitCustom, setSplitCustom] = useState('');
     const [splitPart, setSplitPart] = useState(1);
+    // #8 Định dạng dữ liệu khi chèn placeholder
+    const [splitFmt, setSplitFmt] = useState('');      // '' | upper | lower | title | number | money | date | pad
+    const [splitFmtArg, setSplitFmtArg] = useState(''); // số chữ số thập phân / độ rộng / format ngày
     const [csvHasHeader, setCsvHasHeader] = useState(true);
     const lastCsvFileRef = useRef<File | null>(null);
     const [batchFiles, setBatchFiles] = useState<File[]>([]);
@@ -315,11 +337,13 @@ export default function DataMergeTool({
 
     const buildSplitToken = (): string => {
         if (!splitCol) return '';
-        if (splitMode === 'whole') return `{${splitCol}}`;
-        if (splitMode === 'ws') return `{${splitCol}[${splitPart}]}`;
+        // phần định dạng (#8): |func hoặc |func:arg
+        const fmt = splitFmt ? (splitFmtArg.trim() ? `|${splitFmt}:${splitFmtArg.trim()}` : `|${splitFmt}`) : '';
+        if (splitMode === 'whole') return `{${splitCol}${fmt}}`;
+        if (splitMode === 'ws') return `{${splitCol}[${splitPart}]${fmt}}`;
         const d = splitMode === 'custom' ? splitCustom : splitMode;
-        if (!d) return `{${splitCol}[${splitPart}]}`;
-        return `{${splitCol}[${splitPart}|${d}]}`;
+        if (!d) return `{${splitCol}[${splitPart}]${fmt}}`;
+        return `{${splitCol}[${splitPart}|${d}]${fmt}}`;
     };
 
     const insertSplitToken = (target: any) => {
@@ -504,6 +528,10 @@ export default function DataMergeTool({
             setStatusMessage("Chưa có file PDF gốc.");
             return;
         }
+        if (!csvData || csvData.length === 0) {
+            setStatusMessage("Chưa có dữ liệu. Tải CSV hoặc chuyển sang 'Nhập tay' (mỗi dòng = 1 bản ghi).");
+            return;
+        }
 
         setIsGenerating(true);
         try {
@@ -569,8 +597,45 @@ export default function DataMergeTool({
                 </div>
             </div>
 
-            {/* CSV Data Section */}
-            <VdpSection step="1" title="Dữ liệu CSV" defaultOpen>
+            {/* Data Section: CSV hoặc Nhập tay */}
+            <VdpSection step="1" title="Dữ liệu (CSV / Nhập tay)" defaultOpen>
+                <div className="flex gap-1 mb-3 p-0.5 bg-slate-100 dark:bg-zinc-800 rounded-md">
+                    <button
+                        onClick={() => setDataMode('csv')}
+                        className={`flex-1 h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'csv' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
+                    >📄 Tải CSV</button>
+                    <button
+                        onClick={() => { setDataMode('manual'); applyManualData(manualText, manualColName); }}
+                        className={`flex-1 h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'manual' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
+                    >✍️ Nhập tay</button>
+                </div>
+
+                {dataMode === 'manual' ? (
+                    <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 shrink-0">Tên cột:</span>
+                            <input
+                                value={manualColName}
+                                onChange={(e) => { setManualColName(e.target.value); applyManualData(manualText, e.target.value); }}
+                                placeholder="Noidung"
+                                className="flex-1 h-7 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded focus:outline-none focus:border-blue-500"
+                            />
+                        </div>
+                        <textarea
+                            value={manualText}
+                            onChange={(e) => { setManualText(e.target.value); applyManualData(e.target.value, manualColName); }}
+                            placeholder={'Mỗi dòng = 1 bản ghi.\nVí dụ:\nĐây là sản phẩm chính hãng của thương hiệu CCK\nMã 002\nMã 003'}
+                            rows={5}
+                            className="w-full p-2 text-[12px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-blue-500 resize-y leading-relaxed"
+                        />
+                        <p className="text-[10px] text-slate-400 leading-snug">
+                            Mỗi dòng là 1 bản ghi: <b>1 dòng → 1 trang</b>, nhiều dòng → nhiều trang.
+                            Field cần dùng thì gán vào cột <b>"{manualColName || 'Noidung'}"</b>.
+                            (Muốn cùng 1 nội dung cố định trên mọi trang thì gõ thẳng nội dung vào ô text của field.)
+                        </p>
+                    </div>
+                ) : (
+                <>
                 <label className="flex items-center justify-center w-full p-3 border-2 border-dashed border-blue-300 dark:border-blue-700/50 rounded-md cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
                     <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
@@ -593,6 +658,8 @@ export default function DataMergeTool({
             <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">Hàng đầu là tiêu đề cột</span>
         </label>
         <p className="text-[10px] text-slate-400 leading-snug -mt-1">Bỏ chọn nếu file không có dòng tiêu đề — cột sẽ tự đặt tên "Cột 1", "Cột 2"…</p>
+        </>
+        )}
 
         {csvHeaders.length > 0 && (
             <div className="text-[13px] text-slate-600 dark:text-zinc-400 space-y-2">
@@ -767,16 +834,18 @@ export default function DataMergeTool({
                         
                         {selectedField.type !== 'text' && (
                             <div className="grid grid-cols-2 gap-3 mt-1">
+                                {/* Field lưu theo "mm phồng" (CSS px). Hiển thị/nhập theo mm THẬT
+                                    (×0.75) để khớp kích thước trang & file xuất. */}
                                 <ToolNumberInput 
                                     label="Rộng W"
-                                    value={selectedField.width || 0}
-                                    onChange={(val) => updateSelectedField({ width: val })}
+                                    value={Math.round((selectedField.width || 0) * 0.75 * 100) / 100}
+                                    onChange={(val) => updateSelectedField({ width: val / 0.75 })}
                                     suffix="mm" step={0.1}
                                 />
                                 <ToolNumberInput 
                                     label="Cao H"
-                                    value={selectedField.height || 0}
-                                    onChange={(val) => updateSelectedField({ height: val })}
+                                    value={Math.round((selectedField.height || 0) * 0.75 * 100) / 100}
+                                    onChange={(val) => updateSelectedField({ height: val / 0.75 })}
                                     suffix="mm" step={0.1}
                                 />
                             </div>
@@ -834,6 +903,27 @@ export default function DataMergeTool({
                                                 )}
                                             </div>
                                         )}
+                                        {/* #8 Định dạng dữ liệu */}
+                                        <div className="grid grid-cols-2 gap-1.5">
+                                            <select value={splitFmt} onChange={e => { setSplitFmt(e.target.value); setSplitFmtArg(e.target.value === 'date' ? '%d/%m/%Y' : ''); }} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" title="Định dạng dữ liệu">
+                                                <option value="">Định dạng: Không</option>
+                                                <option value="upper">CHỮ HOA</option>
+                                                <option value="lower">chữ thường</option>
+                                                <option value="title">Viết Hoa Đầu Từ</option>
+                                                <option value="number">Số (1,234)</option>
+                                                <option value="money">Tiền tệ</option>
+                                                <option value="date">Ngày tháng</option>
+                                                <option value="pad">Đệm số 0 (000123)</option>
+                                            </select>
+                                            {(splitFmt === 'number' || splitFmt === 'money' || splitFmt === 'pad' || splitFmt === 'date') && (
+                                                <input
+                                                    value={splitFmtArg}
+                                                    onChange={e => setSplitFmtArg(e.target.value)}
+                                                    placeholder={splitFmt === 'date' ? '%d/%m/%Y' : splitFmt === 'pad' ? 'Độ rộng (vd 6)' : 'Số lẻ (vd 0)'}
+                                                    className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
+                                                />
+                                            )}
+                                        </div>
                                         <div className="flex items-center justify-between gap-2">
                                             <code className="text-[11px] text-teal-600 dark:text-teal-400 font-mono truncate" title="Cú pháp sẽ được chèn">{buildSplitToken() || '—'}</code>
                                             <button onClick={() => insertSplitToken(selectedField)} disabled={!splitCol} className="shrink-0 h-7 px-3 text-[11px] font-semibold bg-teal-500 text-white rounded-md hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Chèn</button>
@@ -973,6 +1063,12 @@ export default function DataMergeTool({
                                             disabled={selectedField.qrStyle.transparentBg}
                                         />
                                     </div>
+                                    <ToolNumberInput 
+                                        label="Lề trắng (mm)"
+                                        value={selectedField.quietZone ?? 2}
+                                        onChange={(val) => updateSelectedField({ quietZone: val })}
+                                        suffix="mm" step={0.5}
+                                    />
                                     <div className="flex flex-col gap-1 col-span-2 mt-1">
                                         <label className="flex items-center gap-2 cursor-pointer">
                                             <input 
@@ -1102,7 +1198,28 @@ export default function DataMergeTool({
                         {selectedField.type === 'image' && (
                             <div className="flex flex-col gap-3 mt-1 pt-3 border-t border-slate-200 dark:border-zinc-700">
                                 <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">Tuỳ chỉnh Hình ảnh</span>
+                                <div className="text-[10px] text-slate-500 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-zinc-700 rounded p-2 leading-relaxed">
+                                    <b>Tên trường</b> = cột CSV chứa <b>tên file</b> (vd <code>anh.png</code>) hoặc đường dẫn đầy đủ của ảnh từng bản ghi. Nếu chỉ là tên file, điền <b>Thư mục gốc</b> bên dưới.
+                                </div>
                                 <div className="flex flex-col gap-3">
+                                    <div className="flex flex-col gap-1">
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Thư mục gốc ảnh (nếu cột chứa tên file)</span>
+                                        <input
+                                            value={selectedField.imageBaseDir || ''}
+                                            onChange={(e) => updateSelectedField({ imageBaseDir: e.target.value })}
+                                            placeholder="VD: D:\\anh_san_pham"
+                                            className="w-full h-9 px-2 text-[12px] font-mono bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
+                                        />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Ảnh mặc định (khi cột rỗng — không bắt buộc)</span>
+                                        <input
+                                            value={selectedField.imagePath || ''}
+                                            onChange={(e) => updateSelectedField({ imagePath: e.target.value })}
+                                            placeholder="VD: D:\\anh_san_pham\\default.png"
+                                            className="w-full h-9 px-2 text-[12px] font-mono bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
+                                        />
+                                    </div>
                                     <div className="flex flex-col gap-1">
                                         <span className="text-[11px] font-medium text-slate-500 block mb-1">Hình dáng khung (Shape)</span>
                                         <select 

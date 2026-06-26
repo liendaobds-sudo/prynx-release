@@ -182,7 +182,7 @@ def generate_one_dao_cut_segments(placements, gap_x, gap_y, bleed_pt):
     return final_segments
 
 
-def draw_one_dao_cuts(page, segments, color=(0, 0, 0), stroke_width=0.5, oc=None):
+def draw_one_dao_cuts(page, segments, color=(0, 0, 0, 1), stroke_width=0.5, oc=None):
     """
     Vẽ tất cả đường cắt 1 Dao lên 1 trang PDF bằng pikepdf.
 

@@ -163,7 +163,12 @@ async def export_images(req: ExportImagesRequest):
             base_name=req.base_name,
         )
         return {"ok": True, "count": len(files), "output_dir": req.output_dir, "files": files}
-    except (ValueError, FileNotFoundError) as e:
+    except FileNotFoundError as e:
+        # Không trả str(e) ra client: chứa đường dẫn nội bộ. Log nội bộ, client nhận generic.
+        logger.warning("Export ảnh: không tìm thấy file nguồn: %s", e)
+        raise HTTPException(status_code=400, detail="Không tìm thấy file nguồn để xuất.")
+    except ValueError as e:
+        # Tham số sai (dpi/format/pages...) — message có kiểm soát, an toàn trả ra.
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Lỗi khi xuất ảnh")

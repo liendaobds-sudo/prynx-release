@@ -26,7 +26,8 @@ def draw_duplex_marks(page, sheet_w, sheet_h, margin_mm=3.0, ocg_xref=None):
     margin_pt = margin_mm * MM_TO_PTS
     radius = circle_d / 2.0
     half = line_len / 2.0
-    color = (0, 0, 0)
+    # Registration color (in trên mọi kẽm) cho dấu canh chồng màu 2 mặt.
+    color = (1, 1, 1, 1)
 
     cx = sheet_w / 2.0
     cy = sheet_h / 2.0

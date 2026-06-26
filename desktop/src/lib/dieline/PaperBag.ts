@@ -36,6 +36,46 @@ import {
     HANDLE_HOLE_MARGIN,
 } from './constants';
 
+// ─── Helper: Hình tròn dạng polygon điểm (cho holes 3D) ────
+function circlePoly(cx: number, cy: number, r: number): Point2D[] {
+    const N = 32;
+    const pts: Point2D[] = [];
+    for (let i = 0; i < N; i++) {
+        const angle = (2 * Math.PI * i) / N;
+        pts.push(pt(snap(cx + r * Math.cos(angle)), snap(cy + r * Math.sin(angle))));
+    }
+    return pts;
+}
+
+// ─── Helper: Clip đoạn thẳng vào bbox (Liang–Barsky) ────────
+function clipLineToBox(
+    p1: Point2D, p2: Point2D,
+    minX: number, maxX: number, minY: number, maxY: number,
+): [Point2D, Point2D] | null {
+    let t0 = 0, t1 = 1;
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const checks = [
+        { p: -dx, q: p1.x - minX },
+        { p: dx, q: maxX - p1.x },
+        { p: -dy, q: p1.y - minY },
+        { p: dy, q: maxY - p1.y },
+    ];
+    for (const { p, q } of checks) {
+        if (p === 0) {
+            if (q < 0) return null; // song song & ngoài
+        } else {
+            const r = q / p;
+            if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+            else { if (r < t0) return null; if (r < t1) t1 = r; }
+        }
+    }
+    if (t1 - t0 < 1e-6) return null; // đoạn còn lại quá ngắn
+    return [
+        { x: p1.x + t0 * dx, y: p1.y + t0 * dy },
+        { x: p1.x + t1 * dx, y: p1.y + t1 * dy },
+    ];
+}
+
 // ─── Helper: Vẽ hình tròn (polyline xấp xỉ) ────────────
 function circleArcs(cx: number, cy: number, r: number, tag: 'CUT' | 'CREASE'): PathSegment[] {
     const segs: PathSegment[] = [];
@@ -93,7 +133,11 @@ export function generatePaperBag(params: BoxParams): DielineModel {
     const { L, W, D, G, glueSide, panelOrder } = params;
 
     // Resolved auto-params
-    const bottomH = params.BF > 0 ? params.BF : snap(W * 0.85);
+    // RULE: độ cao đáy KHÔNG vượt quá 85% độ rộng hông (W). Đáy quá cao so với
+    // hông sẽ không gập chụm phẳng được (chồng quá nhiều / cấn). Mặc định 85%W.
+    const bottomHMax = snap(W * 0.85);
+    const bottomHraw = params.BF > 0 ? params.BF : snap(W * 0.85);
+    const bottomH = Math.min(bottomHraw, bottomHMax);
     const topFold = params.TH > 0 ? params.TH : 0;
     const HR = params.HR > 0 ? params.HR : HANDLE_HOLE_RADIUS;
     const HM = params.HM > 0 ? params.HM : HANDLE_HOLE_MARGIN;
@@ -130,6 +174,16 @@ export function generatePaperBag(params: BoxParams): DielineModel {
     // C. VẼ THÂN TÚI — từ panel sequence
     // ============================================================
     const glueVat = snap(G * GLUE_TAPER_RATIO);
+    // Vát góc mí dán (glueVat) phải nằm GỌN trong vùng mà nó bevel: vát ở ĐÁY
+    // chỉ được cao tối đa bằng chiều cao vùng đáy (bottomH), vát ở MIỆNG chỉ
+    // được cao tối đa bằng chiều cao mí miệng (topFold). Nếu glueVat vượt quá,
+    // đỉnh vát sẽ thò QUA đường gập (yBody / yTop) sang vùng kế bên → tai đáy
+    // mí dán (mục C3) và mí miệng mí dán (mục D2) bị tự cắt (bowtie) và CHỒNG
+    // LẤN nhau (lỗi hình học thật, không phải nhiễu đo). Kẹp riêng từng đầu để
+    // giữ đúng ý nghĩa "vát góc" tối đa mà vẫn hợp lệ. Trường hợp thường gặp
+    // (vùng đủ cao) → botVat = topVat = glueVat, hành vi KHÔNG đổi.
+    const botVat = snap(Math.min(glueVat, bottomH));
+    const topVat = snap(Math.min(glueVat, topFold > 0 ? topFold : D));
     const glueIsLeft = glueSide === 'left';
 
     for (let i = 0; i < seq.length; i++) {
@@ -142,14 +196,14 @@ export function generatePaperBag(params: BoxParams): DielineModel {
             const gluePaths: PathSegment[] = [];
             if (glueIsLeft) {
                 // Glue bên trái: vát hướng trái
-                gluePaths.push(line(pt(xL, yBotFlap + glueVat), pt(xL, yTopFold - glueVat), 'CUT'));
-                gluePaths.push(line(pt(xL, yTopFold - glueVat), pt(xR, yTopFold), 'CUT'));
-                gluePaths.push(line(pt(xR, yBotFlap), pt(xL, yBotFlap + glueVat), 'CUT'));
+                gluePaths.push(line(pt(xL, yBotFlap + botVat), pt(xL, yTopFold - topVat), 'CUT'));
+                gluePaths.push(line(pt(xL, yTopFold - topVat), pt(xR, yTopFold), 'CUT'));
+                gluePaths.push(line(pt(xR, yBotFlap), pt(xL, yBotFlap + botVat), 'CUT'));
             } else {
                 // Glue bên phải: vát hướng phải
-                gluePaths.push(line(pt(xR, yBotFlap + glueVat), pt(xR, yTopFold - glueVat), 'CUT'));
-                gluePaths.push(line(pt(xR, yTopFold - glueVat), pt(xL, yTopFold), 'CUT'));
-                gluePaths.push(line(pt(xL, yBotFlap), pt(xR, yBotFlap + glueVat), 'CUT'));
+                gluePaths.push(line(pt(xR, yBotFlap + botVat), pt(xR, yTopFold - topVat), 'CUT'));
+                gluePaths.push(line(pt(xR, yTopFold - topVat), pt(xL, yTopFold), 'CUT'));
+                gluePaths.push(line(pt(xL, yBotFlap), pt(xR, yBotFlap + botVat), 'CUT'));
             }
             allPaths.push(...gluePaths);
             // Crease biên glue ↔ panel kề
@@ -160,15 +214,26 @@ export function generatePaperBag(params: BoxParams): DielineModel {
             }
             allPaths.push(line(pt(xL, yBody), pt(xR, yBody), 'CREASE')); // Giao đáy - mí dán
             panels.push({
-                name: p.name, label: p.label, paths: gluePaths,
-                outline: glueIsLeft ? [
-                    pt(xL, yBotFlap + glueVat), pt(xR, yBotFlap), pt(xR, topFold > 0 ? yTopFold : yTop), pt(xL, topFold > 0 ? yTopFold - glueVat : yTop - glueVat)
-                ] : [
-                    pt(xL, yBotFlap), pt(xR, yBotFlap + glueVat), pt(xR, topFold > 0 ? yTopFold - glueVat : yTop - glueVat), pt(xL, topFold > 0 ? yTopFold : yTop)
+                name: p.name, label: p.label,
+                // paths để RỖNG: nét sẽ do vòng clip (mục H) điền theo bbox đã
+                // cắt (body+đáy). Nếu giữ gluePaths (full height) thì nét miệng
+                // sẽ lơ lửng ngoài khối mí dán đã cắt ở yTop.
+                paths: [],
+                // Outline 3D mí dán = CHỈ vùng THÂN [yBody..yTop]. Vùng ĐÁY
+                // ([yBotFlap..yBody]) tách thành panel `bottom_glue_flap` (mục
+                // C3) để gập VÀO ĐÁY theo cạnh ngang yBody — nếu giữ chung với
+                // thân thì phần đáy mí dán chỉ cuốn theo vách (quanh cạnh đứng)
+                // và KHÔNG gập vào đáy. Vùng MIỆNG ([yTop..yTopFold]) tách thành
+                // `lip_glue_flap` (mục D2). Phần thân là HCN phẳng (vát glueVat
+                // nằm dưới yBody nên không ảnh hưởng).
+                outline: [
+                    pt(xL, yBody), pt(xR, yBody), pt(xR, yTop), pt(xL, yTop),
                 ],
                 parent: glueIsLeft ? seq[i + 1]?.name ?? null : seq[i - 1]?.name ?? null,
-                pivotEdge: [pt(glueIsLeft ? xR : xL, yBotFlap), pt(glueIsLeft ? xR : xL, yTopFold)],
-                foldAngle: glueIsLeft ? 90 : -90,
+                pivotEdge: [pt(glueIsLeft ? xR : xL, yBody), pt(glueIsLeft ? xR : xL, yTop)],
+                // Mép keo cuộn cùng chiều chuỗi tường liền kề: net = −90 (trái) /
+                // +90 (phải). net = foldAngle × foldDirection.
+                foldAngle: -90,
                 foldDirection: glueIsLeft ? 1 : -1,
             });
         } else {
@@ -201,9 +266,14 @@ export function generatePaperBag(params: BoxParams): DielineModel {
                 parent = null;
                 pivotEdge = null;
             } else if (i < (glueIsLeft ? 2 : 1)) {
+                // Chuỗi panel BÊN TRÁI gốc — phải cuộn CÙNG CHIỀU với chuỗi phải
+                // (về phía −Z) để khép thành ống kín. (Trước đây +90 khiến hông
+                // trái xòe ngược về +Z → ống hở, "gấp sai".)
                 parent = seq[i + 1]?.name ?? null;
                 pivotEdge = [pt(xR, yBody), pt(xR, yTop)];
-                foldAngle = 90;
+                // Net = foldAngle × foldDirection = −90 (ngược chiều chuỗi phải
+                // vốn +90) để hai hông cùng chụm về −Z, khép ống kín.
+                foldAngle = -90;
                 foldDir = 1;
             } else {
                 parent = seq[i - 1]?.name ?? null;
@@ -214,10 +284,157 @@ export function generatePaperBag(params: BoxParams): DielineModel {
 
             panels.push({
                 name: p.name, label: p.label, paths: bodyPaths,
+                // Outline 3D CHỈ vùng THÂN [yBody..yTop] — KHÔNG gồm vùng đáy
+                // (tách thành tai đáy mục C2) và KHÔNG gồm mí miệng (tách thành
+                // panel lip mục D2 để gập mép trên).
                 outline: [
-                    pt(xL, yBotFlap), pt(xR, yBotFlap), pt(xR, topFold > 0 ? yTopFold : yTop), pt(xL, topFold > 0 ? yTopFold : yTop)
+                    pt(xL, yBody), pt(xR, yBody), pt(xR, yTop), pt(xL, yTop)
                 ],
                 parent, pivotEdge, foldAngle, foldDirection: foldDir,
+            });
+        }
+    }
+
+    // ============================================================
+    // C2. PANEL GẬP ĐÁY SOS — tách vùng đáy thành 4 tai gập riêng
+    //
+    // Mỗi mặt tường (hông/mặt) có một tai đáy [xL..xR]×[yBotFlap..yBody]
+    // bản lề tại cạnh đáy thân (yBody). Khi mô phỏng 3D, sau khi 4 tường
+    // đã gập thành ống, các tai đáy gập 90° vào trong để CHỤM thành đáy
+    // hộp — thay vì lòi ra như váy phẳng (lỗi cũ). Tai hông tuck trước,
+    // tai mặt trước/sau gập đè lên sau (foldPhase so le).
+    //
+    // foldAngle/foldDirection đã đo bằng test tạm: gập VÀO LÒNG ống ứng với
+    // net −90° (foldAngle 90 + foldDirection −1) cho mọi tường, vì tai nằm
+    // ở phía −Y cục bộ và lòng ống ở phía +Z cục bộ của mỗi tường.
+    // ============================================================
+    for (let i = 0; i < seq.length; i++) {
+        const p = seq[i];
+        if (p.type === 'glue') continue;
+        const xL = xs[i];
+        const xR = xs[i + 1];
+        const isSide = p.type === 'side';
+        panels.push({
+            name: `bottom_${p.name}`,
+            label: `Đáy ${p.label}`,
+            // Cạnh biên tai đáy: mép bản lề (yBody) là CREASE, ba mép còn lại CUT.
+            // (Chỉ gắn vào panel để hợp lệ + vẽ overlay 3D; KHÔNG thêm vào allPaths
+            // nên không đổi biên cắt 2D / contour.)
+            paths: [
+                line(pt(xL, yBody), pt(xR, yBody), 'CREASE'),
+                line(pt(xR, yBody), pt(xR, yBotFlap), 'CUT'),
+                line(pt(xR, yBotFlap), pt(xL, yBotFlap), 'CUT'),
+                line(pt(xL, yBotFlap), pt(xL, yBody), 'CUT'),
+            ],
+            outline: [
+                pt(xL, yBotFlap), pt(xR, yBotFlap), pt(xR, yBody), pt(xL, yBody),
+            ],
+            parent: p.name,
+            pivotEdge: [pt(xL, yBody), pt(xR, yBody)],
+            // Net = foldAngle × foldDirection = +90 → gập VÀO LÒNG ống (đo bằng
+            // test tạm: net −90 gập ra ngoài, +90 gập vào trong cho cả 4 tường).
+            foldAngle: 90,
+            foldDirection: 1,
+            // Tai hông tuck trước [0.78..0.9]; tai mặt trước/sau đè lên [0.9..1.0].
+            foldPhase: isSide ? [0.78, 0.9] : [0.9, 1.0],
+            // 4 tai đáy gập về CÙNG mặt phẳng đáy → đồng phẳng gây z-fighting.
+            // Phân lớp (polygonOffset) theo thứ tự xếp: hông dưới cùng, mặt
+            // trước/sau đè lên trên — như đáy SOS chồng lớp thật.
+            stackZ: isSide ? (p.name === 'side1' ? 1 : 2) : (p.name === 'front' ? 3 : 4),
+        });
+    }
+
+    // ============================================================
+    // C3. TAI ĐÁY CỦA MÍ DÁN — phần đáy mí dán cũng gập VÀO ĐÁY
+    //
+    // Mí dán cuốn quanh cạnh ĐỨNG để dán lên vách kề; nhưng phần ĐÁY của nó
+    // ([yBotFlap..yBody]) phải gập VÀO ĐÁY hộp theo cạnh ngang yBody — y như
+    // các tai đáy tường. Parent = glue_flap nên nó thừa hưởng phép cuốn của mí
+    // dán rồi mới gập tiếp vào đáy (đúng trình tự thật). Giữ vát glueVat ở góc.
+    // ============================================================
+    {
+        const gi = glueIdx;
+        const gxL = xs[gi];
+        const gxR = xs[gi + 1];
+        const botOutline = glueIsLeft
+            ? [pt(gxR, yBotFlap), pt(gxL, yBotFlap + botVat), pt(gxL, yBody), pt(gxR, yBody)]
+            : [pt(gxL, yBotFlap), pt(gxR, yBotFlap + botVat), pt(gxR, yBody), pt(gxL, yBody)];
+        panels.push({
+            name: 'bottom_glue_flap',
+            label: 'Đáy mí dán',
+            // Mép bản lề (yBody) = CREASE; biên còn lại do vòng clip điền.
+            paths: [
+                line(pt(gxL, yBody), pt(gxR, yBody), 'CREASE'),
+            ],
+            outline: botOutline,
+            parent: 'glue_flap',
+            pivotEdge: [pt(gxL, yBody), pt(gxR, yBody)],
+            // Gập VÀO ĐÁY net +90 như tai đáy tường (đo cùng quy ước).
+            foldAngle: 90,
+            foldDirection: 1,
+            // Gập cùng nhịp tai hông (mí dán dán lên vách hông kề).
+            foldPhase: [0.78, 0.9],
+            // Dán đè lên tai đáy của vách kề (side1/last) → cùng lớp dưới.
+            stackZ: 1,
+        });
+    }
+
+    // ============================================================
+    // D2. PANEL MÍ MIỆNG (lip) — gập mép trên xuống ốp vào thân
+    //
+    // Mỗi tường (hông/mặt) có một mí miệng [xL..xR]×[yTop..yTopFold] bản lề tại
+    // cạnh trên thân (yTop), gập 180° ốp PHẲNG xuống mặt trong tường (hem mép
+    // trên). stackZ phân lớp tránh z-fighting với tường. Gập muộn, sau khi ống
+    // đã cuốn (phase ~0.55–0.7), trước khi gập đáy.
+    // ============================================================
+    if (topFold > 0) {
+        let lipStack = 5;
+        // Lượng đẩy mí miệng vào TRONG lòng túi (mm, ÂM = về phía sau tường).
+        // ≥ 2 lớp giấy để mép mí nằm hẳn sau mặt trong tường → nhìn từ ngoài
+        // chỉ thấy mặt ngoài (finish) của tường, không lộ mặt sau giấy của mí.
+        const lipInsetZ = -(params.T * 2 + 0.3);
+        for (let i = 0; i < seq.length; i++) {
+            const p = seq[i];
+            // GỒM CẢ mí dán (glue): vùng miệng của mí dán cũng phải gập vào
+            // trong như các mí vách (nếu bỏ sẽ mất phần để dán ở nắp).
+            const xL = xs[i];
+            const xR = xs[i + 1];
+            // Góc TRÊN của mí miệng: với MÍ DÁN, cạnh trên VÁT XIÊN theo glueVat
+            // (đúng đường cắt 2D mục C) — nếu để vuông thì nền solid vuông góc
+            // trong khi nét khuôn lại vát, lệch nhau. Các panel khác giữ vuông.
+            let topL = pt(xL, yTopFold);
+            let topR = pt(xR, yTopFold);
+            if (p.type === 'glue') {
+                if (glueIsLeft) topL = pt(xL, yTopFold - topVat);
+                else topR = pt(xR, yTopFold - topVat);
+            }
+            panels.push({
+                name: `lip_${p.name}`,
+                label: `Mí miệng ${p.label}`,
+                paths: [
+                    line(pt(xL, yTop), pt(xR, yTop), 'CREASE'),
+                    line(pt(xR, yTop), topR, 'CUT'),
+                    line(topR, topL, 'CUT'),
+                    line(topL, pt(xL, yTop), 'CUT'),
+                ],
+                outline: [
+                    pt(xL, yTop), pt(xR, yTop), topR, topL,
+                ],
+                parent: p.name,
+                pivotEdge: [pt(xL, yTop), pt(xR, yTop)],
+                // Mí miệng gập VÀO PHÍA TRONG túi (−z) TRƯỚC TIÊN (sớm nhất),
+                // rồi vách mới cuộn lại dán hông. net = 180×(−1) = lật vào trong.
+                foldAngle: 180,
+                foldDirection: -1,
+                foldPhase: [0.05, 0.2],
+                // Mí hem gập vào TRONG → phải nằm SAU mặt tường (ẩn trong lòng)
+                // để nhìn từ ngoài thấy mặt ngoài tường, KHÔNG thấy mặt sau giấy
+                // của mí. stackZ ÂM → polygonOffset đẩy mí ra sau (xa camera);
+                // CỘNG THÊM dịch hình học THẬT renderZShift (vào −z cục bộ tường)
+                // để mép mí nằm hẳn sau mặt trong tường, không còn đồng phẳng
+                // gây z-fighting / lộ mặt sau.
+                stackZ: -(lipStack++),
+                renderZShift: lipInsetZ,
             });
         }
     }
@@ -353,6 +570,7 @@ export function generatePaperBag(params: BoxParams): DielineModel {
     // ============================================================
     if (showHandleHoles) {
         const holeY = snap(yTop - HM);
+        const panelByName = new Map(panels.map((pn) => [pn.name, pn]));
 
         for (const fi of faceIndices) {
             const fxL = xs[fi];
@@ -360,6 +578,14 @@ export function generatePaperBag(params: BoxParams): DielineModel {
             const holeL = circleArcs(snap(faceCx - HS / 2), holeY, HR, 'CUT');
             const holeR = circleArcs(snap(faceCx + HS / 2), holeY, HR, 'CUT');
             allPaths.push(...holeL, ...holeR);
+
+            // Lỗ quai THẬT (holes) trên panel mặt → 3D khoét lỗ.
+            const facePanel = panelByName.get(seq[fi].name);
+            if (facePanel) {
+                facePanel.holes = facePanel.holes ?? [];
+                facePanel.holes.push(circlePoly(snap(faceCx - HS / 2), holeY, HR));
+                facePanel.holes.push(circlePoly(snap(faceCx + HS / 2), holeY, HR));
+            }
 
             // --- Lỗ đối xứng trên mí gập miệng ---
             // Khi gập, lỗ trên mí gập phải trùng với lỗ trên thân.
@@ -370,13 +596,53 @@ export function generatePaperBag(params: BoxParams): DielineModel {
                 const mirrorL = circleArcs(snap(faceCx - HS / 2), mirrorY, HR, 'CUT');
                 const mirrorR = circleArcs(snap(faceCx + HS / 2), mirrorY, HR, 'CUT');
                 allPaths.push(...mirrorL, ...mirrorR);
+                // Lỗ trên mí miệng (lip) tương ứng.
+                const lipPanel = panelByName.get(`lip_${seq[fi].name}`);
+                if (lipPanel) {
+                    lipPanel.holes = lipPanel.holes ?? [];
+                    lipPanel.holes.push(circlePoly(snap(faceCx - HS / 2), mirrorY, HR));
+                    lipPanel.holes.push(circlePoly(snap(faceCx + HS / 2), mirrorY, HR));
+                }
             }
         }
     }
 
     // ============================================================
-    // H. Tính Bounding Box & Trả về mô hình
+    // H. CLIP nét khuôn vào từng panel + Bounding Box & Trả về
+    //
+    // Mỗi đoạn nét trong allPaths được CẮT (clip) theo outline-bbox của từng
+    // panel; phần nằm trong panel được thêm vào paths panel đó (gập theo panel,
+    // KHÔNG thò ra ngoài). Nhờ vậy đường chéo SOS cắt qua ranh body↔đáy vẫn
+    // hiện đúng phần của nó trên từng panel. Bezier (viền lỗ quai) chỉ thêm khi
+    // toàn bộ control points nằm trong panel.
     // ============================================================
+    const TOL = 0.5;
+    for (const panel of panels) {
+        const ol = panel.outline;
+        if (!ol || ol.length < 3) continue;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const q of ol) {
+            if (q.x < minX) minX = q.x; if (q.x > maxX) maxX = q.x;
+            if (q.y < minY) minY = q.y; if (q.y > maxY) maxY = q.y;
+        }
+        const bMinX = minX - TOL, bMaxX = maxX + TOL, bMinY = minY - TOL, bMaxY = maxY + TOL;
+        const have = new Set(panel.paths);
+        for (const s of allPaths) {
+            if (have.has(s)) continue;
+            if (s.type === 'bezier' && s.controlPoints) {
+                const allIn = s.controlPoints.every((q) =>
+                    q.x >= bMinX && q.x <= bMaxX && q.y >= bMinY && q.y <= bMaxY);
+                if (allIn) panel.paths.push(s);
+                continue;
+            }
+            // Đoạn thẳng (có thể nhiều điểm): clip từng đoạn con, gom lại.
+            for (let k = 0; k < s.points.length - 1; k++) {
+                const clip = clipLineToBox(s.points[k], s.points[k + 1], bMinX, bMaxX, bMinY, bMaxY);
+                if (clip) panel.paths.push(line(clip[0], clip[1], s.tag));
+            }
+        }
+    }
+
     const bb = computeBoundingBox(allPaths);
 
     return {

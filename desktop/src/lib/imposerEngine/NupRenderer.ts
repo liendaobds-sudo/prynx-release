@@ -1,5 +1,5 @@
 // src/lib/imposerEngine/NupRenderer.ts
-import { PDFDocument, rgb, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees } from 'pdf-lib';
+import { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, rectangle, clip, endPath, translate, rotateDegrees } from 'pdf-lib';
 import { MM_TO_POINTS, ProcessingSettings } from '../pdfImposer';
 import { solveOptimalNupLayout } from './NupGridSolver';
 import { drawMarksNup } from './MarksRenderer';
@@ -300,7 +300,7 @@ export const renderNup = async (
     const drawL = (page: any, x1: number, y1: number, x2: number, y2: number, color: any) => {
         page.drawLine({start:{x:x1,y:y1}, end:{x:x2,y:y2}, thickness: 0.5, color});
     };
-    const black = rgb(0,0,0);
+    const black = cmyk(1, 1, 1, 1); // Registration (mọi kẽm) cho dấu N-up
     const tickLen = 7;
     const tickOff = 4;
 
@@ -486,7 +486,7 @@ export const renderNup = async (
                             width: activeGridW + padding * 2,
                             height: activeGridH + padding * 2,
                             borderWidth: 0.5,
-                            borderColor: rgb(0, 0, 0)
+                            borderColor: cmyk(1, 1, 1, 1)
                         });
                     }
                 }
@@ -527,7 +527,7 @@ export const renderNup = async (
                     width: superGridW + padding * 2,
                     height: superGridH + padding * 2,
                     borderWidth: 0.5,
-                    borderColor: rgb(0, 0, 0)
+                    borderColor: cmyk(1, 1, 1, 1)
                 });
             }
         }

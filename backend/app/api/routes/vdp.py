@@ -157,7 +157,10 @@ async def start_vdp_job(
             raise HTTPException(status_code=400, detail="No file or file_path provided")
         
     job_id = uuid.uuid4().hex
-    output_path = os.path.join(RESULTS_DIR, f"vdp_{job_id}.pdf")
+    # Đường dẫn TUYỆT ĐỐI: path này được trả về frontend và dùng bởi Rust tile
+    # renderer (cwd khác backend). Nếu để tương đối ("./results/..."), Rust không
+    # tìm thấy file (os error 3) → render hỏng dù Python mở được.
+    output_path = os.path.abspath(os.path.join(RESULTS_DIR, f"vdp_{job_id}.pdf"))
     
     vdp_jobs[job_id] = {
         "status": "processing",

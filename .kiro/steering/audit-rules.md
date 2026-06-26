@@ -215,6 +215,11 @@ sai. Quy tắc bắt buộc khi đụng layout/bình/nesting/render/preview:
       thuật toán + toạ độ + render.
 - [ ] (Float) Đã cân nhắc nhiễu order-of-operations ở quyết định rời rạc/biên.
 - [ ] Quan sát của user không bị bác bằng "log nói khớp" — nếu mâu thuẫn đã đo lại.
+- [ ] Với "bug truyền sai tham số / sai giá trị": đã xác minh có CONSUMER trên
+      đường live ĐỌC giá trị đó (giá trị sinh ra nhưng không ai đọc = moot, hạ severity).
+- [ ] Trước khi nói "test/lệnh không chạy được / thiếu dep": đã thử bằng venv
+      dự án (`backend\venv\Scripts\python.exe`) — không kết luận từ python global.
+- [ ] Đã làm lượt sâu NGAY từ đầu, không đợi user hỏi lại mới đào kỹ.
 
 ---
 
@@ -270,3 +275,57 @@ Chấm theo từng nhóm 12.1–12.6: **PASS / WARN / FAIL** kèm bằng chứng
 - **GO có điều kiện** nếu chỉ còn 🟠: liệt kê việc phải làm + mức rủi ro nếu ship luôn.
 - **GO** nếu mọi nhóm PASS và test lõi xanh.
 > Không được tuyên bố GO chỉ vì "không thấy lỗi" — phải đã CHỦ ĐỘNG kiểm từng nhóm trên.
+
+---
+
+## 13. Bài học phiên audit shape-detection (chống tái phạm CỤ THỂ)
+
+> Ba lỗi thật đã xảy ra; ghi lại để KHÔNG lặp. Đây là cụ thể hoá của §1, §2, §0.
+
+### 13.1 Severity = correctness × REACHABILITY × CONSUMPTION (không chỉ correctness)
+
+Một finding "đúng ở mức code" CHƯA chắc là lỗi production. Phải nhân thêm 2 yếu tố:
+
+- **Reachability:** đoạn code đó có nằm trên đường chạy live không (§1.4)?
+- **Consumption:** với lỗi kiểu "gán/truyền SAI một giá trị", phải tìm xem **ai
+  ĐỌC** giá trị đó. Nếu giá trị được sinh ra nhưng **không consumer live nào đọc**
+  → lỗi là **moot** (P4/cosmetic), KHÔNG phải P0.
+
+> Bài học đắt: đã xếp `effective_body_w_ratio = bigEndAxisFrac` lên **P0** và dẫn
+> chứng bằng `NupGridSolver.effectiveW` (TS). Nhưng (a) TS đó là orphan, và (b)
+> solver Python LIVE (`asymmetric_layouts.py`) chỉ đọc `waistRatio/bigEndFirst/
+> bigEndAxisFrac` — **không hề đọc** `effective_body_w_ratio`. ⟹ thực chất moot.
+> Quy tắc: trước khi gắn severity cho "bug truyền tham số", **grep ngược consumer**
+> của ĐÚNG key/biến đó trên ĐÚNG engine live, rồi mới chấm điểm.
+
+Hệ quả thao tác: với mỗi finding về dữ liệu/tham số, ghi thêm dòng
+`Consumer (live): <file:line đọc giá trị>` hoặc `Consumer: KHÔNG có → moot`.
+
+### 13.2 venv-first là quy tắc CỨNG, không phải gợi ý
+
+- **CẤM** kết luận "thiếu dep / test không chạy được / module not found" khi mới
+  chỉ thử bằng `python` toàn cục. Bước 0 trước khi chạy bất kỳ lệnh Python nào:
+  tìm interpreter dự án (`backend\venv\Scripts\python.exe`; nếu không có thì
+  `where python` + đọc README/run_dev.bat) và DÙNG nó.
+- Nếu một lệnh "không chạy được", coi đó là **nghi vấn của chính mình** cần truy
+  nguyên (sai interpreter? sai cwd? thiếu PYTHONPATH?), KHÔNG phải kết luận về dự án.
+
+> Bài học: báo "thiếu `hypothesis`, không chạy được PBT" trong khi
+> `backend\venv` có sẵn `hypothesis 6.155.3` — chạy lại bằng venv: **13 passed**.
+
+### 13.3 Độ sâu mặc định = SÂU; không đợi bị hỏi "kỹ chưa"
+
+- Lượt audit ĐẦU TIÊN đã phải trace-to-ground-truth (§1) + verify consumer (§13.1)
+  + chạy test bằng venv (§13.2). KHÔNG nộp bản nông rồi chờ user phản hồi mới đào.
+- Nếu phạm vi quá lớn để làm hết trong một lượt → nói rõ phần nào `[VERIFIED]`,
+  phần nào còn `[SUSPECTED]` + kế hoạch verify, thay vì im lặng để lại lỗ hổng.
+- Khi đã lỡ kết luận sơ sài: **rút lại công khai** (§0.4) kèm severity đã hiệu
+  chỉnh, đừng để trôi.
+
+### 13.4 Quy trình rút gọn cho mọi finding (dán vào báo cáo)
+```
+[VERIFIED|SUSPECTED] <severity> <mô tả>
+  Sink/đường chạy: <entry → ... → file:line>
+  Consumer (live): <file:line đọc giá trị>  | hoặc: KHÔNG → moot
+  Bằng chứng: <đọc code / lệnh đã chạy bằng venv + kết quả>
+```

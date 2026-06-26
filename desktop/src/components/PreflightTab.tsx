@@ -202,7 +202,7 @@ export default function PreflightTab() {
   // ════════════════════════════════════════
   if (phase === 'upload') {
     return (
-      <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1c23]">
+      <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
         <div className="flex-1 flex flex-col items-center justify-center py-12 px-6">
           <div className="text-center mb-10 animate-fade-in">
             <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">🩺 Preflight — Kiểm tra chuẩn in</h1>
@@ -230,7 +230,7 @@ export default function PreflightTab() {
   // WORKSPACE PHASE (AcrobatViewer + rightPanel)
   // ════════════════════════════════════════
   return (
-    <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1c23]">
+    <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
       <div className="flex-1 flex flex-row overflow-hidden relative animate-fade-in">
 
         {error && (

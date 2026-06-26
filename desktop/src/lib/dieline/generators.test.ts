@@ -426,7 +426,7 @@ describe('generateMatchboxTray', () => {
         expect(model.standardCode).toContain('FEFCO');
     });
 
-    it('generates correct panel count (bottom + 4×4 zones + 4 corners + 4 lock tabs + 5 sleeve = 30)', () => {
+    it('generates correct panel count (bottom + 4×4 zones + 4 corner gussets + 4 lock tabs + 5 sleeve = 30)', () => {
         const model = generateMatchboxTray(make({ boxType: 'tray', L: 200, W: 150, D: 40, G: 10, TH: 15 }));
         expect(model.panels.length).toBe(30);
     });

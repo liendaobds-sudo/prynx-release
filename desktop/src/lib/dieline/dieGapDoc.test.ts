@@ -1,13 +1,13 @@
 // ============================================================
-// dieGap Doc Static Test — Sửa chú thích `dieGap` (Requirement 6.1–6.3)
+// dieGap Doc Static Test — Cập nhật chú thích `dieGap` (Requirement 8.3)
 //
 // Xác minh nội dung JSDoc của thuộc tính `dieGap` trong
 // nestingTypes.ts sau khi đã cập nhật ở task 9.1:
-//   1. (6.1) KHÔNG còn cụm mô tả "offset polygon ra ngoài mỗi bên".
-//   2. (6.2) CÓ mô tả `dieGap` là khoảng hở giữa bounding box của
-//      hai khuôn liền kề.
-//   3. (6.3) CÓ ghi chú offset polygon thực là known limitation,
-//      dự kiến xử lý ở Giai đoạn 2.
+//   1. JSDoc `dieGap` MÔ TẢ Polygon_Offset thực — đẩy mỗi cạnh của
+//      đường biên (outline) mỗi khuôn ra ngoài theo pháp tuyến một
+//      lượng bằng `dieGap`.
+//   2. KHÔNG còn cụm ghi chú "known limitation Giai đoạn 2" liên
+//      quan đến offset polygon.
 //
 // Đây là EXAMPLE/static test: đọc nguồn tĩnh, không sinh hình học
 // và không thay đổi hành vi runtime.
@@ -48,31 +48,37 @@ function readNestingTypesSource(): string {
     );
 }
 
-describe('dieGap doc static test (Requirement 6.1–6.3)', () => {
+/**
+ * Trích đoạn JSDoc nằm ngay trước khai báo thuộc tính `dieGap`.
+ * Trả về chuỗi rỗng nếu không tìm được, để các assertion nội dung
+ * thất bại một cách rõ ràng.
+ */
+function extractDieGapDoc(src: string): string {
+    // Bắt khối /** ... */ ngay trước `dieGap`
+    const match = src.match(/\/\*\*([\s\S]*?)\*\/\s*dieGap:\s*number;/);
+    return match ? match[1] : '';
+}
+
+describe('dieGap doc static test (Requirement 8.3)', () => {
     const src = readNestingTypesSource();
+    const dieGapDoc = extractDieGapDoc(src);
 
-    it('(6.1) KHÔNG còn cụm mô tả "offset polygon ra ngoài mỗi bên"', () => {
-        expect(src).not.toContain('offset polygon ra ngoài mỗi bên');
-    });
-
-    it('(6.2) mô tả dieGap là khoảng hở giữa bounding box của hai khuôn liền kề', () => {
-        // Chú thích phải nêu cả "bounding box" lẫn khái niệm khoảng hở (gap)
-        expect(src).toMatch(/bounding box/i);
-        expect(src).toMatch(/khoảng hở/i);
-        // Gắn ngữ cảnh hai khuôn liền kề
-        expect(src).toMatch(/hai khuôn liền kề/i);
-    });
-
-    it('(6.3) ghi chú offset polygon thực là known limitation Giai đoạn 2', () => {
-        expect(src).toMatch(/known limitation/i);
-        expect(src).toMatch(/Giai đoạn 2/i);
-        // Đề cập rõ "offset polygon thực" như giới hạn chưa hiện thực
-        expect(src).toMatch(/offset polygon thực/i);
-    });
-
-    it('chú thích nằm ngay trước khai báo thuộc tính dieGap', () => {
-        // Đảm bảo các cụm chú thích nói trên thuộc về thuộc tính dieGap
-        // (khai báo `dieGap: number;` vẫn tồn tại).
+    it('khai báo thuộc tính dieGap vẫn tồn tại', () => {
         expect(src).toMatch(/dieGap:\s*number;/);
+    });
+
+    it('JSDoc dieGap mô tả Polygon_Offset thực theo từng cạnh', () => {
+        // Đoạn JSDoc phải gắn trực tiếp vào thuộc tính dieGap
+        expect(dieGapDoc.length).toBeGreaterThan(0);
+        // Mô tả phép offset polygon thực
+        expect(dieGapDoc).toMatch(/offset polygon thực/i);
+        // Nêu rõ tác động lên từng cạnh của đường biên (outline)
+        expect(dieGapDoc).toMatch(/từng cạnh/i);
+        expect(dieGapDoc).toMatch(/outline|đường biên/i);
+    });
+
+    it('KHÔNG còn ghi chú "known limitation Giai đoạn 2"', () => {
+        expect(src).not.toMatch(/known limitation/i);
+        expect(dieGapDoc).not.toMatch(/known limitation/i);
     });
 });

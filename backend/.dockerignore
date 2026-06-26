@@ -1,0 +1,77 @@
+# ============================================================
+#  Backend Docker Build — Exclude List
+#  Build context = ./backend (set in docker-compose.yml)
+#  CRITICAL: This file controls what goes into production image
+# ============================================================
+
+# ── Internal documentation (core algorithm logic, architecture) ──
+# NEVER ship these — they expose business-critical implementation details
+**/*PLAYBOOK*.md
+**/*ARCHITECTURE*.md
+**/*AUDIT*.md
+**/*SECURITY*.md
+**/KNOWN_DIVERGENCES.md
+**/QA_CHECKLIST.md
+
+# ── Dependencies (installed in image via pip/npm) ──
+venv/
+node_modules/
+__pycache__/
+
+# ── Secrets — NEVER ship .env into the image (Supabase/payment keys) ──
+.env
+*.env
+!.env.example
+
+# ── Test files & fixtures ──
+tests/
+pytest.ini
+.pytest_cache/
+.hypothesis/
+golden_tests/
+
+# ── Development databases ──
+*.db
+data/
+
+# ── Dev/debug scripts (not needed at runtime) ──
+debug/
+sandbox/
+test.py
+test2.py
+fix.py
+find_upload.py
+search_models.py
+download_sam.py
+verify_syntax.py
+verify_token_pipeline.py
+_patch_validate.py
+generate_complex_pdf.py
+inspect_pdf.py
+update_call.py
+shape_layouts_original.py
+
+# ── Sample/test PDFs ──
+*.pdf
+!app/assets/**/*.pdf
+
+# ── Text scratch files ──
+*.txt
+
+# ── Build artifacts ──
+*.pyc
+*.pyo
+*.pyd
+
+# ── OS files ──
+.DS_Store
+Thumbs.db
+
+# ── Uploads and results (mounted as volumes) ──
+uploads/
+results/
+temp/
+
+# ── IDE ──
+.vscode/
+.idea/

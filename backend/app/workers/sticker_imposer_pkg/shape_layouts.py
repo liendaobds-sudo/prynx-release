@@ -27,6 +27,10 @@ def _py_solve_pointy_top_hex_layout(usable_w: float, usable_h: float, item_w: fl
     horizontal_step = item_w + gap_x
     vertical_step = (item_h * 0.75) + gap_y
     
+    # Guard: bước nhảy ≤ 0 (gap âm bất thường) làm vòng tiling không tiến → treo.
+    if horizontal_step <= 0 or vertical_step <= 0:
+        return {'totalItems': 0, 'items': [], 'widthUsed': 0, 'heightUsed': 0, 'strategyUsed': 'hex_pointy'}
+    
     items = []
     r = 0
     while True:
@@ -85,6 +89,10 @@ def _py_solve_flat_top_hex_layout(usable_w: float, usable_h: float, item_w: floa
     
     vertical_step = item_h + gap_y
     horizontal_step = (item_w * 0.75) + gap_x
+    
+    # Guard: bước nhảy ≤ 0 (gap âm bất thường) làm vòng tiling không tiến → treo.
+    if horizontal_step <= 0 or vertical_step <= 0:
+        return {'totalItems': 0, 'items': [], 'widthUsed': 0, 'heightUsed': 0, 'strategyUsed': 'hex_flat'}
     
     items = []
     c = 0
@@ -175,6 +183,10 @@ def _py_solve_advanced_pentagon_layout(usable_w: float, usable_h: float, item_w:
     base_h = h_orig - peak_h
     h_step = w_orig + gap_x
     
+    # Guard: bước nhảy ngang/dọc ≤ 0 (gap âm) làm vòng tiling không tiến → treo.
+    if h_step <= 0 or (base_h + gap_y) <= 0 or (h_orig + gap_y) <= 0:
+        return empty
+    
     items = []
     current_y = 0.0
     row_idx = 0
@@ -264,6 +276,10 @@ def _py_solve_advanced_triangle_layout(usable_w: float, usable_h: float, item_w:
         # effectiveGap in the perpendicular/sloped direction
         v_step = h_orig + gap_y * gap_mult + delta_w * 2.0
         
+        # Guard: bước nhảy ≤ 0 (gap âm) làm vòng tiling không tiến → treo.
+        if h_step <= 0 or v_step <= 0:
+            return empty
+        
         while current_x + w_orig <= usable_w + 0.01:
             is180_0 = get_is180_to_point('right', apex, is_rotated_90)
             r = 0
@@ -293,6 +309,10 @@ def _py_solve_advanced_triangle_layout(usable_w: float, usable_h: float, item_w:
         
         v_step = h_orig + gap_y
         h_step = w_orig + gap_x * gap_mult + delta_w * 2.0
+        
+        # Guard: bước nhảy ≤ 0 (gap âm) làm vòng tiling không tiến → treo.
+        if h_step <= 0 or v_step <= 0:
+            return empty
         
         while current_y + h_orig <= usable_h + 0.01:
             is180_0 = get_is180_to_point('down', apex, is_rotated_90)

@@ -193,6 +193,15 @@ def run_nup_engine(
     # Kiểu dấu xén: 'default' (nét đơn) | 'japanese' (nét đôi trim+bleed / トンボ)
     mark_style = settings.get('markStyle', 'default')
 
+    # ── Mép kẹp (gripper / cắn nhíp) ──
+    # Cạnh nạp giấy (ĐÁY tờ) không in được → phải chừa tối thiểu = gripper. Theo ĐÚNG
+    # quy ước đã thống nhất toàn app (nestingEngine.calcPrintableArea, useBoxStore,
+    # SpreadPlacer): lề đáy hiệu dụng = max(marginBottom, gripper). TRƯỚC ĐÂY engine
+    # N-Up bỏ qua gripper (chỉ log) → bài tràn vào vùng kẹp (audit cắt xén #gripper).
+    gripper_pt = settings.get('gripperMargin', 0) * MM_TO_PTS
+    if gripper_pt > margin_bottom:
+        margin_bottom = gripper_pt
+
     if settings.get('marginMode') == 'include_marks' and mark_type != 'none':
 
         mark_space = mark_len + mark_off
@@ -1483,10 +1492,15 @@ def run_nup_engine(
         _stage("Đang đóng dấu bản quyền...")
         try:
             import pikepdf
+            import os as _os, tempfile as _tempfile
             from app.core.watermark import embed_watermark
             with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as pdf:
                 embed_watermark(pdf, _wm_license, _wm_hwid)
-                pdf.save(output_path)
+                # Ghi atomic: temp cùng thư mục rồi os.replace (tránh hỏng output nếu chết giữa chừng).
+                _fd, _tmp = _tempfile.mkstemp(suffix=".pdf", dir=_os.path.dirname(output_path) or ".")
+                _os.close(_fd)
+                pdf.save(_tmp)
+            _os.replace(_tmp, output_path)
         except Exception as e:
             logger.error(f"Failed to write watermark: {e}")
 

@@ -223,7 +223,7 @@ export function generateGableBox(params: BoxParams): DielineModel {
         pivotEdge: [pt(xFrontL, yTop), pt(xFrontR, yTop)],
         foldAngle: gableFold, foldDirection: -1,
         outline: gfResult.baseOutline,
-        foldPhase: [0.8, 1.0],
+        foldPhase: [0.6, 0.8],
     });
     panels.push({
         name: 'gable_front_handle', label: 'Tay cầm trước',
@@ -233,7 +233,7 @@ export function generateGableBox(params: BoxParams): DielineModel {
         holes: [tracePerimeter(gfResult.holes)],
         outline: gfResult.handleOutline,
         annotations: gfResult.annotations,
-        foldPhase: [0.8, 1.0],
+        foldPhase: [0.6, 0.8],
     });
 
     // --- C2. Gable Panel Back (trên Back Panel, L wide) ---
@@ -245,7 +245,7 @@ export function generateGableBox(params: BoxParams): DielineModel {
         pivotEdge: [pt(xBackL, yTop), pt(xBackR, yTop)],
         foldAngle: gableFold, foldDirection: -1,
         outline: gbResult.baseOutline,
-        foldPhase: [0.8, 1.0],
+        foldPhase: [0.6, 0.8],
     });
     panels.push({
         name: 'gable_back_handle', label: 'Tay cầm sau',
@@ -255,7 +255,7 @@ export function generateGableBox(params: BoxParams): DielineModel {
         holes: [tracePerimeter(gbResult.holes)],
         outline: gbResult.handleOutline,
         annotations: gbResult.annotations,
-        foldPhase: [0.8, 1.0],
+        foldPhase: [0.6, 0.8],
     });
 
     // --- C3 & C4: Tính toán góc gập của side flap ---
@@ -264,20 +264,27 @@ export function generateGableBox(params: BoxParams): DielineModel {
     // Side flap quay quanh trục Y, nên góc gập phi = atan(X_A / Z_height).
     const insetA = snap(params.gableStyle === 'pitched' ? (L - 5 / 6 * L) / 2 : 0);
     const Z_height = h1 * Math.cos(gableFold * Math.PI / 180); // Chiều cao thực tế Z
+    // Kích thước ngàm — TÍNH GIỐNG HỆT buildGablePanel để mái phụ + rãnh LUÔN bám
+    // theo ngàm khi đổi thông số: HFH (cao tay cầm), SLH (tỷ lệ rãnh), TRW (rộng ngàm), W, L.
+    const gH2 = params.HFH > 0 ? snap(params.HFH) : snap(0.9 * h1);
+    const gRectH = snap((params.SLH / 100) * gH2);
+    const gTRW = snap(params.TRW > 0 ? params.TRW : L / 9);
+    const gR = snap(Math.min(gTRW / 2, gRectH));
     let sideFlapFold = gableFold;
     if (Z_height > 0.001) {
-        const TRW = snap(params.TRW > 0 ? params.TRW : L / 9);
-        const rectH = snap(((params as any).ratioSLH || 85) / 100 * (0.9 * h1));
-        const Z_P = (h1 + rectH) * Math.cos(gableFold * Math.PI / 180);
+        const Z_P = (h1 + gRectH) * Math.cos(gableFold * Math.PI / 180);
         const angleA = Math.atan2(insetA, Z_height) * 180 / Math.PI;
-        const angleP = Math.atan2(TRW, Z_P) * 180 / Math.PI;
+        const angleP = Math.atan2(gTRW, Z_P) * 180 / Math.PI;
         sideFlapFold = (angleA + angleP) / 2; // Average to minimize 3D clipping
     } else {
-        sideFlapFold = 90; // for flat roof
+        // Mái bằng: mái phụ gập đúng theo HƯỚNG khóe ngàm A→P (Δx=TRW theo ngang,
+        // Δy=rectH−r theo dọc) để chân rãnh ↔ A và đỉnh rãnh ↔ P.
+        // Góc = atan(TRW / (rectH − r)); chiều dài rãnh = √(TRW² + (rectH−r)²) (trong buildSideTriFlap).
+        sideFlapFold = Math.atan2(gTRW, Math.max(gRectH - gR, 0.001)) * 180 / Math.PI;
     }
 
     // --- C3. Side Flap trái (trên SideA Panel, W wide) — Tam giác ---
-    const sfLResult = buildSideTriFlap(xSideAL, xSideAR, yTop, W, L, 1, params.HH, params.gableStyle, params.SLW, params.SLH, params.TRW);
+    const sfLResult = buildSideTriFlap(xSideAL, xSideAR, yTop, W, L, 1, params.HH, params.gableStyle, params.SLW, params.SLH, params.TRW, params.HFH);
     allPaths.push(...sfLResult.paths, ...sfLResult.holes);
     panels.push({
         name: 'side_flap_left', label: 'Tai mái trái',
@@ -287,11 +294,11 @@ export function generateGableBox(params: BoxParams): DielineModel {
         foldAngle: sideFlapFold, foldDirection: -1,
         holes: sfLResult.holes.length > 0 ? [tracePerimeter(sfLResult.holes)] : [],
         annotations: sfLResult.annotations,
-        foldPhase: [0.6, 0.9],
+        foldPhase: [0.8, 1.0],
     });
 
     // --- C4. Side Flap phải (trên SideB Panel, W wide) — Tam giác ---
-    const sfRResult = buildSideTriFlap(xSideBL, xSideBR, yTop, W, L, 1, params.HH, params.gableStyle, params.SLW, params.SLH, params.TRW);
+    const sfRResult = buildSideTriFlap(xSideBL, xSideBR, yTop, W, L, 1, params.HH, params.gableStyle, params.SLW, params.SLH, params.TRW, params.HFH);
     allPaths.push(...sfRResult.paths, ...sfRResult.holes);
     panels.push({
         name: 'side_flap_right', label: 'Tai mái phải',
@@ -301,7 +308,7 @@ export function generateGableBox(params: BoxParams): DielineModel {
         foldAngle: sideFlapFold, foldDirection: -1,
         holes: sfRResult.holes.length > 0 ? [tracePerimeter(sfRResult.holes)] : [],
         annotations: sfRResult.annotations,
-        foldPhase: [0.6, 0.9],
+        foldPhase: [0.8, 1.0],
     });
 
     // ============================================================
@@ -607,21 +614,41 @@ function buildGablePanel(
     const h2 = snap(overrideHFH > 0 ? overrideHFH : defaultH2);
     const EF_width = snap(2 / 3 * panelW);
     const insetEF = snap((AB_width - EF_width) / 2);
-    const _E = pt(snap(_A.x + insetEF), snap(_A.y + h2));
-    const _F = pt(snap(_B.x - insetEF), snap(_A.y + h2));
 
-    // === Step 3: Tab trái — thụt vào trong bên PHẢI của A ===
+    // --- Mái dốc 'pitched': bù góc gập để DA và EP SONG SONG với mái phụ sau khi gập ---
+    // Tay cầm (chứa E, P) gập một góc KHÁC mái dốc DA. Nếu E, P nằm trên đường thẳng D–A
+    // thì sau khi gập cạnh EP không song song mái phụ → P/E lòi ra trước (đâm xuyên).
+    // Đo từ mô hình 3D đã gập: một điểm trên tay cầm cách đường gập A–B đoạn `dh` (theo y)
+    // sẽ NẰM SONG SONG với mặt phẳng mái phụ (cùng độ sâu với A, tức nằm sau mái phụ) khi
+    // đặt thụt vào trong với: inset = C · slopeInv · dh, C ≈ 1.75 (hằng định cho mọi cỡ hộp).
+    const pitched = gableStyle === 'pitched';
+    const slopeInv = h1 > 0 ? insetAB / h1 : 0;        // dx/dy dọc cạnh xiên D–A
+    const PAR_C = 1.75;                                // hệ số bù song song (đo từ 3D)
+    // Chặn trên inset để E,F không vượt quá (giữ EF_width ≥ 30% AB_width); với tham số
+    // cực đoan (W rất nhỏ ⇒ slopeInv lớn, hoặc HFH lớn) công thức có thể bùng nổ, làm
+    // E,F văng sang panel khác gây chồng lấn. Tham số thường KHÔNG chạm ngưỡng này.
+    const maxParInset = snap(0.35 * AB_width);
+    const parX = (baseX: number, dir: 1 | -1, dh: number) =>
+        snap(baseX + dir * Math.min(PAR_C * slopeInv * dh, maxParInset));
+
+    const _E = pt(pitched ? parX(_A.x, 1, h2) : snap(_A.x + insetEF), snap(_A.y + h2));
+    const _F = pt(pitched ? parX(_B.x, -1, h2) : snap(_B.x - insetEF), snap(_A.y + h2));
+
+    // === Step 3: Tab trái/phải — khóe ngàm nằm trên cạnh xiên khi pitched ===
     const rectH = snap((ratioSLH / 100) * h2);
     const rectW = snap(overrideTRW > 0 ? overrideTRW : panelW / 9);
+    // Kẹp bán kính bo ≤ rectH để khóe ngàm (pArc2.y = A.y + rectH - r) không bao giờ
+    // tụt xuống dưới chân ngàm A. Nếu không, với param cực đoan (rectW ≫ rectH) khóe
+    // sẽ rơi xuống y < A.y và onLine() đẩy điểm văng ra ngoài, đè lên panel mép dán.
+    const r = snap(Math.min(rectW / 2, rectH));
 
-    const _R = pt(snap(xLeft + rectW), _A.y);  // Góc trong dưới
-    const _O = pt(xLeft, snap(_A.y + rectH));   // Góc ngoài trên
-    const _P = pt(snap(xLeft + rectW), snap(_A.y + rectH)); // Góc trong trên
+    // Khóe ngàm P, Q đặt theo công thức song song (parX) để pArc2/qArc1 song song mái phụ.
+    const _O = pt(xLeft, snap(_A.y + rectH));   // Mũi ngàm trái (góc ngoài trên)
+    const _P = pt(pitched ? parX(_A.x, 1, rectH - r) : snap(xLeft + rectW), snap(_A.y + rectH));
 
-    // === Step 3b: Tab phải — thụt vào trong bên TRÁI của B ===
-    const _H = pt(snap(xRight - rectW), _B.y);  // Góc trong dưới
-    const _Q = pt(snap(xRight - rectW), snap(_B.y + rectH)); // Góc trong trên
-    const _T = pt(xRight, snap(_B.y + rectH));  // Góc ngoài trên
+    // === Step 3b: Tab phải ===
+    const _T = pt(xRight, snap(_B.y + rectH));  // Mũi ngàm phải (góc ngoài trên)
+    const _Q = pt(pitched ? parX(_B.x, -1, rectH - r) : snap(xRight - rectW), snap(_B.y + rectH));
 
     // === Step 4: Handle hole YKNM ===
     const defaultHoleW = snap(2 / 5 * panelW);
@@ -647,20 +674,30 @@ function buildGablePanel(
     // CUT — Outer contour (tab thụt vào trong, bo tròn đầu tab)
     //   D → A → O    P → E → F → Q    T → B → C
     // ================================================================
-    
-    // Thêm các chú thích để dễ hình dung
-    annotations.push({ point: _A, text: 'A', anchor: 'start', baseline: 'hanging' });
-    annotations.push({ point: _B, text: 'B', anchor: 'end', baseline: 'hanging' });
-    annotations.push({ point: _O, text: 'O (Đỉnh ngàm trái)', anchor: 'start', baseline: 'hanging' });
-    annotations.push({ point: _P, text: 'P (Góc trong ngàm trái)', anchor: 'end', baseline: 'hanging' });
-    annotations.push({ point: _R, text: 'R (Chân ngàm trái)', anchor: 'start', baseline: 'bottom' });
-    annotations.push({ point: _E, text: 'E', anchor: 'start', baseline: 'hanging' });
-    annotations.push({ point: _F, text: 'F', anchor: 'end', baseline: 'hanging' });
-    annotations.push({ point: _Q, text: 'Q (Góc trong ngàm phải)', anchor: 'start', baseline: 'hanging' });
-    annotations.push({ point: _T, text: 'T (Đỉnh ngàm phải)', anchor: 'end', baseline: 'hanging' });
-    annotations.push({ point: _H, text: 'H (Chân ngàm phải)', anchor: 'end', baseline: 'bottom' });
 
-    const r = snap(rectW / 2);
+    // Chú thích ĐẦY ĐỦ tên các điểm (hiển thị khi bật "Hiện chi tiết") —
+    // dùng để tham chiếu chính xác khi chỉnh hình ngàm/mái.
+    // LƯU Ý: đường cắt lưỡi ngàm bắt đầu NGAY TẠI A (và B) — `sA_oArc1 = A→O`.
+    // Vì vậy CHÂN NGÀM chính là điểm A/B (không có điểm R/H riêng trên nét cắt).
+    // --- Đáy mái (chân mái, cạnh gập xuống thân hộp) ---
+    annotations.push({ point: _D, text: 'D — Đáy mái trái (chân mái)', anchor: 'end', baseline: 'hanging' });
+    annotations.push({ point: _C, text: 'C — Đáy mái phải (chân mái)', anchor: 'start', baseline: 'hanging' });
+    // --- Góc hình thang nắp = CHÂN NGÀM (đường cắt ngàm bắt đầu tại đây) ---
+    annotations.push({ point: _A, text: 'A — Góc hình thang trái = Chân ngàm trái', anchor: 'start', baseline: 'bottom' });
+    annotations.push({ point: _B, text: 'B — Góc hình thang phải = Chân ngàm phải', anchor: 'end', baseline: 'bottom' });
+    // --- Ngàm khóa TRÁI/PHẢI: chú thích O,P,T,Q được đẩy SAU khi tính điểm cung
+    //     (oArcTop, pArc2, qArc1, tArcTop) để trỏ ĐÚNG điểm trên nét cắt cong,
+    //     không trỏ vào góc hộp-bao lý thuyết (_O/_P/_T/_Q) đang lơ lửng ngoài cung. ---
+    // --- Đỉnh nắp (vai tay cầm, hai đầu cạnh trên ngang) ---
+    annotations.push({ point: _E, text: 'E — Đỉnh nắp trái (vai tay cầm)', anchor: 'start', baseline: 'hanging' });
+    annotations.push({ point: _F, text: 'F — Đỉnh nắp phải (vai tay cầm)', anchor: 'end', baseline: 'hanging' });
+    // --- Lỗ quai xách (YKNM) ---
+    annotations.push({ point: _M, text: 'M — Lỗ quai: mép dưới-trái', anchor: 'end', baseline: 'hanging' });
+    annotations.push({ point: _N, text: 'N — Lỗ quai: mép dưới-phải', anchor: 'start', baseline: 'hanging' });
+    annotations.push({ point: _Y, text: 'Y — Lỗ quai: mép trên-trái', anchor: 'end', baseline: 'bottom' });
+    annotations.push({ point: _K, text: 'K — Lỗ quai: mép trên-phải', anchor: 'start', baseline: 'bottom' });
+
+
     const kappa = 4 * (Math.sqrt(2) - 1) / 3;
     const kLen = snap(r * kappa);
 
@@ -675,6 +712,14 @@ function buildGablePanel(
     const qArcTop = pt(snap(_Q.x + r), _Q.y);                  // Đỉnh arc
     const tArcTop = pt(snap(_T.x - r), _T.y);                  // Đỉnh arc
     const tArc2 = pt(_T.x, snap(_T.y - r));                    // End arc
+
+    // --- Chú thích ngàm trỏ ĐÚNG điểm trên nét cắt cong (không phải góc hộp-bao) ---
+    // Đỉnh/mũi ngàm = điểm cao nhất của cung (oArcTop/tArcTop).
+    // Khóe ngàm = nơi cung kết thúc và nét cắt đi lên đỉnh nắp (pArc2 / qArc1).
+    annotations.push({ point: oArcTop, text: 'O — Đỉnh ngàm trái (mũi lưỡi)', anchor: 'middle', baseline: 'bottom' });
+    annotations.push({ point: pArc2, text: 'P — Khóe ngàm trái (góc trong)', anchor: 'start', baseline: 'middle' });
+    annotations.push({ point: tArcTop, text: 'T — Đỉnh ngàm phải (mũi lưỡi)', anchor: 'middle', baseline: 'bottom' });
+    annotations.push({ point: qArc1, text: 'Q — Khóe ngàm phải (góc trong)', anchor: 'end', baseline: 'middle' });
 
     const sDA = line(_D, _A, 'CUT');
     const sA_oArc1 = line(_A, oArc1, 'CUT');
@@ -796,7 +841,8 @@ function buildSideTriFlap(
     gableStyle: 'flat' | 'pitched' = 'flat',
     slotW: number = 3,
     ratioSLH: number = 85,
-    overrideTRW: number = 0
+    overrideTRW: number = 0,
+    overrideHFH: number = 0  // HFH — cao tay cầm (bám theo buildGablePanel để rãnh khớp ngàm)
 ): { paths: PathSegment[], holes: PathSegment[], annotations: any[] } {
 
     const paths: PathSegment[] = [];
@@ -804,16 +850,43 @@ function buildSideTriFlap(
     const annotations: any[] = [];
     
     const h1 = snap(gableStyle === 'pitched' ? sideW / Math.sqrt(3) : sideW / 2);
-    const h2 = snap(0.9 * h1);
+    const h2 = snap(overrideHFH > 0 ? overrideHFH : 0.9 * h1);  // bám theo HFH như buildGablePanel
     const defaultH = snap(h1 + h2);
-    
+
     const gableFold = gableStyle === 'pitched' ? 60 : 90;
     const insetA = snap(gableStyle === 'pitched' ? (panelW - 5 / 6 * panelW) / 2 : 0);
     const rectH = snap((ratioSLH / 100) * h2);
-    
+
     const Z_height = h1 * Math.cos(gableFold * Math.PI / 180);
-    const minH = snap(Math.sqrt(insetA * insetA + Z_height * Z_height) + 15);
-    const triH = snap(Math.max(overrideH > 0 ? overrideH : defaultH, minH));
+
+    // --- Vị trí rãnh khoá khớp với ngàm mái chính khi gập (đo từ mô hình 3D) ---
+    // Khi đóng hộp, ngàm mái chính (A=chân ngàm, P=khóe) chiếu xuống đúng đường
+    // tâm (xMid) của mái phụ. Chân ngàm A rơi cách đáy mái phụ một đoạn:
+    //   slotOffset = √(insetA² + Z_height²)
+    // và khóe P cách A một đoạn (chiều dài ngàm trên cạnh xiên):
+    //   slotLen = (rectH - r)·√(1 + (insetA/h1)²)
+    // ⇒ rãnh phải nằm trong [yBase+slotOffset, yBase+slotOffset+slotLen].
+    const pitched = gableStyle === 'pitched';
+    const slopeInv = h1 > 0 ? insetA / h1 : 0;
+    const trw = snap(overrideTRW > 0 ? overrideTRW : panelW / 9);
+    const rLock = snap(Math.min(trw / 2, rectH));
+    const slotOffset = pitched ? snap(Math.sqrt(insetA * insetA + Z_height * Z_height)) : 0;
+    // Pitched: chiều dài rãnh = khóe A→P dọc cạnh xiên. Flat: = khoảng cách khóe A→P
+    // của ngàm = √(TRW² + (rectH−r)²) (kết hợp với góc gập atan(TRW/(rectH−r)) ở generateGableBox
+    // → đỉnh rãnh trùng P, chân rãnh trùng A).
+    const slotLen = pitched
+        ? snap((rectH - rLock) * Math.sqrt(1 + slopeInv * slopeInv))
+        : snap(Math.sqrt(trw * trw + (rectH - rLock) * (rectH - rLock)));
+
+    // Mái phụ chỉ cần đủ cao để CHỨA trọn rãnh khóa (tới khóe P) + biên 15mm.
+    // KHÔNG kéo cao tới đỉnh nắp E: vì cạnh nắp gấp khúc tại A (đoạn EP của tay
+    // cầm gập lên theo mặt phẳng khác với mái dốc DA), nếu mái phụ cao tới E thì
+    // đoạn EP sẽ đâm xuyên qua mái phụ.
+    const minH = snap(slotOffset + slotLen + 15);
+    // Pitched: phủ tới đỉnh dốc (h1+h2). Flat: chỉ cao bằng chiều cao khóa (minH) —
+    // nếu dùng h1+h2 thì mái phụ cao vống lên quá ngàm (không khớp).
+    const flapDefault = pitched ? defaultH : minH;
+    const triH = snap(Math.max(overrideH > 0 ? overrideH : flapDefault, minH));
     const xMid = snap((xLeft + xRight) / 2);
     const yTip = snap(yBase + dir * triH);
 
@@ -839,22 +912,20 @@ function buildSideTriFlap(
         tR, 'CUT'));
     paths.push(line(tR, pt(xRight, yBase), 'CUT'));
 
-    // === Rãnh gài (lock slot) theo code cũ ===
+    // === Rãnh gài (lock slot) — đặt khớp ngàm mái chính ===
     const slotR = snap(slotW / 2);
     const slotKLen = snap(slotR * kappa);
 
-    // slotH ở code cũ là 0.85 * h2. Hiện tại rectH = ratioSLH * h2
-    // Tôi sẽ dùng rectH để tương thích với tham số của component mới
-    const slotH = rectH;
-
-    const sL = pt(snap(xMid - slotW / 2), yBase);
-    const sR = pt(snap(xMid + slotW / 2), yBase);
-    const sTopY = snap(yBase + dir * slotH);
+    // Chân rãnh cách đáy mái phụ slotOffset; rãnh dài slotLen (A→P).
+    const sBaseY = snap(yBase + dir * slotOffset);
+    const sL = pt(snap(xMid - slotW / 2), sBaseY);
+    const sR = pt(snap(xMid + slotW / 2), sBaseY);
+    const sTopY = snap(sBaseY + dir * slotLen);
     const sTopL = pt(sL.x, snap(sTopY - dir * slotR));
     const sTopR = pt(sR.x, snap(sTopY - dir * slotR));
     const sArcTop = pt(xMid, sTopY);
 
-    // Vẽ rãnh hình chữ U hở đáy:
+    // Vẽ rãnh hình chữ U bo đỉnh (khép kín đáy):
     const s1 = line(sL, sTopL, 'CUT');
     const s2 = bezierSegment(sTopL,
         pt(sTopL.x, snap(sTopL.y + dir * slotKLen)),
@@ -865,13 +936,13 @@ function buildSideTriFlap(
         pt(sTopR.x, snap(sTopR.y + dir * slotKLen)),
         sTopR, 'CUT');
     const s4 = line(sTopR, sR, 'CUT');
-    const s5 = line(sR, sL, 'CUT'); // Close the loop at the bottom
+    const s5 = line(sR, sL, 'CUT'); // Khép đáy rãnh
 
     // Add to holes so 3D engine cuts it out
     holes.push(s1, s2, s3, s4, s5);
 
-    annotations.push({ point: pt(xMid, yBase), text: 'Chân rãnh (yBase)', anchor: 'middle', baseline: 'hanging' });
-    annotations.push({ point: pt(xMid, sTopY), text: 'Đỉnh rãnh (slotH)', anchor: 'middle', baseline: 'bottom' });
+    annotations.push({ point: pt(xMid, sBaseY), text: 'Chân rãnh (= chân ngàm A)', anchor: 'middle', baseline: 'hanging' });
+    annotations.push({ point: pt(xMid, sTopY), text: 'Đỉnh rãnh (= khóe ngàm P)', anchor: 'middle', baseline: 'bottom' });
 
     return { paths, holes, annotations };
 }

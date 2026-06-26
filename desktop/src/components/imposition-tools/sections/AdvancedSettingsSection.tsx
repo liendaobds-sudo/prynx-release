@@ -518,8 +518,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                             const previewStr = buildReportPreview(s.reportDisplay, {
                                                 orderCode: s.reportOrderCode,
                                                 labelName: s.reportDisplay.labelNameText,
-                                                widthMm: s.sourcePageDim?.w,
-                                                heightMm: s.sourcePageDim?.h,
+                                                widthMm: s.sourcePageDim ? s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0) : undefined,
+                                                heightMm: s.sourcePageDim ? s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0) : undefined,
                                                 paperSize: `Khổ ${Math.round(sw)}x${Math.round(sh)}mm`,
                                                 itemsPerSheet: s.previewCapacity,
                                                 requestedQty: s.targetQuantity,

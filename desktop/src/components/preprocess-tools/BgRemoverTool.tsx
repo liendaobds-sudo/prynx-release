@@ -396,7 +396,7 @@ export function BgRemoverPreview({ tabId }: { tabId: string }) {
         <div
             ref={containerRef}
             className={`w-full h-full flex flex-col items-center justify-center relative select-none transition-colors overflow-hidden ${
-                isDragOver ? 'bg-indigo-50 dark:bg-indigo-950/30' : 'bg-slate-100 dark:bg-[#1e2028]'
+                isDragOver ? 'bg-indigo-50 dark:bg-indigo-950/30' : 'bg-slate-100 dark:bg-[#1e1e1e]'
             }`}
             onDragOver={e => { e.preventDefault(); setIsDragOver(true); }}
             onDragLeave={() => setIsDragOver(false)}

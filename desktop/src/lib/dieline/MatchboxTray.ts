@@ -15,6 +15,7 @@ import {
     BoxParams, DielineModel, Panel, PathSegment, PathTag, Point2D,
 } from './types';
 import { pt, line, snap, computeBoundingBox, filletBezier } from './utils';
+import { tracePerimeter } from './tracePerimeter';
 import { generateMatchboxSleeve } from './MatchboxSleeve';
 
 // ============================================================
@@ -146,7 +147,29 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
     // Vách phụ nhỏ hơn vách chính = T
     const vertZoneWidths = [snap(D - T), beamW, snap(D - 2 * T), tabH];  // front/back
     const horizZoneWidths = [D, beamW, snap(D - T), tabH];               // left/right
-    const foldAngles = [90, 180, 180, 90];
+    // Trình tự gập (theo chỉ thị thực tế, dừng dần theo từng bước):
+    //   1) Cả 4 vách dựng 90° (0.2–0.4).
+    //   2) 4 khóa bẻ ngược ra ngoài (0.4–0.52) — xử lý ở mục lock.
+    //   3) Từ 0.52: CHỈ gập vách phụ TRƯỚC/SAU (dầm→gờ rồi vách phụ vào trong);
+    //      TRÁI/PHẢI KHÔNG gập (chỉ dựng vách rồi dừng).
+    //   Mí (tab) chưa gập — chờ chỉ thị tiếp.
+    // foldAngle tách theo chiều strip: vert = front/back, horiz = left/right.
+    const vertFoldAngles = [90, 90, 90, -90];  // front/back: wall, dầm, vách phụ, mí
+    const horizFoldAngles = [90, 90, 90, -90];  // left/right: GIỜ gập tương tự (sau 80%)
+    // foldPhase tách theo chiều: front/back gập sớm (0.2–0.78); left/right gập
+    // MUỘN (sau 0.8) tương tự — mí bẻ ra trước, rồi dầm vào, rồi vách phụ vào.
+    const vertFoldPhases: [number, number][] = [
+        [0.2, 0.4],   // wall — dựng vách
+        [0.52, 0.64], // beam (dầm)
+        [0.64, 0.78], // sec (vách phụ)
+        [0.4, 0.52],  // tab (mí) — bẻ ngược cùng khóa
+    ];
+    const horizFoldPhases: [number, number][] = [
+        [0.2, 0.4],   // wall — dựng vách (cùng lúc 4 vách)
+        [0.86, 0.92], // beam (dầm) — gập vào (sau 80%)
+        [0.92, 1.0],  // sec (vách phụ) — gập vào, kéo mí nằm sát đáy
+        [0.8, 0.86],  // tab (mí) — bẻ ngược ra trước (từ 80%)
+    ];
 
     // Pre-compute: lock tabs tồn tại? (dùng để bỏ CUT cạnh sec wall bị trùng)
     const _tongueW = params.trayTongueW ?? 15;
@@ -374,10 +397,15 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
                 ? [pt(pA, b0), pt(pB, b0)]
                 : [pt(b0, pA), pt(b0, pB)];
 
-            // Outline
-            const outline: Point2D[] = s.vert
+            // Outline cho 3D: panel có cạnh cong (bezier — bo góc mí / cung
+            // chuyển beam→sec) thì TRUY VẾT chu vi thực (lấy mẫu bezier) để khối
+            // 3D bám đúng khuôn 2D (góc bo, không bị nhọn). Panel thẳng (vách/
+            // vách phụ) giữ hình chữ nhật gọn (traced sẽ kèm artifact notch góc).
+            const hasCurve = paths.some((p) => p.type === 'bezier');
+            const rectOutline: Point2D[] = s.vert
                 ? [pt(pA, b0), pt(pB, b0), pt(pB, b1), pt(pA, b1)]
                 : [pt(b0, pA), pt(b1, pA), pt(b1, pB), pt(b0, pB)];
+            const outline = hasCurve ? tracePerimeter(paths) : rectOutline;
 
             panels.push({
                 name: `${s.prefix}_${zoneNames[i]}`,
@@ -386,8 +414,11 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
                 outline,
                 parent: parentNames[i],
                 pivotEdge,
-                foldAngle: foldAngles[i],
-                foldDirection: s.dir,
+                foldAngle: (s.vert ? vertFoldAngles[i] : horizFoldAngles[i]),
+                // Strip ngang (left/right) bản lề dọc trục Y → cùng dấu fold cho
+                // hiệu ứng NGƯỢC so với strip dọc; đảo dấu để cả 4 vách gập LÊN.
+                foldDirection: (s.vert ? s.dir : (-s.dir)) as 1 | -1,
+                foldPhase: (s.vert ? vertFoldPhases[i] : horizFoldPhases[i]),
             });
         }
     }
@@ -406,24 +437,25 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
         a: Point2D; d: Point2D;
         dirSign: Point2D; // (sx, sy) hướng mở rộng
         parent: string;
+        sideWall: string; // vách hông để gập miếng góc 3D
     }
 
     const cornerCfgs: CornerCfg[] = [
         {
             name: 'corner_fl', label: 'Góc trước-trái',
-            a: pt(T, W), d: pt(T, W + wallH_vert), dirSign: pt(-1, 1), parent: 'front_wall'
+            a: pt(T, W), d: pt(T, W + wallH_vert), dirSign: pt(-1, 1), parent: 'front_wall', sideWall: 'left_wall'
         },
         {
             name: 'corner_fr', label: 'Góc trước-phải',
-            a: pt(L - T, W), d: pt(L - T, W + wallH_vert), dirSign: pt(1, 1), parent: 'front_wall'
+            a: pt(L - T, W), d: pt(L - T, W + wallH_vert), dirSign: pt(1, 1), parent: 'front_wall', sideWall: 'right_wall'
         },
         {
             name: 'corner_bl', label: 'Góc sau-trái',
-            a: pt(T, 0), d: pt(T, -wallH_vert), dirSign: pt(-1, -1), parent: 'back_wall'
+            a: pt(T, 0), d: pt(T, -wallH_vert), dirSign: pt(-1, -1), parent: 'back_wall', sideWall: 'left_wall'
         },
         {
             name: 'corner_br', label: 'Góc sau-phải',
-            a: pt(L - T, 0), d: pt(L - T, -wallH_vert), dirSign: pt(1, -1), parent: 'back_wall'
+            a: pt(L - T, 0), d: pt(L - T, -wallH_vert), dirSign: pt(1, -1), parent: 'back_wall', sideWall: 'right_wall'
         },
     ];
 
@@ -465,6 +497,9 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
             outline: [a, d, c, dP],
             parent: cc.parent, pivotEdge: [a, a],
             foldAngle: 45, foldDirection: 1,
+            // CHỈ 3D: dữ liệu render miếng đệm góc (gập đôi theo nếp chéo a→c).
+            // KHÔNG ảnh hưởng path/outline 2D ở trên.
+            gusset: { frontWall: cc.parent, sideWall: cc.sideWall, a, d, c, dP, center: pt(snap(L / 2), snap(W / 2)) },
         });
     }
 
@@ -667,9 +702,17 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
             allPaths.push(...lPaths);
             panels.push({
                 name: lc.name, label: lc.label, paths: lPaths,
-                outline: [pBase0, pBase1, pOuter1, pOuter0],
+                // Outline 3D truy vết chu vi thực (rãnh khóa chữ U + bo góc) để
+                // khối 3D bám đúng khuôn 2D thay vì hình chữ nhật nhọn không rãnh.
+                outline: tracePerimeter(lPaths),
                 parent: lc.parent, pivotEdge: [pBase0, pBase1],
-                foldAngle: 90, foldDirection: xDir === -1 ? -1 : 1,
+                // Khóa BẺ NGƯỢC RA NGOÀI (trái với lòng khay) ngay sau khi vách
+                // dựng xong. Chiều phụ thuộc CẢ xDir LẪN trước/sau: vách sau gập
+                // −90° làm đảo dấu, nên khóa trước dùng xDir, khóa sau dùng −xDir
+                // → cả 4 đều bật ra NGOÀI (trước→+y, sau→−y), KHÔNG cùng 1 hướng.
+                foldAngle: 90,
+                foldDirection: ((lc.parent === 'front_sec' ? xDir : -xDir)) as 1 | -1,
+                foldPhase: [0.4, 0.52],
             });
         }
     }
@@ -684,13 +727,24 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
     const sW_sleeve = snap(W + clearance);
     const sD_sleeve = snap(D + clearance);
     const sG_sleeve = snap(Math.min(params.sleeveGlue ?? 15, sD_sleeve / 2));
-    const sleeveH = snap(sG_sleeve + 2 * sW_sleeve + 2 * sD_sleeve);
-    const trayCenterY = snap((trayBB.minY + trayBB.maxY) / 2);
-    const sleeveOffsetY = snap(trayCenterY - sleeveH / 2);
+    // Canh offsetY để LÒNG ỐNG vỏ trùng tâm Y của khay (W/2) → khay lồng vào
+    // theo TRỤC X thẳng (Δy = 0), không bay chéo. Mặt trước vỏ (đáy ống) nằm ở
+    // y∈[offsetY+G, offsetY+G+sW]; tâm của nó = offsetY+G+sW/2, đặt = W/2.
+    const sleeveOffsetY = snap(W / 2 - sG_sleeve - sW_sleeve / 2);
 
     const sleeve = generateMatchboxSleeve(params, sleeveOffsetX, sleeveOffsetY);
     allPaths.push(...sleeve.paths);
     panels.push(...sleeve.panels);
+
+    // Vector LỒNG khay vào vỏ (hệ phẳng-đã-gập): đưa tâm hộp khay (L/2,W/2,D/2)
+    // trùng tâm lòng ống vỏ. Ống vỏ: mặt trước y∈[G,G+sW] (tâm sW/2), x∈[0,sL]
+    // (tâm sL/2), z∈[0,sD] (tâm sD/2) — tất cả cộng offset.
+    const sL_sleeve = snap(params.L + clearance);
+    const nesting = {
+        x: snap(sleeveOffsetX + sL_sleeve / 2 - L / 2),
+        y: snap(sleeveOffsetY + sG_sleeve + sW_sleeve / 2 - W / 2),
+        z: snap(sD_sleeve / 2 - D / 2),
+    };
 
     return {
         name: 'Matchbox Tray + Sleeve (Hộp Diêm)',
@@ -700,5 +754,6 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
         allPaths,
         boundingBox: computeBoundingBox(allPaths),
         params,
+        nesting,
     };
 }

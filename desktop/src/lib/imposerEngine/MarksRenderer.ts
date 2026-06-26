@@ -13,7 +13,7 @@
 //   - At OUTER edges of the overall grid: lines extend by bleedPt (so the bleed area gets a cut line).
 //   - At INNER edges (between cells):    lines run exactly between trim edges, NO bleed extension.
 
-import { PDFPage, PDFFont, rgb, cmyk } from 'pdf-lib';
+import { PDFPage, PDFFont, cmyk } from 'pdf-lib';
 import { ProcessingSettings } from '../pdfImposer';
 import { NupBlock } from './NupGridSolver';
 
@@ -197,7 +197,7 @@ export function drawMarksNup(
         }
 
         // --- Spine FOLD marks (red tick) for saddle stitch booklets ---
-        const FOLD_COLOR = rgb(1, 0, 0); // Red — standard fold indicator
+        const FOLD_COLOR = cmyk(0, 1, 1, 0); // Đỏ (CMYK) — chuẩn dấu gấp, không dùng RGB
         for (const cellX of Array.from(spineCutsV)) {
             const x = gridX + cellX;
             // Top edge tick (pointing UP)

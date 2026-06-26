@@ -6,6 +6,7 @@
 import React from 'react';
 import { useBoxStore } from '../../store/useBoxStore';
 import { BoxParams } from '../../lib/dieline/types';
+import MockupArtworkPanel from './MockupArtworkPanel';
 
 
 /** Only numeric params for sliders */
@@ -35,8 +36,8 @@ const ADVANCED_PARAMS: ParamConfig[] = [
 ];
 
 
-export default function ParamPanel() {
-    const { params, setParam, setParams, dieline, clampVersion, mockupTextureUrl, setMockupTextureUrl } = useBoxStore();
+export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
+    const { params, setParam, setParams, dieline, clampVersion } = useBoxStore();
     const [showAdvanced, setShowAdvanced] = React.useState(false);
     const [showExtra, setShowExtra] = React.useState(false);
 
@@ -65,7 +66,22 @@ export default function ParamPanel() {
 
             {/* Box Type Selector */}
             <div className="dt-box-type-section">
-                <label className="dt-section-label">Loại khuôn</label>
+                <label className="dt-section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Loại khuôn</span>
+                    {onBack && (
+                        <button
+                            type="button"
+                            onClick={onBack}
+                            title="Chọn lại loại hộp"
+                            style={{
+                                background: 'transparent', border: 'none', cursor: 'pointer',
+                                color: 'var(--dt-accent)', fontSize: '18px', lineHeight: 1, padding: '0 2px',
+                            }}
+                        >
+                            ←
+                        </button>
+                    )}
+                </label>
                 <select
                     className="dt-param-select"
                     value={params.boxType}
@@ -525,6 +541,96 @@ export default function ParamPanel() {
                 </div>
             )}
 
+            {/* ─── Gable: Kiểu nắp & quai xách (thiết kế chính, luôn hiện) ─── */}
+            {isGable && (() => {
+                const gh1 = Math.round(params.W / 2);
+                const gh2 = Math.round(0.9 * gh1);
+                const designNums: { key: 'HFH' | 'HW' | 'HHL'; label: string; defVal: number; min: number; max: number }[] = [
+                    { key: 'HFH', label: 'Cao tay cầm', defVal: gh2, min: 0, max: 100 },
+                    { key: 'HW', label: 'Rộng lỗ quai', defVal: Math.round(2 / 5 * params.L), min: 0, max: Math.max(20, params.L - 20) },
+                    { key: 'HHL', label: 'Cao lỗ quai', defVal: Math.round(gh2 / 2), min: 0, max: 60 },
+                ];
+                return (
+                    <div className="dt-params-section">
+                        <label className="dt-section-label">Kiểu nắp & quai xách</label>
+                        <div className="dt-param-slider">
+                            <div className="dt-param-header"><label className="dt-param-label">Kiểu mái</label></div>
+                            <div className="dt-glue-side-toggle">
+                                <button className={`dt-glue-side-btn ${params.gableStyle === 'flat' ? 'active' : ''}`} onClick={() => setParam('gableStyle', 'flat')}>Mái bằng</button>
+                                <button className={`dt-glue-side-btn ${params.gableStyle === 'pitched' ? 'active' : ''}`} onClick={() => setParam('gableStyle', 'pitched')}>Mái dốc</button>
+                            </div>
+                        </div>
+                        <div className="dt-param-grid" style={{ marginTop: '0.5rem' }}>
+                            {designNums.map((gp) => (
+                                <div key={gp.key} className="dt-param-cell">
+                                    <label className="dt-param-cell-label">{gp.label}</label>
+                                    <input
+                                        type="number"
+                                        defaultValue={params[gp.key] === 0 ? gp.defVal : params[gp.key] as number}
+                                        key={`${gp.key}-${params[gp.key]}-${clampVersion}`}
+                                        min={gp.min} max={gp.max} step={1}
+                                        className="dt-param-input" style={{ textAlign: 'right' }}
+                                        onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) setParam(gp.key, v === gp.defVal ? 0 : v); }}
+                                        onKeyDown={(e) => { if (e.key === 'Enter') { const v = parseFloat((e.target as HTMLInputElement).value); if (!isNaN(v)) setParam(gp.key, v === gp.defVal ? 0 : v); (e.target as HTMLInputElement).blur(); } }}
+                                    />
+                                    <span className="dt-param-cell-unit">{params[gp.key] === 0 ? 'Auto' : 'mm'}</span>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
+                            <div className="dt-param-header"><label className="dt-param-label">Dạng lỗ quai</label></div>
+                            <div className="dt-glue-side-toggle">
+                                <button className={`dt-glue-side-btn ${params.handleShape === 'oval' ? 'active' : ''}`} onClick={() => setParam('handleShape', 'oval')}>⬭ Oval</button>
+                                <button className={`dt-glue-side-btn ${params.handleShape === 'roundRect' ? 'active' : ''}`} onClick={() => setParam('handleShape', 'roundRect')}>▢ Bo tròn</button>
+                            </div>
+                        </div>
+                        <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
+                            <div className="dt-param-header"><label className="dt-param-label">Vị trí lỗ</label></div>
+                            <div className="dt-glue-side-toggle">
+                                <button className={`dt-glue-side-btn ${params.handleY === 'bottom' ? 'active' : ''}`} onClick={() => setParam('handleY', 'bottom')}>Sát đáy</button>
+                                <button className={`dt-glue-side-btn ${params.handleY === 'center' ? 'active' : ''}`} onClick={() => setParam('handleY', 'center')}>Giữa</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* ─── Pizza: tính năng riêng (luôn hiện khi chọn hộp pizza) ─── */}
+            {isPizza && (
+                <div className="dt-params-section">
+                    <label className="dt-section-label">Tính năng hộp pizza</label>
+                    <div className="dt-param-grid">
+                        <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaVent', !params.pizzaVent)}>
+                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Lỗ thông hơi</label>
+                            <input type="checkbox" checked={params.pizzaVent as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
+                        </div>
+                        {params.pizzaVent && (
+                            <div className="dt-param-cell">
+                                <label className="dt-param-cell-label">⌀ Lỗ thông hơi</label>
+                                <input
+                                    type="number"
+                                    defaultValue={params.pizzaVentD === 0 ? 6 : params.pizzaVentD}
+                                    key={`pizzaVentD-${params.pizzaVentD}`}
+                                    min={2} max={20} step={1}
+                                    className="dt-param-input" style={{ textAlign: 'right' }}
+                                    onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) setParam('pizzaVentD', v === 6 ? 0 : v); }}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') { const v = parseFloat((e.target as HTMLInputElement).value); if (!isNaN(v)) setParam('pizzaVentD', v === 6 ? 0 : v); (e.target as HTMLInputElement).blur(); } }}
+                                />
+                                <span className="dt-param-cell-unit">{params.pizzaVentD === 0 ? 'Auto' : 'mm'}</span>
+                            </div>
+                        )}
+                        <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaFrontLock', !params.pizzaFrontLock)}>
+                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Lưỡi gài khóa nắp</label>
+                            <input type="checkbox" checked={params.pizzaFrontLock as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
+                        </div>
+                        <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaCornerLock', !params.pizzaCornerLock)}>
+                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Khóa góc xếp chồng</label>
+                            <input type="checkbox" checked={params.pizzaCornerLock as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Advanced Toggle — not for cup sleeve */}
             {!isCupSleeve && !isEnvelope && !isTray && (
                 <button
@@ -617,7 +723,7 @@ export default function ParamPanel() {
                     className="dt-advanced-toggle"
                     onClick={() => setShowExtra(!showExtra)}
                 >
-                    {showExtra ? '▼' : '▶'} Thông số đáy & nắp
+                    {showExtra ? '▼' : '▶'} {isGable ? 'Tinh chỉnh khóa & ngàm (nâng cao)' : 'Thông số đáy & nắp'}
                 </button>
 
                 {showExtra && (
@@ -691,21 +797,16 @@ export default function ParamPanel() {
                                 ));
                             })()}
 
-                            {/* Gable Params (HH, HW, HHL) */}
+                            {/* Gable — chỉ tham số khóa/ngàm nâng cao (đa số Auto); thiết kế chính ở mục trên */}
                             {isGable && (() => {
                                 const h1 = Math.round(params.W / 2);
                                 const h2 = Math.round(0.9 * h1);
                                 const defHH = h1 + h2;
-                                const defHW = Math.round(2 / 5 * params.L);
-                                const defHHL = Math.round(h2 / 2);
-                                const gableParams: { key: 'HH' | 'HW' | 'HHL' | 'HFH' | 'SLW' | 'SLH' | 'TRW'; label: string; defVal: number; min: number; max: number }[] = [
+                                const gableParams: { key: 'HH' | 'SLW' | 'SLH' | 'TRW'; label: string; defVal: number; min: number; max: number }[] = [
                                     { key: 'HH', label: 'Cao tai hộp', defVal: defHH, min: 0, max: 120 },
-                                    { key: 'HFH', label: 'Cao tay cầm', defVal: Math.round(0.9 * h1), min: 0, max: 100 },
-                                    { key: 'HW', label: 'Rộng lỗ quai', defVal: defHW, min: 0, max: Math.max(20, params.L - 20) },
-                                    { key: 'HHL', label: 'Cao lỗ quai', defVal: defHHL, min: 0, max: 60 },
-                                    { key: 'SLW', label: 'Rộng rãnh', defVal: 3, min: 1, max: 10 },
-                                    { key: 'SLH', label: 'Sâu rãnh (%)', defVal: 85, min: 50, max: 100 },
                                     { key: 'TRW', label: 'Rộng ngàm', defVal: Math.round(params.L / 9), min: 0, max: Math.round(params.L / 4) },
+                                    { key: 'SLH', label: 'Sâu rãnh (%)', defVal: 85, min: 50, max: 100 },
+                                    { key: 'SLW', label: 'Rộng rãnh', defVal: 3, min: 1, max: 10 },
                                 ];
                                 return gableParams.map((gp) => (
                                     <div key={gp.key} className="dt-param-cell">
@@ -738,69 +839,7 @@ export default function ParamPanel() {
                         </div>
 
 
-                        {isGable && (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
-                                <div className="dt-param-slider">
-                                    <div className="dt-param-header">
-                                        <label className="dt-param-label">Kiểu mái</label>
-                                    </div>
-                                    <div className="dt-glue-side-toggle">
-                                        <button
-                                            className={`dt-glue-side-btn ${params.gableStyle === 'flat' ? 'active' : ''}`}
-                                            onClick={() => setParam('gableStyle', 'flat')}
-                                        >
-                                            Mái bằng
-                                        </button>
-                                        <button
-                                            className={`dt-glue-side-btn ${params.gableStyle === 'pitched' ? 'active' : ''}`}
-                                            onClick={() => setParam('gableStyle', 'pitched')}
-                                        >
-                                            Mái dốc
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div className="dt-param-slider">
-                                    <div className="dt-param-header">
-                                        <label className="dt-param-label">Dạng lỗ quai</label>
-                                    </div>
-                                    <div className="dt-glue-side-toggle">
-                                        <button
-                                            className={`dt-glue-side-btn ${params.handleShape === 'oval' ? 'active' : ''}`}
-                                            onClick={() => setParam('handleShape', 'oval')}
-                                        >
-                                            ⬭ Oval
-                                        </button>
-                                        <button
-                                            className={`dt-glue-side-btn ${params.handleShape === 'roundRect' ? 'active' : ''}`}
-                                            onClick={() => setParam('handleShape', 'roundRect')}
-                                        >
-                                            ▢ Bo tròn
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <div className="dt-param-slider">
-                                    <div className="dt-param-header">
-                                        <label className="dt-param-label">Vị trí lỗ</label>
-                                    </div>
-                                    <div className="dt-glue-side-toggle">
-                                        <button
-                                            className={`dt-glue-side-btn ${params.handleY === 'bottom' ? 'active' : ''}`}
-                                            onClick={() => setParam('handleY', 'bottom')}
-                                        >
-                                            Sát đáy
-                                        </button>
-                                        <button
-                                            className={`dt-glue-side-btn ${params.handleY === 'center' ? 'active' : ''}`}
-                                            onClick={() => setParam('handleY', 'center')}
-                                        >
-                                            Giữa
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
+                        {/* Kiểu mái + dạng/vị trí lỗ quai đã chuyển lên mục "Kiểu nắp & quai xách" */}
                     </div>
                 )}
             </>)}
@@ -933,39 +972,14 @@ export default function ParamPanel() {
                 )}
             </>)}
 
-            {/* ─── 3D Mockup Settings ─── */}
+            {/* ─── 3D Mockup Settings — GỘP 1 NƠI: tải ảnh + chỉnh transform/mask ─── */}
             <div className="dt-params-section" style={{ marginTop: '1rem', borderTop: '1px dashed var(--dt-border)', paddingTop: '1rem' }}>
                 <label className="dt-section-label">🎨 Thiết kế 3D (Mockup)</label>
-                <p className="dt-param-desc" style={{ marginBottom: '0.75rem' }}>
-                    Tải ảnh thiết kế (JPEG/PNG) để dán lên mặt ngoài của hộp.
+                <p className="dt-param-desc" style={{ marginBottom: '0.5rem' }}>
+                    Tải ảnh thiết kế (JPEG/PNG) dán lên mặt ngoài hộp, kèm chỉnh tỉ lệ,
+                    vị trí, xoay, ảnh mặt trong và mặt nạ gia công.
                 </p>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                    <label className="dt-glue-side-btn active" style={{ cursor: 'pointer', textAlign: 'center', flex: 1 }}>
-                        🖼️ Tải ảnh lên
-                        <input
-                            type="file"
-                            accept="image/png, image/jpeg, image/webp"
-                            style={{ display: 'none' }}
-                            onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) {
-                                    const url = URL.createObjectURL(file);
-                                    setMockupTextureUrl(url);
-                                }
-                            }}
-                        />
-                    </label>
-                    {mockupTextureUrl && (
-                        <button
-                            className="dt-glue-side-btn"
-                            onClick={() => setMockupTextureUrl(null)}
-                            style={{ flex: '0 0 auto', padding: '0.5rem', color: 'var(--dt-danger)' }}
-                            title="Xoá ảnh mockup"
-                        >
-                            ✖
-                        </button>
-                    )}
-                </div>
+                <MockupArtworkPanel />
             </div>
         </div>
     );

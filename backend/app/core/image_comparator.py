@@ -51,6 +51,11 @@ class ComparisonResult:
     is_imposition_mode: bool = False
     total_instances: int = 0
     failed_instances: int = 0
+    # Kích thước ảnh (px) mà diff_regions/highlighted_image đang nằm trong đó. Khi
+    # so có CO GIÃN (Case A) hoặc bình bài, kích thước này KHÁC ảnh đầu vào gốc →
+    # caller phải chuẩn hoá toạ độ theo đây, không theo ảnh gốc (tránh lệch toạ độ).
+    render_w: int = 0
+    render_h: int = 0
 
 
 @dataclass
@@ -87,18 +92,39 @@ class ImageComparator:
         """
         result = ComparisonResult()
 
-        # Step 1: Detect Imposition Mode (Size mismatch > 1.5x)
+        # Step 1: Detect Imposition Mode (theo tỉ lệ DIỆN TÍCH, không phải 1 chiều)
         h1, w1 = img1.shape[:2]
         h2, w2 = img2.shape[:2]
         
         is_packaging = config.get("is_packaging_mode", False) if config else False
 
-        if (w2 / w1 > 1.5) or (h2 / h1 > 1.5):
-            logger.info(f"Imposition Mode: Image 2 > Image 1. Packaging: {is_packaging}")
-            return self._compare_imposition(template=img1, imposed=img2, is_packaging_mode=is_packaging)
-        elif (w1 / w2 > 1.5) or (h1 / h2 > 1.5):
-            logger.info(f"Imposition Mode: Image 1 > Image 2. Packaging: {is_packaging}")
-            return self._compare_imposition(template=img2, imposed=img1, is_packaging_mode=is_packaging)
+        area1 = float(w1 * h1)
+        area2 = float(w2 * h2)
+        asp1 = (w1 / h1) if h1 else 1.0
+        asp2 = (w2 / h2) if h2 else 1.0
+        size_eq = (abs(w1 - w2) <= 0.02 * max(w1, w2)) and (abs(h1 - h2) <= 0.02 * max(h1, h2))
+        aspect_close = abs(asp1 - asp2) <= 0.06 * max(asp1, asp2, 1e-6)
+        area_ratio = (max(area1, area2) / min(area1, area2)) if min(area1, area2) > 0 else 1.0
+        IMPOSITION_AREA_RATIO = 1.8
+
+        # ── Case A: CÙNG tỉ lệ khung, KHÁC cỡ, diện tích chênh < ngưỡng N-up ──
+        # Khi chênh diện tích < 1.8× thì KHÔNG thể là lưới ≥2 bản → chắc chắn là MỘT
+        # thiết kế đổi cỡ (vd A4 ↔ ~A4 thu nhỏ). Co giãn ĐỀU rồi so 1:1 (cùng aspect →
+        # không méo). Trường hợp chênh ≥1.8× (mơ hồ: 1 bản phóng to HAY lưới N-up giữ
+        # tỉ lệ) để chế độ bình bài đa tỉ lệ tự đếm số bản mà xử lý.
+        if not size_eq and aspect_close and 1.02 < area_ratio < IMPOSITION_AREA_RATIO:
+            res_a = self._compare_scaled(img1, img2, tolerance, config)
+            if res_a is not None:
+                return res_a
+
+        # ── Case B: tờ N-up / 1 bản phóng to (diện tích lớn vượt trội) → dò mẫu ĐA TỈ LỆ ──
+        if not size_eq and area_ratio >= IMPOSITION_AREA_RATIO:
+            if area2 >= area1:
+                logger.info(f"Imposition Mode: Image 2 lớn hơn (area {area_ratio:.2f}×). Packaging: {is_packaging}")
+                return self._compare_imposition(template=img1, imposed=img2, is_packaging_mode=is_packaging)
+            else:
+                logger.info(f"Imposition Mode: Image 1 lớn hơn (area {area_ratio:.2f}×). Packaging: {is_packaging}")
+                return self._compare_imposition(template=img2, imposed=img1, is_packaging_mode=is_packaging)
 
         # Step 1.5: Ensure same dimensions if standard 1:1 mode
         img1, img2 = self._normalize_dimensions(img1, img2)
@@ -150,6 +176,9 @@ class ImageComparator:
         binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
         result.diff_mask = binary_mask
+        # Toạ độ vùng khác biệt nằm trong KÍCH THƯỚC LÀM VIỆC (img2 sau normalize/scale)
+        result.render_w = img2.shape[1]
+        result.render_h = img2.shape[0]
 
         # Calculate diff pixel percentage
         total_pixels = binary_mask.shape[0] * binary_mask.shape[1]
@@ -386,16 +415,48 @@ class ImageComparator:
             logger.warning(f"Image alignment skipped: {e}")
             return mov
 
+    def _compare_scaled(self, img1, img2, tolerance, config):
+        """Case A: 2 ảnh CÙNG tỉ lệ khung, KHÁC cỡ → co giãn ĐỀU bên nhỏ về đúng cỡ
+        bên lớn rồi so 1:1. Giữ NGUYÊN thứ tự tham số (img2 vẫn là nền highlight).
+
+        Gọi lại self.compare() trên 2 ảnh đã CÙNG cỡ → đi thẳng nhánh 1:1 (không đệ
+        quy vô hạn vì size_eq=True). render_w/h trong kết quả phản ánh cỡ đã co giãn.
+        """
+        h1, w1 = img1.shape[:2]
+        h2, w2 = img2.shape[:2]
+        if w1 * h1 >= w2 * h2:
+            img2r = cv2.resize(img2, (w1, h1), interpolation=cv2.INTER_AREA)
+            return self.compare(img1, img2r, tolerance=tolerance, config=config)
+        else:
+            img1r = cv2.resize(img1, (w2, h2), interpolation=cv2.INTER_AREA)
+            return self.compare(img1r, img2, tolerance=tolerance, config=config)
+
     def _normalize_dimensions(
         self, img1: np.ndarray, img2: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Resize images to match dimensions if different."""
-        if img1.shape[:2] != img2.shape[:2]:
-            h = max(img1.shape[0], img2.shape[0])
-            w = max(img1.shape[1], img2.shape[1])
-            img1 = cv2.resize(img1, (w, h), interpolation=cv2.INTER_LANCZOS4)
-            img2 = cv2.resize(img2, (w, h), interpolation=cv2.INTER_LANCZOS4)
-        return img1, img2
+        """Đưa 2 ảnh về cùng kích thước để absdiff/SSIM.
+
+        PAD thêm viền TRẮNG giữ NGUYÊN tỉ lệ, KHÔNG resize-ép. Resize phi tuyến (khi
+        2 trang lệch tỉ lệ/kích thước) làm méo toàn bộ nội dung → báo khác biệt giả
+        cả trang (audit so-sánh #2). Pad ở mép phải/dưới (gốc trên-trái); `_align_to`
+        bù dịch nhỏ sau đó. Vùng pad là trắng ở CẢ HAI ảnh tại phần chung nên không
+        tự sinh diff; chỉ phần một ảnh thực sự có nội dung dài/rộng hơn mới bị bắt.
+        """
+        h1, w1 = img1.shape[:2]
+        h2, w2 = img2.shape[:2]
+        if (h1, w1) == (h2, w2):
+            return img1, img2
+
+        H, W = max(h1, h2), max(w1, w2)
+
+        def _pad(img: np.ndarray) -> np.ndarray:
+            h, w = img.shape[:2]
+            if h == H and w == W:
+                return img
+            val = (255, 255, 255) if img.ndim == 3 else 255
+            return cv2.copyMakeBorder(img, 0, H - h, 0, W - w, cv2.BORDER_CONSTANT, value=val)
+
+        return _pad(img1), _pad(img2)
 
     def _classify_severity(self, area: int, total_pixels: int) -> str:
         """Classify severity based on region area relative to page."""
@@ -441,57 +502,92 @@ class ImageComparator:
             # ff_mask marks background as 1. We want content as 255.
             alpha_mask = (1 - ff_mask[1:-1, 1:-1]) * 255
         
-        # 3. Multi-Angle Scanning (0, 90, 180, 270)
-        boxes_for_nms = []
-        scores = []
-        angles_for_boxes = []
-        
+        # 3. Multi-Angle + Multi-Scale Scanning
+        # Quét 4 góc xoay (0/90/180/270). ĐA TỈ LỆ: thử cỡ GỐC (scale 1.0) TRƯỚC để
+        # GIỮ NGUYÊN hành vi bình tem hiện tại; CHỈ khi cỡ gốc không tìm thấy mẫu nào
+        # mới thử các cỡ khác (vd thiết kế bị BÓP A4→A5 khi bình) → hỗ trợ scale mà
+        # không gây nhiễu cho luồng cùng-cỡ đang chạy tốt. Giả định scale ĐỒNG NHẤT
+        # trên cả tờ (đúng với bình bài thực tế).
         angles = [
-            (0, None), 
+            (0, None),
             (90, cv2.ROTATE_90_CLOCKWISE),
             (180, cv2.ROTATE_180),
-            (270, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            (270, cv2.ROTATE_90_COUNTERCLOCKWISE),
         ]
-        
-        for angle, rot_code in angles:
-            if rot_code is not None:
-                rotated_core = cv2.rotate(core_gray, rot_code)
-                # Compute full template dimensions when rotated
-                if angle in [90, 270]:
-                    full_rot_w, full_rot_h = th, tw
-                    # When rotated 90/270, the margin_x and margin_y flip theoretically,
-                    # but since they mapped to the core, the offset to the top-left of the original bounding box is identical?
-                    offset_x, offset_y = margin_y, margin_x
-                else:
-                    full_rot_w, full_rot_h = tw, th
-                    offset_x, offset_y = margin_x, margin_y
-            else:
-                rotated_core = core_gray
-                full_rot_w, full_rot_h = tw, th
-                offset_x, offset_y = margin_x, margin_y
-                
-            res = cv2.matchTemplate(gray_imposed, rotated_core, cv2.TM_CCOEFF_NORMED)
-            loc = np.where(res >= 0.82) # Looser threshold because we trimmed margins
-            
-            for pt in zip(*loc[::-1]):
-                # pt[0], pt[1] is the top-left of the CORE.
-                # Find the top-left of the FULL template:
-                full_x = pt[0] - offset_x
-                full_y = pt[1] - offset_y
-                
-                boxes_for_nms.append([int(full_x), int(full_y), int(full_rot_w), int(full_rot_h)])
-                scores.append(float(res[pt[1], pt[0]]))
-                angles_for_boxes.append(angle)
 
-        matched_boxes = []
-        matched_angles = []
-        if len(boxes_for_nms) > 0:
+        def _scan_scale(scale):
+            boxes_s, scores_s, angles_s = [], [], []
+            cw = max(1, int(round(core_gray.shape[1] * scale)))
+            ch = max(1, int(round(core_gray.shape[0] * scale)))
+            scaled_core = core_gray if scale == 1.0 else cv2.resize(core_gray, (cw, ch), interpolation=cv2.INTER_AREA)
+            fw = max(1, int(round(tw * scale)))
+            fh = max(1, int(round(th * scale)))
+            mx = int(round(margin_x * scale))
+            my = int(round(margin_y * scale))
+            for angle, rot_code in angles:
+                if rot_code is not None:
+                    rc = cv2.rotate(scaled_core, rot_code)
+                    if angle in (90, 270):
+                        full_w, full_h = fh, fw
+                        ox, oy = my, mx
+                    else:
+                        full_w, full_h = fw, fh
+                        ox, oy = mx, my
+                else:
+                    rc = scaled_core
+                    full_w, full_h = fw, fh
+                    ox, oy = mx, my
+                if rc.shape[0] > gray_imposed.shape[0] or rc.shape[1] > gray_imposed.shape[1]:
+                    continue  # template (đã scale) lớn hơn tờ → matchTemplate không chạy được
+                res = cv2.matchTemplate(gray_imposed, rc, cv2.TM_CCOEFF_NORMED)
+                loc = np.where(res >= 0.82)  # ngưỡng nới vì đã cắt mép
+                for pt in zip(*loc[::-1]):
+                    boxes_s.append([int(pt[0] - ox), int(pt[1] - oy), int(full_w), int(full_h)])
+                    scores_s.append(float(res[pt[1], pt[0]]))
+                    angles_s.append(angle)
+            return boxes_s, scores_s, angles_s
+
+        def _nms(boxes_n, scores_n, angles_n):
+            if not boxes_n:
+                return [], []
             nms_thresh = 0.85 if is_packaging_mode else 0.3
-            indices = cv2.dnn.NMSBoxes(boxes_for_nms, scores, score_threshold=0.82, nms_threshold=nms_thresh)
-            if len(indices) > 0:
-                indices = indices.flatten()
-                matched_boxes = [boxes_for_nms[i] for i in indices]
-                matched_angles = [angles_for_boxes[i] for i in indices]
+            idx = cv2.dnn.NMSBoxes(boxes_n, scores_n, score_threshold=0.82, nms_threshold=nms_thresh)
+            if len(idx) == 0:
+                return [], []
+            idx = idx.flatten()
+            return [boxes_n[i] for i in idx], [angles_n[i] for i in idx]
+
+        match_scale = 1.0
+        _b, _s, _a = _scan_scale(1.0)
+        matched_boxes, matched_angles = _nms(_b, _s, _a)
+
+        if len(matched_boxes) == 0:
+            # Cỡ gốc không thấy → thử các cỡ mà k bản (k=1..6) vừa khít mỗi chiều của tờ.
+            cand = set()
+            for k in range(1, 7):
+                cand.add(round(iw / (tw * k), 3))
+                cand.add(round(ih / (th * k), 3))
+            cand = sorted(
+                (c for c in cand if 0.15 <= c <= 3.0 and abs(c - 1.0) > 0.02),
+                key=lambda c: abs(c - 1.0),
+            )
+            for sc in cand:
+                _b, _s, _a = _scan_scale(sc)
+                mb, ma = _nms(_b, _s, _a)
+                if mb:
+                    matched_boxes, matched_angles, match_scale = mb, ma, sc
+                    logger.info(f"Imposition: tìm thấy mẫu ở tỉ lệ {sc:.3f}× ({len(mb)} bản)")
+                    break
+
+        # Nếu khớp ở tỉ lệ khác cỡ gốc → co giãn template (và alpha) về đúng tỉ lệ đó
+        # để bước so pixel từng bản khớp đúng (template gốc ≠ cỡ bản trên tờ).
+        if match_scale != 1.0:
+            new_w = max(1, int(round(template.shape[1] * match_scale)))
+            new_h = max(1, int(round(template.shape[0] * match_scale)))
+            template = cv2.resize(template, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            if alpha_mask is not None:
+                alpha_mask = cv2.resize(alpha_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            th, tw = template.shape[:2]
 
         # Short-circuit if template is entirely missing from this N-up sheet
         if len(matched_boxes) == 0:
@@ -503,6 +599,8 @@ class ImageComparator:
             )]
             result.diff_count = 1
             result.highlighted_image = imposed.copy()
+            result.render_w = iw
+            result.render_h = ih
             return result
 
         # 4. Micro-Comparison Process
@@ -601,6 +699,8 @@ class ImageComparator:
         result.similarity_score = round(100.0 - (total_diff_pixels / (iw * ih) * 100), 2)
         result.total_instances = total_instances
         result.failed_instances = failed_instances
+        result.render_w = iw
+        result.render_h = ih
         
         # If there are errors, draw them and enable Spotlight GIF
         if has_errors:

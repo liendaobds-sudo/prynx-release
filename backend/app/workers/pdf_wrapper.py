@@ -122,7 +122,7 @@ class Page:
         return new_shape(self.doc._pdf, self._page)
 
     def insert_text(self, point=None, text="", fontsize=11, fontname="helv",
-                    color=(0, 0, 0), render_mode=0, oc=None):
+                    color=(0, 0, 0, 1), render_mode=0, oc=None):
         return insert_text(self.doc._pdf, self._page, point, text, fontsize, fontname, color, render_mode, oc)
 
     def set_trimbox(self, rect):

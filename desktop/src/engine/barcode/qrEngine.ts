@@ -254,10 +254,17 @@ export const QR_STYLE_PRESETS: QRStylePreset[] = [
 function buildStylingOptions(opts: QRGenerateOptions): QRStylingOptions {
   const { style } = opts;
 
+  // Tiếng Việt (và mọi ký tự đa byte): qr-code-styling/qrcode-generator ở byte mode
+  // ghi charCodeAt & 0xFF → CẮT CỤT ký tự >255 (vd "ả"→"£", "ư"→"°"). Encode chuỗi
+  // Unicode thành "binary string" gồm các byte UTF-8 trước → QR chứa UTF-8 hợp lệ,
+  // máy quét đọc đúng (khớp với output backend dùng segno). ASCII giữ nguyên.
+  let qrData = opts.data;
+  try { qrData = unescape(encodeURIComponent(opts.data)); } catch { /* giữ nguyên */ }
+
   const qrOpts: QRStylingOptions = {
     width: opts.size,
     height: opts.size,
-    data: opts.data,
+    data: qrData,
     margin: style.margin ?? 10,
     type: 'canvas',
     qrOptions: {

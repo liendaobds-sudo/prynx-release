@@ -650,7 +650,7 @@ function AppInner() {
                 rounded-t-lg transition-colors cursor-default border border-b-0
                 ${isActive
                   ? 'bg-[#e6e8eb] dark:bg-[#1a1a1a] border-black/10 dark:border-white/10 shadow-[0_-2px_6px_rgba(0,0,0,0.03)] text-slate-900 dark:text-white font-semibold z-10'
-                  : 'bg-transparent border-transparent text-slate-600 dark:text-zinc-400 hover:bg-[#e0e2e5] dark:hover:bg-[#1f2937] z-0'}
+                  : 'bg-transparent border-transparent text-slate-600 dark:text-zinc-400 hover:bg-[#e0e2e5] dark:hover:bg-[#262626] z-0'}
               `}
             >
               {isActive && (
@@ -683,7 +683,7 @@ function AppInner() {
                 ${draggingTabId === tab.id ? 'cursor-grabbing shadow-lg shadow-black/20 dark:shadow-black/50' : 'cursor-default'}
                 ${isActive
                   ? 'bg-[#e6e8eb] dark:bg-[#1a1a1a] border-black/10 dark:border-white/10 shadow-[0_-2px_6px_rgba(0,0,0,0.03)] text-slate-900 dark:text-white font-semibold z-10'
-                  : 'bg-[#e6e8eb]/50 dark:bg-[#1a1a1a]/50 border-black/5 dark:border-white/5 text-slate-500 dark:text-zinc-400 hover:bg-[#e0e2e5] dark:hover:bg-[#1f2937] z-0'}
+                  : 'bg-[#e6e8eb]/50 dark:bg-[#1a1a1a]/50 border-black/5 dark:border-white/5 text-slate-500 dark:text-zinc-400 hover:bg-[#e0e2e5] dark:hover:bg-[#262626] z-0'}
               `}
             >
               {isActive && (

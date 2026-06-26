@@ -24,10 +24,13 @@ _DATA_MODELS = os.path.join(os.path.dirname(__file__), "..", "..", "data", "mode
 _U2NET_HOME = os.path.expanduser(os.path.join("~", ".u2net"))
 
 # variant -> (url, local_path)
+# LƯU Ý: cache model ở ~/.u2net (thư mục HOME ổn định) cho MỌI biến thể. Trước đây 'full'
+# lưu vào data/models tính theo __file__ — trong bản Nuitka onefile, __file__ nằm trong thư
+# mục giải nén TẠM (bị xoá khi thoát) → tải lại 927MB mỗi lần mở / ghi lỗi. Dùng HOME để bền.
 MODELS = {
     "full": (
         "https://github.com/ZhengPeng7/BiRefNet/releases/download/v1/BiRefNet-general-epoch_244.onnx",
-        os.path.join(_DATA_MODELS, "BiRefNet-general-epoch_244.onnx"),
+        os.path.join(_U2NET_HOME, "BiRefNet-general-epoch_244.onnx"),
     ),
     "lite": (
         "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx",

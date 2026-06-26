@@ -1,6 +1,30 @@
 # Token Lifecycle — Security Audit Findings
 
-## Architecture Trace (Entry → Sink)
+> ## ⚠️ TRẠNG THÁI: ĐÃ KHẮC PHỤC (cập nhật 2026-06-26) — ĐỌC PHẦN NÀY TRƯỚC
+>
+> **Toàn bộ 4 lỗi 🔴 CRITICAL + các 🟠 liệt kê BÊN DƯỚI đã được vá.** Bản gốc dưới đây
+> phản ánh trạng thái code TẠI THỜI ĐIỂM phát hiện, GIỮ LẠI để truy vết lịch sử.
+> Đừng dùng nó để đánh giá rủi ro hiện tại. Đối chiếu chéo: `SECURITY_AUDIT_2026-06-20.md`
+> (đợt vá chính) + `SECURITY_ARCHITECTURE.md` Mục 8–10.
+>
+> | # gốc | Phát hiện | Trạng thái hiện tại (đã VERIFIED bằng code/chạy) |
+> |---|---|---|
+> | V#1 | Fail-open khi `PRYNX_ENFORCE_LICENSE_TOKEN` unset | ✅ VÁ. `_enforce_license_token()` trả **True bất kể env** khi không phải dev (`license_guard.py`). Chạy thật `DEV_MODE=false` → `enforce=True`. |
+> | V#2 | Replay bằng lùi đồng hồ client | ✅ VÁ (2 lớp). `_clock_guard()` (mốc đơn điệu ký HMAC) + **V3 cận trên tuổi thọ token** (deletion-proof, `_MAX_TOKEN_LIFETIME_SECONDS`) — chặn replay token cũ khi lùi giờ. |
+> | V#3 | Bypass ràng HWID bằng chuỗi rỗng | ✅ VÁ. `require_license` raise **401** nếu thiếu `X-Hardware-Id` ở production (chuỗi rỗng không lọt) + token bắt buộc field `m`. |
+> | V#4 | Bypass ràng key bằng chuỗi rỗng | ✅ VÁ. Tương tự V#3: thiếu `X-License-Key` → 401; token bắt buộc field `k`. |
+> | V#5 | Thiếu Supabase creds = silent allow | ✅ THEO THIẾT KẾ (không còn silent). Sidecar không giữ service key; biên giới THẬT là token Ed25519 đã enforce. Log rõ `SUPABASE_CREDS_MISSING relying_on_signed_token`. |
+> | V#6 | DNS fail → grace 5' | 🟢 Chấp nhận (Ring-3 ceiling). Grace ngắn + token Ed25519 vẫn enforce. |
+> | V#7 | Field HWID/key optional trong token | ✅ VÁ. `verify_license_token` nay **bắt buộc** `m` và `k` (token thiếu → từ chối). |
+>
+> **Residual (cố hữu, không phải bug):** `_clock_guard` dựa trên file `.clkguard` có thể bị
+> XOÁ để reset mốc → cho phép một lần lùi đồng hồ NHỎ (chỉ kéo dài token 2h đã cấp; đòi
+> quyền local admin). Đã giảm thiểu bằng V3 (cận trên tuổi thọ, không state trên đĩa, bắt
+> được lùi giờ lớn). Triệt để cần nguồn thời gian tin cậy từ server — đánh đổi luồng offline.
+
+---
+
+## (LỊCH SỬ) Architecture Trace (Entry → Sink)
 
 ### Entry Point
 - **Desktop (Tauri)** → CLI invokes Tauri `sign_api_request(path, license_key)` 

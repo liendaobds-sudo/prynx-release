@@ -520,6 +520,11 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
     if progress_callback:
         progress_callback(1, 1, "CNC: hoàn tất")
 
+    # Cache kích thước thành phẩm TRƯỚC KHI đóng src_doc (để report block dùng)
+    _trim_cache: Dict[int, tuple] = {}
+    for fi in front_idxs:
+        _trim_cache[fi] = _trim_dims(src_doc[fi])
+
     buf = io.BytesIO()
     out_doc.save(buf, garbage=0, deflate=True)
     out_doc.close()
@@ -540,6 +545,8 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
             if 'gangCount' not in _fo:
                 _fo = _fo + ['gangCount']
             _cfg['fieldOrder'] = _fo
+            _PT_MM = 1.0 / MM_TO_PTS
+            _cnc_paper = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
             for sub_front_idxs, layout, page_info in report_units:
                 if is_sr:
                     fi = sub_front_idxs[0]
@@ -547,13 +554,20 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
                     _qty = _qty_for(fi)
                     _gang = 0
                     _ident = str(fi + 1)
+                    _tw, _th = _trim_cache.get(fi, (0, 0))
+                    _w_mm = _tw * _PT_MM
+                    _h_mm = _th * _PT_MM
                 else:
                     _label = report_cfg.get('labelNameText') or ""
                     _qty = 0
                     _gang = len(sub_front_idxs)
                     _ident = ""
+                    _w_mm = 0.0  # gang nhiều mẫu → kích thước hỗn hợp
+                    _h_mm = 0.0
                 _data = _nr.compute_report_data(
                     label_name=_label,
+                    width_mm=_w_mm, height_mm=_h_mm,
+                    paper_size=_cnc_paper,
                     items_per_sheet=layout['items_per_sheet'],
                     requested_qty=_qty,
                     material=settings.get('reportMaterial', '') or '',

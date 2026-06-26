@@ -123,7 +123,7 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
     panels.push({
         name: 'bottom', label: 'Đáy', paths: bottomPaths,
         parent: null, pivotEdge: null, foldAngle: 0, foldDirection: 1,
-        outline: [],
+        outline: [pt(0, 0), pt(L, 0), pt(L, W), pt(0, W)],
     });
 
     // ── SLOTS trên Bottom (4 khe, dịch vào 2T từ mép X) ──
@@ -133,6 +133,15 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         { x: snap(L - 2 * T - slot_w), y: so },
         { x: snap(L - 2 * T - slot_w), y: snap(W - so - sl) },
     ];
+    // Lỗ khoét thật trên ĐÁY (để tab cuộn hông luồn xuyên qua khi render 3D).
+    const slotHoles: Point2D[][] = slotPositions.map((s) => [
+        pt(s.x, s.y),
+        pt(snap(s.x + slot_w), s.y),
+        pt(snap(s.x + slot_w), snap(s.y + sl)),
+        pt(s.x, snap(s.y + sl)),
+    ]);
+    const bottomPanelRef = panels.find((p) => p.name === 'bottom');
+    if (bottomPanelRef) bottomPanelRef.holes = slotHoles;
     for (const s of slotPositions) {
         const x0 = s.x, y0 = s.y;
         const x1 = snap(s.x + slot_w), y1 = snap(s.y + sl);
@@ -176,12 +185,32 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         line(pt(xFrontL, snap(-D)), pt(xFrontR, snap(-D)), 'CUT'), // dưới
         line(pt(xFrontR, snap(-D)), pt(xFrontR, 0), 'CREASE'),     // phải — gập tai trước
     ];
+    // Khe nhận lưỡi gài khóa nắp trước — khe chữ nhật (rộng = slot_w như khe đáy),
+    // đặt sát mép đáy vách trước, đúng nơi lưỡi gài luồn vào.
+    let frontLockSlotHole: Point2D[] | undefined;
+    if (params.pizzaFrontLock) {
+        const flLockW = snap(L / 5);            // dài khe = bề rộng lưỡi gài
+        const flCx = snap(L / 2);
+        const flHalfW = snap(flLockW / 2);
+        const flYhi = snap(-0.05);              // mép trên khe (sát đáy vách, z≈0.05)
+        const flYlo = snap(-0.05 - slot_w);     // rộng = slot_w (như khe đáy)
+        const sx0 = snap(flCx - flHalfW), sx1 = snap(flCx + flHalfW);
+        frontPaths.push(
+            line(pt(sx0, flYlo), pt(sx1, flYlo), 'CUT'),
+            line(pt(sx1, flYlo), pt(sx1, flYhi), 'CUT'),
+            line(pt(sx1, flYhi), pt(sx0, flYhi), 'CUT'),
+            line(pt(sx0, flYhi), pt(sx0, flYlo), 'CUT'),
+        );
+        frontLockSlotHole = [pt(sx0, flYlo), pt(sx1, flYlo), pt(sx1, flYhi), pt(sx0, flYhi)];
+    }
     allPaths.push(...frontPaths);
     panels.push({
         name: 'front', label: 'Vách trước', paths: frontPaths,
         parent: 'bottom', pivotEdge: [pt(xFrontL, 0), pt(xFrontR, 0)],
         foldAngle: -90, foldDirection: 1,
-        outline: [],
+        foldPhase: [0.05, 0.2],
+        outline: [pt(xFrontL, 0), pt(xFrontR, 0), pt(xFrontR, snap(-D)), pt(xFrontL, snap(-D))],
+        holes: frontLockSlotHole ? [frontLockSlotHole] : undefined,
     });
 
     // ============================================================
@@ -197,7 +226,8 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         name: 'back', label: 'Vách sau', paths: backPaths,
         parent: 'bottom', pivotEdge: [pt(xFrontL, W), pt(xFrontR, W)],
         foldAngle: 90, foldDirection: 1,
-        outline: [],
+        foldPhase: [0.05, 0.2],
+        outline: [pt(xFrontL, W), pt(xFrontR, W), pt(xFrontR, snap(W + D)), pt(xFrontL, snap(W + D))],
     });
 
     // ============================================================
@@ -216,8 +246,33 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         name: 'lid', label: 'Nắp chính', paths: lidPaths,
         parent: 'back', pivotEdge: [pt(xLidL, yLidBot), pt(xLidR, yLidBot)],
         foldAngle: 90, foldDirection: 1,
-        outline: [],
+        foldPhase: [0.66, 0.8],
+        outline: [pt(xLidL, yLidBot), pt(xLidR, yLidBot), pt(xLidR, yLidTop), pt(xLidL, yLidTop)],
     });
+
+    // ── LỖ THÔNG HƠI trên nắp (đặc trưng hộp pizza — thoát hơi giữ bánh giòn) ──
+    if (params.pizzaVent) {
+        const ventR = snap((params.pizzaVentD > 0 ? params.pizzaVentD : 6) / 2);
+        const ventCount = Math.max(2, Math.min(5, Math.round(L / 100)));
+        const ventCY = snap((yLidBot + yLidTop) / 2);
+        const usableW = xLidR - xLidL;
+        const lidPanel = panels.find(p => p.name === 'lid');
+        for (let i = 0; i < ventCount; i++) {
+            const cx = snap(xLidL + usableW * (i + 1) / (ventCount + 1));
+            const circ: PathSegment[] = [
+                arcToBezier(cx, ventCY, ventR, 0, 90, 'CUT'),
+                arcToBezier(cx, ventCY, ventR, 90, 180, 'CUT'),
+                arcToBezier(cx, ventCY, ventR, 180, 270, 'CUT'),
+                arcToBezier(cx, ventCY, ventR, 270, 360, 'CUT'),
+            ];
+            allPaths.push(...circ);
+            if (lidPanel) {
+                lidPanel.holes = lidPanel.holes || [];
+                lidPanel.holes.push(getOutlinePoints(circ));
+            }
+        }
+    }
+
 
     // ============================================================
     // 4b. NẮP PHỤ (SECONDARY LID) — Gắn trên nắp chính
@@ -240,9 +295,10 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
 
         // 4 góc chính
         const yTabTop = snap(ySecBot + tabR);
-        // Đáy (nối quạt): full width
-        const pBotL = pt(0, yTabTop);
-        const pBotR = pt(L, yTabTop);
+        // Đáy (nối quạt): inset về mép trong xLidL/xLidR để biên nắp phụ trùng
+        // bản lề tai quạt (tai quạt cắm vào trong, không úp mặt ngoài).
+        const pBotL = pt(xLidL, yTabTop);
+        const pBotR = pt(xLidR, yTabTop);
         // Đỉnh (hẹp hơn): xiên vào taperX
         const pTopL = pt(snap(taperX), ySecTop);
         const pTopR = pt(snap(L - taperX), ySecTop);
@@ -251,8 +307,18 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
 
         // Cạnh trái xiên: pBotL → pTopL
         secPaths.push(line(pBotL, pTopL, 'CUT'));
-        // Cạnh trên (hẹp): pTopL → pTopR
-        secPaths.push(line(pTopL, pTopR, 'CUT'));
+        // Cạnh trên: nếu bật khóa nắp, đoạn giữa là CREASE (bản lề lưỡi gài).
+        const lockW = snap(L / 5);
+        const lockH = snap(Math.min(D * 0.5, 16));
+        const tlx = snap(L / 2 - lockW / 2);
+        const trx = snap(L / 2 + lockW / 2);
+        if (params.pizzaFrontLock) {
+            secPaths.push(line(pTopL, pt(tlx, ySecTop), 'CUT'));
+            secPaths.push(line(pt(tlx, ySecTop), pt(trx, ySecTop), 'CREASE')); // bản lề lưỡi gài
+            secPaths.push(line(pt(trx, ySecTop), pTopR, 'CUT'));
+        } else {
+            secPaths.push(line(pTopL, pTopR, 'CUT'));
+        }
         // Cạnh phải xiên: pTopR → pBotR
         secPaths.push(line(pTopR, pBotR, 'CUT'));
 
@@ -260,10 +326,32 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         panels.push({
             name: 'secondary_lid', label: 'Nắp phụ', paths: secPaths,
             parent: 'lid',
-            pivotEdge: [pt(0, ySecBot), pt(L, ySecBot)],
+            pivotEdge: [pt(xLidL, ySecBot), pt(xLidR, ySecBot)],
             foldAngle: -90, foldDirection: -1,
-            outline: [pt(0, ySecBot), pt(L, ySecBot), pt(L, yTabTop), pt(snap(L - taperX), ySecTop), pt(snap(taperX), ySecTop), pt(0, yTabTop)],
+            foldPhase: [0.88, 0.96],
+            outline: [pt(xLidL, ySecBot), pt(xLidR, ySecBot), pt(xLidR, yTabTop), pt(snap(L - taperX), ySecTop), pt(snap(taperX), ySecTop), pt(xLidL, yTabTop)],
         });
+
+        // ── LƯỠI GÀI (front lock tab) — panel con của nắp phụ ──
+        // Gập luồn vào khe trên vách trước (chỉ khi bật pizzaFrontLock).
+        if (params.pizzaFrontLock) {
+            const tabPaths: PathSegment[] = [
+                line(pt(tlx, ySecTop), pt(tlx, snap(ySecTop + lockH)), 'CUT'),
+                line(pt(tlx, snap(ySecTop + lockH)), pt(trx, snap(ySecTop + lockH)), 'CUT'),
+                line(pt(trx, snap(ySecTop + lockH)), pt(trx, ySecTop), 'CUT'),
+            ];
+            allPaths.push(...tabPaths);
+            panels.push({
+                name: 'front_lock_tab', label: 'Lưỡi gài', paths: tabPaths,
+                parent: 'secondary_lid',
+                pivotEdge: [pt(tlx, ySecTop), pt(trx, ySecTop)],
+                // Gập CÙNG LÚC với 2 tai quạt (cùng là con nắp phụ, gập trước khi
+                // nắp phụ đậy). Tư thế cuối: luồn vào khe vách trước.
+                foldAngle: 90, foldDirection: 1,
+                foldPhase: [0.8, 0.88],
+                outline: [pt(tlx, ySecTop), pt(trx, ySecTop), pt(trx, snap(ySecTop + lockH)), pt(tlx, snap(ySecTop + lockH))],
+            });
+        }
 
         // --- 2 TAI QUẠT — bezier mượt (Cup Sleeve formula) ---
         // R = D - T; bo góc dưới = bezier fillet; góc trên = sắc
@@ -312,28 +400,32 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
 
         // ── BÊN PHẢI ──
         {
-            const cx = L, cy = ySecBot;
+            // Bản lề tai quạt đặt tại MÉP TRONG xLidR (trùng pivot nắp phụ) để khi
+            // gập, tai quạt cắm vào trong lòng hộp/khe gờ hông — KHÔNG úp ra mặt
+            // ngoài vách (mép ngoài x=L).
+            const cx = xLidR, cy = ySecBot;
             const tabSegs = buildFanTabSegments(cx, cy, 1);
 
             allPaths.push(line(pt(cx, cy), pt(cx, snap(cy + tabR)), 'CREASE'));
             allPaths.push(...tabSegs);
             secTabRightPaths = tabSegs;
-            // Nối tai quạt với tai nắp phải: pivot → đỉnh tai nắp
-            fanToLidR = line(pt(cx, cy), pt(xLidR, cy), 'CUT');
-            allPaths.push(fanToLidR);
+            fanToLidR = undefined; // bản lề đã trùng mép tai nắp, không cần đường nối
             panels.push({
                 name: 'sec_tab_right', label: 'Tai quạt phải', paths: tabSegs,
                 parent: 'secondary_lid',
                 pivotEdge: [pt(cx, cy), pt(cx, snap(cy + tabR))],
                 foldAngle: -90, foldDirection: 1,
-                outline: [pt(L, ySecBot), pt(L, snap(ySecBot + tabR)), ...getOutlinePoints(tabSegs)],
+                // Gập TRƯỚC khi nắp phụ gập xuống (nắp phụ ~[0.6,0.8]) để 2 tai
+                // quạt luôn dính theo nắp phụ suốt animation.
+                foldPhase: [0.8, 0.88],
+                outline: [pt(cx, ySecBot), pt(cx, snap(ySecBot + tabR)), ...getOutlinePoints(tabSegs)],
             });
         }
 
-        // ── BÊN TRÁI = mirror bên phải: x → L - x ──
+        // ── BÊN TRÁI = mirror bên phải: x → L - x → tâm tại xLidL ──
         {
-            const cx = 0, cy = ySecBot;
-            const tabSegs = buildFanTabSegments(L, ySecBot, 1).map(seg => ({
+            const cx = xLidL, cy = ySecBot;
+            const tabSegs = buildFanTabSegments(xLidR, ySecBot, 1).map(seg => ({
                 ...seg,
                 points: seg.points.map(p => pt(snap(L - p.x), p.y)),
                 ...(seg.controlPoints ? {
@@ -344,19 +436,20 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
             allPaths.push(line(pt(cx, cy), pt(cx, snap(cy + tabR)), 'CREASE'));
             allPaths.push(...tabSegs);
             secTabLeftPaths = tabSegs;
-            // Nối tai quạt với tai nắp trái: pivot → đỉnh tai nắp
-            fanToLidL = line(pt(cx, cy), pt(xLidL, cy), 'CUT');
-            allPaths.push(fanToLidL);
+            fanToLidL = undefined; // bản lề đã trùng mép tai nắp, không cần đường nối
             panels.push({
                 name: 'sec_tab_left', label: 'Tai quạt trái', paths: tabSegs,
                 parent: 'secondary_lid',
                 pivotEdge: [pt(cx, cy), pt(cx, snap(cy + tabR))],
                 foldAngle: 90, foldDirection: 1,
-                outline: [pt(0, ySecBot), pt(0, snap(ySecBot + tabR)), ...getOutlinePoints(tabSegs)],
+                // Gập TRƯỚC khi nắp phụ gập xuống — xem sec_tab_right.
+                foldPhase: [0.8, 0.88],
+                outline: [pt(cx, ySecBot), pt(cx, snap(ySecBot + tabR)), ...getOutlinePoints(tabSegs)],
             });
         }
     }
-    // ============================================================
+
+    // ============================================================
     // 5. TẠO DANH SÁCH PANELS (CÁC MẶT PHẲNG 3D) — hình thang thẳng, đơn giản
     //    Mọc dọc Y từ Front, Back và Lid
     //
@@ -416,7 +509,8 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         name: 'dust_front_left', label: 'Tai trước‑trái', paths: dfFL,
         parent: 'front', pivotEdge: [pt(xFrontL, snap(-D)), pt(xFrontL, 0)],
         foldAngle: 90, foldDirection: 1,
-        outline: [],
+        foldPhase: [0.2, 0.33],
+        outline: [pt(xFrontL, 0), pt(xFrontL, snap(-D)), ...getOutlinePoints(dfFL)],
     });
 
     // Dust flap Front-Right (mọc sang phải từ Front, tại xFrontR)
@@ -427,6 +521,7 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         name: 'dust_front_right', label: 'Tai trước‑phải', paths: dfFR,
         parent: 'front', pivotEdge: [pt(xFrontR, snap(-D)), pt(xFrontR, 0)],
         foldAngle: -90, foldDirection: 1,
+        foldPhase: [0.2, 0.33],
         outline: [pt(xFrontR, 0), pt(xFrontR, snap(-D)), ...getOutlinePoints(dfFR)],
     });
 
@@ -439,7 +534,8 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         name: 'dust_back_left', label: 'Tai sau‑trái', paths: dfBL,
         parent: 'back', pivotEdge: [pt(xFrontL, W), pt(xFrontL, snap(W + D))],
         foldAngle: 90, foldDirection: 1,
-        outline: [],
+        foldPhase: [0.2, 0.33],
+        outline: [pt(xFrontL, snap(W + D)), pt(xFrontL, W), ...getOutlinePoints(dfBL)],
     });
 
     // Dust flap Back-Right (mọc sang phải từ Back, tại xFrontR)
@@ -451,7 +547,8 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         name: 'dust_back_right', label: 'Tai sau‑phải', paths: dfBR,
         parent: 'back', pivotEdge: [pt(xFrontR, W), pt(xFrontR, snap(W + D))],
         foldAngle: -90, foldDirection: 1,
-        outline: [pt(xFrontR, W), pt(xFrontR, snap(W + D)), ...getOutlinePoints(dfBR)],
+        foldPhase: [0.2, 0.33],
+        outline: [pt(xFrontR, snap(W + D)), pt(xFrontR, W), ...getOutlinePoints(dfBR)],
     });
 
     // ── TAI NẮP (lid flaps) — bezier bo góc giống buildDustFlap ──
@@ -506,7 +603,10 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
             name: 'dust_lid_left', label: 'Tai nắp‑trái', paths: dfLL,
             parent: 'lid', pivotEdge: [pt(xLidL, yLidBot), pt(xLidL, yLidTop)],
             foldAngle: 90, foldDirection: 1,
-            outline: [],
+            // Gập TRƯỚC khi nắp chính đậy (lid auto-phase ~[0.4,0.6]) để tai luôn
+            // dính sát theo nắp suốt animation (đúng thứ tự lắp: gập tai → đậy nắp).
+            foldPhase: [0.55, 0.66],
+            outline: [pt(xLidL, yLidTop), pt(xLidL, yLidBot), ...getOutlinePoints(dfLL)],
         });
 
         // Lid-Right (tại xLidR)
@@ -517,7 +617,9 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
             name: 'dust_lid_right', label: 'Tai nắp‑phải', paths: dfLR,
             parent: 'lid', pivotEdge: [pt(xLidR, yLidBot), pt(xLidR, yLidTop)],
             foldAngle: -90, foldDirection: 1,
-            outline: [pt(xLidR, yLidBot), pt(xLidR, yLidTop), ...getOutlinePoints(dfLR)],
+            // Gập TRƯỚC khi nắp chính đậy — xem dust_lid_left.
+            foldPhase: [0.55, 0.66],
+            outline: [pt(xLidR, yLidTop), pt(xLidR, yLidBot), ...getOutlinePoints(dfLR)],
         });
     }
 
@@ -526,65 +628,125 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
     //    Cùng kiểu dáng với mailer's buildSideWallHoriz
     //    nhưng xoay 90° (mọc theo X thay vì Y)
     // ============================================================
-    function buildSideWallVert(isRight: boolean): PathSegment[] {
+    // Tách vách hông thành 3 phần để gập đúng cấu tạo "cuộn" (2 đường nhấn X1, X2):
+    //  - THÂN vách (body): gập lên 90° tại mép đáy → cao đúng D, sát nắp.
+    //  - GỜ MÉP (rim): dải hẹp giữa X1↔X2, gập 90° tại X1 → tạo gờ mép trên.
+    //  - MẶT TRONG (inner) + tab khóa: gập 90° tại X2 → thả xuống lòng hộp,
+    //    đầu tab cắm về phía khe đáy. Cả 2 đường nhấn đều là nếp gập thật.
+    function buildSideWallVert(isRight: boolean): {
+        body: PathSegment[];
+        rim: PathSegment[];
+        inner: PathSegment[];
+        bodyOutline: Point2D[];
+        rimOutline: Point2D[];
+        innerOutline: Point2D[];
+        X1: number;
+        X2: number;
+    } {
         const dirX = isRight ? 1 : -1;
         const X0 = isRight ? L : 0;
-        const paths: PathSegment[] = [];
-
-        const X1 = snap(X0 + dirX * D);
-        const X2 = snap(X0 + dirX * (D + T_fold));
-        const X_base = snap(X0 + dirX * X_outer);
-        const X_tab_ext = snap(X0 + dirX * X_tab);
-
-        // Đường cấn kép
-        paths.push(line(pt(X1, 0), pt(X1, W), 'CREASE'));
-        paths.push(line(pt(X2, C), pt(X2, snap(W - C)), 'CREASE'));
-
-        // Chân hông kéo dài tới xFrontL/xFrontR để liền mạch với tai trước/sau
         const xFoot = isRight ? xFrontR : xFrontL;
 
-        // Viền liên tục (CUT)
-        paths.push(line(pt(xFoot, 0), pt(X1, 0), 'CUT'));
-        paths.push(line(pt(X1, 0), pt(X2, C), 'CUT'));
-        paths.push(line(pt(X2, C), pt(X_base, C), 'CUT'));
-        // Tab 1
-        paths.push(line(pt(X_base, C), pt(X_base, so), 'CUT'));
-        paths.push(line(pt(X_base, so), pt(X_tab_ext, so), 'CUT'));
-        paths.push(line(pt(X_tab_ext, so), pt(X_tab_ext, snap(so + sl)), 'CUT'));
-        paths.push(line(pt(X_tab_ext, snap(so + sl)), pt(X_base, snap(so + sl)), 'CUT'));
-        // Thân giữa
-        paths.push(line(pt(X_base, snap(so + sl)), pt(X_base, snap(W - so - sl)), 'CUT'));
-        // Tab 2
-        paths.push(line(pt(X_base, snap(W - so - sl)), pt(X_tab_ext, snap(W - so - sl)), 'CUT'));
-        paths.push(line(pt(X_tab_ext, snap(W - so - sl)), pt(X_tab_ext, snap(W - so)), 'CUT'));
-        paths.push(line(pt(X_tab_ext, snap(W - so)), pt(X_base, snap(W - so)), 'CUT'));
-        // Phần trên
-        paths.push(line(pt(X_base, snap(W - so)), pt(X_base, snap(W - C)), 'CUT'));
-        paths.push(line(pt(X_base, snap(W - C)), pt(X2, snap(W - C)), 'CUT'));
-        paths.push(line(pt(X2, snap(W - C)), pt(X1, W), 'CUT'));
-        paths.push(line(pt(X1, W), pt(xFoot, W), 'CUT'));
+        const X1 = snap(X0 + dirX * D);                 // đỉnh vách (bản lề thân↔gờ mép)
+        const X2 = snap(X0 + dirX * (D + T_fold));      // bản lề gờ mép↔mặt trong
+        const X_base = snap(X0 + dirX * X_outer);
+        const X_tab_ext = snap(X0 + dirX * X_tab);
+        const barb = params.pizzaCornerLock ? snap(Math.min(2, sl * 0.25)) : 0;
+        const Cw = snap(W - C);
 
-        return paths;
+        // ── THÂN VÁCH (rộng đúng D) ──
+        const body: PathSegment[] = [
+            line(pt(xFoot, 0), pt(X1, 0), 'CUT'),       // đáy
+            line(pt(X1, 0), pt(X1, W), 'CREASE'),       // đỉnh vách = bản lề gờ mép
+            line(pt(X1, W), pt(xFoot, W), 'CUT'),       // mép trên
+        ];
+        const bodyOutline: Point2D[] = [
+            pt(X0, 0), pt(xFoot, 0), pt(X1, 0), pt(X1, W), pt(xFoot, W), pt(X0, W),
+        ];
+
+        // ── GỜ MÉP (dải X1↔X2) ──
+        const rim: PathSegment[] = [
+            line(pt(X1, 0), pt(X2, C), 'CUT'),          // vát góc dưới
+            line(pt(X2, C), pt(X2, Cw), 'CREASE'),      // đường nhấn X2 = bản lề mặt trong
+            line(pt(X2, Cw), pt(X1, W), 'CUT'),         // vát góc trên
+        ];
+        const rimOutline: Point2D[] = [
+            pt(X1, 0), pt(X2, C), pt(X2, Cw), pt(X1, W),
+        ];
+
+        // ── MẶT TRONG + 2 TAB KHÓA (trace từ X2,C → X2,Cw) ──
+        const inner: PathSegment[] = [
+            line(pt(X2, C), pt(X_base, C), 'CUT'),
+            line(pt(X_base, C), pt(X_base, so), 'CUT'),
+            line(pt(X_base, so), pt(X_tab_ext, snap(so - barb)), 'CUT'),
+            line(pt(X_tab_ext, snap(so - barb)), pt(X_tab_ext, snap(so + sl + barb)), 'CUT'),
+            line(pt(X_tab_ext, snap(so + sl + barb)), pt(X_base, snap(so + sl)), 'CUT'),
+            line(pt(X_base, snap(so + sl)), pt(X_base, snap(W - so - sl)), 'CUT'),
+            line(pt(X_base, snap(W - so - sl)), pt(X_tab_ext, snap(W - so - sl - barb)), 'CUT'),
+            line(pt(X_tab_ext, snap(W - so - sl - barb)), pt(X_tab_ext, snap(W - so + barb)), 'CUT'),
+            line(pt(X_tab_ext, snap(W - so + barb)), pt(X_base, snap(W - so)), 'CUT'),
+            line(pt(X_base, snap(W - so)), pt(X_base, Cw), 'CUT'),
+            line(pt(X_base, Cw), pt(X2, Cw), 'CUT'),
+        ];
+        const innerOutline: Point2D[] = [
+            pt(X2, C), pt(X_base, C), pt(X_base, so),
+            pt(X_tab_ext, snap(so - barb)), pt(X_tab_ext, snap(so + sl + barb)),
+            pt(X_base, snap(so + sl)), pt(X_base, snap(W - so - sl)),
+            pt(X_tab_ext, snap(W - so - sl - barb)), pt(X_tab_ext, snap(W - so + barb)),
+            pt(X_base, snap(W - so)), pt(X_base, Cw), pt(X2, Cw),
+        ];
+
+        return { body, rim, inner, bodyOutline, rimOutline, innerOutline, X1, X2 };
     }
 
     // Side Wall Left
-    const swLeftPaths = buildSideWallVert(false);
-    allPaths.push(...swLeftPaths);
+    const swLeft = buildSideWallVert(false);
+    allPaths.push(...swLeft.body, ...swLeft.rim, ...swLeft.inner);
     panels.push({
-        name: 'side_left', label: 'Hông trái', paths: swLeftPaths,
+        name: 'side_left', label: 'Hông trái', paths: swLeft.body,
         parent: 'bottom', pivotEdge: [pt(0, 0), pt(0, W)],
         foldAngle: 90, foldDirection: 1,
-        outline: [],
+        foldPhase: [0.33, 0.42],
+        outline: swLeft.bodyOutline,
+    });
+    panels.push({
+        name: 'side_left_rim', label: 'Gờ hông trái', paths: swLeft.rim,
+        parent: 'side_left', pivotEdge: [pt(swLeft.X1, 0), pt(swLeft.X1, W)],
+        foldAngle: 90, foldDirection: 1,
+        foldPhase: [0.42, 0.48],
+        outline: swLeft.rimOutline,
+    });
+    panels.push({
+        name: 'side_left_roll', label: 'Cuộn hông trái', paths: swLeft.inner,
+        parent: 'side_left_rim', pivotEdge: [pt(swLeft.X2, C), pt(swLeft.X2, snap(W - C))],
+        foldAngle: 90, foldDirection: 1,
+        foldPhase: [0.48, 0.55],
+        outline: swLeft.innerOutline,
     });
 
     // Side Wall Right
-    const swRightPaths = buildSideWallVert(true);
-    allPaths.push(...swRightPaths);
+    const swRight = buildSideWallVert(true);
+    allPaths.push(...swRight.body, ...swRight.rim, ...swRight.inner);
     panels.push({
-        name: 'side_right', label: 'Hông phải', paths: swRightPaths,
+        name: 'side_right', label: 'Hông phải', paths: swRight.body,
         parent: 'bottom', pivotEdge: [pt(L, 0), pt(L, W)],
         foldAngle: -90, foldDirection: 1,
-        outline: [pt(L, 0), pt(xFrontR, 0), ...getOutlinePoints(swRightPaths), pt(xFrontR, W), pt(L, W)],
+        foldPhase: [0.33, 0.42],
+        outline: swRight.bodyOutline,
+    });
+    panels.push({
+        name: 'side_right_rim', label: 'Gờ hông phải', paths: swRight.rim,
+        parent: 'side_right', pivotEdge: [pt(swRight.X1, 0), pt(swRight.X1, W)],
+        foldAngle: 90, foldDirection: -1,
+        foldPhase: [0.42, 0.48],
+        outline: swRight.rimOutline,
+    });
+    panels.push({
+        name: 'side_right_roll', label: 'Cuộn hông phải', paths: swRight.inner,
+        parent: 'side_right_rim', pivotEdge: [pt(swRight.X2, C), pt(swRight.X2, snap(W - C))],
+        foldAngle: 90, foldDirection: -1,
+        foldPhase: [0.48, 0.55],
+        outline: swRight.innerOutline,
     });
 
     // ============================================================
@@ -667,11 +829,11 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
 
     // --- Dust Front-Left ↔ Side Wall Left tại (xFrontL, 0) ---
     // dfFL last seg endpoint ≈ (xFrontL, 0), swLeftPaths chân bottom ≈ (xFrontL, 0)
-    connectCutCorner(dfFL[dfFL.length - 1], true, dfFL, swLeftPaths[2], false, swLeftPaths);
+    connectCutCorner(dfFL[dfFL.length - 1], true, dfFL, swLeft.body[0], false, swLeft.body);
     // dfFL first seg endpoint ≈ (xFrontL, -D), swLeftPaths ... ko cần vì front edge là CREASE
 
     // --- Dust Front-Right ↔ Side Wall Right tại (xFrontR, 0) ---
-    connectCutCorner(dfFR[dfFR.length - 1], true, dfFR, swRightPaths[2], false, swRightPaths);
+    connectCutCorner(dfFR[dfFR.length - 1], true, dfFR, swRight.body[0], false, swRight.body);
 
     // --- Dust Front-Left bottom ↔ Front bottom-left ---
     // dfFL[0] start ≈ (xFrontL, -D), frontPaths bottom ≈ (xFrontL, -D)
@@ -733,10 +895,10 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
 
     // --- Side Wall Left top ↔ Dust Back-Left bottom at (xFrontL, W) ---
     const deepR = snap(Math.max(T * 20, 15));
-    connectCutCorner(swLeftPaths[swLeftPaths.length - 1], true, swLeftPaths, dfBL[0], false, dfBL, deepR);
+    connectCutCorner(swLeft.body[swLeft.body.length - 1], true, swLeft.body, dfBL[0], false, dfBL, deepR);
 
     // --- Side Wall Right top ↔ Dust Back-Right bottom at (xFrontR, W) ---
-    connectCutCorner(swRightPaths[swRightPaths.length - 1], true, swRightPaths, dfBR[0], false, dfBR, deepR);
+    connectCutCorner(swRight.body[swRight.body.length - 1], true, swRight.body, dfBR[0], false, dfBR, deepR);
 
     // --- fanToLid endpoint ↔ dust_lid[last] endpoint: bo góc hướng vào thân hộp ---
     // Dùng pointedFillet (curve hướng vào corner) thay vì filletBezier (curve ra ngoài)
@@ -793,3 +955,4 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
         panels, allPaths, boundingBox: bb, params,
     };
 }
+

@@ -109,7 +109,11 @@ export function generateMatchboxSleeve(
         allPaths.push(...paths);
 
         // Pivot edge = horizontal edge connecting to parent panel
-        const pivotEdge: [Point2D, Point2D] = [pt(x0, w.yStart), pt(x1, w.yStart)];
+        // Bản lề: cạnh ngang nối với panel cha. Với mí dán (glue), nếp nhấn nằm
+        // ở yEnd (cạnh giáp mặt trước), KHÔNG phải yStart (cạnh ngoài tự do).
+        const pivotEdge: [Point2D, Point2D] = isGlue
+            ? [pt(x0, w.yEnd), pt(x1, w.yEnd)]
+            : [pt(x0, w.yStart), pt(x1, w.yStart)];
         panels.push({
             name: w.name,
             label: w.label,
@@ -121,8 +125,12 @@ export function generateMatchboxSleeve(
             ],
             parent: w.parent,
             pivotEdge: i === 1 ? null : pivotEdge, // front = root (no pivot)
-            foldAngle: isGlue ? 0 : 90,
-            foldDirection: 1,
+            // Mí dán gập VÀO TRONG ống TRƯỚC, rồi hông (side2) mới cuốn vào dán
+            // đè lên mí. Vì vậy mí gập SỚM (cùng lúc dựng vách đầu), trước khi
+            // side2 đóng. net −90° để lật lên đúng mặt phẳng hông.
+            foldAngle: 90,
+            foldDirection: isGlue ? -1 : 1,
+            ...(isGlue ? { foldPhase: [0.2, 0.4] as [number, number] } : {}),
         });
     }
 

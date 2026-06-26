@@ -405,8 +405,16 @@ def _score_die_candidate(path, page_rect, names_lower, die_colors, die_color_tol
         score += 1000.0
         by_spot = True
     elif _is_genuine_spot(spot):
-        score += 400.0
-        by_spot = True
+        # Đường bế gần như LUÔN là NÉT (stroke/sf). Kênh spot chỉ là tín hiệu bế
+        # mạnh khi path là nét; với VÙNG TÔ thuần (fill) hạ mạnh điểm để không nuốt
+        # nhầm mảng màu spot của artwork (vd logo Pantone) làm đường khuôn (audit #8).
+        # Tên kênh cấu hình (+1000 ở trên) vẫn được tôn trọng vô điều kiện.
+        # Lưu ý: KHÔNG dùng _is_hairline để xét "có nét" vì path fill vẫn mang width
+        # stroke thừa kế (mặc định 1.0) trong parser → dễ nhận nhầm. Dùng đúng tiêu
+        # chí nét theo type, nhất quán với heuristic stroke ở nup_diecut/nup_engine.
+        is_strokish = ptype in ("s", "sf") or (fill is None and color is not None)
+        score += 400.0 if is_strokish else 80.0
+        by_spot = is_strokish
 
     if _color_matches_die(color, die_colors, die_color_tol) or \
             _color_matches_die(fill, die_colors, die_color_tol):

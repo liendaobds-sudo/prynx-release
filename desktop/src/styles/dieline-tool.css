@@ -47,15 +47,15 @@
 
 /* --- Design Tokens — Dark Mode --- */
 .dark .dieline-tool {
-  --dt-bg-primary: #0d1117;
-  --dt-bg-secondary: #161b22;
-  --dt-bg-tertiary: #1c2129;
-  --dt-bg-elevated: #21262d;
+  --dt-bg-primary: #121212;
+  --dt-bg-secondary: #1c1c1c;
+  --dt-bg-tertiary: #242424;
+  --dt-bg-elevated: #2b2b2b;
   --dt-bg-hover: rgba(139, 92, 246, 0.08);
 
   --dt-text-primary: #ffffff;
-  --dt-text-secondary: #c9d1d9;
-  --dt-text-muted: #8b949e;
+  --dt-text-secondary: #d4d4d8;
+  --dt-text-muted: #a1a1aa;
 
   --dt-accent: #8b5cf6;
   --dt-accent-hover: rgba(139, 92, 246, 0.85);
@@ -65,8 +65,8 @@
   --dt-warning: #d29922;
   --dt-danger: #f85149;
 
-  --dt-border: #30363d;
-  --dt-border-subtle: rgba(48, 54, 61, 0.6);
+  --dt-border: #2e2e2e;
+  --dt-border-subtle: rgba(60, 60, 60, 0.6);
 
   --dt-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --dt-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
@@ -75,9 +75,9 @@
   --dt-grid-color: rgba(255, 255, 255, 0.04);
   --dt-grid-major-color: rgba(255, 255, 255, 0.08);
 
-  --dt-grad-sidebar: linear-gradient(180deg, #1e2430 0%, var(--dt-bg-secondary) 100%);
-  --dt-grad-gallery: linear-gradient(180deg, #161b22 0%, var(--dt-bg-primary) 100%);
-  --dt-scrollbar-thumb: #30363d;
+  --dt-grad-sidebar: linear-gradient(180deg, #232323 0%, var(--dt-bg-secondary) 100%);
+  --dt-grad-gallery: linear-gradient(180deg, #1c1c1c 0%, var(--dt-bg-primary) 100%);
+  --dt-scrollbar-thumb: #3f3f3f;
 }
 
 /* --- App Layout --- */
@@ -549,6 +549,16 @@
   background: var(--dt-bg-secondary);
   border-bottom: 1px solid var(--dt-border);
   flex-shrink: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Giữ mỗi mục trên 1 hàng, không co rúm/xuống dòng khi khung hẹp (chia đôi);
+   thừa thì cuộn ngang. */
+.dt-canvas-toolbar > * {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .dt-toolbar-btn {
@@ -706,7 +716,7 @@
   transform: translateX(-50%);
   background: rgba(22, 27, 34, 0.92);
   backdrop-filter: blur(12px);
-  border: 1px solid var(--dt-border);
+  border: 1px solid rgba(0, 0, 0, 0.45);
   border-radius: 12px;
   padding: 10px 20px;
   display: flex;
@@ -1042,4 +1052,172 @@
   color: var(--dt-text-primary);
   border-color: var(--dt-accent);
   background: var(--dt-accent-subtle);
+}
+
+/* ============================================================
+   Mockup UX nâng cấp — accordion, dropzone, transform, fold
+   ============================================================ */
+
+/* --- CollapsibleSection (accordion) --- */
+.dt-collapse {
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius-sm);
+  margin-bottom: 8px;
+  overflow: hidden;
+  background: var(--dt-bg-secondary);
+}
+.dt-collapse-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 11px;
+  background: var(--dt-bg-tertiary);
+  border: none;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--dt-text-primary);
+  text-align: left;
+  transition: background var(--dt-transition);
+}
+.dt-collapse-header:hover { background: var(--dt-bg-hover); }
+.dt-collapse-header:focus-visible {
+  outline: 2px solid var(--dt-accent);
+  outline-offset: -2px;
+}
+.dt-collapse-chevron {
+  font-size: 10px;
+  color: var(--dt-text-muted);
+  width: 12px;
+  flex-shrink: 0;
+}
+.dt-collapse-title { flex: 1; }
+.dt-collapse-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--dt-accent);
+  background: var(--dt-accent-subtle);
+  padding: 2px 7px;
+  border-radius: 999px;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-collapse-body { padding: 11px; }
+
+/* --- Ô nhập số cạnh slider --- */
+.dt-num-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.dt-num-input {
+  width: 56px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+  background: var(--dt-bg-elevated);
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius-sm);
+  color: var(--dt-accent);
+  outline: none;
+}
+.dt-num-input:focus {
+  border-color: var(--dt-accent);
+  box-shadow: 0 0 0 2px var(--dt-accent-subtle);
+}
+.dt-num-unit { font-size: 11px; color: var(--dt-text-muted); }
+
+/* --- Hàng nút thao tác transform --- */
+.dt-art-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.dt-mini-btn {
+  flex: 1 1 auto;
+  min-width: 52px;
+  padding: 5px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--dt-bg-tertiary);
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius-sm);
+  color: var(--dt-text-secondary);
+  cursor: pointer;
+  transition: all var(--dt-transition);
+  white-space: nowrap;
+}
+.dt-mini-btn:hover { background: var(--dt-bg-hover); color: var(--dt-text-primary); }
+.dt-mini-btn.active { background: var(--dt-accent); color: #fff; border-color: var(--dt-accent); }
+
+/* --- Vùng tải ảnh kéo-thả + thumbnail --- */
+.dt-uploader { display: flex; flex-direction: column; }
+.dt-dropzone {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1.5px dashed var(--dt-border);
+  border-radius: var(--dt-radius-sm);
+  background: var(--dt-bg-tertiary);
+  cursor: pointer;
+  transition: all var(--dt-transition);
+}
+.dt-dropzone:hover { border-color: var(--dt-accent); background: var(--dt-bg-hover); }
+.dt-dropzone.drag {
+  border-color: var(--dt-accent);
+  background: var(--dt-accent-subtle);
+  box-shadow: 0 0 0 2px var(--dt-accent-subtle) inset;
+}
+.dt-dropzone-icon { font-size: 22px; }
+.dt-thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--dt-border);
+  background:
+    repeating-conic-gradient(#0000000d 0% 25%, transparent 0% 50%) 50% / 12px 12px;
+  flex-shrink: 0;
+}
+.dt-dropzone-text {
+  font-size: 11.5px;
+  color: var(--dt-text-secondary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Fold controls: nút bước nhanh --- */
+.dt-fold-step-btn {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  background: var(--dt-bg-tertiary);
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius-sm);
+  color: var(--dt-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--dt-transition);
+}
+.dt-fold-step-btn:hover { background: var(--dt-bg-hover); color: var(--dt-text-primary); }
+
+/* --- Thanh Hoàn tác/Làm lại artwork --- */
+.dt-undo-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.dt-undo-bar .dt-mini-btn { flex: 1; }
+
+/* --- Ô bật chế độ kéo ảnh trên 3D (đang bật) --- */
+.dt-param-cell.active-edit {
+  border-color: var(--dt-accent);
+  box-shadow: 0 0 0 1px var(--dt-accent) inset;
 }

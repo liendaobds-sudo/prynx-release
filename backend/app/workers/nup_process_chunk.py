@@ -590,7 +590,7 @@ def process_chunk(args):
             for seg in mark_segs:
                 shape.draw_line(pdf_lib.Point(seg['x1'], seg['y1']), pdf_lib.Point(seg['x2'], seg['y2']))
 
-            shape.finish(color=(0,0,0), width=mark_thick)
+            shape.finish(color=(1, 1, 1, 1), width=mark_thick)  # registration (mọi kẽm)
 
             shape.commit()
         # Draw cluster tile cut marks (always, regardless of mark_type)
@@ -662,7 +662,7 @@ def process_chunk(args):
             _draw_ponts_on_page(out_page, placements, pont_config, sheet_w, sheet_h, margin_left, margin_bottom, ocg_xref=None)
 
         # Extract default die_color and die_width from first available cache for 1-dao
-        global_die_color = (1, 0, 0)  # Default to Red
+        global_die_color = (0, 1, 1, 0)  # Default to Red (CMYK, không dùng RGB)
         global_die_width = 0.5
 
         for p in placements:
@@ -688,7 +688,7 @@ def process_chunk(args):
                         global_die_width = max(0.5, float(cached.get('width') or 0.5))
                         break
                     else:
-                        global_die_color = (1, 0, 0) # Fallback to red if black/white
+                        global_die_color = (0, 1, 1, 0) # Fallback to red (CMYK) if black/white
                         global_die_width = max(0.5, float(cached.get('width') or 0.5))
                         break
 
@@ -726,7 +726,7 @@ def process_chunk(args):
                 die_rect = cached['rect']
                 die_color = cached.get('color')
                 if not die_color:
-                    die_color = (1, 0, 0)
+                    die_color = (0, 1, 1, 0)  # CMYK đỏ (không RGB)
                 else:
                     is_invisible = False
                     if len(die_color) == 4:
@@ -740,7 +740,7 @@ def process_chunk(args):
                             is_invisible = True
                             
                     if is_invisible:
-                        die_color = (1, 0, 0)
+                        die_color = (0, 1, 1, 0)
                 die_width = max(0.5, float(cached.get('width') or 0.5))
 
                 abs_x = p['abs_x']
@@ -874,7 +874,7 @@ def process_chunk(args):
                     # Fallback to Red for invisible colors (black, white, near-black, near-white)
                     # Spot colors often get parsed as white (1,1,1) or black (0,0,0)
                     if not die_color:
-                        die_color = (1, 0, 0)
+                        die_color = (0, 1, 1, 0)
                     else:
                         is_invisible = False
                         if len(die_color) == 4: # CMYK
@@ -888,7 +888,7 @@ def process_chunk(args):
                                 is_invisible = True
                                 
                         if is_invisible:
-                            die_color = (1, 0, 0)  # Red for visibility
+                            die_color = (0, 1, 1, 0)  # Red (CMYK) for visibility
                     die_width = max(0.5, float(cached.get('width') or 0.5))
 
                     # Calculate offset: where this placement's trim rect is on the output page

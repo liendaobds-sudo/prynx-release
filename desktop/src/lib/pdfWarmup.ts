@@ -87,22 +87,24 @@ export async function warmupPdfjs(): Promise<void> {
 /** Lên lịch warm-up vào thời điểm app rảnh (sau first paint). */
 export function scheduleWarmupPdfjs(): () => void {
     const run = () => {
-        // Ưu tiên warm pdfium (engine chính của view native) NGAY.
+        // ƯU TIÊN #1: nạp + parse khối JS workspace NGAY. Đây là thứ gây "đơ
+        // main-thread" 2-3s ở LẦN MỞ FILE ĐẦU TIÊN (dev mode Vite còn biên dịch
+        // on-demand cả cây ImpositionTab→AcrobatViewer→LivePageFrame). Làm sớm ở
+        // màn hình Home (lúc người dùng chưa thao tác) → mở file đầu tiên hết đơ.
+        warmupWorkspaceChunks();
+        // pdfium chạy ở luồng Rust (spawn_blocking) → KHÔNG chặn main thread, warm song song.
         warmupPdfium();
-        // Preload chunk workspace nặng lúc idle → bỏ "treo ~7s" lần mở file ĐẦU TIÊN
-        // (dev mode biên dịch on-demand cả cây component khi mở file).
-        setTimeout(() => { warmupWorkspaceChunks(); }, 500);
-        // pdfjs (chỉ dùng cho browser-mode/thumbnail) warm sau, tránh đụng độ tài nguyên
-        // với lần mở file đầu tiên.
-        setTimeout(() => { warmupPdfjs(); }, 4000);
+        // pdfjs chỉ dùng cho browser-mode/thumbnail → warm sau cùng, tránh đụng tài nguyên.
+        setTimeout(() => { warmupPdfjs(); }, 3000);
     };
     const ric = (window as any).requestIdleCallback as
         | ((cb: () => void, opts?: any) => number)
         | undefined;
     if (ric) {
-        const id = ric(run, { timeout: 2000 });
+        // timeout NGẮN (300ms) để warmup khởi động sớm, không chờ idle lâu tới 2s.
+        const id = ric(run, { timeout: 300 });
         return () => (window as any).cancelIdleCallback?.(id);
     }
-    const t = setTimeout(run, 800);
+    const t = setTimeout(run, 200);
     return () => clearTimeout(t);
 }

@@ -36,3 +36,17 @@ export const OUTPUT_PREFIXES = [
 export function isOutputFile(name: string): boolean {
   return OUTPUT_PREFIXES.some(prefix => name.includes(prefix));
 }
+
+/**
+ * Prefixes của riêng kết quả BÌNH BÀI (có đường cắt/bế) — dùng để gate nút
+ * "Gửi Máy Bế". KHÔNG dùng isOutputFile chung vì nó còn match VDP_, Numbered_,
+ * watermarked_... (những file không có dữ liệu cắt).
+ */
+export const IMPOSED_PREFIXES = ['Imposed_'] as const;
+
+/**
+ * Check nếu file là kết quả bình bài (có thể trích đường cắt để gửi máy bế).
+ */
+export function isImposedOutputFile(name: string): boolean {
+  return IMPOSED_PREFIXES.some(prefix => name.includes(prefix));
+}

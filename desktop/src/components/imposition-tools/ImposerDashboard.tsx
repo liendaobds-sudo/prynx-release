@@ -156,28 +156,88 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         s.setShowSettings(false);
     }, [_deletePreset, s]);
 
+    // ═══ Resolve khổ giấy ĐÍCH (single source of truth) ═══
+    // Tính trực tiếp từ formsize + savedForms, KHÔNG tin mirror customSheetWidth/Height
+    // (mirror có thể lệch lúc mount vì savedForms nạp ASYNC: preset custom_ chưa sẵn khi
+    // optimizer chạy lần đầu → trước đây kẹt khổ default 320×450/450×320).
+    const resolveSheetDims = useCallback((): { w: number; h: number } => {
+        if (s.formsize.startsWith('custom_')) {
+            const p = savedForms.find(f => f.id === s.formsize);
+            if (p) return { w: p.w, h: p.h };
+            return { w: s.customSheetWidth, h: s.customSheetHeight };
+        } else if (s.formsize !== 'custom' && s.formsize !== 'auto_100') {
+            const ps = PREDEFINED_SIZES[s.formsize];
+            if (ps) return { w: ps.w, h: ps.h };
+            return { w: s.customSheetWidth, h: s.customSheetHeight };
+        }
+        return { w: s.customSheetWidth, h: s.customSheetHeight };
+    }, [s.formsize, savedForms, s.customSheetWidth, s.customSheetHeight]);
+
+    // Khổ giấy SAU khi áp hướng máy in: offset LUÔN ngang (cạnh dài = trục bồng).
+    // Gom swap về MỘT chỗ (trước đây lặp 4 nơi → dễ lệch). Mọi tính toán + lúc chạy
+    // PHẢI dùng helper này để preview ≡ output.
+    const resolvePressSheetDims = useCallback((): { w: number; h: number } => {
+        const d = resolveSheetDims();
+        return (s.paperClassification === 'offset')
+            ? { w: Math.max(d.w, d.h), h: Math.min(d.w, d.h) }
+            : d;
+    }, [resolveSheetDims, s.paperClassification]);
+
     // ═══ Paper dimension sync ═══
-    // Only sync when formsize CHANGES, not on initial mount (persist already has the right values)
+    // Đồng bộ customSheetWidth/Height theo formsize. Phân biệt 2 trường hợp:
+    //   • USER ĐỔI formsize  → áp ĐỦ preset (dims + lề + phân loại offset/in_nhanh + nhíp).
+    //   • HEAL âm thầm (formsize không đổi nhưng dims lệch, vd savedForms nạp trễ lúc mount)
+    //     → CHỈ đồng bộ dims. KHÔNG ghi đè paperClassification/lề để giữ NGUYÊN lựa chọn tay
+    //     của user (tránh vô tình bật/tắt các option phụ thuộc phân loại, vd "Ghép nửa cuốn").
     const prevFormsizeRef = useRef(s.formsize);
     useEffect(() => {
-        if (prevFormsizeRef.current === s.formsize) return; // skip initial mount & no-change
+        const formsizeChanged = prevFormsizeRef.current !== s.formsize;
         prevFormsizeRef.current = s.formsize;
-
         if (s.formsize.startsWith('custom_')) {
             const preset = savedForms.find(f => f.id === s.formsize);
-            if (preset) {
+            if (preset && (preset.w !== s.customSheetWidth || preset.h !== s.customSheetHeight)) {
                 s.setCustomSheetWidth(preset.w); s.setCustomSheetHeight(preset.h);
-                s.setMarginTop(preset.marginTop); s.setMarginBottom(preset.marginBottom);
-                s.setMarginLeft(preset.marginLeft); s.setMarginRight(preset.marginRight);
-                if (preset.marginMode) s.setMarginMode(preset.marginMode);
-                if (preset.classification) s.setPaperClassification(preset.classification);
-                if (preset.gripperMargin !== undefined) s.setGripperMargin(preset.gripperMargin);
+                if (formsizeChanged) {
+                    s.setMarginTop(preset.marginTop); s.setMarginBottom(preset.marginBottom);
+                    s.setMarginLeft(preset.marginLeft); s.setMarginRight(preset.marginRight);
+                    if (preset.marginMode) s.setMarginMode(preset.marginMode);
+                    if (preset.classification) s.setPaperClassification(preset.classification);
+                    if (preset.gripperMargin !== undefined) s.setGripperMargin(preset.gripperMargin);
+                }
             }
         } else if (s.formsize !== 'custom' && s.formsize !== 'auto_100') {
             const ps = PREDEFINED_SIZES[s.formsize];
-            if (ps) { s.setCustomSheetWidth(ps.w); s.setCustomSheetHeight(ps.h); s.setPaperClassification(ps.classification); s.setGripperMargin(ps.gripperMargin); }
+            if (ps && (ps.w !== s.customSheetWidth || ps.h !== s.customSheetHeight)) {
+                s.setCustomSheetWidth(ps.w); s.setCustomSheetHeight(ps.h);
+                if (formsizeChanged) {
+                    s.setPaperClassification(ps.classification); s.setGripperMargin(ps.gripperMargin);
+                }
+            }
         }
-    }, [s.formsize, savedForms]);
+    }, [s.formsize, savedForms, s.customSheetWidth, s.customSheetHeight]);
+
+    // ═══ formsize PHẢI hợp với paperClassification (workflow là cái quyết định) ═══
+    // Bug gốc: formsize persist từ phiên trước (vd preset In Nhanh 330×350). Khi vào Offset,
+    // formsize vẫn dính preset In Nhanh → dropdown (lọc theo Offset) ẩn nó, hiện NHẦM khổ
+    // khác, nhưng tính toán dùng khổ ẩn. → Khi classification đổi mà khổ đang chọn KHÔNG
+    // thuộc classification đó, tự chuyển formsize về khổ hợp lệ của classification hiện tại.
+    useEffect(() => {
+        let curClass: 'offset' | 'in_nhanh' | null = null;
+        if (s.formsize.startsWith('custom_')) {
+            curClass = savedForms.find(f => f.id === s.formsize)?.classification ?? null;
+        } else if (PREDEFINED_SIZES[s.formsize]) {
+            curClass = PREDEFINED_SIZES[s.formsize].classification;
+        }
+        // formsize='custom'/'auto_100' (tự do) → không ép.
+        if (curClass && curClass !== s.paperClassification) {
+            if (s.paperClassification === 'offset') {
+                const firstOffset = savedForms.find(f => f.classification === 'offset');
+                s.setFormsize(firstOffset ? firstOffset.id : 'custom');
+            } else {
+                s.setFormsize('SRA3');
+            }
+        }
+    }, [s.paperClassification, s.formsize, savedForms]);
 
     const handleSettingsApply = useCallback((w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number) => {
         s.setCustomSheetWidth(w); s.setCustomSheetHeight(h);
@@ -413,16 +473,10 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             s.setOptimalData(null); s.setCatalogPreview(''); s.setCatalogJobsState(null);
             return;
         }
-        // Always use customSheetWidth/Height — already synced by formsize change effect
-        let sheetW = s.customSheetWidth;
-        let sheetH = s.customSheetHeight;
-
-        if (s.paperClassification === 'offset') {
-            const rawW = sheetW;
-            const rawH = sheetH;
-            sheetW = Math.max(rawW, rawH);
-            sheetH = Math.min(rawW, rawH);
-        }
+        // Resolve khổ ĐÍCH từ formsize + savedForms (SSOT) — không phụ thuộc mirror có thể lệch.
+        const _press = resolvePressSheetDims();
+        const sheetW = _press.w;
+        const sheetH = _press.h;
 
         import('../../lib/imposerEngine/SheetOptimizer').then(({ optimizeMasterSig }) => {
             const optResult = optimizeMasterSig(
@@ -450,7 +504,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 s.setCatalogJobsState(null);
             }
         });
-    }, [s.autoCatalog, s.sourcePageDim, sourceTotalPages, s.formsize, s.customSheetWidth, s.customSheetHeight, s.gripperMargin, s.marginTop, s.marginLeft, s.marginRight, s.bleed, s.gapX, s.gapY, s.signatureMode, s.catalogHasCover, s.catalogMasterSigOverride, s.catalogRemainderPlacement]);
+    }, [s.autoCatalog, s.sourcePageDim, sourceTotalPages, s.formsize, savedForms, s.customSheetWidth, s.customSheetHeight, s.gripperMargin, s.marginTop, s.marginLeft, s.marginRight, s.bleed, s.gapX, s.gapY, s.signatureMode, s.catalogHasCover, s.catalogMasterSigOverride, s.catalogRemainderPlacement]);
 
     // Batch layout reset + fetch
     useEffect(() => {
@@ -477,15 +531,10 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const handleExecute = async () => {
         if (s.taskMode === 'booklet') {
             if (s.autoCatalog && onStartCatalogPlan && s.optimalData?.recommended) {
-                // Always use customSheetWidth/Height — already synced by formsize change effect
-                let sheetW = s.customSheetWidth;
-                let sheetH = s.customSheetHeight;
-                if (s.paperClassification === 'offset') {
-                    const rawW = sheetW;
-                    const rawH = sheetH;
-                    sheetW = Math.max(rawW, rawH);
-                    sheetH = Math.min(rawW, rawH);
-                }
+                // Khổ ĐÍCH = SSOT (resolve theo formsize + swap offset) — đồng nhất optimizer.
+                const _press = resolvePressSheetDims();
+                const sheetW = _press.w;
+                const sheetH = _press.h;
                 let targetMasterSig = s.optimalData.recommended.pagesPerSig;
                 if (s.catalogMasterSigOverride !== 'auto') targetMasterSig = parseInt(s.catalogMasterSigOverride, 10);
                 onStartCatalogPlan(
@@ -495,16 +544,16 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 return;
             }
             
-            let effSheetW = s.customSheetWidth;
-            let effSheetH = s.customSheetHeight;
-            if (s.paperClassification === 'offset') {
-                effSheetW = Math.max(s.customSheetWidth, s.customSheetHeight);
-                effSheetH = Math.min(s.customSheetWidth, s.customSheetHeight);
-            }
-            
+            // Khổ ĐÍCH = SSOT (resolve theo formsize + swap offset). KHÔNG đọc mirror thô
+            // (có thể lệch). Truyền formsize='custom' + dims đã resolve để handleStartBooklet
+            // dùng thẳng, tránh re-resolve lệch (bug: khổ predefined offset không được swap).
+            const _press = resolvePressSheetDims();
+            const effSheetW = _press.w;
+            const effSheetH = _press.h;
+
             onStartBooklet({
                 signatureMode: s.signatureMode, foliosize: s.foliosize,
-                formsize: (s.scaleMode === '100') ? 'auto_100' : s.formsize,
+                formsize: (s.scaleMode === '100') ? 'auto_100' : 'custom',
                 customSheetWidth: effSheetW, customSheetHeight: effSheetH,
                 bleed: s.bleed, paperThickness: s.paperThickness, markType: s.markType,
                 markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness,
@@ -526,12 +575,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             let finalFormsize = s.formsize;
             if (s.formsize.startsWith('custom_') || s.formsize === 'custom') finalFormsize = 'custom';
             
-            let effSheetW = s.customSheetWidth;
-            let effSheetH = s.customSheetHeight;
-            if (s.paperClassification === 'offset') {
-                effSheetW = Math.max(s.customSheetWidth, s.customSheetHeight);
-                effSheetH = Math.min(s.customSheetWidth, s.customSheetHeight);
-            }
+            const _pressNup = resolvePressSheetDims();
+            let effSheetW = _pressNup.w;
+            let effSheetH = _pressNup.h;
 
             // ADD GRIPPER MARGIN TO BOTTOM MARGIN FOR N-UP
             let effMarginBottom = s.marginBottom;
@@ -793,8 +839,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     {(s.taskMode === 'booklet' && s.paperClassification === 'in_nhanh' && showProductFirst) ? (
                         <ProductFirstPanel
                             pageCount={sourceTotalPages}
-                            finishedWidthMm={s.sourcePageDim ? Math.round(s.sourcePageDim.w * 0.352778) : undefined}
-                            finishedHeightMm={s.sourcePageDim ? Math.round(s.sourcePageDim.h * 0.352778) : undefined}
+                            finishedWidthMm={s.sourcePageDim ? Math.round(s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0)) : undefined}
+                            finishedHeightMm={s.sourcePageDim ? Math.round(s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0)) : undefined}
                             onApplied={() => setShowProductFirst(false)}
                             onOpenAdvanced={() => setShowProductFirst(false)}
                         />

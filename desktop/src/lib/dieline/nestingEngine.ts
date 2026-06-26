@@ -14,12 +14,415 @@
 // ============================================================
 
 import { NestingConfig, NestingResult, PlacedDieline, SuperTileInfo } from './nestingTypes';
-import { BoxParams } from './types';
+import { BoxParams, DielineModel, Point2D } from './types';
 import { snap } from './utils';
+import { SNAP_TOLERANCE } from './sharedGeometry';
+import { extractOuterSilhouette, OuterSilhouette } from './contourValidator';
 
 interface BBox {
     width: number;
     height: number;
+}
+
+// ============================================================
+// Polygon Offset (Workstream B) — Phép offset polygon thực
+//
+// Đẩy mỗi cạnh của outline ra ngoài theo pháp tuyến một lượng
+// `offset = max(0, dieGap)` (Minkowski-style outward offset).
+// Hàm thuần, xác định (snap theo quy ước snap của Nesting_Engine),
+// chính xác cho đa giác lồi & hình chữ nhật; với outline lõm gây
+// tự cắt → fail closed về phía bao phủ (bao trọn outline gốc).
+//   Requirements: 5.2, 5.6, 5.7, 6.1, 6.4, 6.5, 6.6, 6.8
+// ============================================================
+
+/** Giới hạn miter (tỉ lệ) — góc 90° (rect) cho miter ratio ≈ 1.414 < 4 ⇒ không bị vát. */
+const MITER_LIMIT = 4;
+/** Ngưỡng coi hai cạnh là song song / diện tích suy biến. */
+const PARALLEL_EPS = 1e-9;
+
+/** Diện tích có dấu (shoelace) — dương/âm tùy hướng CW/CCW của hệ tọa độ. */
+function polygonSignedArea(pts: Point2D[]): number {
+    let acc = 0;
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        acc += a.x * b.y - b.x * a.y;
+    }
+    return acc / 2;
+}
+
+/**
+ * Làm sạch đa giác: bỏ điểm trùng liên tiếp (trong SNAP_TOLERANCE) và
+ * điểm đóng vòng lặp trùng điểm đầu. KHÔNG biến đổi mảng đầu vào.
+ */
+function cleanPolygon(pts: Point2D[]): Point2D[] {
+    const out: Point2D[] = [];
+    for (const p of pts) {
+        const prev = out[out.length - 1];
+        if (prev && Math.abs(prev.x - p.x) < SNAP_TOLERANCE && Math.abs(prev.y - p.y) < SNAP_TOLERANCE) {
+            continue;
+        }
+        out.push({ x: p.x, y: p.y });
+    }
+    // Bỏ điểm cuối nếu trùng điểm đầu (vòng đã đóng tường minh).
+    while (out.length >= 2) {
+        const first = out[0];
+        const last = out[out.length - 1];
+        if (Math.abs(first.x - last.x) < SNAP_TOLERANCE && Math.abs(first.y - last.y) < SNAP_TOLERANCE) {
+            out.pop();
+        } else {
+            break;
+        }
+    }
+    return out;
+}
+
+/** Giao điểm hai đường thẳng (điểm + hướng). Trả null nếu song song. */
+function lineIntersect(
+    p1: Point2D, d1: Point2D,
+    p2: Point2D, d2: Point2D,
+): Point2D | null {
+    const denom = d1.x * d2.y - d1.y * d2.x;
+    if (Math.abs(denom) < PARALLEL_EPS) return null;
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const t = (dx * d2.y - dy * d2.x) / denom;
+    return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
+}
+
+/** Hai đoạn thẳng [a,b] và [c,d] có cắt nhau thực sự (giao trong lòng, không tính chạm đầu mút). */
+function segmentsProperlyIntersect(a: Point2D, b: Point2D, c: Point2D, d: Point2D): boolean {
+    const cross = (o: Point2D, p: Point2D, q: Point2D) =>
+        (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+    const d1 = cross(c, d, a);
+    const d2 = cross(c, d, b);
+    const d3 = cross(a, b, c);
+    const d4 = cross(a, b, d);
+    return ((d1 > PARALLEL_EPS && d2 < -PARALLEL_EPS) || (d1 < -PARALLEL_EPS && d2 > PARALLEL_EPS))
+        && ((d3 > PARALLEL_EPS && d4 < -PARALLEL_EPS) || (d3 < -PARALLEL_EPS && d4 > PARALLEL_EPS));
+}
+
+/** Đa giác có tự cắt (hai cạnh không kề cắt nhau trong lòng) hay không. */
+function isSelfIntersecting(pts: Point2D[]): boolean {
+    const n = pts.length;
+    if (n < 4) return false;
+    for (let i = 0; i < n; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % n];
+        for (let j = i + 1; j < n; j++) {
+            // Bỏ qua cạnh kề (chung đỉnh) và cạnh nối vòng.
+            if (j === i) continue;
+            if ((i + 1) % n === j) continue;
+            if ((j + 1) % n === i) continue;
+            const c = pts[j];
+            const d = pts[(j + 1) % n];
+            if (segmentsProperlyIntersect(a, b, c, d)) return true;
+        }
+    }
+    return false;
+}
+
+/** Bao lồi (Andrew's monotone chain) — trả về theo thứ tự xác định, không lặp đỉnh cuối. */
+function convexHull(pts: Point2D[]): Point2D[] {
+    const sorted = [...pts].sort((p, q) => (p.x - q.x) || (p.y - q.y));
+    if (sorted.length < 3) return sorted;
+    const cross = (o: Point2D, a: Point2D, b: Point2D) =>
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const lower: Point2D[] = [];
+    for (const p of sorted) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    const upper: Point2D[] = [];
+    for (let i = sorted.length - 1; i >= 0; i--) {
+        const p = sorted[i];
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    return lower.concat(upper);
+}
+
+/**
+ * Miter offset: đẩy mỗi cạnh ra ngoài `offset` theo pháp tuyến ngoài, nối góc
+ * bằng giao điểm cạnh đã dịch (miter); kẹp miter quá nhọn bằng cách vát (bevel).
+ * `area` là diện tích có dấu của `pts` (để chọn hướng pháp tuyến ra ngoài).
+ */
+function miterOffset(pts: Point2D[], offset: number, area: number): Point2D[] {
+    const n = pts.length;
+    // Hướng pháp tuyến ngoài: với diện tích dương dùng (dy,-dx), âm thì đảo dấu.
+    const s = area >= 0 ? 1 : -1;
+
+    // Pháp tuyến ngoài đơn vị của cạnh i (từ pts[i] → pts[i+1]).
+    const edgeNormal = (i: number): Point2D => {
+        const a = pts[i];
+        const b = pts[(i + 1) % n];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        return { x: (s * dy) / len, y: (-s * dx) / len };
+    };
+
+    const out: Point2D[] = [];
+    for (let i = 0; i < n; i++) {
+        const prevEdge = (i - 1 + n) % n;          // cạnh tới đỉnh i
+        const nextEdge = i;                         // cạnh rời đỉnh i
+        const n1 = edgeNormal(prevEdge);
+        const n2 = edgeNormal(nextEdge);
+        const v = pts[i];
+
+        const a = pts[prevEdge];
+        const b = pts[i];
+        const c = pts[(i + 1) % n];
+
+        // Điểm trên hai cạnh đã dịch ra ngoài.
+        const p1 = { x: b.x + offset * n1.x, y: b.y + offset * n1.y };
+        const d1 = { x: b.x - a.x, y: b.y - a.y };
+        const p2 = { x: b.x + offset * n2.x, y: b.y + offset * n2.y };
+        const d2 = { x: c.x - b.x, y: c.y - b.y };
+
+        const inter = lineIntersect(p1, d1, p2, d2);
+        if (!inter) {
+            // Hai cạnh song song (góc bẹt) → chỉ tịnh tiến đỉnh theo pháp tuyến.
+            out.push({ x: v.x + offset * n1.x, y: v.y + offset * n1.y });
+            continue;
+        }
+
+        const miterLen = Math.hypot(inter.x - v.x, inter.y - v.y);
+        if (miterLen > offset * MITER_LIMIT) {
+            // Kẹp miter: vát góc bằng hai điểm trên hai cạnh đã dịch.
+            out.push({ x: b.x + offset * n1.x, y: b.y + offset * n1.y });
+            out.push({ x: b.x + offset * n2.x, y: b.y + offset * n2.y });
+        } else {
+            out.push(inter);
+        }
+    }
+    return out;
+}
+
+/**
+ * Polygon_Offset — đẩy mỗi cạnh của `outline` ra ngoài theo pháp tuyến một
+ * lượng `offset = max(0, offset)` (Minkowski-style outward offset). Hàm thuần.
+ *
+ *  - Kẹp âm: `offset < 0` → coi như 0, KHÔNG thu nhỏ outline (Req 5.7, 6.8).
+ *  - Chuẩn hóa hướng bằng dấu shoelace để pháp tuyến hướng ra ngoài (Req 5.2).
+ *  - Đẩy mỗi cạnh ra `offset`, nối góc lồi bằng giao điểm (miter có kẹp); với
+ *    outline lõm gây tự cắt → tạo đa giác offset không tự cắt bao trọn outline
+ *    gốc đã giãn `offset` (fail closed về phía bao phủ) (Req 5.6, 6.1).
+ *  - Snap mọi tọa độ theo quy ước snap của Nesting_Engine để bit-identical
+ *    (Req 6.3, 6.6); giữ đơn vị mm (Req 6.5).
+ *  - Hình chữ nhật: mỗi cạnh ra đúng `offset`, mỗi chiều tăng `2×offset` (Req 6.4).
+ */
+export function offsetPolygon(outline: Point2D[], offset: number): Point2D[] {
+    // Kẹp âm (Req 5.7, 6.8).
+    const off = offset > 0 ? offset : 0;
+
+    const clean = cleanPolygon(outline);
+
+    // < 3 đỉnh phân biệt → không offset được; trả bản sao đã snap.
+    if (clean.length < 3) {
+        return clean.map(p => ({ x: snap(p.x), y: snap(p.y) }));
+    }
+
+    // offset = 0 → giữ nguyên outline (diện tích không đổi — Req 6.2); chỉ snap.
+    if (off === 0) {
+        return clean.map(p => ({ x: snap(p.x), y: snap(p.y) }));
+    }
+
+    const area = polygonSignedArea(clean);
+    // Diện tích suy biến → không offset được.
+    if (Math.abs(area) < PARALLEL_EPS) {
+        return clean.map(p => ({ x: snap(p.x), y: snap(p.y) }));
+    }
+
+    // Miter offset (chính xác cho lồi & chữ nhật).
+    let result = miterOffset(clean, off, area);
+
+    // Bảo đảm offset ĐẨY RA NGOÀI (diện tích không giảm — Req 6.1, 6.2).
+    // Nếu hướng pháp tuyến sai (do quy ước hệ tọa độ), đảo dấu rồi tính lại.
+    if (Math.abs(polygonSignedArea(result)) + PARALLEL_EPS < Math.abs(area)) {
+        result = miterOffset(clean, off, -area);
+    }
+
+    // Lõm gây tự cắt → fail closed: dùng miter offset của bao lồi (bao trọn,
+    // không tự cắt) — ưu tiên bao phủ hơn tối ưu hình dạng (Req 5.6).
+    if (isSelfIntersecting(result)) {
+        const hull = convexHull(clean);
+        result = miterOffset(hull, off, polygonSignedArea(hull));
+    }
+
+    // Snap xác định (Req 6.3, 6.6); đơn vị mm (Req 6.5).
+    return result.map(p => ({ x: snap(p.x), y: snap(p.y) }));
+}
+
+// ============================================================
+// Die_Outline (Workstream B) — Chọn nguồn biên ngoài của khuôn
+//
+// `computeDieOutline` tính đường biên ngoài thực (Die_Outline) của
+// một khuôn làm đầu vào lồng khuôn: dùng Outer_Silhouette của khuôn
+// khi "sẵn có", ngược lại / suy biến → đa giác chữ nhật suy ra từ
+// `boundingBox`. Hàm thuần, chỉ-đọc model (Req 4.2).
+//   Requirements: 5.1, 6.7
+// ============================================================
+
+/** Diện tích bao tối thiểu (mm²) để coi Outer_Silhouette không suy biến (Req 6.7). */
+const DEGENERATE_AREA_EPS = 0.001;
+
+/** Đếm số đỉnh phân biệt (gộp các điểm trùng trong SNAP_TOLERANCE). */
+function countDistinctVertices(pts: Point2D[]): number {
+    const distinct: Point2D[] = [];
+    for (const p of pts) {
+        const dup = distinct.some(
+            (q) => Math.abs(q.x - p.x) <= SNAP_TOLERANCE && Math.abs(q.y - p.y) <= SNAP_TOLERANCE,
+        );
+        if (!dup) distinct.push(p);
+    }
+    return distinct.length;
+}
+
+/**
+ * Outer_Silhouette "sẵn có" để dùng làm Die_Outline khi (Req 5.1, 6.7):
+ *   - khép kín (gapMm ≤ SNAP_TOLERANCE),
+ *   - ≥ 3 đỉnh phân biệt,
+ *   - diện tích bao không suy biến (> 0,001 mm²).
+ */
+function isSilhouetteUsable(s: OuterSilhouette): boolean {
+    return s.closed
+        && s.area > DEGENERATE_AREA_EPS
+        && countDistinctVertices(s.vertices) >= 3;
+}
+
+/**
+ * Tính Die_Outline — đường biên ngoài thực của một khuôn dùng làm đầu vào
+ * lồng khuôn. Hàm thuần, chỉ đọc model (KHÔNG mutate).
+ *
+ *  - Dùng Outer_Silhouette của khuôn khi "sẵn có" (≥ 3 đỉnh phân biệt, diện
+ *    tích bao > 0,001 mm², khoảng hở đầu-cuối ≤ SNAP_TOLERANCE) — Req 5.1.
+ *  - Ngược lại / suy biến (< 3 đỉnh phân biệt hoặc diện tích ≤ 0,001 mm²)
+ *    → đa giác chữ nhật suy ra từ `bbox`: [(0,0),(w,0),(w,h),(0,h)] — Req 6.7.
+ */
+export function computeDieOutline(model: DielineModel | undefined, bbox: BBox): Point2D[] {
+    const rect: Point2D[] = [
+        { x: snap(0), y: snap(0) },
+        { x: snap(bbox.width), y: snap(0) },
+        { x: snap(bbox.width), y: snap(bbox.height) },
+        { x: snap(0), y: snap(bbox.height) },
+    ];
+
+    if (!model || !Array.isArray(model.allPaths)) {
+        return rect;
+    }
+
+    // Gom đoạn CUT/BLEED của khuôn (biên ngoài) — chỉ-đọc model.
+    const cutBleedSegs = model.allPaths.filter(
+        (p) => p.tag === 'CUT' || p.tag === 'BLEED',
+    );
+
+    const silhouette = extractOuterSilhouette(cutBleedSegs);
+    if (silhouette && isSilhouetteUsable(silhouette)) {
+        return silhouette.vertices.map((p) => ({ x: snap(p.x), y: snap(p.y) }));
+    }
+
+    // Outer_Silhouette không sẵn có / suy biến → bbox-rect (Req 6.7).
+    return rect;
+}
+
+// ============================================================
+// Polygon Collision (Workstream B) — Va chạm theo polygon thay
+// cho xấp xỉ Bounding_Box_Gap khi lồng khuôn (Req 5.3, 5.4, 5.5,
+// 7.2, 7.3, 7.4, 7.5, 8.5).
+//
+// Quy trình: tính `outline` của khuôn MỘT lần (computeDieOutline),
+// rồi với mỗi góc xoay thuộc {0°,90°,180°,270°} XOAY outline TRƯỚC,
+// `offsetPolygon(rotated, dieGap)` SAU (cùng `offset = dieGap`) để
+// được vùng keep-out. Khoảng hở giữa hai khuôn được suy ra trực tiếp
+// từ va chạm keep-out↔outline-gốc: bước lưới tối thiểu sao cho keep-out
+// của khuôn này CHỈ vừa chạm outline gốc khuôn kia (diện tích giao ≤ 0).
+//
+// Với Die_Outline là HÌNH CHỮ NHẬT, bước này đúng bằng `cạnh + dieGap`
+// nên trùng khít hành vi Bounding_Box_Gap của Giai đoạn 1 (Req 8.1).
+// `calculateNesting` không nhận `model` nên outline luôn là chữ nhật
+// suy từ bbox — va chạm polygon trùng Bounding_Box_Gap, bảo toàn mọi
+// kết quả lồng khuôn chữ nhật trong dung sai đã ghim.
+// ============================================================
+
+/** Tập góc xoay được hỗ trợ (Req 7.4, 7.5). */
+const SUPPORTED_ANGLES = [0, 90, 180, 270] as const;
+
+/**
+ * Xoay outline quanh gốc tọa độ theo góc thuộc {0°,90°,180°,270°}.
+ * Hàm thuần, snap xác định. Góc ngoài tập hỗ trợ được chuẩn hóa về 0°
+ * (Req 7.5 — chỉ xét các góc thuộc tập được hỗ trợ).
+ */
+function rotateOutline(outline: Point2D[], angle: number): Point2D[] {
+    const norm = (((angle % 360) + 360) % 360);
+    const a = (SUPPORTED_ANGLES as readonly number[]).includes(norm) ? norm : 0;
+    return outline.map((p) => {
+        switch (a) {
+            case 90: return { x: snap(-p.y), y: snap(p.x) };
+            case 180: return { x: snap(-p.x), y: snap(-p.y) };
+            case 270: return { x: snap(p.y), y: snap(-p.x) };
+            default: return { x: snap(p.x), y: snap(p.y) };
+        }
+    });
+}
+
+/** Bao chữ nhật trục (AABB) của một dãy đỉnh. */
+function outlineBounds(
+    pts: Point2D[],
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+    if (pts.length === 0) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of pts) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, minY, maxX, maxY };
+}
+
+/**
+ * Vùng keep-out của khuôn tại một góc xoay (Req 7.4, 7.5):
+ * XOAY outline TRƯỚC rồi `offsetPolygon(rotated, gap)` SAU, cùng `offset = gap`.
+ */
+function computeKeepOut(outline: Point2D[], angle: number, gap: number): Point2D[] {
+    return offsetPolygon(rotateOutline(outline, angle), gap);
+}
+
+/**
+ * Bước lưới (cellW, cellH) suy từ va chạm polygon — thay cho xấp xỉ
+ * `dieW + gap` / `dieH + gap` (Req 5.3, 5.4, 7.2). Bước theo trục là
+ * khoảng dịch tối thiểu sao cho keep-out của khuôn này chỉ vừa chạm
+ * outline gốc khuôn kia (diện tích giao ≤ 0): `bước = keepOut.max − orig.min`.
+ *
+ * Với Die_Outline chữ nhật → `dieW + gap` / `dieH + gap`, trùng khít
+ * Bounding_Box_Gap Giai đoạn 1 (Req 8.1). Suy biến → fallback bbox-gap.
+ */
+function gridCellFromCollision(
+    outline: Point2D[], angle: number, gap: number,
+    dieW: number, dieH: number,
+): { cellW: number; cellH: number } {
+    const swap = angle === 90 || angle === 270;
+    const footW = swap ? dieH : dieW;
+    const footH = swap ? dieW : dieH;
+    const fallback = { cellW: snap(footW + gap), cellH: snap(footH + gap) };
+
+    const rotated = rotateOutline(outline, angle);
+    const keepOut = computeKeepOut(outline, angle, gap);
+    const ob = outlineBounds(rotated);
+    const kb = outlineBounds(keepOut);
+    if (!ob || !kb) return fallback;
+
+    const cellW = snap(kb.maxX - ob.minX);
+    const cellH = snap(kb.maxY - ob.minY);
+    if (cellW <= 0 || cellH <= 0) return fallback;
+    return { cellW, cellH };
 }
 
 type LayoutResult = {
@@ -74,9 +477,11 @@ function calcGridNone(
     dieW: number, dieH: number, gap: number,
     areaW: number, areaH: number,
     ox: number, oy: number,
+    outline: Point2D[],
 ): LayoutResult {
-    const cellW = dieW + gap;
-    const cellH = dieH + gap;
+    // Bước lưới suy từ va chạm polygon (keep-out↔outline-gốc) thay cho
+    // xấp xỉ `dieW + gap`/`dieH + gap`. Chữ nhật → trùng Giai đoạn 1.
+    const { cellW, cellH } = gridCellFromCollision(outline, 0, gap, dieW, dieH);
     const cols = Math.max(0, Math.floor((areaW + gap) / cellW));
     const rows = Math.max(0, Math.floor((areaH + gap) / cellH));
     return {
@@ -89,10 +494,11 @@ function calcGrid90(
     dieW: number, dieH: number, gap: number,
     areaW: number, areaH: number,
     ox: number, oy: number,
+    outline: Point2D[],
 ): LayoutResult {
-    // Chỉ trả về layout 90° — layout 0° đã có calcGridNone
-    const cellW90 = dieH + gap;
-    const cellH90 = dieW + gap;
+    // Chỉ trả về layout 90° — layout 0° đã có calcGridNone.
+    // Keep-out tính SAU khi xoay outline 90° (Req 7.4); chữ nhật → dieH/dieW + gap.
+    const { cellW: cellW90, cellH: cellH90 } = gridCellFromCollision(outline, 90, gap, dieW, dieH);
     const cols = Math.max(0, Math.floor((areaW + gap) / cellW90));
     const rows = Math.max(0, Math.floor((areaH + gap) / cellH90));
     return {
@@ -669,6 +1075,7 @@ function calcSmart(
     areaW: number, areaH: number,
     ox: number, oy: number,
     params: BoxParams,
+    outline: Point2D[],
 ): LayoutResult {
     // Tính closureH + tuckH + dustH
     const closureH = snap(params.W + params.T);
@@ -679,8 +1086,8 @@ function calcSmart(
 
     // Grid baselines làm fallback
     const gridFallback = () => {
-        const r0 = calcGridNone(dieW, dieH, gap, areaW, areaH, ox, oy);
-        const r90 = calcGrid90(dieW, dieH, gap, areaW, areaH, ox, oy);
+        const r0 = calcGridNone(dieW, dieH, gap, areaW, areaH, ox, oy, outline);
+        const r90 = calcGrid90(dieW, dieH, gap, areaW, areaH, ox, oy, outline);
         return r0.positions.length >= r90.positions.length ? r0 : r90;
     };
 
@@ -748,22 +1155,30 @@ export function calculateNesting(
     const dieW = bbox.width;
     const dieH = bbox.height;
 
+    // Outline thực của khuôn — tính MỘT lần (Req 5.1). `calculateNesting`
+    // không nhận `model` nên Outer_Silhouette không sẵn có ⇒ đa giác chữ nhật
+    // suy từ bbox; va chạm polygon khi đó trùng khít Bounding_Box_Gap Giai
+    // đoạn 1 cho khuôn chữ nhật (Req 8.1). Mọi keep-out trong các hàm lưới
+    // được tính bằng `offsetPolygon(rotateOutline(outline, θ), gap)` với
+    // θ ∈ {0°,90°,180°,270°} (Req 7.4, 7.5).
+    const outline = computeDieOutline(undefined, { width: dieW, height: dieH });
+
     const calcForSheet = (sw: number, sh: number) => {
         const { areaW, areaH, offsetX, offsetY } = calcPrintableArea(sw, sh, margin, gripperMargin);
 
         let best: LayoutResult;
 
         if (nestingMode === 'smart' && params) {
-            best = calcSmart(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, params);
+            best = calcSmart(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, params, outline);
         } else {
             if (rotation === 'none') {
-                best = calcGridNone(dieW, dieH, gap, areaW, areaH, offsetX, offsetY);
+                best = calcGridNone(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, outline);
             } else if (rotation === '90') {
-                best = calcGrid90(dieW, dieH, gap, areaW, areaH, offsetX, offsetY);
+                best = calcGrid90(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, outline);
             } else {
                 // auto: so sánh 0° vs 90°
-                const r0 = calcGridNone(dieW, dieH, gap, areaW, areaH, offsetX, offsetY);
-                const r90 = calcGrid90(dieW, dieH, gap, areaW, areaH, offsetX, offsetY);
+                const r0 = calcGridNone(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, outline);
+                const r90 = calcGrid90(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, outline);
                 best = r0.positions.length >= r90.positions.length ? r0 : r90;
             }
         }

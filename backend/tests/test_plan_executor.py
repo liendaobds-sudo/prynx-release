@@ -144,3 +144,53 @@ def test_marks_preserved_as_cmyk_not_rgb(tmp_path):
     assert "0.0 0.0 0.0 1.0 K" in text, f"marks phải dùng CMYK K-only, không phải RGB. Got: {text!r}"
     # Không được quy đổi sang RGB stroke ('RG') cho mark đen.
     assert "0.0 0.0 0.0 RG" not in text
+
+
+def test_uses_mediabox_not_trimbox_for_parity(tmp_path):
+    """Audit 🔴 parity: /pdf-meta báo kích thước theo MediaBox nên PlanExecutor PHẢI vẽ
+    trang theo MediaBox, không phải TrimBox. File in sẵn (TrimBox < MediaBox) nếu vẽ theo
+    TrimBox sẽ ra trang nhỏ hơn kế hoạch → lệch gáy/dấu xén. Xác minh bằng RASTER."""
+    import pikepdf
+    pdfium = pytest.importorskip("pypdfium2")
+
+    # Trang MediaBox 120x120, nội dung đen phủ kín, TrimBox thu vào 100x100 (bleed 10pt).
+    doc = pdf_lib.open()
+    pg = doc.new_page(width=120, height=120)
+    sh = pg.new_shape()
+    sh.draw_rect(pdf_lib.Rect(0, 0, 120, 120))
+    sh.finish(color=(0, 0, 0), fill=(0, 0, 0))
+    sh.commit()
+    buf = io.BytesIO(); doc.save(buf); doc.close()
+
+    src = str(tmp_path / "src_trim.pdf")
+    with pikepdf.open(io.BytesIO(buf.getvalue())) as p:
+        p.pages[0].TrimBox = [10, 10, 110, 110]
+        p.save(src)
+
+    out_dir = str(tmp_path / "out")
+    plan = _plan(src, out_dir, [{
+        "sheet_index": 0, "width_pt": 200, "height_pt": 200,
+        "front": {"placements": [{"source_page": 0, "x_pt": 0, "y_pt": 80, "scale": 1.0}], "marks": []},
+    }])
+    out = _run(plan, src)
+
+    d = pdfium.PdfDocument(out)
+    pil = d[0].render(scale=2.0).to_pil().convert('L')
+    W, H = pil.size
+    px = pil.load()
+    minx = W; miny = H; maxx = 0; maxy = 0; found = False
+    for y in range(H):
+        for x in range(W):
+            if px[x, y] < 100:
+                found = True
+                minx = min(minx, x); maxx = max(maxx, x)
+                miny = min(miny, y); maxy = max(maxy, y)
+    d.close()
+
+    assert found, "phải có vùng đen"
+    s = 2.0
+    w_pt = (maxx - minx) / s
+    h_pt = (maxy - miny) / s
+    # MediaBox-draw ⇒ ~120; TrimBox-draw (lỗi cũ) ⇒ ~100. Cho dung sai raster ±3pt.
+    assert abs(w_pt - 120) < 3, f"phải vẽ theo MediaBox (w~120), được {w_pt:.1f}"
+    assert abs(h_pt - 120) < 3, f"phải vẽ theo MediaBox (h~120), được {h_pt:.1f}"

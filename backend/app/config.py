@@ -89,6 +89,15 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# Chuẩn hoá thư mục lưu trữ về đường dẫn TUYỆT ĐỐI.
+# LÝ DO: path output trả về frontend được Rust native renderer (tile.localhost /
+# get_pdf_metadata) mở, mà tiến trình Rust có cwd KHÁC backend. Nếu path tương đối
+# ("./results/...", do .env override) → Rust báo "cannot find path" (os error 3)
+# → render hỏng (ảnh vỡ) dù Python vẫn mở được. Ép tuyệt đối ở đây vá cho TẤT CẢ
+# tính năng (vdp, imposition, preflight, separations, pdfx, layer, ...).
+settings.UPLOAD_DIR = os.path.abspath(settings.UPLOAD_DIR)
+settings.RESULTS_DIR = os.path.abspath(settings.RESULTS_DIR)
+
 # DEV_MODE or IS_DESKTOP_APP: override DB to SQLite (Desktop app must use SQLite)
 if settings.DEV_MODE or settings.IS_DESKTOP_APP:
     db_path = Path("./data").resolve()

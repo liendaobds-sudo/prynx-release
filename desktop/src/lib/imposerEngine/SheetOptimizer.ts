@@ -213,6 +213,14 @@ export function optimizeMasterSig(
     // Vùng có lề — chỉ dùng tính dung sai + hiển thị gap
     const usableWithMargins = calcUsableArea(sheet, margins);
 
+    // Vùng FIT THẬT = khổ trừ ĐÚNG nhíp (gripper) — vùng cấm CỨNG không in được.
+    // Lề top/bottom/left/right là lề MỀM (bố cục, thợ in dịch kẽm được) → KHÔNG trừ khi
+    // check fit, chỉ dùng để cảnh báo "sát lề". (Trước đây trừ cả marginTop làm tay 16 bị
+    // loại oan khi gripper+marginTop > dung sai, dù vật lý vẫn vừa.)
+    const gripperUsable = calcUsableArea(sheet, {
+        ...margins, marginTop: 0, marginLeft: 0, marginRight: 0,
+    });
+
     const allOptions: SigOption[] = [];
 
     const gapX = margins.gapX || 0;
@@ -222,16 +230,15 @@ export function optimizeMasterSig(
         const gridW = spreadMm.w * def.cols + (def.cols > 1 ? (def.cols - 1) * gapX : 0);
         const gridH = spreadMm.h * def.rows + (def.rows > 1 ? (def.rows - 1) * gapY : 0);
 
-        // === PRIMARY FIT: So sánh với vùng in khả dụng (usable area) ===
-        // KHÔNG dùng fullSheet vì nhíp (gripperMargin) là vùng cấm vật lý, không thể in đè lên được.
-        let fits = gridW <= usableWithMargins.w && gridH <= usableWithMargins.h;
+        // === PRIMARY FIT: chỉ trừ nhíp cứng (gripperUsable), lề mềm không tính ===
+        let fits = gridW <= gripperUsable.w && gridH <= gripperUsable.h;
         let actualGridW = gridW;
         let actualGridH = gridH;
         let isRotated = false;
 
         // Thử xoay kẽm nếu không fit
         if (!fits) {
-            const fitsRotated = gridW <= usableWithMargins.h && gridH <= usableWithMargins.w;
+            const fitsRotated = gridW <= gripperUsable.h && gridH <= gripperUsable.w;
             if (fitsRotated) {
                 fits = true;
                 isRotated = true;

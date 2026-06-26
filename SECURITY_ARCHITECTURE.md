@@ -413,8 +413,11 @@ hiện ĐÃ có (xem 9.3). Đây là điều DUY NHẤT phải xác nhận lại
 2. Đăng nhập **license thật**, dùng 1 tính năng gọi backend (merge/imposition):
    - Chạy được → chuỗi token Ed25519 hoạt động end-to-end (edge function CÓ cấp token). ✅
    - Mọi thao tác 403 → edge function chưa trả `token` → sửa ở Supabase (repo printsolutions-main).
-3. Mở `%APPDATA%\PrynX\logs\security.log`: phải có
+3. **Bật diagnostic trước** (security.log mặc định TẮT để không rò posture cho kẻ trinh sát —
+   xem Mục 18): tạo file rỗng `%APPDATA%\PrynX\logs\.security_diag` HOẶC đặt env
+   `PRYNX_SECURITY_DIAG=1`, mở lại app, rồi mở `%APPDATA%\PrynX\logs\security.log`: phải có
    `STARTUP enforce_license_token=true dev_mode=False sidecar_token=set pubkey=embedded`.
+   **Xoá file `.security_diag` sau khi verify** (để máy thật không ghi log nữa).
 4. (Tùy chọn) chạy `pdf-inspector-backend.exe` trực tiếp trong terminal → phải thấy
    `dev_mode=False` + `sidecar_token=MISSING` → request bị 403 (đúng fail-closed H3).
 5. Sửa 1 byte file đã cài → app báo tamper + thoát (integrity #10/#11).
@@ -562,7 +565,7 @@ sequenceDiagram
 
 - [ ] `cargo check --release` sạch (không lỗi `webview2_com` — mục A).
 - [ ] `build_production.ps1` set cả `PRYNX_SIDECAR_HASH` **và** `PRYNX_FRONTEND_HASH`.
-- [ ] Cài app → `security.log` hiện `enforce_license_token=true dev_mode=False sidecar_token=set pubkey=embedded`.
+- [ ] Cài app → (bật diagnostic: tạo `%APPDATA%\PrynX\logs\.security_diag`) → `security.log` hiện `enforce_license_token=true dev_mode=False sidecar_token=set pubkey=embedded` → **xoá `.security_diag`** sau khi verify.
 - [ ] Đăng nhập license thật → dùng 1 tính năng backend → **chạy được** (xác nhận edge function cấp token).
 - [ ] License sai/không đăng nhập → backend từ chối (403).
 - [ ] Chạy `pdf-inspector-backend.exe` trực tiếp → `dev_mode=False` + request bị 403 (fail-closed H3).
@@ -571,3 +574,218 @@ sequenceDiagram
 - [ ] Edge function `license-verify` trả `token` (HTTP 200) với TTL phù hợp grace mong muốn.
 - [ ] Rotate các key đã phơi nhiễm (nếu có); private key chỉ ở Supabase secret.
 - [ ] (Tùy chọn) Code signing Authenticode để giảm cảnh báo SmartScreen.
+
+---
+
+## 16. Hardening 2026-06-26 (audit độc lập theo `audit-rules`)
+
+> Audit verify-to-ground-truth: trace code thật + chạy harness bằng venv dự án.
+> Kết luận tổng thể: **không phát hiện 🔴 mới**; các 🔴 trong tài liệu cũ đã vá (đã chứng minh).
+> 100% router gate `require_license`, watermark phủ toàn bộ output, deps pinned (30/30 `==`),
+> `.env`/`backend/.env` gitignored, không có service_role key trong repo này, CI có pip-audit +
+> npm audit + release-integrity-gate.
+
+### 16.1. V3 — Cận trên tuổi thọ token (deletion-proof anti-rollback)
+- **Vấn đề:** `_clock_guard` chống lùi đồng hồ dựa trên file `.clkguard`; file này có thể bị
+  XOÁ để reset mốc đơn điệu → cho phép một lần lùi giờ replay token đã hết hạn.
+- **Vá:** thêm kiểm tra KHÔNG-trạng-thái-trên-đĩa trong `verify_license_token` (Python sidecar —
+  biên giới thật) **và** `verify_token_with_pubkey` (Rust — defense-in-depth): từ chối nếu
+  `exp - now > _MAX_TOKEN_LIFETIME_SECONDS (+ skew)`. Token TTL 2h nên tuổi thọ hợp lệ luôn ≤ TTL;
+  vượt cận ⇒ đồng hồ đã bị lùi xa lúc cấp token. Không thể vô hiệu bằng cách xoá file.
+- **Mặc định:** 3h (TTL 2h + 1h dư), chỉnh qua `PRYNX_MAX_TOKEN_LIFETIME_SECONDS`. **Bất biến
+  bắt buộc:** giá trị này phải LUÔN ≥ TTL token edge function cấp (nếu đổi TTL token, đổi cận này theo).
+- **Verify:** harness ed25519 (venv): token 1h → pass; expired → reject; +10h (giả lập lùi giờ) →
+  `lifetime implausible`. Rust `cargo test --lib token_tests` = **8/8 pass**. py_compile sạch.
+- **Files:** `backend/app/core/license_guard.py` (`_MAX_TOKEN_LIFETIME_SECONDS`, nhánh V3 trong
+  `verify_license_token`); `desktop/src-tauri/src/security.rs` (`MAX_TOKEN_LIFETIME_SECS`).
+- **Residual (cố hữu):** lùi giờ NHỎ (chỉ đủ un-expire token vừa hết hạn) + xoá `.clkguard` vẫn
+  qua được V3 vì `exp - now` nhỏ. Đòi quyền local admin (đổi clock hệ thống) — cùng mặt phẳng
+  Ring-3 mà mô hình đã chấp nhận. Triệt để cần timestamp tin cậy từ server mỗi request (đánh đổi offline).
+
+### 16.2. Watermark cho PDF report
+- **Vấn đề:** `report.py` (`/api/jobs/{id}/report`) xuất PDF có thể phát hành ra ngoài nhưng
+  trước đây KHÔNG nhúng stealth watermark (chỉ gate license).
+- **Vá:** thêm `_safe_watermark()` (đồng nhất `pdf_tools.py`/`edit.py`) — nhúng XMP + invisible
+  text khi report MỚI sinh (ghi atomic qua temp + `os.replace`; non-blocking, nuốt lỗi).
+  Bản cache giữ watermark từ lần tạo đầu. Bỏ qua khi DEV_MODE/thiếu license.
+- **File:** `backend/app/api/routes/report.py`.
+
+### 16.3. Tài liệu lỗi thời
+- `SECURITY_AUDIT_TOKEN_2026.md` liệt kê 4 🔴 nay đã vá → thêm banner "ĐÃ KHẮC PHỤC" + bảng đối
+  chiếu trạng thái hiện tại ở đầu file (giữ lịch sử). Tránh hiểu nhầm hệ thống còn 4 lỗ chí mạng.
+
+### 16.4. Ma trận endpoint — cập nhật
+- Router `export` (`/api/export/images`, thêm sau Mục 10) ĐÃ gate `require_license` ở cấp router.
+  Output là ảnh raster → không áp watermark XMP/invisible-text (không phù hợp); gate license là đủ.
+- Router `report` nay có watermark (16.2).
+
+### 16.5. Còn lại ngoài tầm code repo này (cần hạ tầng — KHÔNG verify được trong session)
+- Edge function `license-verify` (repo `printsolutions-main` + Supabase live) thực sự cấp + ký
+  token bằng đúng private key — **[SUSPECTED]**, kiểm bằng checklist Mục 9.6/Mục 15 trên bản release.
+- Rotate các key từng phơi nhiễm + code-signing Authenticode — việc vận hành.
+
+---
+
+## 17. Audit đóng gói release + cập nhật phiên bản (2026-06-26)
+
+> Trace toàn chuỗi: `release_update.ps1`/`quanly_phathanh.ps1` → `build_production.ps1 -Release`
+> → `tauri build` (ký minisign) → `latest.json` → GitHub Releases → client `UpdateChecker.tsx`
+> (`check()` → verify chữ ký pubkey nhúng → `downloadAndInstall` → `relaunch`).
+
+### 17.1. Đã VERIFIED là TỐT
+- Verify chữ ký update BẬT: `pubkey` minisign trong `tauri.conf.json`; plugin updater đăng ký
+  thật (`lib.rs` `tauri_plugin_updater::Builder`), `Cargo.toml`, capability `updater:default`.
+  ⇒ Chiếm GitHub repo KHÔNG đủ đẩy update giả — phải có private key.
+- Private key ngoài repo (`~/.tauri/prynx.key`), không git-tracked; password truyền qua env.
+- Endpoint HTTPS (GitHub); cài đặt do người dùng bấm (không silent); hash integrity baked thật.
+
+### 17.2. ĐÃ VÁ trong đợt này
+| # | Mức | Vấn đề | Vá | Verify |
+|---|---|---|---|---|
+| U1 | 🟠 | **Endpoint update vs repo phát hành không cùng nguồn chân lý.** Endpoint cố định `liendaobds-sudo/prynx-release` nhưng `-ReleaseRepo` gõ tay → phát hành nhầm repo = client không bao giờ nhận update (kẹt bản cũ, không vá khẩn được). | **Cách A:** `release_update.ps1` + GUI **tự suy repo từ endpoint** trong `tauri.conf.json` (`Get-EndpointRepo`, regex `github.com/<owner/repo>/releases`). Bỏ gõ tay; nếu truyền `-ReleaseRepo` lệch endpoint → **dừng + báo**. GUI hiện repo read-only. | parse OK + derivation trả đúng `liendaobds-sudo/prynx-release` |
+| U2 | 🟡 | **Republish xoá rồi tạo lại release** → nếu create lỗi sau delete, client mất "latest". | KHÔNG xoá trước: nếu tag tồn tại → `gh release upload --clobber`; chưa có → `gh release create`. | parse OK |
+| U3 | 🟡 | **CSP cho `script-src`/`connect-src` `https://cdnjs.cloudflare.com`** (rủi ro chuỗi cung ứng). | **ĐÃ GỠ** sau khi xác minh là dead path: chuỗi cdnjs chỉ là tính năng viewer của jsPDF (`output('pdfobjectnewwindow')` tải PDFObject từ cdnjs). App **0** lần gọi chế độ đó — jsPDF chỉ dùng `new jsPDF()` + svg2pdf (vector cục bộ) + `doc.save(name)`; không `html()`/`addFont` URL/`fetch`. Gỡ cdnjs khỏi cả `script-src` và `connect-src`. | source: 0 ref cdnjs; jsPDF API thuần (`exportPDF.ts`/`exportNestingPDF.ts`); JSON hợp lệ; grep config = 0 cdnjs |
+
+### 17.3. Residual — CỐ Ý KHÔNG đổi (tránh regression / theo thiết kế)
+- 🟡 **`assetProtocol.scope: ["**","**/*"]`** rộng = WebView đọc mọi file. **Theo thiết kế** cho công
+  cụ PDF desktop (mở/đọc file người dùng chọn ở bất kỳ đâu). Thu hẹp sẽ vỡ tính năng cốt lõi.
+  Lớp bù: frontend integrity check (#11), invoke freeze (#14), CSP `connect-src` hẹp, fs deny (H5).
+- 🟢 **`test_pdfium.rs`, `c.txt`, `error.log`** trong `src-tauri/`: cruft dev, **KHÔNG ship** (bundle
+  Tauri chỉ gồm `resources` + `externalBin` + `dist`; Rust chỉ compile `src/`). Không phải leak.
+
+### 17.4. Chưa kiểm (ngoài workspace)
+- Repo `liendaobds-sudo/prynx-release` trên GitHub có tồn tại + chứa `latest.json` đã ký không;
+  private key còn bí mật/đã rotate chưa — kiểm thủ công trên GitHub + máy build.
+
+---
+
+## 18. Giảm rò trinh sát (anti-recon) — 2026-06-26
+
+> Mục tiêu: cắt lợi thế "đọc là hiểu cơ chế" của kẻ tấn công, mà KHÔNG mất khả năng
+> dev tự kiểm chứng bản release. Không có 🔴; đây là siết bề mặt trinh sát.
+
+| # | Mức | Trước | Sau | File |
+|---|---|---|---|---|
+| R1 | 🟡 | `security.log` LUÔN ghi trên máy khách, lộ posture: `enforce/dev_mode/pubkey`, lý do từ chối token... → bản đồ sẵn cho kẻ trinh sát. | `_security_log_to_file` **gated** bởi `_security_diag_enabled()`: mặc định **KHÔNG ghi**. Dev bật khi cần verify bằng env `PRYNX_SECURITY_DIAG=1` HOẶC file `%APPDATA%\PrynX\logs\.security_diag`. Telemetry thật vẫn qua Supabase `security_logs`. | `license_guard.py` |
+| R2 | 🟡 | Dòng STARTUP posture ghi `logger.info` → vào `app.log` (đọc được trên máy khách). | Hạ xuống `logger.debug` (không vào file handler INFO). `main.py` "guard active" cũng hạ `debug`. | `license_guard.py`, `main.py` |
+| R3 | 🟢 | Vite không chốt `sourcemap` (mặc định off nhưng dễ vô tình bật). | Chốt `build.sourcemap=false` tường minh → chắc chắn không ship source map (không lộ mã nguồn frontend). | `vite.config.ts` |
+
+**Đã VERIFIED bundle KHÔNG kèm nhạy cảm:** `dist/` có 0 file `.map`, 0 `.md/.ts/.py`; bundle Tauri
+chỉ gồm `frontendDist` (dist) + `resources` (gs/tesseract) + `externalBin` (sidecar Nuitka đã compile).
+Không kèm tài liệu (`*AUDIT*.md`/`*SECURITY*.md`) hay source Python.
+
+**Kiểm chứng:** py_compile sạch; `_security_diag_enabled()` = `False` (mặc định) / `True` (khi bật env);
+diagnostics 3 file sạch.
+
+**Lưu ý vận hành:** quy trình verify release (Mục 9.6 #3 + Mục 15) NAY cần bật diagnostic trước khi
+đọc `security.log`, và **xoá `.security_diag` sau khi xong** để máy không còn ghi log.
+
+**Residual:** một kẻ tấn công có quyền local vẫn suy ra cơ chế qua quan sát động (bắt traffic loopback,
+debugger) — đây là trần Ring-3 cố hữu. R1–R3 chỉ tăng công sức trinh sát, không loại bỏ (đúng kỳ vọng).
+
+---
+
+## 19. CI security guards + verify WebSocket (2026-06-26)
+
+### 19.1. WebSocket gate — VERIFIED (đọc code thật, không chỉ tin doc)
+`ws.py` `job_progress_ws`: gọi `verify_sidecar_signature(url_path, token, ts, sig)` (token+HMAC qua
+query param, ký trên path `/ws/jobs/{job_id}/progress`) **TRƯỚC** `websocket.accept()`; sai → đóng
+`4001` và return. Dev mode bỏ qua (đúng thiết kế). WS chỉ stream tiến độ job (read-only, không xuất
+PDF) nên gate sidecar-token là đủ. ⟹ đóng `[SUSPECTED]` trước đây = **[VERIFIED] TỐT**.
+
+### 19.2. CI Security Regression Guards (job `security-guards` trong `.github/workflows/ci.yml`)
+Chặn merge nếu TÁI PHÁT các lỗ đã vá (chạy mỗi push/PR vào main). 5 guard, đã chạy thử local = pass:
+1. `config.py` `DEV_MODE` default phải = False (chặn fail-open F3 tái diễn).
+2. `tauri.conf.json` phải có `pubkey` updater non-empty (verify chữ ký update không bị tắt).
+3. `tauri.release.conf.json` phải có `createUpdaterArtifacts=true` (release vẫn sinh `.sig`).
+4. CSP KHÔNG được chứa `cdnjs`/`unsafe-eval` (chống mở lại supply-chain/XSS — U3/R-series).
+5. `lib.rs` spawn sidecar phải giữ `PRYNX_ENFORCE_LICENSE_TOKEN="true"` + `DEV_MODE="false"`.
+
+> Lưu ý: guard `USING(true)` trên bảng RLS nhạy cảm KHÔNG đặt ở repo này (dễ false-positive với
+> SQL dò/cleanup như `printsolutions_security_fix.sql`) — nó thuộc CI của repo `printsolutions-main`.
+
+**Verify:** YAML parse OK (6 job: backend-lint, preflight-qa, desktop-lint, dependency-scan,
+security-guards, release-integrity-gate); 5 guard chạy thử trên trạng thái hiện tại → toàn bộ PASS.
+
+---
+
+## 20. Audit ĐÓNG GÓI — đủ thành phần / sót tính năng? (2026-06-26)
+
+> Đối chiếu import thật của `backend/app` vs `requirements.txt` vs `--include-package` (Nuitka)
+> + wiring binary ngoài. Verify bằng venv dự án (kiểm package thực cài).
+
+### 20.1. Phát hiện & vá
+| # | Mức | Phát hiện (VERIFIED) | Vá |
+|---|---|---|---|
+| P1 | 🔴 | **Tách nền vỡ trong bản đóng gói.** Route live `remove_background_endpoint` → `isnet/birefnet_engine` **hard-import `onnxruntime`**. onnxruntime cài ad-hoc trong venv (1.24.4) nên chạy lúc dev, NHƯNG **thiếu ở `requirements.txt` + `--include-package`** → bundle sót → ImportError khi bấm tách nền (và máy build sạch còn không cài). | Thêm `onnxruntime==1.24.4` vào requirements; thêm `--include-package=onnxruntime` + `--include-package-data=onnxruntime` (gói native DLL) vào build. |
+| P2 | 🟠 | **Kênh cắt Serial không chạy.** `cut_export/transport/serial_port.py` import `serial` (pyserial) — **thiếu cả venv lẫn requirements** → luôn trả "missing pyserial". Spec gui-may-be 5.3/5.5 cần serial. | Thêm `pyserial==3.5` vào requirements. |
+| P3 | 🟡 | `pypdf`, `fontTools`, `uharfbuzz` được app import nhưng không khai báo `--include-package` (Nuitka thường tự lần, riêng `fontTools` có dynamic submodule dễ sót → font-subset khi edit PDF). | Thêm 3 `--include-package` tương ứng. |
+
+### 20.2. Đã kiểm là ĐỦ (không phải gap)
+- **Tesseract OCR:** `ocr_engine.py` trỏ `tesseract_cmd` tới `binaries/tesseract/tesseract.exe` bundled (fallback Program Files). Build copy nguyên thư mục Tesseract (kèm `tessdata`). ✓ *(SUSPECTED: cần xác nhận `tessdata` máy dev có `vie.traineddata` cho `lang="vie+eng"`.)*
+- **Ghostscript:** `config._find_ghostscript` trỏ `binaries/gs/bin/gswin64c.exe` bundled. ✓
+- **ICC + fonts:** `app/assets/icc` (FOGRA39, sRGB) + `app/assets/fonts` (DejaVuSans) bundled qua `--include-data-dir=app/assets`. ✓
+- **pdfium.dll:** bundled qua `--include-data-files` cho `pdfcompare_native`. ✓
+- **Không phải gap:** `rembg`/`pymatting` (engine cũ, route không gọi, không cài), `cupy` (guarded → CPU fallback), `python-barcode` (app không import — dead dep, có thể gỡ sau).
+
+### 20.3. CHƯA kiểm được ở đây (cần build thật) — [SUSPECTED]
+- **onnxruntime + Nuitka:** đây là ca khó (native provider DLL + load động). `--include-package(-data)` là công thức ĐÚNG nhưng PHẢI xác minh bằng `build_production.ps1 -Release` rồi bấm "tách nền" trên máy cài sạch. Nếu vẫn lỗi load DLL → cân nhắc `--include-onefile-external-data` hoặc copy thủ công `onnxruntime/capi/*.dll`.
+- **Model ONNX (isnet ~178MB / birefnet 224–927MB):** KHÔNG bundle — `birefnet_engine` tải runtime qua httpx về `data/models`/`~/.u2net`. ⇒ lần tách nền ĐẦU cần internet + URL còn sống. Cân nhắc bundle sẵn model nhẹ (isnet) để chạy offline ngay.
+
+---
+
+## 21. Audit Production-Readiness — error handling / data safety (2026-06-26)
+
+> Nhóm B (ngoài license): rà `except: pass` nuốt lỗi, rò stacktrace ra client, ghi đè file
+> không atomic. Verify-to-ground-truth trên routes/core/workers.
+
+### 21.1. Kết quả — phần lớn ĐÃ TỐT (không bịa severity)
+- **Không rò stacktrace:** toàn bộ 500-error dùng `detail=f"... ({type(e).__name__})"` (chỉ tên loại
+  exception, KHÔNG message/path/trace). 4xx dùng message exception DOMAIN có kiểm soát
+  (`ObjectMapError`, `GlyphCoverageError`, `ValueError`...). `edit.py` còn xử lý riêng
+  `FileNotFoundError` → generic (cố ý tránh lộ path) + `logger.exception` cho log nội bộ.
+- **Không mất file input:** mọi chỗ chạm file gốc (`allow_overwriting_input=True`) ở tầng route đều
+  atomic (temp + `os.replace`). Output chính ghi file MỚI (không đè input). `edit.py` timeout → HỦY,
+  không ghi đè gốc (Yêu cầu 13.4).
+- **127 `except…pass`:** gần hết là best-effort hợp lệ (dọn temp `OSError`, rule dò preflight, fallback
+  layout, log bảo mật). KHÔNG phải bug hành vi → KHÔNG mass-sửa (rủi ro cao, lợi ích thấp).
+
+### 21.2. Đã vá (🟡 nhỏ)
+| # | Vấn đề | Vá |
+|---|---|---|
+| E1 | `export.py` gộp `(ValueError, FileNotFoundError)` → `str(e)` có thể lộ path server. | Tách `FileNotFoundError` → message generic + log nội bộ; `ValueError` giữ str (controlled). |
+| E2 | Watermark **in-place** tầng engine (`nup_engine`, `vdp_engine`, `plan_executor`) ghi `output_path` không atomic → crash giữa chừng làm hỏng output. | Đổi sang ghi temp + `os.replace` (cùng mẫu `_safe_watermark`). Output vốn tái tạo được nên rủi ro thấp, nhưng giờ nhất quán & an toàn. |
+
+**Verify:** py_compile sạch + diagnostics sạch (export.py, nup_engine.py, plan_executor.py, vdp_engine.py).
+
+### 21.3. 🟢 Ghi nhận (không sửa)
+- `except…pass` thiếu `logger.debug` ở vài rule dò/transform → khó chẩn đoán hơn nhưng không sai
+  hành vi. Có thể bổ sung debug-log dần khi đụng tới từng vùng, không cần đợt sửa hàng loạt.
+
+---
+
+## 22. Audit "Tách nền AI" (background removal) — 2026-06-26
+
+> Route `/pdf-tools/remove-background` → `isnet_engine` (fast) / `birefnet_engine` (lite=default, full=max).
+
+### 22.1. TỐT (verify code) — không có lỗi correctness kiểu OCR
+- Chạy inference trong `run_in_threadpool` (không khoá event loop — đã sửa "server đứng hình").
+- Validate path client cấp: chặn `..`, symlink, kiểm tồn tại + đuôi cho phép.
+- Guard OOM: ảnh > 6000px hạ xuống trước khi xử lý.
+- ONNX trực tiếp + GPU→CPU fallback sticky (DirectML OOM/treo → rớt CPU); env `PRYNX_BG_FORCE_CPU=1`.
+- Pre/post-processing chuẩn (ImageNet cho BiRefNet, ISNet norm); output PNG RGBA đúng. Có warmup endpoint.
+
+### 22.2. Đã vá
+| # | Mức | Vấn đề | Vá |
+|---|---|---|---|
+| BG1 | 🟡 | Model 'full' (927MB) cache vào `data/models` theo `__file__` → trong Nuitka onefile rơi vào thư mục giải nén TẠM (xoá khi thoát) → tải lại mỗi lần mở / ghi lỗi. | Đổi cache 'full' sang `~/.u2net` (HOME ổn định) như 'lite'/'fast'. py_compile ✓ |
+| BG2 | 🟡 | Endpoint `remove-background` trả `detail=f"...{str(e)}"` ra client (lộ path model/URL/deps) — trái chuẩn anti-recon. | **ĐÃ CHỐT & VÁ:** đổi về `type(e).__name__`; chi tiết vẫn log nội bộ (`exc_info=True`). py_compile ✓ |
+
+### 22.3. Cần xác minh / cân nhắc — [SUSPECTED] + recommendation
+- **onnxruntime trong bundle:** đã thêm `requirements` + `--include-package(-data)` (Mục 20). Vẫn PHẢI
+  verify trên `build_production.ps1 -Release` thật (onnxruntime native DLL là ca khó). Thiếu → feature 500.
+- **Model tải runtime (178–927MB từ GitHub):** lần tách nền ĐẦU cần internet + GitHub reachable; không có
+  thanh tiến độ cho bản 927MB → user dễ tưởng treo. Cân nhắc: bundle sẵn 1 model nhẹ (isnet 178MB) để
+  chạy offline ngay, hoặc thêm UI tiến độ tải.
+- 🟡 **Rò chi tiết lỗi:** ✅ ĐÃ VÁ (BG2) — endpoint `remove-background` nay trả `type(e).__name__`
+  thay vì `str(e)`, chi tiết vào log nội bộ. Nhất quán anti-recon với toàn backend.
