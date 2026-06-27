@@ -183,29 +183,35 @@ def compute_sticker_layout_for_page(
 
     shape_props = {}  # Always start empty — will be filled from yDF
 
-    # Always try to classify shape from yDF vectors
-
     _auto_detected_shape = None
 
     _auto_detected_props = {}
 
-    try:
+    # Chỉ chạy classify_shape khi THỰC SỰ cần (thiếu override type HOẶC thiếu
+    # override props). Khi Detection (SSOT) đã cấp đủ type+props → bỏ qua, tránh
+    # phân loại "tính-rồi-vứt" trong vòng nóng layout (audit shape-detection #2).
 
-        from app.workers.shape_classifier import classify_shape
+    _need_auto = (not shape_type) or (not shape_props_override)
 
-        if largest_path:
+    if _need_auto:
 
-            result = classify_shape(largest_path.get('items', []))
+        try:
 
-            _auto_detected_shape = result['shape_type'].name
+            from app.workers.shape_classifier import classify_shape
 
-            _auto_detected_props = result.get('params', {})
+            if largest_path:
 
-            logger.debug(f"   SHAyE: classify_shape from yDF → {_auto_detected_shape}")
+                result = classify_shape(largest_path.get('items', []))
 
-    except Exception as e:
+                _auto_detected_shape = result['shape_type'].name
 
-        logger.debug(f"   SHAyE: classify_shape failed: {e}")
+                _auto_detected_props = result.get('params', {})
+
+                logger.debug(f"   SHAyE: classify_shape from yDF → {_auto_detected_shape}")
+
+        except Exception as e:
+
+            logger.debug(f"   SHAyE: classify_shape failed: {e}")
 
     if not shape_type:
 

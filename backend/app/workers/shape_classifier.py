@@ -364,6 +364,13 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
             return ShapeType.HEXAGON, hex_params
         return ShapeType.CUSTOM, {'reason': '6_edge_non_hex'}
 
+    # 7 edges → arrow (heptagon điển hình của tem mũi tên). Khớp nhánh raster
+    # (vertices==7 → ARROW) và CHẶN rơi xuống width-profile bị nhận nhầm thành
+    # HAMMER (audit shape-detection: arrow7 → HAMMER). Hammer/dumbbell thực tế là
+    # đường cong trơn (0 cạnh thẳng) nên không chạm nhánh này.
+    if n_edges == 7:
+        return ShapeType.ARROW, {'note': 'heptagon_arrow'}
+
     # 8 edges → octagon (treat as circle for layout)
     if n_edges == 8:
         return ShapeType.CIRCLE_ELLIPSE, {'note': 'octagon'}

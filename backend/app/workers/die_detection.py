@@ -668,19 +668,28 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
     shape_type = coerce_shape_type(result["shape_type"].name)
     props = _normalize_props(result.get("params", {}) or {})
 
-    # Kích thước thành phẩm từ contour đã sample (đồng nhất với route cũ).
-    try:
-        samples = _sample_bezier_contour(items)
-        if samples:
-            min_x, max_x, min_y, max_y = _bounding_box(samples)
-            visual_w = max_x - min_x
-            visual_h = max_y - min_y
-        else:
+    # Kích thước thành phẩm. Nếu đường bế bị TÁCH nhiều subpath cùng spot/màu
+    # (vd contour + chi tiết), extent của NHÓM ĐÃ GỘP mới phản ánh đủ; anchor đơn
+    # có thể thiếu (audit shape-detection #3). Ca 1 subpath → GIỮ NGUYÊN cách cũ
+    # (sample contour anchor) để không đổi kết quả phổ biến.
+    _members = _collect_die_group(paths, largest, page.rect, die_colors, die_color_tol)
+    if len(_members) > 1:
+        _mr = _merge_die_paths(_members)["rect"]
+        visual_w = _mr.width
+        visual_h = _mr.height
+    else:
+        try:
+            samples = _sample_bezier_contour(items)
+            if samples:
+                min_x, max_x, min_y, max_y = _bounding_box(samples)
+                visual_w = max_x - min_x
+                visual_h = max_y - min_y
+            else:
+                visual_w = largest["rect"].width
+                visual_h = largest["rect"].height
+        except Exception:
             visual_w = largest["rect"].width
             visual_h = largest["rect"].height
-    except Exception:
-        visual_w = largest["rect"].width
-        visual_h = largest["rect"].height
 
     try:
         rot = page.rotation

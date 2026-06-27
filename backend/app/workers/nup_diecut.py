@@ -277,11 +277,22 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         if not filtered: filtered = valid_paths
 
-        stroke_paths = [p for p in filtered if p.get('type') == 's' or (p.get('fill') is None and p.get('color') is not None)]
+        # SSOT (die-shape-detection-ssot — R3.2): dùng CHUNG bộ chọn đường khuôn
+        # `_select_from_paths` (chấm điểm kênh spot / màu bế / nét) như Detection,
+        # THAY VÌ chỉ chọn path diện tích lớn nhất. Trước đây max-area chọn nhầm
+        # mảng artwork khi nó lớn hơn đường khuôn → head-to-tail tính nesting theo
+        # artwork (preview≠output). Nay bám đúng đường bế như UI/preview.
+        from app.workers.die_detection import _select_from_paths, DetectionConfig
 
-        target_paths = stroke_paths if stroke_paths else filtered
+        _cfg = DetectionConfig()
 
-        largest_path = max(target_paths, key=lambda p: p['rect'].width * p['rect'].height)
+        largest_path, _matched_by_spot = _select_from_paths(
+            paths, src_page.rect, _cfg.die_channel_names, _cfg.die_colors, _cfg.die_color_tol
+        )
+
+        # Fallback an toàn: SSOT không có ứng viên → giữ hành vi cũ (path lớn nhất).
+        if largest_path is None:
+            largest_path = max(filtered, key=lambda p: p['rect'].width * p['rect'].height)
 
         logger.debug(f"[HEAD_TO_TAIL_DEBUG] largest_path rect={largest_path['rect']} items={len(largest_path.get('items',[]))}")
 
