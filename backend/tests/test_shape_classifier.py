@@ -90,6 +90,9 @@ _VECTOR_CASES = [
     ("parallelogram", lines([(0, 0), (120, 0), (150, 70), (30, 70)]), ShapeType.PARALLELOGRAM),
     ("arrow7",        lines([(0, 30), (60, 30), (60, 10), (100, 50),
                              (60, 90), (60, 70), (0, 70)]),           ShapeType.ARROW),
+    ("octagon_reg",   reg_polygon(100, 100, 60, 8),                   ShapeType.CIRCLE_ELLIPSE),
+    ("chamfered_rect", lines([(15, 0), (105, 0), (120, 15), (120, 65),
+                              (105, 80), (15, 80), (0, 65), (0, 15)]), ShapeType.RECTANGLE),
     ("dumbbell",      _bar_poly(200, 60, 24, two_heads=True),         ShapeType.DUMBBELL),
     ("hammer",        _bar_poly(200, 60, 24, two_heads=False),        ShapeType.HAMMER),
 ]

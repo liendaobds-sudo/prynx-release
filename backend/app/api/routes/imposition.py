@@ -457,16 +457,28 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
         _logger.warning(f"Spot extraction on page {page_idx + 1} failed: {e}")
         return None
 
-    for p in sep_result.get("plates", []):
-        # Bất kỳ plate KHÔNG phải process color (CMYK) → coi là kênh khuôn (spot).
-        if p["name"] in ("Cyan", "Magenta", "Yellow", "Black"):
-            continue
+    plates = [
+        p for p in sep_result.get("plates", [])
+        # Bất kỳ plate KHÔNG phải process color (CMYK) → ứng viên kênh khuôn (spot).
+        if p["name"] not in ("Cyan", "Magenta", "Yellow", "Black")
+    ]
+    if not plates:
+        return None
+
+    # Ưu tiên plate có TÊN khớp kênh khuôn cấu hình (CutContour/Dieline/…) — nhất
+    # quán với _select_from_paths ở đường vector (tên kênh > spot bất kỳ). Khi không
+    # plate nào khớp tên, giữ THỨ TỰ GỐC (plate spot đầu tiên) như cũ (sort ổn định).
+    from app.workers.die_detection import _match_die_channel
+    _names = frozenset(n.strip().lower() for n in (config.die_channel_names or ()))
+    plates.sort(key=lambda p: 0 if _match_die_channel(p.get("name"), _names) else 1)
+
+    import cv2
+    for p in plates:
         try:
             raw_bytes = zlib.decompress(base64.b64decode(p["alpha_data"]))
             h = sep_result["height"]
             w = sep_result["width"]
             mask = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, w))
-            import cv2
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
                 solid = np.zeros_like(mask)
@@ -481,7 +493,7 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
             return build_shape_from_raster(page_idx, mask, spot_w, spot_h)
         except Exception as e:
             _logger.warning(f"Raster classify page {page_idx + 1} failed: {e}")
-            return None
+            continue
     return None
 
 

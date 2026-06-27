@@ -371,8 +371,23 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
     if n_edges == 7:
         return ShapeType.ARROW, {'note': 'heptagon_arrow'}
 
-    # 8 edges → octagon (treat as circle for layout)
+    # 8 edges → bát giác (≈ tròn cho layout) HOẶC chữ nhật vát góc.
+    # Phân biệt: chữ nhật vát góc có 4 cạnh DÀI (2 cặp song song ⊥) + 4 vát NGẮN
+    # (bimodal độ dài). Bát giác đều có 8 cạnh xấp xỉ bằng nhau. Tránh xếp nhầm
+    # nhãn vát góc theo kiểu tròn (audit shape-detection).
     if n_edges == 8:
+        lengths = sorted((e['length'] for e in merged), reverse=True)
+        avg_long = sum(lengths[:4]) / 4.0
+        avg_short = sum(lengths[4:]) / 4.0
+        if avg_short > 1e-6 and (avg_long / avg_short) > 2.0:
+            long_edges = sorted(merged, key=lambda e: e['length'], reverse=True)[:4]
+            par = _find_parallel_groups(long_edges)
+            if len(par) == 2:
+                g1, g2 = par[0][0], par[1][0]
+                n1x, n1y = g1['dx'] / g1['length'], g1['dy'] / g1['length']
+                n2x, n2y = g2['dx'] / g2['length'], g2['dy'] / g2['length']
+                if abs(n1x * n2x + n1y * n2y) < 0.08:  # 2 cặp song song ~vuông góc
+                    return ShapeType.RECTANGLE, {'note': 'chamfered_rect'}
         return ShapeType.CIRCLE_ELLIPSE, {'note': 'octagon'}
 
     return None, None  # Unresolved → need width profile
