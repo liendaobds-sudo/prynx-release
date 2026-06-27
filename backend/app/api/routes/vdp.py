@@ -1,14 +1,28 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 import os
 import uuid
 import json
 import time
+import base64
+import tempfile
 import multiprocessing
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Tuple
 from app.schemas.vdp import VdpRequest, VdpField
 from app.workers.vdp_engine import run_vdp_engine
+from app.workers.vdp_datasource import (
+    DataSourceError,
+    RecordTable,
+    read_source,
+    list_xlsx_sheets,
+)
+from app.workers.vdp_validate import (
+    validate_batch,
+    gating_state,
+    build_error_report_csv,
+)
+from app.workers.vdp_preview import render_record_preview
 from app.core.license_guard import require_license
 from app.config import settings
 
@@ -270,3 +284,404 @@ def get_system_fonts(license_info: dict = Depends(require_license)):
     
     fonts.sort(key=lambda x: x["name"].lower())
     return {"fonts": fonts}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VDP Upgrade routes (Tier-1): nguồn dữ liệu, validate, preview, báo cáo lỗi.
+#
+# Mọi route giữ Depends(require_license) như các route hiện có. Lỗi đọc nguồn
+# (DataSourceError) được chuyển thành HTTP 400 với detail là thông báo tiếng
+# Việt (design.md — Error Handling). Route /validate KHÔNG sinh bất kỳ artifact
+# PDF nào (Req 5.7).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Số dòng xem trước trả về cho /vdp/datasource (đủ để UI hiển thị mẫu cột).
+DATASOURCE_PREVIEW_ROWS = 20
+
+
+def _parse_fields(fields_json: str) -> List[VdpField]:
+    """Phân tích chuỗi JSON cấu hình field thành danh sách ``VdpField``.
+
+    Lỗi JSON/schema → HTTP 400 với thông báo tiếng Việt (giữ phong cách các
+    route hiện có).
+    """
+    try:
+        parsed = json.loads(fields_json)
+        return [VdpField(**f) for f in parsed]
+    except HTTPException:
+        raise
+    except Exception as exc:  # JSONDecodeError hoặc lỗi validate pydantic
+        logger.debug("Invalid fields payload: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail="Dữ liệu cấu hình field (fields) không hợp lệ.",
+        )
+
+
+async def _form_or_file_text(value: Optional[str], upload: Optional[UploadFile]) -> Optional[str]:
+    """Lấy nội dung JSON từ trường form chuỗi HOẶC từ file upload.
+
+    Trường form multipart bị Starlette giới hạn 1MB mỗi part; dữ liệu lớn (vd
+    ``rows``/``issues`` của lô nhiều bản ghi) phải gửi qua file part (UploadFile)
+    để không bị chặn — giống cách ``/generate`` gửi ``data_file``. Ưu tiên ``value``
+    (form) nếu có; nếu không thì đọc ``upload`` (file). Trả ``None`` khi cả hai trống.
+    """
+    if value is not None:
+        return value
+    if upload is not None:
+        raw = await upload.read()
+        return raw.decode("utf-8", errors="replace")
+    return None
+
+
+async def _read_table_from_source(
+    kind: str,
+    file: Optional[UploadFile],
+    url: Optional[str],
+    text: Optional[str],
+    sheet: Optional[str],
+    has_header: bool,
+) -> RecordTable:
+    """Đọc nguồn dữ liệu (csv/xlsx/gsheet) → ``RecordTable``.
+
+    Quy ``DataSourceError`` về HTTP 400 với ``detail`` là thông báo tiếng Việt.
+    """
+    normalized = (kind or "").strip().lower()
+
+    if normalized == "csv":
+        if file is not None:
+            payload: Any = await file.read()
+        elif text is not None:
+            payload = text
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Thiếu dữ liệu nguồn CSV (cần tải file hoặc dán nội dung).",
+            )
+    elif normalized in ("xlsx", "excel"):
+        if file is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Thiếu file Excel (.xlsx) để đọc.",
+            )
+        payload = await file.read()
+    elif normalized in ("gsheet", "gsheets", "google-sheets"):
+        if not url:
+            raise HTTPException(
+                status_code=400,
+                detail="Thiếu đường liên kết (URL) Google Sheets.",
+            )
+        payload = url
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Định dạng nguồn dữ liệu không được hỗ trợ: '{kind}'.",
+        )
+
+    try:
+        return read_source(normalized, payload, sheet=sheet, has_header=has_header)
+    except DataSourceError as exc:
+        raise HTTPException(status_code=400, detail=exc.message)
+
+
+def _table_from_rows(
+    rows_json: Optional[str], columns_json: Optional[str]
+) -> Optional[RecordTable]:
+    """Dựng ``RecordTable`` từ rows (và tuỳ chọn columns) đã nạp sẵn ở phía UI.
+
+    Khi không truyền ``rows_json`` → trả ``None`` (nguồn chưa nạp). Khi không
+    truyền ``columns_json`` → suy cột từ khoá của các dòng theo thứ tự xuất hiện.
+    """
+    if rows_json is None:
+        return None
+    try:
+        rows = json.loads(rows_json)
+        if not isinstance(rows, list):
+            raise ValueError("rows phải là một mảng JSON")
+        rows = [dict(r) for r in rows]
+    except Exception as exc:
+        logger.debug("Invalid rows payload: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail="Dữ liệu dòng record (rows) không hợp lệ.",
+        )
+
+    if columns_json:
+        try:
+            columns = list(json.loads(columns_json))
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Dữ liệu danh sách cột (columns) không hợp lệ.",
+            )
+    else:
+        columns = []
+        seen: set = set()
+        for row in rows:
+            for key in row.keys():
+                if key not in seen:
+                    seen.add(key)
+                    columns.append(key)
+
+    return RecordTable(columns=columns, rows=rows)
+
+
+async def _resolve_table(
+    kind: Optional[str],
+    file: Optional[UploadFile],
+    url: Optional[str],
+    text: Optional[str],
+    sheet: Optional[str],
+    has_header: bool,
+    rows_json: Optional[str],
+    columns_json: Optional[str],
+) -> Optional[RecordTable]:
+    """Lấy ``RecordTable`` từ một nguồn (đọc lại) HOẶC từ rows đã nạp sẵn.
+
+    Ưu tiên nguồn (``kind``) nếu được cung cấp; nếu không, dùng ``rows_json``.
+    Trả ``None`` khi không có cả hai (nguồn chưa nạp) — caller xử lý theo ngữ cảnh.
+    """
+    if kind:
+        return await _read_table_from_source(kind, file, url, text, sheet, has_header)
+    return _table_from_rows(rows_json, columns_json)
+
+
+@router.post("/datasource")
+async def read_datasource(
+    kind: str = Form(...),
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    text: Optional[str] = Form(None),
+    sheet: Optional[str] = Form(None),
+    has_header: bool = Form(True),
+    license_info: dict = Depends(require_license),
+):
+    """Đọc nguồn dữ liệu (csv/xlsx/gsheet) → cột + số record + xem trước (Req 1.1, 1.3).
+
+    ``DataSourceError`` → HTTP 400 với thông báo tiếng Việt.
+    """
+    table = await _read_table_from_source(kind, file, url, text, sheet, has_header)
+    return {
+        "columns": table.columns,
+        "record_count": len(table.rows),
+        "preview_rows": table.rows[:DATASOURCE_PREVIEW_ROWS],
+    }
+
+
+@router.post("/datasource/sheets")
+async def read_datasource_sheets(
+    file: UploadFile = File(...),
+    license_info: dict = Depends(require_license),
+):
+    """Liệt kê tên sheet của một file Excel ``.xlsx`` để người dùng chọn (Req 1.3)."""
+    data = await file.read()
+    try:
+        sheets = list_xlsx_sheets(data)
+    except DataSourceError as exc:
+        raise HTTPException(status_code=400, detail=exc.message)
+    return {"sheets": sheets}
+
+
+@router.post("/validate")
+async def validate_vdp(
+    fields: str = Form(...),
+    kind: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    text: Optional[str] = Form(None),
+    sheet: Optional[str] = Form(None),
+    has_header: bool = Form(True),
+    rows: Optional[str] = Form(None),
+    columns: Optional[str] = Form(None),
+    rows_file: Optional[UploadFile] = File(None),
+    license_info: dict = Depends(require_license),
+):
+    """Kiểm tra cấu hình field + dữ liệu TRƯỚC khi sinh lô (Req 5.*).
+
+    KHÔNG sinh bất kỳ artifact PDF nào (Req 5.7). Trả danh sách ``issues`` và
+    ``gating`` (``block`` | ``needs_confirmation`` | ``allow``). Nguồn chưa nạp/0
+    record được ``validate_batch`` coi là lỗi chặn (Req 5.8, 5.11).
+    """
+    vdp_fields = _parse_fields(fields)
+    rows = await _form_or_file_text(rows, rows_file)
+    table = await _resolve_table(
+        kind, file, url, text, sheet, has_header, rows, columns
+    )
+
+    issues = validate_batch(vdp_fields, table)
+    gating = gating_state(issues)
+
+    return {
+        "gating": gating,
+        "issues": [
+            {
+                "severity": i.severity,
+                "record_idx": i.record_idx,
+                "field": i.field,
+                "reason": i.reason,
+            }
+            for i in issues
+        ],
+    }
+
+
+@router.post("/preview")
+async def preview_vdp(
+    fields: str = Form(...),
+    requested_index: int = Form(...),
+    template: Optional[UploadFile] = File(None),
+    template_path: Optional[str] = Form(None),
+    kind: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    text: Optional[str] = Form(None),
+    sheet: Optional[str] = Form(None),
+    has_header: bool = Form(True),
+    rows: Optional[str] = Form(None),
+    columns: Optional[str] = Form(None),
+    rows_file: Optional[UploadFile] = File(None),
+    scale: float = Form(2.0),
+    license_info: dict = Depends(require_license),
+):
+    """Render bản xem trước record thứ N → PNG (base64) + field_errors (Req 4.1–4.6, 4.10).
+
+    Template nhận từ upload (``template``) hoặc đường dẫn server (``template_path``).
+    Dùng chung ``render_record_preview`` để bảo toàn parity preview ↔ output.
+    """
+    vdp_fields = _parse_fields(fields)
+    rows = await _form_or_file_text(rows, rows_file)
+    table = await _resolve_table(
+        kind, file, url, text, sheet, has_header, rows, columns
+    )
+    if table is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Nguồn dữ liệu chưa được nạp để xem trước.",
+        )
+
+    # Chuẩn bị template trên đĩa cho render_record_preview.
+    tmp_template: Optional[str] = None
+    resolved_template_path: Optional[str] = None
+    if template is not None:
+        template_bytes = await template.read()
+        if not template_bytes.startswith(b"%PDF"):
+            raise HTTPException(
+                status_code=400, detail="File template tải lên không phải PDF hợp lệ."
+            )
+        tmp_template = os.path.join(
+            tempfile.gettempdir(), f"vdp_preview_tpl_{uuid.uuid4().hex}.pdf"
+        )
+        with open(tmp_template, "wb") as fp:
+            fp.write(template_bytes)
+        resolved_template_path = tmp_template
+    elif template_path:
+        real_path = os.path.realpath(template_path)
+        if not os.path.isfile(real_path):
+            raise HTTPException(
+                status_code=400,
+                detail="template_path không tồn tại hoặc không phải file.",
+            )
+        resolved_template_path = real_path
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Thiếu template (cần tải file hoặc cung cấp template_path).",
+        )
+
+    try:
+        result = render_record_preview(
+            resolved_template_path,
+            vdp_fields,
+            table.rows,
+            requested_index,
+            scale=scale,
+        )
+    finally:
+        if tmp_template and os.path.exists(tmp_template):
+            try:
+                os.remove(tmp_template)
+            except OSError:
+                pass
+
+    image_b64 = (
+        base64.b64encode(result.image_png).decode("ascii")
+        if result.image_png is not None
+        else None
+    )
+
+    return {
+        "image_png_base64": image_b64,
+        "record_index": result.record_index,
+        "clamped": result.clamped,
+        "empty_source": result.empty_source,
+        "width": result.width,
+        "height": result.height,
+        "message": result.message,
+        "field_errors": [
+            {
+                "field": e.field,
+                "kind": e.kind,
+                "rect": e.rect,
+                "reason": e.reason,
+            }
+            for e in result.field_errors
+        ],
+    }
+
+
+@router.post("/error-report")
+async def error_report_vdp(
+    issues: Optional[str] = Form(None),
+    fields: Optional[str] = Form(None),
+    kind: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    text: Optional[str] = Form(None),
+    sheet: Optional[str] = Form(None),
+    has_header: bool = Form(True),
+    rows: Optional[str] = Form(None),
+    columns: Optional[str] = Form(None),
+    rows_file: Optional[UploadFile] = File(None),
+    issues_file: Optional[UploadFile] = File(None),
+    license_info: dict = Depends(require_license),
+):
+    """Sinh báo cáo lỗi CSV tải về (Req 4.7, 4.8).
+
+    Hai chế độ:
+    - Truyền ``issues`` (JSON) đã có sẵn → sinh CSV trực tiếp.
+    - Truyền ``fields`` + nguồn/rows → tính lại issue qua ``validate_batch`` rồi sinh CSV.
+    """
+    issues = await _form_or_file_text(issues, issues_file)
+    rows = await _form_or_file_text(rows, rows_file)
+    if issues is not None:
+        try:
+            issue_list = json.loads(issues)
+            if not isinstance(issue_list, list):
+                raise ValueError("issues phải là một mảng JSON")
+        except Exception as exc:
+            logger.debug("Invalid issues payload: %s", exc)
+            raise HTTPException(
+                status_code=400, detail="Dữ liệu issues không hợp lệ."
+            )
+    elif fields is not None:
+        vdp_fields = _parse_fields(fields)
+        table = await _resolve_table(
+            kind, file, url, text, sheet, has_header, rows, columns
+        )
+        issue_list = validate_batch(vdp_fields, table)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Cần cung cấp 'issues' hoặc 'fields' (kèm nguồn) để sinh báo cáo lỗi.",
+        )
+
+    csv_text = build_error_report_csv(issue_list)
+    # Thêm BOM UTF-8 để Excel mở đúng tiếng Việt có dấu.
+    content = ("\ufeff" + csv_text).encode("utf-8")
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": "attachment; filename=vdp_error_report.csv"
+        },
+    )

@@ -9,6 +9,10 @@ import tempfile
 from xml.sax.saxutils import escape as xml_escape
 
 from app.workers import pdf_wrapper as pdf_lib
+from app.workers.vdp_gs1 import (
+    parse_gs1, build_gs1_payload, human_readable, GS1Error, FNC1,
+)
+from app.workers.vdp_conditions import resolve_field_content, ConditionError
 from app.schemas.vdp import VdpField
 from typing import List, Dict
 
@@ -23,6 +27,9 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 logger = logging.getLogger(__name__)
 
 MM_TO_PTS = 2.83465
+# Hằng số quy đổi toạ độ frontend (CSS px @96dpi) → point backend, dùng CHUNG cho
+# mọi loại field (text/image/QR/barcode 1D/2D) để bảo toàn parity preview ↔ output.
+CSS_TO_PT_FACTOR = 72.0 / 96.0  # = 0.75
 
 def hex_to_rgb(hex_str: str) -> tuple:
     hex_str = (hex_str or '#000000').lstrip('#')
@@ -271,6 +278,495 @@ def _draw_image_field(c, field, val, rl_x, rl_y, w, h):
     return True
 
 
+# ─── Barcode 2D công nghiệp: DataMatrix ECC200 / GS1 DataMatrix ─────────────
+# Widget ECC200 của ReportLab là loại Type-12 cố định 44×44 module (barWidth =
+# cỡ một module = X-dimension). Ta dùng nó cho cả DataMatrix thường và GS1
+# DataMatrix (chèn FNC1 qua build_gs1_payload). Phần GS1-128 dùng Code128 + FNC1.
+DATAMATRIX_MODULES = 44       # số module mỗi cạnh của ECC200 Type-12
+MIN_X_DIMENSION_MM = 0.254    # X-dimension tối thiểu để máy quét đọc được (Req 3.11)
+
+
+def datamatrix_fit(frame_w_pt, frame_h_pt, quiet_zone_pt, n_modules=DATAMATRIX_MODULES):
+    """Tính cỡ module và kiểm fit cho barcode 2D (Req 3.11).
+
+    Trả tuple ``(ok, module_pt, x_dim_mm, reason)``. Theo Property 20, ``ok`` là
+    False KHI VÀ CHỈ KHI X-dimension < 0.254 mm HOẶC quiet zone < 1 module.
+
+    Đơn vị point dùng chung với 1D/QR; quy đổi point→mm bằng ``/ MM_TO_PTS`` (point
+    là đơn vị vật lý 1/72 inch nên đây là kích thước in thật, không phụ thuộc CSS).
+    """
+    inner_w = frame_w_pt - 2 * quiet_zone_pt
+    inner_h = frame_h_pt - 2 * quiet_zone_pt
+    module_pt = min(inner_w, inner_h) / n_modules
+    x_dim_mm = module_pt / MM_TO_PTS
+    if x_dim_mm < MIN_X_DIMENSION_MM:
+        return (False, module_pt, x_dim_mm,
+                f"X-dimension {x_dim_mm:.3f}mm < {MIN_X_DIMENSION_MM}mm")
+    if quiet_zone_pt < module_pt:
+        return (False, module_pt, x_dim_mm,
+                f"quiet zone {quiet_zone_pt:.2f}pt < 1 module ({module_pt:.2f}pt)")
+    return (True, module_pt, x_dim_mm, "")
+
+
+def render_2d(c, field, value, rect):
+    """Vẽ barcode 2D (DataMatrix / GS1 DataMatrix) vào canvas ReportLab.
+
+    - DataMatrix      : mã ECC200 biểu diễn ``value`` (Req 3.1).
+    - GS1 DataMatrix  : parse AI → chèn FNC1 → ECC200 tuân thủ GS1 (Req 3.3).
+    - Quiet zone + màu CMYK theo CÙNG hệ quy đổi ``CSS_TO_PT_FACTOR`` như QR/1D (Req 3.7).
+    - Kiểm fit X-dimension ≥ 0.254 mm và quiet zone ≥ 1 module; nếu khung quá nhỏ
+      hoặc AI sai → raise ValueError để caller gắn nhãn ERR + ghi báo cáo, KHÔNG
+      sinh mã sai chuẩn (Req 3.5, 3.11).
+
+    ``rect`` = ``{'x','y','w','h'}`` theo toạ độ ReportLab (gốc dưới-trái), đã clamp.
+    """
+    from reportlab.graphics.barcode.ecc200datamatrix import ECC200DataMatrix
+
+    btype = (field.get('barcodeType') or field.get('barType') or '').lower()
+    raw = str(value)
+
+    # GS1 DataMatrix: parse + validate AI rồi dựng payload có FNC1 (\x1d).
+    # parse_gs1 raise GS1Error (lớp con của ValueError) khi AI/định dạng sai (Req 3.5).
+    is_gs1_dm = btype in ('gs1-datamatrix', 'gs1datamatrix', 'gs1_datamatrix', 'gs1-dm')
+    if is_gs1_dm:
+        elems = parse_gs1(raw)
+        data = build_gs1_payload(elems)
+    else:
+        data = raw
+    # Human-readable GS1 '(AI)dữ_liệu' (Req 3.10): chỉ khi gs1HumanReadable bật.
+    # Mặc định tắt ⇒ hr_text='' ⇒ ma trận chiếm trọn khung như cũ (parity).
+    want_hr = is_gs1_dm and bool(field.get('gs1HumanReadable'))
+    hr_text = human_readable(elems) if want_hr else ''
+
+    rl_x, rl_y = rect['x'], rect['y']
+    w, h = rect['w'], rect['h']
+
+    # Quiet zone mm → point — CÙNG công thức với QR/1D (Req 3.7, Property 18).
+    qz_pts = max(0.0, float(field.get('quietZone', 2) or 0)) * MM_TO_PTS * CSS_TO_PT_FACTOR
+    qz_pts = max(0.0, min(qz_pts, w / 2.0 - 0.5, h / 2.0 - 0.5))
+
+    # Dải HR (nếu bật) chiếm phần đáy khung; ma trận fit vào phần CÒN LẠI.
+    # hr_h=0 ⇒ fit_h=h ⇒ datamatrix_fit/đặt ma trận y hệt trước (parity).
+    hr_h = min(h * 0.18, 9.0) if hr_text else 0.0
+    fit_h = max(1.0, h - hr_h)
+    ok, module_pt, x_dim_mm, reason = datamatrix_fit(w, fit_h, qz_pts)
+    if not ok:
+        raise ValueError(f"DataMatrix khong dat chuan: {reason}")
+
+    dm = ECC200DataMatrix(value=data, barWidth=module_pt)
+    dm.validate()
+    if not getattr(dm, 'valid', 1):
+        raise ValueError("DataMatrix: gia tri co ky tu khong ma hoa duoc (ord>255)")
+    dm.encode()
+    dm.computeSize()
+
+    bar_color = field.get('barColor') or field.get('fontColor') or '#000000'
+    transparent_bg = field.get('transparentBg', False)
+
+    c.saveState()
+    # Nền phủ TOÀN BỘ khung (gồm vùng quiet zone) như QR/1D.
+    if not transparent_bg:
+        c.setFillColorCMYK(*hex_to_cmyk(field.get('bgColor', '#FFFFFF')))
+        c.rect(rl_x, rl_y, w, h, stroke=0, fill=1)
+    # Ma trận vuông (DATAMATRIX_MODULES × module_pt), canh giữa trong vùng FIT
+    # (khung TRỪ dải HR ở đáy). hr_h=0 ⇒ offy = canh giữa cả khung như cũ.
+    draw_sz = module_pt * DATAMATRIX_MODULES
+    offx = rl_x + (w - draw_sz) / 2.0
+    offy = rl_y + hr_h + (fit_h - draw_sz) / 2.0
+    c.setFillColorCMYK(*hex_to_cmyk(bar_color))
+    dm.x = 0
+    dm.y = 0
+    # drawOn lưu trạng thái rồi gọi draw(); rect() của widget dùng màu fill hiện tại.
+    dm.drawOn(c, offx, offy)
+    if hr_h > 0:
+        hr_fs = max(3.0, min(hr_h * 0.8, w * 1.7 / max(1, len(hr_text))))
+        c.setFillColorCMYK(*hex_to_cmyk(bar_color))
+        c.setFont('Helvetica', hr_fs)
+        tw = c.stringWidth(hr_text, 'Helvetica', hr_fs)
+        tx = rl_x + (w - tw) / 2.0
+        ty = rl_y + (hr_h - hr_fs) / 2.0 + hr_fs * 0.18
+        c.drawString(tx, ty, hr_text)
+    c.restoreState()
+
+
+def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, error_sink=None):
+    """Vẽ TẤT CẢ field của một record lên canvas ReportLab ``c``.
+
+    Tách dùng chung giữa ``process_chunk`` (sinh lô) và Preview_Service để bảo
+    toàn parity preview ↔ output: cùng quy đổi toạ độ ``CSS_TO_PT_FACTOR = 0.75``,
+    cùng ``hex_to_cmyk`` (đen #000000 → (0,0,0,1) pure-K), cùng phép xoay
+    0/90/180/270 và cùng cách clamp khung vào trang. ``field_rects`` đã được
+    tính sẵn theo point; ``pw``/``ph`` là kích thước trang; ``field_font_variants``
+    là map biến thể font đã đăng ký. Hành vi giữ NGUYÊN so với vòng lặp gốc.
+
+    ``error_sink`` (tuỳ chọn): nếu truyền một list, mỗi field bị MISSING/ERR sẽ
+    được thêm một dict ``{'field','kind','reason','rect'}`` vào list — ``rect`` là
+    khung field ĐÃ clamp theo toạ độ point gốc-trên-trái (x từ trái, y từ trên,
+    w, h). Preview_Service dùng cơ chế này để báo lỗi đúng các field mà engine
+    gắn nhãn (một nguồn sự thật duy nhất, bảo toàn parity preview ↔ output). Mặc
+    định None ⇒ hành vi sinh lô giữ NGUYÊN.
+    """
+    from reportlab.graphics.barcode import createBarcodeDrawing
+    from reportlab.graphics import renderPDF
+    fields_dict = fields
+    for fi, field in enumerate(fields_dict):
+        f_rect = field_rects[fi]
+        # Clamp khung field vào trong trang (MediaBox) để nội dung (QR / mã vạch /
+        # text / ảnh) KHÔNG tràn ra ngoài trang rồi bị cắt mất — ví dụ người dùng
+        # kéo khung lớn hơn trang hoặc đặt lệch ra mép. Clone (không sửa field_rects
+        # gốc vì dùng lại cho mọi bản ghi).
+        _fx = min(max(0.0, f_rect['x']), max(0.0, pw - 1.0))
+        _fy = min(max(0.0, f_rect['y']), max(0.0, ph - 1.0))
+        _fw = max(1.0, min(f_rect['w'], pw - _fx))
+        _fh = max(1.0, min(f_rect['h'], ph - _fy))
+        f_rect = {'x': _fx, 'y': _fy, 'w': _fw, 'h': _fh}
+        # Khung field đã clamp theo toạ độ point gốc-trên-trái (x từ trái, y từ
+        # trên) — dùng để báo lỗi field cho Preview_Service. KHÔNG bị ảnh hưởng
+        # bởi phép xoay bên dưới (f_rect bị gán lại khi xoay, report_rect thì không).
+        report_rect = {'x': _fx, 'y': _fy, 'w': _fw, 'h': _fh}
+        # Frontend coordinates are MediaBox-relative (viewer shows MediaBox)
+        # ReportLab origin is bottom-left, frontend origin is top-left
+        rl_x = f_rect['x']
+        rl_y = ph - f_rect['y'] - f_rect['h']
+
+        # Phân giải nội dung field theo pipeline THỨ TỰ CỐ ĐỊNH (Req 2.11):
+        #   (1) điều kiện ẩn/hiện → (2) bảng rule first-match → (3) token nội tuyến
+        #   {Cot?A:B} → (4) placeholder cũ ({Cot}, {Cot[2|-]}, {Cot|func:arg}).
+        # Field KHÔNG dùng tính năng mới: bước 1–3 là no-op, bước 4 chính là
+        # _substitute hiện tại ⇒ kết quả không đổi (Req 2.8, 7.3).
+        try:
+            resolved = resolve_field_content(field, row)
+        except ConditionError as ce:
+            # Điều kiện/rule/token tham chiếu cột không tồn tại → gắn nhãn MISSING
+            # cho field của record này + ghi báo cáo lỗi, rồi tiếp tục field kế
+            # (KHÔNG làm hỏng các field/record khác) (Req 2.7, 8.4, 8.6).
+            c.setFillColorCMYK(0, 1, 1, 0)  # đỏ (CMYK)
+            c.setFont("Helvetica", 8)
+            c.drawString(rl_x, rl_y + f_rect['h'] - 10, f"MISSING: {field.get('name', '')}")
+            if error_sink is not None:
+                error_sink.append({
+                    'field': field.get('name', ''),
+                    'kind': 'MISSING',
+                    'reason': ce.reason,
+                    'rect': dict(report_rect),
+                })
+            continue
+
+        # (1) Field bị ẩn theo điều kiện ẩn/hiện → bỏ qua việc vẽ (Req 2.1).
+        if not resolved.visible:
+            continue
+
+        val = resolved.content
+
+        # #3 Image: cột rỗng / placeholder chưa map → dùng ảnh tĩnh (nếu có).
+        if field['type'] == 'image':
+            if (not val) or (val.startswith('{') and val.endswith('}')):
+                val = field.get('imagePath') or ''
+
+        if not val:
+            if field['type'] != 'image':
+                c.setFillColorCMYK(0, 1, 1, 0)  # đỏ (CMYK)
+                c.setFont("Helvetica", 8)
+                c.drawString(rl_x, rl_y + f_rect['h'] - 10, f"MISSING: {field['name']}")
+                if error_sink is not None:
+                    error_sink.append({
+                        'field': field.get('name', ''),
+                        'kind': 'MISSING',
+                        'reason': f"Thiếu giá trị cột cho field {field.get('name', '')}",
+                        'rect': dict(report_rect),
+                    })
+            continue
+
+        # Toạ độ gốc (chưa xoay) để vẽ nhãn lỗi nếu cần
+        err_x, err_y, err_h = rl_x, rl_y, f_rect['h']
+        rotated = False
+        try:
+            font_color_hex = (field.get('fontColor') or '#000000')
+            text_color = cmyk_color(font_color_hex)  # CMYK → đen pure-K (#4)
+
+            # ── Rotation: xoay nội dung quanh tâm box. Frontend đã hoán đổi w/h
+            #    cho field dọc (90/270), nên footprint vẽ = hoán đổi ngược lại. ──
+            rot = int(field.get('rotation') or 0) % 360
+            if rot in (90, 180, 270):
+                cx = f_rect['x'] + f_rect['w'] / 2.0
+                cy = ph - f_rect['y'] - f_rect['h'] / 2.0
+                ew, eh = (f_rect['h'], f_rect['w']) if rot in (90, 270) else (f_rect['w'], f_rect['h'])
+                c.saveState()
+                c.translate(cx, cy)
+                c.rotate(rot)
+                rotated = True
+                f_rect = {'x': -ew / 2.0, 'y': f_rect['y'], 'w': ew, 'h': eh}
+                rl_x = -ew / 2.0
+                rl_y = -eh / 2.0
+
+            if field['type'] == 'qrcode':
+                val_str = str(val)
+                if not val_str:
+                    continue
+
+                qr_style = field.get('qrStyle') or {}
+                transparent_bg = qr_style.get('transparentBg', False)
+                bg_color_hex = qr_style.get('bgColor', '#FFFFFF')
+                # Màu chấm QR lấy từ qrStyle.dotColor (fallback fontColor).
+                qr_fg_hex = qr_style.get('dotColor') or field.get('fontColor') or '#000000'
+
+                import segno
+                # Mức sửa lỗi lấy từ UI (L/M/Q/H), fallback 'M' nếu không hợp lệ.
+                ec_raw = str(field.get('errorCorrection') or 'M').lower()
+                ec_level = ec_raw if ec_raw in ('l', 'm', 'q', 'h') else 'm'
+                qr = segno.make(val_str, error=ec_level)
+                matrix = qr.matrix
+                n = len(matrix)  # số module mỗi cạnh (chưa gồm lề trắng)
+
+                # Strip compression — KHÔNG cộng quiet zone vào ma trận;
+                # lề trắng được vẽ bằng inset vật lý (mm) bên dưới để khớp preview.
+                strips = []
+                for r, row_data in enumerate(matrix):
+                    col = 0
+                    while col < len(row_data):
+                        if row_data[col]:
+                            start_c = col
+                            while col < len(row_data) and row_data[col]:
+                                col += 1
+                            strips.append((start_c, r, col - start_c, 1))
+                        else:
+                            col += 1
+
+                if n > 0:
+                    # Lề trắng (quiet zone) theo "Lề trắng (mm)" người dùng đặt.
+                    # LƯU Ý: để QR quét được, vùng trắng quanh QR nên ≥ ~4 module —
+                    # có thể đến từ ô "Lề trắng (mm)" này HOẶC từ vùng trắng của trang
+                    # quanh khung. Không ép cứng nữa để QR lấp đầy khung theo ý người dùng.
+                    qz_pts = max(0.0, float(field.get('quietZone', 2) or 0)) * MM_TO_PTS * CSS_TO_PT_FACTOR
+                    qz_pts = max(0.0, min(qz_pts, f_rect['w'] / 2.0 - 0.5, f_rect['h'] / 2.0 - 0.5))
+
+                    c.saveState()
+                    # Nền phủ TOÀN BỘ khung (gồm vùng lề trắng).
+                    if not transparent_bg:
+                        c.setFillColorCMYK(*hex_to_cmyk(bg_color_hex))
+                        c.rect(rl_x, rl_y, f_rect['w'], f_rect['h'], stroke=0, fill=1)
+
+                    # Vùng vẽ QR = khung trừ lề mm; QR giữ vuông, canh giữa.
+                    inner_w = max(1.0, f_rect['w'] - 2 * qz_pts)
+                    inner_h = max(1.0, f_rect['h'] - 2 * qz_pts)
+                    module = min(inner_w / n, inner_h / n)
+                    draw = module * n
+                    offx = rl_x + (f_rect['w'] - draw) / 2.0
+                    offy = rl_y + (f_rect['h'] - draw) / 2.0
+
+                    c.setFillColorCMYK(*hex_to_cmyk(qr_fg_hex))
+                    c.translate(offx, offy)
+                    c.scale(module, module)
+                    for x, y, w, h in strips:
+                        c.rect(x, n - y - h, w, h, stroke=0, fill=1)
+                    c.restoreState()
+
+            elif field['type'] == 'barcode':
+                val_str = str(val)
+                if not val_str:
+                    continue
+
+                btype = (field.get('barcodeType') or field.get('barType') or 'code128').lower()
+
+                # ── Nhánh barcode 2D mới (DataMatrix / GS1 DataMatrix) ──
+                # Vẽ độc lập qua render_2d rồi kết thúc field; KHÔNG đụng path
+                # 1D/QR hiện có để bảo toàn hành vi (Req 3.8, 7.3). AI sai / khung
+                # quá nhỏ → render_2d raise → except phía dưới gắn nhãn ERR (Req 3.5, 3.11).
+                if btype in ('datamatrix', 'gs1-datamatrix', 'gs1datamatrix',
+                             'gs1_datamatrix', 'gs1-dm'):
+                    render_2d(c, field, val_str,
+                              {'x': rl_x, 'y': rl_y, 'w': f_rect['w'], 'h': f_rect['h']})
+                else:
+                    # ── GS1-128: Code128 trên payload có FNC1 ──
+                    is_gs1_128 = btype in ('gs1-128', 'gs1128', 'gs1_128')
+                    if is_gs1_128:
+                        # parse + validate AI; sai định dạng → ERR (Req 3.5).
+                        elems = parse_gs1(val_str)
+                        payload = build_gs1_payload(elems)
+                        # FNC1 placeholder (\x1d) → ký tự FNC1 của Code128 (\xf1).
+                        bc_value = payload.replace(FNC1, '\xf1')
+                        rl_btype = 'Code128'
+                    else:
+                        # Map ĐẦY ĐỦ 7 loại 1D UI cung cấp → tránh preview ≠ output (#6).
+                        # Trước đây chỉ map 4 loại, còn lại âm thầm thành Code128.
+                        bt_map = {
+                            'code128': 'Code128',
+                            'ean13': 'EAN13',
+                            'ean8': 'EAN8',
+                            'upca': 'UPCA',
+                            'code39': 'Standard39',
+                            'itf14': 'I2of5',       # ITF = Interleaved 2 of 5
+                            'codabar': 'Codabar',
+                        }
+                        if btype not in bt_map:
+                            # Loại chưa hỗ trợ render → báo lỗi rõ thay vì in sai symbology.
+                            raise ValueError(f"barcode '{btype}' chua ho tro")
+                        rl_btype = bt_map[btype]
+                        bc_value = val_str
+
+                    # Màu vạch lấy từ barColor (fallback fontColor) — không dùng nhầm fontColor.
+                    bar_color = field.get('barColor') or field.get('fontColor') or '#000000'
+                    c_col = CMYKColor(*hex_to_cmyk(bar_color))
+                    # GS1-128: payload chứa ký tự điều khiển FNC1 nên KHÔNG in HR
+                    # mặc định (tránh hiển thị rác); 1D giữ nguyên hành vi showText.
+                    show_text = False if is_gs1_128 else field.get('showText', True)
+                    bc_kwargs = dict(value=bc_value, barFillColor=c_col, humanReadable=bool(show_text))
+                    if rl_btype == 'I2of5':
+                        bc_kwargs['bearers'] = 3.0  # ITF-14 có thanh bao quanh
+                    barcode = createBarcodeDrawing(rl_btype, **bc_kwargs)
+                    x0, y0, x1, y1 = barcode.getBounds()
+                    intrinsic_w = x1 - x0
+                    intrinsic_h = y1 - y0
+
+                    if intrinsic_w > 0 and intrinsic_h > 0:
+                        # Lề trắng (quiet zone) mm → points, cùng hệ quy đổi với khung.
+                        qz_pts = max(0.0, float(field.get('quietZone', 2) or 0)) * MM_TO_PTS * CSS_TO_PT_FACTOR
+                        qz_pts = max(0.0, min(qz_pts, f_rect['w'] / 2.0 - 0.5, f_rect['h'] / 2.0 - 0.5))
+
+                        transparent_bg = field.get('transparentBg', False)
+
+                        # GS1-128 human-readable: in chuỗi '(AI)dữ_liệu' SẠCH (không
+                        # chứa FNC1) ở dải đáy khung khi người dùng bật gs1HumanReadable
+                        # (Req 3.10). Mặc định tắt ⇒ hr_h = 0 ⇒ layout GIỮ NGUYÊN như cũ
+                        # (parity preview↔output không đổi với mọi field hiện có).
+                        want_gs1_hr = is_gs1_128 and bool(field.get('gs1HumanReadable'))
+                        hr_text = human_readable(elems) if want_gs1_hr else ''
+
+                        c.saveState()
+                        # Nền phủ TOÀN BỘ khung (bao gồm vùng lề trắng)
+                        if not transparent_bg:
+                            c.setFillColorCMYK(*hex_to_cmyk(field.get('bgColor', '#FFFFFF')))
+                            c.rect(rl_x, rl_y, f_rect['w'], f_rect['h'], stroke=0, fill=1)
+
+                        # Mã vạch lấp đầy vùng trong (khung trừ lề), đặt lệch theo lề.
+                        inner_w = max(1.0, f_rect['w'] - 2 * qz_pts)
+                        inner_h = max(1.0, f_rect['h'] - 2 * qz_pts)
+                        # Dải chữ HR (nếu bật): tối đa 22% chiều cao vùng trong, trần 9pt.
+                        hr_h = min(inner_h * 0.22, 9.0) if hr_text else 0.0
+                        bar_h = max(1.0, inner_h - hr_h)
+                        c.saveState()
+                        c.translate(rl_x + qz_pts, rl_y + qz_pts + hr_h)
+                        c.scale(inner_w / intrinsic_w, bar_h / intrinsic_h)
+                        renderPDF.draw(barcode, c, -x0, -y0)
+                        c.restoreState()
+
+                        if hr_h > 0:
+                            # Cỡ chữ vừa dải HR và vừa bề ngang vùng trong.
+                            hr_fs = max(3.0, min(hr_h * 0.8,
+                                                 inner_w * 1.7 / max(1, len(hr_text))))
+                            c.setFillColorCMYK(*hex_to_cmyk(bar_color))
+                            c.setFont('Helvetica', hr_fs)
+                            tw = c.stringWidth(hr_text, 'Helvetica', hr_fs)
+                            tx = rl_x + qz_pts + (inner_w - tw) / 2.0
+                            ty = rl_y + qz_pts + (hr_h - hr_fs) / 2.0 + hr_fs * 0.18
+                            c.drawString(tx, ty, hr_text)
+
+                        c.restoreState()
+            elif field['type'] == 'image':
+                # #3 Ảnh biến đổi: vẽ ảnh từ cột (hoặc ảnh tĩnh) theo fit + shape.
+                _drawn = _draw_image_field(c, field, val, rl_x, rl_y, f_rect['w'], f_rect['h'])
+                if not _drawn:
+                    # Không tìm thấy ảnh → khung mảnh để biết vị trí (không phá output).
+                    c.saveState()
+                    c.setStrokeColorCMYK(0, 0, 0, 0.35)
+                    c.setLineWidth(0.4)
+                    c.rect(rl_x, rl_y, f_rect['w'], f_rect['h'], stroke=1, fill=0)
+                    c.restoreState()
+            elif field['type'] == 'text':
+                fontsize = field.get('fontSize', 10)
+                line_h = float(field.get('lineHeight') or 1.0)
+                font_file = field.get('fontFile')
+
+                # #7 Chọn font THẬT theo fontStyle nếu có biến thể Bold/Italic;
+                # chỉ dùng faux cho phần KHÔNG có file font tương ứng.
+                fs_style = str(field.get('fontStyle') or 'regular').lower()
+                want_bold = 'bold' in fs_style
+                want_italic = 'italic' in fs_style
+                variants = field_font_variants.get(field.get('id'), {}) if font_file else {}
+                font_name = variants.get('regular') or "Helvetica"
+                need_faux_bold = want_bold
+                need_faux_italic = want_italic
+                if want_bold and want_italic and variants.get('bolditalic'):
+                    font_name = variants['bolditalic']; need_faux_bold = need_faux_italic = False
+                elif want_bold and want_italic and variants.get('bold'):
+                    font_name = variants['bold']; need_faux_bold = False
+                elif want_bold and variants.get('bold'):
+                    font_name = variants['bold']; need_faux_bold = False
+                elif want_italic and variants.get('italic'):
+                    font_name = variants['italic']; need_faux_italic = False
+                # Map frontend alignment to ReportLab alignment
+                align_map = {'left': TA_LEFT, 'center': TA_CENTER, 'right': TA_RIGHT}
+                raw_align = field.get('alignment', 'left')
+                text_align = align_map.get(raw_align, TA_LEFT)
+
+                style = ParagraphStyle(
+                    name='VDP',
+                    fontName=font_name,
+                    fontSize=fontsize,
+                    textColor=text_color,
+                    leading=fontsize * line_h,
+                    alignment=text_align
+                )
+
+                # Escape XML đặc biệt (& < >) TRƯỚC khi chèn <br/>, nếu không
+                # dữ liệu chứa các ký tự này sẽ làm vỡ parser của ReportLab Paragraph.
+                text_html = xml_escape(str(val)).replace('\n', '<br/>')
+                p = Paragraph(text_html, style)
+                w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
+
+                # AUTO-FIT: bóp dần cỡ chữ tới khi đoạn văn (đã xuống dòng theo bề rộng
+                # khung) vừa CHIỀU CAO khung → tránh chữ tràn xuống dưới khung.
+                auto_fit = field.get('autoFit', True)
+                if auto_fit and h > f_rect['h']:
+                    fs = float(fontsize)
+                    guard = 0
+                    while h > f_rect['h'] and fs > 2 and guard < 200:
+                        fs -= max(0.5, fs * 0.06)
+                        style = ParagraphStyle(
+                            name='VDP',
+                            fontName=font_name,
+                            fontSize=fs,
+                            textColor=text_color,
+                            leading=fs * line_h,
+                            alignment=text_align
+                        )
+                        p = Paragraph(text_html, style)
+                        w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
+                        guard += 1
+
+                # Canh GIỮA theo chiều dọc trong khung: chừa đều trên/dưới.
+                # #7: dùng font Bold/Italic THẬT khi có (need_faux_* = False);
+                # chỉ faux phần thiếu (bold = double-strike, italic = nghiêng shear).
+                ty = rl_y + (f_rect['h'] - h) / 2.0
+                if need_faux_bold or need_faux_italic:
+                    c.saveState()
+                    c.translate(rl_x, ty)
+                    if need_faux_italic:
+                        c.transform(1, 0, 0.21, 1, 0, 0)  # nghiêng ~12°
+                    p.drawOn(c, 0, 0)
+                    if need_faux_bold:
+                        # vẽ lại lệch ~3% cỡ chữ → dày nét (giả bold)
+                        p.drawOn(c, max(0.3, float(style.fontSize) * 0.03), 0)
+                    c.restoreState()
+                else:
+                    p.drawOn(c, rl_x, ty)
+        except Exception as e:
+            c.setFillColorCMYK(0, 1, 1, 0)  # đỏ (CMYK)
+            c.setFont("Helvetica", 7)
+            c.drawString(err_x, err_y + err_h - 10, f"ERR: {str(e)[:60]}")
+            if error_sink is not None:
+                error_sink.append({
+                    'field': field.get('name', ''),
+                    'kind': 'ERR',
+                    'reason': str(e),
+                    'rect': dict(report_rect),
+                })
+        finally:
+            if rotated:
+                c.restoreState()
+
+
+
 def process_chunk(args) -> str:
     template_path, fields_dict, data_chunk, chunk_start_idx, progress_file = args
     
@@ -374,276 +870,7 @@ def process_chunk(args) -> str:
         buf = io.BytesIO()
         c = canvas.Canvas(buf, pagesize=(pw, ph))
         
-        for fi, field in enumerate(fields_dict):
-            f_rect = field_rects[fi]
-            # Clamp khung field vào trong trang (MediaBox) để nội dung (QR / mã vạch /
-            # text / ảnh) KHÔNG tràn ra ngoài trang rồi bị cắt mất — ví dụ người dùng
-            # kéo khung lớn hơn trang hoặc đặt lệch ra mép. Clone (không sửa field_rects
-            # gốc vì dùng lại cho mọi bản ghi).
-            _fx = min(max(0.0, f_rect['x']), max(0.0, pw - 1.0))
-            _fy = min(max(0.0, f_rect['y']), max(0.0, ph - 1.0))
-            _fw = max(1.0, min(f_rect['w'], pw - _fx))
-            _fh = max(1.0, min(f_rect['h'], ph - _fy))
-            f_rect = {'x': _fx, 'y': _fy, 'w': _fw, 'h': _fh}
-            # Frontend coordinates are MediaBox-relative (viewer shows MediaBox)
-            # ReportLab origin is bottom-left, frontend origin is top-left
-            rl_x = f_rect['x']
-            rl_y = ph - f_rect['y'] - f_rect['h']
-            
-            text_content = field.get('textContent')
-            if text_content is None:
-                text_content = f"{{{field['name']}}}"
-            # Thay placeholder: tách cột {Cot[2|-]} + định dạng {Cot|func:arg}
-            #   func: upper|lower|title|trim|pad:N|padr:N|number:N|money:N|date:FMT
-            # Cho phép 1 cột CSV chứa nhiều nội dung và biến đổi dữ liệu ngay khi merge.
-            text_content = _substitute(text_content, row)
-            val = text_content
-
-            # #3 Image: cột rỗng / placeholder chưa map → dùng ảnh tĩnh (nếu có).
-            if field['type'] == 'image':
-                if (not val) or (val.startswith('{') and val.endswith('}')):
-                    val = field.get('imagePath') or ''
-
-            if not val:
-                if field['type'] != 'image':
-                    c.setFillColorCMYK(0, 1, 1, 0)  # đỏ (CMYK)
-                    c.setFont("Helvetica", 8)
-                    c.drawString(rl_x, rl_y + f_rect['h'] - 10, f"MISSING: {field['name']}")
-                continue
-                
-            # Toạ độ gốc (chưa xoay) để vẽ nhãn lỗi nếu cần
-            err_x, err_y, err_h = rl_x, rl_y, f_rect['h']
-            rotated = False
-            try:
-                font_color_hex = (field.get('fontColor') or '#000000')
-                text_color = cmyk_color(font_color_hex)  # CMYK → đen pure-K (#4)
-
-                # ── Rotation: xoay nội dung quanh tâm box. Frontend đã hoán đổi w/h
-                #    cho field dọc (90/270), nên footprint vẽ = hoán đổi ngược lại. ──
-                rot = int(field.get('rotation') or 0) % 360
-                if rot in (90, 180, 270):
-                    cx = f_rect['x'] + f_rect['w'] / 2.0
-                    cy = ph - f_rect['y'] - f_rect['h'] / 2.0
-                    ew, eh = (f_rect['h'], f_rect['w']) if rot in (90, 270) else (f_rect['w'], f_rect['h'])
-                    c.saveState()
-                    c.translate(cx, cy)
-                    c.rotate(rot)
-                    rotated = True
-                    f_rect = {'x': -ew / 2.0, 'y': f_rect['y'], 'w': ew, 'h': eh}
-                    rl_x = -ew / 2.0
-                    rl_y = -eh / 2.0
-
-                if field['type'] == 'qrcode':
-                    val_str = str(val)
-                    if not val_str:
-                        continue
-                        
-                    qr_style = field.get('qrStyle') or {}
-                    transparent_bg = qr_style.get('transparentBg', False)
-                    bg_color_hex = qr_style.get('bgColor', '#FFFFFF')
-                    # Màu chấm QR lấy từ qrStyle.dotColor (fallback fontColor).
-                    qr_fg_hex = qr_style.get('dotColor') or field.get('fontColor') or '#000000'
-                    
-                    import segno
-                    # Mức sửa lỗi lấy từ UI (L/M/Q/H), fallback 'M' nếu không hợp lệ.
-                    ec_raw = str(field.get('errorCorrection') or 'M').lower()
-                    ec_level = ec_raw if ec_raw in ('l', 'm', 'q', 'h') else 'm'
-                    qr = segno.make(val_str, error=ec_level)
-                    matrix = qr.matrix
-                    n = len(matrix)  # số module mỗi cạnh (chưa gồm lề trắng)
-
-                    # Strip compression — KHÔNG cộng quiet zone vào ma trận;
-                    # lề trắng được vẽ bằng inset vật lý (mm) bên dưới để khớp preview.
-                    strips = []
-                    for r, row_data in enumerate(matrix):
-                        col = 0
-                        while col < len(row_data):
-                            if row_data[col]:
-                                start_c = col
-                                while col < len(row_data) and row_data[col]:
-                                    col += 1
-                                strips.append((start_c, r, col - start_c, 1))
-                            else:
-                                col += 1
-
-                    if n > 0:
-                        # Lề trắng (quiet zone) theo "Lề trắng (mm)" người dùng đặt.
-                        # LƯU Ý: để QR quét được, vùng trắng quanh QR nên ≥ ~4 module —
-                        # có thể đến từ ô "Lề trắng (mm)" này HOẶC từ vùng trắng của trang
-                        # quanh khung. Không ép cứng nữa để QR lấp đầy khung theo ý người dùng.
-                        qz_pts = max(0.0, float(field.get('quietZone', 2) or 0)) * MM_TO_PTS * CSS_TO_PT_FACTOR
-                        qz_pts = max(0.0, min(qz_pts, f_rect['w'] / 2.0 - 0.5, f_rect['h'] / 2.0 - 0.5))
-
-                        c.saveState()
-                        # Nền phủ TOÀN BỘ khung (gồm vùng lề trắng).
-                        if not transparent_bg:
-                            c.setFillColorCMYK(*hex_to_cmyk(bg_color_hex))
-                            c.rect(rl_x, rl_y, f_rect['w'], f_rect['h'], stroke=0, fill=1)
-
-                        # Vùng vẽ QR = khung trừ lề mm; QR giữ vuông, canh giữa.
-                        inner_w = max(1.0, f_rect['w'] - 2 * qz_pts)
-                        inner_h = max(1.0, f_rect['h'] - 2 * qz_pts)
-                        module = min(inner_w / n, inner_h / n)
-                        draw = module * n
-                        offx = rl_x + (f_rect['w'] - draw) / 2.0
-                        offy = rl_y + (f_rect['h'] - draw) / 2.0
-
-                        c.setFillColorCMYK(*hex_to_cmyk(qr_fg_hex))
-                        c.translate(offx, offy)
-                        c.scale(module, module)
-                        for x, y, w, h in strips:
-                            c.rect(x, n - y - h, w, h, stroke=0, fill=1)
-                        c.restoreState()
-                        
-                elif field['type'] == 'barcode':
-                    val_str = str(val)
-                    if not val_str:
-                        continue
-                        
-                    btype = (field.get('barcodeType') or field.get('barType') or 'code128').lower()
-                    # Map ĐẦY ĐỦ 7 loại UI cung cấp → tránh preview ≠ output (#6).
-                    # Trước đây chỉ map 4 loại, còn lại âm thầm thành Code128.
-                    bt_map = {
-                        'code128': 'Code128',
-                        'ean13': 'EAN13',
-                        'ean8': 'EAN8',
-                        'upca': 'UPCA',
-                        'code39': 'Standard39',
-                        'itf14': 'I2of5',       # ITF = Interleaved 2 of 5
-                        'codabar': 'Codabar',
-                    }
-                    if btype not in bt_map:
-                        # Loại chưa hỗ trợ render → báo lỗi rõ thay vì in sai symbology.
-                        raise ValueError(f"barcode '{btype}' chua ho tro")
-                    rl_btype = bt_map[btype]
-                    
-                    # Màu vạch lấy từ barColor (fallback fontColor) — không dùng nhầm fontColor.
-                    bar_color = field.get('barColor') or field.get('fontColor') or '#000000'
-                    c_col = CMYKColor(*hex_to_cmyk(bar_color))
-                    show_text = field.get('showText', True)
-                    bc_kwargs = dict(value=val_str, barFillColor=c_col, humanReadable=bool(show_text))
-                    if rl_btype == 'I2of5':
-                        bc_kwargs['bearers'] = 3.0  # ITF-14 có thanh bao quanh
-                    barcode = createBarcodeDrawing(rl_btype, **bc_kwargs)
-                    x0, y0, x1, y1 = barcode.getBounds()
-                    intrinsic_w = x1 - x0
-                    intrinsic_h = y1 - y0
-
-                    if intrinsic_w > 0 and intrinsic_h > 0:
-                        # Lề trắng (quiet zone) mm → points, cùng hệ quy đổi với khung.
-                        qz_pts = max(0.0, float(field.get('quietZone', 2) or 0)) * MM_TO_PTS * CSS_TO_PT_FACTOR
-                        qz_pts = max(0.0, min(qz_pts, f_rect['w'] / 2.0 - 0.5, f_rect['h'] / 2.0 - 0.5))
-
-                        transparent_bg = field.get('transparentBg', False)
-
-                        c.saveState()
-                        # Nền phủ TOÀN BỘ khung (bao gồm vùng lề trắng)
-                        if not transparent_bg:
-                            c.setFillColorCMYK(*hex_to_cmyk(field.get('bgColor', '#FFFFFF')))
-                            c.rect(rl_x, rl_y, f_rect['w'], f_rect['h'], stroke=0, fill=1)
-
-                        # Mã vạch lấp đầy vùng trong (khung trừ lề), đặt lệch theo lề.
-                        inner_w = max(1.0, f_rect['w'] - 2 * qz_pts)
-                        inner_h = max(1.0, f_rect['h'] - 2 * qz_pts)
-                        c.translate(rl_x + qz_pts, rl_y + qz_pts)
-                        c.scale(inner_w / intrinsic_w, inner_h / intrinsic_h)
-                        renderPDF.draw(barcode, c, -x0, -y0)
-                        c.restoreState()
-                elif field['type'] == 'image':
-                    # #3 Ảnh biến đổi: vẽ ảnh từ cột (hoặc ảnh tĩnh) theo fit + shape.
-                    _drawn = _draw_image_field(c, field, val, rl_x, rl_y, f_rect['w'], f_rect['h'])
-                    if not _drawn:
-                        # Không tìm thấy ảnh → khung mảnh để biết vị trí (không phá output).
-                        c.saveState()
-                        c.setStrokeColorCMYK(0, 0, 0, 0.35)
-                        c.setLineWidth(0.4)
-                        c.rect(rl_x, rl_y, f_rect['w'], f_rect['h'], stroke=1, fill=0)
-                        c.restoreState()
-                elif field['type'] == 'text':
-                    fontsize = field.get('fontSize', 10)
-                    line_h = float(field.get('lineHeight') or 1.0)
-                    font_file = field.get('fontFile')
-
-                    # #7 Chọn font THẬT theo fontStyle nếu có biến thể Bold/Italic;
-                    # chỉ dùng faux cho phần KHÔNG có file font tương ứng.
-                    fs_style = str(field.get('fontStyle') or 'regular').lower()
-                    want_bold = 'bold' in fs_style
-                    want_italic = 'italic' in fs_style
-                    variants = field_font_variants.get(field.get('id'), {}) if font_file else {}
-                    font_name = variants.get('regular') or "Helvetica"
-                    need_faux_bold = want_bold
-                    need_faux_italic = want_italic
-                    if want_bold and want_italic and variants.get('bolditalic'):
-                        font_name = variants['bolditalic']; need_faux_bold = need_faux_italic = False
-                    elif want_bold and want_italic and variants.get('bold'):
-                        font_name = variants['bold']; need_faux_bold = False
-                    elif want_bold and variants.get('bold'):
-                        font_name = variants['bold']; need_faux_bold = False
-                    elif want_italic and variants.get('italic'):
-                        font_name = variants['italic']; need_faux_italic = False
-                    # Map frontend alignment to ReportLab alignment
-                    align_map = {'left': TA_LEFT, 'center': TA_CENTER, 'right': TA_RIGHT}
-                    raw_align = field.get('alignment', 'left')
-                    text_align = align_map.get(raw_align, TA_LEFT)
-                    
-                    style = ParagraphStyle(
-                        name='VDP',
-                        fontName=font_name,
-                        fontSize=fontsize,
-                        textColor=text_color,
-                        leading=fontsize * line_h,
-                        alignment=text_align
-                    )
-                    
-                    # Escape XML đặc biệt (& < >) TRƯỚC khi chèn <br/>, nếu không
-                    # dữ liệu chứa các ký tự này sẽ làm vỡ parser của ReportLab Paragraph.
-                    text_html = xml_escape(str(val)).replace('\n', '<br/>')
-                    p = Paragraph(text_html, style)
-                    w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
-
-                    # AUTO-FIT: bóp dần cỡ chữ tới khi đoạn văn (đã xuống dòng theo bề rộng
-                    # khung) vừa CHIỀU CAO khung → tránh chữ tràn xuống dưới khung.
-                    auto_fit = field.get('autoFit', True)
-                    if auto_fit and h > f_rect['h']:
-                        fs = float(fontsize)
-                        guard = 0
-                        while h > f_rect['h'] and fs > 2 and guard < 200:
-                            fs -= max(0.5, fs * 0.06)
-                            style = ParagraphStyle(
-                                name='VDP',
-                                fontName=font_name,
-                                fontSize=fs,
-                                textColor=text_color,
-                                leading=fs * line_h,
-                                alignment=text_align
-                            )
-                            p = Paragraph(text_html, style)
-                            w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
-                            guard += 1
-
-                    # Canh GIỮA theo chiều dọc trong khung: chừa đều trên/dưới.
-                    # #7: dùng font Bold/Italic THẬT khi có (need_faux_* = False);
-                    # chỉ faux phần thiếu (bold = double-strike, italic = nghiêng shear).
-                    ty = rl_y + (f_rect['h'] - h) / 2.0
-                    if need_faux_bold or need_faux_italic:
-                        c.saveState()
-                        c.translate(rl_x, ty)
-                        if need_faux_italic:
-                            c.transform(1, 0, 0.21, 1, 0, 0)  # nghiêng ~12°
-                        p.drawOn(c, 0, 0)
-                        if need_faux_bold:
-                            # vẽ lại lệch ~3% cỡ chữ → dày nét (giả bold)
-                            p.drawOn(c, max(0.3, float(style.fontSize) * 0.03), 0)
-                        c.restoreState()
-                    else:
-                        p.drawOn(c, rl_x, ty)
-            except Exception as e:
-                c.setFillColorCMYK(0, 1, 1, 0)  # đỏ (CMYK)
-                c.setFont("Helvetica", 7)
-                c.drawString(err_x, err_y + err_h - 10, f"ERR: {str(e)[:60]}")
-            finally:
-                if rotated:
-                    c.restoreState()
+        render_one_record(c, fields_dict, row, field_rects, pw, ph, field_font_variants)
                 
         c.showPage()
         c.save()
@@ -651,7 +878,21 @@ def process_chunk(args) -> str:
         # Merge overlay onto page
         overlay_pdf = pdf_lib.open(stream=buf.getvalue())
         page.show_pdf_page(page.rect, overlay_pdf, 0)
-        
+
+        # Giải phóng tài nguyên overlay của record này. XObject đã được copy_foreign
+        # vào out_doc và add_resource lên trang nên VẪN nằm trong output → an toàn để
+        # đóng handle nguồn. Đồng thời xoá entry vừa thêm khỏi _nup_xobj_cache: mỗi
+        # overlay VDP có UID riêng ⇒ cache LUÔN miss (không tái dùng được), nếu giữ
+        # lại chỉ làm phình RAM tuyến tính theo số record trong vòng nóng. Phần copy
+        # nặng vẫn chạy y như cũ nên tốc độ/record KHÔNG đổi (audit vdp-upgrade).
+        try:
+            overlay_pdf.close()
+        except Exception:
+            pass
+        _xobj_cache = getattr(out_doc._pdf, "_nup_xobj_cache", None)
+        if _xobj_cache:
+            _xobj_cache.clear()
+
         count += 1
         if progress_file and count % 50 == 0:
             try:

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import Papa from 'papaparse';
-import { startVdpJobBackend, getVdpJobStatus, downloadVdpJob, pollVdpJob, getSystemFonts } from '@/lib/api';
+import { startVdpJobBackend, getVdpJobStatus, downloadVdpJob, pollVdpJob, getSystemFonts, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, type VdpFieldError, type VdpIssue, type VdpGating } from '@/lib/api';
 import { getQRBlob, DEFAULT_QR_STYLE } from '@/engine/barcode/qrEngine';
 import { generateBarcodeDataURL } from '@/engine/barcode/barcodeEngine';
 import { FontSelector } from './FontSelector';
@@ -130,6 +130,322 @@ function VdpSection({ step, title, badge, defaultOpen = true, accent, children }
     );
 }
 
+// ─── Logic điều kiện (Req 2): ẩn/hiện field + bảng rule cho field ───
+type VdpOperator = 'eq' | 'ne' | 'contains' | 'empty' | 'not_empty';
+
+interface VdpFieldCondition {
+    column: string;
+    operator: VdpOperator;
+    value: string;
+    action: 'show_if' | 'hide_if';
+}
+
+interface VdpRule {
+    column: string;
+    operator: VdpOperator;
+    value: string;
+    result: string;
+}
+
+// Toán tử so sánh hỗ trợ (Req 2.9) — nhãn tiếng Việt.
+const VDP_OPERATORS: { value: VdpOperator; label: string }[] = [
+    { value: 'eq', label: 'Bằng' },
+    { value: 'ne', label: 'Khác' },
+    { value: 'contains', label: 'Chứa' },
+    { value: 'empty', label: 'Rỗng' },
+    { value: 'not_empty', label: 'Khác rỗng' },
+];
+
+// 'empty'/'not_empty' không cần ô giá trị so sánh.
+const operatorNeedsValue = (op: VdpOperator) => op !== 'empty' && op !== 'not_empty';
+
+// Panel cấu hình điều kiện ẩn/hiện (conditions) và bảng rule (rules) cho field
+// đang chọn. Persist qua onChange → updateSelectedField để gửi kèm field tới backend.
+function VdpLogicPanel({ field, csvHeaders, onChange }: {
+    field: any;
+    csvHeaders: string[];
+    onChange: (changes: any) => void;
+}) {
+    const conditions: VdpFieldCondition[] = Array.isArray(field.conditions) ? field.conditions : [];
+    const rules: VdpRule[] = Array.isArray(field.rules) ? field.rules : [];
+    const defaultCol = csvHeaders[0] || '';
+    const [showHelp, setShowHelp] = useState(false);
+
+    // Đóng modal trợ giúp bằng phím ESC (chỉ gắn listener khi modal đang mở).
+    useEffect(() => {
+        if (!showHelp) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                setShowHelp(false);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [showHelp]);
+
+    const inputClass = "h-8 px-2 text-[12px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded focus:outline-none focus:border-teal-500 transition-all";
+    const selectClass = inputClass + " font-medium";
+
+    // ── Conditions (ẩn/hiện) ──
+    const addCondition = () => onChange({ conditions: [...conditions, { column: defaultCol, operator: 'eq', value: '', action: 'show_if' } as VdpFieldCondition] });
+    const updateCondition = (i: number, changes: Partial<VdpFieldCondition>) =>
+        onChange({ conditions: conditions.map((c, idx) => idx === i ? { ...c, ...changes } : c) });
+    const removeCondition = (i: number) =>
+        onChange({ conditions: conditions.filter((_, idx) => idx !== i) });
+
+    // ── Rules (bảng rule first-match) ──
+    const addRule = () => onChange({ rules: [...rules, { column: defaultCol, operator: 'eq', value: '', result: '' } as VdpRule] });
+    const updateRule = (i: number, changes: Partial<VdpRule>) =>
+        onChange({ rules: rules.map((r, idx) => idx === i ? { ...r, ...changes } : r) });
+    const removeRule = (i: number) =>
+        onChange({ rules: rules.filter((_, idx) => idx !== i) });
+
+    const columnOptions = (selected: string) => (
+        <>
+            {!csvHeaders.includes(selected) && <option value={selected}>{selected || '— chọn cột —'}</option>}
+            {csvHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+        </>
+    );
+
+    return (
+        <div className="flex flex-col gap-4">
+            {/* Nút trợ giúp: mở modal giải thích "khi nào dùng" bằng ví dụ đời thường */}
+            <div className="flex items-start gap-2 text-[11px] text-slate-500 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700 rounded p-2">
+                <span className="flex-1">
+                    Dùng khi <b>các bản in cần khác nhau theo dữ liệu</b> (vd: chỉ một số tem có dấu VIP, hoặc đổi ảnh/chữ theo cột).
+                </span>
+                <button
+                    type="button"
+                    onClick={() => setShowHelp(true)}
+                    className="shrink-0 inline-flex items-center gap-1 px-2 py-1 bg-teal-50 hover:bg-teal-100 dark:bg-teal-500/10 dark:hover:bg-teal-500/20 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-700 rounded font-medium transition-colors"
+                    title="Khi nào dùng? Xem ví dụ"
+                >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" /><path strokeLinecap="round" d="M12 16.5h.01" /></svg>
+                    Khi nào dùng?
+                </button>
+            </div>
+
+            {showHelp && (
+                <div
+                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4"
+                    onClick={() => setShowHelp(false)}
+                >
+                    <div
+                        className="max-w-lg w-full max-h-[80vh] overflow-auto bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-slate-200 dark:border-zinc-700"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700 sticky top-0 bg-white dark:bg-zinc-900">
+                            <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">Logic điều kiện — khi nào dùng?</span>
+                            <button
+                                type="button"
+                                onClick={() => setShowHelp(false)}
+                                className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+                                title="Đóng"
+                            >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                        </div>
+                        <div className="p-4 space-y-4 text-[12px] text-slate-600 dark:text-zinc-300 leading-relaxed">
+                            <p>
+                                Bạn in <b>nhiều bản từ một bảng dữ liệu</b> (mỗi dòng = một tem/thẻ/vé).
+                                Bình thường mọi bản giống khuôn, chỉ khác chữ điền vào. Phần này dùng khi
+                                <b> một số bản cần khác nhau tuỳ dòng</b>.
+                            </p>
+
+                            <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
+                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">👁️ Điều kiện ẩn/hiện</div>
+                                <div className="mb-1">Quyết định <b>có in chi tiết này hay không</b>.</div>
+                                <div className="text-slate-500 dark:text-zinc-400">
+                                    Ví dụ: vẽ sẵn dấu "VIP" lên thẻ → đặt <i>Hiện nếu</i> cột <code>Hạng</code> <i>Bằng</i> <code>VIP</code>.
+                                    Chỉ khách VIP mới in dấu; khách khác bỏ trống.
+                                </div>
+                            </div>
+
+                            <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
+                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">🔁 Bảng rule (đổi nội dung/ảnh)</div>
+                                <div className="mb-1">Field <b>vẫn in</b>, nhưng <b>đổi chữ/ảnh theo dữ liệu</b>. Xét từ trên xuống, gặp dòng đúng đầu tiên thì lấy.</div>
+                                <div className="text-slate-500 dark:text-zinc-400">
+                                    Ví dụ ảnh: cột <code>Nước</code> <i>Bằng</i> <code>VN</code> → <code>co_vn.png</code>;
+                                    <code>US</code> → <code>co_us.png</code>. Mỗi bản tự lấy đúng cờ.
+                                    <br />
+                                    Ví dụ chữ: cột <code>Điểm</code> <i>Chứa</i> ... → in "Vàng" / "Bạc".
+                                </div>
+                            </div>
+
+                            <div className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                <b>Phân biệt nhanh:</b> Ẩn/hiện = "có in không?" · Rule = "in cái gì vào?".
+                                Không cần thì cứ để trống — field in bình thường.
+                            </div>
+                        </div>
+                        <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-700 text-right">
+                            <button
+                                type="button"
+                                onClick={() => setShowHelp(false)}
+                                className="text-[12px] px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded font-medium transition-colors"
+                            >
+                                Đã hiểu
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {csvHeaders.length === 0 && (
+                <div className="text-[11px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 rounded">
+                    Chưa nạp dữ liệu nguồn — hãy nạp CSV/Excel/Sheets để chọn cột.
+                </div>
+            )}
+
+            {/* ── Điều kiện ẩn/hiện ── */}
+            <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                    <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">Điều kiện ẩn/hiện</span>
+                    <button
+                        type="button"
+                        onClick={addCondition}
+                        className="text-[11px] px-2 py-1 bg-teal-50 hover:bg-teal-100 dark:bg-teal-500/10 dark:hover:bg-teal-500/20 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-700 rounded font-medium transition-colors"
+                    >
+                        + Thêm điều kiện
+                    </button>
+                </div>
+                <span className="text-[10px] text-slate-500 dark:text-zinc-400 italic">
+                    Nếu cột thoả điều kiện → hiện (show_if) hoặc ẩn (hide_if) field này.
+                </span>
+                <span className="text-[10px] text-teal-700 dark:text-teal-400">
+                    Ví dụ: Hiện nếu <b>Hạng</b> Bằng <b>VIP</b> → chỉ khách VIP mới in field này.
+                </span>
+                {conditions.length === 0 ? (
+                    <span className="text-[11px] text-slate-400 dark:text-zinc-500">Chưa có điều kiện (field luôn hiện).</span>
+                ) : (
+                    <div className="flex flex-col gap-2">
+                        {conditions.map((c, i) => (
+                            <div key={i} className="flex flex-col gap-1.5 p-2 bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700 rounded">
+                                <div className="flex items-center gap-1.5">
+                                    <select
+                                        value={c.action}
+                                        onChange={(e) => updateCondition(i, { action: e.target.value as VdpFieldCondition['action'] })}
+                                        className={selectClass + " w-24 shrink-0"}
+                                    >
+                                        <option value="show_if">Hiện nếu</option>
+                                        <option value="hide_if">Ẩn nếu</option>
+                                    </select>
+                                    <select
+                                        value={c.column}
+                                        onChange={(e) => updateCondition(i, { column: e.target.value })}
+                                        className={selectClass + " flex-1 min-w-0"}
+                                    >
+                                        {columnOptions(c.column)}
+                                    </select>
+                                    <button
+                                        type="button"
+                                        onClick={() => removeCondition(i)}
+                                        className="shrink-0 text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
+                                        title="Xóa điều kiện"
+                                    >
+                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <select
+                                        value={c.operator}
+                                        onChange={(e) => updateCondition(i, { operator: e.target.value as VdpOperator })}
+                                        className={selectClass + " w-28 shrink-0"}
+                                    >
+                                        {VDP_OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+                                    </select>
+                                    <input
+                                        type="text"
+                                        value={c.value}
+                                        onChange={(e) => updateCondition(i, { value: e.target.value })}
+                                        disabled={!operatorNeedsValue(c.operator)}
+                                        placeholder={operatorNeedsValue(c.operator) ? 'Giá trị so sánh' : '(không cần giá trị)'}
+                                        className={inputClass + " flex-1 min-w-0 disabled:bg-slate-100 dark:disabled:bg-zinc-800 disabled:text-slate-400"}
+                                    />
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            <ToolDivider />
+
+            {/* ── Bảng rule ── */}
+            <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                    <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">Bảng rule (đổi nội dung/ảnh)</span>
+                    <button
+                        type="button"
+                        onClick={addRule}
+                        className="text-[11px] px-2 py-1 bg-teal-50 hover:bg-teal-100 dark:bg-teal-500/10 dark:hover:bg-teal-500/20 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-700 rounded font-medium transition-colors"
+                    >
+                        + Thêm rule
+                    </button>
+                </div>
+                <span className="text-[10px] text-slate-500 dark:text-zinc-400 italic">
+                    Nếu cột thoả điều kiện → đặt nội dung/ảnh = kết quả. Áp rule khớp đầu tiên.
+                </span>
+                <span className="text-[10px] text-teal-700 dark:text-teal-400">
+                    Ví dụ: <b>Nước</b> Bằng <b>VN</b> → kết quả <b>co_vn.png</b> (mỗi bản tự lấy đúng cờ).
+                </span>
+                {rules.length === 0 ? (
+                    <span className="text-[11px] text-slate-400 dark:text-zinc-500">Chưa có rule.</span>
+                ) : (
+                    <div className="flex flex-col gap-2">
+                        {rules.map((r, i) => (
+                            <div key={i} className="flex flex-col gap-1.5 p-2 bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700 rounded">
+                                <div className="flex items-center gap-1.5">
+                                    <span className="text-[10px] font-bold text-slate-400 shrink-0 w-8">#{i + 1}</span>
+                                    <select
+                                        value={r.column}
+                                        onChange={(e) => updateRule(i, { column: e.target.value })}
+                                        className={selectClass + " flex-1 min-w-0"}
+                                    >
+                                        {columnOptions(r.column)}
+                                    </select>
+                                    <button
+                                        type="button"
+                                        onClick={() => removeRule(i)}
+                                        className="shrink-0 text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
+                                        title="Xóa rule"
+                                    >
+                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                    <select
+                                        value={r.operator}
+                                        onChange={(e) => updateRule(i, { operator: e.target.value as VdpOperator })}
+                                        className={selectClass + " w-28 shrink-0"}
+                                    >
+                                        {VDP_OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+                                    </select>
+                                    <input
+                                        type="text"
+                                        value={r.value}
+                                        onChange={(e) => updateRule(i, { value: e.target.value })}
+                                        disabled={!operatorNeedsValue(r.operator)}
+                                        placeholder={operatorNeedsValue(r.operator) ? 'Giá trị so sánh' : '(không cần giá trị)'}
+                                        className={inputClass + " flex-1 min-w-0 disabled:bg-slate-100 dark:disabled:bg-zinc-800 disabled:text-slate-400"}
+                                    />
+                                </div>
+                                <input
+                                    type="text"
+                                    value={r.result}
+                                    onChange={(e) => updateRule(i, { result: e.target.value })}
+                                    placeholder="→ Kết quả (nội dung hoặc đường dẫn ảnh)"
+                                    className={inputClass + " w-full"}
+                                />
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
 // ─── Icon căn chỉnh kiểu Illustrator ───
 interface Props {
   pdfFile: File | null;
@@ -157,7 +473,7 @@ export default function DataMergeTool({
 }: Props) {
     const [csvData, setCsvData] = useState<Record<string, string>[]>([]);
     const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
-    const [dataMode, setDataMode] = useState<'csv' | 'manual'>('csv');
+    const [dataMode, setDataMode] = useState<'csv' | 'manual' | 'xlsx' | 'gsheet'>('csv');
     const [manualText, setManualText] = useState('');
     const [manualColName, setManualColName] = useState('Noidung');
     const [statusMessage, setStatusMessage] = useState("");
@@ -165,6 +481,35 @@ export default function DataMergeTool({
     const [systemFonts, setSystemFonts] = useState<{name: string, path: string}[]>([]);
     const [fontDropdownOpen, setFontDropdownOpen] = useState(false);
     const [fontSearch, setFontSearch] = useState('');
+
+    // ── Nguồn dữ liệu mở rộng (xlsx / Google Sheets) — task 14.1 ──
+    // Số bản ghi THẬT do backend báo về (preview_rows chỉ là mẫu hiển thị).
+    const [sourceRecordCount, setSourceRecordCount] = useState<number | null>(null);
+    const [sourceError, setSourceError] = useState<string>('');     // thông báo lỗi tiếng Việt
+    const [sourceLoading, setSourceLoading] = useState(false);
+    const [xlsxFile, setXlsxFile] = useState<File | null>(null);    // file .xlsx đang chọn
+    const [sheetList, setSheetList] = useState<string[]>([]);       // danh sách sheet của file
+    const [selectedSheet, setSelectedSheet] = useState<string>(''); // sheet đang đọc
+    const [gsheetUrl, setGsheetUrl] = useState<string>('');         // link Google Sheets
+
+    // ── Xem trước record + điều hướng (task 14.3, Req 4.2/4.3/4.5/4.6/4.9/8.5) ──
+    const [previewIndex, setPreviewIndex] = useState(1);            // chỉ số yêu cầu (1-based)
+    const [previewImg, setPreviewImg] = useState<string | null>(null);   // data URL PNG
+    const [previewDims, setPreviewDims] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+    const [previewErrors, setPreviewErrors] = useState<VdpFieldError[]>([]);
+    const [previewRecordIndex, setPreviewRecordIndex] = useState(0);     // chỉ số đã render thực
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [previewProcessing, setPreviewProcessing] = useState(false);   // chỉ báo khi > 2s (Req 4.3)
+    const [previewMsg, setPreviewMsg] = useState('');
+    const previewAbortRef = useRef<AbortController | null>(null);
+    // Huỷ request preview đang chờ khi unmount để không rò rỉ (giữ UI mượt).
+    useEffect(() => () => { previewAbortRef.current?.abort(); }, []);
+
+    // ── Gating validate + xuất báo cáo lỗi (task 14.4, Req 4.7/4.8/5.8/5.9/5.10) ──
+    const [validateGating, setValidateGating] = useState<VdpGating | null>(null); // null = chưa kiểm tra
+    const [validateIssues, setValidateIssues] = useState<VdpIssue[]>([]);
+    const [validating, setValidating] = useState(false);
+    const [reportLoading, setReportLoading] = useState(false);
 
     useEffect(() => {
         getSystemFonts().then(setSystemFonts).catch(console.error);
@@ -218,6 +563,105 @@ export default function DataMergeTool({
         loadCsvIntoState(files[0], csvHasHeader);
         if (files.length > 1) {
             setStatusMessage(`Đã chọn ${files.length} file. Map trường với cột rồi bấm "Chạy ${files.length} file".`);
+        }
+    };
+
+    // ── Nguồn dữ liệu mở rộng (task 14.1): xlsx + Google Sheets ──
+    // Đưa kết quả /vdp/datasource về state dùng chung (csvHeaders/csvData) để
+    // các bước map field/preview phía sau hoạt động đồng nhất với đường CSV.
+    const applySourceResult = (
+        result: { columns: string[]; record_count: number; preview_rows: Record<string, string>[] },
+        label: string,
+    ) => {
+        setSourceError('');
+        setBatchFiles([]);            // nguồn xlsx/gsheet không dùng chạy hàng loạt CSV
+        setCsvHeaders(result.columns);
+        setCsvData(result.preview_rows);
+        setSourceRecordCount(result.record_count);
+        if (result.record_count === 0) {
+            setStatusMessage(`${label}: nguồn rỗng (0 bản ghi).`);
+        } else {
+            setStatusMessage(`${label}: ${result.record_count} bản ghi, ${result.columns.length} cột.`);
+        }
+    };
+
+    const clearSourceState = () => {
+        setCsvHeaders([]);
+        setCsvData([]);
+        setSourceRecordCount(null);
+    };
+
+    // Đọc dữ liệu một sheet của file .xlsx hiện chọn qua /vdp/datasource.
+    const loadXlsxSheet = async (file: File, sheet: string) => {
+        setSourceLoading(true);
+        setSourceError('');
+        setStatusMessage(`Đang đọc sheet "${sheet}"...`);
+        try {
+            const result = await readVdpDatasource({ kind: 'xlsx', file, sheet, hasHeader: csvHasHeader });
+            applySourceResult(result, `Excel · ${sheet}`);
+        } catch (err: any) {
+            clearSourceState();
+            setSourceError(err?.message || 'Không đọc được file Excel.');
+            setStatusMessage('Lỗi đọc file Excel.');
+        } finally {
+            setSourceLoading(false);
+        }
+    };
+
+    // Chọn file .xlsx → liệt kê sheet → tự đọc sheet đầu tiên.
+    const handleXlsxFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = Array.from(e.target.files || []).find(f => /\.xlsx$/i.test(f.name)) || null;
+        e.currentTarget.value = '';
+        if (!file) return;
+        setXlsxFile(file);
+        setSheetList([]);
+        setSelectedSheet('');
+        clearSourceState();
+        setSourceLoading(true);
+        setSourceError('');
+        setStatusMessage('Đang đọc danh sách sheet...');
+        try {
+            const sheets = await listVdpSheets(file);
+            setSheetList(sheets);
+            const first = sheets[0] || '';
+            setSelectedSheet(first);
+            if (first) {
+                await loadXlsxSheet(file, first);
+            } else {
+                setSourceLoading(false);
+                setSourceError('File Excel không có sheet nào.');
+                setStatusMessage('File Excel rỗng.');
+            }
+        } catch (err: any) {
+            setSourceLoading(false);
+            setXlsxFile(null);
+            setSourceError(err?.message || 'Không đọc được file Excel.');
+            setStatusMessage('Lỗi đọc file Excel.');
+        }
+    };
+
+    // Đổi sheet đang chọn → đọc lại dữ liệu sheet đó.
+    const handleSheetChange = async (sheet: string) => {
+        setSelectedSheet(sheet);
+        if (xlsxFile && sheet) await loadXlsxSheet(xlsxFile, sheet);
+    };
+
+    // Nạp dữ liệu từ link Google Sheets công khai qua /vdp/datasource.
+    const loadGsheet = async () => {
+        const url = gsheetUrl.trim();
+        if (!url) { setSourceError('Hãy dán link Google Sheets.'); return; }
+        setSourceLoading(true);
+        setSourceError('');
+        setStatusMessage('Đang lấy dữ liệu Google Sheets...');
+        try {
+            const result = await readVdpDatasource({ kind: 'gsheet', url, hasHeader: csvHasHeader });
+            applySourceResult(result, 'Google Sheets');
+        } catch (err: any) {
+            clearSourceState();
+            setSourceError(err?.message || 'Không lấy được dữ liệu Google Sheets.');
+            setStatusMessage('Lỗi lấy dữ liệu Google Sheets.');
+        } finally {
+            setSourceLoading(false);
         }
     };
 
@@ -328,6 +772,18 @@ export default function DataMergeTool({
     // #8 Định dạng dữ liệu khi chèn placeholder
     const [splitFmt, setSplitFmt] = useState('');      // '' | upper | lower | title | number | money | date | pad
     const [splitFmtArg, setSplitFmtArg] = useState(''); // số chữ số thập phân / độ rộng / format ngày
+    const [showQuickInsert, setShowQuickInsert] = useState(false); // thu gọn "Chèn thêm cột vào câu" (nâng cao)
+    const [showQuickHelp, setShowQuickHelp] = useState(false);     // modal hướng dẫn "Chèn thêm cột vào câu"
+
+    // Đóng modal hướng dẫn "Chèn thêm cột" bằng phím ESC.
+    useEffect(() => {
+        if (!showQuickHelp) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.stopPropagation(); setShowQuickHelp(false); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [showQuickHelp]);
     const [csvHasHeader, setCsvHasHeader] = useState(true);
     const lastCsvFileRef = useRef<File | null>(null);
     const [batchFiles, setBatchFiles] = useState<File[]>([]);
@@ -494,6 +950,31 @@ export default function DataMergeTool({
                     setStatusMessage(`${tag}: đang đọc...`);
                     const data = (await parseCsv(csvFile, csvHasHeader)).data;
                     if (data.length === 0) { setStatusMessage(`${tag}: rỗng, bỏ qua.`); continue; }
+
+                    // Gating validate cho từng file trước khi sinh (Req 5.8/5.9/5.10).
+                    setStatusMessage(`${tag}: đang kiểm tra dữ liệu...`);
+                    try {
+                        const vres = await validateVdp({
+                            fields: vdpFields,
+                            rows: data,
+                            columns: data.length ? Object.keys(data[0]) : [],
+                            hasHeader: csvHasHeader,
+                        });
+                        if (vres.gating === 'block') {
+                            const errCount = vres.issues.filter(i => i.severity === 'error').length;
+                            setStatusMessage(`${tag}: có ${errCount} lỗi chặn — bỏ qua file này.`);
+                            continue;
+                        }
+                        if (vres.gating === 'needs_confirmation') {
+                            const warnCount = vres.issues.filter(i => i.severity === 'warning').length;
+                            const ok = window.confirm(`${csvFile.name}: ${warnCount} cảnh báo (vd ảnh thiếu).\nVẫn tiếp tục sinh file này?`);
+                            if (!ok) { setStatusMessage(`${tag}: đã bỏ qua do còn cảnh báo.`); continue; }
+                        }
+                    } catch (vErr: any) {
+                        setStatusMessage(`${tag}: lỗi kiểm tra dữ liệu — ${vErr?.message || vErr}. Bỏ qua.`);
+                        continue;
+                    }
+
                     const { fields, data: jobData } = buildJobInput(data);
                     setStatusMessage(`${tag}: đang sinh ${data.length} bản ghi...`);
                     const jobId = await startVdpJobBackend(templateFile, fields, jobData);
@@ -519,6 +1000,223 @@ export default function DataMergeTool({
         }
     };
 
+    // ─── Xem trước một record (task 14.3) ───────────────────────────────────
+    // Tổng số record để điều hướng/kẹp: xlsx/gsheet dùng số THẬT từ backend
+    // (sourceRecordCount), còn csv/manual dùng số dòng đã nạp (csvData).
+    const previewTotal = (dataMode === 'xlsx' || dataMode === 'gsheet')
+        ? (sourceRecordCount ?? csvData.length)
+        : csvData.length;
+
+    // Gọi /vdp/preview bất đồng bộ cho record thứ `index` (1-based). Giữ UI phản
+    // hồi (không block), huỷ request cũ khi điều hướng nhanh, và chỉ hiện chỉ báo
+    // "đang xử lý" khi vượt 2 giây (Req 4.3, 8.5).
+    const runPreview = async (index: number) => {
+        if (!csvData || csvData.length === 0) {
+            setPreviewImg(null);
+            setPreviewErrors([]);
+            setPreviewMsg('Chưa có dữ liệu nguồn để xem trước.');
+            return;
+        }
+        const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
+        if (!templateFile) {
+            setPreviewMsg('Chưa có file PDF template để xem trước.');
+            return;
+        }
+
+        // Huỷ request preview đang chờ (điều hướng nhanh không xếp hàng vô ích).
+        previewAbortRef.current?.abort();
+        const ac = new AbortController();
+        previewAbortRef.current = ac;
+
+        setPreviewLoading(true);
+        // Chỉ báo xử lý chỉ xuất hiện nếu request kéo dài > 2 giây (Req 4.3).
+        const slowTimer = setTimeout(() => {
+            if (!ac.signal.aborted) setPreviewProcessing(true);
+        }, 2000);
+
+        try {
+            const params: Parameters<typeof previewVdpRecord>[0] = {
+                fields: vdpFields,
+                requestedIndex: index,
+                template: templateFile,
+                hasHeader: csvHasHeader,
+                signal: ac.signal,
+            };
+            // Nguồn dữ liệu: xlsx/gsheet đọc lại để phủ toàn bộ record; còn lại
+            // gửi rows đã nạp sẵn (csv/manual nạp đủ dòng).
+            if (dataMode === 'xlsx' && xlsxFile) {
+                params.kind = 'xlsx';
+                params.file = xlsxFile;
+                if (selectedSheet) params.sheet = selectedSheet;
+            } else if (dataMode === 'gsheet' && gsheetUrl.trim()) {
+                params.kind = 'gsheet';
+                params.url = gsheetUrl.trim();
+            } else {
+                params.rows = csvData;
+                params.columns = csvHeaders;
+            }
+
+            const result = await previewVdpRecord(params);
+            if (ac.signal.aborted) return;
+
+            if (result.empty_source) {
+                setPreviewImg(null);
+                setPreviewErrors([]);
+                setPreviewMsg(result.message || 'Nguồn dữ liệu rỗng (0 record).');
+                return;
+            }
+            setPreviewImg(result.image_png_base64 ? `data:image/png;base64,${result.image_png_base64}` : null);
+            setPreviewDims({ w: result.width, h: result.height });
+            setPreviewErrors(result.field_errors || []);
+            setPreviewRecordIndex(result.record_index);
+            // Nếu backend kẹp chỉ số, đồng bộ ô nhập về chỉ số thực tế (Req 4.5).
+            if (result.clamped) setPreviewIndex(result.record_index);
+            setPreviewMsg(result.message || '');
+        } catch (err: any) {
+            if (err?.name === 'AbortError' || ac.signal.aborted) return;
+            setPreviewMsg(err?.message || 'Lỗi tạo bản xem trước.');
+        } finally {
+            clearTimeout(slowTimer);
+            if (!ac.signal.aborted) {
+                setPreviewLoading(false);
+                setPreviewProcessing(false);
+            }
+        }
+    };
+
+    // Điều hướng tới record `target` với kẹp ở hai biên + thông báo (Req 4.2, 4.5).
+    const goToPreview = (target: number) => {
+        if (previewTotal <= 0) {
+            setPreviewImg(null);
+            setPreviewErrors([]);
+            setPreviewMsg('Nguồn dữ liệu rỗng (0 record) — không thể xem trước.');
+            return;
+        }
+        let idx = target;
+        let clampMsg = '';
+        if (idx < 1) { idx = 1; clampMsg = 'Đã ở record đầu tiên.'; }
+        else if (idx > previewTotal) { idx = previewTotal; clampMsg = 'Đã ở record cuối cùng.'; }
+        setPreviewIndex(idx);
+        if (clampMsg) setPreviewMsg(clampMsg);
+        runPreview(idx);
+    };
+
+    // ─── Gating validate + xuất báo cáo lỗi (task 14.4) ─────────────────────
+    // Dựng tham số nguồn dữ liệu cho validate/error-report giống runPreview:
+    // xlsx/gsheet đọc lại để phủ toàn bộ record; csv/manual gửi rows đã nạp sẵn.
+    const buildSourceParams = (): {
+        kind?: 'csv' | 'xlsx' | 'gsheet';
+        file?: File;
+        url?: string;
+        rows?: Record<string, string>[];
+        columns?: string[];
+    } => {
+        if (dataMode === 'xlsx' && xlsxFile) {
+            return { kind: 'xlsx', file: xlsxFile };
+        }
+        if (dataMode === 'gsheet' && gsheetUrl.trim()) {
+            return { kind: 'gsheet', url: gsheetUrl.trim() };
+        }
+        return { rows: csvData, columns: csvHeaders };
+    };
+
+    // Chạy validate qua backend, cập nhật gating + issues vào state. Trả kết quả
+    // gating để caller (handleGenerate / nút kiểm tra) quyết định hành vi.
+    const runValidate = async (): Promise<{ gating: VdpGating; issues: VdpIssue[] } | null> => {
+        const src = buildSourceParams();
+        const params: Parameters<typeof validateVdp>[0] = {
+            fields: vdpFields,
+            hasHeader: csvHasHeader,
+            ...src,
+        };
+        // sheet đi kèm xlsx (buildSourceParams giữ kind/file; bổ sung sheet ở đây).
+        if (src.kind === 'xlsx' && selectedSheet) params.sheet = selectedSheet;
+
+        const result = await validateVdp(params);
+        setValidateGating(result.gating);
+        setValidateIssues(result.issues);
+        return result;
+    };
+
+    // Nút "Kiểm tra (validate)" thủ công — hiển thị gating + danh sách issue.
+    const handleManualValidate = async () => {
+        if (vdpFields.length === 0) { setStatusMessage('Chưa có trường dữ liệu (VDP Field) nào.'); return; }
+        setValidating(true);
+        setStatusMessage('Đang kiểm tra dữ liệu...');
+        try {
+            const result = await runValidate();
+            if (!result) return;
+            const errCount = result.issues.filter(i => i.severity === 'error').length;
+            const warnCount = result.issues.filter(i => i.severity === 'warning').length;
+            if (result.gating === 'allow') setStatusMessage('Kiểm tra xong: không có lỗi, sẵn sàng sinh lô.');
+            else if (result.gating === 'needs_confirmation') setStatusMessage(`Kiểm tra xong: ${warnCount} cảnh báo — cần xác nhận trước khi sinh lô.`);
+            else setStatusMessage(`Kiểm tra xong: ${errCount} lỗi chặn — phải khắc phục trước khi sinh lô.`);
+        } catch (err: any) {
+            setStatusMessage(`Lỗi kiểm tra dữ liệu: ${err?.message || err}`);
+        } finally {
+            setValidating(false);
+        }
+    };
+
+    // Gating trước khi sinh lô: chặn nếu có lỗi (Req 5.8), hỏi xác nhận nếu chỉ
+    // cảnh báo (Req 5.9), cho chạy nếu sạch (Req 5.10). Trả true nếu được tiếp tục.
+    const runPreGenerateValidation = async (): Promise<boolean> => {
+        setValidating(true);
+        setStatusMessage('Đang kiểm tra dữ liệu trước khi sinh lô...');
+        try {
+            const result = await runValidate();
+            if (!result) return false;
+            const errCount = result.issues.filter(i => i.severity === 'error').length;
+            const warnCount = result.issues.filter(i => i.severity === 'warning').length;
+
+            if (result.gating === 'block') {
+                setStatusMessage(`Có ${errCount} lỗi chặn — không thể sinh lô. Mở mục "Kiểm tra trước khi chạy" để xem chi tiết.`);
+                return false;
+            }
+            if (result.gating === 'needs_confirmation') {
+                const ok = window.confirm(
+                    `Phát hiện ${warnCount} cảnh báo (ví dụ: ảnh biến đổi thiếu file).\n\n` +
+                    `Các record liên quan có thể bị thiếu nội dung. Bạn vẫn muốn tiếp tục sinh lô?`
+                );
+                if (!ok) {
+                    setStatusMessage('Đã huỷ sinh lô do còn cảnh báo chưa xử lý.');
+                    return false;
+                }
+                return true;
+            }
+            return true; // allow
+        } catch (err: any) {
+            setStatusMessage(`Lỗi kiểm tra dữ liệu: ${err?.message || err}`);
+            return false;
+        } finally {
+            setValidating(false);
+        }
+    };
+
+    // Xuất báo cáo lỗi CSV (Req 4.7, 4.8). Nếu đã validate → dùng issues hiện có;
+    // nếu chưa → gửi fields + nguồn để backend tự tính (vẫn xuất CSV "không lỗi").
+    const handleExportReport = async () => {
+        setReportLoading(true);
+        setStatusMessage('Đang tạo báo cáo lỗi CSV...');
+        try {
+            if (validateGating !== null) {
+                await downloadVdpErrorReport({ issues: validateIssues });
+            } else {
+                await downloadVdpErrorReport({
+                    fields: vdpFields,
+                    hasHeader: csvHasHeader,
+                    ...buildSourceParams(),
+                    ...(dataMode === 'xlsx' && selectedSheet ? { sheet: selectedSheet } : {}),
+                });
+            }
+            setStatusMessage('Đã xuất báo cáo lỗi CSV.');
+        } catch (err: any) {
+            setStatusMessage(`Lỗi xuất báo cáo lỗi: ${err?.message || err}`);
+        } finally {
+            setReportLoading(false);
+        }
+    };
+
     const handleGenerate = async () => {
         if (vdpFields.length === 0) {
             setStatusMessage("Chưa có trường dữ liệu (VDP Field) nào.");
@@ -532,6 +1230,11 @@ export default function DataMergeTool({
             setStatusMessage("Chưa có dữ liệu. Tải CSV hoặc chuyển sang 'Nhập tay' (mỗi dòng = 1 bản ghi).");
             return;
         }
+
+        // Gating validate TRƯỚC khi sinh lô (Req 5.8/5.9/5.10): chặn nếu có lỗi,
+        // hỏi xác nhận nếu chỉ có cảnh báo, cho chạy nếu sạch.
+        const allowed = await runPreGenerateValidation();
+        if (!allowed) return;
 
         setIsGenerating(true);
         try {
@@ -597,16 +1300,24 @@ export default function DataMergeTool({
                 </div>
             </div>
 
-            {/* Data Section: CSV hoặc Nhập tay */}
-            <VdpSection step="1" title="Dữ liệu (CSV / Nhập tay)" defaultOpen>
-                <div className="flex gap-1 mb-3 p-0.5 bg-slate-100 dark:bg-zinc-800 rounded-md">
+            {/* Data Section: CSV / Excel / Google Sheets / Nhập tay */}
+            <VdpSection step="1" title="Dữ liệu (CSV / Excel / Sheets / Nhập tay)" defaultOpen>
+                <div className="grid grid-cols-2 gap-1 mb-3 p-0.5 bg-slate-100 dark:bg-zinc-800 rounded-md">
                     <button
                         onClick={() => setDataMode('csv')}
-                        className={`flex-1 h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'csv' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
+                        className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'csv' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
                     >📄 Tải CSV</button>
                     <button
+                        onClick={() => setDataMode('xlsx')}
+                        className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'xlsx' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
+                    >📊 Excel</button>
+                    <button
+                        onClick={() => setDataMode('gsheet')}
+                        className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'gsheet' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
+                    >🔗 Sheets</button>
+                    <button
                         onClick={() => { setDataMode('manual'); applyManualData(manualText, manualColName); }}
-                        className={`flex-1 h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'manual' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
+                        className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'manual' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
                     >✍️ Nhập tay</button>
                 </div>
 
@@ -634,7 +1345,7 @@ export default function DataMergeTool({
                             (Muốn cùng 1 nội dung cố định trên mọi trang thì gõ thẳng nội dung vào ô text của field.)
                         </p>
                     </div>
-                ) : (
+                ) : dataMode === 'csv' ? (
                 <>
                 <label className="flex items-center justify-center w-full p-3 border-2 border-dashed border-blue-300 dark:border-blue-700/50 rounded-md cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
                     <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
@@ -659,6 +1370,94 @@ export default function DataMergeTool({
         </label>
         <p className="text-[10px] text-slate-400 leading-snug -mt-1">Bỏ chọn nếu file không có dòng tiêu đề — cột sẽ tự đặt tên "Cột 1", "Cột 2"…</p>
         </>
+        ) : dataMode === 'xlsx' ? (
+        <>
+            <label className="flex items-center justify-center w-full p-3 border-2 border-dashed border-emerald-300 dark:border-emerald-700/50 rounded-md cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
+                <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                    <span className="text-sm font-medium">{xlsxFile ? 'Đổi file Excel (.xlsx)' : 'Tải file Excel (.xlsx)'}</span>
+                </div>
+                <input type="file" accept=".xlsx" onChange={handleXlsxFile} className="hidden" />
+            </label>
+            {xlsxFile && (
+                <div className="mt-2 text-[12px] text-slate-600 dark:text-zinc-300 truncate" title={xlsxFile.name}>
+                    📊 {xlsxFile.name}
+                </div>
+            )}
+            {sheetList.length > 0 && (
+                <div className="mt-2 flex flex-col gap-1">
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">Chọn sheet ({sheetList.length})</span>
+                    <select
+                        value={selectedSheet}
+                        onChange={(e) => handleSheetChange(e.target.value)}
+                        disabled={sourceLoading}
+                        className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+                    >
+                        {sheetList.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                </div>
+            )}
+            <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
+                <input
+                    type="checkbox"
+                    checked={csvHasHeader}
+                    onChange={(e) => {
+                        const v = e.target.checked;
+                        setCsvHasHeader(v);
+                        if (xlsxFile && selectedSheet) loadXlsxSheet(xlsxFile, selectedSheet);
+                    }}
+                    className="w-4 h-4 accent-emerald-500"
+                />
+                <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">Hàng đầu là tiêu đề cột</span>
+            </label>
+        </>
+        ) : (
+        <>
+            <div className="flex flex-col gap-2">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">Link Google Sheets (chia sẻ công khai)</span>
+                <input
+                    type="url"
+                    value={gsheetUrl}
+                    onChange={(e) => setGsheetUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') loadGsheet(); }}
+                    placeholder="https://docs.google.com/spreadsheets/d/.../edit"
+                    className="w-full h-8 px-2 text-[12px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-blue-500"
+                />
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                        type="checkbox"
+                        checked={csvHasHeader}
+                        onChange={(e) => setCsvHasHeader(e.target.checked)}
+                        className="w-4 h-4 accent-blue-500"
+                    />
+                    <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">Hàng đầu là tiêu đề cột</span>
+                </label>
+                <button
+                    onClick={loadGsheet}
+                    disabled={sourceLoading || !gsheetUrl.trim()}
+                    className="self-start h-8 px-4 text-[12px] font-semibold bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                    {sourceLoading ? 'Đang tải…' : 'Lấy dữ liệu'}
+                </button>
+                <p className="text-[10px] text-slate-400 leading-snug">
+                    Sheet phải được chia sẻ ở chế độ "Bất kỳ ai có đường liên kết". Dữ liệu được lấy qua đường export CSV của Google.
+                </p>
+            </div>
+        </>
+        )}
+
+        {sourceLoading && (
+            <div className="flex items-center gap-2 text-[12px] text-slate-500 dark:text-zinc-400">
+                <svg className="w-4 h-4 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                Đang đọc nguồn dữ liệu…
+            </div>
+        )}
+
+        {sourceError && (
+            <div className="flex items-start gap-2 p-2.5 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-[12px] text-red-700 dark:text-red-300 leading-snug">
+                <svg className="w-4 h-4 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                <span>{sourceError}</span>
+            </div>
         )}
 
         {csvHeaders.length > 0 && (
@@ -666,7 +1465,7 @@ export default function DataMergeTool({
                 {batchFiles.length < 2 && (
                 <div className="flex items-center justify-between">
                     <span>Số bản ghi:</span>
-                    <span className="font-bold">{csvData.length}</span>
+                    <span className="font-bold">{sourceRecordCount ?? csvData.length}</span>
                 </div>
                 )}
                 <div className="flex items-center justify-between">
@@ -802,7 +1601,7 @@ export default function DataMergeTool({
                 <VdpSection step="4" title="Cài đặt trường" accent defaultOpen>
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col gap-1 p-2.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-                            <span className="text-[12px] font-bold text-blue-700 dark:text-blue-400 block mb-1">Nguồn dữ liệu (Cột CSV)</span>
+                            <span className="text-[12px] font-bold text-blue-700 dark:text-blue-400 block mb-1">Cột chính của ô này</span>
                             <select 
                                 value={csvHeaders.includes(selectedField.name) ? selectedField.name : ""}
                                 onChange={(e) => updateSelectedField({ name: e.target.value })}
@@ -813,9 +1612,10 @@ export default function DataMergeTool({
                                     <option key={h} value={h}>{h}</option>
                                 ))}
                             </select>
-                            {selectedField.type === 'text' && (
-                                <span className="text-[10px] text-blue-600/80 mt-1 italic">Mẹo: Hoặc dùng ngoặc nhọn {'{Tên Cột}'} chèn thẳng vào vùng Text bên dưới.</span>
-                            )}
+                            <span className="text-[10px] text-blue-600/80 mt-1 italic">
+                                Giá trị cột này sẽ được in vào ô (mỗi bản in lấy theo dòng của nó).
+                                {selectedField.type === 'text' && <> Hoặc gõ thẳng {'{Tên Cột}'} vào vùng Nội dung bên dưới.</>}
+                            </span>
                         </div>
                     
                         <div className="flex flex-col gap-1">
@@ -863,7 +1663,7 @@ export default function DataMergeTool({
                                 <div className="flex flex-col gap-1">
                                     <span className="text-[10px] font-medium text-slate-500 block mb-1">
                                         Nội dung {selectedField.type === 'text' ? 'Text' : selectedField.type === 'qrcode' ? 'QR Code' : 'Mã vạch'} 
-                                        <span className="text-slate-400 font-normal"> (dùng "Chèn cột nhanh" bên dưới, hoặc gõ {'{Tên_Cột}'})</span>
+                                        <span className="text-slate-400 font-normal"> (gõ {'{Tên_Cột}'}, hoặc dùng "Chèn thêm cột vào câu" bên dưới)</span>
                                     </span>
                                     <input 
                                         type="text" 
@@ -876,13 +1676,34 @@ export default function DataMergeTool({
 
                                 {csvHeaders.length > 0 && (
                                     <div className="flex flex-col gap-1.5 p-2 rounded-md bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-zinc-700">
-                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Chèn cột nhanh</span>
+                                        <div className="flex items-center gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowQuickInsert(v => !v)}
+                                                className="flex items-center justify-between flex-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide hover:text-teal-600 transition-colors"
+                                                title="Công cụ tạo nhanh placeholder {cột} để chèn vào câu (tuỳ chọn)"
+                                            >
+                                                <span>Chèn thêm cột vào câu (nâng cao)</span>
+                                                <svg className={`w-3.5 h-3.5 transition-transform ${showQuickInsert ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowQuickHelp(true)}
+                                                title="Xem hướng dẫn & ví dụ"
+                                                className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full text-teal-600 dark:text-teal-300 bg-teal-50 dark:bg-teal-500/10 hover:bg-teal-100 dark:hover:bg-teal-500/20 border border-teal-200 dark:border-teal-700 transition-colors"
+                                            >
+                                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" /><path strokeLinecap="round" d="M12 16.5h.01" /></svg>
+                                            </button>
+                                        </div>
+                                        {showQuickInsert && (
+                                        <>
+                                        <span className="text-[10px] text-slate-400 italic">Tạo nhanh {'{cột}'} (có thể tách phần &amp; định dạng) rồi bấm Chèn vào ô Nội dung.</span>
                                         <div className="grid grid-cols-2 gap-1.5">
-                                            <select value={splitCol} onChange={e => setSplitCol(e.target.value)} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500">
+                                            <select value={splitCol} onChange={e => setSplitCol(e.target.value)} title="Chọn cột dữ liệu muốn chèn placeholder vào câu" className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500">
                                                 <option value="">— Chọn cột —</option>
                                                 {csvHeaders.map(h => <option key={h} value={h}>{h}</option>)}
                                             </select>
-                                            <select value={splitMode} onChange={e => setSplitMode(e.target.value)} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500">
+                                            <select value={splitMode} onChange={e => setSplitMode(e.target.value)} title="Lấy cả ô, hoặc tách theo dấu rồi lấy 1 phần. VD: '123-456' tách '-' lấy phần 1 → 123" className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500">
                                                 <option value="whole">Cả cột (không tách)</option>
                                                 <option value="ws">Tách: khoảng trắng</option>
                                                 <option value="-">Tách: gạch ngang (-)</option>
@@ -896,16 +1717,16 @@ export default function DataMergeTool({
                                             <div className="grid grid-cols-2 gap-1.5">
                                                 <div className="flex items-center gap-1.5">
                                                     <span className="text-[11px] text-slate-500 shrink-0">Phần</span>
-                                                    <input type="number" min={1} value={splitPart} onChange={e => setSplitPart(Math.max(1, parseInt(e.target.value) || 1))} className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
+                                                    <input type="number" min={1} value={splitPart} onChange={e => setSplitPart(Math.max(1, parseInt(e.target.value) || 1))} title="Lấy phần thứ mấy sau khi tách (1 = phần đầu tiên)" className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
                                                 </div>
                                                 {splitMode === 'custom' && (
-                                                    <input value={splitCustom} onChange={e => setSplitCustom(e.target.value)} placeholder="Nhập dấu phân cách" className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
+                                                    <input value={splitCustom} onChange={e => setSplitCustom(e.target.value)} placeholder="Nhập dấu phân cách" title="Ký tự dùng để tách ô (vd: | hoặc _)" className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
                                                 )}
                                             </div>
                                         )}
                                         {/* #8 Định dạng dữ liệu */}
                                         <div className="grid grid-cols-2 gap-1.5">
-                                            <select value={splitFmt} onChange={e => { setSplitFmt(e.target.value); setSplitFmtArg(e.target.value === 'date' ? '%d/%m/%Y' : ''); }} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" title="Định dạng dữ liệu">
+                                            <select value={splitFmt} onChange={e => { setSplitFmt(e.target.value); setSplitFmtArg(e.target.value === 'date' ? '%d/%m/%Y' : ''); }} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" title="Biến đổi giá trị trước khi in: VIẾT HOA, số 1,234, ngày, đệm số 0…">
                                                 <option value="">Định dạng: Không</option>
                                                 <option value="upper">CHỮ HOA</option>
                                                 <option value="lower">chữ thường</option>
@@ -926,8 +1747,43 @@ export default function DataMergeTool({
                                         </div>
                                         <div className="flex items-center justify-between gap-2">
                                             <code className="text-[11px] text-teal-600 dark:text-teal-400 font-mono truncate" title="Cú pháp sẽ được chèn">{buildSplitToken() || '—'}</code>
-                                            <button onClick={() => insertSplitToken(selectedField)} disabled={!splitCol} className="shrink-0 h-7 px-3 text-[11px] font-semibold bg-teal-500 text-white rounded-md hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Chèn</button>
+                                            <button onClick={() => insertSplitToken(selectedField)} disabled={!splitCol} title="Chèn placeholder vừa tạo vào ô Nội dung ở trên" className="shrink-0 h-7 px-3 text-[11px] font-semibold bg-teal-500 text-white rounded-md hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Chèn</button>
                                         </div>
+                                        </>
+                                        )}
+                                        {showQuickHelp && (
+                                            <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4" onClick={() => setShowQuickHelp(false)}>
+                                                <div className="max-w-lg w-full max-h-[80vh] overflow-auto bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-slate-200 dark:border-zinc-700" onClick={(e) => e.stopPropagation()}>
+                                                    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700 sticky top-0 bg-white dark:bg-zinc-900">
+                                                        <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">Chèn thêm cột vào câu — hướng dẫn</span>
+                                                        <button type="button" onClick={() => setShowQuickHelp(false)} className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors" title="Đóng">
+                                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                                        </button>
+                                                    </div>
+                                                    <div className="p-4 space-y-4 text-[12px] text-slate-600 dark:text-zinc-300 leading-relaxed">
+                                                        <p>Công cụ này <b>tạo nhanh placeholder</b> <code>{'{cột}'}</code> rồi bỏ vào ô <b>Nội dung</b> — khỏi phải gõ cú pháp tay. Khi in, mỗi bản sẽ thay <code>{'{cột}'}</code> bằng giá trị dòng của nó.</p>
+                                                        <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60 space-y-2">
+                                                            <div><b>1. Chọn cột</b>: lấy dữ liệu từ cột nào.</div>
+                                                            <div>
+                                                                <b>2. Cả cột / Tách</b>: lấy nguyên ô, hoặc tách theo dấu rồi lấy phần thứ N.
+                                                                <div className="text-slate-500 dark:text-zinc-400 mt-0.5">VD ô <code>123-456</code>, tách <code>-</code> lấy phần 1 → <b>123</b>.</div>
+                                                            </div>
+                                                            <div>
+                                                                <b>3. Định dạng</b>: biến đổi giá trị trước khi in.
+                                                                <div className="text-slate-500 dark:text-zinc-400 mt-0.5">VIẾT HOA · số <code>1,234</code> · ngày <code>dd/mm/yyyy</code> · đệm 0 <code>000123</code>.</div>
+                                                            </div>
+                                                            <div><b>4. Bấm "Chèn"</b>: ghép thành token (vd <code>{'{cao}'}</code>, <code>{'{cao[2|-]}'}</code>, <code>{'{cao|upper}'}</code>) và thêm vào ô Nội dung.</div>
+                                                        </div>
+                                                        <div className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                                            Mẹo: bạn có thể chèn nhiều cột vào một câu, vd <code>{'Mã: {SKU} - {Tên}'}</code>. Không cần công cụ này thì gõ tay <code>{'{Tên_Cột}'}</code> cũng được.
+                                                        </div>
+                                                    </div>
+                                                    <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-700 text-right">
+                                                        <button type="button" onClick={() => setShowQuickHelp(false)} className="text-[12px] px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded font-medium transition-colors">Đã hiểu</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                                 {selectedField.type === 'text' && (
@@ -1252,6 +2108,207 @@ export default function DataMergeTool({
                     </div>
                 </VdpSection>
             )}
+
+            {/* Logic điều kiện: ẩn/hiện + bảng rule cho field (task 14.2, Req 2.1/2.2/2.5/2.6) */}
+            {selectedField && (
+                <VdpSection step="5" title="Logic điều kiện (ẩn/hiện · rule)" defaultOpen={false}>
+                    <VdpLogicPanel
+                        field={selectedField}
+                        csvHeaders={csvHeaders}
+                        onChange={updateSelectedField}
+                    />
+                </VdpSection>
+            )}
+
+            {/* Xem trước record + điều hướng + dấu lỗi (task 14.3, Req 4.2/4.3/4.5/4.6/4.9) */}
+            <VdpSection step="6" title="Xem trước record" defaultOpen={false}>
+                <div className="flex flex-col gap-3">
+                    {/* Điều hướng record: Prev / ô chỉ số / Next + nút Xem */}
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => goToPreview(previewIndex - 1)}
+                            disabled={previewLoading || previewTotal <= 0}
+                            title="Record trước"
+                            className="shrink-0 h-8 w-8 flex items-center justify-center rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+                        </button>
+                        <div className="flex items-center gap-1 flex-1 min-w-0 justify-center">
+                            <input
+                                type="number"
+                                min={1}
+                                max={previewTotal || 1}
+                                value={previewIndex}
+                                onChange={(e) => setPreviewIndex(Math.max(1, Number(e.target.value) || 1))}
+                                onKeyDown={(e) => { if (e.key === 'Enter') goToPreview(previewIndex); }}
+                                className="h-8 w-16 px-2 text-[12px] text-center bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded focus:outline-none focus:border-teal-500 transition-all"
+                            />
+                            <span className="text-[12px] text-slate-500 dark:text-zinc-400 shrink-0">
+                                / {previewTotal > 0 ? previewTotal.toLocaleString('vi-VN') : 0}
+                            </span>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => goToPreview(previewIndex + 1)}
+                            disabled={previewLoading || previewTotal <= 0}
+                            title="Record kế tiếp"
+                            className="shrink-0 h-8 w-8 flex items-center justify-center rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => goToPreview(previewIndex)}
+                            disabled={previewLoading || previewTotal <= 0}
+                            className="shrink-0 h-8 px-3 text-[12px] font-semibold bg-teal-600 hover:bg-teal-700 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded transition-colors"
+                        >
+                            Xem
+                        </button>
+                    </div>
+
+                    {/* Thông báo (đã kẹp / nguồn rỗng / lỗi) */}
+                    {previewMsg && (
+                        <div className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 px-2 py-1.5 rounded leading-snug">
+                            {previewMsg}
+                        </div>
+                    )}
+
+                    {/* Khung ảnh xem trước + overlay dấu lỗi */}
+                    <div className="relative rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40 overflow-hidden min-h-[120px] flex items-center justify-center">
+                        {previewImg ? (
+                            <div className="relative inline-block w-full">
+                                <img
+                                    src={previewImg}
+                                    alt={`Xem trước record ${previewRecordIndex}`}
+                                    className="block w-full h-auto select-none"
+                                    draggable={false}
+                                />
+                                {/* Dấu hiệu lỗi field: rect theo pixel ảnh → quy về % để
+                                    tự co giãn theo kích thước hiển thị (Req 4.6). */}
+                                {previewDims.w > 0 && previewDims.h > 0 && previewErrors.map((er, i) => (
+                                    <div
+                                        key={i}
+                                        title={`${er.kind}: ${er.field}${er.reason ? ' — ' + er.reason : ''}`}
+                                        className="absolute border-2 border-red-500 bg-red-500/15 pointer-events-auto"
+                                        style={{
+                                            left: `${(er.rect.x / previewDims.w) * 100}%`,
+                                            top: `${(er.rect.y / previewDims.h) * 100}%`,
+                                            width: `${(er.rect.w / previewDims.w) * 100}%`,
+                                            height: `${(er.rect.h / previewDims.h) * 100}%`,
+                                        }}
+                                    >
+                                        <span className="absolute -top-4 left-0 text-[9px] font-bold text-white bg-red-500 px-1 rounded-sm whitespace-nowrap">
+                                            {er.kind}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-[12px] text-slate-400 dark:text-zinc-500 py-8 px-3 text-center">
+                                Bấm "Xem" để tạo bản xem trước record.
+                            </div>
+                        )}
+
+                        {/* Chỉ báo đang xử lý — chỉ hiện khi vượt 2 giây (Req 4.3, 8.5) */}
+                        {previewProcessing && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/70 dark:bg-zinc-900/70 backdrop-blur-[1px]">
+                                <svg className="animate-spin h-6 w-6 text-teal-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                <span className="text-[11px] font-medium text-slate-600 dark:text-zinc-300">Đang xử lý xem trước…</span>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Liệt kê lỗi field của record đang xem (MISSING/ERR) */}
+                    {previewErrors.length > 0 && (
+                        <div className="flex flex-col gap-1">
+                            <span className="text-[11px] font-bold text-red-600 dark:text-red-400">
+                                {previewErrors.length} field lỗi ở record này:
+                            </span>
+                            {previewErrors.map((er, i) => (
+                                <div key={i} className="text-[10px] text-slate-600 dark:text-zinc-400 leading-snug">
+                                    <span className="font-mono font-bold text-red-500">[{er.kind}]</span>{' '}
+                                    <span className="font-semibold">{er.field}</span>
+                                    {er.reason ? <span> — {er.reason}</span> : null}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </VdpSection>
+
+            {/* Kiểm tra trước khi chạy + xuất báo cáo lỗi CSV (task 14.4, Req 4.7/4.8/5.8/5.9/5.10) */}
+            <VdpSection step="7" title="Kiểm tra trước khi chạy" defaultOpen={false}>
+                <div className="flex flex-col gap-3">
+                    <span className="text-[10px] text-slate-500 dark:text-zinc-400 italic leading-snug">
+                        Kiểm tra placeholder, ảnh biến đổi và giá trị barcode trước khi sinh lô. Có lỗi → chặn; chỉ cảnh báo → cần xác nhận; sạch → cho chạy.
+                    </span>
+
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={handleManualValidate}
+                            disabled={validating || vdpFields.length === 0}
+                            className="flex-1 h-9 px-3 text-[12px] font-semibold text-white bg-teal-600 hover:bg-teal-700 disabled:bg-slate-400 disabled:cursor-not-allowed rounded-md transition-colors flex items-center justify-center gap-1.5"
+                        >
+                            {validating ? (
+                                <>
+                                    <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                                    Đang kiểm tra…
+                                </>
+                            ) : 'Kiểm tra (validate)'}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleExportReport}
+                            disabled={reportLoading}
+                            className="flex-1 h-9 px-3 text-[12px] font-semibold text-slate-700 dark:text-zinc-200 border border-slate-300 dark:border-white/20 rounded-md hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
+                            title="Tải báo cáo các record có lỗi (MISSING/ERR) dạng CSV"
+                        >
+                            {reportLoading ? 'Đang tạo…' : 'Xuất báo cáo lỗi (CSV)'}
+                        </button>
+                    </div>
+
+                    {/* Trạng thái gating */}
+                    {validateGating && (
+                        <div className={`text-[12px] font-semibold rounded-md px-3 py-2 ${
+                            validateGating === 'block'
+                                ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+                                : validateGating === 'needs_confirmation'
+                                    ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+                                    : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                        }`}>
+                            {validateGating === 'block' && '⛔ Có lỗi chặn — không thể sinh lô cho tới khi khắc phục.'}
+                            {validateGating === 'needs_confirmation' && '⚠️ Chỉ có cảnh báo — cần xác nhận trước khi sinh lô.'}
+                            {validateGating === 'allow' && '✅ Không có lỗi — sẵn sàng sinh lô.'}
+                        </div>
+                    )}
+
+                    {/* Danh sách issue */}
+                    {validateIssues.length > 0 && (
+                        <div className="flex flex-col gap-1 max-h-56 overflow-y-auto scroller-thin pr-1">
+                            {validateIssues.map((iss, i) => (
+                                <div
+                                    key={i}
+                                    className={`text-[10px] leading-snug rounded px-2 py-1 ${
+                                        iss.severity === 'error'
+                                            ? 'bg-red-50 dark:bg-red-900/10 text-red-700 dark:text-red-300'
+                                            : 'bg-amber-50 dark:bg-amber-900/10 text-amber-700 dark:text-amber-300'
+                                    }`}
+                                >
+                                    <span className="font-mono font-bold uppercase">[{iss.severity === 'error' ? 'LỖI' : 'CẢNH BÁO'}]</span>{' '}
+                                    {iss.record_idx != null && <span className="font-semibold">dòng {iss.record_idx}</span>}
+                                    {iss.field ? <span> · {iss.field}</span> : null}
+                                    {iss.reason ? <span> — {iss.reason}</span> : null}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {validateGating === 'allow' && validateIssues.length === 0 && (
+                        <span className="text-[11px] text-slate-400 dark:text-zinc-500">Không có lỗi hay cảnh báo nào.</span>
+                    )}
+                </div>
+            </VdpSection>
 
             {/* Action Buttons */}
             <div className="pt-2">

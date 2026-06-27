@@ -447,3 +447,311 @@ export async function getSystemFonts(): Promise<{name: string, path: string}[]> 
   const data = await res.json();
   return data.fonts;
 }
+
+// ===== VDP Upgrade: nguồn dữ liệu (xlsx / Google Sheets / csv) =====
+
+export interface VdpDatasourceResult {
+  columns: string[];
+  record_count: number;
+  preview_rows: Record<string, string>[];
+}
+
+/**
+ * Đọc một nguồn dữ liệu VDP qua backend (`POST /api/vdp/datasource`).
+ *
+ * - `kind='csv'`: truyền `file` (File .csv) hoặc `text` (nội dung dán tay).
+ * - `kind='xlsx'`: truyền `file` (File .xlsx) và tuỳ chọn `sheet` để chọn sheet.
+ * - `kind='gsheet'`: truyền `url` là link Google Sheets công khai.
+ *
+ * Lỗi đọc nguồn (DataSourceError) trả về HTTP 400 với `detail` là thông báo
+ * tiếng Việt — được ném thành Error để UI hiển thị.
+ */
+export async function readVdpDatasource(params: {
+  kind: 'csv' | 'xlsx' | 'gsheet';
+  file?: File;
+  url?: string;
+  text?: string;
+  sheet?: string;
+  hasHeader?: boolean;
+}): Promise<VdpDatasourceResult> {
+  const formData = new FormData();
+  formData.append('kind', params.kind);
+  if (params.file) formData.append('file', params.file);
+  if (params.url) formData.append('url', params.url);
+  if (params.text !== undefined) formData.append('text', params.text);
+  if (params.sheet) formData.append('sheet', params.sheet);
+  formData.append('has_header', String(params.hasHeader ?? true));
+
+  const res = await authenticatedFetch(`${API_BASE}/api/vdp/datasource`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Lỗi đọc nguồn dữ liệu' }));
+    let msg = err.detail || 'Lỗi đọc nguồn dữ liệu';
+    if (typeof msg === 'object') {
+      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
+    }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// ===== VDP Upgrade: xem trước một record (task 14.3, Req 4.1–4.6, 4.10) =====
+
+/** Một dấu hiệu lỗi field trong bản xem trước. `rect` theo toạ độ PIXEL ảnh PNG. */
+export interface VdpFieldError {
+  field: string;
+  kind: 'MISSING' | 'ERR' | string;
+  rect: { x: number; y: number; w: number; h: number };
+  reason: string;
+}
+
+/** Kết quả `POST /api/vdp/preview` — render một record thành ảnh PNG + dấu lỗi. */
+export interface VdpPreviewResult {
+  image_png_base64: string | null;   // null khi nguồn rỗng
+  record_index: number;              // chỉ số record (1-based) đã kẹp thực sự render
+  clamped: boolean;                  // true nếu chỉ số yêu cầu nằm ngoài khoảng
+  empty_source: boolean;             // true nếu nguồn 0 record
+  width: number;                     // kích thước ảnh PNG (pixel)
+  height: number;
+  message: string;                   // thông báo tiếng Việt (đã kẹp / nguồn rỗng)
+  field_errors: VdpFieldError[];
+}
+
+/**
+ * Render bản xem trước record thứ N của một job VDP (`POST /api/vdp/preview`).
+ *
+ * Template lấy từ `template` (File) hoặc `templatePath` (đường dẫn server).
+ * Nguồn dữ liệu: truyền `rows` (+ `columns`) đã nạp sẵn, HOẶC `kind`/`file`/`url`
+ * để backend đọc lại nguồn (xlsx/gsheet/csv).
+ *
+ * `requestedIndex` là 1-based; backend tự kẹp về `[1, total]` và báo qua `clamped`.
+ * Truyền `signal` để huỷ request cũ khi người dùng điều hướng nhanh (giữ UI mượt).
+ */
+export async function previewVdpRecord(params: {
+  fields: any[];
+  requestedIndex: number;
+  template?: File;
+  templatePath?: string;
+  rows?: Record<string, string>[];
+  columns?: string[];
+  kind?: 'csv' | 'xlsx' | 'gsheet';
+  file?: File;
+  url?: string;
+  text?: string;
+  sheet?: string;
+  hasHeader?: boolean;
+  scale?: number;
+  signal?: AbortSignal;
+}): Promise<VdpPreviewResult> {
+  const formData = new FormData();
+  formData.append('fields', JSON.stringify(params.fields));
+  formData.append('requested_index', String(params.requestedIndex));
+
+  if (params.template) {
+    const realFile = await prepareFileForUpload(params.template);
+    formData.append('template', realFile, params.template.name);
+  }
+  if (params.templatePath) formData.append('template_path', params.templatePath);
+
+  if (params.kind) formData.append('kind', params.kind);
+  if (params.file) formData.append('file', params.file);
+  if (params.url) formData.append('url', params.url);
+  if (params.text !== undefined) formData.append('text', params.text);
+  if (params.sheet) formData.append('sheet', params.sheet);
+  if (params.rows) {
+    const rowsBlob = new Blob([JSON.stringify(params.rows)], { type: 'application/json' });
+    formData.append('rows_file', rowsBlob, 'rows.json');
+  }
+  if (params.columns) formData.append('columns', JSON.stringify(params.columns));
+  formData.append('has_header', String(params.hasHeader ?? true));
+  if (params.scale !== undefined) formData.append('scale', String(params.scale));
+
+  const res = await authenticatedFetch(`${API_BASE}/api/vdp/preview`, {
+    method: 'POST',
+    body: formData,
+    signal: params.signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Lỗi tạo bản xem trước' }));
+    let msg = err.detail || 'Lỗi tạo bản xem trước';
+    if (typeof msg === 'object') {
+      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
+    }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+// ===== VDP Upgrade: validate trước khi sinh lô + báo cáo lỗi CSV =====
+// (task 14.4, Req 4.7/4.8/5.8/5.9/5.10)
+
+/** Trạng thái cổng (gating) quyết định việc sinh lô dựa trên kết quả validate. */
+export type VdpGating = 'block' | 'needs_confirmation' | 'allow';
+
+/** Một issue (lỗi/cảnh báo) do Validator backend trả về. */
+export interface VdpIssue {
+  severity: 'error' | 'warning' | string;
+  record_idx: number | null;   // null = lỗi cấu hình toàn cục (không gắn record)
+  field: string | null;
+  reason: string;
+}
+
+/** Kết quả `POST /api/vdp/validate`. */
+export interface VdpValidateResult {
+  gating: VdpGating;
+  issues: VdpIssue[];
+}
+
+/**
+ * Kiểm tra cấu hình field + dữ liệu TRƯỚC khi sinh lô (`POST /api/vdp/validate`).
+ *
+ * Nguồn dữ liệu: truyền `rows` (+ `columns`) đã nạp sẵn, HOẶC `kind`/`file`/`url`/
+ * `text`/`sheet` để backend đọc lại nguồn (xlsx/gsheet/csv). Backend KHÔNG sinh
+ * bất kỳ artifact PDF nào (Req 5.7).
+ *
+ * Trả `gating` (`block`|`needs_confirmation`|`allow`) và danh sách `issues`.
+ * Nguồn chưa nạp/0 record được backend coi là lỗi chặn (Req 5.8, 5.11).
+ */
+export async function validateVdp(params: {
+  fields: any[];
+  rows?: Record<string, string>[];
+  columns?: string[];
+  kind?: 'csv' | 'xlsx' | 'gsheet';
+  file?: File;
+  url?: string;
+  text?: string;
+  sheet?: string;
+  hasHeader?: boolean;
+  signal?: AbortSignal;
+}): Promise<VdpValidateResult> {
+  const formData = new FormData();
+  formData.append('fields', JSON.stringify(params.fields));
+  if (params.kind) formData.append('kind', params.kind);
+  if (params.file) formData.append('file', params.file);
+  if (params.url) formData.append('url', params.url);
+  if (params.text !== undefined) formData.append('text', params.text);
+  if (params.sheet) formData.append('sheet', params.sheet);
+  if (params.rows) {
+    const rowsBlob = new Blob([JSON.stringify(params.rows)], { type: 'application/json' });
+    formData.append('rows_file', rowsBlob, 'rows.json');
+  }
+  if (params.columns) formData.append('columns', JSON.stringify(params.columns));
+  formData.append('has_header', String(params.hasHeader ?? true));
+
+  const res = await authenticatedFetch(`${API_BASE}/api/vdp/validate`, {
+    method: 'POST',
+    body: formData,
+    signal: params.signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Lỗi kiểm tra dữ liệu' }));
+    let msg = err.detail || 'Lỗi kiểm tra dữ liệu';
+    if (typeof msg === 'object') {
+      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
+    }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+/**
+ * Tải báo cáo lỗi CSV (`POST /api/vdp/error-report`) rồi kích hoạt lưu file.
+ *
+ * Truyền `issues` đã có sẵn (vd từ `validateVdp`) HOẶC `fields` + nguồn để backend
+ * tính lại. Khi không có lỗi nào, backend vẫn xuất CSV cho biết "không phát hiện
+ * lỗi" (Req 4.8). CSV có BOM UTF-8 để Excel mở đúng tiếng Việt có dấu.
+ *
+ * Lưu file theo cùng cơ chế như `saveVdpTemplate`: trong Tauri dùng hộp thoại
+ * lưu file, trên web dùng anchor download.
+ */
+export async function downloadVdpErrorReport(params: {
+  issues?: VdpIssue[];
+  fields?: any[];
+  rows?: Record<string, string>[];
+  columns?: string[];
+  kind?: 'csv' | 'xlsx' | 'gsheet';
+  file?: File;
+  url?: string;
+  text?: string;
+  sheet?: string;
+  hasHeader?: boolean;
+  fileName?: string;
+}): Promise<void> {
+  const formData = new FormData();
+  if (params.issues) {
+    const issuesBlob = new Blob([JSON.stringify(params.issues)], { type: 'application/json' });
+    formData.append('issues_file', issuesBlob, 'issues.json');
+  }
+  if (params.fields) formData.append('fields', JSON.stringify(params.fields));
+  if (params.kind) formData.append('kind', params.kind);
+  if (params.file) formData.append('file', params.file);
+  if (params.url) formData.append('url', params.url);
+  if (params.text !== undefined) formData.append('text', params.text);
+  if (params.sheet) formData.append('sheet', params.sheet);
+  if (params.rows) {
+    const rowsBlob = new Blob([JSON.stringify(params.rows)], { type: 'application/json' });
+    formData.append('rows_file', rowsBlob, 'rows.json');
+  }
+  if (params.columns) formData.append('columns', JSON.stringify(params.columns));
+  formData.append('has_header', String(params.hasHeader ?? true));
+
+  const res = await authenticatedFetch(`${API_BASE}/api/vdp/error-report`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Lỗi xuất báo cáo lỗi' }));
+    let msg = err.detail || 'Lỗi xuất báo cáo lỗi';
+    if (typeof msg === 'object') {
+      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
+    }
+    throw new Error(msg);
+  }
+
+  const blob = await res.blob();
+  const defaultName = params.fileName || 'vdp_error_report.csv';
+
+  if ((window as any).__TAURI_INTERNALS__) {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const { writeFile } = await import('@tauri-apps/plugin-fs');
+    const path = await save({
+      defaultPath: defaultName,
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+      title: 'Lưu báo cáo lỗi VDP',
+    });
+    if (path) {
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      await writeFile(path, bytes);
+    }
+  } else {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = defaultName;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  }
+}
+
+/** Liệt kê tên các sheet của một file Excel `.xlsx` (`POST /api/vdp/datasource/sheets`). */
+export async function listVdpSheets(file: File): Promise<string[]> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await authenticatedFetch(`${API_BASE}/api/vdp/datasource/sheets`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Lỗi đọc danh sách sheet' }));
+    let msg = err.detail || 'Lỗi đọc danh sách sheet';
+    if (typeof msg === 'object') {
+      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
+    }
+    throw new Error(msg);
+  }
+  const data = await res.json();
+  return data.sheets as string[];
+}

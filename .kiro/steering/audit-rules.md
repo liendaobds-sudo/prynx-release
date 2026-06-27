@@ -329,3 +329,65 @@ Hệ quả thao tác: với mỗi finding về dữ liệu/tham số, ghi thêm 
   Consumer (live): <file:line đọc giá trị>  | hoặc: KHÔNG → moot
   Bằng chứng: <đọc code / lệnh đã chạy bằng venv + kết quả>
 ```
+
+---
+
+## 14. Bài học phiên Production-Audit (2026-06-26) — chống tái phạm CỤ THỂ
+
+> Bảy lỗ hổng đã xảy ra THẬT trong một phiên audit toàn dự án. Mỗi mục gắn với
+> sự kiện thật; đây là cụ thể hoá của §0, §12, §13.
+
+### 14.1 Test ĐỎ ≠ lỗi production
+Trước khi gắn severity cho một test fail, PHẢI phân loại nó là:
+(a) lỗi correctness production, (b) lỗi **test-harness** (test tự sai), (c) **test-drift /
+mock cũ** (production đúng, kỳ vọng test lỗi thời), (d) **flaky / không tất định**.
+Cách phân loại = §1 trace-to-ground-truth: đọc xem *code-under-test THỰC SỰ ĐỌC dữ
+liệu nào*.
+> Bài học: gắn 🔴 "validator bỏ sót lỗ hở" cho test paper_bag fail, NHƯNG validator
+> chỉ đọc `model.allPaths` còn test tiêm lỗi vào `panel.paths` (bản sao clip) → no-op.
+> Đó là lỗi test-harness, KHÔNG phải lỗi production. Cùng tên test về sau LẠI lộ một
+> lỗi production thật (overlap hình học) — nên (a)…(d) không loại trừ nhau.
+
+### 14.2 PBT seed ngẫu nhiên: 1 lần xanh KHÔNG phải bằng chứng
+Với property test seed ngẫu nhiên (fast-check/hypothesis không pin seed), một run xanh
+chỉ là "may seed", KHÔNG chứng minh pass. Phải chạy NHIỀU lần (hoặc pin seed) mới kết
+luận. Ngược lại, một fail **flaky** là TÍN HIỆU lỗi thật phải đào tới cùng — CẤM dập
+bằng `-u` (update snapshot) hay nâng tolerance.
+> Bài học: overlap paper_bag chỉ fail 2/10 lần → suite "xanh" một lần tạo an toàn giả;
+> đào ra lỗi hình học thật (glueVat vượt crease → tab tự cắt & chồng).
+
+### 14.3 Supply-chain: quét MỌI hệ sinh thái; "chưa cài" không phải kết luận
+Repo có Rust/npm/pip thì phải chạy ĐỦ `cargo audit` + `npm audit` + `pip-audit`. Thiếu
+tool → CÀI rồi chạy (mirror venv-first §13.2), không được kết luận "không quét được".
+Dependency khai báo nhưng KHÔNG dùng vẫn mang CVE → grep call-site, nếu 0 thì đề xuất gỡ.
+> Bài học: `cargo audit` chưa từng chạy ở các audit trước → bỏ sót `lopdf 0.34` (7.5
+> HIGH) và `pyo3` buffer-overflow. lopdf còn là dep KHÔNG dùng (gỡ hẳn được).
+
+### 14.4 Không tin claim subagent / báo cáo cũ — reproduce đúng con số
+Mọi kết luận từ sub-agent hoặc báo cáo audit cũ là `[SUSPECTED]` cho tới khi TỰ chạy lại
+artifact và xác minh ĐÚNG cặp/số/dòng (không chỉ "kết luận đúng hướng").
+> Bài học: subagent báo cặp overlap "glue_flap∩bottom_glue_flap 201mm²" — nhưng cặp đó
+> bị `ancestorRelated` loại trừ; cặp gây fail THẬT là `bottom_glue_flap∩lip_glue_flap
+> = 0.1333mm²`. Chỉ lộ ra khi tự chạy đúng test.
+
+### 14.5 Audit phải KHÔNG phá môi trường dev của người dùng
+CẤM `taskkill` / kill tiến trình node/python, dừng dev server, hay sửa global state mà
+người dùng đang chạy. Chỉ chạy verify ở background process riêng; dọn process do CHÍNH
+mình tạo, không đụng của người khác.
+> Bài học: một subagent kill các tiến trình node "để đo sạch" → tắt luôn Vite dev server
+> của user (`ERR_CONNECTION_REFUSED`, dynamic import 3D fail).
+
+### 14.6 Chạy verify CÔ LẬP + đối soát số liệu mâu thuẫn
+Chạy suite verify khi KHÔNG có run khác đụng cùng file/snapshot. Nếu 2 lần đo ra số khác
+nhau → truy nguyên TRƯỚC khi báo cáo, đừng chọn số đẹp.
+> Bài học: vitest lần đầu 703/1, lần sau 698/6 — do process zombie `vitest -u` chạy song
+> song làm bẩn snapshot/đo lệch.
+
+### 14.7 Release reproducibility là tiêu chí GO (mở rộng §12.3)
+Production-readiness yêu cầu artifact build từ cây ĐÃ COMMIT, sạch:
+- `git status` phải sạch — file vá chưa commit = build từ checkout sạch THIẾU vá = 🔴 chặn.
+- MỌI lockfile phải tracked (kể cả của crate phụ, vd `imposition_core/Cargo.lock`).
+- Build script cho artifact giao khách phải **fail-fast** khi thiếu dep bundle bắt buộc
+  (pdfium/Ghostscript…) thay vì chỉ `WARNING` rồi build tiếp (ship artifact hỏng âm thầm).
+> Bài học: 146 file (gồm vá bảo mật) chưa commit; `build_production.ps1` chỉ WARNING khi
+> thiếu pdfium/Ghostscript.

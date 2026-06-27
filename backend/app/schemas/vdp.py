@@ -1,5 +1,25 @@
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
+
+# Toán tử so sánh hỗ trợ cho điều kiện ẩn/hiện và bảng rule (Req 2.9)
+VdpOperator = Literal['eq', 'ne', 'contains', 'empty', 'not_empty']
+
+
+class VdpFieldCondition(BaseModel):
+    """Điều kiện ẩn/hiện field dựa trên giá trị một cột (Req 2.1, 2.2)."""
+    column: str
+    operator: VdpOperator
+    value: str = ''
+    action: Literal['show_if', 'hide_if'] = 'show_if'
+
+
+class VdpRule(BaseModel):
+    """Một dòng trong bảng rule: nếu cột thoả điều kiện thì đặt nội dung/ảnh = result (Req 2.5, 2.6)."""
+    column: str
+    operator: VdpOperator
+    value: str = ''
+    result: str
+
 
 class VdpField(BaseModel):
     id: str
@@ -23,7 +43,10 @@ class VdpField(BaseModel):
     autoFit: Optional[bool] = True  # tự bóp cỡ chữ để vừa khung (không tràn)
     # Barcode/QR specific
     barType: Optional[str] = 'code128'
-    barcodeType: Optional[str] = None  # tên frontend gửi (ưu tiên hơn barType)
+    # tên frontend gửi (ưu tiên hơn barType); ngoài các loại 1D/qr hiện có,
+    # nhận thêm 'datamatrix' | 'gs1-128' | 'gs1-datamatrix' (Req 3.1, 3.2, 3.3)
+    barcodeType: Optional[str] = None
+    gs1HumanReadable: Optional[bool] = False  # in chuỗi (AI)dữ_liệu cho GS1 (Req 3.10)
     barColor: Optional[str] = '#000000'
     bgColor: Optional[str] = '#FFFFFF'
     transparentBg: Optional[bool] = False
@@ -38,6 +61,9 @@ class VdpField(BaseModel):
     imageShape: Optional[str] = 'rectangle'  # rectangle | rounded | circle | polygon | star
     imageBaseDir: Optional[str] = None       # thư mục gốc khi cột chứa TÊN file ảnh
     imagePath: Optional[str] = None           # ảnh tĩnh (dùng khi cột rỗng/không map)
+    # Logic điều kiện (Req 2) — mặc định None để bảo toàn hành vi cũ (Req 7.2, 7.3)
+    conditions: Optional[List[VdpFieldCondition]] = None  # điều kiện ẩn/hiện (Req 2.1, 2.2)
+    rules: Optional[List[VdpRule]] = None                 # bảng rule first-match (Req 2.5, 2.6)
 
 class VdpRequest(BaseModel):
     file_id: str

@@ -4,12 +4,39 @@ pdf_ops — Direct pikepdf operations for PDF manipulation.
 Replaces pdf_wrapper's Document, Page, Shape classes.
 All operations use pikepdf directly without an intermediate compatibility layer.
 """
+import itertools
 import pikepdf
 import math
 import logging
 from app.workers.pdf_types import Point, Rect
 
 logger = logging.getLogger(__name__)
+
+# Bộ đếm UID toàn cục cho XObject cache của show_pdf_page. KHÔNG dùng id() của
+# đối tượng nguồn làm khóa cache: id() được tái dùng sau khi object bị GC, nên các
+# overlay khác nhau (mỗi record VDP tạo một overlay riêng rồi bị thu hồi) có thể
+# trùng id() → cache trả nhầm XObject của record cũ (lẫn nội dung giữa các trang).
+# Thay vào đó gắn một UID đơn điệu, KHÔNG tái dùng lên CHÍNH đối tượng nguồn.
+_PDF_UID_COUNTER = itertools.count(1)
+
+
+def _stable_pdf_uid(src_pdf: pikepdf.Pdf) -> int:
+    """Trả UID ổn định, duy nhất cho từng đối tượng ``src_pdf``.
+
+    UID được lưu ngay trên đối tượng (``_pdfops_uid``) nên một đối tượng mới — kể
+    cả khi tái dùng địa chỉ bộ nhớ (id) của đối tượng đã bị GC — sẽ KHÔNG có sẵn
+    thuộc tính này và được cấp UID mới, loại bỏ va chạm khóa cache. Với N-up (cùng
+    một ``src_pdf`` đặt nhiều lần) UID giữ nguyên nên việc nhúng-một-lần vẫn đúng.
+    """
+    uid = getattr(src_pdf, "_pdfops_uid", None)
+    if uid is None:
+        uid = next(_PDF_UID_COUNTER)
+        try:
+            src_pdf._pdfops_uid = uid
+        except Exception:
+            # Không gắn được thuộc tính → fallback id() (hành vi cũ).
+            uid = id(src_pdf)
+    return uid
 
 
 # =========================================================================
@@ -252,7 +279,9 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
             pdf._nup_xobj_cache = _cache
         except Exception:
             _cache = None  # không gắn được cache → fallback hành vi cũ
-    _key = (id(src_pdf), page_idx)
+    # Khóa cache theo UID ổn định (KHÔNG dùng id() — xem _stable_pdf_uid) để tránh
+    # va chạm khi id() bị tái dùng sau GC giữa các overlay record của VDP.
+    _key = (_stable_pdf_uid(src_pdf), page_idx)
     _cached = _cache.get(_key) if _cache is not None else None
     if _cached is not None:
         xobj, _res_name = _cached

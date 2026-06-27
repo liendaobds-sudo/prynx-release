@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../Button';
 
+export type PaperUsage = 'in_nhanh' | 'offset' | 'diecut' | 'nup';
+
 export interface SavedForm {
     id: string;
     name: string;
@@ -13,7 +15,20 @@ export interface SavedForm {
     marginRight: number;
     marginMode?: 'labels_only' | 'include_marks';
     classification?: 'offset' | 'in_nhanh';
+    usages?: PaperUsage[];
     gripperMargin?: number;
+}
+
+/**
+ * Trả về danh sách mục đích sử dụng của một khổ giấy đã lưu.
+ * Ưu tiên `usages` (model mới, đa-mục-đích). Nếu chưa có (form cũ chỉ có
+ * `classification`) thì suy ra để giữ tương thích ngược:
+ *   - classification === 'offset' → ['offset']
+ *   - mọi giá trị khác / undefined → ['in_nhanh']
+ */
+export function formUsages(f: Pick<SavedForm, 'usages' | 'classification'>): PaperUsage[] {
+    if (Array.isArray(f.usages) && f.usages.length > 0) return f.usages;
+    return f.classification === 'offset' ? ['offset'] : ['in_nhanh'];
 }
 
 export function usePaperPresets(storageKey: string) {
@@ -26,10 +41,10 @@ export function usePaperPresets(storageKey: string) {
         } catch (e) { }
     }, [storageKey]);
 
-    const handleSavePreset = (name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh' = 'in_nhanh', gripperMargin: number = 0) => {
+    const handleSavePreset = (name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh' = 'in_nhanh', gripperMargin: number = 0, usages: PaperUsage[] = ['in_nhanh']) => {
         const newPreset: SavedForm = {
             id: 'custom_' + Date.now(),
-            name, w, h, marginTop: mT, marginBottom: mB, marginLeft: mL, marginRight: mR, marginMode: mode, classification, gripperMargin
+            name, w, h, marginTop: mT, marginBottom: mB, marginLeft: mL, marginRight: mR, marginMode: mode, classification, usages, gripperMargin
         };
         const newList = [...savedForms, newPreset];
         setSavedForms(newList);
@@ -37,8 +52,8 @@ export function usePaperPresets(storageKey: string) {
         return newPreset.id;
     };
 
-    const handleUpdatePreset = (id: string, name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh' = 'in_nhanh', gripperMargin: number = 0) => {
-        const newList = savedForms.map(f => f.id === id ? { ...f, name, w, h, marginTop: mT, marginBottom: mB, marginLeft: mL, marginRight: mR, marginMode: mode, classification, gripperMargin } : f);
+    const handleUpdatePreset = (id: string, name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh' = 'in_nhanh', gripperMargin: number = 0, usages: PaperUsage[] = ['in_nhanh']) => {
+        const newList = savedForms.map(f => f.id === id ? { ...f, name, w, h, marginTop: mT, marginBottom: mB, marginLeft: mL, marginRight: mR, marginMode: mode, classification, usages, gripperMargin } : f);
         setSavedForms(newList);
         localStorage.setItem(storageKey, JSON.stringify(newList));
     };
@@ -65,10 +80,10 @@ export function PaperSettingsDialog({
     marginMode: 'labels_only' | 'include_marks';
     classification: 'offset' | 'in_nhanh';
     gripperMargin: number;
-    onApply: (w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripperMargin: number) => void;
+    onApply: (w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripperMargin: number, usages: PaperUsage[]) => void;
     savedForms: SavedForm[];
-    onSavePreset: (name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripperMargin: number) => void;
-    onUpdatePreset: (id: string, name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripperMargin: number) => void;
+    onSavePreset: (name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripperMargin: number, usages: PaperUsage[]) => void;
+    onUpdatePreset: (id: string, name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripperMargin: number, usages: PaperUsage[]) => void;
     onDeletePreset: (id: string) => void;
     currentFormsize: string;
 }) {
@@ -80,21 +95,40 @@ export function PaperSettingsDialog({
     const [mL, setML] = useState(marginLeft);
     const [mR, setMR] = useState(marginRight);
     const [mMode, setMMode] = useState(marginMode);
-    const [classif, setClassif] = useState<'offset' | 'in_nhanh'>(classification || 'in_nhanh');
+    const [usages, setUsages] = useState<PaperUsage[]>(
+        classification === 'offset' ? ['offset'] : ['in_nhanh']
+    );
     const [gripper, setGripper] = useState(gripperMargin || 0);
+
+    // Phân loại chính (giữ tham số classification positional cho logic margin/gripper +
+    // paperClassification cũ): có offset → 'offset', còn lại → 'in_nhanh'.
+    const primaryClassification: 'offset' | 'in_nhanh' = usages.includes('offset') ? 'offset' : 'in_nhanh';
+
+    const toggleUsage = (u: PaperUsage) => {
+        setUsages(prev => {
+            const has = prev.includes(u);
+            const next = has ? prev.filter(x => x !== u) : [...prev, u];
+            // Bật offset thì reset gripper hợp lý; bỏ offset (không còn offset) thì gripper về 0.
+            if (u === 'offset') {
+                if (!has) { /* vừa bật offset, giữ gripper hiện tại */ }
+                else { setGripper(0); }
+            }
+            return next;
+        });
+    };
 
     const isEditing = currentFormsize.startsWith('custom_');
 
     useEffect(() => {
         if (isOpen) { 
             setW(width); setH(height); setMT(marginTop); setMB(marginBottom); setML(marginLeft); setMR(marginRight); setMMode(marginMode); 
-            setClassif(classification || 'in_nhanh'); setGripper(gripperMargin || 0);
+            setUsages(classification === 'offset' ? ['offset'] : ['in_nhanh']); setGripper(gripperMargin || 0);
             if (isEditing) {
                 const f = savedForms.find(x => x.id === currentFormsize);
                 if (f) {
                     setPresetName(f.name);
                     if (f.marginMode) setMMode(f.marginMode);
-                    if (f.classification) setClassif(f.classification);
+                    setUsages(formUsages(f));
                     if (f.gripperMargin !== undefined) setGripper(f.gripperMargin);
                 }
             } else {
@@ -131,20 +165,31 @@ export function PaperSettingsDialog({
                 </div>
 
                 <div className="flex flex-col gap-5">
-                    {/* Hàng 0: Phân loại in */}
+                    {/* Hàng 0: Mục đích sử dụng (đa lựa chọn) */}
                     <div className="flex gap-4 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-lg border border-slate-200 dark:border-white/10">
                         <div className="flex-1">
-                            <label className={labelCls}>Mục đích In</label>
-                            <div className="flex gap-3 mt-2">
+                            <label className={labelCls}>Mục đích In (chọn nhiều)</label>
+                            <div className="flex flex-wrap gap-x-4 gap-y-2 mt-2">
                                 <label className="flex items-center gap-2 cursor-pointer group">
-                                    <input type="radio" checked={classif === 'in_nhanh'} onChange={() => { setClassif('in_nhanh'); setGripper(0); }} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
-                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">In Nhanh Kỹ Thuật Số</span>
+                                    <input type="checkbox" checked={usages.includes('in_nhanh')} onChange={() => toggleUsage('in_nhanh')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
+                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Bình Sách – In Nhanh (Digital)</span>
                                 </label>
                                 <label className="flex items-center gap-2 cursor-pointer group">
-                                    <input type="radio" checked={classif === 'offset'} onChange={() => setClassif('offset')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
-                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">In Offset</span>
+                                    <input type="checkbox" checked={usages.includes('offset')} onChange={() => toggleUsage('offset')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
+                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Bình Sách – In Offset</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer group">
+                                    <input type="checkbox" checked={usages.includes('diecut')} onChange={() => toggleUsage('diecut')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
+                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Bế tem / Die-cut</span>
+                                </label>
+                                <label className="flex items-center gap-2 cursor-pointer group">
+                                    <input type="checkbox" checked={usages.includes('nup')} onChange={() => toggleUsage('nup')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
+                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Bình bài xén / N-Up</span>
                                 </label>
                             </div>
+                            {usages.length === 0 && (
+                                <p className="text-[11px] text-red-500 mt-2">Chọn ít nhất một mục đích in để lưu.</p>
+                            )}
                         </div>
                     </div>
 
@@ -178,7 +223,7 @@ export function PaperSettingsDialog({
                     {/* Hàng 3: Vùng lề */}
                     <div>
                         <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2 mb-3">Vùng An Toàn / Vùng In (Lề mm)</h4>
-                        {classif === 'offset' ? (
+                        {usages.includes('offset') ? (
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="text-[11px] text-slate-500 block mb-1 font-medium">Nhíp máy in (Gripper)</label>
@@ -247,14 +292,16 @@ export function PaperSettingsDialog({
                     <Button variant="secondary" onClick={onClose}>Hủy</Button>
                     <Button 
                         variant="primary" 
+                        disabled={usages.length === 0}
                         onClick={() => { 
+                            if (usages.length === 0) return;
                             if (isEditing) {
-                                onUpdatePreset(currentFormsize, presetName, w, h, mT, mB, mL, mR, mMode, classif, gripper);
+                                onUpdatePreset(currentFormsize, presetName, w, h, mT, mB, mL, mR, mMode, primaryClassification, gripper, usages);
                             } else {
                                 if (presetName.trim() !== '') {
-                                    onSavePreset(presetName.trim(), w, h, mT, mB, mL, mR, mMode, classif, gripper);
+                                    onSavePreset(presetName.trim(), w, h, mT, mB, mL, mR, mMode, primaryClassification, gripper, usages);
                                 } else {
-                                    onApply(w, h, mT, mB, mL, mR, mMode, classif, gripper); // Just apply without saving preset
+                                    onApply(w, h, mT, mB, mL, mR, mMode, primaryClassification, gripper, usages); // Just apply without saving preset
                                 }
                             }
                             onClose(); 

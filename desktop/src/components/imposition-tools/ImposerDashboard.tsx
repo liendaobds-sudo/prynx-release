@@ -15,7 +15,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useShallow } from 'zustand/react/shallow';
-import { usePaperPresets, PaperSettingsDialog } from './PaperSettingsUI';
+import { usePaperPresets, PaperSettingsDialog, formUsages, type PaperUsage } from './PaperSettingsUI';
 import { MarksSettingsDialog } from './MarksSettingsDialog';
 import { PontSettingsDialog } from './PontSettingsDialog';
 import { Divider, Checkbox } from './SharedUI';
@@ -134,17 +134,17 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // ═══ Paper Presets ═══
     const { savedForms, handleSavePreset: _savePreset, handleUpdatePreset: _updatePreset, handleDeletePreset: _deletePreset } = usePaperPresets('printauto_saved_forms');
 
-    const handleSavePreset = useCallback((name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number) => {
+    const handleSavePreset = useCallback((name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number, usages: PaperUsage[] = ['in_nhanh']) => {
         if (savedForms.some(f => f.name === name)) { toast.error('Tên "' + name + '" đã tồn tại.'); return; }
-        const newId = _savePreset(name, w, h, mT, mB, mL, mR, mMode, classification, gripper);
+        const newId = _savePreset(name, w, h, mT, mB, mL, mR, mMode, classification, gripper, usages);
         s.setFormsize(newId);
         s.setCustomSheetWidth(w); s.setCustomSheetHeight(h);
         s.setMarginTop(mT); s.setMarginBottom(mB); s.setMarginLeft(mL); s.setMarginRight(mR);
         s.setMarginMode(mMode); s.setPaperClassification(classification); s.setGripperMargin(gripper);
     }, [savedForms, _savePreset, s]);
 
-    const handleUpdatePreset = useCallback((id: string, name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number) => {
-        _updatePreset(id, name, w, h, mT, mB, mL, mR, mMode, classification, gripper);
+    const handleUpdatePreset = useCallback((id: string, name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number, usages: PaperUsage[] = ['in_nhanh']) => {
+        _updatePreset(id, name, w, h, mT, mB, mL, mR, mMode, classification, gripper, usages);
         s.setCustomSheetWidth(w); s.setCustomSheetHeight(h);
         s.setMarginTop(mT); s.setMarginBottom(mB); s.setMarginLeft(mL); s.setMarginRight(mR);
         s.setMarginMode(mMode); s.setPaperClassification(classification); s.setGripperMargin(gripper);
@@ -222,24 +222,35 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // khác, nhưng tính toán dùng khổ ẩn. → Khi classification đổi mà khổ đang chọn KHÔNG
     // thuộc classification đó, tự chuyển formsize về khổ hợp lệ của classification hiện tại.
     useEffect(() => {
-        let curClass: 'offset' | 'in_nhanh' | null = null;
+        // Context hiện tại: bế tem/CNC → 'diecut'; N-Up (Bình bài xén, gồm step_repeat) → 'nup';
+        // còn lại (booklet) theo paperClassification.
+        const paperContext: PaperUsage = (activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer')
+            ? 'diecut'
+            : (activeTool === 'nup')
+                ? 'nup'
+                : (s.paperClassification as PaperUsage);
+
+        // Khổ mặc định (predefined digital sheets) hợp lệ cho in_nhanh VÀ nup.
+        const showsDefault = (paperContext === 'in_nhanh' || paperContext === 'nup');
+
+        // Khổ đang chọn có hợp với context hiện tại không?
+        let belongs: boolean | null = null; // null = khổ tự do (custom/auto_100) → không ép
         if (s.formsize.startsWith('custom_')) {
-            curClass = savedForms.find(f => f.id === s.formsize)?.classification ?? null;
+            const f = savedForms.find(x => x.id === s.formsize);
+            belongs = f ? formUsages(f).includes(paperContext) : null;
         } else if (PREDEFINED_SIZES[s.formsize]) {
-            curClass = PREDEFINED_SIZES[s.formsize].classification;
+            // Khổ predefined (digital sheet) hợp lệ ở in_nhanh & nup; không ở offset/diecut.
+            belongs = showsDefault;
         }
         // formsize='custom'/'auto_100' (tự do) → không ép.
-        if (curClass && curClass !== s.paperClassification) {
-            if (s.paperClassification === 'offset') {
-                const firstOffset = savedForms.find(f => f.classification === 'offset');
-                s.setFormsize(firstOffset ? firstOffset.id : 'custom');
-            } else {
-                s.setFormsize('SRA3');
-            }
+        if (belongs === false) {
+            // Tìm khổ đã lưu hợp với context để chuyển sang.
+            const firstMatch = savedForms.find(f => formUsages(f).includes(paperContext));
+            s.setFormsize(firstMatch ? firstMatch.id : (showsDefault ? 'SRA3' : 'custom'));
         }
-    }, [s.paperClassification, s.formsize, savedForms]);
+    }, [s.paperClassification, s.formsize, savedForms, activeTool]);
 
-    const handleSettingsApply = useCallback((w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number) => {
+    const handleSettingsApply = useCallback((w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number, _usages: PaperUsage[] = ['in_nhanh']) => {
         s.setCustomSheetWidth(w); s.setCustomSheetHeight(h);
         s.setMarginTop(mT); s.setMarginBottom(mB); s.setMarginLeft(mL); s.setMarginRight(mR);
         s.setMarginMode(mMode); s.setPaperClassification(classification); s.setGripperMargin(gripper);
@@ -725,24 +736,38 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     <div className="flex flex-1 items-center gap-2 min-w-0">
                         <select value={s.formsize} onChange={(e) => s.setFormsize(e.target.value)}
                             className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium">
-                            {s.paperClassification === 'in_nhanh' && (
-                                <optgroup label="Khổ Mặc Định (In Nhanh)">
-                                    <option value="A4">A4 (210 x 297 mm)</option><option value="A3">A3 (297 x 420 mm)</option>
-                                    <option value="SRA3">SRA3 (320 x 450 mm)</option><option value="B">Khổ B (320 x 430 mm)</option>
-                                    <option value="Ledger">Ledger (279 x 432 mm)</option>
-                                </optgroup>
-                            )}
-                            {savedForms.length > 0 && s.paperClassification === 'offset' && (
-                                <optgroup label="Khổ Đã Lưu (In Offset)">
-                                    {savedForms.filter(f => f.classification === 'offset').map(f => (<option key={f.id} value={f.id}>{f.name} ({f.w}x{f.h}mm)</option>))}
-                                </optgroup>
-                            )}
-                            {savedForms.length > 0 && s.paperClassification === 'in_nhanh' && (
-                                <optgroup label="Khổ Đã Lưu (In Nhanh)">
-                                    {savedForms.filter(f => !f.classification || f.classification === 'in_nhanh').map(f => (<option key={f.id} value={f.id}>{f.name} ({f.w}x{f.h}mm)</option>))}
-                                </optgroup>
-                            )}
-                            <optgroup label="Khác"><option value="custom">+ Tạo khổ giấy mới (Custom)...</option></optgroup>
+                            {(() => {
+                                const paperContext: PaperUsage = (activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer')
+                                    ? 'diecut'
+                                    : (activeTool === 'nup')
+                                        ? 'nup'
+                                        : (s.paperClassification as PaperUsage);
+                                const savedLabel = paperContext === 'nup'
+                                    ? 'Khổ Đã Lưu (Bình bài xén)'
+                                    : paperContext === 'diecut'
+                                        ? 'Khổ Đã Lưu (Bế tem)'
+                                        : paperContext === 'offset'
+                                            ? 'Khổ Đã Lưu (In Offset)'
+                                            : 'Khổ Đã Lưu (In Nhanh)';
+                                const matchedForms = savedForms.filter(f => formUsages(f).includes(paperContext));
+                                return (
+                                    <>
+                                        {(paperContext === 'in_nhanh' || paperContext === 'nup') && (
+                                            <optgroup label="Khổ Mặc Định (In Nhanh)">
+                                                <option value="A4">A4 (210 x 297 mm)</option><option value="A3">A3 (297 x 420 mm)</option>
+                                                <option value="SRA3">SRA3 (320 x 450 mm)</option><option value="B">Khổ B (320 x 430 mm)</option>
+                                                <option value="Ledger">Ledger (279 x 432 mm)</option>
+                                            </optgroup>
+                                        )}
+                                        {matchedForms.length > 0 && (
+                                            <optgroup label={savedLabel}>
+                                                {matchedForms.map(f => (<option key={f.id} value={f.id}>{f.name} ({f.w}x{f.h}mm)</option>))}
+                                            </optgroup>
+                                        )}
+                                        <optgroup label="Khác"><option value="custom">+ Tạo khổ giấy mới (Custom)...</option></optgroup>
+                                    </>
+                                );
+                            })()}
                         </select>
                         <button onClick={() => s.setShowSettings(true)} className="shrink-0 w-8 h-8 rounded border border-slate-300 dark:border-white/20 flex items-center justify-center text-slate-500 hover:text-indigo-600 hover:border-indigo-400 transition-colors bg-white dark:bg-zinc-900" title="Thiết lập Lề giấy">
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
