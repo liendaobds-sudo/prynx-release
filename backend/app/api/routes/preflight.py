@@ -1078,6 +1078,14 @@ class ConvertColorsRequest(BaseModel):
     preserve_black: bool = True
 
 
+# Map lựa chọn ICC ở UI → tên file trong settings.ICC_PROFILE_DIR.
+# Hiện chỉ bundle FOGRA39 (+ sRGB nguồn). Thêm profile khác = thả file .icc vào
+# thư mục ICC rồi thêm một dòng vào map này (UI cũng cần thêm lựa chọn tương ứng).
+ICC_FILE_MAP = {
+    "fogra39": "FOGRA39.icc",
+}
+
+
 @router.post("/preflight/convert-colors")
 async def convert_colors(req: ConvertColorsRequest):
     """Chuyển đổi không gian màu toàn bộ file PDF."""
@@ -1098,34 +1106,76 @@ async def convert_colors(req: ConvertColorsRequest):
                 log.append({"action_id": conv, "status": "success", "message": "Spot → CMYK", "duration_ms": ms})
 
             elif conv in ("rgb_to_cmyk", "gray_to_cmyk"):
-                import subprocess
+                import subprocess, uuid, asyncio
                 gs_path = settings.GHOSTSCRIPT_PATH
-                output = str(Path(current_path).parent / f"cc_{conv}_{Path(current_path).stem}.pdf")
+                # Ghi output vào preflight_output — ĐÚNG nơi /preflight/download phục
+                # vụ. (Trước đây ghi cạnh file gốc trong UPLOAD_DIR → download 404.)
+                out_dir = Path(settings.RESULTS_DIR) / "preflight_output"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                output = str(out_dir / f"cc_{conv}_{Path(current_path).stem}_{uuid.uuid4().hex[:6]}.pdf")
+
+                # Pre-pass GIỮ ĐEN 100%K: GS biến RGB(0,0,0) thành rich-black 4 màu.
+                # Đổi trước màu RGB-đen-thuần sang DeviceGray đen (→ GS map thành K-only).
+                # Chỉ áp cho RGB→CMYK; gray/CMYK-đen vốn đã ra K thuần.
+                gs_input = str(current_path)
+                prepass_tmp = None
+                if conv == "rgb_to_cmyk" and req.preserve_black:
+                    from app.core.preserve_black import force_pure_black_to_gray
+                    prepass_tmp = str(out_dir / f"pb_{Path(current_path).stem}_{uuid.uuid4().hex[:6]}.pdf")
+                    try:
+                        await asyncio.to_thread(force_pure_black_to_gray, str(current_path), prepass_tmp)
+                        gs_input = prepass_tmp
+                    except Exception as pe:
+                        logger.warning("Pre-pass giữ đen thất bại (%s) — tiếp tục không pre-pass.", pe)
+                        prepass_tmp = None
 
                 intent_map = {"relative": 1, "perceptual": 0, "saturation": 2, "absolute": 3}
                 ri = intent_map.get(req.rendering_intent, 1)
+                strategy = "CMYK" if conv == "rgb_to_cmyk" else "Gray"
 
                 gs_args = [
-                    gs_path, "-dBATCH", "-dNOPAUSE", "-dQUIET",
+                    gs_path, "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
                     "-sDEVICE=pdfwrite",
                     f"-sOutputFile={output}",
                     "-dPDFSETTINGS=/prepress",
-                    f"-sColorConversionStrategy={'CMYK' if conv == 'rgb_to_cmyk' else 'Gray'}",
+                    f"-sColorConversionStrategy={strategy}",
                     "-dConvertCMYKImagesToProcess=false",
                     f"-dRenderIntent={ri}",
                 ]
-                if req.preserve_black:
-                    gs_args.append("-dPreserveBlack=true")
+                # Gắn ICC Profile đích theo lựa chọn người dùng (chỉ cho RGB→CMYK).
+                # 'auto' = không ép (giữ profile nhúng / mặc định GS). -dNOSAFER ở trên
+                # cho phép GS đọc file ICC bundle (GS 10 mặc định SAFER chặn).
+                if conv == "rgb_to_cmyk" and req.icc_profile and req.icc_profile != "auto":
+                    icc_file = ICC_FILE_MAP.get(req.icc_profile)
+                    if icc_file:
+                        icc_path = os.path.join(settings.ICC_PROFILE_DIR, icc_file)
+                        if os.path.exists(icc_path):
+                            gs_args += [
+                                "-sProcessColorModel=DeviceCMYK",
+                                f"-sOutputICCProfile={icc_path}",
+                                "-dOverrideICC=true",
+                            ]
+                        else:
+                            logger.warning(
+                                "ICC profile '%s' không tồn tại (%s) — dùng mặc định GS.",
+                                req.icc_profile, icc_path,
+                            )
+                    else:
+                        logger.warning("ICC profile '%s' chưa được hỗ trợ — dùng mặc định GS.", req.icc_profile)
 
-                gs_args.append(str(current_path))
+                gs_args.append(gs_input)
 
-                import asyncio
                 proc = await asyncio.to_thread(subprocess.run, gs_args, capture_output=True, timeout=300)
+                if prepass_tmp:
+                    try:
+                        os.remove(prepass_tmp)
+                    except OSError:
+                        pass
                 if proc.returncode != 0:
                     raise Exception(f"Ghostscript failed: {proc.stderr.decode()[:200]}")
 
                 current_path = output
-                label = "RGB → CMYK" if conv == "rgb_to_cmyk" else "Grayscale → CMYK K"
+                label = "RGB → CMYK" if conv == "rgb_to_cmyk" else "Chuyển sang Grayscale (đen trắng)"
                 ms = round((time.time() - t0) * 1000)
                 log.append({"action_id": conv, "status": "success", "message": label, "duration_ms": ms})
 

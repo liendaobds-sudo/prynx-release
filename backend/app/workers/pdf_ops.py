@@ -137,6 +137,9 @@ class ShapeBuilder:
         return font_key
 
     def finish(self, color=(0, 0, 0, 1), width=1, closePath=False, fill=None, dashes=None, oc=None, item_name=None):
+        # Phòng thủ: caller có thể truyền color=None (vd path chỉ-tô). Tránh len(None).
+        if color is None:
+            color = (0, 0, 0, 1)
         preamble = []
         if fill:
             if len(fill) == 4:

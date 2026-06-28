@@ -350,10 +350,18 @@ class ActionEngine:
     # ────────────────────────────────────────────────────────
 
     async def _action_fix_hairlines(self, pdf_path: str, output_path: str, params: dict) -> bool:
-        """Detect and widen hairlines (strokes thinner than threshold)."""
-        import pikepdf
-        from app.workers.pdf_types import Point, Rect
-        from app.workers.pdf_ops import new_shape, page_height
+        """Phát hiện & tăng độ dày các NÉT (stroke) mảnh hơn ngưỡng.
+
+        An toàn màu / đường khuôn:
+          - CHỈ xử lý path có nét (``color`` khác ``None``). Path chỉ-tô (fill) không
+            mang khái niệm "độ dày nét" nên không phải hairline; bỏ qua chúng cũng
+            đồng thời tránh lỗi ``len(None)`` khi ``finish(color=None)``.
+          - Bao gồm cả nét ``width == 0`` (toán tử ``0 w`` — hairline kinh điển, mảnh
+            nhất, dễ biến mất khi in offset nhất).
+          - BỎ QUA path dùng màu Spot/Separation (vd đường bế CutContour/Dieline):
+            vẽ đè bằng DeviceRGB/CMYK sẽ làm sai màu, sai khổ và mất kênh spot.
+        """
+        from app.workers.pdf_ops import new_shape
         from app.workers.pdf_content_parser import extract_vector_paths
 
         threshold = params.get("threshold_pt", 0.1)
@@ -369,32 +377,38 @@ class ActionEngine:
                 fixed_on_page = 0
 
                 for path in drawings:
+                    color = path.get("color")
+                    # Chỉ NÉT mới có độ dày để sửa; bỏ path chỉ-tô (color=None).
+                    if color is None:
+                        continue
+                    # Giữ nguyên nét màu Spot/Separation (đường bế, vạch kỹ thuật).
+                    if path.get("spot_name"):
+                        continue
                     width = path.get("width", 0)
-                    if 0 < width <= threshold:
-                        # Redraw this path with increased width
-                        color = path.get("color")
-                        fill = path.get("fill")
-                        items = path.get("items", [])
-                        closePath = path.get("closePath", False)
+                    # Gồm cả width == 0 (hairline '0 w'); loại width > threshold.
+                    if not (0 <= width <= threshold):
+                        continue
 
-                        for item in items:
-                            if item[0] == "l":  # line
-                                shape.draw_line(item[1], item[2])
-                            elif item[0] == "re":  # rect
-                                shape.draw_rect(item[1])
-                            elif item[0] == "qu":  # quad
-                                shape.draw_quad(item[1])
-                            elif item[0] == "c":  # curve
-                                shape.draw_bezier(item[1], item[2], item[3], item[4])
+                    fill = path.get("fill")
+                    items = path.get("items", [])
+                    closePath = path.get("closePath", False)
 
-                        if items:
-                            shape.finish(
-                                color=color,
-                                fill=fill,
-                                width=replace_with,
-                                closePath=closePath,
-                            )
-                            fixed_on_page += 1
+                    for item in items:
+                        if item[0] == "l":      # line
+                            shape.draw_line(item[1], item[2])
+                        elif item[0] == "re":   # rect
+                            shape.draw_rect(item[1])
+                        elif item[0] == "c":    # curve (bezier)
+                            shape.draw_bezier(item[1], item[2], item[3], item[4])
+
+                    if items:
+                        shape.finish(
+                            color=color,
+                            fill=fill,
+                            width=replace_with,
+                            closePath=closePath,
+                        )
+                        fixed_on_page += 1
 
                 if fixed_on_page > 0:
                     shape.commit()
@@ -403,7 +417,7 @@ class ActionEngine:
             pdf.save(output_path)
             pdf.close()
 
-            logger.info(f"FIX_HAIRLINES: Fixed {total_fixed} hairlines (< {threshold}pt → {replace_with}pt)")
+            logger.info(f"FIX_HAIRLINES: Fixed {total_fixed} hairlines (<= {threshold}pt -> {replace_with}pt)")
             return True
 
         except Exception as e:
@@ -415,20 +429,25 @@ class ActionEngine:
     # ────────────────────────────────────────────────────────
 
     async def _action_set_black_overprint(self, pdf_path: str, output_path: str, params: dict) -> bool:
-        """Set overprint for black text and strokes via Ghostscript."""
-        cmd = [
-            self.gs_path,
-            "-dSAFER", "-dBATCH", "-dNOPAUSE",
-            "-sDEVICE=pdfwrite",
-            "-dPDFSETTINGS=/prepress",
-            "-dAutoRotatePages=/None",
-            "-dCompatibilityLevel=1.4",
-            "-dOverprint=/enable",
-            "-dOPM=1",
-            f"-sOutputFile={output_path}",
-            pdf_path,
-        ]
-        return await self._run_gs(cmd, "SET_BLACK_OVERPRINT")
+        """Bật overprint THỰC SỰ cho text/nét đen (K>95%) bằng pikepdf.
+
+        Trước đây dùng Ghostscript ``-dOverprint=/enable -dOPM=1`` — nhưng pdfwrite
+        chỉ ghi ``/OPM`` (mode) chứ KHÔNG ghi cờ ``/OP``/``/op`` true, nên object đen
+        vẫn knockout (lỗi viền trắng không được khắc phục). Nay chèn ExtGState
+        overprint vào đúng object đen (xem app.core.overprint_black).
+
+        Tôn trọng tham số: ``overprint_black`` (công tắc), ``preserve_overprint``.
+        (``trap_width``/``black_trap_width`` là trapping spread/choke ở mức RIP —
+        ngoài phạm vi công cụ này; xem cảnh báo trên UI.)
+        """
+        from app.core.overprint_black import apply_black_overprint
+
+        def _work():
+            return apply_black_overprint(pdf_path, output_path, params or {})
+
+        count = await asyncio.to_thread(_work)
+        logger.info(f"SET_BLACK_OVERPRINT: bật overprint cho {count} thao tác vẽ object đen")
+        return True
 
     # ────────────────────────────────────────────────────────
     #  GHOSTSCRIPT SUBPROCESS RUNNER
