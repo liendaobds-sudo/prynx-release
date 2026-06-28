@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { getToolHelp } from '../../lib/toolHelp';
+import ToolHelpModal from '../ToolHelpModal';
 
 // ==================== RichSelect (Custom Dropdown) ====================
 export const RichSelect = ({ value, onChange, options, compact = false }: { value: string, onChange: (v: string) => void, options: {value: string, title: string, desc?: string}[], compact?: boolean }) => {
@@ -111,8 +113,11 @@ export const DisabledItem = ({ label }: { label: string }) => (
 );
 
 // ==================== ToolItem ====================
-export const ToolItem = ({ icon, label, desc, info, onClick, hoverColor, active, isFavorite, onToggleFavorite }: { icon: string, label: string, desc?: string, info?: string, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void }) => {
+export const ToolItem = ({ icon, label, desc, info, helpKey, onClick, hoverColor, active, isFavorite, onToggleFavorite }: { icon: string, label: string, desc?: string, info?: string, helpKey?: string, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void }) => {
     const [open, setOpen] = useState(false);
+    const help = getToolHelp(helpKey);
+    const hasHelp = !!help;
+    const showHelpBtn = hasHelp || !!info;
     return (
         <div className="relative">
             <div
@@ -139,7 +144,7 @@ export const ToolItem = ({ icon, label, desc, info, onClick, hoverColor, active,
                         <svg className="w-4 h-4" fill={isFavorite ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.5a.56.56 0 011.04 0l2.12 4.3 4.75.69c.46.07.64.63.31.95l-3.44 3.35.81 4.73c.08.46-.4.81-.81.59L12 16.98l-4.25 2.23c-.41.22-.89-.13-.81-.59l.81-4.73-3.44-3.35a.56.56 0 01.31-.95l4.75-.69 2.12-4.3z" /></svg>
                     </button>
                 )}
-                {info && (
+                {showHelpBtn && (
                     <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
@@ -150,7 +155,11 @@ export const ToolItem = ({ icon, label, desc, info, onClick, hoverColor, active,
                     </button>
                 )}
             </div>
-            {open && info && (
+            {/* Có nội dung help chi tiết → mở modal; nếu không, fallback popover ngắn từ longDescription. */}
+            {open && hasHelp && (
+                <ToolHelpModal help={help!} icon={icon} onClose={() => setOpen(false)} />
+            )}
+            {open && !hasHelp && info && (
                 <>
                     <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
                     <div className="absolute right-2 top-full mt-1 z-50 w-64 max-w-[88vw] p-3 rounded-lg bg-white dark:bg-zinc-800 border border-slate-200 dark:border-white/10 shadow-xl">

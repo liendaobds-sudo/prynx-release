@@ -70,6 +70,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                                 icon={tool.icon}
                                 label={tool.title}
                                 info={tool.longDescription}
+                                helpKey={keyOf(tool)}
                                 isFavorite
                                 onToggleFavorite={() => toggleFavoriteTool(keyOf(tool))}
                                 onClick={() => open(tool)}
@@ -101,6 +102,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                                 icon={tool.icon}
                                 label={tool.title}
                                 info={tool.longDescription}
+                                helpKey={keyOf(tool)}
                                 isFavorite={favoriteTools.includes(keyOf(tool))}
                                 onToggleFavorite={() => toggleFavoriteTool(keyOf(tool))}
                                 onClick={() => open(tool)}
