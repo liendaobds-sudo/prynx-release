@@ -58,6 +58,10 @@ export interface GridPreviewProps {
 interface BackendLayoutCell {
   x: number;
   y: number;
+  // Toạ độ TUYỆT ĐỐI cuối cùng (sau căn giữa + va chạm) — gốc dưới-trái tờ, Y hướng
+  // lên. Có khi absPlacement=true. Frontend vẽ trực tiếp: svgY=sheetHeight-absY-h.
+  absX?: number;
+  absY?: number;
   width: number;
   height: number;
   isRotated: boolean;
@@ -74,6 +78,11 @@ interface BackendLayoutResult {
   cells: BackendLayoutCell[];
   error?: string;
   isMixedPreview?: boolean;
+  // Backend đã trả toạ độ tuyệt đối (SSOT, khớp output) → frontend CHỈ vẽ, KHÔNG
+  // canh giữa lại. false/thiếu → đường lưới tương đối cũ (N-Up không die-cut).
+  absPlacement?: boolean;
+  // Đường bế THẬT của tem (phân số 0..1, Y-up) — dùng vẽ búa/tạ đúng outline (Bug A).
+  diePolygon?: number[][] | null;
 }
 
 // =====================================================================
@@ -159,6 +168,7 @@ function renderCellShape(
   shapeType: string,
   shapeProps: Record<string, any> | null,
   idx: number,
+  diePolygon?: number[][] | null,
 ) {
   const color = BLOCK_COLORS[blockId % BLOCK_COLORS.length];
   const opacity = is180 && !isRotated ? ROTATED180_OPACITY : 1; // Subtle hint for 180 flip
@@ -373,6 +383,26 @@ function renderCellShape(
 
     case "DUMBBELL":
     case "HAMMER": {
+      // ── Đường bế THẬT (backend trả diePolygon, phân số 0..1 Y-up) → vẽ ĐÚNG outline
+      // của tem, áp đúng phép xoay như output. Khắc phục Bug A (hình tổng hợp đoán hướng
+      // sai khi bigEndFirst / tem tạ-bị-nhận-là-búa). Không cần bigEndFirst nữa vì
+      // polygon đã mang hướng THẬT.
+      if (diePolygon && diePolygon.length >= 3) {
+        const realPts = diePolygon
+          .map(([fx, fy]) => `${ox + fx * ow},${oy + (1 - fy) * oh}`)
+          .join(" ");
+        return (
+          <g key={idx} opacity={opacity} transform={transform}>
+            <polygon
+              points={realPts}
+              fill={color.fill}
+              stroke={color.stroke}
+              strokeWidth={0.8}
+              strokeLinejoin="round"
+            />
+          </g>
+        );
+      }
       const isHorizontal = ow > oh;
       const isDumbbell = shapeKey === "DUMBBELL";
 
@@ -681,6 +711,7 @@ export default function GridPreview(props: GridPreviewProps) {
           sheet_h: sheetHeight * MM_TO_PT,
           margin_left: marginLeft * MM_TO_PT,
           margin_bottom: marginBottom * MM_TO_PT,
+          margin_top: marginTop * MM_TO_PT,
           ...(filePath ? { path: filePath } : (fileId ? { file_id: fileId } : {})),
           page_idx: pageIdx,
           bleed: bleed * MM_TO_PT, // bleed in points to match nup_engine
@@ -736,6 +767,8 @@ export default function GridPreview(props: GridPreviewProps) {
               ...cell,
               x: cell.x * PT_TO_MM,
               y: cell.y * PT_TO_MM,
+              absX: cell.absX != null ? cell.absX * PT_TO_MM : undefined,
+              absY: cell.absY != null ? cell.absY * PT_TO_MM : undefined,
               width: cell.width * PT_TO_MM,
               height: cell.height * PT_TO_MM,
             }));
@@ -915,21 +948,20 @@ export default function GridPreview(props: GridPreviewProps) {
   const svgCells = useMemo(() => {
     if (!layoutResult || !layoutResult.cells) return [];
 
-    const isMixed = !!(layoutResult as any).isMixedPreview;
+    // SSOT: backend đã trả toạ độ TUYỆT ĐỐI (sau căn giữa + va chạm). Frontend CHỈ vẽ.
+    const useAbs = !!layoutResult.absPlacement;
 
     return layoutResult.cells.map((cell, idx) => {
       let svgX_mm: number;
       let svgY_mm: number;
 
-      if (isMixed) {
-        // Bin-packing coords are already screen/SVG space (y=0 top, y↓)
-        // Just center within the usable area + add margins
-        const offsetX = marginLeft + (usableW - gridW) / 2;
-        const offsetY = marginTop + (usableH - gridH) / 2;
-        svgX_mm = offsetX + cell.x;
-        svgY_mm = offsetY + cell.y;
+      if (useAbs && cell.absX != null && cell.absY != null) {
+        // abs gốc dưới-trái tờ, Y hướng lên → SVG (Y hướng xuống):
+        //   svgX = absX ; svgY = sheetHeight − absY − height
+        svgX_mm = cell.absX;
+        svgY_mm = sheetHeight - cell.absY - cell.height;
       } else {
-        // PDF coords → SVG conversion (y-flip)
+        // Đường lưới tương đối (N-Up không die-cut): PDF coords → SVG (y-flip).
         svgX_mm = svgBaseX + cell.x;
         svgY_mm = svgBaseYConst + cell.y;
       }
@@ -951,12 +983,7 @@ export default function GridPreview(props: GridPreviewProps) {
     svgBaseYConst,
     scale,
     pad,
-    marginLeft,
-    marginTop,
-    usableW,
-    usableH,
-    gridW,
-    gridH,
+    sheetHeight,
   ]);
 
   // Usable area in SVG pixels
@@ -1272,6 +1299,7 @@ export default function GridPreview(props: GridPreviewProps) {
                           itemShape,
                           parsedItemParams,
                           c.idx,
+                          (layoutResult as any)?.diePolygon,
                         )}
                         {isMixed && (
                           <text
@@ -1523,6 +1551,7 @@ export default function GridPreview(props: GridPreviewProps) {
                               itemShape,
                               parsedItemParams,
                               c.idx,
+                              (layoutResult as any)?.diePolygon,
                             )}
                             {isMixed && (
                               <text

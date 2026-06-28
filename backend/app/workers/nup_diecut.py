@@ -308,7 +308,11 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         polys = []
 
-        for p in target_paths:
+        # Gộp mọi path KHÔNG-nền cùng màu với đường khuôn đã chọn (SSOT) để bắt
+        # TRỌN cutline (contour + chi tiết). 'filtered' = paths đã loại nền full-page.
+        # (Trước dùng 'target_paths'; biến đó đã bỏ khi chuyển sang _select_from_paths
+        # — fix regression NameError khiến head-to-tail luôn rơi về CUSTOM.)
+        for p in filtered:
 
             if p.get('color') == target_color:
 

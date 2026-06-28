@@ -799,6 +799,7 @@ class PreviewLayoutRequest(BaseModel):
     sheet_h: float = 0
     margin_left: float = 0
     margin_bottom: float = 0
+    margin_top: float = 0
     file_id: Optional[str] = None
     path: Optional[str] = None
     page_idx: int = 0
@@ -824,6 +825,39 @@ class PreviewLayoutRequest(BaseModel):
     cnc_flip_edge: Optional[str] = "long"
     cols: int = 0
     rows: int = 0
+
+def _normalize_polygon_to_unit(poly, max_pts: int = 80):
+    """Outline shapely (page coords, Y-up PDF) → list [fx, fy] phân số 0..1 đã giản hoá.
+
+    Dùng cho preview vẽ ĐƯỜNG BẾ THẬT của tem búa/tạ (thay hình tổng hợp đoán hướng).
+    Trả None nếu không hợp lệ. Giản hoá + cap số đỉnh để payload nhỏ và vẽ nhanh.
+    """
+    if poly is None:
+        return None
+    try:
+        geom = poly
+        if getattr(geom, 'geom_type', None) == 'MultiPolygon':
+            geom = max(geom.geoms, key=lambda g: g.area)
+        if getattr(geom, 'geom_type', None) != 'Polygon':
+            return None
+        minx, miny, maxx, maxy = geom.bounds
+        w = maxx - minx
+        h = maxy - miny
+        if w <= 0 or h <= 0:
+            return None
+        tol = max(w, h) * 0.005
+        try:
+            ext = geom.simplify(tol, preserve_topology=True).exterior
+        except Exception:
+            ext = geom.exterior
+        coords = list(ext.coords)
+        if len(coords) > max_pts:
+            step = len(coords) / max_pts
+            coords = [coords[int(i * step)] for i in range(max_pts)]
+        return [[(x - minx) / w, (y - miny) / h] for x, y in coords]
+    except Exception:
+        return None
+
 
 def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h: float, req: Any, overall_w: float = 0, overall_h: float = 0, base_poly=None) -> List[Dict[str, Any]]:
     """
@@ -905,7 +939,7 @@ def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h:
             return items
         
         resolved = smart_resolve_collisions(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
-        
+
         return [r['cell'] for r in resolved]
     except Exception as e:
         import logging
@@ -928,7 +962,8 @@ async def preview_layout(req: PreviewLayoutRequest):
             from app.database import SessionLocal
             from app.models.job import UploadedFile as UploadedFileModel
             from app.workers.sticker_imposer_pkg.layout_compute import compute_sticker_layout_for_page
-            
+            from app.workers.imposition_finalize import finalize_placements, resolve_pont_collisions_on_placements
+
             logger.debug("[PREVIEW] file_id=%s path=%s usable=%.2fx%.2f item=%.2fx%.2f gap=%.2fx%.2f strategy=%s shape=%s props=%s",
                          req.file_id, req.path, req.usable_w, req.usable_h, req.item_w, req.item_h,
                          req.gap_x, req.gap_y, req.strategy, req.shape_type, req.shape_props)
@@ -1034,15 +1069,32 @@ async def preview_layout(req: PreviewLayoutRequest):
                         exclude_zones=cnc_exclude or None,
                     )
                     doc.close()
-                    items = [{
-                        'x': c['x'], 'y': c['y'], 'width': c['width'], 'height': c['height'],
-                        'isRotated': c['isRotated'], 'isRotated180': False, 'pageIdx': c['pageIdx'],
-                    } for c in cnc_layout['cells']]
+                    # ── Branch D: dùng placements (abs_x + original_cell_y TOP-DOWN) khớp
+                    # cnc_render. Convert sang abs bottom-up: absY = sheet_h - original_cell_y - h.
+                    _sheet_h = getattr(req, 'sheet_h', 0) or 0
+                    items = []
+                    ov_w = 0.0
+                    ov_h = 0.0
+                    for pl in cnc_layout['placements']:
+                        c = pl['cell']
+                        w = pl['width']
+                        h = pl['height']
+                        abs_x = pl['abs_x']
+                        abs_y = _sheet_h - pl['original_cell_y'] - h
+                        items.append({
+                            'x': c.get('x', 0), 'y': c.get('y', 0),
+                            'absX': abs_x, 'absY': abs_y,
+                            'width': w, 'height': h,
+                            'isRotated': c.get('isRotated', False), 'isRotated180': False,
+                            'pageIdx': pl['src_page_idx'],
+                        })
+                        ov_w = max(ov_w, abs_x + w)
+                        ov_h = max(ov_h, abs_y + h)
                     return {
                         "success": True,
                         "cells": items,
-                        "overallWidth": cnc_layout['overall_w'],
-                        "overallHeight": cnc_layout['overall_h'],
+                        "overallWidth": ov_w,
+                        "overallHeight": ov_h,
                         "totalItems": cnc_layout['items_per_sheet'],
                         "sheetsNeeded": cnc_layout['sheets_needed'],
                         "strategyUsed": "cnc_mixed",
@@ -1050,6 +1102,7 @@ async def preview_layout(req: PreviewLayoutRequest):
                         "isCncPreview": True,
                         "cncTwoSided": cnc_two_sided,
                         "cncFlipEdge": cnc_flip_edge,
+                        "absPlacement": True,
                         "placedByPage": {str(k): v for k, v in (cnc_layout.get('placed_by_page') or {}).items()},
                     }
 
@@ -1132,32 +1185,48 @@ async def preview_layout(req: PreviewLayoutRequest):
                     )
                 
                 doc.close()
-                
+
+                # ── Branch C: toạ độ TUYỆT ĐỐI khớp export (_finalize_sheet_centering, nup_engine L690-713) ──
+                # Packer trả top-left (y-down); căn giữa rồi flip → abs bottom-up sheet space.
+                _ml = getattr(req, 'margin_left', 0) or 0
+                _mb = getattr(req, 'margin_bottom', 0) or 0
+                _pl = bp_result['placements']
+                max_x_used = max((p['x'] + p['w'] for p in _pl), default=0.0)
+                max_bottom = max((p['y'] + p['h'] for p in _pl), default=0.0)
+                x_off = _ml + (req.usable_w - max_x_used) / 2 if max_x_used < req.usable_w else _ml
+                y_off = _mb + (req.usable_h - max_bottom) / 2 if max_bottom < req.usable_h else _mb
+
                 items = []
-                for p in bp_result['placements']:
+                ov_w = 0.0
+                ov_h = 0.0
+                for p in _pl:
+                    abs_x = x_off + p['x']
+                    abs_y = y_off + (max_bottom - p['y'] - p['h'])
                     items.append({
                         'x': p['x'],
                         'y': p['y'],
+                        'absX': abs_x,
+                        'absY': abs_y,
                         'width': p['w'],
                         'height': p['h'],
                         'isRotated': p['is_rotated'],
                         'isRotated180': False,
                         'pageIdx': p['page_idx'],
                     })
-                
-                overall_w = max((it['x'] + it['width'] for it in items), default=0)
-                overall_h = max((it['y'] + it['height'] for it in items), default=0)
-                
-                logger.debug("[BIN-PACK PREVIEW] %d items, overall=%.1fx%.1f, zones=%d", len(items), overall_w, overall_h, len(exclude_zones))
-                
+                    ov_w = max(ov_w, abs_x + p['w'])
+                    ov_h = max(ov_h, abs_y + p['h'])
+
+                logger.debug("[BIN-PACK PREVIEW] %d items, overall=%.1fx%.1f, zones=%d", len(items), ov_w, ov_h, len(exclude_zones))
+
                 return {
                     "success": True,
                     "cells": items,
-                    "overallWidth": overall_w,
-                    "overallHeight": overall_h,
+                    "overallWidth": ov_w,
+                    "overallHeight": ov_h,
                     "totalItems": len(items),
                     "strategyUsed": "bin_pack_mixed",
                     "isMixedPreview": True,
+                    "absPlacement": True,
                 }
             
             # ── SINGLE-PAGE PREVIEW (S&R or single-page N-Up) ──
@@ -1236,7 +1305,16 @@ async def preview_layout(req: PreviewLayoutRequest):
                     gap_y=req.gap_y,
                     strategy=req.strategy,
                     shape_type_override=shape_override,
+                    # PARITY (audit shape-detection): truyền props từ Detection (SSOT)
+                    # GIỐNG output (nup_process_chunk). Trước đây preview KHÔNG truyền
+                    # props → solver tự classify lại → props (vd hướng búa/tạ) lệch
+                    # output → preview ≠ output với hình bất đối xứng.
+                    shape_props_override=(req.shape_props or None),
                     bleed_pt=bleed_pt,
+                    # PARITY (audit): output (nup_process_chunk) truyền secondary_gap
+                    # (khe block phụ / split-gap); preview trước đây BỎ → block phụ xếp
+                    # khít hơn output. Truyền split_gap (points) frontend đã gửi cho khớp.
+                    secondary_gap=(getattr(req, 'split_gap', None) or None),
                 )
 
             if is_cluster:
@@ -1268,39 +1346,46 @@ async def preview_layout(req: PreviewLayoutRequest):
                     is_die_cut=True
                 )
                 
-                if ct_placements:
-                    min_x = min(place.get('abs_x', 0) for place in ct_placements)
-                    min_y = min(place.get('abs_y', 0) for place in ct_placements)
-                else:
-                    min_x = 0
-                    min_y = 0
-
-                new_items = []
-                max_w = 0
-                max_h = 0
+                # ── Branch B: CLUSTER-TILE → toạ độ TUYỆT ĐỐI khớp export (nup_engine L807-819) ──
+                # ct_offset_x = margin_left ; ct_offset_y = margin_top (= sheet_h - mb - usable_h).
+                # absY (bottom-up sheet) = usable_h + mb + mt - (abs_y_topdown + mt) - h.
+                doc.close()
+                _ml = getattr(req, 'margin_left', 0) or 0
+                _mb = getattr(req, 'margin_bottom', 0) or 0
+                _mt = getattr(req, 'margin_top', 0) or 0
+                abs_cells = []
+                max_w = 0.0
+                max_h = 0.0
                 for place in ct_placements:
                     c = place.get('cell', {})
-                    x = place.get('abs_x', 0) - min_x
-                    y = place.get('abs_y', 0) - min_y
                     w = place.get('width', 0)
                     h = place.get('height', 0)
-                    max_w = max(max_w, x + w)
-                    max_h = max(max_h, y + h)
-                    
-                    new_items.append({
-                        'x': x,
-                        'y': y,
+                    ox = place.get('abs_x', 0) + _ml
+                    oy = place.get('abs_y', 0) + _mt
+                    abs_x = ox
+                    abs_y = req.usable_h + _mb + _mt - oy - h
+                    abs_cells.append({
+                        'x': place.get('abs_x', 0),
+                        'y': place.get('abs_y', 0),
+                        'absX': abs_x,
+                        'absY': abs_y,
                         'width': w,
                         'height': h,
                         'isRotated': c.get('isRotated', False),
                         'isRotated180': c.get('isRotated180', False),
-                        'blockId': place.get('cluster_idx', 0)
+                        'blockId': place.get('cluster_idx', 0),
                     })
-                
-                result['items'] = new_items
-                result['widthUsed'] = max_w
-                result['heightUsed'] = max_h
-                result['strategyUsed'] = 'cluster_tile'
+                    max_w = max(max_w, abs_x + w)
+                    max_h = max(max_h, abs_y + h)
+                return {
+                    "success": True,
+                    "cells": abs_cells,
+                    "overallWidth": max_w,
+                    "overallHeight": max_h,
+                    "totalItems": len(abs_cells),
+                    "strategyUsed": "cluster_tile",
+                    "absPlacement": True,
+                }
             base_poly = None
             if getattr(req, 'pont_config', None) and not req.pont_config.get('disableCollision', False):
                 if getattr(req, 'shape_type', None) == 'CIRCLE_ELLIPSE':
@@ -1313,42 +1398,90 @@ async def preview_layout(req: PreviewLayoutRequest):
                     paths = page.extract_vector_paths()
                     if paths:
                         base_poly = build_shapely_polygon_from_paths(paths, page.rect)
-            
+
+            # ── Đường bế THẬT cho búa/tạ (Bug A): preview vẽ outline thật → khớp output,
+            # không phụ thuộc hình tổng hợp đoán hướng. CHỈ trích cho HAMMER/DUMBBELL
+            # (hình bất đối xứng dễ vẽ sai); hình khác giữ vẽ tổng hợp (không tốn thêm).
+            die_polygon_norm = None
+            _shape_final = (result.get('shapeType') or '').upper()
+            if _shape_final in ('HAMMER', 'DUMBBELL'):
+                try:
+                    _outline = base_poly
+                    if _outline is None:
+                        from app.workers.pont_collision import build_shapely_polygon_from_paths
+                        _paths = page.extract_vector_paths()
+                        if _paths:
+                            _outline = build_shapely_polygon_from_paths(_paths, page.rect)
+                    die_polygon_norm = _normalize_polygon_to_unit(_outline)
+                except Exception as _e:
+                    logger.debug("die polygon extract failed: %s", _e)
+                    die_polygon_norm = None
+
             doc.close()
-            
+
             items = result.get("items", [])
             logger.debug("PREVIEW result: items_before_collision=%d", len(items))
-            
-            # Note: collision resolution is already done inside compute_sticker_layout_for_page
-            # via solve_optimal_sticker_layout → resolve_layout_collisions
-            # Apply pont collision separately (sheet-level, not item-level)
-            items = apply_preview_collisions(items, req.item_w, req.item_h, req, result.get("widthUsed", 0), result.get("heightUsed", 0), base_poly)
-            
-            logger.debug("PREVIEW result: items_after_pont_collision=%d", len(items))
-            
-            logger.info(f"[PREVIEW] compute_sticker_layout_for_page: shape={result.get('shapeType')} items={len(items)}")
-            
-            # ── Preview vẽ đúng SỐ Ô THỰC SỰ ĐƯỢC LẤP (khớp output) ──
-            # Sức chứa (totalItems) GIỮ NGUYÊN = số ô tối đa của tờ. Riêng N-Up
-            # "Dàn nhiều mẫu" (sequential): nếu KHÔNG auto-fill (có nhập SL) thì mỗi
-            # trang chỉ đặt 1 lần → chỉ lấp min(số_trang, sức_chứa) ô. Trim cells để
-            # preview KHỚP output (vd 14 trang/18 ô: vẽ 14 ô, cụm L-shape rỗng).
-            # Bình trang (step_repeat) & Bế tem fill đầy nên KHÔNG trim.
-            _capacity = len(items)
-            if (not getattr(req, 'is_die_cut', False)) and _tm == 'nup':
-                _tqbp = getattr(req, 'target_quantities_by_page', None) or {}
-                _gq = getattr(req, 'target_quantity', 0) or 0
-                _auto_fill = (_gq == 0) and not any(int(v or 0) > 0 for v in _tqbp.values())
-                if not _auto_fill:
-                    items = items[:min(src_page_count, _capacity)]
-            
+
+            _is_relative_grid = (not getattr(req, 'is_die_cut', False)) and _tm in ('nup', 'step_repeat', 'booklet')
+
+            if _is_relative_grid:
+                # ── Branch E: N-Up lưới thường (KHÔNG die-cut) — giữ toạ độ TƯƠNG ĐỐI,
+                # frontend tự canh lưới (export grid honor align). KHÔNG dùng abs.
+                items = apply_preview_collisions(items, req.item_w, req.item_h, req, result.get("widthUsed", 0), result.get("heightUsed", 0), base_poly)
+                _capacity = len(items)
+                if _tm == 'nup':
+                    _tqbp = getattr(req, 'target_quantities_by_page', None) or {}
+                    _gq = getattr(req, 'target_quantity', 0) or 0
+                    _auto_fill = (_gq == 0) and not any(int(v or 0) > 0 for v in _tqbp.values())
+                    if not _auto_fill:
+                        items = items[:min(src_page_count, _capacity)]
+                return {
+                    "success": True,
+                    "cells": items,
+                    "overallWidth": result.get("widthUsed", 0),
+                    "overallHeight": result.get("heightUsed", 0),
+                    "totalItems": _capacity,
+                    "strategyUsed": result.get("strategyUsed", ""),
+                    "absPlacement": False,
+                }
+
+            # ── Branch A: die-cut / sticker S&R → toạ độ TUYỆT ĐỐI (SSOT, khớp export).
+            # finalize_placements (căn giữa) + resolve_pont_collisions_on_placements
+            # (giữ abs_x/abs_y đã dời/xoay/căn giữa) → preview == output.
+            _ml = getattr(req, 'margin_left', 0) or 0
+            _mb = getattr(req, 'margin_bottom', 0) or 0
+            _mt = getattr(req, 'margin_top', 0) or 0
+            placements = finalize_placements(items, req.usable_w, req.usable_h, _ml, _mb, _mt, page_idx)
+            placements = resolve_pont_collisions_on_placements(placements, req, base_poly)
+
+            abs_cells = []
+            max_w = 0.0
+            max_h = 0.0
+            for p in placements:
+                c = p['cell']
+                w = p['width']
+                h = p['height']
+                abs_cells.append({
+                    'x': c.get('x', 0), 'y': c.get('y', 0),
+                    'absX': p['abs_x'], 'absY': p['abs_y'],
+                    'width': w, 'height': h,
+                    'isRotated': c.get('isRotated', False),
+                    'isRotated180': c.get('isRotated180', False),
+                })
+                max_w = max(max_w, p['abs_x'] + w)
+                max_h = max(max_h, p['abs_y'] + h)
+
+            logger.info(f"[PREVIEW] abs S&R: shape={result.get('shapeType')} items={len(abs_cells)} (strategy={result.get('strategyUsed')})")
+
             return {
                 "success": True,
-                "cells": items,
-                "overallWidth": result.get("widthUsed", 0),
-                "overallHeight": result.get("heightUsed", 0),
-                "totalItems": _capacity,
-                "strategyUsed": result.get("strategyUsed", "")
+                "cells": abs_cells,
+                "overallWidth": max_w,
+                "overallHeight": max_h,
+                "totalItems": len(abs_cells),
+                "strategyUsed": result.get("strategyUsed", ""),
+                "absPlacement": True,
+                "diePolygon": die_polygon_norm,
             }
             
 

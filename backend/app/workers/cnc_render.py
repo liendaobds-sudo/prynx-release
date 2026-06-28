@@ -33,6 +33,7 @@ from app.workers.cnc_marks import draw_duplex_marks
 from app.workers.cnc_layout import build_cnc_front_layout, build_cnc_gang_layout, select_front_pages
 from app.workers.die_detection import DetectedShape, Trim, MAX_TRIM_PT
 from app.workers.shape_types import coerce_shape_type
+from app.workers.imposition_finalize import finalize_placements
 
 logger = logging.getLogger(__name__)
 
@@ -116,36 +117,12 @@ def _build_placements(items, usable_w, usable_h, margin_left, margin_bottom,
                       margin_top, src_page_idx):
     """Dựng danh sách placement (toạ độ tuyệt đối) từ items solver — căn giữa tờ.
 
-    Công thức KHỚP nhánh `repeat` của nup_engine để render đồng nhất.
+    Delegator sang SSOT finalize_placements (imposition_finalize.py) — preview dùng
+    CHUNG đúng hàm này để preview == output.
     """
-    if not items:
-        return []
-    total_content_h = max((it.get('y', 0) + it.get('height', 0) for it in items), default=0.0)
-    max_x_used = max((it.get('x', 0) + it.get('width', 0) for it in items), default=0.0)
-    x_off = margin_left + (usable_w - max_x_used) / 2 if max_x_used < usable_w else margin_left
-    y_off = margin_bottom + (usable_h - total_content_h) / 2 if total_content_h < usable_h else margin_bottom
-
-    placements = []
-    for it in items:
-        rx = it.get('x', 0)
-        ry = it.get('y', 0)
-        iw = it.get('width', 0)
-        ih = it.get('height', 0)
-        abs_y_top = y_off + (total_content_h - ry - ih)
-        placements.append({
-            'cluster_idx': 0,
-            'cell': {
-                'x': rx, 'y': ry, 'width': iw, 'height': ih,
-                'isRotated': it.get('isRotated', False),
-                'isRotated180': it.get('isRotated180', False),
-            },
-            'src_page_idx': src_page_idx,
-            'abs_x': x_off + rx,
-            'abs_y': abs_y_top,
-            'width': iw, 'height': ih,
-            'original_cell_y': usable_h + margin_bottom + margin_top - abs_y_top - ih,
-        })
-    return placements
+    return finalize_placements(
+        items, usable_w, usable_h, margin_left, margin_bottom, margin_top, src_page_idx
+    )
 
 
 def mirror_placements_multi(front_pl, sheet_w, sheet_h, flip_edge, back_of):

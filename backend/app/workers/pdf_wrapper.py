@@ -35,6 +35,11 @@ class Page:
     def __init__(self, doc, pikepdf_page):
         self.doc = doc
         self._page = pikepdf_page
+        # Memo cho extract_vector_paths: trong 1 lần dựng layout (preview/render) cùng
+        # một Page được truyền 4-6 lần (find die-path, NFP overlap, die polygon, base_poly,
+        # classify…) — parse lại content stream mỗi lần rất tốn. Cache theo instance là an
+        # toàn vì Page nguồn KHÔNG bị sửa nội dung; các hàm sửa nội dung tự xoá cache.
+        self._vp_cache = None
 
     @property
     def rect(self):
@@ -75,6 +80,7 @@ class Page:
         return int(self._page.get("/Rotate", 0))
 
     def clean_contents(self):
+        self._vp_cache = None  # nội dung thay đổi → bỏ cache vector paths
         try:
             self._page.contents_coalesce()
         except Exception:
@@ -97,7 +103,9 @@ class Page:
         return xrefs
 
     def extract_vector_paths(self):
-        return extract_vector_paths(self._page, self.doc._pdf)
+        if self._vp_cache is None:
+            self._vp_cache = extract_vector_paths(self._page, self.doc._pdf)
+        return self._vp_cache
 
     def get_pixmap(self, matrix=None, alpha=False, dpi=None, colorspace=None):
         scale = 1.0
@@ -116,6 +124,7 @@ class Page:
         return get_pixmap(self._page, doc_path, page_idx, scale)
 
     def show_pdf_page(self, rect, src_doc, page_idx, rotate=0, clip=None, keep_proportion=False, out_clip=None, mirror_x=False, mirror_y=False):
+        self._vp_cache = None  # ghi nội dung trang đích → bỏ cache
         show_pdf_page(self.doc._pdf, self._page, rect, src_doc._pdf, page_idx, rotate, clip, keep_proportion, out_clip, mirror_x, mirror_y)
 
     def new_shape(self):
@@ -123,6 +132,7 @@ class Page:
 
     def insert_text(self, point=None, text="", fontsize=11, fontname="helv",
                     color=(0, 0, 0, 1), render_mode=0, oc=None):
+        self._vp_cache = None  # ghi nội dung → bỏ cache
         return insert_text(self.doc._pdf, self._page, point, text, fontsize, fontname, color, render_mode, oc)
 
     def set_trimbox(self, rect):

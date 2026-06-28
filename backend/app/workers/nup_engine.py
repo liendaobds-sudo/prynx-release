@@ -51,6 +51,7 @@ from app.workers.nup_diecut import (
 )
 from app.workers.nup_marks import _draw_ponts_on_page
 from app.workers.nup_sticker import compute_sticker_layout_for_page
+from app.workers.imposition_finalize import finalize_placements
 
 from app.workers.nup_process_chunk import process_chunk
 
@@ -836,32 +837,12 @@ def run_nup_engine(
                 repeat_count = 1 if _export_unique else sheets_needed
                 _type_report_str = _make_type_report(p_idx, tw, th, items_per_sheet, qty) if _report_enabled else None
 
-                all_bottoms = [it.get('y', 0) + it.get('height', th) for it in fl['items']]
-                total_content_h = max(all_bottoms) if all_bottoms else 0.0
-                max_x_used = max([it.get('x', 0) + it.get('width', tw) for it in fl['items']], default=0.0)
-                
-                x_off = margin_left + (usable_w - max_x_used) / 2 if max_x_used < usable_w else margin_left
-                y_off = margin_bottom + (usable_h - total_content_h) / 2 if total_content_h < usable_h else margin_bottom
-                
+                # SSOT căn giữa: dùng CHUNG finalize_placements với preview + cnc_render.
                 for _ in range(repeat_count):
-                    precalculated_placements[sheet_idx] = []
-                    for item in fl['items']:
-                        rx = item.get('x', 0)
-                        ry = item.get('y', 0)
-                        iw = item.get('width', tw)
-                        ih = item.get('height', th)
-                        abs_x = x_off + rx
-                        abs_y = y_off + ry
-                        precalculated_placements[sheet_idx].append({
-                            'cluster_idx': 0,
-                            'cell': {'x': rx, 'y': ry, 'width': iw, 'height': ih, 
-                                     'isRotated': item.get('isRotated', False), 
-                                     'isRotated180': item.get('isRotated180', False)},
-                            'src_page_idx': p_idx,
-                            'abs_x': abs_x, 'abs_y': y_off + (total_content_h - ry - ih),
-                            'width': iw, 'height': ih,
-                            'original_cell_y': usable_h + margin_bottom + margin_top - (y_off + (total_content_h - ry - ih)) - ih,
-                        })
+                    precalculated_placements[sheet_idx] = finalize_placements(
+                        fl['items'], usable_w, usable_h,
+                        margin_left, margin_bottom, margin_top, p_idx,
+                    )
                     if _type_report_str:
                         _reports_by_sheet[sheet_idx] = _type_report_str
                     sheet_idx += 1
