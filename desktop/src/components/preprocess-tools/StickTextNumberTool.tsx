@@ -4,6 +4,8 @@ import { getFileArrayBuffer } from '../../lib/utils';
 import { ToolSectionLabel } from './ToolUI';
 import { FontSelector } from './FontSelector';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { formatPageNumber, applyTokens, effectiveLR, NUMBER_STYLES, type NumberStyle } from '../../lib/stampFormat';
 
 interface Props {
     pdfFile: File | null;
@@ -30,6 +32,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
     const [startNumber, setStartNumber] = useState(1);
     const [increment, setIncrement] = useState(1);
     const [padLength, setPadLength] = useState(1);
+    const [numberStyle, setNumberStyle] = useState<NumberStyle>('arabic');
 
     // Appearance
     const [fontName, setFontName] = useState('Helvetica');
@@ -39,6 +42,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
 
     // Margins (mm)
     const [margins, setMargins] = useState({ top: 12.7, bottom: 12.7, left: 25.4, right: 25.4 });
+    const [mirrorMargins, setMirrorMargins] = useState(false);
 
     // Rotation
     const [rotation, setRotation] = useState(0);
@@ -49,16 +53,18 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
     const [rangeEnd, setRangeEnd] = useState(999);
 
     const { setStickPreviewParams } = useWorkspaceStore();
+    const getWorkingFile = useWorkingPdf();
 
     // Sync preview params
     React.useEffect(() => {
         setStickPreviewParams({
             fields, margins, startNumber, increment, padLength,
             fontName, fontSize, fontColor, rotation,
-            targetType, rangeStart, rangeEnd
+            targetType, rangeStart, rangeEnd,
+            numberStyle, mirrorMargins
         });
         return () => setStickPreviewParams(null);
-    }, [fields, margins, startNumber, increment, padLength, fontName, fontSize, fontColor, rotation, targetType, rangeStart, rangeEnd, setStickPreviewParams]);
+    }, [fields, margins, startNumber, increment, padLength, fontName, fontSize, fontColor, rotation, targetType, rangeStart, rangeEnd, numberStyle, mirrorMargins, setStickPreviewParams]);
 
     const MM_TO_PT = 2.83465;
 
@@ -78,16 +84,20 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
         setProgress('Đang xử lý đóng dấu...');
 
         try {
-            const buf = await getFileArrayBuffer(pdfFile);
+            // Đóng dấu trên BẢN ĐÃ CHỈNH (viewer reorder/xoay/xoá) nếu có — đồng bộ
+            // với các tool khác; tránh đóng lên file gốc làm mất chỉnh sửa.
+            const sourceFile = (await getWorkingFile()) || pdfFile;
+            const buf = await getFileArrayBuffer(sourceFile);
             const doc = await PDFDocument.load(buf, { ignoreEncryption: true });
 
             // Load Font
             let font;
+            // 1) Font tuỳ chỉnh người dùng chọn (Tauri đọc file .ttf/.otf).
             if (fontFile && (window as any).__TAURI_INTERNALS__) {
                 try {
                     const { readFile } = await import('@tauri-apps/plugin-fs');
                     const fontBytes = await readFile(fontFile);
-                    
+
                     const fontkit = (await import('@pdf-lib/fontkit')).default;
                     doc.registerFontkit(fontkit);
                     font = await doc.embedFont(fontBytes);
@@ -95,7 +105,25 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                     console.error("Failed to load custom font", e);
                 }
             }
-            
+
+            // 2) Mặc định: font Unicode bundle (Roboto) — HỖ TRỢ TIẾNG VIỆT.
+            //    StandardFonts (Helvetica/Times/Courier) mã hoá WinAnsi, KHÔNG encode
+            //    được nhiều ký tự Việt (ụ, ệ, ộ…) → drawText ném lỗi. Roboto nhúng qua
+            //    fontkit khắc phục triệt để.
+            if (!font) {
+                try {
+                    const fontkit = (await import('@pdf-lib/fontkit')).default;
+                    doc.registerFontkit(fontkit);
+                    const res = await fetch('/fonts/Roboto-Regular.ttf');
+                    if (res.ok) {
+                        font = await doc.embedFont(await res.arrayBuffer());
+                    }
+                } catch (e) {
+                    console.error("Failed to load bundled Unicode font", e);
+                }
+            }
+
+            // 3) Last resort: StandardFonts (chỉ an toàn với ký tự ASCII/Latin-1).
             if (!font) {
                 if (fontName === 'Times-Roman') font = await doc.embedFont(StandardFonts.TimesRoman);
                 else if (fontName === 'Courier') font = await doc.embedFont(StandardFonts.Courier);
@@ -123,7 +151,8 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
 
                 const page = doc.getPage(i);
                 const { width, height } = page.getSize();
-                const numStr = String(sequenceCounter).padStart(padLength, '0');
+                const numStr = formatPageNumber(sequenceCounter, numberStyle, padLength);
+                const totalStr = String(pageCount);
 
                 const marginPt = {
                     top: margins.top * MM_TO_PT,
@@ -131,13 +160,15 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                     left: margins.left * MM_TO_PT,
                     right: margins.right * MM_TO_PT
                 };
+                // Lề gương 2 mặt: hoán đổi trái/phải ở trang chẵn (gáy theo phía trong).
+                const eff = effectiveLR(marginPt.left, marginPt.right, i + 1, mirrorMargins);
 
                 const textHeight = font.heightAtSize(fontSize);
                 const baselineOffset = textHeight * 0.2; 
 
                 const drawField = (content: string, pos: 'topLeft' | 'topCenter' | 'topRight' | 'bottomLeft' | 'bottomCenter' | 'bottomRight') => {
                     if (!content) return;
-                    let drawString = content.replace(/\[page\]/gi, numStr).replace(/\[date\]/gi, todayStr);
+                    let drawString = applyTokens(content, numStr, totalStr, todayStr);
                     const textWidth = font.widthOfTextAtSize(drawString, fontSize);
 
                     let x = 0;
@@ -145,9 +176,9 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
 
                     // X position
                     if (pos.includes('Left')) {
-                        x = marginPt.left;
+                        x = eff.left;
                     } else if (pos.includes('Right')) {
-                        x = width - textWidth - marginPt.right;
+                        x = width - textWidth - eff.right;
                     } else {
                         x = (width / 2) - (textWidth / 2);
                     }
@@ -159,6 +190,9 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                         y = marginPt.bottom + baselineOffset;
                     }
 
+                    // 0° đặt đúng vị trí (đã xác minh). Góc xoay khác: pdf-lib xoay
+                    // quanh điểm neo baseline-trái — parity chính xác với preview chưa
+                    // xác minh được nên KHÔNG bù tâm ở đây (xem ghi chú UI: chỉ 0°).
                     page.drawText(drawString, {
                         x, y, size: fontSize, font, color: textColor, rotate: degrees(rotation)
                     });
@@ -237,8 +271,9 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                 <div className="bg-slate-50 dark:bg-zinc-800/30 p-3 rounded-lg border border-slate-200 dark:border-zinc-700/50 flex flex-col gap-3">
                     {/* Quick tokens */}
                     <div className="flex justify-center gap-2 mb-2">
-                        <button onClick={() => insertToken('[page]')} className="px-3 py-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 text-xs font-bold rounded shadow-sm hover:bg-sky-200 border border-sky-200 dark:border-sky-800">📄 Chèn Số Trang [page]</button>
-                        <button onClick={() => insertToken('[date]')} className="px-3 py-1 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-xs font-bold rounded shadow-sm hover:bg-amber-200 border border-amber-200 dark:border-amber-800">📅 Chèn Ngày [date]</button>
+                        <button onClick={() => insertToken('[page]')} className="px-3 py-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 text-xs font-bold rounded shadow-sm hover:bg-sky-200 border border-sky-200 dark:border-sky-800">📄 Số Trang [page]</button>
+                        <button onClick={() => insertToken('[total]')} className="px-3 py-1 bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs font-bold rounded shadow-sm hover:bg-emerald-200 border border-emerald-200 dark:border-emerald-800">🔢 Tổng trang [total]</button>
+                        <button onClick={() => insertToken('[date]')} className="px-3 py-1 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-xs font-bold rounded shadow-sm hover:bg-amber-200 border border-amber-200 dark:border-amber-800">📅 Ngày [date]</button>
                     </div>
 
                     <div className="grid grid-cols-3 gap-2">
@@ -271,6 +306,13 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                             <input type="number" min={1} max={10} value={padLength} onChange={e => setPadLength(Number(e.target.value))} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded dark:bg-zinc-900 text-sm" />
                         </div>
                     </div>
+                    <div className="flex flex-col gap-1 mt-2">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">Kiểu số</label>
+                        <select value={numberStyle} onChange={e => setNumberStyle(e.target.value as NumberStyle)} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm outline-none">
+                            {NUMBER_STYLES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                        </select>
+                        <span className="text-[10px] text-slate-400 leading-snug mt-0.5">Mẹo: gõ "Trang [page]/[total]" để ra "Trang 1/20". Kiểu La Mã/chữ cái bỏ qua "Độ dài số".</span>
+                    </div>
                 </div>
 
                 {/* Margins */}
@@ -294,6 +336,17 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                             <input type="number" step="1" value={margins.right} onChange={e => setMargins({...margins, right: Number(e.target.value)})} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded dark:bg-zinc-900 text-sm" />
                         </div>
                     </div>
+                    <button onClick={() => setMirrorMargins(!mirrorMargins)}
+                        className={`mt-2 w-full text-left px-3 py-2 rounded-lg border text-[12px] transition-all flex items-start gap-2.5
+                            ${mirrorMargins ? 'border-sky-500 bg-sky-500/10 text-sky-700 dark:text-sky-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
+                        <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 ${mirrorMargins ? 'bg-sky-500 border-sky-500' : 'bg-white dark:bg-zinc-800 border-slate-300 dark:border-zinc-500'}`}>
+                            {mirrorMargins && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg>}
+                        </div>
+                        <div className="flex-1">
+                            <span className="font-semibold block">Lề gương 2 mặt (đóng cuốn)</span>
+                            <span className="text-[10px] text-slate-500 dark:text-zinc-400 block leading-snug mt-0.5">Tự hoán đổi lề Trái/Phải ở trang chẵn để lề trong luôn nằm phía gáy.</span>
+                        </div>
+                    </button>
                 </div>
 
                 {/* Appearance */}

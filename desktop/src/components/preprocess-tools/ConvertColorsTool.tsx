@@ -1,32 +1,110 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, HelpCircle } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import ToolHelpModal from '../ToolHelpModal';
+import type { ToolHelp } from '../../lib/toolHelp';
 
 interface Props {
   pdfFile: File | null;
   onFileFixed?: (blob: Blob, name: string) => void;
 }
 
+// Nội dung hướng dẫn chi tiết (mở bằng nút "Hướng dẫn").
+const COLOR_HELP: ToolHelp = {
+  title: 'Chuyển đổi màu — Hướng dẫn',
+  tagline: 'Đưa file về đúng hệ màu để in, tránh lệch màu so với thiết kế.',
+  sections: [
+    {
+      heading: 'Chọn loại chuyển đổi',
+      items: [
+        'RGB → CMYK: màn hình dùng màu RGB, còn máy in offset dùng 4 mực C-M-Y-K. Bước này đổi RGB sang CMYK để in ra đúng màu. Hầu như luôn cần khi gửi nhà in.',
+        'Chuyển sang đen trắng (Grayscale): bỏ toàn bộ màu, in một màu đen. Chỉ dùng khi CỐ Ý in trắng đen — thao tác này sẽ làm mất màu cả tài liệu.',
+        'Spot Color → CMYK: đổi màu pha (Pantone, HKS…) sang 4 màu CMYK tương đương. Dùng khi in 4 màu, không tách bản màu pha riêng.',
+      ],
+    },
+    {
+      heading: 'Hồ sơ màu đích (Profile)',
+      items: [
+        'Tự động: giữ hồ sơ màu có sẵn trong file. Chọn khi bạn không chắc.',
+        'In offset (FOGRA39): tiêu chuẩn màu phổ biến cho giấy couché. Chọn khi nhà in yêu cầu chuẩn này.',
+      ],
+    },
+    {
+      heading: 'Giữ chữ & nét đen in 1 màu đen',
+      items: [
+        'Khi đổi sang CMYK, chữ đen dễ bị pha từ cả 4 mực (gọi là "rich black").',
+        'Lúc in, 4 mực lệch nhau vài phần mm sẽ tạo viền màu nhòe quanh chữ (lỗi chồng màu).',
+        'Bật mục này để chữ/nét đen chỉ in bằng mực đen K → sắc nét, không lệch viền. Nên BẬT cho in offset.',
+      ],
+    },
+    {
+      heading: 'Tùy chọn nâng cao — Cách quy đổi màu',
+      items: [
+        'Giữ màu gần nhất: cân bằng, hợp hầu hết ấn phẩm (mặc định).',
+        'Tốt cho ảnh: giữ chuyển sắc mượt, hợp hình chụp.',
+        'Rực rỡ: ưu tiên màu tươi, hợp biểu đồ / mảng màu đồ họa.',
+        'Tuyệt đối: giữ nguyên giá trị màu, dùng khi làm proof thử màu.',
+        'Không rõ thì cứ để mặc định.',
+      ],
+    },
+  ],
+  printNote: 'RGB→CMYK và "giữ đen 100% K" quan trọng nhất cho IN OFFSET. In nhanh (kỹ thuật số) thường tự xử lý nên ít cần chỉnh.',
+};
+
+// Giải thích SÂU cho khu "Tùy chọn nâng cao" (chuẩn màu + cách quy đổi).
+const ADVANCED_HELP: ToolHelp = {
+  title: 'Chuẩn màu & Cách quy đổi — Giải thích kỹ',
+  tagline: 'Phần kỹ thuật cho người làm in chuyên. Không rành cứ để mặc định.',
+  sections: [
+    {
+      heading: 'Chuẩn màu đích (ICC profile) là gì?',
+      items: [
+        'Mỗi điều kiện in (loại máy + loại giấy + loại mực) cho ra màu hơi khác nhau. "Chuẩn màu" là bộ thông số mô tả cách một điều kiện in tái tạo màu, giúp màu in ra sát với dự kiến.',
+        'Tự động: app dùng hồ sơ màu sẵn có trong file (hoặc mặc định an toàn). Hợp gần như mọi trường hợp.',
+        'In offset (FOGRA39): chuẩn châu Âu cho giấy couché (giấy láng), còn gọi ISO Coated. Chọn khi nhà in nói rõ cần FOGRA39.',
+        'Chọn "sai" chuẩn thường chỉ lệch màu nhẹ, không làm hỏng file. Không chắc → để Tự động.',
+      ],
+    },
+    {
+      heading: 'Cách quy đổi màu (Rendering Intent) là gì?',
+      items: [
+        'Màu trên màn hình (RGB) rộng hơn màu in được (CMYK). Khi đổi sang CMYK có những màu "ngoài tầm in". Mục này quyết định cách ép các màu đó vào vùng in được.',
+        'Giữ màu gần nhất: giữ đúng màu in được, màu ngoài tầm kéo về gần nhất. Cân bằng — mặc định cho tờ rơi, bao bì, văn bản.',
+        'Tốt cho ảnh: nén cả dải màu cho mượt, giữ chuyển sắc tự nhiên. Hợp ảnh chụp.',
+        'Rực rỡ: ưu tiên màu tươi/đậm, ít quan tâm chính xác. Hợp biểu đồ, mảng màu đồ họa.',
+        'Tuyệt đối: giữ y nguyên giá trị màu (kể cả nền giấy). Dùng khi làm proof thử màu / mô phỏng loại giấy khác.',
+      ],
+    },
+    {
+      heading: 'Tóm lại nên chọn gì?',
+      items: [
+        'Đa số: để cả hai ở MẶC ĐỊNH (Tự động + Giữ màu gần nhất).',
+        'In ảnh là chính: thử "Tốt cho ảnh".',
+        'Nhà in yêu cầu FOGRA39: chọn "In offset (FOGRA39)".',
+      ],
+    },
+  ],
+  printNote: 'Các tùy chọn này ảnh hưởng độ chính xác màu khi IN OFFSET. In nhanh ít bị ảnh hưởng.',
+};
+
 const CONVERSIONS = [
   { id: 'rgb_to_cmyk', icon: '🔵→🟡', label: 'RGB → CMYK', desc: 'Chuyển toàn bộ object RGB sang không gian màu CMYK. Bắt buộc cho in offset truyền thống.' },
-  { id: 'gray_to_cmyk', icon: '⬜→🟡', label: 'Grayscale → CMYK K', desc: 'Chuyển Grayscale thành CMYK chỉ dùng kênh K (Black). Tránh lỗi gray build 4 màu gây moire.' },
+  { id: 'gray_to_cmyk', icon: '⬛→⬜', label: 'Chuyển sang đen trắng (Grayscale)', desc: 'Chuyển toàn bộ nội dung sang thang xám (DeviceGray) để in một màu đen. Lưu ý: thao tác này LÀM MẤT MÀU của cả tài liệu.' },
   { id: 'spot_to_cmyk', icon: '🟣→🟡', label: 'Spot Color → CMYK', desc: 'Chuyển tất cả màu pha (Pantone, HKS, custom spot) sang CMYK tương đương. Cần cho in 4 màu.' },
 ];
 
 const ICC_PROFILES = [
-  { value: 'auto', label: 'Tự động (theo file)', desc: 'Dùng ICC profile đã nhúng trong file' },
-  { value: 'fogra39', label: 'FOGRA39 (Coated)', desc: 'Tiêu chuẩn EU cho giấy couché' },
-  { value: 'swop', label: 'SWOP v2', desc: 'Tiêu chuẩn Mỹ cho offset sheetfed' },
-  { value: 'japan_color', label: 'Japan Color 2001', desc: 'Tiêu chuẩn Nhật Bản' },
+  { value: 'auto', label: 'Tự động (khuyên dùng)', desc: 'Cứ để cái này nếu bạn không rành.' },
+  { value: 'fogra39', label: 'In offset (FOGRA39)', desc: 'Chỉ chọn khi nhà in yêu cầu chuẩn này.' },
 ];
 
 const RENDERING_INTENTS = [
-  { value: 'relative', label: 'Relative Colorimetric', desc: 'Giữ màu gần nhất, phù hợp hầu hết ấn phẩm' },
-  { value: 'perceptual', label: 'Perceptual', desc: 'Duy trì mối quan hệ giữa các màu, tốt cho ảnh' },
-  { value: 'saturation', label: 'Saturation', desc: 'Ưu tiên độ bão hòa, tốt cho biểu đồ/đồ họa' },
-  { value: 'absolute', label: 'Absolute Colorimetric', desc: 'Giữ nguyên giá trị màu tuyệt đối (proofing)' },
+  { value: 'relative', label: 'Giữ màu gần nhất', desc: 'Mặc định — hợp hầu hết ấn phẩm' },
+  { value: 'perceptual', label: 'Tốt cho ảnh', desc: 'Duy trì quan hệ giữa các màu' },
+  { value: 'saturation', label: 'Rực rỡ', desc: 'Hợp biểu đồ / đồ họa' },
+  { value: 'absolute', label: 'Tuyệt đối', desc: 'Proofing, giữ nguyên giá trị' },
 ];
 
 export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
@@ -40,6 +118,9 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
   const [error, setError] = useState('');
   const [isConversionsOpen, setIsConversionsOpen] = useState(true);
   const [isProfileOpen, setIsProfileOpen] = useState(true);
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showAdvHelp, setShowAdvHelp] = useState(false);
 
   useEffect(() => { setFileId(''); setResult(null); setError(''); }, [pdfFile]);
 
@@ -98,6 +179,15 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
 
+      {/* ═══ NÚT HƯỚNG DẪN ═══ */}
+      <button onClick={() => setShowHelp(true)}
+        className="w-full flex items-center justify-center gap-1.5 text-[12px] font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 py-2 rounded-lg border border-indigo-200 dark:border-indigo-800/50 transition-colors">
+        <HelpCircle className="w-4 h-4" /> Chưa rõ? Xem hướng dẫn &amp; giải thích
+      </button>
+
+      {showHelp && <ToolHelpModal help={COLOR_HELP} icon="🎨" onClose={() => setShowHelp(false)} />}
+      {showAdvHelp && <ToolHelpModal help={ADVANCED_HELP} icon="🎛️" onClose={() => setShowAdvHelp(false)} />}
+
       {/* ═══ SECTION 1: CHỌN CHUYỂN ĐỔI ═══ */}
       <div className="space-y-2">
         <div className="flex items-center justify-between mb-3">
@@ -149,68 +239,80 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
       <div className="space-y-2">
         <button onClick={() => setIsProfileOpen(!isProfileOpen)} className="w-full flex items-center justify-center gap-2 group">
           <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
-            🛠️ CẤU HÌNH ICC & RENDERING
+            🎯 TIÊU CHUẨN MÀU IN
           </span>
           <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isProfileOpen ? 'rotate-180' : ''}`} />
         </button>
 
         {isProfileOpen && (
           <div className="animate-in slide-in-from-top-2 fade-in duration-200 space-y-3">
-            {/* ICC Profile */}
-            <div className="p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2">ICC Profile đích</span>
-              <div className="grid grid-cols-2 gap-1.5">
-                {ICC_PROFILES.map((p, i) => {
-                  const sel = profile === p.value;
-                  const isLeftCol = i % 2 === 0;
-                  return (
-                    <button key={p.value} onClick={() => setProfile(p.value)}
-                      className={`text-left px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
-                        ${sel ? 'border-teal-500 bg-teal-500/10 font-semibold text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
-                      <span className="block font-medium truncate">{p.label}</span>
-                      <span className="text-[8px] text-slate-400 block">{p.desc}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Rendering Intent */}
-            <div className="p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2">Rendering Intent</span>
-              <div className="grid grid-cols-2 gap-1.5">
-                {RENDERING_INTENTS.map((ri, i) => {
-                  const sel = intent === ri.value;
-                  const isLeftCol = i % 2 === 0;
-                  return (
-                    <button key={ri.value} onClick={() => setIntent(ri.value)}
-                      className={`text-left px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
-                        ${sel ? 'border-teal-500 bg-teal-500/10 font-semibold text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
-                      <span className="block font-medium truncate">{ri.label}</span>
-                      <span className="text-[8px] text-slate-400 block">{ri.desc}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Options */}
+            {/* Giữ đen 100% K — thứ DUY NHẤT cần quan tâm ở màn hình chính */}
             <button onClick={() => setPreserveBlack(!preserveBlack)}
-              className={`w-full text-left px-3 py-2 rounded-lg border text-[12px] transition-all flex items-center gap-2
-                ${preserveBlack ? 'border-teal-500 bg-teal-500/10 font-semibold text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
-              <div className={`w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0 ${preserveBlack ? 'bg-teal-500 border-teal-500' : 'bg-white dark:bg-zinc-800 border-slate-300 dark:border-zinc-500'}`}>
+              className={`w-full text-left px-3 py-2.5 rounded-lg border text-[12px] transition-all flex items-start gap-2.5
+                ${preserveBlack ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
+              <div className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0 ${preserveBlack ? 'bg-teal-500 border-teal-500' : 'bg-white dark:bg-zinc-800 border-slate-300 dark:border-zinc-500'}`}>
                 {preserveBlack && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg>}
               </div>
-              <span className="flex-1">Giữ nguyên Black tinh (Preserve Pure K)</span>
-              <div className="relative group/tooltip flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-[10px] text-slate-500 shrink-0 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors"
-                onClick={(e) => e.stopPropagation()}>
-                ?
-                <div className="absolute bottom-full mb-2 right-0 w-max max-w-[220px] p-3 bg-slate-800 dark:bg-zinc-700 text-white text-[11px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words">
-                  Khi chuyển RGB→CMYK, giữ nguyên vùng 100%K thay vì build lại từ 4 kênh. Tránh lỗi registration trên text đen.
-                  <div className="absolute top-full right-3 w-2 h-2 bg-slate-800 dark:bg-zinc-700 transform rotate-45 -mt-1" />
-                </div>
+              <div className="flex-1">
+                <span className="font-semibold block">Giữ chữ &amp; nét đen in 1 màu đen</span>
+                <span className="text-[11px] text-slate-500 dark:text-zinc-400 block leading-snug mt-0.5">Chữ/nét đen chỉ in bằng mực đen (K), không pha 4 màu → tránh lệch viền khi in. Nên bật cho in offset.</span>
               </div>
             </button>
+
+            {/* Tùy chọn nâng cao: chuẩn màu + cách quy đổi (mặc định ẩn — đa số không cần) */}
+            <div className="rounded-lg border border-slate-200 dark:border-white/10 overflow-hidden">
+              <div className="w-full flex items-center justify-between pr-2 hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition-colors">
+                <button onClick={() => setIsAdvancedOpen(!isAdvancedOpen)}
+                  className="flex items-center gap-2 flex-1 px-3 py-2 text-[11px] font-bold text-slate-500 text-left">
+                  <span>Tùy chọn nâng cao (chuẩn màu)</span>
+                  <ChevronDown className={`w-3 h-3 transition-transform duration-200 ${isAdvancedOpen ? 'rotate-180' : ''}`} />
+                </button>
+                <button onClick={() => setShowAdvHelp(true)} title="Giải thích chi tiết"
+                  className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors">
+                  <HelpCircle className="w-4 h-4" />
+                </button>
+              </div>
+              {isAdvancedOpen && (
+                <div className="p-3 pt-1 space-y-3 animate-in slide-in-from-top-1 fade-in duration-200">
+                  {/* Chuẩn màu đích (ICC) */}
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Chuẩn màu đích</span>
+                    <p className="text-[11px] text-slate-400 dark:text-zinc-500 mb-2 leading-snug">Không rành thì cứ để <b>Tự động</b>.</p>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {ICC_PROFILES.map((p) => {
+                        const sel = profile === p.value;
+                        return (
+                          <button key={p.value} onClick={() => setProfile(p.value)}
+                            className={`text-left px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
+                              ${sel ? 'border-teal-500 bg-teal-500/10 font-semibold text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
+                            <span className="block font-medium truncate">{p.label}</span>
+                            <span className="text-[10px] text-slate-400 block leading-snug mt-0.5">{p.desc}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Cách quy đổi màu (Rendering Intent) */}
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2">Cách quy đổi màu</span>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {RENDERING_INTENTS.map((ri) => {
+                        const sel = intent === ri.value;
+                        return (
+                          <button key={ri.value} onClick={() => setIntent(ri.value)}
+                            className={`text-left px-2.5 py-1.5 rounded-lg border text-[11px] transition-all
+                              ${sel ? 'border-teal-500 bg-teal-500/10 font-semibold text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
+                            <span className="block font-medium truncate">{ri.label}</span>
+                            <span className="text-[10px] text-slate-400 block leading-snug mt-0.5">{ri.desc}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

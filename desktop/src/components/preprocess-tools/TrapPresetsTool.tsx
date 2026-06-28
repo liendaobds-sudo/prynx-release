@@ -2,9 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
-import { 
-    ToolSectionLabel, ToolDivider, ToolCardOption, 
-    ToolCheckboxOption, ToolNumberInput, ToolWarning 
+import {
+    ToolSectionLabel, ToolDivider, ToolCheckboxOption, ToolWarning
 } from './ToolUI';
 
 interface Props {
@@ -12,22 +11,13 @@ interface Props {
   onFileFixed?: (blob: Blob, name: string) => void;
 }
 
-const PRESETS = [
-  { key: 'default', label: 'Mặc định', desc: 'Trap 0.25pt / Black 0.5pt', trap: 0.25, black: 0.5 },
-  { key: 'heavy', label: 'Mạnh', desc: 'Trap 0.5pt / Black 1.0pt', trap: 0.5, black: 1.0 },
-  { key: 'none', label: 'Chỉ Overprint', desc: 'Không trap, chỉ OPM', trap: 0, black: 0 },
-];
-
 const OPTIONS = [
-  { key: 'overprint_black', label: 'Overprint text đen (K>95%)', desc: 'Set overprint cho toàn bộ text và nét vector đen. Tránh lỗi knockout gây viền trắng quanh chữ đen trên nền màu.' },
-  { key: 'preserve_overprint', label: 'Giữ overprint hiện có', desc: 'Không ghi đè các thiết lập overprint đã có sẵn trong file gốc. Chỉ bổ sung cho các object chưa set.' },
+  { key: 'overprint_black', label: 'Overprint text/nét đen (K>95%)', desc: 'Bật overprint cho text và nét đen thuần. Tránh lỗi knockout gây viền trắng quanh chữ đen trên nền màu.' },
+  { key: 'preserve_overprint', label: 'Giữ overprint hiện có', desc: 'Không tắt các thiết lập overprint đã có sẵn trong file; chỉ bổ sung cho object đen chưa set.' },
 ];
 
 export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
   const [fileId, setFileId] = useState('');
-  const [preset, setPreset] = useState('default');
-  const [trapWidth, setTrapWidth] = useState(0.25);
-  const [blackTrapWidth, setBlackTrapWidth] = useState(0.5);
   const [overprintBlack, setOverprintBlack] = useState(true);
   const [preserveOverprint, setPreserveOverprint] = useState(true);
   const [running, setRunning] = useState(false);
@@ -44,30 +34,22 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
     return r.id;
   }, [fileId, pdfFile, getWorkingFile]);
 
-  const selectPreset = (key: string) => {
-    setPreset(key);
-    const p = PRESETS.find(pr => pr.key === key);
-    if (p) { setTrapWidth(p.trap); setBlackTrapWidth(p.black); }
-  };
-
   const apply = async () => {
     setRunning(true); setStatus('');
     try {
       const fid = await ensureUploaded();
+      const params = { overprint_black: overprintBlack, preserve_overprint: preserveOverprint };
       recipeRecorder.noteOperation('trapping', {
         action_id: 'SET_BLACK_OVERPRINT',
-        params: { trap_width: trapWidth, black_trap_width: blackTrapWidth, overprint_black: overprintBlack, preserve_overprint: preserveOverprint },
+        params,
       });
       const res = await authenticatedFetch(`${getApiUrl()}/preflight/set-overprint`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          file_id: fid, action_id: 'SET_BLACK_OVERPRINT',
-          params: { trap_width: trapWidth, black_trap_width: blackTrapWidth, overprint_black: overprintBlack, preserve_overprint: preserveOverprint },
-        }),
+        body: JSON.stringify({ file_id: fid, action_id: 'SET_BLACK_OVERPRINT', params }),
       });
       const data = await res.json();
       if (data.success) {
-        setStatus('✅ Đã áp dụng Overprint/Trapping');
+        setStatus('✅ Đã áp dụng Overprint đen');
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
@@ -88,47 +70,14 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
   return (
     <div className="flex flex-col gap-4 animate-in fade-in duration-200">
 
-      {/* ═══ SECTION 1: CẤU HÌNH ═══ */}
+      {/* ═══ SECTION 1: CẤU HÌNH OVERPRINT ═══ */}
       <div className="flex flex-col gap-2">
-        <ToolSectionLabel>Cấu hình Trapping</ToolSectionLabel>
-
-        {/* Presets */}
-        <div className="grid grid-cols-3 gap-2">
-            {PRESETS.map(p => (
-                <ToolCardOption 
-                    key={p.key}
-                    selected={preset === p.key}
-                    onClick={() => selectPreset(p.key)}
-                    label={p.label}
-                    desc={p.desc}
-                    className="items-center text-center"
-                />
-            ))}
-        </div>
-
-        {/* Fine-tune */}
-        <div className="p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2">Tinh chỉnh</span>
-            <div className="grid grid-cols-2 gap-3">
-                <ToolNumberInput 
-                    label="Trap Width"
-                    value={trapWidth}
-                    onChange={val => { setTrapWidth(val); setPreset(''); }}
-                    suffix="pt" step={0.05}
-                />
-                <ToolNumberInput 
-                    label="Black Trap Width"
-                    value={blackTrapWidth}
-                    onChange={val => { setBlackTrapWidth(val); setPreset(''); }}
-                    suffix="pt" step={0.05}
-                />
-            </div>
-        </div>
+        <ToolSectionLabel>Cấu hình Overprint đen</ToolSectionLabel>
 
         {/* Options */}
         <div className="flex flex-col gap-2 pt-1">
             {OPTIONS.map((opt) => (
-                <ToolCheckboxOption 
+                <ToolCheckboxOption
                     key={opt.key}
                     selected={getOpt(opt.key)}
                     onClick={() => toggleOpt(opt.key)}
@@ -139,9 +88,9 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
         </div>
 
         {/* Info Note */}
-        <ToolWarning 
-            title="Lưu ý quan trọng"
-            desc={<>Trapping chuyên sâu cần hệ thống RIP chuyên nghiệp trên máy CTP. Tính năng này chủ yếu set <b>Overprint</b> cho text/nét đen.</>}
+        <ToolWarning
+            title="Phạm vi công cụ"
+            desc={<>Công cụ này bật <b>Overprint</b> cho object màu đen thuần (chống viền trắng quanh chữ/nét đen). <b>Trapping spread/choke</b> (bẫy mực hình học) cần hệ thống RIP chuyên nghiệp trên máy CTP — không thực hiện ở đây.</>}
         />
       </div>
 
@@ -149,7 +98,7 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
       <ToolDivider />
       <button onClick={apply} disabled={running}
         className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
-        {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang áp dụng...</>) : (<>🚀 Áp dụng Trapping</>)}
+        {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang áp dụng...</>) : (<>🚀 Áp dụng Overprint đen</>)}
       </button>
 
       {/* ═══ STATUS ═══ */}

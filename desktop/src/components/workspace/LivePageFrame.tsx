@@ -22,6 +22,7 @@ import {
     rotationScreenToPdf,
     pickFontForName as pickFontForNameUtil,
 } from './editGeometry';
+import { formatPageNumber, applyTokens, effectiveLR } from '../../lib/stampFormat';
 
 // ─── Edit PDF Object (task 10.1) ─────────────────────────────────────────────
 // Object do GET /edit/objects trả về, SAU khi đã convert bbox PDF (bottom-left)
@@ -393,6 +394,7 @@ export const LivePageFrame = (props: any) => {
     const dragRef = useRef<{ startX: number; startY: number; active: boolean; lastHoverTime?: number }>({ startX: 0, startY: 0, active: false });
     
     const stickPreviewParams = useWorkspaceStore(s => s.stickPreviewParams);
+    const viewerNumPages = useWorkspaceStore(s => s.viewerNumPages);
 
     // VDP Drag/Resize interaction state
     const [vdpInteraction, setVdpInteraction] = useState<{ type: 'move'|'resize', handle?: 'nw'|'ne'|'sw'|'se'|'n'|'s'|'e'|'w', fieldIds: string[], startX: number, startY: number, startFields: Record<string, {x: number, y: number, w: number, h: number}> } | null>(null);
@@ -2553,7 +2555,7 @@ export const LivePageFrame = (props: any) => {
 
              {/* Preview Stick Text & Numbers Tool */}
              {stickPreviewParams && pageDim && (() => {
-                 const { fields, margins, startNumber, increment, padLength, fontName, fontSize, fontColor, rotation, targetType, rangeStart, rangeEnd } = stickPreviewParams;
+                 const { fields, margins, startNumber, increment, padLength, fontName, fontSize, fontColor, rotation, targetType, rangeStart, rangeEnd, numberStyle, mirrorMargins } = stickPreviewParams;
                  
                  // Check if page should be processed
                  let process = false;
@@ -2578,25 +2580,29 @@ export const LivePageFrame = (props: any) => {
                      currentNumber += processedCount * increment;
                  }
 
-                 const numStr = String(currentNumber).padStart(padLength, '0');
+                 const numStr = formatPageNumber(currentNumber, numberStyle || 'arabic', padLength);
+                 const totalStr = String(viewerNumPages || 0);
                  const todayStr = new Date().toLocaleDateString('vi-VN');
 
                  const pageWidthPt = pageDim.w;
                  const scale = displayWidth / pageWidthPt;
                  const MM_TO_PT = 2.83465;
 
+                 // Lề gương 2 mặt: hoán đổi trái/phải ở trang chẵn (khớp output).
+                 const effM = effectiveLR(margins?.left ?? 0, margins?.right ?? 0, originalPageNum, !!mirrorMargins);
+
                  const fieldList = [
-                     { id: 'topLeft', content: fields?.topLeft, top: margins?.top, bottom: null, left: margins?.left, right: null, align: 'flex-start', valalign: 'flex-start' },
+                     { id: 'topLeft', content: fields?.topLeft, top: margins?.top, bottom: null, left: effM.left, right: null, align: 'flex-start', valalign: 'flex-start' },
                      { id: 'topCenter', content: fields?.topCenter, top: margins?.top, bottom: null, left: 0, right: 0, align: 'center', valalign: 'flex-start' },
-                     { id: 'topRight', content: fields?.topRight, top: margins?.top, bottom: null, left: null, right: margins?.right, align: 'flex-end', valalign: 'flex-start' },
-                     { id: 'bottomLeft', content: fields?.bottomLeft, top: null, bottom: margins?.bottom, left: margins?.left, right: null, align: 'flex-start', valalign: 'flex-end' },
+                     { id: 'topRight', content: fields?.topRight, top: margins?.top, bottom: null, left: null, right: effM.right, align: 'flex-end', valalign: 'flex-start' },
+                     { id: 'bottomLeft', content: fields?.bottomLeft, top: null, bottom: margins?.bottom, left: effM.left, right: null, align: 'flex-start', valalign: 'flex-end' },
                      { id: 'bottomCenter', content: fields?.bottomCenter, top: null, bottom: margins?.bottom, left: 0, right: 0, align: 'center', valalign: 'flex-end' },
-                     { id: 'bottomRight', content: fields?.bottomRight, top: null, bottom: margins?.bottom, left: null, right: margins?.right, align: 'flex-end', valalign: 'flex-end' }
+                     { id: 'bottomRight', content: fields?.bottomRight, top: null, bottom: margins?.bottom, left: null, right: effM.right, align: 'flex-end', valalign: 'flex-end' }
                  ];
 
                  return fieldList.map(f => {
                      if (!f.content) return null;
-                     const drawString = f.content.replace(/\[page\]/gi, numStr).replace(/\[date\]/gi, todayStr);
+                     const drawString = applyTokens(f.content, numStr, totalStr, todayStr);
                      if (!drawString) return null;
 
                      let posStyles: any = { position: 'absolute' };
