@@ -194,14 +194,14 @@ describe('PageResizer — resizePages', () => {
 describe('PdfMerger — mergePdf', () => {
   it('merge_files: base + 1 file, giữ thứ tự', async () => {
     const base = await makePdf(2, 100); // 100,101
-    const extra = new File([await makePdf(2, 200)], 'b.pdf', { type: 'application/pdf' });
+    const extra = new File([await makePdf(2, 200) as BlobPart], 'b.pdf', { type: 'application/pdf' });
     const out = await mergePdf(base, { mode: 'merge_files', filesToMerge: [extra] } as any);
     expect(await widths(out)).toEqual([100, 101, 200, 201]);
   });
 
   it('interleave: xen kẽ odd/even', async () => {
-    const oddFile = new File([await makePdf(3, 100)], 'odd.pdf', { type: 'application/pdf' });
-    const evenFile = new File([await makePdf(2, 200)], 'even.pdf', { type: 'application/pdf' });
+    const oddFile = new File([await makePdf(3, 100) as BlobPart], 'odd.pdf', { type: 'application/pdf' });
+    const evenFile = new File([await makePdf(2, 200) as BlobPart], 'even.pdf', { type: 'application/pdf' });
     const out = await mergePdf(null, { mode: 'interleave', oddFile, evenFile } as any);
     expect(await widths(out)).toEqual([100, 200, 101, 201, 102]);
   });
