@@ -191,7 +191,7 @@ async def resize_pages_endpoint(
     """Resize PDF pages to a new format."""
     from app.workers.pdf_tools_engine import resize_pages
     
-    source_path = save_upload(file)
+    source_path = await save_upload(file)
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"resized_{job_id}.pdf")
     
@@ -225,7 +225,7 @@ async def shuffle_pages_endpoint(
     """
     from app.workers.pdf_tools_engine import shuffle_pages
     
-    source_path = save_upload(file)
+    source_path = await save_upload(file)
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"shuffled_{job_id}.pdf")
     
@@ -269,7 +269,7 @@ async def ocr_searchable_endpoint(
     """
     from app.core.ocr_engine import OCREngine
 
-    source_path = save_upload(file)
+    source_path = await save_upload(file)
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"searchable_{job_id}.pdf")
 
@@ -665,10 +665,25 @@ async def remove_background_endpoint(
 
 
 @router.post("/remove-background/warmup")
-async def remove_background_warmup():
-    """Nạp sẵn model tách nền (chạy nền) để lần bấm đầu không phải chờ cold-start ~25s.
-    FE gọi khi mở công cụ; chạy trong threadpool nên không khoá event loop."""
+async def remove_background_warmup(engine: str = Form("general")):
+    """Nạp sẵn model tách nền (chạy nền) để lần bấm đầu không phải chờ cold-start.
+    FE gọi khi mở công cụ; chạy trong threadpool nên không khoá event loop.
+
+    Warm ĐÚNG engine người dùng đang chọn (trước đây chỉ warm birefnet-lite →
+    chọn 'fast'/'hair' vẫn cold-start):
+      - 'fast'        → ISNet (~178MB)
+      - 'hair'/'max'  → BiRefNet full (927MB, chất lượng tối đa)
+      - còn lại       → BiRefNet lite (mặc định 'general')
+    """
     from fastapi.concurrency import run_in_threadpool
-    from app.workers.birefnet_engine import warmup
-    ok = await run_in_threadpool(warmup, "lite")  # warm engine mặc định (chất lượng cao)
+    e = (engine or "general").strip().lower()
+    if e == "fast":
+        from app.workers.isnet_engine import warmup
+        ok = await run_in_threadpool(warmup)
+    elif e in ("hair", "max"):
+        from app.workers.birefnet_engine import warmup
+        ok = await run_in_threadpool(warmup, "full")
+    else:
+        from app.workers.birefnet_engine import warmup
+        ok = await run_in_threadpool(warmup, "lite")
     return {"ok": bool(ok)}

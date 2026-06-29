@@ -685,8 +685,14 @@ export const LivePageFrame = (props: any) => {
     // chiều cao trang (pageDim.h, point) — dùng chung công thức `x * scale` với overlay.
     useEffect(() => {
         if (!isObjectEditMode || originalPageNum === -1 || !selectionFileId || !pageDim?.h) {
-            setEditObjects([]);
-            setSelectedObjectIds([]);
+            // QUAN TRỌNG (fix vòng lặp "Maximum update depth"): selectedObjectIds là STORE
+            // dùng chung MỌI LivePageFrame. Set về `[]` MỚI mỗi lần effect chạy → đổi tham
+            // chiếu → useShallow coi là thay đổi → re-render mọi frame → cascade vô hạn
+            // (đặc biệt khi nhiều frame ảo Virtuoso + preview re-render liên tục, frame
+            // không ở edit-mode liên tục chạy nhánh này). Dùng updater IDEMPOTENT: khi đã
+            // rỗng thì giữ NGUYÊN tham chiếu → React/Zustand bail-out, không re-render thừa.
+            setEditObjects(prev => (prev.length ? [] : prev));
+            setSelectedObjectIds(prev => (prev.length ? [] : prev));
             return;
         }
         const pageIndex = originalPageNum - 1; // /edit dùng chỉ số 0-based
@@ -696,7 +702,7 @@ export const LivePageFrame = (props: any) => {
         const cached = _editObjectsCache.get(cacheKey);
         if (cached) {
             setEditObjects(cached);
-            setSelectedObjectIds([]);
+            setSelectedObjectIds(prev => (prev.length ? [] : prev));
             editCropOriginRef.current = _editCropOriginCache.get(cacheKey) || [0, 0];
             hideEditGhost();
             return;
@@ -736,13 +742,13 @@ export const LivePageFrame = (props: any) => {
                 _editObjectsCache.set(cacheKey, objs); // Lưu cache cho lần bật/tắt sau.
                 _editCropOriginCache.set(cacheKey, [bx0, by0]);
                 setEditObjects(objs);
-                setSelectedObjectIds([]);
+                setSelectedObjectIds(prev => (prev.length ? [] : prev));
                 hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
             } catch (err) {
                 if (!cancelled) {
                     console.warn('[edit] Không tải được /edit/objects:', err);
-                    setEditObjects([]);
-                    setSelectedObjectIds([]);
+                    setEditObjects(prev => (prev.length ? [] : prev));
+                    setSelectedObjectIds(prev => (prev.length ? [] : prev));
                     const m = err instanceof Error ? err.message : String(err);
                     // 404 = fid/file không còn trên backend (thường sau khi RESTART
                     // server, file tải lên cũ đã mất) → hướng dẫn mở lại file.
@@ -822,7 +828,7 @@ export const LivePageFrame = (props: any) => {
         // /edit/objects để lần bật chế độ kế tiếp fetch lại dữ liệu khớp trang mới.
         clearEditObjectsCache();
         // Bỏ selection cũ (trỏ object của file/trang trước) để không highlight chéo.
-        setSelectedObjectIds([]);
+        setSelectedObjectIds(prev => (prev.length ? [] : prev));
     }, [pdfUrl]);
 
     if (originalPageNum === -1) {

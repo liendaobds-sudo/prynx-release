@@ -536,9 +536,26 @@ function renderCellShape(
     }
 
     case "ARROW": {
+      // Đường bế THẬT (diePolygon) → vẽ ĐÚNG contour mũi tên (đầu/cán/hướng thật,
+      // kể cả bất đối xứng). Trước đây vẽ mũi tên TỔNG HỢP tỉ lệ cố định → sai hình.
+      if (diePolygon && diePolygon.length >= 3) {
+        const realPts = diePolygon
+          .map(([fx, fy]) => `${ox + fx * ow},${oy + (1 - fy) * oh}`)
+          .join(" ");
+        shapeNode = (
+          <polygon
+            points={realPts}
+            fill={color.fill}
+            stroke={color.stroke}
+            strokeWidth={0.8}
+            strokeLinejoin="round"
+          />
+        );
+        break;
+      }
       const aw = ow * 0.35,
         ah = oh * 0.4;
-      // Base arrow pointing UP
+      // Base arrow pointing UP (fallback khi không có đường bế thật)
       const pts = `${cx},${oy} ${ox + ow},${oy + ah} ${ox + ow - aw},${oy + ah} ${ox + ow - aw},${oy + oh} ${ox + aw},${oy + oh} ${ox + aw},${oy + ah} ${ox},${oy + ah}`;
       shapeNode = (
         <polygon
@@ -552,19 +569,37 @@ function renderCellShape(
     }
 
     default: {
-      shapeNode = (
-        <rect
-          x={ox}
-          y={oy}
-          width={ow}
-          height={oh}
-          fill={color.fill}
-          stroke={color.stroke}
-          strokeWidth={0.8}
-          rx={0.5}
-          ry={0.5}
-        />
-      );
+      // CUSTOM / hình tự do: nếu backend trả đường bế THẬT (diePolygon, phân số
+      // 0..1 Y-up) → vẽ ĐÚNG contour (vd khuôn 'bù xén' trace từ raster). Trước đây
+      // luôn vẽ bounding box → preview sai hình. Không có polygon → mới fallback rect.
+      if (diePolygon && diePolygon.length >= 3) {
+        const realPts = diePolygon
+          .map(([fx, fy]) => `${ox + fx * ow},${oy + (1 - fy) * oh}`)
+          .join(" ");
+        shapeNode = (
+          <polygon
+            points={realPts}
+            fill={color.fill}
+            stroke={color.stroke}
+            strokeWidth={0.8}
+            strokeLinejoin="round"
+          />
+        );
+      } else {
+        shapeNode = (
+          <rect
+            x={ox}
+            y={oy}
+            width={ow}
+            height={oh}
+            fill={color.fill}
+            stroke={color.stroke}
+            strokeWidth={0.8}
+            rx={0.5}
+            ry={0.5}
+          />
+        );
+      }
       break;
     }
   }
@@ -728,6 +763,10 @@ export default function GridPreview(props: GridPreviewProps) {
           split_gap: splitGap * MM_TO_PT,
           target_quantity: Number(targetQuantity) || 0,
           target_quantities_by_page: targetQuantitiesByPage || {},
+          // Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup): backend tự bật khi đúng 1 trang
+          // có khuôn + còn lại không. Gửi hình/nội-suy nhận diện theo trang để detect.
+          detected_shapes_by_page: shapesByPage || {},
+          detected_shape_params_by_page: shapeParamsByPage || {},
           imposer_mode: imposerMode,
           cnc_two_sided: !!cncTwoSided,
           cnc_flip_edge: cncFlipEdge || "long",
@@ -849,6 +888,8 @@ export default function GridPreview(props: GridPreviewProps) {
     tileGapY,
     targetQuantity,
     targetQuantitiesByPage,
+    shapesByPage,
+    shapeParamsByPage,
     imposerMode,
     cncTwoSided,
     cncFlipEdge,
@@ -1286,6 +1327,11 @@ export default function GridPreview(props: GridPreviewProps) {
                       !Array.isArray(itemShapeParams)
                         ? itemShapeParams
                         : shapePropsParsed;
+                    // Đường bế THẬT theo trang (mixed) → vẽ đúng contour mỗi ô (kể cả CUSTOM).
+                    const itemDiePoly =
+                      (isMixed && (layoutResult as any)?.diePolygonsByPage
+                        ? (layoutResult as any).diePolygonsByPage[String(c.blockId)]
+                        : null) ?? (layoutResult as any)?.diePolygon;
                     return (
                       <g key={c.idx}>
                         {renderCellShape(
@@ -1299,7 +1345,7 @@ export default function GridPreview(props: GridPreviewProps) {
                           itemShape,
                           parsedItemParams,
                           c.idx,
-                          (layoutResult as any)?.diePolygon,
+                          itemDiePoly,
                         )}
                         {isMixed && (
                           <text
@@ -1538,6 +1584,12 @@ export default function GridPreview(props: GridPreviewProps) {
                         const cx = c.sx + c.sw / 2;
                         const cy = c.sy + c.sh / 2;
 
+                        // Đường bế THẬT theo trang (CNC mixed) → contour đúng mỗi ô.
+                        const itemDiePoly =
+                          (isMixed && (layoutResult as any)?.diePolygonsByPage
+                            ? (layoutResult as any).diePolygonsByPage[String(c.blockId)]
+                            : null) ?? (layoutResult as any)?.diePolygon;
+
                         return (
                           <g key={c.idx}>
                             {renderCellShape(
@@ -1551,7 +1603,7 @@ export default function GridPreview(props: GridPreviewProps) {
                               itemShape,
                               parsedItemParams,
                               c.idx,
-                              (layoutResult as any)?.diePolygon,
+                              itemDiePoly,
                             )}
                             {isMixed && (
                               <text

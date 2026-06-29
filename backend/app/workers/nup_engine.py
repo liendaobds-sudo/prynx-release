@@ -265,6 +265,9 @@ def run_nup_engine(
     precalculated_placements = None
     cluster_tile_cuts = {}
 
+    # Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup) — mặc định tắt; chỉ bật trong khối die-cut.
+    homogeneous_master_idx = None
+
     # Report state (spec: binh-tem-be-report) — luôn tồn tại để khối finalize đọc được.
     _reports_by_sheet = {}
     _report_rows = []
@@ -292,6 +295,16 @@ def run_nup_engine(
 
         page_infos = []  # [(p_idx, qty, trim_w, trim_h), ...]
 
+        # Tín hiệu tin cậy cho chế độ ĐỒNG NHẤT (sticker-homogeneous-nup):
+        #   has_die_by_page[p_idx]  = trang CÓ đường bế (master tiềm năng) hay KHÔNG (nội dung)
+        #   trim_by_page[p_idx]     = trim (pt) của trang — để dựng poly khuôn cho detector
+        has_die_by_page = {}
+        trim_by_page = {}
+        # Tín hiệu ĐÁNG TIN cho phân biệt cùng-khuôn/khác-khuôn: trang có ĐƯỜNG BẾ
+        # THẬT (kênh khuôn/spot-nét/màu bế), KHÔNG tính fallback hình học (artwork
+        # nội dung cũng có nét/khép kín). Tách khỏi has_die_by_page (dùng cho trim).
+        genuine_die_by_page = {}
+
         for p_idx in range(page_count):
 
             p_str = str(p_idx)
@@ -315,6 +328,14 @@ def run_nup_engine(
             src_page = tmp_doc[p_idx]
 
             largest_path = _find_largest_die_path(src_page)
+
+            has_die_by_page[p_idx] = largest_path is not None
+
+            try:
+                from app.workers.sticker_homogeneous import page_has_die as _page_has_die
+                genuine_die_by_page[p_idx] = _page_has_die(src_page)
+            except Exception:
+                genuine_die_by_page[p_idx] = False
 
             if largest_path:
 
@@ -343,6 +364,8 @@ def run_nup_engine(
                 cur_trim_h -= 2 * bleed_pt
 
             page_infos.append((p_idx, qty, cur_trim_w, cur_trim_h))
+
+            trim_by_page[p_idx] = (cur_trim_w, cur_trim_h)
 
             logger.debug(f"   [ZONE] Page {p_idx}: qty={qty} trim={cur_trim_w:.1f}x{cur_trim_h:.1f}")
 
@@ -536,6 +559,51 @@ def run_nup_engine(
             else:
                 remaining_by_page = {p_idx: qty for p_idx, qty, _, _ in page_infos}
 
+        # ── PHÁT HIỆN CHẾ ĐỘ ĐỒNG NHẤT (sticker-homogeneous-nup, Task 6) ──
+        # Chỉ bật ở chế độ "Dàn nhiều mẫu" (auto-fill). Dựng adapter/trang từ tín hiệu
+        # has_die (đáng tin) + hình nhận diện; rồi detect_homogeneous quyết định.
+        homogeneous_plan = None
+        homogeneous_master_idx = None
+        if is_auto_fill:
+            try:
+                from app.workers import sticker_homogeneous as _sh
+                from app.workers.shape_types import ShapeType as _ShapeType, coerce_shape_type as _coerce
+                _adapters = []
+                for _p in range(page_count):
+                    _hd = genuine_die_by_page.get(_p, False)
+                    if _hd:
+                        _s = (detected_shapes_by_page.get(str(_p))
+                              or detected_shapes_by_page.get(_p))
+                        try:
+                            _stype = _coerce(_s) if _s else _ShapeType.CUSTOM
+                        except Exception:
+                            _stype = _ShapeType.CUSTOM
+                    else:
+                        _stype = _ShapeType.CUSTOM
+                    _tw, _th = trim_by_page.get(_p, (0.0, 0.0))
+                    _poly = ((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th)) if _hd else ()
+                    _props = (detected_shape_params_by_page.get(str(_p))
+                              or detected_shape_params_by_page.get(_p) or {})
+                    _adapters.append(_sh.make_shape_adapter(_stype, _poly, _tw, _th, _props, has_die=_hd))
+                homogeneous_plan = _sh.detect_homogeneous(_adapters)
+                if homogeneous_plan is not None:
+                    homogeneous_master_idx = homogeneous_plan.master_page_idx
+                    # Cần nesting master hợp lệ để xếp shape-aware; nếu không có → fallback.
+                    if not (full_layouts.get(homogeneous_master_idx)
+                            and full_layouts[homogeneous_master_idx].get('items')):
+                        logger.info("   [HOMOGENEOUS] Master nesting trống → fallback bin-pack trộn cũ")
+                        homogeneous_plan = None
+                        homogeneous_master_idx = None
+                    else:
+                        logger.info(
+                            f"   [HOMOGENEOUS] Bật chế độ đồng nhất: master=trang {homogeneous_master_idx}, "
+                            f"shape={homogeneous_plan.shape_type.name}, "
+                            f"{len(homogeneous_plan.content_pages)} trang nội dung")
+            except Exception as _e_hom:
+                logger.warning(f"   [HOMOGENEOUS] Phát hiện thất bại → giữ đường cũ: {_e_hom}")
+                homogeneous_plan = None
+                homogeneous_master_idx = None
+
         precalculated_placements = {}
         cluster_tile_cuts = {}  # sheet_idx -> tile_cut_lines for cluster_tile mode
 
@@ -713,7 +781,95 @@ def run_nup_engine(
                 p['abs_y'] = y_off + (total_content_h_s - cell['y'] - cell['height'])
                 p['original_cell_y'] = usable_h + margin_bottom + margin_top - p['abs_y'] - cell['height']
 
-        if layout_type == 'repeat':
+        if homogeneous_plan is not None and is_auto_fill:
+            # ══ CHẾ ĐỘ ĐỒNG NHẤT: 1 khuôn master + N trang nội dung (Task 6) ══
+            # Xếp shape-aware từ master (tái dùng nesting đã tính ở full_layouts → "1 lần"),
+            # rải nội dung theo thứ tự (cuốn chiếu sang tờ), căn-giữa qua finalize_placements
+            # (SSOT parity preview↔output), giải boong qua resolve_pont_collisions_on_placements.
+            from app.workers import sticker_homogeneous as _sh
+            from app.workers.imposition_finalize import resolve_pont_collisions_on_placements
+
+            _master_idx = homogeneous_plan.master_page_idx
+            _master_fl = full_layouts.get(_master_idx)
+
+            # Tái dùng nesting master ĐÃ tính (không gọi lại compute → giữ "nesting 1 lần").
+            def _reuse_master_layout(*_a, **_k):
+                return _master_fl
+
+            # Số lượng/trang (auto-fill → None = mỗi trang 1 lần). Vẫn đọc thủ công để an toàn.
+            _quantities = None
+            if any((int(v or 0) > 0) for v in target_quantities_by_page.values()):
+                _quantities = [
+                    int(target_quantities_by_page.get(str(_cp))
+                        or target_quantities_by_page.get(_cp) or 0)
+                    for _cp in homogeneous_plan.content_pages
+                ]
+
+            _hom_layout = _sh.build_homogeneous_layout(
+                master_page=None,
+                plan=homogeneous_plan,
+                sheet_usable_w=usable_w,
+                sheet_usable_h=usable_h,
+                gap_x=gap_x,
+                gap_y=gap_y,
+                bleed_pt=bleed_pt,
+                secondary_gap=None,  # nesting đã tái dùng → secondary_gap không dùng lại
+                quantities=_quantities,
+                layout_fn=_reuse_master_layout,
+            )
+
+            # base_poly cho boong: ellipse chuẩn cho Tròn/Elip, còn lại để None (xấp xỉ chữ nhật).
+            _master_base_poly = None
+            if homogeneous_plan.shape_type == _sh.ShapeType.CIRCLE_ELLIPSE:
+                try:
+                    from shapely.geometry import Point as _Point
+                    from shapely.affinity import scale as _scale
+                    _rx = homogeneous_plan.trim_w / 2.0
+                    _ry = homogeneous_plan.trim_h / 2.0
+                    if _rx > 0 and _ry > 0:
+                        _master_base_poly = _scale(_Point(0, 0).buffer(1.0, resolution=64),
+                                                   xfact=_rx, yfact=_ry)
+                except Exception:
+                    _master_base_poly = None
+
+            # req-like tối thiểu cho resolve_pont_collisions_on_placements.
+            class _ReqLike:
+                pass
+            _req_like = _ReqLike()
+            _req_like.pont_config = (settings.get('pontConfig')
+                                     if settings.get('pontType', 'none') != 'none' else None)
+            _req_like.sheet_w = sheet_w
+            _req_like.sheet_h = sheet_h
+            _req_like.margin_left = margin_left
+            _req_like.margin_bottom = margin_bottom
+
+            _items = list(_hom_layout.items)
+            _C = _hom_layout.cells_per_sheet
+            total_items_placed = 0
+            for _t in range(_hom_layout.num_sheets):
+                # Căn-giữa khối ô (SSOT). src_page_idx tạm = master; gán lại theo nội dung sau.
+                _pls = finalize_placements(
+                    _items, usable_w, usable_h,
+                    margin_left, margin_bottom, margin_top, _master_idx,
+                )
+                # Gán src_page_idx nội dung cho từng ô của tờ _t; ô không có nội dung → bỏ.
+                _by_cell = {cc.cell_index: cc.src_page_idx
+                            for cc in _hom_layout.cell_contents if cc.sheet_index == _t}
+                _sheet_pls = []
+                for _ci, _pl in enumerate(_pls):
+                    if _ci in _by_cell:
+                        _pl['src_page_idx'] = _by_cell[_ci]
+                        _sheet_pls.append(_pl)
+                # Boong: dùng CHUNG hàm với preview (parity). Idempotent với Phase 2 ở chunk.
+                _sheet_pls = resolve_pont_collisions_on_placements(
+                    _sheet_pls, _req_like, base_poly=_master_base_poly)
+                precalculated_placements[_t] = _sheet_pls
+                total_items_placed += len(_sheet_pls)
+
+            logger.info(f"   [HOMOGENEOUS] DONE: {total_items_placed} ô / {_hom_layout.num_sheets} tờ "
+                        f"(C={_C} ô/tờ)")
+
+        elif layout_type == 'repeat':
             logger.debug(f"   [ZONE] STICKER IMPOSER -> processing pages independently without mixing")
             sheet_idx = 0
 
@@ -847,6 +1003,30 @@ def run_nup_engine(
                         _reports_by_sheet[sheet_idx] = _type_report_str
                     sheet_idx += 1
             total_items_placed = sum(len(p) for p in precalculated_placements.values())
+
+        elif is_auto_fill and len(page_infos) == 1 and grouping_strategy != 'cluster_tile':
+            # ── AUTO-FILL 1 LOẠI TEM (single template) ──────────────────────────────
+            # solve_auto_fill_mixed (MaxRects bao hình CHỮ NHẬT) chỉ dành cho TRỘN ≥2 mẫu.
+            # Với DUY NHẤT 1 mẫu, preview luôn đi single-page nesting shape-aware
+            # (compute_sticker_layout_for_page) → nếu output đi MaxRects thì layout LỆCH
+            # preview ("lung tung"). detect_homogeneous trả None khi chỉ 1 trang (cần ≥1
+            # trang nội dung) nên không có nhánh nào kéo về nesting → bổ sung tại đây.
+            # Dùng CHUNG full_layouts (nesting) + finalize_placements (SSOT căn giữa) y hệt
+            # nhánh 'repeat' & preview Branch A → preview ≡ output. Boong giải ở Phase 2
+            # nup_process_chunk (dùng chung mọi nhánh).
+            p_idx, _qty, _tw, _th = page_infos[0]
+            fl = full_layouts.get(p_idx)
+            sheet_idx = 0
+            if fl and fl.get('items'):
+                precalculated_placements[sheet_idx] = finalize_placements(
+                    fl['items'], usable_w, usable_h,
+                    margin_left, margin_bottom, margin_top, p_idx,
+                )
+            else:
+                precalculated_placements[sheet_idx] = []
+            total_items_placed = len(precalculated_placements[sheet_idx])
+            logger.info(f"   [ZONE] AUTO-FILL 1 MẪU (nesting, parity preview): "
+                        f"{total_items_placed} con/tờ")
 
         elif is_auto_fill:
             # ── AUTO-FILL: Pack all types onto 1 sheet using MaxRects bin-packing ──
@@ -1334,6 +1514,10 @@ def run_nup_engine(
             mark_style,  # Kiểu dấu xén: 'default' | 'japanese' (nét đôi)
 
             settings.get('duplexFlow', 'single'),  # Duplex flow for mirroring back side
+
+            (homogeneous_master_idx is not None),  # _homogeneousMode: bật registration đồng nhất
+
+            homogeneous_master_idx,  # trang khuôn master (để vẽ đường bế master ở mỗi ô)
 
         )
 

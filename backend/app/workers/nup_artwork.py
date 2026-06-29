@@ -151,12 +151,20 @@ def place_one_artwork(
     find_largest_die_path,
     mirror_x=False,
     mirror_y=False,
+    homogeneous_clip=None,
+    homogeneous_rect=None,
 ):
     """Đặt MỘT placement `p` lên `out_page`. Trả về (trim_rect, src_page_idx).
 
     Logic rút nguyên văn từ process_chunk — KHÔNG đổi hành vi.
 
     mirror_x / mirror_y: lật gương nội dung quanh tâm ô (cho Mặt sau bình bế 2 mặt).
+
+    homogeneous_clip / homogeneous_rect (chế độ ĐỒNG NHẤT — sticker-homogeneous-nup):
+    khi ``homogeneous_clip`` ≠ None → đi nhánh REGISTRATION: đặt artwork của trang nội
+    dung bằng ``show_pdf_page(rect=khuôn ô, clip=bbox artwork, keep_proportion=True)``
+    → bỏ lệch vị trí trên trang gốc + co khít + căn tâm vào khuôn. Khi None (mặc định)
+    GIỮ NGUYÊN hành vi cũ.
     """
     cell = p['cell']
     cluster_idx = p['cluster_idx']
@@ -170,6 +178,16 @@ def place_one_artwork(
         trim_rect.x0 - bleed_pt, trim_rect.y0 - bleed_pt,
         trim_rect.x1 + bleed_pt, trim_rect.y1 + bleed_pt,
     )
+
+    # ── Chế độ ĐỒNG NHẤT: registration (căn-tâm + co-khít) — short-circuit ──
+    if homogeneous_clip is not None:
+        reg_rect = homogeneous_rect if homogeneous_rect is not None else trim_rect
+        out_page.show_pdf_page(
+            reg_rect, src_doc, src_page_idx,
+            clip=homogeneous_clip, keep_proportion=True,
+            mirror_x=mirror_x, mirror_y=mirror_y,
+        )
+        return trim_rect, src_page_idx
 
     # out_clip: bleed đầy ở mép ngoài block, nửa gap ở mép trong.
     _bb = block_bbox.get((cluster_idx, cell.get('blockId', 0)))

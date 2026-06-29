@@ -274,6 +274,62 @@ def _find_parallel_groups(edges, tolerance=1e-4):
     return groups
 
 
+def _ellipse_fit_residual(samples) -> float:
+    """Độ lệch của biên so với ELIP KHỚP (bất biến xoay/tịnh tiến).
+
+    Xoay điểm về TRỤC CHÍNH (PCA closed-form 2×2) rồi tính e_i=((u/ax)²+(v/ay)²)
+    với ax,ay = nửa-bề-rộng theo trục chính. Elip/tròn THẬT (mọi góc xoay) → e_i≈1
+    ở mọi điểm → std≈0. Blob bo tròn (sao bù-xén, dấu +, lưỡi liềm bo...) tuy có thể
+    lọt dải tỉ lệ π/4 nhưng cánh/lõm làm e_i dao động → std lớn (≥~0.06).
+
+    Trả std(e_i); càng nhỏ càng giống elip. Trả inf nếu không đủ dữ liệu.
+    """
+    n = len(samples)
+    if n < 8:
+        return float('inf')
+    mx = sum(p[0] for p in samples) / n
+    my = sum(p[1] for p in samples) / n
+    sxx = sxy = syy = 0.0
+    for x, y in samples:
+        dx = x - mx; dy = y - my
+        sxx += dx * dx; sxy += dx * dy; syy += dy * dy
+    sxx /= n; sxy /= n; syy /= n
+    theta = 0.5 * math.atan2(2.0 * sxy, sxx - syy)  # góc trục chính
+    ct, st_ = math.cos(theta), math.sin(theta)
+    us = [(x - mx) * ct + (y - my) * st_ for x, y in samples]
+    vs = [-(x - mx) * st_ + (y - my) * ct for x, y in samples]
+    ax = (max(us) - min(us)) / 2.0
+    ay = (max(vs) - min(vs)) / 2.0
+    if ax <= 1e-9 or ay <= 1e-9:
+        return float('inf')
+    uc = (max(us) + min(us)) / 2.0
+    vc = (max(vs) + min(vs)) / 2.0
+    es = [((u - uc) / ax) ** 2 + ((v - vc) / ay) ** 2 for u, v in zip(us, vs)]
+    me = sum(es) / len(es)
+    return (sum((e - me) ** 2 for e in es) / len(es)) ** 0.5
+
+
+# Ngưỡng std elip-fit: elip thật (kể cả xoay) ~0; blob bo tròn ≥~0.06. 0.04 = biên rộng.
+_ELLIPSE_FIT_MAX_STD = 0.04
+
+
+def _edges_have_reflex(edges) -> bool:
+    """True nếu đa giác (theo list cạnh đã merge) có đỉnh LÕM (reflex) — tức KHÔNG lồi.
+    Dùng dấu tích có hướng giữa cạnh liên tiếp: lồi → mọi dấu giống nhau."""
+    n = len(edges)
+    if n < 3:
+        return False
+    first = 0.0
+    for ci in range(n):
+        nx = (ci + 1) % n
+        cv = edges[ci]['dx'] * edges[nx]['dy'] - edges[ci]['dy'] * edges[nx]['dx']
+        if ci == 0:
+            first = cv
+        elif (first > 0 and cv < -1e-4) or (first < 0 and cv > 1e-4):
+            return True
+    return False
+
+
 def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h):
     """
     Port of _phanTichHinhHoc_Core polygon classification (JSX lines 8495-8898).
@@ -298,8 +354,11 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
         bbox_area = total_w * total_h
         if bbox_area > 0:
             ratio = real_area / bbox_area
-            # Only confidently classify as circle if ratio is very close to π/4 ≈ 0.785
-            if 0.73 < ratio < 0.84:
+            # Tròn/elip (kể cả XOAY/dẹt): dùng độ KHỚP ELIP bất biến xoay làm tiêu chí
+            # CHÍNH. Trước đây chỉ dựa dải tỉ lệ diện tích ~π/4 (0.73–0.84) nên BỎ SÓT
+            # elip xoay/dẹt (bbox nở to → tỉ lệ rớt khỏi dải dù vẫn là elip thật). Đo
+            # residual PCA: elip thật (mọi góc) ~0; blob/lens/pill/sao ≥0.058. <0.04 ⇔ elip.
+            if _ellipse_fit_residual(samples) < _ELLIPSE_FIT_MAX_STD:
                 return ShapeType.CIRCLE_ELLIPSE, {'area_ratio': ratio}
         # Don't return CUSTOM here — let width profile try trapezoid ramp detection
         return None, None
@@ -369,7 +428,12 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
     # HAMMER (audit shape-detection: arrow7 → HAMMER). Hammer/dumbbell thực tế là
     # đường cong trơn (0 cạnh thẳng) nên không chạm nhánh này.
     if n_edges == 7:
-        return ShapeType.ARROW, {'note': 'heptagon_arrow'}
+        # Mũi tên THẬT có đỉnh LÕM (reflex) nơi thân gặp ngạnh đầu. Đa giác 7 cạnh LỒI
+        # (heptagon đều, hình tròn-hoá 7 cạnh...) KHÔNG phải mũi tên → tránh gán nhầm
+        # ARROW rồi xếp theo giả định mũi tên (audit hình học — chống 7-cạnh→ARROW vô điều kiện).
+        if _edges_have_reflex(merged):
+            return ShapeType.ARROW, {'note': 'heptagon_arrow'}
+        return ShapeType.CUSTOM, {'reason': '7_edge_convex'}
 
     # 8 edges → bát giác (≈ tròn cho layout) HOẶC chữ nhật vát góc.
     # Phân biệt: chữ nhật vát góc có 4 cạnh DÀI (2 cặp song song ⊥) + 4 vát NGẮN
@@ -631,6 +695,19 @@ def _analyze_parallelogram_params(edges, total_w, total_h):
 #         Port of _analyzeWidthProfile (JSX line 8913)
 # =========================================================================
 
+# Ngưỡng "đầu gọn ở mút" cho búa/tạ (audit búa/tạ — chống nhận nhầm hình đặc biệt).
+# big_d_along_axis_frac = phần ĐẦU chiếm bao nhiêu dọc trục dài. Búa/tạ THẬT: đầu gọn
+# ở mút (~0.2–0.45), phần còn lại là CÁN. Hình đặc biệt có khối phình trải dài (dấu +,
+# quả lê, lưỡi liềm: 0.69–0.77) → KHÔNG phải đầu+cán. Ngưỡng 0.6 tách sạch (biên rộng).
+_MAX_HEAD_EXTENT_FRAC = 0.6
+
+# Ngưỡng "thuôn về MŨI NHỌN" (chống tam giác/nón bo tròn bị nhận nhầm búa/tạ).
+# Búa/tạ THẬT có CÁN bề rộng hữu hạn (min_w/max_w ~0.28–0.4). Tam giác/nón bo tròn
+# thu gần về MỘT ĐIỂM ở mút (min_w/max_w ~0.02–0.03). Khi tỉ lệ này quá nhỏ → hình
+# thuôn nhọn (tam giác/giọt nước/contour bù-xén ngôi sao+chữ), KHÔNG phải đầu+cán.
+_MIN_TIP_WIDTH_FRAC = 0.15
+
+
 def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h, edges=None, force=False):
     """
     Port of _analyzeWidthProfile (JSX lines 8913-9158).
@@ -727,6 +804,14 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
     min_w = min(widths)
     ramp_ratio = abs(last_w - first_w) / max_w if max_w > 0 else 0
 
+    # CỔNG "THUÔN VỀ MŨI NHỌN" (audit tam giác bo tròn → HAMMER): nếu hình thu gần về
+    # MỘT ĐIỂM ở mút (min_w/max_w rất nhỏ) thì đây là tam giác/nón/giọt nước (contour
+    # bù-xén ngôi sao + chữ cũng vào đây), KHÔNG phải búa/tạ (cán có bề rộng hữu hạn).
+    # → trả None (→ CUSTOM). Contour bo tròn không có 3 cạnh thẳng nên không vào nhánh
+    # TRIANGLE; CUSTOM là an toàn (dùng layout contour/bbox). Bỏ qua khi force.
+    if not force and max_w > 0 and (min_w / max_w) < _MIN_TIP_WIDTH_FRAC:
+        return None
+
     # Compute max peak width early (needed for both ramp and hammer detection)
     max_peak_width = max(head_start_peak, head_end_peak)
 
@@ -810,6 +895,14 @@ def _analyze_width_profile(samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w,
                     break
 
     big_d_along_axis_frac = big_head_edge_pos
+
+    # CỔNG "ĐẦU GỌN Ở MÚT" (audit búa/tạ — chống nhận nhầm hình đặc biệt thành búa/tạ).
+    # Búa/tạ thật: đầu chiếm phần NHỎ ở mút, phần còn lại là CÁN dài → big_d_along_axis_frac
+    # nhỏ (đo thực nghiệm: 0.29–0.33). Hình đặc biệt (dấu +, quả lê, lưỡi liềm) là khối
+    # phình rồi thắt, "đầu" trải >0.6 trục (0.69–0.77) → KHÔNG phải đầu+cán → trả None
+    # (→ CUSTOM). Bỏ qua khi force=True (chế độ TRÍCH tham số sau khi type đã chốt).
+    if not force and big_d_along_axis_frac > _MAX_HEAD_EXTENT_FRAC:
+        return None
 
     # Find small head transition
     small_transition_threshold = (small_d + waist_width) / 2

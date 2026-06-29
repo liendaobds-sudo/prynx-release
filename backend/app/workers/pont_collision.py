@@ -570,6 +570,150 @@ def _try_local_pair_flips(placements: List[Dict], zones: List[box], base_poly: P
     return cur
 
 
+def _has_any_sticker_overlap(placements: List[Dict], base_poly: Polygon) -> bool:
+    """True nếu BẤT KỲ cặp tem nào ĐÈ nhau (diện tích giao > 1pt²). Dùng polygon thật khi
+    có base_poly, ngược lại dùng AABB (bbox). Quét toàn cục — chỉ chạy 1 lần để verify
+    kết quả reflow, nên O(N²) chấp nhận được."""
+    n = len(placements)
+    boxes = [(p['abs_x'], p['abs_y'], p['abs_x'] + p['width'], p['abs_y'] + p['height']) for p in placements]
+    cache: Dict[int, Any] = {}
+    def _poly(i):
+        if i not in cache:
+            cache[i] = get_item_polygon(placements[i], base_poly)
+        return cache[i]
+    for i in range(n):
+        bi = boxes[i]
+        for j in range(i + 1, n):
+            bj = boxes[j]
+            if bi[2] <= bj[0] + 0.01 or bi[0] >= bj[2] - 0.01 or bi[3] <= bj[1] + 0.01 or bi[1] >= bj[3] - 0.01:
+                continue  # AABB rời nhau
+            if base_poly is None:
+                ox = min(bi[2], bj[2]) - max(bi[0], bj[0])
+                oy = min(bi[3], bj[3]) - max(bi[1], bj[1])
+                if ox * oy > MIN_OVERLAP_AREA_PT2:
+                    return True
+            else:
+                pi, pj = _poly(i), _poly(j)
+                if pi.intersects(pj) and pi.intersection(pj).area > MIN_OVERLAP_AREA_PT2:
+                    return True
+    return False
+
+
+def _column_free_bands(col_x0: float, col_x1: float, zones: List[box],
+                       region_lo: float, region_hi: float) -> List[Tuple[float, float]]:
+    """Các BĂNG TRỐNG dọc [lo,hi] trong [region_lo,region_hi] sau khi loại các vùng cấm
+    có x-extent giao với cột [col_x0,col_x1]. Sắp theo y tăng dần."""
+    cuts = []
+    for z in zones:
+        zminx, zminy, zmaxx, zmaxy = z.bounds
+        if zmaxx <= col_x0 + 0.5 or zminx >= col_x1 - 0.5:
+            continue  # zone không phủ x của cột → không chắn
+        lo = max(zminy, region_lo)
+        hi = min(zmaxy, region_hi)
+        if hi > lo:
+            cuts.append((lo, hi))
+    cuts.sort()
+    merged: List[Tuple[float, float]] = []
+    for lo, hi in cuts:
+        if merged and lo <= merged[-1][1] + 0.01:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    bands = []
+    cursor = region_lo
+    for lo, hi in merged:
+        if lo - cursor > 0.5:
+            bands.append((cursor, lo))
+        cursor = max(cursor, hi)
+    if region_hi - cursor > 0.5:
+        bands.append((cursor, region_hi))
+    return bands
+
+
+def _resolve_by_columns(placements: List[Dict], zones: List[box], base_poly: Polygon, base_rect_pts: Tuple[float,float,float,float], sheet_w: float, sheet_h: float, margins: Dict[str, float]) -> List[Dict]:
+    """Giải va chạm theo CỘT (dải dọc). Với mỗi cột có tem chạm vùng cấm: tính băng trống
+    dọc (giữa các vùng cấm phủ x của cột), GIỮ TỐI ĐA tem fit được, phân bố đều theo pitch
+    gốc + CĂN GIỮA trong băng → xóa tối thiểu (vd cột 5 tem chạm 2 đầu: xóa 1, dồn 4 ra giữa,
+    thay vì xóa 2). Cột KHÔNG va chạm giữ nguyên (bảo toàn lưới).
+
+    Chỉ áp cho layout KHÔNG-lồng (CUSTOM/tròn/chữ nhật/lưới) — caller đã gate bằng has_flippable.
+    Vì các cột tách rời theo x, dịch tem theo phương dọc trong 1 cột không thể đè cột khác; chỉ
+    còn rủi ro đè nội-cột (khử bằng pitch>=h) → vẫn verify toàn cục cuối cùng.
+
+    Trả layout mới nếu HẾT va chạm và KHÔNG sinh tem-đè; ngược lại None (caller rơi về row-based)."""
+    if not placements:
+        return []
+    initial_cols = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
+    if not initial_cols:
+        return placements
+
+    layout_bbox = get_placements_bbox(placements)
+    region_lo, region_hi = layout_bbox[1], layout_bbox[3]
+
+    tol = 5.0
+    col_keys: Dict[float, List[int]] = {}
+    for i, p in enumerate(placements):
+        key = round(p['abs_x'] / tol) * tol
+        col_keys.setdefault(key, []).append(i)
+
+    out: List[Dict] = []
+    for key in sorted(col_keys):
+        col_items = [placements[i] for i in col_keys[key]]
+        col_items.sort(key=lambda p: p['abs_y'])
+
+        col_collided = [k for k, p in enumerate(col_items)
+                        if detect_collisions([p], zones, base_poly, base_rect_pts, sheet_h)]
+        if not col_collided:
+            out.extend(col_items)  # cột sạch → giữ nguyên
+            continue
+
+        col_x0 = min(p['abs_x'] for p in col_items)
+        col_x1 = max(p['abs_x'] + p['width'] for p in col_items)
+        h = max(p['height'] for p in col_items)
+        ys = [p['abs_y'] for p in col_items]
+        gaps = [ys[k + 1] - ys[k] - h for k in range(len(ys) - 1)]
+        pos_gaps = [g for g in gaps if g > -0.5]
+        gap = max(min(pos_gaps), 0.0) if pos_gaps else 0.0
+
+        bands = _column_free_bands(col_x0, col_x1, zones, region_lo, region_hi)
+        best = None  # (n_fit, band_lo, band_hi)
+        for blo, bhi in bands:
+            bh = bhi - blo
+            if bh < h - 0.5:
+                continue
+            n_fit = int((bh + gap + 1e-6) // (h + gap)) if (h + gap) > 0 else 0
+            n_fit = min(n_fit, len(col_items))
+            if best is None or n_fit > best[0]:
+                best = (n_fit, blo, bhi)
+        if best is None or best[0] <= 0:
+            return None  # cột không đặt nổi tem nào → bỏ chiến lược, để row-based xử lý
+        n_fit, blo, bhi = best
+
+        n_drop = len(col_items) - n_fit
+        if n_drop > 0:
+            # ưu tiên xóa tem đang va chạm; nếu còn dư xóa từ 2 đầu vào
+            drop_order = list(col_collided) + [k for k in range(len(col_items)) if k not in col_collided]
+            drop_set = set(drop_order[:n_drop])
+            keep = [p for k, p in enumerate(col_items) if k not in drop_set]
+        else:
+            keep = col_items
+
+        total = n_fit * h + (n_fit - 1) * gap
+        start = blo + (bhi - blo - total) / 2.0
+        for k, p in enumerate(keep):
+            q = dict(p)
+            new_y = start + k * (h + gap)
+            q['abs_y'] = new_y
+            q['original_cell_y'] = sheet_h - new_y - p['height']
+            out.append(q)
+
+    if detect_collisions(out, zones, base_poly, base_rect_pts, sheet_h):
+        return None
+    if _has_any_sticker_overlap(out, base_poly):
+        return None
+    return out
+
+
 def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly: Polygon, base_rect_pts: Tuple[float,float,float,float], sheet_w: float, sheet_h: float, margins: Dict[str, float]) -> List[Dict]:
     """Giải va chạm tem với VÙNG CẤM (pont/ốc 4 góc), ưu tiên GIỮ nhiều tem nhất.
 
@@ -584,6 +728,7 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
     if not placements:
         return []
     initial_cols = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
+
     if not initial_cols:
         return placements
 
@@ -593,11 +738,18 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
                         for ax in ('row', 'col')
                         for idxs, _n in _interlocked_clusters(placements, ax))
     if not has_flippable:
-        return _resolve_one_orientation(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+        col_out = _resolve_by_columns(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+        row_out = _resolve_one_orientation(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+        if col_out is not None and len(col_out) >= len(row_out):
+            out = col_out
+        else:
+            out = row_out
+        return out
 
     # 1) Xoay 180° cục bộ trọn cụm lồng giáp vùng cấm.
     local = _try_local_pair_flips(placements, zones, base_poly, base_rect_pts, sheet_h)
-    if not detect_collisions(local, zones, base_poly, base_rect_pts, sheet_h):
+    _flip_cols = detect_collisions(local, zones, base_poly, base_rect_pts, sheet_h)
+    if not _flip_cols:
         return local
 
     # 2) Dịch cả khối nếu xoay chưa hết va chạm.
@@ -606,7 +758,8 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
         return block_shift
 
     # 3) Xóa tối thiểu + canh giữa.
-    return _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+    out = _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+    return out
 
 
 def _resolve_one_orientation(placements: List[Dict], zones: List[box], base_poly: Polygon, base_rect_pts: Tuple[float,float,float,float], sheet_w: float, sheet_h: float, margins: Dict[str, float]) -> List[Dict]:

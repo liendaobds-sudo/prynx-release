@@ -126,10 +126,27 @@ def resize_pages(source_path: str, output_path: str,
         elif apply_to == 'odd':
             pages_to_resize = set(range(0, total, 2))
         else:
-            try:
-                pages_to_resize = set(int(x.strip()) - 1 for x in apply_to.split(',') if x.strip().isdigit())
-            except Exception:
-                pages_to_resize = set(range(total))
+            # Parse danh sách trang tùy biến: hỗ trợ cả dải "a-b" lẫn số lẻ "n"
+            # (1-based, inclusive) — đồng bộ với client parseRanges. Trước đây chỉ
+            # nhận số lẻ (x.isdigit()) nên dải có dấu '-' bị bỏ âm thầm (audit fix).
+            pages_to_resize = set()
+            for part in apply_to.split(','):
+                part = part.strip()
+                if not part:
+                    continue
+                if '-' in part:
+                    a, _, b = part.partition('-')
+                    a, b = a.strip(), b.strip()
+                    if a.isdigit():
+                        start = int(a)
+                        end = int(b) if b.isdigit() else total
+                        for p in range(start, end + 1):
+                            if 1 <= p <= total:
+                                pages_to_resize.add(p - 1)
+                elif part.isdigit():
+                    p = int(part)
+                    if 1 <= p <= total:
+                        pages_to_resize.add(p - 1)
 
         for i in range(total):
             src_page = src.pages[i]

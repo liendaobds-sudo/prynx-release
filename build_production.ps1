@@ -71,6 +71,22 @@ if (-not $SkipNuitka) {
         }
     }
 
+    # ---- Step 1a: GPU (DirectML) onnxruntime cho ban Windows ship ----
+    # requirements.txt pin onnxruntime CPU (CI Ubuntu + dev da nen -- directml
+    # KHONG co wheel Linux). Ban Windows ship can DirectML de TU bat GPU (DX12:
+    # NVIDIA/AMD/Intel), CPU fallback tu dong -- KHONG can khach cai CUDA/cuDNN.
+    # Do thuc (RTX 3060, 1024x1024): isnet ~10x, birefnet-lite ~1.7x so voi CPU.
+    & $VENV_PYTHON -m pip show onnxruntime-directml *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Installing onnxruntime-directml (GPU) into build venv..." -ForegroundColor DarkGray
+        & $VENV_PYTHON -m pip uninstall -y onnxruntime *> $null
+        & $VENV_PYTHON -m pip install -r "$ROOT\backend\requirements-win-gpu.txt"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to install onnxruntime-directml" -ForegroundColor Red
+            exit 1
+        }
+    }
+
     New-Item -ItemType Directory -Force -Path $SIDECAR_DIR | Out-Null
 
     Push-Location "$ROOT\backend"
@@ -88,6 +104,17 @@ if (-not $SkipNuitka) {
         Write-Host "  Build aborted to avoid shipping a broken artifact." -ForegroundColor Red
         Pop-Location
         exit 1
+    }
+
+    # DirectML.dll cua onnxruntime-directml -- dam bao Nuitka onefile gom kem (GPU EP).
+    # Neu khong co (venv CPU-only) -> bo qua, chay CPU binh thuong (khong loi).
+    $DML_FLAG = ""
+    $dmlPath = (& $VENV_PYTHON -c "import os,onnxruntime as o;p=os.path.join(os.path.dirname(o.__file__),'capi','DirectML.dll');print(p if os.path.exists(p) else '')").Trim()
+    if ($dmlPath -and (Test-Path $dmlPath)) {
+        $DML_FLAG = "--include-data-files=$dmlPath=onnxruntime/capi/DirectML.dll"
+        Write-Host "  DirectML.dll bundled (GPU): $dmlPath" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  DirectML.dll not found (onnxruntime CPU) - shipping CPU inference." -ForegroundColor DarkGray
     }
 
     & $VENV_PYTHON -m nuitka `
@@ -126,8 +153,11 @@ if (-not $SkipNuitka) {
         --include-package=uharfbuzz `
         --include-package=onnxruntime `
         --include-package-data=onnxruntime `
+        --include-package=openpyxl `
+        --include-package=serial `
         --include-data-dir=app/assets=app/assets `
         $PDFIUM_FLAG `
+        $DML_FLAG `
         --nofollow-import-to=tkinter `
         --nofollow-import-to=unittest `
         --nofollow-import-to=test `

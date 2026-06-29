@@ -134,7 +134,7 @@ def process_chunk(args):
      sheet_usable_w, sheet_usable_h, align, cx_count, cy_count, cluster_gap,
      active_grid_w, active_grid_h, super_grid_w, super_grid_h,
      prog_file, total_page_count, layout_type, is_die_cut, pont_config, strategy, detected_shapes_by_page, target_quantity, detected_shape_params_by_page, sheet_mapping, chunk_precalc_placements,
-     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow) = args
+     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, homogeneous_mode, homogeneous_master_idx) = args
 
     src_doc = pdf_lib.open(source_path)
 
@@ -161,6 +161,29 @@ def process_chunk(args):
     _die_path_cache = {}    # Cache _find_largest_die_path result per src_page_idx
     _layout_cache = {}      # Cache compute_sticker_layout_for_page result per src_page_idx
     _base_poly_cache = {}   # Cache (base_poly, base_rect_pts) cho collision theo src_page_idx (mẫu)
+
+    # ── Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup) ──
+    # Cache bbox vùng mực thật của từng trang nội dung (vector-first) để registration
+    # (clip+co-khít+căn-tâm) mà KHÔNG dò lại mỗi ô. Trang rỗng (None) → bỏ ô an toàn.
+    _artwork_bbox_cache = {}
+    _hom_master_die = None  # (items, rect, color, width) của khuôn master → vẽ đường bế mỗi ô
+    if homogeneous_mode and homogeneous_master_idx is not None:
+        try:
+            from app.workers import sticker_homogeneous as _sh_mod
+            _mp = src_doc[homogeneous_master_idx]
+            _m_path = _find_largest_die_path(_mp)
+            if _m_path:
+                _hom_master_die = {
+                    'items': _m_path.get('items', []),
+                    'rect': _m_path['rect'],
+                    'color': _m_path.get('color', (0, 1, 1, 0)),
+                    'width': _m_path.get('width', 0.5),
+                }
+        except Exception as _e_hm:
+            logger.debug(f"[HOMOGENEOUS] seed master die failed: {_e_hm}", flush=True)
+            _hom_master_die = None
+    else:
+        _sh_mod = None
 
     _MAX_GEOM_CACHE = 200  # Giới hạn để tránh memory leak
 
@@ -546,6 +569,30 @@ def process_chunk(args):
 
             cluster_idx = p['cluster_idx']
 
+            # ── Chế độ ĐỒNG NHẤT: registration nội dung vào khuôn (clip+co-khít+căn-tâm) ──
+            _hom_clip = None
+            if homogeneous_mode and is_die_cut:
+                _src_idx = p['src_page_idx']
+                if _src_idx not in _artwork_bbox_cache:
+                    _bb = None
+                    try:
+                        if _sh_mod is not None:
+                            _bb = _sh_mod.artwork_bbox(src_doc[_src_idx])
+                    except Exception as _e_bb:
+                        logger.debug(f"[HOMOGENEOUS] artwork_bbox page={_src_idx} lỗi: {_e_bb}", flush=True)
+                        _bb = None
+                    _artwork_bbox_cache[_src_idx] = _bb
+                _bb = _artwork_bbox_cache[_src_idx]
+                if _bb is None:
+                    # Trang nội dung rỗng → bỏ ô an toàn (không render, không sập).
+                    continue
+                _hom_clip = pdf_lib.Rect(_bb.x0, _bb.y0, _bb.x1, _bb.y1)
+                # Seed đường bế MASTER cho ô này để Phase die-overlay vẽ khuôn ở mỗi ô.
+                if _hom_master_die is not None:
+                    _ck = f"{job_id}_{_src_idx}"
+                    if _ck not in _die_items_cache:
+                        _die_items_cache[_ck] = dict(_hom_master_die)
+
             # Đặt artwork qua hàm DÙNG CHUNG (nguồn chân lý duy nhất — xem nup_artwork.py)
             trim_rect, src_page_idx = place_one_artwork(
                 out_page, src_doc, p,
@@ -555,6 +602,7 @@ def process_chunk(args):
                 max_geom_cache=_MAX_GEOM_CACHE, block_bbox=_block_bbox,
                 clip_off_x=_clip_off_x, clip_off_y=_clip_off_y,
                 find_largest_die_path=_find_largest_die_path,
+                homogeneous_clip=_hom_clip,
             )
 
             block_id = cell.get('blockId', 0)

@@ -155,7 +155,8 @@ export default function UpscaleTool({ pdfFile, onFileFixed }: Props) {
 
             const resizeToTarget = async (sourceBlob: Blob, targetW: number, targetH: number): Promise<Blob> => {
                 const tempImg = new Image();
-                tempImg.src = URL.createObjectURL(sourceBlob);
+                const tempUrl = URL.createObjectURL(sourceBlob);
+                tempImg.src = tempUrl;
                 await new Promise(res => tempImg.onload = res);
                 const canvas = document.createElement('canvas');
                 canvas.width = targetW;
@@ -164,6 +165,7 @@ export default function UpscaleTool({ pdfFile, onFileFixed }: Props) {
                 ctx.imageSmoothingEnabled = true;
                 ctx.imageSmoothingQuality = 'high';
                 ctx.drawImage(tempImg, 0, 0, targetW, targetH);
+                URL.revokeObjectURL(tempUrl);
                 return new Promise((resolve, reject) => {
                     canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Resize toBlob failed")), 'image/png');
                 });
@@ -188,10 +190,12 @@ export default function UpscaleTool({ pdfFile, onFileFixed }: Props) {
                         // Full AI 4x (Pass 2)
                         setProgress(`Đang tiến hành chạy AI (Pass 2 - 4x)...`);
                         const img2 = new Image();
-                        img2.src = URL.createObjectURL(finalBlob);
+                        const img2Url = URL.createObjectURL(finalBlob);
+                        img2.src = img2Url;
                         await new Promise(res => img2.onload = res);
                         await upscaler.render(img2);
                         finalBlob = await readTextureToBlob(customTexture!, upscaler.resolution!.width * 2, upscaler.resolution!.height * 2);
+                        URL.revokeObjectURL(img2Url);
                     }
                 }
                 
@@ -203,6 +207,7 @@ export default function UpscaleTool({ pdfFile, onFileFixed }: Props) {
                 GPUCanvasContext.prototype.getCurrentTexture = originalGetCurrentTexture;
                 if (customTexture) (customTexture as GPUTexture).destroy();
                 originalDeviceDestroy();
+                if (imgUrl) URL.revokeObjectURL(imgUrl);
             }
             setProgress('');
         } catch (e: any) {

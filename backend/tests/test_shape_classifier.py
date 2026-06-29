@@ -112,6 +112,69 @@ def test_arrow7_not_hammer_regression():
     assert got is not ShapeType.HAMMER
 
 
+def test_convex_heptagon_not_arrow():
+    """Audit hình học: đa giác 7 cạnh LỒI (heptagon đều) KHÔNG được gán nhầm ARROW
+    (mũi tên thật có đỉnh lõm/ngạnh). Trước đây mọi 7-cạnh → ARROW vô điều kiện."""
+    hept = lines([(100 * math.cos(2 * math.pi * i / 7), 100 * math.sin(2 * math.pi * i / 7))
+                  for i in range(7)])
+    got = classify_shape(hept)["shape_type"]
+    assert got is not ShapeType.ARROW
+
+
+# ─── Regression búa/tạ: HÌNH ĐẶC BIỆT không được nhận nhầm thành búa/tạ ──────
+# (audit búa/tạ — cổng "đầu gọn ở mút" _MAX_HEAD_EXTENT_FRAC). Đo thực nghiệm: các
+# hình này có big_d_along_axis_frac 0.69–0.77 (khối phình trải dài, KHÔNG phải đầu+cán).
+
+def _pts_circle(cx, cy, r, n=120, ysquash=1.0):
+    return [(cx + r * math.cos(2 * math.pi * i / n),
+             cy + r * math.sin(2 * math.pi * i / n) * ysquash) for i in range(n)]
+
+
+def _plus_poly():
+    c, arm, half = 100, 30, 80
+    return lines([
+        (c - arm, c - half), (c + arm, c - half), (c + arm, c - arm), (c + half, c - arm),
+        (c + half, c + arm), (c + arm, c + arm), (c + arm, c + half), (c - arm, c + half),
+        (c - arm, c + arm), (c - half, c + arm), (c - half, c - arm), (c - arm, c - arm),
+    ])
+
+
+def _pear_bulb_poly():
+    pts = []
+    for i in range(120):
+        t = 2 * math.pi * i / 120
+        base = 60 if math.sin(t) < 0 else 30  # to ở dưới, nhỏ ở trên → cổ thắt
+        pts.append((100 + base * math.cos(t), 100 + base * math.sin(t) * 1.3))
+    return lines(pts)
+
+
+def _crescent_poly():
+    outer = _pts_circle(100, 100, 80, 120)
+    inner = list(reversed(_pts_circle(132, 100, 62, 120)))
+    return lines(outer + inner)
+
+
+_SPECIAL_NOT_HAMMER = [
+    ("plus_cross", _plus_poly()),
+    ("pear_bulb", _pear_bulb_poly()),
+    ("crescent", _crescent_poly()),
+]
+
+
+@pytest.mark.parametrize("name,items", _SPECIAL_NOT_HAMMER, ids=[c[0] for c in _SPECIAL_NOT_HAMMER])
+def test_special_shapes_not_hammer_dumbbell(name, items):
+    """Hình đặc biệt (khối phình trải dài) KHÔNG được nhận thành búa/tạ — phải CUSTOM/khác."""
+    got = classify_shape(items)["shape_type"]
+    assert got not in (ShapeType.HAMMER, ShapeType.DUMBBELL), (
+        f"{name}: bị nhận nhầm thành {got.name} (đáng lẽ KHÔNG phải búa/tạ)")
+
+
+def test_true_hammer_dumbbell_still_detected():
+    """Đối chứng: búa/tạ THẬT (đầu gọn ở mút) vẫn được nhận đúng sau khi thêm cổng."""
+    assert classify_shape(_bar_poly(200, 60, 24, two_heads=False))["shape_type"] is ShapeType.HAMMER
+    assert classify_shape(_bar_poly(200, 60, 24, two_heads=True))["shape_type"] is ShapeType.DUMBBELL
+
+
 def test_empty_items_is_custom():
     assert classify_shape([])["shape_type"] is ShapeType.CUSTOM
 
@@ -137,3 +200,110 @@ def test_detect_shape_raster_basic():
     m = np.zeros((220, 220), dtype=np.uint8)
     cv2.fillPoly(m, [np.array([[110, 20], [20, 200], [200, 200]], dtype=np.int32)], 255)
     assert detect_shape(m) is ShapeType.TRIANGLE
+
+
+# ─── Hồi quy: chống nhận nhầm blob bo tròn (sao bù-xén) thành Tròn/Elip ──────
+# Nhánh 0-cạnh-thẳng (đường cong trơn) trước đây chỉ dựa tỉ lệ diện tích ~π/4 →
+# blob ngôi sao bù-xén (lọt dải) bị gọi CIRCLE_ELLIPSE. Thêm cổng elip-fit (PCA).
+from app.workers.shape_classifier import _classify_polygon_core, _ellipse_fit_residual
+
+
+def _curve_samples(modulate, n=400, lobes=5, amp=0.0, bulge=0.0, rx=100.0, ry=100.0,
+                   rot_deg=0.0):
+    ca, sa = math.cos(math.radians(rot_deg)), math.sin(math.radians(rot_deg))
+    pts = []
+    for i in range(n):
+        t = 2 * math.pi * i / n
+        r = 1.0 + (amp * math.cos(lobes * t) if modulate else 0.0)
+        r += bulge * max(0.0, -math.sin(t)) ** 2  # bướu dưới (mô phỏng vùng chữ)
+        x0, y0 = rx * r * math.cos(t), ry * r * math.sin(t)
+        pts.append((x0 * ca - y0 * sa, x0 * sa + y0 * ca))
+    return pts
+
+
+def _classify_curve(samples):
+    xs = [p[0] for p in samples]; ys = [p[1] for p in samples]
+    mnx, mxx, mny, mxy = min(xs), max(xs), min(ys), max(ys)
+    return _classify_polygon_core([], samples, mnx, mxx, mny, mxy, mxx - mnx, mxy - mny)
+
+
+@pytest.mark.parametrize("rx,ry,rot", [
+    (100, 100, 0),    # tròn
+    (150, 70, 0),     # elip dẹt
+    (110, 100, 30),   # elip xoay 30°
+    (130, 90, 45),    # elip dẹt xoay 45°
+    (180, 60, 45),    # elip RẤT dẹt (3:1) xoay 45° — trước đây rớt khỏi dải tỉ lệ → CUSTOM
+    (160, 80, 30),    # elip 2:1 xoay 30°
+])
+def test_true_ellipse_still_circle_ellipse(rx, ry, rot):
+    """Elip/tròn thật (kể cả XOAY/DẸT) vẫn phải nhận CIRCLE_ELLIPSE — fit residual ~0.
+    Bao gồm elip xoay-dẹt mà tiêu chí cũ (dải tỉ lệ diện tích) BỎ SÓT."""
+    samples = _curve_samples(False, rx=rx, ry=ry, rot_deg=rot)
+    assert _ellipse_fit_residual(samples) < 0.04
+    st, _ = _classify_curve(samples)
+    assert st == ShapeType.CIRCLE_ELLIPSE
+
+
+@pytest.mark.parametrize("amp,bulge", [
+    (0.05, 0.0), (0.07, 0.0), (0.10, 0.0),
+    (0.07, 0.12), (0.05, 0.10),  # sao + bướu = contour bù-xén ngôi sao + chữ
+])
+def test_rounded_star_blob_not_ellipse(amp, bulge):
+    """Blob ngôi sao bo tròn (đường bế bù-xén) KHÔNG được nhận là Tròn/Elip."""
+    samples = _curve_samples(True, lobes=5, amp=amp, bulge=bulge, rx=100, ry=100)
+    assert _ellipse_fit_residual(samples) >= 0.04
+    st, _ = _classify_curve(samples)
+    assert st != ShapeType.CIRCLE_ELLIPSE  # → None (CUSTOM qua fallback)
+
+
+# ─── Hồi quy: tam giác bo tròn (contour bù-xén) KHÔNG được nhận nhầm thành búa ──
+# Contour bo tròn 0 cạnh thẳng → rơi xuống width-profile; trước đây profile "thuôn
+# về điểm" (đỉnh tam giác) bị đọc là "cán mảnh + 1 đầu to" = HAMMER. Cổng
+# _MIN_TIP_WIDTH_FRAC chặn: hình thu về mũi nhọn (min/max rất nhỏ) → None (CUSTOM).
+from app.workers.shape_classifier import _analyze_width_profile
+
+
+def _tri_bulge_samples(text_w_frac=0.78, Htext=90.0, neck=0.04, W=200.0, Htri=240.0, n=600):
+    Htot = Htri + Htext
+    pts = []
+    steps = n // 4
+    for i in range(steps + 1):
+        t = i / steps
+        pts.append(((W / 2.0) * t, t * Htri))
+    tw = W * text_w_frac
+    for i in range(1, steps + 1):
+        t = i / steps
+        x = (W / 2.0) * (1 - t) + (tw / 2.0) * t
+        x -= neck * W * math.sin(math.pi * min(t * 3, 1))
+        pts.append((x, Htri + t * Htext))
+    for i in range(1, steps + 1):
+        t = i / steps
+        pts.append((tw / 2.0 - tw * t, Htot))
+    for i in range(1, steps + 1):
+        t = i / steps
+        x = -((tw / 2.0) * (1 - t) + (W / 2.0) * t)
+        x += neck * W * math.sin(math.pi * min((1 - t) * 3, 1))
+        pts.append((x, Htot - t * Htext))
+    for i in range(1, steps):
+        t = i / steps
+        pts.append((-(W / 2.0) * (1 - t), Htri * (1 - t)))
+    return pts
+
+
+def _wp(samples):
+    xs = [p[0] for p in samples]; ys = [p[1] for p in samples]
+    mnx, mxx, mny, mxy = min(xs), max(xs), min(ys), max(ys)
+    return _analyze_width_profile(samples, mnx, mxx, mny, mxy, mxx - mnx, mxy - mny, edges=[])
+
+
+@pytest.mark.parametrize("text_w,Htext", [(0.78, 90.0), (0.65, 90.0), (0.0, 1.0)])
+def test_rounded_triangle_not_hammer(text_w, Htext):
+    """Tam giác bo tròn (± băng chữ) → width-profile KHÔNG ra búa/tạ (None → CUSTOM)."""
+    wp = _wp(_tri_bulge_samples(text_w_frac=text_w, Htext=Htext))
+    assert wp is None or wp.get('shapeType') not in ('hammer', 'dumbbell')
+
+
+def test_real_hammer_dumbbell_still_detected_after_tip_gate():
+    """Cổng mũi-nhọn KHÔNG được phá búa/tạ thật (cán bề rộng hữu hạn)."""
+    assert classify_shape(_bar_poly(200, 60, 24, two_heads=False))["shape_type"] is ShapeType.HAMMER
+    assert classify_shape(_bar_poly(200, 60, 24, two_heads=True))["shape_type"] is ShapeType.DUMBBELL

@@ -134,7 +134,7 @@ def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
     mask_prob = np.squeeze(mask_prob)
 
     mask_img = Image.fromarray((mask_prob * 255).astype(np.uint8), mode="L")
-    mask_final = mask_img.resize((orig_w, orig_h), Image.BILINEAR)
+    mask_final = mask_img.resize((orig_w, orig_h), Image.BICUBIC)
     mask_final = mask_final.filter(ImageFilter.GaussianBlur(radius=0.75))
 
     result_img = image.convert("RGBA")

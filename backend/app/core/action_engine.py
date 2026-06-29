@@ -35,6 +35,9 @@ class ActionLogEntry:
     status: str           # "success" | "failed" | "skipped"
     message: str
     duration_ms: int = 0
+    # Dữ liệu báo cáo bổ sung (vd report gỡ kênh: max/avg ΔE, OOG, warnings).
+    # Để None với các action không sinh report. Task 11.2 sẽ surface lên FixResponse.
+    report: dict | None = None
 
 
 @dataclass
@@ -88,6 +91,54 @@ AVAILABLE_ACTIONS = {
         "description": "Đặt overprint cho text và nét đen (K>95%), tránh lỗi knockout khi in offset.",
         "engine": "ghostscript",
     },
+    "REMOVE_CHANNELS": {
+        "title": "Gỡ kênh màu (Channel Remover)",
+        "description": (
+            "Gỡ một hoặc nhiều kênh process (C/M/Y/K) để in bằng ít mực hơn. "
+            "Chế độ 'reseparate' bù màu qua FOGRA39 để giữ màu gần nhất; "
+            "cảnh báo và báo cáo ΔE cho vùng ngoài gamut."
+        ),
+        "engine": "channel_remover",
+        "parameters": {
+            "kept_channels": {
+                "type": "array",
+                "description": "Danh sách kênh GIỮ lại (1..3 phần tử), tập con của C/M/Y/K.",
+                "default": ["C", "M", "Y"],
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["direct", "reseparate"],
+                "description": "'direct' xóa thẳng kênh; 'reseparate' bù màu qua FOGRA39.",
+                "default": "reseparate",
+            },
+            "tac_limit": {
+                "type": "number",
+                "description": "Tổng phủ mực tối đa (%) cho màu kết quả.",
+                "default": 360.0,
+            },
+            "gamut_threshold": {
+                "type": "number",
+                "description": "Ngưỡng ΔE phân loại màu Out-Of-Gamut.",
+                "default": 5.0,
+            },
+            "spot_handling": {
+                "type": "string",
+                "enum": ["skip", "convert"],
+                "description": "'skip' giữ nguyên màu pha; 'convert' chuyển sang CMYK trước khi gỡ.",
+                "default": "skip",
+            },
+            "process_hidden_layers": {
+                "type": "boolean",
+                "description": "Có áp gỡ kênh cho nội dung layer ẩn (OCG) hay không.",
+                "default": False,
+            },
+            "grid_step": {
+                "type": "number",
+                "description": "Bước lưới (%) khi liệt kê tổ hợp CMYK kênh-giữ cho LUT.",
+                "default": 5.0,
+            },
+        },
+    },
 }
 
 
@@ -110,6 +161,8 @@ class ActionEngine:
         self.default_profile = settings.DEFAULT_CMYK_PROFILE
         self.output_dir = Path(settings.RESULTS_DIR) / "preflight_output"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Buffer chứa report bổ sung của handler gần nhất (vd REMOVE_CHANNELS).
+        self._last_report: dict | None = None
 
     async def execute(
         self, pdf_path: str, action_id: str, params: dict | None = None, original_name: str | None = None
@@ -133,16 +186,35 @@ class ActionEngine:
             if handler is None:
                 return ActionResult(success=False, error=f"Handler cho '{action_id}' chưa được triển khai.")
 
+            # Reset report buffer; handlers sinh report (vd REMOVE_CHANNELS) sẽ
+            # gán self._last_report để execute đính vào ActionLogEntry.report.
+            self._last_report = None
+
             logger.debug(f"Calling handler for {action_id}...")
             success = await handler(pdf_path, output_path, params)
             logger.debug(f"Handler returned: {success}")
             duration = int((datetime.now() - start).total_seconds() * 1000)
 
+            base_msg = (
+                f"{AVAILABLE_ACTIONS[action_id]['title']} "
+                f"{'thành công' if success else 'thất bại'}."
+            )
+            report = self._last_report
+            if report:
+                base_msg += (
+                    f" ΔE max={report.get('max_delta_e', 0):.2f}, "
+                    f"avg={report.get('avg_delta_e', 0):.2f}, "
+                    f"OOG={report.get('out_of_gamut_count', 0)}."
+                )
+                for warn in report.get("warnings", []):
+                    base_msg += f" ⚠ {warn}"
+
             log_entry = ActionLogEntry(
                 action_id=action_id,
                 status="success" if success else "failed",
-                message=f"{AVAILABLE_ACTIONS[action_id]['title']} {'thành công' if success else 'thất bại'}.",
+                message=base_msg,
                 duration_ms=duration,
+                report=report,
             )
 
             return ActionResult(
@@ -447,6 +519,50 @@ class ActionEngine:
 
         count = await asyncio.to_thread(_work)
         logger.info(f"SET_BLACK_OVERPRINT: bật overprint cho {count} thao tác vẽ object đen")
+        return True
+
+    # ────────────────────────────────────────────────────────
+    #  REMOVE CHANNELS (channel_remover)
+    # ────────────────────────────────────────────────────────
+
+    async def _action_remove_channels(self, pdf_path: str, output_path: str, params: dict) -> bool:
+        """Gỡ kênh process (C/M/Y/K) khỏi PDF, có bù màu re-separation.
+
+        Theo mẫu ``_action_set_black_overprint``: hàm lõi đồng bộ
+        ``remove_channels`` (app.core.channel_remover) được chạy qua
+        ``asyncio.to_thread`` để không chặn event loop. ``output_path`` do
+        ``execute`` dựng sẵn nằm dưới ``RESULTS_DIR/preflight_output`` (Req 9.1),
+        nên file kết quả tải được qua Download_Endpoint và ``output_filename`` =
+        ``Path(output_path).name`` (Req 9.2).
+
+        Báo cáo (max/avg ΔE, OOG count, warnings) được đính vào
+        ``self._last_report`` để ``execute`` gắn vào ``ActionLogEntry.report`` và
+        tóm tắt vào message — không cần đổi ``FixResponse`` (task 11.2 surface sau).
+        (Req 9.1, 9.2, 9.3)
+        """
+        from app.core.channel_remover import remove_channels
+
+        def _work():
+            return remove_channels(pdf_path, output_path, params or {})
+
+        report = await asyncio.to_thread(_work)
+
+        self._last_report = {
+            "output_filename": report.output_filename,
+            "max_delta_e": report.max_delta_e,
+            "avg_delta_e": report.avg_delta_e,
+            "out_of_gamut_count": report.out_of_gamut_count,
+            "total_colors": report.total_colors,
+            "warnings": list(report.warnings),
+            "identical_to_original": report.identical_to_original,
+        }
+
+        logger.info(
+            "REMOVE_CHANNELS: colors=%d oog=%d ΔEmax=%.2f ΔEavg=%.2f warnings=%d -> %s",
+            report.total_colors, report.out_of_gamut_count,
+            report.max_delta_e, report.avg_delta_e,
+            len(report.warnings), output_path,
+        )
         return True
 
     # ────────────────────────────────────────────────────────

@@ -340,7 +340,10 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
             } else {
                 action = 'custom';
                 const rules = parseRule(settings.rule);
-                mapping = applyRule(rules, totalPages, Math.max(1, settings.groupSize), settings.mode).map((m: any) => m.newPageNum || m);
+                // applyRule trả PageMapping[] = {srcPage (0-based), rotation}.
+                // Backend /shuffle custom cần danh sách SỐ TRANG 1-based; trang trắng
+                // (srcPage = -1) → 0 và bị backend lọc bỏ (điều kiện 0 < p <= total).
+                mapping = applyRule(rules, totalPages, Math.max(1, settings.groupSize), settings.mode).map((m: any) => m.srcPage + 1);
             }
             const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
             const blob = await backendShufflePages(workingFile, action, mapping);

@@ -819,6 +819,10 @@ class PreviewLayoutRequest(BaseModel):
     split_gap: Optional[float] = 0
     target_quantity: Optional[int] = 0
     target_quantities_by_page: Optional[Dict[str, int]] = {}
+    # ── Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup) — hình/props nhận diện theo trang ──
+    # Cần để preview phát hiện "1 khuôn master + nhiều nội dung" KHỚP output (nup_engine).
+    detected_shapes_by_page: Optional[Dict[str, Any]] = None
+    detected_shape_params_by_page: Optional[Dict[str, Any]] = None
     # ── Bình Bế Rớt (CNC) ghép nhiều mẫu — preview khớp output ──
     imposer_mode: Optional[str] = None
     cnc_two_sided: Optional[bool] = False
@@ -1032,6 +1036,8 @@ async def preview_layout(req: PreviewLayoutRequest):
                         return q if q > 0 else 0
 
                     page_dims_qty = []
+                    _cnc_die_poly_by_page = {}
+                    from app.workers.pont_collision import build_shapely_polygon_from_paths as _bspfp_cnc
                     for pi in front_idxs:
                         pg = doc[pi]
                         lp = _find_largest_die_path(pg)
@@ -1041,6 +1047,12 @@ async def preview_layout(req: PreviewLayoutRequest):
                             tw = pg.rect.width - 2 * bleed_pt
                             th = pg.rect.height - 2 * bleed_pt
                         page_dims_qty.append((pi, tw, th, _qty_cnc(pi)))
+                        if lp is not None:
+                            try:
+                                _cnc_die_poly_by_page[pi] = _normalize_polygon_to_unit(
+                                    _bspfp_cnc(pg.extract_vector_paths(), pg.rect))
+                            except Exception:
+                                _cnc_die_poly_by_page[pi] = None
 
                     cnc_gap = max(req.gap_x, req.gap_y)
                     # Va chạm boong: LOẠI vùng cấm lúc packing — DÙNG CHUNG helper với
@@ -1104,9 +1116,18 @@ async def preview_layout(req: PreviewLayoutRequest):
                         "cncFlipEdge": cnc_flip_edge,
                         "absPlacement": True,
                         "placedByPage": {str(k): v for k, v in (cnc_layout.get('placed_by_page') or {}).items()},
+                        "diePolygonsByPage": {str(pi): poly for pi, poly in _cnc_die_poly_by_page.items() if poly},
                     }
 
                 page_dims = []
+                # Tín hiệu theo CHỈ SỐ TRANG GỐC (pi) cho chế độ ĐỒNG NHẤT — page_dims
+                # sẽ bị SORT bên dưới nên KHÔNG dùng được thứ tự của nó để dò master.
+                _has_die_by_page = {}
+                _genuine_die_by_page = {}  # tín hiệu ĐÁNG TIN (kênh/màu bế) — phân biệt cùng/khác khuôn
+                _trim_by_page = {}
+                _die_poly_by_page = {}  # pi → đường bế THẬT (0..1) để preview vẽ contour đúng (kể cả CUSTOM)
+                from app.workers.sticker_homogeneous import page_has_die as _page_has_die
+                from app.workers.pont_collision import build_shapely_polygon_from_paths as _bspfp
                 for pi in range(doc.page_count):
                     pg = doc[pi]
                     lp = _find_largest_die_path(pg)
@@ -1119,6 +1140,20 @@ async def preview_layout(req: PreviewLayoutRequest):
                         tw -= 2 * bleed_pt
                         th -= 2 * bleed_pt
                     page_dims.append((pi, tw, th))
+                    _has_die_by_page[pi] = lp is not None
+                    try:
+                        _genuine_die_by_page[pi] = _page_has_die(pg)
+                    except Exception:
+                        _genuine_die_by_page[pi] = False
+                    _trim_by_page[pi] = (tw, th)
+                    # Đường bế THẬT của trang (chỉ khi có khuôn) → preview vẽ đúng contour
+                    # cho MỌI hình kể cả CUSTOM (khuôn 'bù xén' trace). extract cache theo Page.
+                    if lp is not None:
+                        try:
+                            _die_poly_by_page[pi] = _normalize_polygon_to_unit(
+                                _bspfp(pg.extract_vector_paths(), pg.rect))
+                        except Exception:
+                            _die_poly_by_page[pi] = None
                 
                 # Sort by min dimension descending — MUST match nup_engine line 330
                 grouping_strategy = getattr(req, 'grouping_strategy', None) or 'maximize_area'
@@ -1161,6 +1196,150 @@ async def preview_layout(req: PreviewLayoutRequest):
                         q = 0
                     return q if q > 0 else 0
                 _total_q = sum(_qty_for_page(pi) for pi, _, _ in page_dims)
+
+                # ══ NHÁNH ĐỒNG NHẤT (sticker-homogeneous-nup, Task 7) ══
+                # Auto-fill (KHỚP gating output: _total_q == 0). Dựng adapter/trang theo
+                # CHỈ SỐ TRANG GỐC (pi) rồi detect_homogeneous; nếu bật → xếp shape-aware
+                # từ master + finalize_placements + resolve_pont_collisions_on_placements
+                # (CÙNG hàm với output → parity ≤ 0.1mm). Lấy TỜ 0 để preview.
+                homogeneous_plan = None
+                if _total_q == 0:
+                    try:
+                        from app.workers import sticker_homogeneous as _sh
+                        from app.workers.shape_types import (
+                            ShapeType as _ShapeType, coerce_shape_type as _coerce,
+                        )
+                        _det_shapes = getattr(req, 'detected_shapes_by_page', None) or {}
+                        _det_params = getattr(req, 'detected_shape_params_by_page', None) or {}
+                        _adapters = []
+                        for _p in range(doc.page_count):
+                            _hd = _genuine_die_by_page.get(_p, False)
+                            if _hd:
+                                _s = (_det_shapes.get(str(_p)) or _det_shapes.get(_p))
+                                try:
+                                    _stype = _coerce(_s) if _s else _ShapeType.CUSTOM
+                                except Exception:
+                                    _stype = _ShapeType.CUSTOM
+                            else:
+                                _stype = _ShapeType.CUSTOM
+                            _tw, _th = _trim_by_page.get(_p, (0.0, 0.0))
+                            _poly = (((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th))
+                                     if _hd else ())
+                            _props = (_det_params.get(str(_p)) or _det_params.get(_p) or {})
+                            _adapters.append(_sh.make_shape_adapter(_stype, _poly, _tw, _th, _props, has_die=_hd))
+                        homogeneous_plan = _sh.detect_homogeneous(_adapters)
+                    except Exception as _e_hom:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"[HOMOGENEOUS PREVIEW] Phát hiện thất bại → giữ đường cũ: {_e_hom}")
+                        homogeneous_plan = None
+
+                if homogeneous_plan is not None:
+                    from app.workers.nup_sticker import compute_sticker_layout_for_page as _csl
+                    _master_idx = homogeneous_plan.master_page_idx
+                    _master_page = doc[_master_idx]
+                    # Nesting master ĐÚNG MỘT LẦN (shape-aware) — dùng làm layout_fn.
+                    _master_layout = _csl(
+                        _master_page, req.usable_w, req.usable_h, req.gap_x, req.gap_y,
+                        strategy='optimal_auto',
+                        shape_type_override=homogeneous_plan.shape_type.name,
+                        shape_props_override=(homogeneous_plan.shape_props or None),
+                        bleed_pt=bleed_pt,
+                    )
+                    if not (_master_layout and _master_layout.get('items')):
+                        # Master nesting trống → bỏ nhánh đồng nhất, rơi xuống đường cũ.
+                        logger.info("[HOMOGENEOUS PREVIEW] Master nesting trống → fallback bin-pack trộn")
+                        homogeneous_plan = None
+
+                if homogeneous_plan is not None:
+                    _hom_layout = _sh.build_homogeneous_layout(
+                        master_page=None,
+                        plan=homogeneous_plan,
+                        sheet_usable_w=req.usable_w,
+                        sheet_usable_h=req.usable_h,
+                        gap_x=req.gap_x,
+                        gap_y=req.gap_y,
+                        bleed_pt=bleed_pt,
+                        secondary_gap=None,
+                        quantities=None,  # auto-fill: mỗi trang 1 lần
+                        layout_fn=(lambda *_a, **_k: _master_layout),
+                    )
+
+                    # base_poly master: ellipse chuẩn cho Tròn/Elip; còn lại None (≈ chữ nhật).
+                    _master_base_poly = None
+                    if homogeneous_plan.shape_type == _sh.ShapeType.CIRCLE_ELLIPSE:
+                        try:
+                            from shapely.geometry import Point as _Point
+                            from shapely.affinity import scale as _scale
+                            _rx = homogeneous_plan.trim_w / 2.0
+                            _ry = homogeneous_plan.trim_h / 2.0
+                            if _rx > 0 and _ry > 0:
+                                _master_base_poly = _scale(_Point(0, 0).buffer(1.0, resolution=64),
+                                                           xfact=_rx, yfact=_ry)
+                        except Exception:
+                            _master_base_poly = None
+
+                    _ml = getattr(req, 'margin_left', 0) or 0
+                    _mb = getattr(req, 'margin_bottom', 0) or 0
+                    _mt = getattr(req, 'margin_top', 0) or 0
+
+                    # TỜ 0: căn-giữa khối ô (SSOT) → gán src_page_idx nội dung → giải boong.
+                    _items = list(_hom_layout.items)
+                    _pls = finalize_placements(
+                        _items, req.usable_w, req.usable_h, _ml, _mb, _mt, _master_idx,
+                    )
+                    _by_cell = {cc.cell_index: cc.src_page_idx
+                                for cc in _hom_layout.cell_contents if cc.sheet_index == 0}
+                    _sheet_pls = []
+                    for _ci, _pl in enumerate(_pls):
+                        if _ci in _by_cell:
+                            _pl['src_page_idx'] = _by_cell[_ci]
+                            _sheet_pls.append(_pl)
+                    # Boong: CÙNG hàm với output (parity). req đã có pont_config/sheet_w/h/margins.
+                    _sheet_pls = resolve_pont_collisions_on_placements(
+                        _sheet_pls, req, base_poly=_master_base_poly)
+
+                    doc.close()
+
+                    cells = []
+                    ov_w = 0.0
+                    ov_h = 0.0
+                    for _pl in _sheet_pls:
+                        _c = _pl['cell']
+                        _w = _pl['width']
+                        _h = _pl['height']
+                        _ax = _pl['abs_x']
+                        _ay = _pl['abs_y']
+                        cells.append({
+                            'x': _c.get('x', 0), 'y': _c.get('y', 0),
+                            'absX': _ax, 'absY': _ay,
+                            'width': _w, 'height': _h,
+                            'isRotated': _c.get('isRotated', False),
+                            'isRotated180': _c.get('isRotated180', False),
+                            'pageIdx': _pl['src_page_idx'],
+                        })
+                        ov_w = max(ov_w, _ax + _w)
+                        ov_h = max(ov_h, _ay + _h)
+
+                    logger.info("[HOMOGENEOUS PREVIEW] master=trang %d, shape=%s, %d ô (tờ 0)",
+                                _master_idx, homogeneous_plan.shape_type.name, len(cells))
+                    return {
+                        "success": True,
+                        "cells": cells,
+                        "overallWidth": ov_w,
+                        "overallHeight": ov_h,
+                        "totalItems": len(cells),
+                        "strategyUsed": "homogeneous",
+                        "isMixedPreview": True,
+                        "absPlacement": True,
+                        "isHomogeneousPreview": True,
+                        # Mọi ô = hình MASTER → map mỗi trang nội dung → đường bế master.
+                        "diePolygonsByPage": (
+                            {str(_cp): _die_poly_by_page.get(_master_idx)
+                             for _cp in homogeneous_plan.content_pages}
+                            if _die_poly_by_page.get(_master_idx) else {}
+                        ),
+                    }
 
                 if _total_q > 0:
                     from app.workers.sticker_imposer_pkg.bin_packing import solve_offset_mixed
@@ -1227,6 +1406,8 @@ async def preview_layout(req: PreviewLayoutRequest):
                     "strategyUsed": "bin_pack_mixed",
                     "isMixedPreview": True,
                     "absPlacement": True,
+                    # Đường bế THẬT theo từng trang → mỗi ô vẽ đúng contour (kể cả CUSTOM).
+                    "diePolygonsByPage": {str(pi): poly for pi, poly in _die_poly_by_page.items() if poly},
                 }
             
             # ── SINGLE-PAGE PREVIEW (S&R or single-page N-Up) ──
@@ -1399,12 +1580,14 @@ async def preview_layout(req: PreviewLayoutRequest):
                     if paths:
                         base_poly = build_shapely_polygon_from_paths(paths, page.rect)
 
-            # ── Đường bế THẬT cho búa/tạ (Bug A): preview vẽ outline thật → khớp output,
-            # không phụ thuộc hình tổng hợp đoán hướng. CHỈ trích cho HAMMER/DUMBBELL
-            # (hình bất đối xứng dễ vẽ sai); hình khác giữ vẽ tổng hợp (không tốn thêm).
+            # ── Đường bế THẬT cho preview (vẽ đúng outline, không phụ thuộc hình tổng hợp).
+            # Trích cho HAMMER/DUMBBELL (bất đối xứng dễ vẽ sai) VÀ CUSTOM (khuôn tự do /
+            # đường cắt 'bù xén' trace từ raster — không khớp hình mẫu nào → trước đây
+            # preview vẽ bounding box; nay vẽ contour THẬT). Hình mẫu sạch (tròn/chữ
+            # nhật/đa giác…) giữ vẽ schematic (khớp + không tốn thêm).
             die_polygon_norm = None
             _shape_final = (result.get('shapeType') or '').upper()
-            if _shape_final in ('HAMMER', 'DUMBBELL'):
+            if _shape_final in ('HAMMER', 'DUMBBELL', 'CUSTOM', 'ARROW'):
                 try:
                     _outline = base_poly
                     if _outline is None:

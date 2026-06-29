@@ -79,11 +79,27 @@ class PipelineRequest(BaseModel):
     actions: List[PipelineAction]
 
 
+class ChannelReportResponse(BaseModel):
+    """Báo cáo bổ sung cho action sinh dữ liệu ΔE (vd REMOVE_CHANNELS).
+
+    Cho phép UI hiển thị cảnh báo vùng ngoài gamut và thống kê ΔE (Req 4.1, 4.2).
+    Mọi trường đều optional để các action không sinh report vẫn hoạt động.
+    """
+    max_delta_e: Optional[float] = None
+    avg_delta_e: Optional[float] = None
+    out_of_gamut_count: Optional[int] = None
+    total_colors: Optional[int] = None
+    warnings: List[str] = []
+    identical_to_original: Optional[bool] = None
+
+
 class ActionLogResponse(BaseModel):
     action_id: str
     status: str
     message: str
     duration_ms: int
+    # Report bổ sung của riêng step này (None nếu action không sinh report).
+    report: Optional[ChannelReportResponse] = None
 
 
 class FixResponse(BaseModel):
@@ -91,6 +107,57 @@ class FixResponse(BaseModel):
     output_filename: Optional[str] = None
     log: List[ActionLogResponse]
     error: Optional[str] = None
+    # Report tổng hợp (lấy từ step gần nhất có report) để UI hiển thị cảnh báo
+    # ngoài gamut và thống kê ΔE mà không phải dò trong log (Req 4.1, 4.2).
+    report: Optional[ChannelReportResponse] = None
+
+
+def _report_dict_to_response(report: Optional[dict]) -> Optional[ChannelReportResponse]:
+    """Chuyển dict report nội bộ (ActionLogEntry.report) sang model API.
+
+    Trả None khi action không sinh report để giữ nguyên hành vi cũ.
+    """
+    if not report:
+        return None
+    return ChannelReportResponse(
+        max_delta_e=report.get("max_delta_e"),
+        avg_delta_e=report.get("avg_delta_e"),
+        out_of_gamut_count=report.get("out_of_gamut_count"),
+        total_colors=report.get("total_colors"),
+        warnings=list(report.get("warnings", []) or []),
+        identical_to_original=report.get("identical_to_original"),
+    )
+
+
+def _action_result_to_fix_response(result) -> "FixResponse":
+    """Dựng FixResponse từ ActionResult, surface report (nếu có) lên response.
+
+    Mỗi step giữ report riêng trong ``log[i].report``; ``FixResponse.report`` lấy
+    report của step gần nhất có dữ liệu (vd REMOVE_CHANNELS trong pipeline).
+    """
+    log_entries = []
+    last_report: Optional[ChannelReportResponse] = None
+    for entry in result.log:
+        entry_report = _report_dict_to_response(getattr(entry, "report", None))
+        if entry_report is not None:
+            last_report = entry_report
+        log_entries.append(
+            ActionLogResponse(
+                action_id=entry.action_id,
+                status=entry.status,
+                message=entry.message,
+                duration_ms=entry.duration_ms,
+                report=entry_report,
+            )
+        )
+
+    return FixResponse(
+        success=result.success,
+        output_filename=Path(result.output_path).name if result.output_path else None,
+        log=log_entries,
+        error=result.error,
+        report=last_report,
+    )
 
 
 # ── Helper ──
@@ -205,20 +272,7 @@ async def fix_pdf(request: FixRequest):
         engine = ActionEngine()
         result = await engine.execute(pdf_path, request.action_id, request.params, original_name=original_name)
 
-        return FixResponse(
-            success=result.success,
-            output_filename=Path(result.output_path).name if result.output_path else None,
-            log=[
-                ActionLogResponse(
-                    action_id=entry.action_id,
-                    status=entry.status,
-                    message=entry.message,
-                    duration_ms=entry.duration_ms,
-                )
-                for entry in result.log
-            ],
-            error=result.error,
-        )
+        return _action_result_to_fix_response(result)
     except Exception as e:
         logger.exception("Preflight fix failed")
         raise HTTPException(status_code=500, detail=f"Lỗi sửa file ({type(e).__name__})")
@@ -237,20 +291,7 @@ async def pipeline_fix(request: PipelineRequest):
         actions = [{"id": a.id, "params": a.params or {}} for a in request.actions]
         result = await engine.execute_batch(pdf_path, actions, original_name=original_name)
 
-        return FixResponse(
-            success=result.success,
-            output_filename=Path(result.output_path).name if result.output_path else None,
-            log=[
-                ActionLogResponse(
-                    action_id=entry.action_id,
-                    status=entry.status,
-                    message=entry.message,
-                    duration_ms=entry.duration_ms,
-                )
-                for entry in result.log
-            ],
-            error=result.error,
-        )
+        return _action_result_to_fix_response(result)
     except Exception as e:
         logger.exception("Preflight pipeline failed")
         raise HTTPException(status_code=500, detail=f"Lỗi pipeline ({type(e).__name__})")

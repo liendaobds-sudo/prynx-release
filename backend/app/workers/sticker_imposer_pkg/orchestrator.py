@@ -132,6 +132,35 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
             ]
             candidates.sort(key=lambda x: (x[0]['totalItems'], -x[0]['widthUsed']*x[0]['heightUsed']), reverse=True)
             configs = [candidates[0]]
+            # MŨI TÊN (hướng B — tối ưu năng suất + không đè):
+            # Hình mũi tên (tip + ngạnh lõm + cán) KHÁC ngũ giác (mái nhà) → công thức
+            # lồng ngũ giác KHÔNG đảm bảo không đè; mũi tên BẤT ĐỐI XỨNG bị đè (đo thật ~4%).
+            #  (1) Đổi nhãn 'pentagon_advanced'→'arrow_advanced' (KHÔNG nằm trong SKIP) để
+            #      khử đè polygon thật được chạy.
+            #  (2) KHỬ ĐÈ TRƯỚC SORT cho ứng viên lồng (như nhánh búa/tạ) → so sánh CÔNG BẰNG
+            #      theo số ô SAU khử đè.
+            #  (3) THÊM ứng viên LƯỚI (không bao giờ đè): với mũi tên bất đối xứng, lưới
+            #      cho năng suất CAO HƠN lồng-rồi-bỏ-ô; với đối xứng, lồng vẫn có thể thắng
+            #      (xếp dày hơn). Bộ chọn tự lấy phương án nhiều ô nhất.
+            if shape_type == 'ARROW':
+                _arrow_best = candidates[0][0]
+                _arrow_best['strategyUsed'] = 'arrow_advanced'
+                if base_poly is not None and _arrow_best.get('items'):
+                    _arrow_best['items'] = resolve_layout_collisions(
+                        _arrow_best['items'], base_poly, max(gap_x, gap_y))
+                    _arrow_best['totalItems'] = len(_arrow_best['items'])
+                    if _arrow_best['items']:
+                        _arrow_best['widthUsed'] = max(it['x'] + it['width'] for it in _arrow_best['items'])
+                        _arrow_best['heightUsed'] = max(it['y'] + it['height'] for it in _arrow_best['items'])
+                    else:
+                        _arrow_best['widthUsed'] = _arrow_best['heightUsed'] = 0
+                _ag1 = solve_grid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+                _ag2 = solve_grid_layout(usable_w, usable_h, item_h, item_w, gap_x, gap_y)
+                configs = [
+                    (_arrow_best, candidates[0][1], 'arrow_advanced'),
+                    (_ag1, False, 'grid'),
+                    (_ag2, True, 'grid'),
+                ]
         elif shape_type == 'HEXAGON':
             # Use proper hexagonal tiling (3/4 ratio) instead of circle-nesting (sqrt(3)/2)
             # to prevent bounding box overlap that causes visual item overlap

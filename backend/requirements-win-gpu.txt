@@ -1,0 +1,21 @@
+# GPU (DirectML) cho BẢN WINDOWS SHIP — KHÔNG dùng cho CI/Linux/dev đa nền.
+#
+# Vì sao tách file (không nhét vào requirements.txt):
+#   - onnxruntime-directml CHỈ có wheel Windows → đưa vào requirements.txt sẽ làm
+#     gãy CI (ubuntu-latest: `pip install -r requirements.txt` + `pip-audit`).
+#   - requirements.txt vẫn pin onnxruntime CPU (chạy được mọi nền + dev/test).
+#
+# build_production.ps1 (Windows) cài file này (thay onnxruntime CPU) vào venv
+# TRƯỚC khi Nuitka đóng gói → bản ship tự bật GPU.
+#
+# DirectML gói SẴN cả GPU EP (DX12: NVIDIA/AMD/Intel) lẫn CPU fallback → KHÔNG
+# cần khách cài CUDA/cuDNN. Engine _build_providers() đã tự ưu tiên Dml khi có,
+# tự rớt CPU nếu máy không hỗ trợ (sticky, env PRYNX_BG_FORCE_CPU=1 ép CPU).
+#
+# Đo THỰC trên RTX 3060 (1024x1024, onnxruntime-directml 1.24.4):
+#   - isnet (engine "Nhanh", CNN):            716 ms  -> 71 ms   (~10x)
+#   - birefnet-lite (engine "Chất lượng cao"): 6610 ms -> 3839 ms (~1.7x)
+#   - CUDA (onnxruntime-gpu): KHÔNG dùng được (đòi CUDA 13 + cuDNN 9) → loại.
+#
+# Pin trùng phiên bản với onnxruntime CPU trong requirements.txt để đồng bộ.
+onnxruntime-directml==1.24.4

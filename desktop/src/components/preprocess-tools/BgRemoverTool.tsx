@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { getApiUrl } from '../../lib/api';
+import { getApiUrl, authenticatedFetch } from '../../lib/api';
 import BgRemoverOptions, { BgRemoverOptionsState } from './BgRemoverOptions';
 import { useBgRemoverStore, defaultTabState, type BatchItem } from './useBgRemoverStore';
 import { toast } from '../ui/Toast';
@@ -110,7 +110,10 @@ async function processBatch(tabId: string) {
             formData.append('custom_hex', options.customHex);
             formData.append('auto_crop', options.autoCrop ? 'true' : 'false');
             // console.log(`[BgRemover] Fetching: ${apiUrl}/pdf-tools/remove-background`);
-            const res = await fetch(`${apiUrl}/pdf-tools/remove-background`, { method: 'POST', body: formData });
+            // PHẢI dùng authenticatedFetch: router /pdf-tools có Depends(require_license)
+            // → ở production cần X-PrynX-Token + chữ ký HMAC (Rust sign_api_request).
+            // Raw fetch thiếu các header này → 403 trên bản đóng gói (chỉ dev mới lọt).
+            const res = await authenticatedFetch(`${apiUrl}/pdf-tools/remove-background`, { method: 'POST', body: formData });
             // console.log(`[BgRemover] Response status: ${res.status}, type: ${res.headers.get('content-type')}`);
             if (!res.ok) {
                 const errorText = await res.text();
@@ -191,11 +194,16 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
     // Global flag
     React.useEffect(() => {
         (window as any).__isBgRemoverActive = true;
-        // Nạp sẵn model AI ngay khi mở công cụ (chạy nền) → lần bấm Tách Nền đầu
-        // không phải chờ cold-start ~25s. Fire-and-forget, lỗi bỏ qua.
-        fetch(`${getApiUrl()}/pdf-tools/remove-background/warmup`, { method: 'POST' }).catch(() => {});
+        // Nạp sẵn ĐÚNG model AI người dùng đang chọn (chạy nền) → lần bấm Tách Nền
+        // đầu không phải chờ cold-start. Fire-and-forget, lỗi bỏ qua.
+        try {
+            const eng = useBgRemoverStore.getState().getTab(tabId)?.options?.aiEngine || 'general';
+            const fd = new FormData();
+            fd.append('engine', eng);
+            authenticatedFetch(`${getApiUrl()}/pdf-tools/remove-background/warmup`, { method: 'POST', body: fd }).catch(() => {});
+        } catch { /* ignore */ }
         return () => { (window as any).__isBgRemoverActive = false; };
-    }, []);
+    }, [tabId]);
 
     // Listen for external file events
     React.useEffect(() => {
