@@ -1278,6 +1278,8 @@ def run_nup_engine(
         logger.debug("[NUP_ENGINE SOLVER RESULT] totalItems=%s strategy=%s",
                      layout.get('totalItems'), layout.get('strategyUsed'))
 
+
+
     capacity = layout['totalItems']
 
     total_capacity = capacity * cx_count * cy_count

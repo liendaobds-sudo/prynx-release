@@ -103,7 +103,14 @@ pub fn register_validated_key(license_key: String, hwid: Option<String>, token: 
         // enforce=false: cache mà không verify (rollout grace / dev mode)
     } else {
         let hw = hwid.unwrap_or_default();
-        verify_license_token_internal(&tok, &hw, &license_key)?; // sai token → KHÔNG cache
+        // F2 (defense-in-depth) → ADVISORY: token verify lỗi thì CHỈ log, KHÔNG chặn cache.
+        // Cache này chỉ gate việc ký SIDECAR token (chứng minh request đến từ frontend hợp lệ).
+        // License THẬT vẫn được backend cưỡng chế độc lập qua X-License-Token (Ed25519) + Supabase.
+        // Nếu chặn cache ở đây khi token phụ trục trặc (rate-limit/grace/edge hiccup) thì toàn bộ
+        // giao tiếp frontend↔backend chết (403 "invalid sidecar token") dù user đã đăng nhập hợp lệ.
+        if let Err(e) = verify_license_token_internal(&tok, &hw, &license_key) {
+            log::warn!("[SECURITY] register_validated_key: license-token verify failed (advisory, vẫn cache): {}", e);
+        }
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -157,7 +164,7 @@ fn verify_token_with_pubkey(token: &str, hwid: &str, license_key: &str, pub_b64:
     // cũ bằng cách LÙI đồng hồ hệ thống. Token TTL 2h nên (exp - now) hợp lệ luôn ≤ TTL;
     // vượt cận (TTL + dư + skew) ⇒ đồng hồ đã bị lùi xa lúc cấp token. Không phụ thuộc file
     // trên đĩa nên không thể vô hiệu bằng cách xoá state.
-    const MAX_TOKEN_LIFETIME_SECS: i64 = 3 * 60 * 60 + 300; // TTL 2h + 1h dư + skew 5'
+    const MAX_TOKEN_LIFETIME_SECS: i64 = 8 * 24 * 60 * 60; // TTL server 7 ngày + 1 ngày dư (PHẢI ≥ TTL token edge function cấp)
     if exp - now > MAX_TOKEN_LIFETIME_SECS {
         return Err("license token lifetime implausible (clock rollback?)".to_string());
     }

@@ -895,7 +895,8 @@ export default function GridPreview(props: GridPreviewProps) {
     cncFlipEdge,
   ]);
 
-  if (sheetWidth <= 0 || sheetHeight <= 0) return null;
+  // LƯU Ý: kiểm tra sheetWidth/sheetHeight <= 0 được dời xuống SAU svgCells useMemo
+  // (hook cuối) để không gọi hook có điều kiện → tránh React #300 crash.
 
   // ── N-Up "Dàn nhiều mẫu": tổng con cần = SL mỗi loại × số mẫu (SL trống → lấp đầy 1 tờ).
   //    "Cần in" theo tổng con; căn giữa CHỈ khi đúng 1 tờ (nhiều tờ giữ vị trí full layout).
@@ -1026,6 +1027,9 @@ export default function GridPreview(props: GridPreviewProps) {
     pad,
     sheetHeight,
   ]);
+
+  // Sau khi MỌI hook đã chạy mới được return sớm (xem ghi chú phía trên).
+  if (sheetWidth <= 0 || sheetHeight <= 0) return null;
 
   // Usable area in SVG pixels
   const uaX = pad + marginLeft * scale;

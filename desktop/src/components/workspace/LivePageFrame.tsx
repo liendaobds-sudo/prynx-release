@@ -831,16 +831,11 @@ export const LivePageFrame = (props: any) => {
         setSelectedObjectIds(prev => (prev.length ? [] : prev));
     }, [pdfUrl]);
 
-    if (originalPageNum === -1) {
-        return (
-            <div className="bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5 relative shrink-0 overflow-hidden">
-                <div style={{ width: actualWidth100 * zoom, height: actualWidth100 * zoom * 1.414 }} className="bg-white flex items-center justify-center">
-                    <span className="text-slate-200 text-3xl font-bold tracking-[0.5em] -rotate-45">DOCUMENT BLANK PAGE</span>
-                </div>
-            </div>
-        );
-    }
-    
+    // LƯU Ý: KHÔNG return sớm cho originalPageNum === -1 ở đây. Trước kia khối này
+    // đặt TRƯỚC nhiều hook bên dưới (useEffect 845/949/1100/1104...), nên khi một
+    // frame đổi originalPageNum giữa -1 và số trang thật, số hook gọi bị lệch →
+    // React error #300 crash. Đã dời xuống SAU TẤT CẢ hook (ngay trước Render).
+
     // Fetch preview image when hidden objects OR hidden OCG layers change
     useEffect(() => {
         if (hiddenObjectIds.length === 0 && hiddenOcgLayerIds.length === 0) {
@@ -1576,6 +1571,17 @@ export const LivePageFrame = (props: any) => {
         if (marqueeRef.current) marqueeRef.current.style.display = 'none';
     };
     //#endregion
+
+    // Trang trắng placeholder: kiểm tra SAU khi mọi hook đã chạy (xem ghi chú phía trên).
+    if (originalPageNum === -1) {
+        return (
+            <div className="bg-white shadow-[0_4px_30px_rgba(0,0,0,0.15)] ring-1 ring-black/5 relative shrink-0 overflow-hidden">
+                <div style={{ width: actualWidth100 * zoom, height: actualWidth100 * zoom * 1.414 }} className="bg-white flex items-center justify-center">
+                    <span className="text-slate-200 text-3xl font-bold tracking-[0.5em] -rotate-45">DOCUMENT BLANK PAGE</span>
+                </div>
+            </div>
+        );
+    }
 
     //#region Render
     return (

@@ -76,6 +76,37 @@ const MemoThumbItem = React.memo((props: any) => {
     const dimH = localDim ? (localDim.h * 25.4 / 72).toFixed(1) : 0;
     const tooltipText = originalPageNum !== -1 ? `Trang ${logicalPageLabel}\nKích thước: ${dimW} x ${dimH} mm` : `Trang Trống`;
 
+    // FIX release: protocol tile.localhost (img/new Image/fetch) đều KHÔNG hiển thị ở release.
+    // Lấy bytes JPEG qua IPC invoke('render_pdf_page') (đáng tin, giống tách nền) → blob: → img.
+    const thumbImgRef = useRef<HTMLImageElement>(null);
+    useEffect(() => {
+        const el = thumbImgRef.current;
+        if (!el || !finalSrc) return;
+        const isTileScheme = finalSrc.startsWith('http://tile.localhost')
+            || finalSrc.startsWith('https://tile.localhost')
+            || finalSrc.startsWith('tile://');
+        if (!isTileScheme) { el.src = finalSrc; return; }
+        let cancelled = false;
+        let blobUrl: string | null = null;
+        (async () => {
+            try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                const baseW = localDim?.w || 595;
+                const optimalZoom = Math.max(0.1, Math.min(1.5, (thumbBaseWidth * 1.3) / baseW));
+                const bytes: ArrayBuffer = await invoke('render_pdf_page', {
+                    filePath: file.path, page: originalPageNum, zoom: optimalZoom, rotation: 0,
+                    clipX: null, clipY: null, clipW: null, clipH: null,
+                });
+                if (cancelled) return;
+                blobUrl = URL.createObjectURL(new Blob([bytes as any], { type: 'image/jpeg' }));
+                if (thumbImgRef.current) thumbImgRef.current.src = blobUrl;
+            } catch {
+                /* thumbnail render thất bại — giữ placeholder, không chặn UI */
+            }
+        })();
+        return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
+    }, [finalSrc, file?.path, originalPageNum, thumbBaseWidth, localDim?.w]);
+
     return (
         <div
             ref={(el) => registerRef?.(el, index)}
@@ -113,7 +144,7 @@ const MemoThumbItem = React.memo((props: any) => {
                         <div style={{ width: containerW, height: containerH, position: 'relative', overflow: 'hidden' }} className="flex items-center justify-center">
                             {finalSrc ? (
                                 <img
-                                    src={finalSrc}
+                                    ref={thumbImgRef}
                                     alt={`Page ${originalPageNum}`}
                                     style={{
                                         width: imgW,

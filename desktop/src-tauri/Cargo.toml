@@ -27,7 +27,7 @@ tauri-plugin-process = "2"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-fs = "2.5.0"
 pdfium-render = { version = "0.8", features = ["thread_safe"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "webp", "gif"] }
 urlencoding = "2"
 tauri-plugin-single-instance = "2.4.2"
 chrono = "0.4.44"

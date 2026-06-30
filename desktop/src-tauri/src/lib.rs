@@ -16,6 +16,7 @@ use std::os::windows::process::CommandExt;
 mod pdf_engine;
 mod security;
 
+
 // Document Handle Pool - Capped to 1 to eliminate the massive 
 // sequential initialization overhead of `load_pdf_from_file` for large VDP files.
 // Tile rendering is fast enough (10ms) that sequential Mutex rendering on 1 handle
@@ -100,13 +101,68 @@ static DOC_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedDocument>>>> = OnceLo
 
 /// Bind thư viện pdfium MỘT LẦN (OnceLock). Tách hàm để vừa dùng trong các lệnh
 /// render vừa dùng cho WARMUP lúc khởi động (tránh cold-start ~2-3s ở lần mở file đầu).
-fn ensure_pdfium() -> &'static Pdfium {
-    PDFIUM_STATIC.get_or_init(|| {
-        let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./bin/"))
-            .or_else(|_| Pdfium::bind_to_system_library())
-            .unwrap();
-        SyncPdfium(Box::leak(Box::new(Pdfium::new(bindings))))
-    }).0
+/// Ghi 1 dòng chẩn đoán (có timestamp) ra %APPDATA%\PrynX\logs\pdfium_load.log
+fn diag_log(msg: &str) {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("pdfium_load.log")) {
+            use std::io::Write;
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+            let _ = writeln!(f, "[{}] {}", now, msg);
+        }
+    }
+}
+
+/// Tìm & bind pdfium.dll. Thử các đường dẫn TUYỆT ĐỐI cạnh executable trước
+/// (release: working-dir là thư mục cài đặt, không phải thư mục exe → "./bin/" sai),
+/// sau đó mới tới đường dẫn tương đối (dev) và system library.
+fn bind_pdfium() -> Result<Box<dyn PdfiumLibraryBindings>, String> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    match std::env::current_exe() {
+        Ok(exe) => {
+            diag_log(&format!("current_exe = {:?}", exe));
+            if let Some(parent) = exe.parent() {
+                dirs.push(parent.to_path_buf());            // <exe_dir>/pdfium.dll
+                dirs.push(parent.join("bin"));              // <exe_dir>/bin/pdfium.dll (resource bundle)
+            }
+        }
+        Err(e) => diag_log(&format!("current_exe FAILED: {:?}", e)),
+    }
+    diag_log(&format!("current_dir = {:?}", std::env::current_dir()));
+    dirs.push(std::path::PathBuf::from("./bin"));        // dev: working-dir = src-tauri
+    dirs.push(std::path::PathBuf::from("."));
+    for dir in &dirs {
+        let lib = Pdfium::pdfium_platform_library_name_at_path(dir);
+        let exists = lib.exists();
+        match Pdfium::bind_to_library(&lib) {
+            Ok(bindings) => {
+                diag_log(&format!("BIND OK via '{}' (exists={})", lib.display(), exists));
+                return Ok(bindings);
+            }
+            Err(e) => diag_log(&format!("bind FAIL '{}' (exists={}): {:?}", lib.display(), exists, e)),
+        }
+    }
+    match Pdfium::bind_to_system_library() {
+        Ok(b) => { diag_log("BIND OK via system library"); Ok(b) }
+        Err(e) => {
+            diag_log(&format!("ALL BIND FAILED, system also failed: {:?}", e));
+            Err(format!("Khong tim thay pdfium.dll (da thu canh exe, ./bin va system): {:?}", e))
+        }
+    }
+}
+
+/// Bind thư viện pdfium MỘT LẦN. Trả về Result để KHÔNG panic khi không tìm thấy
+/// dll (panic trong spawn_blocking sẽ làm task render crash → "Task panicked").
+fn ensure_pdfium() -> Result<&'static Pdfium, String> {
+    if let Some(p) = PDFIUM_STATIC.get() {
+        return Ok(p.0);
+    }
+    let bindings = bind_pdfium()?;
+    let leaked: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
+    // Nếu thread khác đã set trước (race), bản leaked này bị bỏ qua (rò rỉ nhỏ, vô hại).
+    let _ = PDFIUM_STATIC.set(SyncPdfium(leaked));
+    Ok(PDFIUM_STATIC.get().unwrap().0)
 }
 
 // In-Memory LRU Tile Cache (Stores ~200 last rendered JPEGs)
@@ -166,7 +222,7 @@ fn append_perf_log(app_handle: tauri::AppHandle, msg: String) {
 async fn get_pdf_metadata(app_handle: tauri::AppHandle, file_path: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
         let start_time = std::time::Instant::now();
-        let pdfium = ensure_pdfium();
+        let pdfium = ensure_pdfium()?;
         
         let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         let mut cache = cache_lock.lock().map_err(|_| "Cache lock error")?;
@@ -299,7 +355,7 @@ fn render_tile_jpeg(
         }
     }
 
-    let pdfium = ensure_pdfium();
+    let pdfium = ensure_pdfium()?;
     
     let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache_lock.lock().map_err(|_| "Cache lock error")?;
@@ -421,23 +477,11 @@ fn render_tile_jpeg(
     // cho nội dung phức tạp → bỏ. 92 đã giảm tốt ringing ở cạnh chữ/nét mảnh.
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 92);
     encoder.encode_image(&rgba_image).map_err(|e| format!("Encode error: {:?}", e))?;
-    let encode_ms = start_encode.elapsed().as_millis();
-    
-    // Log the timing to performance file (fire and forget)
-    {
-        let file_name = std::path::Path::new(file_path).file_name().unwrap_or_default().to_string_lossy();
-        let msg = format!("[BACKEND] Render Tile (File: {}, Trang: {}, Zoom: {}) - Render: {}ms, Encode: {}ms", 
-                          file_name, page, zoom, render_ms, encode_ms);
-        // We cannot call tauri command from here easily without AppHandle, so we write directly to the log file
-        if let Ok(user_profile) = std::env::var("USERPROFILE") {
-            let file_path = std::path::Path::new(&user_profile).join("Desktop").join("PrynX_Performance.log");
-            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(file_path) {
-                use std::io::Write;
-                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-                let _ = writeln!(&mut file, "[{}] {}", now, msg);
-            }
-        }
-    }
+    let _encode_ms = start_encode.elapsed().as_millis();
+    let _ = render_ms;
+    // LƯU Ý: ĐÃ GỠ block ghi PrynX_Performance.log ở đây — nó gọi chrono::Local::now()
+    // và PANIC ở bản release ("Task panicked"), khiến render_tile_jpeg trả 500 → main view
+    // kẹt RENDERING + thumbnail vỡ. Đây là nguyên nhân gốc thật sự (xem frontend_debug.log).
     
     {
         let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
@@ -462,18 +506,20 @@ fn render_tile_jpeg(
 
 #[tauri::command]
 async fn render_pdf_page(
-    app_handle: tauri::AppHandle,
-    file_path: String, page: i32, zoom: f32, _rotation: i32,
+    _app_handle: tauri::AppHandle,
+    file_path: String, page: i32, zoom: f32, rotation: i32,
     clip_x: Option<i32>, clip_y: Option<i32>, clip_w: Option<i32>, clip_h: Option<i32>,
 ) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let start = std::time::Instant::now();
-        let data = render_tile_jpeg(&file_path, page, zoom, _rotation, clip_x, clip_y, clip_w, clip_h)?;
-        let elapsed = start.elapsed().as_millis();
-        
-        let file_name = std::path::Path::new(&file_path).file_name().unwrap_or_default().to_string_lossy();
-        append_perf_log(app_handle, format!("[BACKEND] Render Tile (File: {}, Trang: {}, Zoom: {:.2}, Clip: {:?}) mất {}ms", file_name, page, zoom, clip_w, elapsed));
-        
+        diag_log(&format!("render_pdf_page ENTER page={} zoom={}", page, zoom));
+        // LƯU Ý: KHÔNG gọi append_perf_log ở đây — append_perf_log dùng app_handle.path()
+        // + chrono::Local::now() trong spawn_blocking và PANIC ở bản release ("Task panicked"),
+        // khiến render_pdf_page trả 500 → main view kẹt RENDERING + thumbnail vỡ. render_tile_jpeg
+        // tự thân chạy tốt (đã chứng minh qua protocol handler trả ảnh OK).
+        let data = match render_tile_jpeg(&file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h) {
+            Ok(d) => { diag_log(&format!("render_pdf_page OK page={} zoom={} bytes={}", page, zoom, d.len())); d }
+            Err(e) => { diag_log(&format!("render_pdf_page FAIL page={} zoom={}: {}", page, zoom, e)); return Err(e); }
+        };
         Ok(tauri::ipc::Response::new(data))
     }).await.unwrap_or_else(|_| Err("Task panicked".into()))
 }
@@ -541,19 +587,17 @@ fn get_file_size(path: String) -> Result<u64, String> {
 
 #[tauri::command]
 fn write_debug_log(path: String, content: String) -> Result<(), String> {
-    // SECURITY: KHÔNG ghi theo đường dẫn tuỳ ý do caller cung cấp (tránh arbitrary file
-    // write / path traversal, và để không vượt phạm vi capability fs). Chỉ lấy phần TÊN FILE
-    // rồi ghi vào %APPDATA%\PrynX\logs. file_name() đã loại bỏ mọi thành phần thư mục/`..`.
+    // SECURITY: chỉ lấy TÊN FILE (chống path traversal) rồi ghi vào %APPDATA%\PrynX\logs.
     let appdata = std::env::var("APPDATA").map_err(|_| "APPDATA not found".to_string())?;
     let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Lỗi tạo thư mục log: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Loi tao thu muc log: {}", e))?;
     let fname = std::path::Path::new(&path)
         .file_name()
         .and_then(|n| n.to_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("debug.txt");
     let target = dir.join(fname);
-    std::fs::write(&target, &content).map_err(|e| format!("Lỗi ghi debug: {}", e))
+    std::fs::write(&target, &content).map_err(|e| format!("Loi ghi debug: {}", e))
 }
 
 #[tauri::command]
@@ -751,6 +795,19 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Re
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Panic hook: ghi mọi panic (message + vị trí) ra %APPDATA%\PrynX\logs\rust_panic.log
+    // để chẩn đoán sự cố ở bản release (nơi không có stdout/console).
+    std::panic::set_hook(Box::new(|info| {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("rust_panic.log")) {
+                use std::io::Write;
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                let _ = writeln!(f, "[{}] PANIC: {} | at {:?}", now, info, info.location());
+            }
+        }
+    }));
     // ─── FIX "chỉ nhanh khi mở DevTools": WebView2 trên cửa sổ transparent hay tính
     // NHẦM là bị che (occluded) → bóp ga (throttle) timer + render xuống cực chậm
     // (load file ~7s). Mở DevTools ép cửa sổ "active" nên hết throttle → nhanh tức thì.
@@ -820,6 +877,19 @@ pub fn run() {
             // ══════════════════════════════════════════════════════════════
             #[cfg(not(debug_assertions))]
             {
+                // QUAN TRỌNG (root-cause "release render chết / thumbnail vỡ"):
+                // pdfium.dll là DLL BÊN THỨ 3, KHÔNG ký bởi Microsoft. Nếu bật
+                // ProcessSignaturePolicy(MicrosoftSignedOnly) TRƯỚC khi nạp nó thì
+                // LoadLibrary(pdfium.dll) bị chặn → error 577 (ERROR_INVALID_IMAGE_HASH)
+                // → mọi render PDF (main view + thumbnail + bình tem) thất bại.
+                // Một DLL đã nạp vào tiến trình thì policy KHÔNG gỡ ra → warmup pdfium
+                // NGAY TẠI ĐÂY (trước policy) để nó hoạt động, mà vẫn chặn được DLL lạ
+                // bị inject về SAU. (Dev không chạy block này nên không gặp lỗi.)
+                match ensure_pdfium() {
+                    Ok(_) => log::info!("[SECURITY] pdfium warmed up before signature policy"),
+                    Err(e) => log::error!("[SECURITY] pdfium warmup FAILED before policy: {}", e),
+                }
+
                 unsafe {
                     use std::ffi::c_void;
                     
@@ -935,6 +1005,10 @@ pub fn run() {
                         // không kèm token Ed25519 hợp lệ (do edge function Supabase phát).
                         // Client bị crack không giả được token → không gọi được backend.
                         ("PRYNX_ENFORCE_LICENSE_TOKEN", "true"),
+                        // Cận chống-lùi-giờ PHẢI ≥ TTL token edge function cấp (hiện 7 ngày).
+                        // Set qua env để override default compiled cũ mà KHÔNG cần recompile Nuitka.
+                        // 8 ngày = 8*24*60*60 = 691200s (7 ngày TTL + 1 ngày dư).
+                        ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
                     ])
                     .spawn()
                     .expect("Failed to spawn sidecar");

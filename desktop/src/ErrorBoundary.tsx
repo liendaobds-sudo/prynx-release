@@ -30,12 +30,12 @@ export class ErrorBoundary extends React.Component<Props, State> {
       // PROD: chỉ thông báo thân thiện + nút tải lại, không lộ stack (audit §12.4).
       const isDev = import.meta.env.DEV;
       return (
-        <div style={{ padding: '2rem', background: '#330000', color: '#ffaaaa', height: '100vh', fontFamily: 'monospace' }}>
+        <div style={{ padding: '2rem', background: '#330000', color: '#ffaaaa', height: '100vh', overflow: 'auto', fontFamily: 'monospace' }}>
           <h1>Đã xảy ra lỗi</h1>
           {isDev ? (
             <>
               <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.error?.message}</pre>
-              <pre style={{ marginTop: '1rem', color: '#ff5555' }}>{this.state.error?.stack}</pre>
+              <pre style={{ marginTop: '1rem', color: '#ff5555', whiteSpace: 'pre-wrap' }}>{this.state.error?.stack}</pre>
             </>
           ) : (
             <p style={{ marginTop: '1rem' }}>

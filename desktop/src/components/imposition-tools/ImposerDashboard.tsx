@@ -363,7 +363,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
 
     // Auto Catalog: fetch page dimensions + plan
     useEffect(() => {
-        if (!pdfFile || (!s.autoCatalog && s.taskMode !== 'booklet')) return;
+        if (!pdfFile) return;
         let isActive = true;
         s.setSourcePageDim(null); // Clear old cache immediately
         const loadPdfMetadata = async () => {
@@ -444,7 +444,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         };
         loadPdfMetadata();
         return () => { isActive = false; };
-    }, [pdfFile, s.autoCatalog, s.taskMode]);
+    }, [pdfFile]);
 
     // ═══ Tự nhận bleed từ file (TrimBox vs MediaBox) → điền sẵn vào ô bleed UI ═══
     // Chỉ điền 1 lần khi MỞ FILE MỚI; người dùng vẫn tự sửa lại bleed mong muốn sau đó.
@@ -979,7 +979,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 onCapacityChange={(cap) => { s.setPreviewCapacity(cap); s.setPreviewCapacities({ ...s.previewCapacities, [safePageIdx]: cap }); }}
                                 onMixedPlacedByPage={(m) => s.setMixedPlacedByPage(m)}
                                 fileId={stickerLike ? selectionFileId : undefined}
-                                filePath={(stickerLike && (window as any).__TAURI_INTERNALS__) ? ((pdfFile as any)?.path || undefined) : undefined}
+                                filePath={((window as any).__TAURI_INTERNALS__) ? ((pdfFile as any)?.path || undefined) : undefined}
                                 pageIdx={safePageIdx}
                                 bleed={s.bleed}
                             />

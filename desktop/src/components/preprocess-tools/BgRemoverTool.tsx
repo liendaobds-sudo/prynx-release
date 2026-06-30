@@ -11,6 +11,18 @@ interface Props {
     pdfFile: File | null;
 }
 
+// ─── Helper: MIME từ phần mở rộng ────────────────────────────────────────────
+function mimeFromName(name: string): string {
+    const n = name.toLowerCase();
+    if (n.endsWith('.png')) return 'image/png';
+    if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg';
+    if (n.endsWith('.webp')) return 'image/webp';
+    if (n.endsWith('.gif')) return 'image/gif';
+    if (n.endsWith('.bmp')) return 'image/bmp';
+    if (n.endsWith('.tif') || n.endsWith('.tiff')) return 'image/tiff';
+    return 'application/octet-stream';
+}
+
 // ─── Helper: Add files ──────────────────────────────────────────────────────
 async function normalizeAndAddFiles(files: File[], tabId: string) {
     const store = useBgRemoverStore.getState();
@@ -23,15 +35,31 @@ async function normalizeAndAddFiles(files: File[], tabId: string) {
         let url = '';
         let fileObj = file;
         if (path && (window as any).__TAURI_INTERNALS__) {
+            // Trong app Tauri đóng gói, file picker trả về File([]) RỖNG chỉ mang theo `path`.
+            // Phải đọc bytes thật từ đĩa (capabilities cho phép $HOME/$DESKTOP/$DOCUMENT/...).
+            // Lưu ý: KHÔNG dựa vào lệnh Rust image::open cho mọi định dạng — crate `image`
+            // không bật webp/gif nên sẽ throw và làm preview vỡ ở bản release.
             try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                const uint8Arr: Uint8Array = await invoke('normalize_image_to_png', { filePath: path });
-                const blob = new Blob([uint8Arr as any], { type: 'image/png' });
-                url = URL.createObjectURL(blob);
-                fileObj = new File([blob], file.name.replace(/\.[^/.]+$/, '.png'), { type: 'image/png' });
+                const { readFile } = await import('@tauri-apps/plugin-fs');
+                const raw = await readFile(path); // Uint8Array dữ liệu thật
+                const isTiff = /\.tiff?$/i.test(file.name);
+                if (isTiff) {
+                    // Webview không render được TIFF → convert sang PNG bằng Rust (feature tiff đã bật).
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    const png: ArrayBuffer = await invoke('normalize_image_bytes', { bytes: raw });
+                    const blob = new Blob([png as any], { type: 'image/png' });
+                    url = URL.createObjectURL(blob);
+                    fileObj = new File([blob], file.name.replace(/\.[^/.]+$/, '.png'), { type: 'image/png' });
+                } else {
+                    // png/jpg/webp/gif/bmp đều được webview hiển thị trực tiếp.
+                    const mime = mimeFromName(file.name);
+                    const blob = new Blob([raw as any], { type: mime });
+                    url = URL.createObjectURL(blob);
+                    fileObj = new File([blob], file.name, { type: mime });
+                }
                 Object.defineProperty(fileObj, 'path', { value: path });
             } catch (e) {
-                console.error('Rust normalize failed:', e);
+                console.error('Tauri image load failed:', e);
                 url = URL.createObjectURL(file);
             }
         } else {

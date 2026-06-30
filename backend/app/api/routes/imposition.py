@@ -1453,10 +1453,6 @@ async def preview_layout(req: PreviewLayoutRequest):
                 trim_w = max(req.item_w - 2 * bleed_pt, 1.0)
                 trim_h = max(req.item_h - 2 * bleed_pt, 1.0)
                 _split_gap_val = getattr(req, 'split_gap', None)
-                logger.info(f"[PREVIEW SOLVER DEBUG] usable_w={compute_w:.2f} usable_h={compute_h:.2f} "
-                            f"trim_w={trim_w:.2f} trim_h={trim_h:.2f} gap_x={req.gap_x:.2f} gap_y={req.gap_y:.2f} "
-                            f"strategy={req.strategy} secondary_gap(split_gap)={_split_gap_val} "
-                            f"item_w={req.item_w:.2f} item_h={req.item_h:.2f} bleed={bleed_pt:.2f}")
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
                     result = solve_manual(trim_w, trim_h, req.gap_x, req.gap_y, req.cols, req.rows)
                 else:

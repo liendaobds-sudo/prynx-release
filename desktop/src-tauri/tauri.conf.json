@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:8321 https://*.supabase.co; script-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com asset: http://asset.localhost https://asset.localhost data: blob:; img-src 'self' asset: http://asset.localhost http://localhost:8321 data: blob: tile:; worker-src 'self' blob:;",
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost asset: http://asset.localhost https://asset.localhost http://localhost:8321 https://*.supabase.co; script-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com asset: http://asset.localhost https://asset.localhost data: blob:; img-src 'self' asset: http://asset.localhost https://asset.localhost http://tauri.localhost http://tile.localhost http://localhost:8321 data: blob: tile:; worker-src 'self' blob:;",
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -59,7 +59,8 @@
     ],
     "resources": [
       "binaries/gs/**/*",
-      "binaries/tesseract/**/*"
+      "binaries/tesseract/**/*",
+      "bin/pdfium.dll"
     ],
     "icon": [
       "icons/32x32.png",
@@ -78,6 +79,11 @@
         "role": "Editor",
         "mimeType": "application/pdf"
       }
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
+    }
   }
 }

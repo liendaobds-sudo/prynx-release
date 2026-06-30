@@ -8,6 +8,29 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8321';
 
 export const getApiUrl = () => `${API_BASE}/api`;
 
+// ─── [DIAG] Logger frontend ghi ra %APPDATA%\PrynX\logs\frontend_debug.log ───
+const _dbgBuffer: string[] = [];
+let _dbgWriting = false;
+export function debugLog(msg: string): void {
+  try {
+    const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    _dbgBuffer.push(line);
+    if (_dbgBuffer.length > 300) _dbgBuffer.splice(0, _dbgBuffer.length - 300);
+    if (_dbgWriting) return;
+    _dbgWriting = true;
+    const flush = async () => {
+      try {
+        const invoke = (window as any).__PRYNX_INVOKE__
+          || (await import('@tauri-apps/api/core')).invoke;
+        await invoke('write_debug_log', { path: 'frontend_debug.log', content: _dbgBuffer.join('\n') });
+      } catch { /* ignore */ }
+      _dbgWriting = false;
+    };
+    void flush();
+  } catch { /* ignore */ }
+}
+
+
 /**
  * Get license credential headers for authenticated API calls.
  * 
@@ -92,6 +115,55 @@ export async function authenticatedFetch(url: string, init?: RequestInit): Promi
     ...(init?.headers || {}),
   };
   return fetch(url, { ...init, headers: mergedHeaders });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Global fetch interceptor — TỰ ĐỘNG ký MỌI request tới backend sidecar.
+//
+// Lý do: nhiều nơi trong app gọi backend bằng `fetch` TRẦN (vd usePdfLoader fallback
+// /imposition/pdf-meta, pdfImposer, LayerPanel...) → ở bản release (DEV_MODE=false,
+// bắt buộc sidecar token) sẽ bị 403 "invalid sidecar token". Thay vì sửa từng call
+// site (dễ sót), ta chặn ở 1 chỗ: bất kỳ fetch nào trỏ tới backend host mà CHƯA có
+// header X-PrynX-Token thì tự đính header ký (qua getLicenseHeaders → Rust sign).
+// An toàn: chỉ chạm URL backend; lỗi gì cũng fallback fetch gốc; không ký 2 lần.
+// ─────────────────────────────────────────────────────────────────────────────
+let _backendFetchPatched = false;
+export function installBackendFetchAuth(): void {
+  if (_backendFetchPatched || typeof window === 'undefined' || !window.fetch) return;
+  _backendFetchPatched = true;
+  const origFetch = window.fetch.bind(window);
+  const isBackendUrl = (u: string): boolean =>
+    !!u && (u.startsWith(API_BASE) || u.startsWith('http://localhost:8321') || u.startsWith('http://127.0.0.1:8321'));
+
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    try {
+      let url = '';
+      if (typeof input === 'string') url = input;
+      else if (input instanceof URL) url = input.href;
+      else if (input && typeof (input as Request).url === 'string') url = (input as Request).url;
+
+      if (isBackendUrl(url)) {
+        if (input instanceof Request) {
+          if (!input.headers.has('X-PrynX-Token')) {
+            const auth = await getLicenseHeaders(url);
+            const merged = new Headers(input.headers);
+            for (const k in auth) if (!merged.has(k)) merged.set(k, auth[k]);
+            return origFetch(new Request(input, { headers: merged }));
+          }
+        } else {
+          const merged = new Headers((init?.headers as HeadersInit) || undefined);
+          if (!merged.has('X-PrynX-Token')) {
+            const auth = await getLicenseHeaders(url);
+            for (const k in auth) if (!merged.has(k)) merged.set(k, auth[k]);
+            return origFetch(url, { ...init, headers: merged });
+          }
+        }
+      }
+    } catch {
+      /* bất kỳ lỗi nào → dùng fetch gốc, không chặn request */
+    }
+    return origFetch(input as any, init);
+  };
 }
 
 

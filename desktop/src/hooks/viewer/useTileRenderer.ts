@@ -62,11 +62,26 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
             return Promise.resolve(pdfUrl ? pdfUrl + '#keep' : '');
         }
 
-        // Native file path → use tile:// custom protocol (zero IPC overhead)
+        // Native file path. Ở RELEASE, protocol tile.localhost (img declarative / new Image /
+        // fetch) ĐỀU không hiển thị được — chỉ cache cũ mới hiện. Cách đáng tin duy nhất:
+        // lấy bytes JPEG qua IPC `invoke('render_pdf_page')` (giống tách nền dùng invoke→blob,
+        // đã chạy ở release) rồi tạo blob:. LiveTile tự cache + revoke blob.
         if ((file as any)?.path) {
-            const encodedPath = encodeURIComponent((file as any).path);
-            const url = `http://tile.localhost/${encodedPath}/${pageNum}/${zoomScale}/${rotation}/${clipX || 0}/${clipY || 0}/${clipW || 0}/${clipH || 0}`;
-            return Promise.resolve(url);
+            return (async () => {
+                const { invoke } = await import('@tauri-apps/api/core');
+                const bytes: ArrayBuffer = await invoke('render_pdf_page', {
+                    filePath: (file as any).path,
+                    page: pageNum,
+                    zoom: zoomScale,
+                    rotation: rotation || 0,
+                    clipX: (clipX && clipX !== 0) ? clipX : null,
+                    clipY: (clipY && clipY !== 0) ? clipY : null,
+                    clipW: (clipW && clipW !== 0) ? clipW : null,
+                    clipH: (clipH && clipH !== 0) ? clipH : null,
+                });
+                const blob = new Blob([bytes as any], { type: 'image/jpeg' });
+                return URL.createObjectURL(blob);
+            })();
         }
 
         // Fallback: PDF.js canvas rendering for non-native files

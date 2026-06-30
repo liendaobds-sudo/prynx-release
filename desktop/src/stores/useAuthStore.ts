@@ -42,6 +42,27 @@ async function deleteFromDPAPI(): Promise<void> {
   } catch { /* ignore */ }
 }
 
+// ── Nạp license key vào cache VALIDATED_KEYS của Rust ──
+// sign_api_request (Rust) CHỈ ký SIDECAR token khi key đã có trong cache này. Phải gọi ở
+// MỌI nhánh mà app coi license là dùng được (VALID / RATE_LIMITED / grace offline) — nếu
+// không, app vào được nhưng mọi request backend bị 403 "invalid sidecar token".
+// Best-effort: không có Tauri (dev/web) thì bỏ qua êm.
+async function ensureKeyRegisteredInRust(licenseKey: string): Promise<void> {
+  if (!licenseKey) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    let hwid = '';
+    try {
+      hwid = await invoke('get_hardware_id') as string;
+      if (hwid) localStorage.setItem(HWID_STORAGE_KEY, hwid);
+    } catch {
+      hwid = localStorage.getItem(HWID_STORAGE_KEY) || '';
+    }
+    const token = useAuthStore.getState().licenseToken || '';
+    await invoke('register_validated_key', { licenseKey, hwid, token });
+  } catch { /* ignore (dev/web mode) */ }
+}
+
 // ── DPAPI-backed license TOKEN storage (C-1) ──
 // Token Ed25519 do server ký được lưu mã hoá (DPAPI) để khi MỞ LẠI app lúc OFFLINE
 // vẫn còn token hợp lệ gửi sidecar (backend release ép token). Token đã ràng HWID.
@@ -411,6 +432,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
         
         // Within 24h grace period
+        // Nạp cache Rust để sidecar token được ký kể cả khi offline/grace (dùng token đã
+        // lưu DPAPI). Không có cái này → vào app được nhưng backend 403.
+        await ensureKeyRegisteredInRust(licenseKey);
         set({ licenseValid: true, lastValidated: Date.now() });
         return true;
       }
@@ -431,6 +455,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       
       // VECTOR #8: Rate limited
       if (data && data.status === 'RATE_LIMITED') {
+        // Vẫn nạp cache Rust để không bị 403 backend khi Supabase rate-limit (hay gặp khi
+        // chạy dev + release cùng máy cùng license → đập RPC quá nhiều).
+        await ensureKeyRegisteredInRust(licenseKey);
         set({ licenseValid: true, lastValidated: Date.now() }); // Grace through, don't punish user
         return true;
       }

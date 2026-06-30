@@ -251,7 +251,7 @@ _CLOCK_SKEW_SECONDS = 300  # dung sai NTP 5 phút
 # thể vô hiệu bằng cách xoá file. Để dư 1h trên TTL nhằm không false-positive nếu
 # chính sách TTL đổi nhẹ; phải LUÔN ≥ TTL token thật. Có thể chỉnh qua env (dev/test).
 _MAX_TOKEN_LIFETIME_SECONDS = int(
-    os.environ.get("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", str(3 * 60 * 60))  # mặc định 3h (TTL 2h + 1h dư)
+    os.environ.get("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", str(8 * 24 * 60 * 60))  # mặc định 8 ngày (TTL server 7 ngày + 1 ngày dư)
 )
 
 
