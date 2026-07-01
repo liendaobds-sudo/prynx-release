@@ -102,7 +102,7 @@ if ($LASTEXITCODE -ne 0) { throw "Build that bai." }
 
 # ---- 4. Tim installer NSIS + file chu ky .sig ----
 $nsisDir = "$ROOT\desktop\src-tauri\target\release\bundle\nsis"
-$setup = Get-ChildItem "$nsisDir\*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+$setup = Get-ChildItem "$nsisDir\*$Version*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $setup) { throw "Khong tim thay *-setup.exe trong $nsisDir" }
 $sigFile = "$($setup.FullName).sig"
 if (-not (Test-Path $sigFile)) { throw "Khong tim thay file chu ky: $sigFile (createUpdaterArtifacts chua bat? hoac ky that bai?)" }
