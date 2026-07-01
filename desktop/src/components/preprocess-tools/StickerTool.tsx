@@ -90,20 +90,17 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
-    const [progress, setProgress] = useState('');
     const [error, setError] = useState('');
     const [warning, setWarning] = useState('');
     const [isSuccess, setIsSuccess] = useState(false);
 
     const runVectorMirror = async () => {
         // Step 1: Upload
-        setProgress('Đang tải file lên...');
         const uploadRes = await uploadPDF((await getWorkingFile()) || pdfFile!);
         let currentFid = uploadRes.id;
         
         // Step 2: Auto Trim (if requested)
         if (trimWhiteEdge) {
-            setProgress('Đang xén bỏ lề trắng...');
             const trimRes = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ file_id: currentFid, pages: null, margin_mm: 0 }),
@@ -116,12 +113,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             const trimBlob = await dlRes.blob();
             const trimFile = new File([trimBlob], 'trimmed.pdf', { type: 'application/pdf' });
             
-            setProgress('Đang chuẩn bị xử lý lật gương...');
             const reUploadRes = await uploadPDF(trimFile);
             currentFid = reUploadRes.id;
         }
         
-        setProgress('Đang lật gương nội dung mép ra vùng bù xén...');
         const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/mirror-bleed`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ file_id: currentFid, bleed_mm: bleedMm, pages: null }),
@@ -130,7 +125,6 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         if (!bleedData.success) throw new Error(bleedData.detail || 'Lỗi tạo bù xén Vector');
         
         // Final Output
-        setProgress('Đang tải file hoàn thiện...');
         const finalRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${bleedData.output_filename}`);
         return await finalRes.blob();
     };
@@ -140,7 +134,6 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         let targetFile = (await getWorkingFile()) || pdfFile!;
         
         if (productType === 'rectangle' && trimWhiteEdge) {
-            setProgress('Đang xén bỏ lề trắng...');
             const uploadRes = await uploadPDF(targetFile);
             currentFid = uploadRes.id;
             
@@ -151,14 +144,12 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             const trimData = await trimRes.json();
             if (!trimData.success) throw new Error(trimData.detail || 'Lỗi xóa lề trắng');
             
-            setProgress('Đang tải file đã xén để chuẩn bị bù màu...');
             const dlRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${trimData.output_filename}`);
             const trimBlob = await dlRes.blob();
             targetFile = new File([trimBlob], 'trimmed.pdf', { type: 'application/pdf' });
         }
 
         // We use uploadPDF first to bypass FastAPI multipart bugs when mixing files and text fields
-        setProgress('Đang tải file lên server...');
         const uploadRes = await uploadPDF(targetFile);
         
         const formData = new FormData();
@@ -173,7 +164,6 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         formData.append('bleed_color_type', bleedColorType); // 'image', 'inpaint', 'solid'
         formData.append('bleed_color_hex', bleedColorHex);
         
-        setProgress('Hệ thống đang phân tích và xử lý bù xén...');
         const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, {
             method: 'POST',
             body: formData,
@@ -208,7 +198,6 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         setIsProcessing(true);
         setError('');
         setWarning('');
-        setProgress('Đang chuẩn bị dữ liệu...');
 
         // ─── Recipe record hook ─── (params tất định; phát lại dò contour lại trên file mới)
         recipeRecorder.noteOperation('sticker_dieline', {
@@ -225,7 +214,6 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 resultBlob = await runOpenCVBleed();
             }
 
-            setProgress('');
             if (onFileFixed) {
                 const prefix = productType === 'rectangle' ? 'autobleed' : 'sticker';
                 const baseName = pdfFile.name.replace(/\.[^/.]+$/, "");
@@ -235,7 +223,6 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         } catch (e: any) {
             recipeRecorder.discardPending();
             setError(e.message || 'Đã xảy ra lỗi không xác định.');
-            setProgress('');
         } finally {
             setIsProcessing(false);
         }
@@ -546,14 +533,6 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                     >
                         Quay lại chỉnh sửa bù xén
                     </button>
-                </div>
-            )}
-
-            {/* Progress */}
-            {progress && (
-                <div className="flex items-center gap-3 bg-rose-50 dark:bg-rose-900/20 p-3 rounded-lg border border-rose-200 dark:border-rose-800/50 mt-2">
-                    <div className="w-5 h-5 rounded-full border-2 border-rose-500 border-t-transparent animate-spin shrink-0" />
-                    <span className="text-[12px] text-rose-700 dark:text-rose-300 font-medium">{progress}</span>
                 </div>
             )}
 

@@ -100,56 +100,27 @@ static PDFIUM_STATIC: OnceLock<SyncPdfium> = OnceLock::new();
 static DOC_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedDocument>>>> = OnceLock::new();
 
 /// Bind thư viện pdfium MỘT LẦN (OnceLock). Tách hàm để vừa dùng trong các lệnh
-/// render vừa dùng cho WARMUP lúc khởi động (tránh cold-start ~2-3s ở lần mở file đầu).
-/// Ghi 1 dòng chẩn đoán (có timestamp) ra %APPDATA%\PrynX\logs\pdfium_load.log
-fn diag_log(msg: &str) {
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
-        let _ = std::fs::create_dir_all(&dir);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("pdfium_load.log")) {
-            use std::io::Write;
-            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-            let _ = writeln!(f, "[{}] {}", now, msg);
-        }
-    }
-}
-
 /// Tìm & bind pdfium.dll. Thử các đường dẫn TUYỆT ĐỐI cạnh executable trước
 /// (release: working-dir là thư mục cài đặt, không phải thư mục exe → "./bin/" sai),
 /// sau đó mới tới đường dẫn tương đối (dev) và system library.
 fn bind_pdfium() -> Result<Box<dyn PdfiumLibraryBindings>, String> {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
-    match std::env::current_exe() {
-        Ok(exe) => {
-            diag_log(&format!("current_exe = {:?}", exe));
-            if let Some(parent) = exe.parent() {
-                dirs.push(parent.to_path_buf());            // <exe_dir>/pdfium.dll
-                dirs.push(parent.join("bin"));              // <exe_dir>/bin/pdfium.dll (resource bundle)
-            }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            dirs.push(parent.to_path_buf());            // <exe_dir>/pdfium.dll
+            dirs.push(parent.join("bin"));              // <exe_dir>/bin/pdfium.dll (resource bundle)
         }
-        Err(e) => diag_log(&format!("current_exe FAILED: {:?}", e)),
     }
-    diag_log(&format!("current_dir = {:?}", std::env::current_dir()));
     dirs.push(std::path::PathBuf::from("./bin"));        // dev: working-dir = src-tauri
     dirs.push(std::path::PathBuf::from("."));
     for dir in &dirs {
         let lib = Pdfium::pdfium_platform_library_name_at_path(dir);
-        let exists = lib.exists();
-        match Pdfium::bind_to_library(&lib) {
-            Ok(bindings) => {
-                diag_log(&format!("BIND OK via '{}' (exists={})", lib.display(), exists));
-                return Ok(bindings);
-            }
-            Err(e) => diag_log(&format!("bind FAIL '{}' (exists={}): {:?}", lib.display(), exists, e)),
+        if let Ok(bindings) = Pdfium::bind_to_library(&lib) {
+            return Ok(bindings);
         }
     }
-    match Pdfium::bind_to_system_library() {
-        Ok(b) => { diag_log("BIND OK via system library"); Ok(b) }
-        Err(e) => {
-            diag_log(&format!("ALL BIND FAILED, system also failed: {:?}", e));
-            Err(format!("Khong tim thay pdfium.dll (da thu canh exe, ./bin va system): {:?}", e))
-        }
-    }
+    Pdfium::bind_to_system_library()
+        .map_err(|e| format!("Khong tim thay pdfium.dll (da thu canh exe, ./bin va system): {:?}", e))
 }
 
 /// Bind thư viện pdfium MỘT LẦN. Trả về Result để KHÔNG panic khi không tìm thấy
@@ -254,9 +225,6 @@ async fn get_pdf_metadata(app_handle: tauri::AppHandle, file_path: String) -> Re
         let document_arc = Arc::clone(cache.get(&file_path).unwrap());
         drop(cache);
 
-        let filename = std::path::Path::new(&file_path).file_name().unwrap_or_default().to_string_lossy();
-        append_perf_log(app_handle, format!("[BACKEND] PDFium đã mở file {} vào RAM. Đọc file mất {}ms. Tổng thời gian init: {}ms", filename, load_ms, start_time.elapsed().as_millis()));
-        
         let handle = document_arc.pool[0].get().unwrap();
         let _guard = handle.lock.lock().unwrap();
         let document = &handle.doc;
@@ -386,15 +354,21 @@ fn render_tile_jpeg(
     let pool_size = document_arc.pool.len();
     let pool_idx = document_arc.next.fetch_add(1, Ordering::Relaxed) % pool_size;
     
-    // LAZY INITIALIZATION of the DocHandle for this core!
-    let handle = document_arc.pool[pool_idx].get_or_init(|| {
+    // LAZY INITIALIZATION of the DocHandle. KHÔNG dùng get_or_init + .expect():
+    // .expect() panic trong spawn_blocking → "Task panicked" che lỗi thật (file PDF
+    // bị xoá/khoá/hỏng giữa phiên). Khởi tạo thủ công + propagate lỗi sạch (§15.7).
+    let cell = &document_arc.pool[pool_idx];
+    if cell.get().is_none() {
         let doc = {
-            let _guard = LOAD_LOCK.lock().unwrap();
-            let bytes = std::fs::read(file_path).expect("FS read failed");
-            pdfium.load_pdf_from_byte_vec(bytes, None).expect("Lazy load failed")
+            let _guard = LOAD_LOCK.lock().map_err(|_| "Load lock poisoned".to_string())?;
+            let bytes = std::fs::read(file_path).map_err(|e| format!("FS read error (lazy): {}", e))?;
+            pdfium.load_pdf_from_byte_vec(bytes, None)
+                .map_err(|e| format!("Failed to open PDF (lazy): {:?}", e))?
         };
-        DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(4)) }
-    });
+        // Race-safe: nếu thread khác set trước, set này trả Err → bỏ qua (doc thừa drop, vô hại).
+        let _ = cell.set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(4)) });
+    }
+    let handle = cell.get().ok_or_else(|| "DocHandle init failed".to_string())?;
     
     let start_render = std::time::Instant::now();
     let rgba_image = {
@@ -511,15 +485,7 @@ async fn render_pdf_page(
     clip_x: Option<i32>, clip_y: Option<i32>, clip_w: Option<i32>, clip_h: Option<i32>,
 ) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        diag_log(&format!("render_pdf_page ENTER page={} zoom={}", page, zoom));
-        // LƯU Ý: KHÔNG gọi append_perf_log ở đây — append_perf_log dùng app_handle.path()
-        // + chrono::Local::now() trong spawn_blocking và PANIC ở bản release ("Task panicked"),
-        // khiến render_pdf_page trả 500 → main view kẹt RENDERING + thumbnail vỡ. render_tile_jpeg
-        // tự thân chạy tốt (đã chứng minh qua protocol handler trả ảnh OK).
-        let data = match render_tile_jpeg(&file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h) {
-            Ok(d) => { diag_log(&format!("render_pdf_page OK page={} zoom={} bytes={}", page, zoom, d.len())); d }
-            Err(e) => { diag_log(&format!("render_pdf_page FAIL page={} zoom={}: {}", page, zoom, e)); return Err(e); }
-        };
+        let data = render_tile_jpeg(&file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h)?;
         Ok(tauri::ipc::Response::new(data))
     }).await.unwrap_or_else(|_| Err("Task panicked".into()))
 }
@@ -586,18 +552,47 @@ fn get_file_size(path: String) -> Result<u64, String> {
 }
 
 #[tauri::command]
-fn write_debug_log(path: String, content: String) -> Result<(), String> {
-    // SECURITY: chỉ lấy TÊN FILE (chống path traversal) rồi ghi vào %APPDATA%\PrynX\logs.
-    let appdata = std::env::var("APPDATA").map_err(|_| "APPDATA not found".to_string())?;
-    let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Loi tao thu muc log: {}", e))?;
-    let fname = std::path::Path::new(&path)
+fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
+    // GHI FILE NGUYÊN TỬ (chống hỏng/mất file gốc khi crash giữa lúc ghi đè).
+    // Ghi ra file TẠM cùng thư mục rồi std::fs::rename (= MoveFileEx REPLACE_EXISTING
+    // trên Windows, rename(2) trên Unix → thay thế NGUYÊN TỬ trên cùng volume). Lệnh
+    // Rust nên KHÔNG vướng scope plugin-fs → dùng được cho path tùy ý user chọn.
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let allowed = ["pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "svg", "csv", "txt", "json"];
+    if !allowed.contains(&ext.as_str()) {
+        return Err(format!("File type .{} not allowed", ext));
+    }
+    if is_sensitive_path(&path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    let target = std::path::Path::new(&path);
+    let dir = match target.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let fname = target
         .file_name()
         .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("debug.txt");
-    let target = dir.join(fname);
-    std::fs::write(&target, &content).map_err(|e| format!("Loi ghi debug: {}", e))
+        .unwrap_or("out");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(".{}.{}.{}.tmp", fname, std::process::id(), nanos));
+
+    if let Err(e) = std::fs::write(&tmp, &contents) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Lỗi ghi file tạm: {}", e));
+    }
+    if let Err(e) = std::fs::rename(&tmp, target) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Lỗi thay thế file đích: {}", e));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -825,7 +820,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_debug_log, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -993,9 +988,19 @@ pub fn run() {
                     }
                 }
 
-                let sidecar = app.shell().sidecar("pdf-inspector-backend")
-                    .expect("Failed to find sidecar binary");
-                let (_rx, mut child) = sidecar
+                let sidecar = match app.shell().sidecar("pdf-inspector-backend") {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("[SIDECAR] Khong tim thay binary sidecar: {}", e);
+                        let _ = std::process::Command::new("powershell")
+                            .args(["-NoProfile", "-Command",
+                                "[System.Windows.MessageBox]::Show('Khong tim thay tien trinh nen (pdf-inspector-backend.exe). Co the bi phan mem diet virus cach ly hoac thieu file. Vui long khoi phuc/loai tru file roi mo lai ung dung.', 'PrynX', 'OK', 'Error')"])
+                            .creation_flags(0x08000000)
+                            .output();
+                        std::process::exit(1);
+                    }
+                };
+                let spawn_result = sidecar
                     .args(["--port", "8321"])
                     .envs([
                         ("DEV_MODE", "false"),
@@ -1010,13 +1015,26 @@ pub fn run() {
                         // 8 ngày = 8*24*60*60 = 691200s (7 ngày TTL + 1 ngày dư).
                         ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
                     ])
-                    .spawn()
-                    .expect("Failed to spawn sidecar");
+                    .spawn();
+                let (_rx, mut child) = match spawn_result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("[SIDECAR] Spawn that bai: {}", e);
+                        let _ = std::process::Command::new("powershell")
+                            .args(["-NoProfile", "-Command",
+                                "[System.Windows.MessageBox]::Show('Khong khoi dong duoc tien trinh nen. Vui long mo lai ung dung; neu van loi hay lien he ho tro.', 'PrynX', 'OK', 'Error')"])
+                            .creation_flags(0x08000000)
+                            .output();
+                        std::process::exit(1);
+                    }
+                };
                 
                 // Write token via stdin pipe — no file on disk ever
                 let token_line = format!("TOKEN:{}\n", sidecar_token);
-                child.write(token_line.as_bytes())
-                    .expect("Failed to write token to sidecar stdin");
+                if let Err(e) = child.write(token_line.as_bytes()) {
+                    // Không panic: log lại; backend không có token sẽ tự từ chối request (fail-closed).
+                    log::error!("[SIDECAR] Ghi token vao stdin that bai: {}", e);
+                }
                 
                 log::info!("Python backend sidecar started on port 8321 (token via stdin pipe)");
             }

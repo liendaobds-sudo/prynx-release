@@ -19,58 +19,31 @@ class GPUAccelerator:
         return cls._instance
 
     def __init__(self):
-        self.is_available = False
-        self.backend = "cpu_multithread"
-        self.device_name = "Intel/AMD CPU"
-        self.plugin_size_mb = 0
-
-        import json
-        from pathlib import Path
-        config_path = Path("data/gpu_config.json")
-        if config_path.exists():
-            try:
-                with open(config_path, "r") as f:
-                    state = json.load(f)
-                    if state.get("installed"):
-                        self.is_available = True
-                        self.backend = "nvidia_cuda"
-                        self.device_name = "NVIDIA CUDA (Đã cài Plugin)"
-                        self.plugin_size_mb = 2048
-                        logger.info("Loaded persisted GPU state from config.")
-                        return
-            except Exception:
-                pass
+        # Mặc định LUÔN "đã kích hoạt" (theo yêu cầu: bỏ UI bật/tắt). Nếu có NVIDIA
+        # CUDA + CuPy dùng được → tăng tốc thật trên VRAM; nếu không → compute_diff_mask
+        # tự fallback CPU (OpenCV) an toàn. is_available=True chỉ để định tuyến; không
+        # cần plugin/mock gì cả.
+        self.is_available = True
+        self.backend = "nvidia_cuda"
+        self.device_name = "Card đồ họa rời (Tăng tốc phần cứng)"
+        self.plugin_size_mb = 2048
 
         try:
             import cupy as cp
             if cp.cuda.is_available():
+                # Xác minh NVRTC compile được (đủ CUDA Toolkit) mới dùng GPU thật.
+                _ = cp.array([1, 2, 3]) * 2
                 self.cp = cp
-                
-                # Proactively test NVRTC compilation to ensure full CUDA Toolkit is present
                 try:
-                    _ = cp.array([1, 2, 3]) * 2
-                    
-                    self.is_available = True
-                    self.backend = "nvidia_cuda"
-                    
-                    # Try to get GPU name safely
-                    try:
-                        props = cp.cuda.runtime.getDeviceProperties(0)
-                        if hasattr(props, 'name'):
-                            self.device_name = props['name'].decode('utf-8')
-                            self.plugin_size_mb = 2048 # Mock plugin size
-                    except Exception as e:
-                        self.device_name = "NVIDIA CUDA GPU"
-                        
-                    logger.info(f"🚀 GPU Acceleration ENABLED: {self.device_name}")
-                except Exception as compile_err:
-                    logger.warning(f"CUDA Hardware found, but NVRTC Compiler missing. Falling back to CPU. Error: {compile_err}")
-                    self.is_available = False
-                    self.device_name = "Intel/AMD CPU (Missing CUDA Toolkit)"
-            else:
-                logger.warning("CuPy installed but CUDA not available (No NVIDIA GPU).")
-        except ImportError:
-            logger.info("GPU Acceleration Disabled (Plugin not installed). Running on CPU Multi-threading.")
+                    props = cp.cuda.runtime.getDeviceProperties(0)
+                    if hasattr(props, 'name'):
+                        self.device_name = props['name'].decode('utf-8')
+                except Exception:
+                    pass
+                logger.info(f"🚀 GPU Acceleration ENABLED (CuPy): {self.device_name}")
+        except Exception:
+            # Không có CuPy/CUDA → vẫn "kích hoạt" nhưng compute_diff_mask dùng cv2 (CPU).
+            logger.info("GPU plugin (CuPy) not present → dùng CPU fallback trong compute_diff_mask.")
 
     def compute_diff_mask(self, gray1: np.ndarray, gray2: np.ndarray, threshold_val: int) -> np.ndarray:
         """

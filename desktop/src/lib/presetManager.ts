@@ -143,11 +143,17 @@ export async function savePreset(preset: ImpositionPreset): Promise<void> {
   
   const dir = await getPresetsDir();
   if (dir && tauriFs) {
+    const filePath = `${dir}/${preset.id}.json`;
+    const json = JSON.stringify(preset, null, 2);
+    // Ghi NGUYÊN TỬ (temp+rename) chống hỏng file preset nếu crash giữa lúc ghi đè.
     try {
-      const filePath = `${dir}/${preset.id}.json`;
-      await tauriFs.writeTextFile(filePath, JSON.stringify(preset, null, 2));
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('write_file_atomic', { path: filePath, contents: new TextEncoder().encode(json) });
       return;
-    } catch { /* fallback */ }
+    } catch {
+      // Fallback: ghi thẳng (lệnh atomic không khả dụng / path bị chặn).
+      try { await tauriFs.writeTextFile(filePath, json); return; } catch { /* → localStorage */ }
+    }
   }
   
   // Fallback: localStorage

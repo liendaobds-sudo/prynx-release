@@ -23,6 +23,7 @@ import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
 import { getApiUrl, uploadPDF, startVdpJobBackend, pollVdpJob, authenticatedFetch } from '../lib/api';
 import { recipeRecorder } from '../lib/recipe/RecipeRecorder';
 import { isOutputFile, isImposedOutputFile } from '../lib/constants';
+import { writeSnapshot, deleteSnapshot } from '../lib/recovery';
 import { getFileArrayBuffer, detectColorSpace } from '../lib/utils';
 import { saveVdpTemplate, loadVdpTemplate } from '../lib/vdpTemplate';
 import OutputPreviewTab, { type PlateOverlay } from './OutputPreviewTab';
@@ -58,6 +59,7 @@ interface Props {
     lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
     batchOutput?: { docs: { blob: Blob, filename: string, report?: string }[], mergedBlob: Blob };
     systemMergeFiles?: File[];
+    initialRecovery?: import('../lib/recovery').RecoverySnapshot;
 }
 
 export default function ImpositionTab(props: Props) {
@@ -78,7 +80,7 @@ export default function ImpositionTab(props: Props) {
     );
 }
 
-function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
+function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, initialRecovery, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
     //#region State & Hooks
     // ═══ All state from Zustand store ═══
     const {
@@ -409,6 +411,46 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         onDirtyChange?.(isDirty);
     }, [isDirty, onDirtyChange]);
+
+    // ── AUTOSAVE / CRASH RECOVERY (phương án A: metadata + path gốc) ──────────────
+    // Khi tab đang-sửa VÀ file có đường dẫn trên đĩa → ghi snapshot (debounce 8s) ra
+    // %APPDATA%\PrynX\recovery\. Crash/cúp điện → snapshot còn sót → App hỏi khôi phục
+    // lúc mở lại. Hết dirty (đã lưu) → xóa snapshot. Snapshot CHỈ chứa thao tác sửa
+    // (thứ tự/xoay trang + field VDP) + path gốc; KHÔNG lưu bytes PDF.
+    useEffect(() => {
+        if (!tabId) return;
+        const fpath = (file as any)?.path as string | undefined;
+        if (!isDirty || !fpath) {
+            void deleteSnapshot(tabId);
+            return;
+        }
+        const t = setTimeout(() => {
+            void writeSnapshot({
+                v: 1,
+                tabId,
+                title: originalFileName || file?.name || 'Tài liệu',
+                savedAt: new Date().toISOString(),
+                originalPath: fpath,
+                originalName: file?.name || originalFileName || 'document.pdf',
+                feature: initialFeature,
+                lockedMode,
+                viewerPageOrder: viewerPageOrder || undefined,
+                viewerPageRotations: viewerPageRotations || undefined,
+                vdpFields: (vdpFields && vdpFields.length) ? vdpFields : undefined,
+            });
+        }, 8000);
+        return () => clearTimeout(t);
+    }, [tabId, isDirty, file, originalFileName, viewerPageOrder, viewerPageRotations, vdpFields, initialFeature, lockedMode]);
+
+    // Áp KHÔI PHỤC một lần khi mở tab từ snapshot: dựng lại thao tác sửa trên file gốc.
+    useEffect(() => {
+        if (!initialRecovery) return;
+        if (initialRecovery.viewerPageOrder) setViewerPageOrder(initialRecovery.viewerPageOrder);
+        if (initialRecovery.viewerPageRotations) setViewerPageRotations(initialRecovery.viewerPageRotations);
+        if (initialRecovery.vdpFields) setVdpFields(initialRecovery.vdpFields);
+        setIsSaved(false);  // khôi phục = trạng thái ĐANG-SỬA
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Warn before closing the entire browser tab if there are unsaved changes
     useEffect(() => {
@@ -1359,7 +1401,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         try {
             if ((window as any).__TAURI_INTERNALS__) {
                 const { save } = await import('@tauri-apps/plugin-dialog');
-                const { writeFile } = await import('@tauri-apps/plugin-fs');
+                const { invoke } = await import('@tauri-apps/api/core');
+                // GHI NGUYÊN TỬ qua lệnh Rust (ghi temp cùng thư mục rồi rename = thay-thế
+                // nguyên tử) → KHÔNG để file gốc dở-dang/hỏng nếu crash giữa lúc ghi đè
+                // (audit an toàn dữ liệu). Bytes truyền dạng Uint8Array (Tauri v2 raw IPC).
+                const atomicWrite = (p: string, data: Uint8Array) =>
+                    invoke('write_file_atomic', { path: p, contents: data });
                 
                 let path: string | null = null;
                 // File kết quả sinh sẵn (VDP/batch) nằm ở thư mục tạm + blob in-memory chỉ
@@ -1395,20 +1442,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         return;
                     }
                     try {
-                        await writeFile(path, writeData);
+                        await atomicWrite(path, writeData);
                         const fileName = path.split(/[\\/]/).pop() || targetName;
                         if (didBake) _bakeInMemory(targetBlob, fileName, path);
                         setIsSaved(true);
                         onTitleChange?.(fileName);
                     } catch (writeErr: any) {
-                        if (writeErr.toString().includes('forbidden path')) {
+                        if (writeErr.toString().includes('forbidden path') || writeErr.toString().includes('not allowed')) {
                             const fallbackPath = await save({
                                 filters: [{ name: 'PDF', extensions: ['pdf'] }],
                                 defaultPath: targetName,
                                 title: 'Select save location (Original path restricted)'
                             });
                             if (fallbackPath) {
-                                await writeFile(fallbackPath, writeData);
+                                await atomicWrite(fallbackPath, writeData);
                                 const fileName = fallbackPath.split(/[\\/]/).pop() || targetName;
                                 if (didBake) _bakeInMemory(targetBlob, fileName, fallbackPath);
                                 setIsSaved(true);
@@ -1948,6 +1995,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onBleedUpdate={handleBleedUpdate}
                                                             onFileFixed={commitWorkingFile}
                                                             systemMergeFiles={systemMergeFiles}
+                                                            getWorkingFile={getWorkingFile}
                                                         />
                                                     )}
                                                 </div>

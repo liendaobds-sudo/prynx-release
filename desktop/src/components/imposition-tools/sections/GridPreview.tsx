@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { authenticatedFetch, getApiUrl } from "../../../lib/api";
+import { authenticatedFetch, getApiUrl, uploadPDF } from "../../../lib/api";
 import type { NupSettings } from "../types";
 
 export interface GridPreviewProps {
@@ -50,6 +50,12 @@ export interface GridPreviewProps {
   imposerMode?: string;
   cncTwoSided?: boolean;
   cncFlipEdge?: "long" | "short";
+  cutType?: string;
+  fillBlockGap?: number;
+  /** PDF đã bake chỉnh sửa viewer — parity preview≡output (không đọc file gốc). */
+  getWorkingFile?: () => Promise<File>;
+  /** Đổi khi xoay/xóa/sắp trang → invalidate cache path preview. */
+  previewSourceKey?: string;
 }
 
 // =====================================================================
@@ -186,22 +192,16 @@ function renderCellShape(
 
   const shapeKey = shapeType?.toUpperCase() || "RECTANGLE";
 
-  // Backend PDF rotation (CCW in PDF Y-up coords) appears as CW on screen (SVG Y-down):
-  //   isRotated only        → PDF rotate=90  → visually 90° CW on screen → SVG rotate(90)
-  //   isRotated180 only     → PDF rotate=180 → visually 180°             → SVG rotate(180)
-  //   isRotated+isRotated180→ PDF rotate=270 → visually 270° CW on screen→ SVG rotate(270)
+  // Đường vẽ SCHEMATIC (hình mẫu không có đường bế thật). Die-cut/CUSTOM giờ đi đường
+  // diePolylines (backend dùng CHUNG transform với file xuất) nên KHÔNG qua rotDeg này.
+  // Giữ nguyên công thức gốc cho các hình schematic để không đổi hành vi chế độ khác.
   let rotDeg = (isRotated ? 90 : 0) + (is180 ? 180 : 0);
 
-  // PENTAGON: When isRotated=true (90° rotation), the SVG and PDF backend interpret
-  // the combined is180 flip differently, causing peaks to point opposite directions.
-  // Fix: invert the is180 visual for the rotated pentagon case.
   if (shapeProps) {
     if (shapeKey === "PENTAGON") {
       if (isRotated) {
-        // Invert is180 effect for rotated pentagons to match renderer
         rotDeg = 90 + (is180 ? 0 : 180);
       }
-      // Also apply orientation correction
       if (shapeProps.pentagonOrientation === "down") {
         rotDeg += 180;
       }
@@ -661,6 +661,10 @@ export default function GridPreview(props: GridPreviewProps) {
     imposerMode,
     cncTwoSided,
     cncFlipEdge,
+    cutType,
+    fillBlockGap,
+    getWorkingFile,
+    previewSourceKey,
   } = props;
 
   const [expanded, setExpanded] = useState(false);
@@ -679,6 +683,47 @@ export default function GridPreview(props: GridPreviewProps) {
   useEffect(() => {
     onMixedPlacedByPageRef.current = onMixedPlacedByPage;
   }, [onMixedPlacedByPage]);
+
+  const previewPathCacheRef = useRef<{ key: string; path?: string; fileId?: string } | null>(null);
+
+  const resolvePreviewSource = async (): Promise<{ path?: string; file_id?: string }> => {
+    const cacheKey = previewSourceKey ?? "default";
+    if (getWorkingFile) {
+      try {
+        const wf = await getWorkingFile();
+        const nativePath = (wf as any)?.path as string | undefined;
+        if (nativePath) {
+          return { path: nativePath };
+        }
+        if (previewPathCacheRef.current?.key === cacheKey && previewPathCacheRef.current.path) {
+          return { path: previewPathCacheRef.current.path };
+        }
+        const bytes = new Uint8Array(await wf.arrayBuffer());
+        if ((window as any).__TAURI_INTERNALS__) {
+          const { tempDir, join } = await import("@tauri-apps/api/path");
+          const { writeFile } = await import("@tauri-apps/plugin-fs");
+          const tDir = await tempDir();
+          const tempPath = await join(tDir, `prynx_preview_${Date.now()}.pdf`);
+          await writeFile(tempPath, bytes);
+          previewPathCacheRef.current = { key: cacheKey, path: tempPath };
+          return { path: tempPath };
+        }
+        if (previewPathCacheRef.current?.key === cacheKey && previewPathCacheRef.current.fileId) {
+          return { file_id: previewPathCacheRef.current.fileId };
+        }
+        const up = await uploadPDF(wf);
+        if (up?.id) {
+          previewPathCacheRef.current = { key: cacheKey, fileId: up.id };
+          return { file_id: up.id };
+        }
+      } catch (e) {
+        console.warn("resolvePreviewSource failed, fallback fileId/path:", e);
+      }
+    }
+    if (filePath) return { path: filePath };
+    if (fileId) return { file_id: fileId };
+    return {};
+  };
 
   const usableW = Math.max(0, sheetWidth - marginLeft - marginRight);
   const usableH = Math.max(0, sheetHeight - marginTop - marginBottom);
@@ -727,6 +772,7 @@ export default function GridPreview(props: GridPreviewProps) {
       abortRef.current = controller;
 
       try {
+        const previewSrc = await resolvePreviewSource();
         // Convert ALL dimensions from mm → points to match shapeParams units
         const body = {
           usable_w: usableW * MM_TO_PT,
@@ -747,9 +793,11 @@ export default function GridPreview(props: GridPreviewProps) {
           margin_left: marginLeft * MM_TO_PT,
           margin_bottom: marginBottom * MM_TO_PT,
           margin_top: marginTop * MM_TO_PT,
-          ...(filePath ? { path: filePath } : (fileId ? { file_id: fileId } : {})),
+          ...(previewSrc.path ? { path: previewSrc.path } : (previewSrc.file_id ? { file_id: previewSrc.file_id } : {})),
           page_idx: pageIdx,
           bleed: bleed * MM_TO_PT, // bleed in points to match nup_engine
+          cut_type: cutType || "default",
+          fill_block_gap: fillBlockGap ?? 0,
           grouping_strategy: groupingStrategy,
           cluster_sizing_mode: clusterSizingMode,
           cluster_cols: clusterCols,
@@ -810,6 +858,13 @@ export default function GridPreview(props: GridPreviewProps) {
               absY: cell.absY != null ? cell.absY * PT_TO_MM : undefined,
               width: cell.width * PT_TO_MM,
               height: cell.height * PT_TO_MM,
+              // Đường bế THẬT (backend đã áp đúng transform của file xuất) — pt→mm,
+              // toạ độ TOP-DOWN trang. Frontend chỉ vẽ y nguyên, KHÔNG tự xoay/lật.
+              diePolylines: (cell as any).diePolylines
+                ? (cell as any).diePolylines.map((pl: number[][]) =>
+                    pl.map(([px, py]) => [px * PT_TO_MM, py * PT_TO_MM]),
+                  )
+                : undefined,
             }));
 
             const convertedResult: BackendLayoutResult = {
@@ -893,6 +948,10 @@ export default function GridPreview(props: GridPreviewProps) {
     imposerMode,
     cncTwoSided,
     cncFlipEdge,
+    cutType,
+    fillBlockGap,
+    getWorkingFile,
+    previewSourceKey,
   ]);
 
   // LƯU Ý: kiểm tra sheetWidth/sheetHeight <= 0 được dời xuống SAU svgCells useMemo
@@ -1016,6 +1075,12 @@ export default function GridPreview(props: GridPreviewProps) {
         isRotated: !!cell.isRotated,
         is180: !!cell.isRotated180,
         blockId: (cell as any).pageIdx ?? cell.blockId ?? 0,
+        // Đường bế THẬT → pixel (mm top-down * scale). Vẽ y nguyên, không xoay/lật.
+        diePolylinesPx: (cell as any).diePolylines
+          ? (cell as any).diePolylines.map((pl: number[][]) =>
+              pl.map(([xm, ym]) => [pad + xm * scale, pad + ym * scale]),
+            )
+          : undefined,
         idx,
       };
     });
@@ -1338,18 +1403,31 @@ export default function GridPreview(props: GridPreviewProps) {
                         : null) ?? (layoutResult as any)?.diePolygon;
                     return (
                       <g key={c.idx}>
-                        {renderCellShape(
-                          c.sx,
-                          c.sy,
-                          c.sw,
-                          c.sh,
-                          c.isRotated,
-                          c.is180,
-                          c.blockId,
-                          itemShape,
-                          parsedItemParams,
-                          c.idx,
-                          itemDiePoly,
+                        {(c as any).diePolylinesPx ? (
+                          <polygon
+                            points={(c as any).diePolylinesPx
+                              .flat()
+                              .map((pt: number[]) => `${pt[0]},${pt[1]}`)
+                              .join(" ")}
+                            fill={color.fill}
+                            stroke={color.stroke}
+                            strokeWidth={0.8}
+                            strokeLinejoin="round"
+                          />
+                        ) : (
+                          renderCellShape(
+                            c.sx,
+                            c.sy,
+                            c.sw,
+                            c.sh,
+                            c.isRotated,
+                            c.is180,
+                            c.blockId,
+                            itemShape,
+                            parsedItemParams,
+                            c.idx,
+                            itemDiePoly,
+                          )
                         )}
                         {isMixed && (
                           <text

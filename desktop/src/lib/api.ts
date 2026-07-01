@@ -8,28 +8,6 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8321';
 
 export const getApiUrl = () => `${API_BASE}/api`;
 
-// ─── [DIAG] Logger frontend ghi ra %APPDATA%\PrynX\logs\frontend_debug.log ───
-const _dbgBuffer: string[] = [];
-let _dbgWriting = false;
-export function debugLog(msg: string): void {
-  try {
-    const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    _dbgBuffer.push(line);
-    if (_dbgBuffer.length > 300) _dbgBuffer.splice(0, _dbgBuffer.length - 300);
-    if (_dbgWriting) return;
-    _dbgWriting = true;
-    const flush = async () => {
-      try {
-        const invoke = (window as any).__PRYNX_INVOKE__
-          || (await import('@tauri-apps/api/core')).invoke;
-        await invoke('write_debug_log', { path: 'frontend_debug.log', content: _dbgBuffer.join('\n') });
-      } catch { /* ignore */ }
-      _dbgWriting = false;
-    };
-    void flush();
-  } catch { /* ignore */ }
-}
-
 
 /**
  * Get license credential headers for authenticated API calls.
@@ -174,6 +152,22 @@ export async function prepareFileForUpload(file: File | any): Promise<File | Blo
       // Test if the actual blob content is empty despite the spoofed size
       const testSlice = file.slice(0, 1);
       if (testSlice.size === 0) {
+          // ⚡ PERF: lấy bytes qua ASSET PROTOCOL (convertFileSrc + fetch) — KÊNH RIÊNG,
+          // KHÔNG dùng kênh invoke IPC. Trước đây readFile() (plugin-fs) đọc cả file qua
+          // IPC → file lớn (vd 15MB) serialize làm NGHẼN kênh IPC → invoke('get_pdf_metadata')
+          // bị trễ 1.7-3.3s → spinner "Đang tải file PDF..." kéo dài. (Xem §15.10.)
+          try {
+              const { convertFileSrc } = await import('@tauri-apps/api/core');
+              const resp = await fetch(convertFileSrc(file.path));
+              if (resp.ok) {
+                  const realBlob = new Blob([await resp.arrayBuffer()], { type: file.type || 'application/pdf' });
+                  Object.defineProperty(realBlob, 'name', { value: file.name });
+                  Object.defineProperty(realBlob, 'path', { value: file.path });
+                  return realBlob;
+              }
+          } catch (e) {
+              console.warn("asset-fetch upload prep failed, fallback readFile:", e);
+          }
           try {
               const { readFile } = await import('@tauri-apps/plugin-fs');
               const fileData = await readFile(file.path);

@@ -46,11 +46,11 @@ import type { ImpositionPreset } from '../../lib/presetManager';
 import { toast } from '../ui/Toast';
 
 
-export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles }: ImposerDashboardProps) {
+export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, getWorkingFile }: ImposerDashboardProps) {
 
     // ═══ Workspace State ═══
     const {
-        isProcessing, error: globalError, file: pdfFile, viewerPageOrder,
+        isProcessing, error: globalError, file: pdfFile, viewerPageOrder, viewerPageRotations,
         setHighlightedIssue: onIssueSelect, setShowOutputPreview,
         detectedShapeType, detectedShapeParams, setDetectedShapeType,
         detectedShapesByPage, setDetectedShapesByPage,
@@ -58,7 +58,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         detectedShapeParamsByPage, setDetectedShapeParamsByPage, viewerActivePage, pdfUrl,
         selectionFileId, setSelectionFileId, hiddenOcgLayerIds
     } = useWorkspaceStore(useShallow(state => ({
-        isProcessing: state.isProcessing, error: state.error, file: state.file, viewerPageOrder: state.viewerPageOrder,
+        isProcessing: state.isProcessing, error: state.error, file: state.file, viewerPageOrder: state.viewerPageOrder, viewerPageRotations: state.viewerPageRotations,
         setHighlightedIssue: state.setHighlightedIssue, setShowOutputPreview: state.setShowOutputPreview,
         detectedShapeType: state.detectedShapeType, detectedShapeParams: state.detectedShapeParams, setDetectedShapeType: state.setDetectedShapeType,
         detectedShapesByPage: state.detectedShapesByPage, setDetectedShapesByPage: state.setDetectedShapesByPage,
@@ -340,12 +340,17 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         data.dimensions.forEach((d: any, i: number) => { newDims[i] = d; });
                         setDetectedDimensionsByPage(newDims);
                     }
+                    let newParams: Record<number, any> = {};
                     if (data.shapeParams) {
-                        const newParams: Record<number, any> = {};
                         data.shapeParams.forEach((p: any, i: number) => { newParams[i] = p; });
                         setDetectedShapeParamsByPage(newParams);
                     }
                     setDetectedShapesByPage(newShapes);
+                    const activeIdx = (viewerPageOrder?.length
+                        ? (viewerPageOrder[(viewerActivePage || 1) - 1] ?? 1) - 1
+                        : (viewerActivePage || 1) - 1);
+                    if (newShapes[activeIdx]) setDetectedShapeType(newShapes[activeIdx]);
+                    if (newParams[activeIdx]) setDetectedShapeParams(newParams[activeIdx]);
                     if (Array.isArray(data.perPage)) {
                         const failed = data.perPage.filter((p: any) => p && p.ok === false);
                         if (failed.length > 0) {
@@ -982,6 +987,10 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 filePath={((window as any).__TAURI_INTERNALS__) ? ((pdfFile as any)?.path || undefined) : undefined}
                                 pageIdx={safePageIdx}
                                 bleed={s.bleed}
+                                cutType={s.cutType}
+                                fillBlockGap={s.fillBlockGap}
+                                getWorkingFile={getWorkingFile}
+                                previewSourceKey={JSON.stringify({ o: viewerPageOrder, r: viewerPageRotations })}
                             />
                             );
                             })()}

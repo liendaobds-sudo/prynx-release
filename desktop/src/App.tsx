@@ -18,6 +18,7 @@ import TrialExpiryBanner from './components/auth/TrialExpiryBanner';
 import { supabase } from './lib/supabase';
 import { ToastViewport, toast } from './components/ui/Toast';
 import { ConfirmDialogHost } from './components/ui/confirmDialog';
+import { listSnapshots, clearAllSnapshots, deleteSnapshot, type RecoverySnapshot } from './lib/recovery';
 
 type AppTabType = 'home' | AppToolId;
 
@@ -103,7 +104,10 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
         <div
           className="w-12 h-full flex items-center justify-center hover:bg-red-500 text-slate-700 dark:text-zinc-300 hover:text-white transition-colors cursor-pointer group"
           onClick={() => {
-            getCurrentWindow().close().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
+            // Route qua AppInner để kiểm tra tab chưa lưu rồi force-close bằng destroy()
+            // (close() không tự đóng WebView2 khi có listener close-requested — dùng destroy
+            // như min/max, cùng họ lệnh window đang chạy tốt, bỏ qua vòng close-requested kẹt).
+            window.dispatchEvent(new CustomEvent('prynx-request-quit'));
           }}
           title="Đóng (Alt+F4)"
           role="button"
@@ -188,6 +192,8 @@ function AppInner() {
   ]);
   const [activeTabId, setActiveTabId] = useState<string>('home');
   const [tabToConfirmClose, setTabToConfirmClose] = useState<string | null>(null);
+  const [showAppCloseConfirm, setShowAppCloseConfirm] = useState(false);
+  const [recoverySnaps, setRecoverySnaps] = useState<RecoverySnapshot[] | null>(null);
   const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
   const [isNewDocOpen, setIsNewDocOpen] = useState(false);
   const fileCtx = useFileContext();
@@ -197,6 +203,20 @@ function AppInner() {
   useEffect(() => {
     const cancel = scheduleWarmupPdfjs();
     return cancel;
+  }, []);
+
+  // ── CRASH RECOVERY: quét snapshot còn sót lúc khởi động (chỉ có nếu lần trước
+  //    CRASH — thoát sạch đã xóa hết). Có → hỏi user khôi phục. ──────────────────
+  useEffect(() => {
+    if (!(window as any).__TAURI_INTERNALS__) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const snaps = await listSnapshots();
+        if (!cancelled && snaps.length > 0) setRecoverySnaps(snaps);
+      } catch { /* bỏ qua nếu lỗi */ }
+    })();
+    return () => { cancelled = true; };
   }, []);
   
   // Drag hover to switch tab logic
@@ -429,6 +449,40 @@ function AppInner() {
 
   const tabsRef = useRef(tabs);
   const activeTabIdRef = useRef(activeTabId);
+  const forceCloseRef = useRef(false);  // true sau khi user xác nhận thoát app → cho phép đóng
+
+  // Khôi phục các phiên chưa lưu từ snapshot (mở lại tab + áp thao tác sửa lên file gốc).
+  const restoreSnapshots = useCallback(async (snaps: RecoverySnapshot[]) => {
+    setRecoverySnaps(null);
+    try {
+      const { stat } = await import('@tauri-apps/plugin-fs');
+      for (const snap of snaps) {
+        try {
+          const fileStat = await stat(snap.originalPath);
+          const fileObj = new File([], snap.originalName || 'document.pdf', { type: 'application/pdf' });
+          Object.defineProperty(fileObj, 'path', { value: snap.originalPath });
+          Object.defineProperty(fileObj, 'size', { value: (fileStat as any).size || 0 });
+          handleOpenApp('imposition', {
+            file: fileObj,
+            initialRecovery: snap,
+            lockedMode: snap.lockedMode,
+            focusFeature: snap.feature,
+          });
+        } catch {
+          // Phương án A: file gốc không còn trên đĩa → không dựng lại được.
+          toast.error(`Không khôi phục được "${snap.title}": file gốc không còn.`);
+        }
+      }
+    } finally {
+      // Tab khôi phục đang-sửa sẽ tự ghi snapshot MỚI → xóa snapshot cũ cho sạch.
+      await clearAllSnapshots();
+    }
+  }, [handleOpenApp]);
+
+  const dismissRecovery = useCallback(async () => {
+    setRecoverySnaps(null);
+    await clearAllSnapshots();
+  }, []);
 
   // Sync refs safely
   tabsRef.current = tabs;
@@ -437,6 +491,9 @@ function AppInner() {
   const commitCloseTab = useCallback((id: string) => {
     // Release all blob URLs associated with this tab
     fileCtx.releaseTab(id);
+    // Đóng tab CHỦ ĐỘNG (có xác nhận nếu dirty) = thoát sạch tab này → xóa snapshot
+    // recovery để lần mở sau không hỏi khôi phục nhầm.
+    void deleteSnapshot(id);
 
     setTabs(prev => {
       const idx = prev.findIndex(t => t.id === id);
@@ -519,6 +576,47 @@ function AppInner() {
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
+  // CHẶN ĐÓNG CỬA SỔ TAURI khi còn tab CHƯA LƯU. beforeunload KHÔNG bắt được nút X
+  // native (Tauri đóng cửa sổ qua sự kiện riêng `close-requested`, không qua DOM
+  // unload) → trước đây bấm X = mất sạch dữ liệu chưa lưu, KHÔNG cảnh báo. Đăng ký
+  // onCloseRequested: nếu có tab dirty → preventDefault + hiện popup xác nhận. Bao
+  // trùm cả nút X (gọi close()), Alt+F4, và đóng từ taskbar (đều phát close-requested).
+  useEffect(() => {
+    if (!(window as any).__TAURI_INTERNALS__) return;  // chỉ áp cho desktop Tauri
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    getCurrentWindow()
+      .onCloseRequested((event) => {
+        if (forceCloseRef.current) return;            // đã xác nhận thoát → cho đóng
+        if (tabsRef.current.some(t => t.isDirty)) {
+          event.preventDefault();          // giữ cửa sổ lại
+          setShowAppCloseConfirm(true);    // hiện popup xác nhận
+        }
+        // không dirty → để Tauri đóng bình thường
+      })
+      .then((fn) => {
+        if (disposed) fn(); else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, []);
+
+  // Nút X (title bar) phát 'prynx-request-quit' → kiểm tra tab chưa lưu ở đây rồi
+  // đóng bằng destroy() (đáng tin như min/max; close() không tự đóng WebView2 khi có
+  // listener close-requested). Có tab dirty → hiện dialog xác nhận thay vì đóng thẳng.
+  useEffect(() => {
+    const onQuit = () => {
+      if (!(window as any).__TAURI_INTERNALS__) return;
+      if (!forceCloseRef.current && tabsRef.current.some(t => t.isDirty)) {
+        setShowAppCloseConfirm(true);
+        return;
+      }
+      getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
+    };
+    window.addEventListener('prynx-request-quit', onQuit);
+    return () => window.removeEventListener('prynx-request-quit', onQuit);
   }, []);
 
   useEffect(() => {
@@ -727,8 +825,13 @@ function AppInner() {
               const toolDef = TOOL_REGISTRY.find(t => t.id === tab.type && t.isEnabled);
               if (!toolDef) return <div className="flex items-center justify-center h-full text-slate-400">Công cụ không tìm thấy</div>;
               const ToolComponent = toolDef.component;
-              // Imposition tabs get special props
-              if (tab.type === 'imposition') {
+              // Các tab dùng ImpositionTab (bình bài + N-Up/Tem bế/CNC khoá-mode) đều
+              // cần ĐỦ props: tabId + onDirtyChange (theo dõi CHƯA LƯU → cảnh báo khi
+              // đóng tab/app) + lockedMode + initialFile. Trước đây chỉ type==='imposition'
+              // được props; nup/diecut/cnc rơi nhánh mặc định (KHÔNG onDirtyChange) →
+              // đóng tab/app mất dữ liệu không cảnh báo (audit an toàn dữ liệu).
+              const IMPOSITION_FAMILY = ['imposition', 'nup', 'diecut', 'cnc'];
+              if (IMPOSITION_FAMILY.includes(tab.type)) {
                 return (
                   <Suspense fallback={<div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-3 border-indigo-400 border-t-transparent rounded-full animate-spin" /></div>}>
                     <ToolComponent
@@ -740,6 +843,7 @@ function AppInner() {
                       initialReport={tab.payload?.report}
                       initialFeature={tab.payload?.focusFeature}
                       lockedMode={tab.payload?.lockedMode}
+                      initialRecovery={tab.payload?.initialRecovery}
                       batchOutput={tab.payload?.batchOutput} // Note: batchOutput now primarily from imposerStore in context, this is legacy payload
                       systemMergeFiles={tab.payload?.systemMergeFiles}
                       onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', { file, lockedMode: tab.payload?.lockedMode, ...extraPayload })}
@@ -763,7 +867,12 @@ function AppInner() {
               }
               return (
                 <Suspense fallback={<div className="flex items-center justify-center h-full"><div className="w-8 h-8 border-3 border-indigo-400 border-t-transparent rounded-full animate-spin" /></div>}>
-                  <ToolComponent />
+                  <ToolComponent
+                    tabId={tab.id}
+                    isActive={tab.id === activeTabId}
+                    onTitleChange={(title: string) => updateTabTitle(tab.id, title)}
+                    onDirtyChange={(isDirty: boolean) => updateTabDirty(tab.id, isDirty)}
+                  />
                 </Suspense>
               );
             })()}
@@ -779,6 +888,69 @@ function AppInner() {
         }}
         onCancel={() => setTabToConfirmClose(null)}
       />
+
+      <ConfirmCloseModal
+        isOpen={showAppCloseConfirm}
+        fileName=""
+        title="Thoát ứng dụng?"
+        confirmText="Vẫn thoát"
+        body={(() => {
+          const dirty = tabs.filter(t => t.isDirty);
+          return (<>
+            Có <span className="text-rose-500 font-bold px-1">{dirty.length}</span>
+            tài liệu CHƯA LƯU{dirty.length ? ': ' : ''}
+            <span className="text-rose-500 font-bold break-all">
+              {dirty.map(t => t.title).join(', ')}
+            </span>.
+            <br /><br />
+            Nếu thoát, bạn sẽ mất toàn bộ thành quả chưa lưu. Bạn có chắc chắn muốn thoát?
+          </>);
+        })()}
+        onConfirm={() => {
+          setShowAppCloseConfirm(false);
+          // Thoát SẠCH (user xác nhận) → xóa hết snapshot recovery rồi mới đóng, để
+          // lần mở sau KHÔNG hỏi khôi phục (snapshot còn sót chỉ khi CRASH).
+          forceCloseRef.current = true;
+          clearAllSnapshots().finally(() => {
+            getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
+          });
+        }}
+        onCancel={() => setShowAppCloseConfirm(false)}
+      />
+
+      {recoverySnaps && recoverySnaps.length > 0 && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-md w-full mx-4 border border-amber-500/40">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">🛟 Khôi phục phiên chưa lưu?</h3>
+            <p className="text-sm text-slate-600 dark:text-zinc-300 mb-3 font-medium">
+              Phát hiện <span className="text-amber-600 font-bold">{recoverySnaps.length}</span> tài liệu
+              chưa lưu từ lần chạy trước (có thể do tắt đột ngột / mất điện). Khôi phục lại các thao tác đang sửa?
+            </p>
+            <ul className="text-[12px] text-slate-600 dark:text-zinc-300 mb-5 max-h-40 overflow-auto list-disc pl-5 space-y-0.5">
+              {recoverySnaps.map((s) => (
+                <li key={s.tabId} className="break-all">
+                  <span className="font-semibold">{s.title}</span>
+                  <span className="text-slate-400"> — {new Date(s.savedAt).toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => { void dismissRecovery(); }}
+                className="px-5 py-2.5 min-w-[100px] text-[14px] font-semibold rounded bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 transition-colors"
+              >
+                Bỏ qua
+              </button>
+              <button
+                onClick={() => { void restoreSnapshots(recoverySnaps); }}
+                className="px-5 py-2.5 min-w-[100px] text-[14px] font-bold rounded bg-amber-500 hover:bg-amber-600 text-white transition-colors shadow-sm"
+              >
+                Khôi phục
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isGlobalSettingsOpen && (
         <SettingsModal onClose={() => setIsGlobalSettingsOpen(false)} />
@@ -800,7 +972,7 @@ function AppInner() {
   );
 }
 
-function ConfirmCloseModal({ isOpen, fileName, onConfirm, onCancel }: { isOpen: boolean, fileName: string, onConfirm: () => void, onCancel: () => void }) {
+function ConfirmCloseModal({ isOpen, fileName, onConfirm, onCancel, title, body, confirmText }: { isOpen: boolean, fileName: string, onConfirm: () => void, onCancel: () => void, title?: string, body?: React.ReactNode, confirmText?: string }) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isOpen && e.key === 'Escape') onCancel();
@@ -813,11 +985,13 @@ function ConfirmCloseModal({ isOpen, fileName, onConfirm, onCancel }: { isOpen: 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-sm w-full mx-4 border border-rose-500/30">
-        <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Cảnh báo chưa lưu</h3>
+        <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{title || 'Cảnh báo chưa lưu'}</h3>
         <p className="text-sm text-slate-600 dark:text-zinc-300 mb-6 font-medium">
+          {body || (<>
           File <span className="text-rose-500 font-bold px-1 break-all">{fileName}</span> chưa được lưu vào máy. Nếu đóng, bạn sẽ mất thành quả file này.
           <br /><br />
           Bạn có chắc chắn muốn đóng tab này không?
+          </>)}
         </p>
         <div className="flex justify-end gap-3">
           <button
@@ -830,7 +1004,7 @@ function ConfirmCloseModal({ isOpen, fileName, onConfirm, onCancel }: { isOpen: 
             onClick={onConfirm}
             className="px-6 py-2.5 min-w-[100px] text-[15px] font-bold rounded bg-rose-500 hover:bg-rose-600 text-white transition-colors shadow-sm focus:outline-none"
           >
-            Vẫn Đóng
+            {confirmText || 'Vẫn Đóng'}
           </button>
         </div>
       </div>

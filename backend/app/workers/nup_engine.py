@@ -81,6 +81,35 @@ def run_nup_engine(
         from app.workers.cnc_render import run_cnc_two_sided
         return run_cnc_two_sided(source_path, output_path, settings, job_id, progress_callback)
 
+    try:
+        from app.workers.rot_audit_log import get_logger as _rot_get_logger
+        _rot_get_logger().warning(
+            "[ROT-AUDIT][REQ][RENDER] source=%s isDieCut=%s layoutType=%s gridStrategy=%s "
+            "sheet=%.1fx%.1f mm margins(t/b/l/r)=%s/%s/%s/%s gap=%s/%s bleed=%s targetQty=%s tqbp=%s "
+            "pontType=%s pontConfig=%s grouping=%s cutType=%s fillBlockGap=%s splitGap=%s "
+            "detectedShapes=%s detectedShapeParams=%s",
+            source_path, settings.get('isDieCutMode'), settings.get('layoutType'),
+            settings.get('gridStrategy'), settings.get('sheetWidth', 0), settings.get('sheetHeight', 0),
+            settings.get('marginTop'), settings.get('marginBottom'), settings.get('marginLeft'),
+            settings.get('marginRight'), settings.get('gapX'), settings.get('gapY'), settings.get('bleed'),
+            settings.get('targetQuantity'), settings.get('targetQuantitiesByPage'),
+            settings.get('pontType'), settings.get('pontConfig'), settings.get('groupingStrategy'),
+            settings.get('cutType'), settings.get('fillBlockGap'), settings.get('splitGap'),
+            settings.get('detectedShapesByPage'), settings.get('detectedShapeParamsByPage'),
+        )
+    except Exception:
+        pass
+
+    # ── GUARD: Bình 2 mặt (duplex) KHÔNG áp dụng cho BÌNH TEM BẾ ──────────────
+    # 2 mặt chỉ hợp lệ ở: Bế CNC (imposerMode=='cnc' — đã route riêng ở đầu hàm) và
+    # Bình cắt xén (guillotine, non-die-cut). Với die-cut sticker (isDieCutMode & !cnc),
+    # duplexFlow='double' rò rỉ (persist từ job trước) làm TỜ SAU bị lật gương + xoay
+    # 180° ở process_chunk → sai. Ép về 1 mặt để tờ nhân bản KHÔNG bị mirror, đồng thời
+    # khớp preview (preview không mirror).
+    if settings.get('isDieCutMode', False) and settings.get('imposerMode') != 'cnc':
+        if settings.get('duplexFlow') == 'double':
+            settings = {**settings, 'duplexFlow': 'normal'}
+
     src_doc = pdf_lib.open(source_path)
 
     page_count = src_doc.page_count
@@ -478,11 +507,16 @@ def run_nup_engine(
                         w_for_nfp = float(settings.get('clusterTileW', 148.0)) * MM
                         h_for_nfp = float(settings.get('clusterTileH', 210.0)) * MM
 
-                # Compute secondary_gap from fillBlockGap for 1-Dao mode
+                # secondary_gap: PHẢI khớp _resolve_preview_secondary_gap (preview) →
+                # one_dao+fillBlockGap → splitGap → None. Nếu bỏ splitGap ở đây, preview
+                # (dùng splitGap) sẽ lệch render (cột lấp đầy L-shape xếp khác).
                 fill_block_gap_mm = settings.get('fillBlockGap', 0)
                 cut_type = settings.get('cutType', 'default')
+                split_gap_mm = settings.get('splitGap', None)
                 if cut_type == 'one_dao' and fill_block_gap_mm > 0:
                     _secondary_gap = fill_block_gap_mm * MM_TO_PTS
+                elif split_gap_mm is not None and split_gap_mm > 0:
+                    _secondary_gap = split_gap_mm * MM_TO_PTS
                 else:
                     _secondary_gap = None
 
@@ -506,6 +540,19 @@ def run_nup_engine(
                 )
 
                 full_layouts[p_idx] = layout_result
+
+                try:
+                    from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                    _items_dbg = layout_result.get('items', [])
+                    _rot_get_logger().warning(
+                        "[ROT-AUDIT][solver][RENDER p_idx=%s] strategy=%s shapeType=%s shapeProps=%s "
+                        "secondary_gap=%s n=%d rot180_per_cell=%s",
+                        p_idx, layout_result.get('strategyUsed'), layout_result.get('shapeType'),
+                        layout_result.get('shapeProps'), _secondary_gap, len(_items_dbg),
+                        [int(it.get('isRotated180', False)) for it in _items_dbg],
+                    )
+                except Exception:
+                    pass
 
                 capacity = len(layout_result.get('items', []))
 

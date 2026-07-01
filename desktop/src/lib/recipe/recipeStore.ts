@@ -101,10 +101,16 @@ export async function saveRecipe(recipe: Recipe): Promise<void> {
 
     const dir = await getRecipesDir();
     if (dir && tauriFs) {
+        const filePath = `${dir}/${toSave.id}.json`;
+        const json = JSON.stringify(toSave, null, 2);
+        // Ghi NGUYÊN TỬ (temp+rename) chống hỏng file recipe nếu crash giữa lúc ghi đè.
         try {
-            await tauriFs.writeTextFile(`${dir}/${toSave.id}.json`, JSON.stringify(toSave, null, 2));
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('write_file_atomic', { path: filePath, contents: new TextEncoder().encode(json) });
             return;
-        } catch { /* fallback */ }
+        } catch {
+            try { await tauriFs.writeTextFile(filePath, json); return; } catch { /* → localStorage */ }
+        }
     }
     const all = lsRead();
     const idx = all.findIndex(r => r.id === toSave.id);

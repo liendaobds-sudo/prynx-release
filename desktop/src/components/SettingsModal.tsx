@@ -2,29 +2,19 @@ import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { open } from '@tauri-apps/plugin-dialog';
-import { getGpuStatus, installGpuPlugin } from '../lib/api';
-import { useComparisonStore } from '../stores/comparisonStore';
+
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 import { TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey } from '../lib/toolRegistry';
 import { Button } from './Button';
-import { SettingRow } from './SettingRow';
+
 import CutterMachinesPanel from './imposition-tools/cut-export/CutterMachinesPanel';
-import { toast } from './ui/Toast';
 import { Star, X } from 'lucide-react';
 
 interface SettingsModalProps {
   onClose: () => void;
 }
 
-interface GpuStatus {
-  is_gpu_available: boolean;
-  current_backend: string;
-  device_name: string;
-  plugin_size_mb: number;
-}
-
 export default function SettingsModal({ onClose }: SettingsModalProps) {
-  const { comparisonMode, setComparisonMode, isPackagingMode, setIsPackagingMode, llmMode, setLlmMode, cloudApiKey, setCloudApiKey } = useComparisonStore();
   const { 
     hiddenTools, toggleToolVisibility, favoriteTools, toggleFavoriteTool,
     defaultExportPath, setDefaultExportPath,
@@ -32,49 +22,16 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     measurementUnit, setMeasurementUnit,
     previewQuality, setPreviewQuality
   } = useAppSettingsStore();
-  const [status, setStatus] = useState<GpuStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [installing, setInstalling] = useState(false);
-  const [successMsg, setSuccessMsg] = useState('');
 
-  const [activeTab, setActiveTab] = useState<'gpu' | 'compare' | 'ai' | 'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter'>('gpu');
+  const [activeTab, setActiveTab] = useState<'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter'>('tools');
 
   useEffect(() => {
-    fetchStatus();
-
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
-
-  const fetchStatus = async () => {
-    try {
-      const data = await getGpuStatus();
-      setStatus(data);
-    } catch (e) {
-      console.error('Failed to get GPU status:', e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleInstall = async () => {
-    setInstalling(true);
-    setSuccessMsg('');
-    try {
-      const res = await installGpuPlugin();
-      setSuccessMsg(res.message + ' ' + (res.note || ''));
-      
-      const updatedStatus = await getGpuStatus();
-      setStatus(updatedStatus);
-    } catch (err: any) {
-      setSuccessMsg('Lỗi tải plugin: ' + err.message);
-    } finally {
-      setInstalling(false);
-    }
-  };
 
   return createPortal(
     <div className="fixed inset-0 z-modal bg-slate-900/40 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -86,9 +43,6 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
              <h2 className="text-lg font-bold text-slate-900 dark:text-white transition-colors">⚙️ Preferences</h2>
           </div>
           <div className="flex-1 py-4 flex flex-col gap-1 px-3">
-             <button onClick={() => setActiveTab('gpu')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'gpu' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>🚀 Hardware GPU</button>
-             <button onClick={() => setActiveTab('compare')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'compare' ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>🔍 Kiểm tra bản in</button>
-             <button onClick={() => setActiveTab('ai')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'ai' ? 'bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>🤖 Cấu hình AI</button>
              <button onClick={() => setActiveTab('tools')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'tools' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>🛠 Quản lý công cụ</button>
              <button onClick={() => setActiveTab('export')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'export' ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>📁 Lưu trữ & Đầu ra</button>
              <button onClick={() => setActiveTab('workspace')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'workspace' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>📏 Không gian làm việc</button>
@@ -109,141 +63,6 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
           </button>
           
           <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
-            {activeTab === 'gpu' && (
-              <div className="animate-fade-in">
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 transition-colors">Tăng tốc phần cứng (GPU)</h3>
-                <p className="text-sm text-slate-500 dark:text-zinc-400 mb-8 leading-relaxed transition-colors">
-                  Tăng tốc phần cứng giúp xử lý mượt mà tài liệu PDF dung lượng lớn.<br/>
-                  Chuyên biệt cho hệ thống in ấn công suất cao. Yêu cầu Card đồ họa rời.
-                </p>
-
-                {loading ? (
-                  <div className="text-slate-500 dark:text-zinc-400 text-sm transition-colors">Đang tải cấu hình...</div>
-                ) : status ? (
-                  <SettingRow 
-                    variant="flat"
-                    title="Lõi xử lý hiện tại"
-                    description={status.is_gpu_available ? 'Card đồ họa rời (Tăng tốc phần cứng)' : 'Chế độ Tiêu chuẩn (CPU)'}
-                    control={
-                      status.is_gpu_available ? (
-                        <span className="inline-flex items-center justify-center px-3 py-1.5 bg-green-500/10 text-green-400 rounded-md text-xs font-semibold border border-green-500/20 shadow-[0_0_10px_rgba(34,197,94,0.1)] flex-shrink-0">
-                          Đã Kích Hoạt
-                        </span>
-                      ) : (
-                        <Button
-                          onClick={handleInstall}
-                          disabled={installing || successMsg !== ''}
-                          variant="primary"
-                        >
-                          {installing ? 'Đang Tải Plugin (2GB)...' : successMsg ? 'Tải Xong' : 'Cài Extension'}
-                        </Button>
-                      )
-                    }
-                  />
-                ) : null}
-
-                {successMsg && (
-                  <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-                    <p className="text-xs text-green-700">✅ {successMsg}</p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === 'compare' && (
-              <div className="animate-fade-in">
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 transition-colors">Chế độ Kiểm tra Bản In</h3>
-                <p className="text-sm text-slate-500 dark:text-zinc-400 mb-8 leading-relaxed transition-colors">
-                  Tách lớp và so sánh chuyên sâu 4 kênh màu in công nghiệp (Cyan, Magenta, Yellow, Black) thay vì màu hiển thị (RGB).<br/>
-                  Giúp phát hiện lỗi in đè, rớt màu, hoặc sai lệch màu spot, rich black.
-                </p>
-
-                <div className="flex" style={{ flexDirection: 'column' }}>
-                  <SettingRow 
-                    variant="flat"
-                    title="Bóc Tách Khảo Sát Kênh Màu (CMYK)"
-                    description="Chỉ kích hoạt khi soát lỗi sai lệch màu file xuất kẽm."
-                    control={
-                      <label className="relative flex items-center cursor-pointer group flex-shrink-0">
-                        <input 
-                          type="checkbox" 
-                          className="sr-only peer" 
-                          checked={comparisonMode === 'cmyk'}
-                          onChange={(e) => setComparisonMode(e.target.checked ? 'cmyk' : 'full')}
-                        />
-                        <div className="w-11 h-6 bg-slate-200 dark:!bg-zinc-700 border border-slate-300 dark:!border-white/10 rounded-lg peer-checked:bg-blue-500 peer-checked:border-blue-600 shadow-inner transition-all duration-300"></div>
-                        <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-md h-[18px] w-[18px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[20px]"></div>
-                      </label>
-                    }
-                  />
-                  
-                  <SettingRow 
-                      variant="flat"
-                      title="Chế độ Bao bì (Xếp Lồng Khớp)"
-                      description="So sánh các trường hợp bình bài lồng nhau"
-                      control={
-                      <label className="relative flex items-center cursor-pointer group flex-shrink-0">
-                        <input 
-                          type="checkbox" 
-                          className="sr-only peer" 
-                          checked={isPackagingMode}
-                          onChange={(e) => setIsPackagingMode(e.target.checked)}
-                        />
-                        <div className="w-11 h-6 bg-slate-200 dark:!bg-zinc-700 border border-slate-300 dark:!border-white/10 rounded-lg peer-checked:bg-blue-500 peer-checked:border-blue-600 shadow-inner transition-all duration-300"></div>
-                        <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-md h-[18px] w-[18px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[20px]"></div>
-                      </label>
-                    }
-                  />
-                </div>
-              </div>
-            )}
-
-            {activeTab === 'ai' && (
-              <div className="animate-fade-in">
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 transition-colors">Cấu hình Trí tuệ Nhân tạo (AI)</h3>
-                <p className="text-sm text-slate-500 dark:text-zinc-400 mb-8 leading-relaxed transition-colors">
-                  Cấu hình API cho tính năng Soát lỗi Chính tả & Ngữ pháp tự động bằng AI.<br/>
-                  API Key được mã hóa và lưu cục bộ trên máy tính của bạn.
-                </p>
-
-                <SettingRow 
-                  variant="flat"
-                  hideBorder={true}
-                  className="py-1"
-                  title="Lựa chọn LLM Model"
-                  control={
-                    <select 
-                      className="bg-white dark:!bg-zinc-700 text-slate-900 dark:!text-white text-sm border border-slate-200 dark:!border-white/20 rounded-lg px-3 py-2 appearance-auto focus:ring-blue-500 transition-colors"
-                      value={llmMode}
-                      onChange={(e) => setLlmMode(e.target.value as any)}
-                    >
-                      <option value="off">Tắt / Vô hiệu hoá AI</option>
-                      <option value="gemini">Google Gemini (Khuyên dùng)</option>
-                      <option value="openai">OpenAI ChatGPT</option>
-                      <option value="deepseek">DeepSeek Cloud API</option>
-                    </select>
-                  }
-                />
-
-                {['gemini', 'openai', 'deepseek'].includes(llmMode) && (
-                  <div className="mt-3 flex gap-2">
-                    <input 
-                      type="password"
-                      placeholder="Nhập API Key tương ứng..."
-                      value={cloudApiKey}
-                      onChange={(e) => setCloudApiKey(e.target.value)}
-                      className="flex-1 bg-white dark:!bg-zinc-700 text-slate-900 dark:!text-white text-sm rounded-lg border border-slate-200 dark:!border-white/20 px-3 py-2 outline-none focus:border-indigo-500 shadow-sm transition-colors"
-                    />
-                    <Button 
-                      variant="secondary" 
-                      onClick={() => toast.success('✅ Đã lưu API Key thành công!')}
-                    >
-                      Lưu
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
 
             {activeTab === 'tools' && (
               <div className="animate-fade-in flex flex-col h-full">
@@ -268,7 +87,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                             const isHidden = hiddenTools.includes(uniqueKey);
                             
                             return (
-                              <label key={uniqueKey} className="flex items-center p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 cursor-pointer transition-colors border border-transparent hover:border-slate-200 dark:hover:border-zinc-700">
+                              <div key={uniqueKey} className="flex items-center p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 cursor-default transition-colors border border-transparent hover:border-slate-200 dark:hover:border-zinc-700">
                                 <div className="text-[20px] w-8 flex justify-center opacity-80">{tool.icon}</div>
                                 <div className="flex-1 min-w-0 ml-2">
                                   <div className={`text-[14px] font-medium ${isHidden ? 'text-slate-400' : 'text-slate-800 dark:text-zinc-200'}`}>
@@ -277,7 +96,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                                 </div>
                                 <div className="flex items-center gap-3 ml-3">
                                   <button
-                                    onClick={(e) => { e.preventDefault(); toggleFavoriteTool(uniqueKey); }}
+                                    onClick={() => toggleFavoriteTool(uniqueKey)}
                                     className={`flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95 ${
                                       favoriteTools.includes(uniqueKey)
                                         ? 'text-amber-400'
@@ -287,7 +106,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                                   >
                                     <Star className="w-5 h-5" fill={favoriteTools.includes(uniqueKey) ? 'currentColor' : 'none'} />
                                   </button>
-                                  <div className="relative flex items-center group flex-shrink-0">
+                                  <label className="relative flex items-center cursor-pointer group flex-shrink-0">
                                     <input 
                                       type="checkbox" 
                                       className="sr-only peer" 
@@ -296,9 +115,9 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                                     />
                                     <div className="w-11 h-6 bg-slate-200 dark:!bg-zinc-700 border border-slate-300 dark:!border-white/10 rounded-lg peer-checked:bg-emerald-500 peer-checked:border-emerald-600 shadow-inner transition-all duration-300"></div>
                                     <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-md h-[18px] w-[18px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[20px]"></div>
-                                  </div>
+                                  </label>
                                 </div>
-                              </label>
+                              </div>
                             );
                           })}
                         </div>
@@ -378,26 +197,6 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 </p>
 
                 <div className="space-y-6 flex-1 pr-4">
-                  <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
-                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">Hiển thị Thước đo (Rulers)</h4>
-                    <label className="flex items-center gap-3 cursor-pointer group">
-                      <div className="relative flex items-center flex-shrink-0">
-                        <input 
-                          type="checkbox" 
-                          className="sr-only peer" 
-                          checked={useAppSettingsStore.getState().showRulers}
-                          onChange={useAppSettingsStore.getState().toggleRulers}
-                        />
-                        <div className="w-11 h-6 bg-slate-200 dark:bg-zinc-700 border border-slate-300 dark:border-white/10 rounded-full peer-checked:bg-emerald-500 peer-checked:border-emerald-600 shadow-inner transition-all duration-300"></div>
-                        <div className="absolute left-[2px] top-[2px] bg-white rounded-full h-[20px] w-[20px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[20px]"></div>
-                      </div>
-                      <div>
-                        <div className="text-sm font-bold text-slate-900 dark:text-white">Bật vạch thước đo tọa độ</div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">Hiển thị thước dọc và ngang ở vùng không gian làm việc (Phím tắt: <kbd className="px-1 py-0.5 bg-slate-200 dark:bg-zinc-700 rounded border border-slate-300 dark:border-zinc-600 font-mono text-[10px]">Ctrl + R</kbd>)</div>
-                      </div>
-                    </label>
-                  </div>
-
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
                     <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">Đơn vị đo lường mặc định</h4>
                     <div className="flex gap-4">

@@ -391,3 +391,96 @@ Production-readiness yêu cầu artifact build từ cây ĐÃ COMMIT, sạch:
   (pdfium/Ghostscript…) thay vì chỉ `WARNING` rồi build tiếp (ship artifact hỏng âm thầm).
 > Bài học: 146 file (gồm vá bảo mật) chưa commit; `build_production.ps1` chỉ WARNING khi
 > thiếu pdfium/Ghostscript.
+
+---
+
+## 15. Bài học phiên Packaging / Release-only (2026-06-30) — chống tái phạm CỤ THỂ
+
+> Bối cảnh: "bản DEV chạy ngon, bản RELEASE (đã đóng gói NSIS) hỏng đủ thứ" — tách
+> nền vỡ ảnh, mở PDF crash React #300, 403 sidecar token, không render trang/thumbnail,
+> Bình Tem `Failed to fetch`. Tốn RẤT nhiều lượt vì cứ đoán & sửa lớp ngọn. Tất cả là
+> lỗi **release-only**: thứ chỉ bật ở bản đóng gói mà DEV bỏ qua. Đây là cụ thể hoá §0,
+> §1, §7, §8.
+
+### 15.1 DEV ≠ RELEASE: phải test trên BẢN ĐÃ CÀI, không chỉ `tauri dev`
+Mọi lớp hardening/đóng gói sau đây **chỉ chạy ở release** nên DEV không bao giờ lộ lỗi:
+- `#[cfg(not(debug_assertions))]`: `SetProcessMitigationPolicy`, integrity check, anti-debug.
+- **CSP** trong `tauri.conf.json` (dev nới lỏng/không ép như release).
+- Tài nguyên bundle (resource/sidecar) đặt ở vị trí KHÁC dev (working-dir, đường dẫn).
+- DevTools bị tắt ở release → KHÔNG có console để xem lỗi.
+⟹ Khi user báo "release lỗi mà dev ngon", **CẤM** kết luận từ việc chạy `tauri dev`. Phải
+build, cài, chạy bản thật, và đọc lỗi qua **log file** (xem §15.6).
+
+### 15.2 Đọc ĐÚNG mã lỗi theo TỪNG đường dẫn — đừng gộp
+`LoadLibraryExW` trả mã khác nhau theo path: **126** = ERROR_MOD_NOT_FOUND (không thấy
+file) ≠ **577** = ERROR_INVALID_IMAGE_HASH (file CÓ nhưng bị chính sách chữ ký chặn).
+> Bài học đắt: panic log ban đầu chỉ thấy "126" ở path KHÔNG tồn tại → đoán "thiếu
+> pdfium.dll", sửa bundle + đường dẫn nhiều lượt vẫn lỗi. Khi log từng path mới thấy path
+> CÓ file báo **577** — root cause thật là chính sách chữ ký, không phải thiếu file. Quy
+> tắc: log mã lỗi + `exists()` cho TỪNG ứng viên path, đừng kết luận từ dòng panic đầu tiên.
+
+### 15.3 ProcessSignaturePolicy(MicrosoftSignedOnly) chặn MỌI DLL bên thứ 3 không ký
+`SetProcessMitigationPolicy(ProcessSignaturePolicy, MicrosoftSignedOnly)` (anti-DLL-inject)
+chặn nạp DLL không ký bởi Microsoft → `pdfium.dll` (và mọi native DLL bên thứ 3) bị từ
+chối (577) → render chết. DLL đã nạp vào tiến trình thì policy KHÔNG gỡ ra.
+⟹ **Warmup nạp các DLL hợp lệ TRƯỚC khi bật policy**; vẫn chặn được DLL lạ inject về sau.
+Khi thêm bất kỳ native dep mới (DLL) vào tiến trình chính → phải kiểm lại policy này.
+
+### 15.4 Native DLL: bundle làm resource + định vị bằng đường dẫn TUYỆT ĐỐI
+- DLL phải được khai báo trong `bundle.resources` của `tauri.conf.json` (nếu không sẽ KHÔNG
+  vào installer dù dev chạy được vì dev đọc từ cây nguồn).
+- Định vị bằng **đường dẫn tuyệt đối từ `std::env::current_exe()`** (`<exe_dir>`, `<exe_dir>/bin`),
+  KHÔNG dùng path tương đối `"./bin/"` — release có working-dir khác (thư mục cài), path
+  tương đối resolve sai.
+
+### 15.5 CSP phải có ĐỦ origin nội bộ Tauri + custom protocol (lỗi release-only kinh điển)
+CSP ép ở release sẽ chặn các origin mà DEV cho qua. Phải liệt kê đủ trong từng directive:
+- `connect-src`: `ipc:` + `http://ipc.localhost` (**kênh IPC trả binary — invoke trả
+  `tauri::ipc::Response` đi qua đây; thiếu → JS nhận rỗng → blob hỏng → `<img>` vỡ ÂM THẦM,
+  KHÔNG có CSP error cho chính cái blob**), `http://tauri.localhost`, `asset:`/`http://asset.localhost`
+  (fetch file qua `convertFileSrc` — Bình Tem/Imposition/Combine), backend host, Supabase,
+  origin kiểm tra internet (`gstatic`, `1.1.1.1`).
+- `img-src`: `http://tile.localhost` (custom protocol tile — phải để cả HOST, scheme `tile:`
+  không đủ), `blob:`, `data:`, `asset`/`tauri.localhost`.
+⟹ Quy tắc: mỗi custom protocol (`tile.localhost`, `asset.localhost`, `ipc.localhost`) là MỘT
+origin riêng — phải khai báo tường minh ở ĐÚNG directive (connect-src cho fetch/IPC, img-src
+cho ảnh). Khi thêm protocol/handler mới → cập nhật CSP ngay.
+
+### 15.6 Chẩn đoán release KHÔNG console: log ra FILE + dùng đúng tín hiệu
+Release không có DevTools → phải tự ghi log file để chẩn đoán:
+- Rust: `std::panic::set_hook` → `%APPDATA%\<App>\logs\rust_panic.log` (bắt "Task panicked").
+- Frontend: command Rust ghi file + listener `securitypolicyviolation` (cho biết CHÍNH XÁC
+  directive + blockedURI bị CSP chặn) + bắt `error` của `<img>`.
+- Xác minh artifact: tile JPEG render ra đĩa → đọc **magic header** (`FF D8 FF`) để biết bytes
+  hợp lệ → tách bạch "backend render hỏng" vs "frontend hiển thị hỏng".
+⟹ KỶ LUẬT: log chẩn đoán là TẠM. **Gỡ sạch trước khi ship** — đặc biệt log ghi đĩa trong
+hot-path (mỗi tile/thumbnail) gây chậm rõ rệt (đồng bộ I/O mỗi lần render). (Liên hệ §9.)
+
+### 15.7 KHÔNG `.unwrap()`/`.expect()` trong `spawn_blocking` / hot-path render
+Panic trong `spawn_blocking` → Tauri trả lỗi mờ "Task panicked", CHE root cause. Phải trả
+`Result` + `?` để lỗi thật (vd "không nạp được pdfium 577") nổi lên log. Khi audit native/
+render path: grep `.unwrap()|.expect(` trên đường chạy nóng = nghi vấn che lỗi.
+
+### 15.8 Sidecar mồ côi / khoá file: nhiễu khi cài & chạy lại
+- **403 "invalid sidecar token"** có thể do **sidecar phiên cũ còn sống** giữ cổng (vd 8321)
+  với token cũ ≠ token phiên mới. Trước khi đào sâu auth: kiểm tra tiến trình mồ côi +
+  cổng (`Get-NetTCPConnection -LocalPort`), kill sạch, mở lại app cho spawn sidecar mới.
+- **"Error opening file for writing ...dll"** lúc cài = file **đang bị khoá** bởi tiến trình
+  đang chạy (app cũ, HOẶC chính lệnh test `LoadLibrary` của mình chưa `FreeLibrary`). Tìm
+  tiến trình giữ module (`Get-Process | … $_.Modules.FileName -eq <dll>`), kill, rồi Retry.
+- "invalid sidecar token" cũng xuất hiện khi token RỖNG (frontend ký hụt). Phân biệt token
+  rỗng vs token sai bằng log phía backend; đừng mặc định là sai cấu hình.
+> Lưu ý self-inflicted: lệnh PowerShell `LoadLibrary(pdfium.dll)` để "test load" đã KHOÁ
+> file dll → installer không ghi đè được suốt mấy lượt. Test load DLL phải `FreeLibrary`
+> hoặc chạy trong tiến trình dùng-một-lần.
+
+### 15.9 React "Minified error #300" ở release = rules-of-hooks (early-return trước hooks)
+Crash chỉ ở release vì bản minified mới bung lỗi. Nguyên nhân thường gặp: `return` sớm
+(vd `if (loadError) return …`) đặt TRƯỚC các `useState/useEffect/useMemo` → số hooks đổi
+giữa các lần render. Sửa: dời MỌI early-return xuống SAU toàn bộ hooks. Khi thấy #300 ở
+release → soi component vừa đụng tới, tìm return/điều kiện nằm trên hooks.
+
+### 15.10 File từ Tauri picker có thể là blob RỖNG (size giả) — đọc bytes thật từ path
+Object `File` do Tauri tạo có thể `size > 0` nhưng nội dung blob rỗng (đọc `.slice(0,1)` ra
+0 byte). Phải đọc bytes thật qua `@tauri-apps/plugin-fs readFile(path)` rồi tạo Blob. Triệu
+chứng: ảnh/preview "vỡ" ở release mà dev (file input web thật) lại ổn.

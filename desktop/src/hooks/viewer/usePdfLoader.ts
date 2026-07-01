@@ -154,7 +154,9 @@ export function usePdfLoader({
                     // đồng thời NẠP SẴN file vào pdfium cache → tile đầu tiên render tức thì.
                     try {
                         const { invoke } = await import('@tauri-apps/api/core');
+                        const __t0 = performance.now();
                         const meta: any = await invoke('get_pdf_metadata', { filePath });
+                        console.log(`[PERF-META] invoke=${(performance.now()-__t0).toFixed(0)}ms | RUST bind=${meta._dbgBindMs}ms load=${meta._dbgLoadMs}ms internal=${meta._dbgInternalMs}ms | numPages=${meta.numPages}`);
                         numPagesFromEngine = meta.numPages || 0;
                         widthPt = meta.widthPt || 0;
                         heightPt = meta.heightPt || 0;
@@ -166,12 +168,15 @@ export function usePdfLoader({
                         }
                     } catch (rustErr) {
                         // Fallback: backend Python qua HTTP (nếu lệnh Rust lỗi)
+                        console.warn('[PERF-META] Rust get_pdf_metadata FAILED → fallback HTTP:', rustErr);
+                        const __tf = performance.now();
                         const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8321';
                         const res = await fetch(`${apiUrl}/api/imposition/pdf-meta`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ path: filePath })
                         });
+                        console.warn(`[PERF-META] HTTP pdf-meta fallback=${(performance.now()-__tf).toFixed(0)}ms ok=${res.ok}`);
                         if (res.ok) {
                             const meta = await res.json();
                             numPagesFromEngine = meta.page_count || 0;

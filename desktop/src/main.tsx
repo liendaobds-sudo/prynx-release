@@ -3,7 +3,7 @@ import * as Sentry from "@sentry/react"
 import './index.css'
 import App from './App'
 import { ErrorBoundary } from './ErrorBoundary'
-import { installBackendFetchAuth, debugLog } from './lib/api'
+import { installBackendFetchAuth } from './lib/api'
 
 // ══════════════════════════════════════════════════════════════
 // VECTOR #3+#13 FIX: Freeze Tauri IPC bridge AND capture invoke.
@@ -48,17 +48,6 @@ Sentry.init({
 // Ký tự động MỌI request tới backend sidecar (kể cả các nơi gọi fetch trần) —
 // tránh 403 "invalid sidecar token" ở bản release. Cài SỚM trước khi render.
 installBackendFetchAuth();
-
-// [DIAG] Bắt vi phạm CSP (vd img-src chặn blob:) → ghi rõ blockedURI + directive.
-debugLog('APP STARTUP');
-document.addEventListener('securitypolicyviolation', (e: any) => {
-  debugLog(`CSP VIOLATION: directive=${e.violatedDirective} blockedURI=${e.blockedURI} src=${e.sourceFile}:${e.lineNumber}`);
-});
-window.addEventListener('error', (e: any) => {
-  if (e?.target && (e.target.tagName === 'IMG')) {
-    debugLog(`IMG load error: src=${String(e.target.src).slice(0, 80)}`);
-  }
-}, true);
 
 // LƯU Ý: Đã BỎ <StrictMode>. Ở DEV, StrictMode chạy MỌI effect/render 2 LẦN
 // (doubleInvokeEffectsOnFiber) → nhân đôi mọi fetch metadata/colorspace + tile load

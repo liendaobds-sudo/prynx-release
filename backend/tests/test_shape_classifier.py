@@ -239,7 +239,7 @@ def test_true_ellipse_still_circle_ellipse(rx, ry, rot):
     """Elip/tròn thật (kể cả XOAY/DẸT) vẫn phải nhận CIRCLE_ELLIPSE — fit residual ~0.
     Bao gồm elip xoay-dẹt mà tiêu chí cũ (dải tỉ lệ diện tích) BỎ SÓT."""
     samples = _curve_samples(False, rx=rx, ry=ry, rot_deg=rot)
-    assert _ellipse_fit_residual(samples) < 0.04
+    assert _ellipse_fit_residual(samples) < 0.02
     st, _ = _classify_curve(samples)
     assert st == ShapeType.CIRCLE_ELLIPSE
 
@@ -251,7 +251,7 @@ def test_true_ellipse_still_circle_ellipse(rx, ry, rot):
 def test_rounded_star_blob_not_ellipse(amp, bulge):
     """Blob ngôi sao bo tròn (đường bế bù-xén) KHÔNG được nhận là Tròn/Elip."""
     samples = _curve_samples(True, lobes=5, amp=amp, bulge=bulge, rx=100, ry=100)
-    assert _ellipse_fit_residual(samples) >= 0.04
+    assert _ellipse_fit_residual(samples) >= 0.02
     st, _ = _classify_curve(samples)
     assert st != ShapeType.CIRCLE_ELLIPSE  # → None (CUSTOM qua fallback)
 

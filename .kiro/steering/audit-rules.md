@@ -391,3 +391,55 @@ Production-readiness yêu cầu artifact build từ cây ĐÃ COMMIT, sạch:
   (pdfium/Ghostscript…) thay vì chỉ `WARNING` rồi build tiếp (ship artifact hỏng âm thầm).
 > Bài học: 146 file (gồm vá bảo mật) chưa commit; `build_production.ps1` chỉ WARNING khi
 > thiếu pdfium/Ghostscript.
+
+
+---
+
+## 15. Bài học phiên shape-classification (2026-07-01) — chống tái phạm CỤ THỂ
+
+> Đã tốn NHIỀU lượt vá sai vì SUY ĐOÁN metric trên hình TỔNG HỢP thay vì đo trên
+> file THẬT. Lỗi: tem ngôi sao bù-xén bị nhận CIRCLE_ELLIPSE; vá residual PCA 3-4
+> lần (0.04 → 0.02, đếm segment...) đều TRƯỢT vì sửa SAI NHÁNH. Khi cuối cùng chèn
+> log vào `classify_shape` thật → lộ ngay: hình đi qua **nhánh OCTAGON (n_edges==8)**,
+> KHÔNG phải nhánh `n_edges==0` đang vá. Đây là cụ thể hoá của §1, §6, §7, §8.
+
+### 15.1 Với lỗi PHÂN LOẠI (classifier nhiều nhánh): xác định NHÁNH THẬT TRƯỚC
+- Một bộ phân loại có nhiều nhánh quyết định (theo số cạnh, theo profile, theo
+  ngưỡng...). TRƯỚC khi chỉnh BẤT KỲ ngưỡng nào, phải biết **input thật đi vào
+  NHÁNH NÀO**. Sửa ngưỡng của nhánh A trong khi input rơi vào nhánh B = vô ích,
+  và tệ hơn: tạo cảm giác "đã thử nhiều cách" trong khi chưa chạm thủ phạm.
+- Cách làm ĐÚNG ngay từ lượt đầu: chèn log tạm tại hàm phân loại thật, in ra
+  **mọi biến quyết định** (số cạnh trích được, số segment, residual, coverage,
+  nhánh đã chọn, kết quả cuối) → nhờ user chạy lại trên FILE THẬT → đọc log.
+  KHÔNG dựng hình tổng hợp rồi suy "chắc nó thế này".
+
+### 15.2 Hình TỔNG HỢP để verify KHÁC input THẬT — không thay thế được
+- Harness tự dựng (vd biên ngôi sao bằng công thức cos) có **cấu trúc path khác
+  hẳn** file thật (số Bezier, cách chia cung, nhiễu anchor). Nó CHỈ tốt để kiểm
+  một metric ĐÃ biết là đúng nhánh, KHÔNG để KHÁM PHÁ nhánh nào đang chạy.
+- Bằng chứng đắt: hình sao tổng hợp của tôi có `n_curves` nhỏ + residual cao →
+  "đúng như kỳ vọng" ở nhánh n_edges==0; nhưng file thật có **41 Bezier** → bộ
+  trích cạnh lọc nhầm 8 đoạn cong-nhẹ thành "cạnh thẳng" → nhánh octagon. Chỉ lộ
+  khi đo file thật.
+
+### 15.3 Mỗi nhánh kết luận "tròn/đối xứng/đẹp" PHẢI có cổng SANITY chung
+- Khi NHIỀU nhánh có thể kết luận cùng một loại (vd CIRCLE_ELLIPSE đến từ cả
+  nhánh area-ratio LẪN nhánh octagon), thì điều kiện an toàn (vd ellipse-fit
+  residual) phải gác **MỌI** nhánh đó — không chỉ một. Vá một cổng ở một nhánh
+  để hở các nhánh song song = lỗ hổng còn nguyên.
+
+### 15.4 Cảnh giác bộ "trích đặc trưng" làm SAI lệch nhánh
+- Lỗi gốc thường KHÔNG ở nhánh phân loại mà ở bước **trích đặc trưng phía trước**
+  (vd `_extract_straight_edges` coi cung Bezier cong-nhẹ là "cạnh thẳng" với dung
+  sai 8%). Đặc trưng nhiễu → đếm cạnh sai → chọn nhánh sai. Khi một hình rõ ràng
+  KHÔNG thuộc loại X mà vẫn bị gán X, hãy nghi **đầu vào của bộ chọn nhánh** (số
+  cạnh/đỉnh/segment được đếm ra sao), đừng chỉ chỉnh ngưỡng của nhánh X.
+- Đối chiếu "đại diện vs nhiễu": cạnh thẳng chỉ đáng tin nếu phủ phần lớn chu vi
+  (coverage cao). Vài đoạn ngắn rải rác = nhiễu, không phải cạnh hình.
+
+### 15.5 User nói "vẫn vậy" lần 2 → DỪNG vá ngọn, CHÈN LOG NGAY
+- Quy tắc cứng cho lỗi phân loại/hình học: nếu sau 1 lần sửa user báo "vẫn vậy",
+  lượt kế tiếp KHÔNG được thử ngưỡng mới — phải chèn log đo tại sink thật rồi nhờ
+  user chạy lại. (Phiên này lẽ ra tiết kiệm được ~3 lượt nếu làm vậy từ lần "vẫn vậy"
+  đầu tiên.) Liên thông §7: user lặp "vẫn lỗi" ⇒ giả định của mình SAI, đổi PHƯƠNG
+  PHÁP (đo), không đổi tham số.

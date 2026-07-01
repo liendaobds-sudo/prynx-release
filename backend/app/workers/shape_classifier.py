@@ -309,8 +309,14 @@ def _ellipse_fit_residual(samples) -> float:
     return (sum((e - me) ** 2 for e in es) / len(es)) ** 0.5
 
 
-# Ngưỡng std elip-fit: elip thật (kể cả xoay) ~0; blob bo tròn ≥~0.06. 0.04 = biên rộng.
-_ELLIPSE_FIT_MAX_STD = 0.04
+# Ngưỡng std elip-fit: elip thật (kể cả xoay/egg) ~0–0.003; blob bù-xén bo mạnh ≥0.03.
+# 0.02 tách sạch (giữa 0.003 egg vs 0.030 blob trơn nhất gặp thực tế).
+_ELLIPSE_FIT_MAX_STD = 0.02
+
+# Tỉ lệ TỐI THIỂU (cạnh thẳng / chu vi) để được xét là ĐA GIÁC. Đa giác thật (tam giác,
+# CN, ngũ/lục/bát giác, CN bo góc) phủ ≥~0.55; contour cong phức tạp (bù-xén) chỉ ~0.2–0.4.
+# Dưới ngưỡng → cong chiếm ưu thế → không ép vào đa giác (chống "octagon giả").
+_MIN_STRAIGHT_COVERAGE = 0.5
 
 
 def _edges_have_reflex(edges) -> bool:
@@ -330,13 +336,47 @@ def _edges_have_reflex(edges) -> bool:
     return False
 
 
-def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h):
+def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h,
+                           *, _n_curve_segments: int = 0):
     """
     Port of _phanTichHinhHoc_Core polygon classification (JSX lines 8495-8898).
     Returns (ShapeType, extra_data) or (None, None) if unresolved.
     """
     merged = _merge_collinear_edges(edges)
     n_edges = len(merged)
+
+    # ── GATE COVERAGE CẠNH THẲNG (gốc rễ "octagon giả" — đo từ file thật) ─────────
+    # Contour cong phức tạp (vd đường bù-xén ngôi sao = 41 Bezier) bị _extract_straight_edges
+    # lọc nhầm vài đoạn cong-nhẹ thành "cạnh thẳng" (vd 8 đoạn) → ÉP nhầm vào nhánh đa
+    # giác (octagon→CIRCLE_ELLIPSE, hoặc pentagon/hexagon...). Đa giác THẬT có cạnh thẳng
+    # phủ gần hết chu vi (octagon ~100%); blob cong chỉ phủ ~28%. Khi coverage thấp →
+    # cạnh thẳng là NHIỄU, KHÔNG đại diện hình → CHỈ cho kết luận tròn/elip qua ellipse-fit
+    # (bất biến, đáng tin), KHÔNG ép vào đa giác. Tròn/elip thật: 0 cạnh thẳng (coverage 0)
+    # cũng đi đúng nhánh này.
+    _perim = 0.0
+    _ns = len(samples)
+    for _i in range(_ns):
+        _x1, _y1 = samples[_i]
+        _x2, _y2 = samples[(_i + 1) % _ns]
+        _perim += math.hypot(_x2 - _x1, _y2 - _y1)
+    _straight_len = sum(e['length'] for e in merged)
+    _coverage = (_straight_len / _perim) if _perim > 0 else 0.0
+
+    if _coverage < _MIN_STRAIGHT_COVERAGE and len(samples) >= 8:
+        # Cong chiếm ưu thế: chỉ nhận TRÒN/ELIP nếu thực sự khớp elip; còn lại → None
+        # (để width-profile / fallback → CUSTOM). KHÔNG chạm các nhánh đa giác.
+        bbox_area = total_w * total_h
+        ratio = 0.0
+        if bbox_area > 0:
+            _ra = 0.0
+            for _i in range(_ns):
+                _x1, _y1 = samples[_i]
+                _x2, _y2 = samples[(_i + 1) % _ns]
+                _ra += _x1 * _y2 - _x2 * _y1
+            ratio = abs(_ra) / 2.0 / bbox_area
+        if _ellipse_fit_residual(samples) < _ELLIPSE_FIT_MAX_STD:
+            return ShapeType.CIRCLE_ELLIPSE, {'area_ratio': ratio}
+        return None, None
 
     # Count horizontal edges (normalized tolerance ~2 deg)
     h_count = sum(1 for e in merged if abs(e['dy'] / e['length']) < 0.035)
@@ -357,8 +397,17 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
             # Tròn/elip (kể cả XOAY/dẹt): dùng độ KHỚP ELIP bất biến xoay làm tiêu chí
             # CHÍNH. Trước đây chỉ dựa dải tỉ lệ diện tích ~π/4 (0.73–0.84) nên BỎ SÓT
             # elip xoay/dẹt (bbox nở to → tỉ lệ rớt khỏi dải dù vẫn là elip thật). Đo
-            # residual PCA: elip thật (mọi góc) ~0; blob/lens/pill/sao ≥0.058. <0.04 ⇔ elip.
-            if _ellipse_fit_residual(samples) < _ELLIPSE_FIT_MAX_STD:
+            # residual PCA: elip thật (mọi góc) ~0; blob/lens/pill/sao ≥0.058. <0.02 ⇔ elip.
+            #
+            # CỔNG CẤU TRÚC BỔ SUNG (chống contour bù-xén bo CỰC mạnh nhầm elip):
+            # Elip chuẩn PDF = ĐÚNG 4 cubic Bezier (kappa 4-arc). Có thể tách thêm →
+            # 5-6 max. Contour bù-xén (outline sticker) LUÔN ≥ 8 segments (biểu diễn
+            # hình phức tạp). Kết hợp: residual < 0.02 VÀ ≤ 6 curve-segments → elip.
+            # Khi caller KHÔNG truyền segment count (_n_curve_segments=0) → chỉ dùng
+            # residual (tương thích test gọi trực tiếp không path_items).
+            residual_ok = _ellipse_fit_residual(samples) < _ELLIPSE_FIT_MAX_STD
+            structure_ok = (_n_curve_segments == 0 or _n_curve_segments <= 6)
+            if residual_ok and structure_ok:
                 return ShapeType.CIRCLE_ELLIPSE, {'area_ratio': ratio}
         # Don't return CUSTOM here — let width profile try trapezoid ramp detection
         return None, None
@@ -457,9 +506,11 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
     return None, None  # Unresolved → need width profile
 
 
-def _classify_polygon(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h):
+def _classify_polygon(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h,
+                      *, _n_curve_segments: int = 0):
     """Wrapper to guarantee hexOrientation is always present for manual overrides."""
-    shape_type, extra_data = _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h)
+    shape_type, extra_data = _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h,
+                                                    _n_curve_segments=_n_curve_segments)
     
     if shape_type is not None or extra_data is not None:
         if extra_data is None:
@@ -997,8 +1048,11 @@ def classify_shape(path_items, page_rect=None) -> Dict[str, Any]:
 
     # Step 2: Extract straight edges and try polygon classification
     edges, total_edge_len = _extract_straight_edges(path_items)
+    # Đếm Bezier curves (cấu trúc path): elip PDF = 4 arcs; contour bù-xén = 8+ curves.
+    _n_curves = sum(1 for it in path_items if it[0] == 'c')
     poly_type, poly_data = _classify_polygon(
-        edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h
+        edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, total_w, total_h,
+        _n_curve_segments=_n_curves,
     )
 
     if poly_type is not None:

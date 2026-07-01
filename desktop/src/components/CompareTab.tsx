@@ -6,7 +6,7 @@ import ProgressTracker from './ProgressTracker';
 import DualPDFViewer from './DualPDFViewer';
 import type { DiffRegionData } from './DualPDFViewer';
 import DiffSidebar from './DiffSidebar';
-import SettingsModal from './SettingsModal';
+
 import ReportModal from './ReportModal';
 import { Button } from './Button';
 import { ThemeToggle } from './ThemeToggle';
@@ -25,7 +25,7 @@ export default function CompareTab() {
   const [gifPan, setGifPan] = useState({ x: 0, y: 0 });
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [isGifDragging, setIsGifDragging] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [focusedRegion, setFocusedRegion] = useState<{page: number, nx: number, ny: number} | null>(null);
 
@@ -36,7 +36,7 @@ export default function CompareTab() {
         setActiveGif(null);
         setGifZoom(1);
         setGifPan({ x: 0, y: 0 });
-        setIsSettingsOpen(false);
+
       }
       if (e.code === 'Space' && activeGif && !e.repeat) {
         setIsSpacePressed(true);
@@ -230,6 +230,40 @@ export default function CompareTab() {
                   <option value={150}>150 DPI — Nhanh</option>
                   <option value={300}>300 DPI — Chính xác</option>
                 </select>
+              </div>
+              <div className="flex flex-col gap-3 justify-end">
+                <label className="flex items-center gap-2.5 cursor-pointer group">
+                  <div className="relative flex items-center flex-shrink-0">
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={store.comparisonMode === 'cmyk'}
+                      onChange={(e) => store.setComparisonMode(e.target.checked ? 'cmyk' : 'full')}
+                    />
+                    <div className="w-9 h-5 bg-slate-200 dark:!bg-zinc-700 border border-slate-300 dark:!border-white/10 rounded-md peer-checked:bg-blue-500 peer-checked:border-blue-600 shadow-inner transition-all duration-300"></div>
+                    <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-sm h-[14px] w-[14px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[16px]"></div>
+                  </div>
+                  <div>
+                    <span className="text-xs font-semibold text-slate-700 dark:text-zinc-200">CMYK</span>
+                    <span className="text-[10px] text-slate-400 dark:text-zinc-500 ml-1.5">Tách kênh màu in</span>
+                  </div>
+                </label>
+                <label className="flex items-center gap-2.5 cursor-pointer group">
+                  <div className="relative flex items-center flex-shrink-0">
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={store.isPackagingMode}
+                      onChange={(e) => store.setIsPackagingMode(e.target.checked)}
+                    />
+                    <div className="w-9 h-5 bg-slate-200 dark:!bg-zinc-700 border border-slate-300 dark:!border-white/10 rounded-md peer-checked:bg-blue-500 peer-checked:border-blue-600 shadow-inner transition-all duration-300"></div>
+                    <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-sm h-[14px] w-[14px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[16px]"></div>
+                  </div>
+                  <div>
+                    <span className="text-xs font-semibold text-slate-700 dark:text-zinc-200">Bao bì</span>
+                    <span className="text-[10px] text-slate-400 dark:text-zinc-500 ml-1.5">Xếp lồng khớp</span>
+                  </div>
+                </label>
               </div>
               <div className="flex items-end">
                 <Button

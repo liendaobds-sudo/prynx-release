@@ -374,6 +374,19 @@ def process_chunk(args):
 
                 placements = chunk_precalc_placements[str(sheet_idx)]
 
+            logger.warning(
+                "[ROT-AUDIT][phase1][sheet=%d] source=PRECALC n=%d layout=%s",
+                sheet_idx, len(placements), layout_type,
+            )
+            try:
+                from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                _rot_get_logger().warning(
+                    "[ROT-AUDIT][phase1][sheet=%d] source=PRECALC n=%d layout=%s",
+                    sheet_idx, len(placements), layout_type,
+                )
+            except Exception:
+                pass
+
         else:
 
             # Try Rust fast path for placement calculation
@@ -405,6 +418,22 @@ def process_chunk(args):
                     page_count=page_count,
                     sheet_mapping=_sm,
                 )
+                logger.warning(
+                    "[ROT-AUDIT][phase1][sheet=%d] source=RUST_COMPUTE_PLACEMENTS n=%d "
+                    "layout=%s cx=%d cy=%d active_grid=%.1fx%.1f super_base=(%.1f,%.1f)",
+                    sheet_idx, len(placements), layout_type, cx_count, cy_count,
+                    cur_active_grid_w, cur_active_grid_h, cur_super_base_x, cur_super_base_y,
+                )
+                try:
+                    from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                    _rot_get_logger().warning(
+                        "[ROT-AUDIT][phase1][sheet=%d] source=RUST_COMPUTE_PLACEMENTS n=%d "
+                        "layout=%s cx=%d cy=%d active_grid=%.1fx%.1f super_base=(%.1f,%.1f)",
+                        sheet_idx, len(placements), layout_type, cx_count, cy_count,
+                        cur_active_grid_w, cur_active_grid_h, cur_super_base_x, cur_super_base_y,
+                    )
+                except Exception:
+                    pass
             except ImportError:
                 # Python fallback — chỉ khi Rust module thiếu
                 placements = []
@@ -539,10 +568,48 @@ def process_chunk(args):
 
                 initial_cols = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
 
+                try:
+                    from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                    _rot_get_logger().warning(
+                        "[ROT-AUDIT][COLLISION][RENDER sheet=%d] n_in=%d zones=%s base_poly_bounds=%s "
+                        "base_rect=%s sheet=%.1fx%.1f margins=%s collide=%d absXY_in=%s",
+                        sheet_idx, len(placements),
+                        [tuple(round(z, 1) for z in zz) for zz in zones],
+                        (tuple(round(b, 1) for b in base_poly.bounds) if base_poly is not None else None),
+                        tuple(round(b, 1) for b in base_rect_pts), sheet_w, sheet_h,
+                        {k: round(v, 1) for k, v in margins.items()}, len(initial_cols),
+                        [(round(p['abs_x'], 1), round(p['abs_y'], 1)) for p in placements],
+                    )
+                except Exception:
+                    pass
+
+                if sheet_idx == 0:
+                    _lay_dbg = _layout_cache.get(first_src_idx) or {}
+                    _ys = sorted(round(p['abs_y'], 1) for p in placements)
+                    logger.warning(
+                        "[DIAG-EXPORT] sheet0 shape=%s strategy=%s base_poly=%s zones=%d "
+                        "items_before=%d collisions=%d abs_y[min..max]=%.1f..%.1f ys=%s",
+                        (detected_shapes_by_page.get(str(first_src_idx)) or detected_shapes_by_page.get(first_src_idx)) if is_die_cut else 'CUSTOM',
+                        _lay_dbg.get('strategyUsed'), 'YES' if base_poly is not None else 'NONE',
+                        len(zones), len(placements), len(initial_cols),
+                        (_ys[0] if _ys else 0), (_ys[-1] if _ys else 0), _ys,
+                    )
 
                 if initial_cols:
                     original_len = len(placements)
                     placements = smart_resolve_collisions(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+                    try:
+                        from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                        _rot_get_logger().warning(
+                            "[ROT-AUDIT][COLLISION][RENDER sheet=%d] n_out=%d absXY_out=%s",
+                            sheet_idx, len(placements),
+                            [(round(p['abs_x'], 1), round(p['abs_y'], 1)) for p in placements],
+                        )
+                    except Exception:
+                        pass
+                    if sheet_idx == 0:
+                        logger.warning("[DIAG-EXPORT] sheet0 items_after_resolve=%d (removed %d)",
+                                       len(placements), original_len - len(placements))
 
         # --- Phase 3: Render ---
 

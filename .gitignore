@@ -97,3 +97,12 @@ backend/download_sam.py
 backend/search_models.py
 desktop/src-tauri/icons/android/
 desktop/src-tauri/icons/ios/
+
+# Release output (installers built locally — too large / not source)
+Ban_Phat_Hanh/
+
+# Cargo/diagnostic scratch logs
+_diag*.txt
+desktop/src-tauri/_cargo_out.txt
+desktop/src-tauri/_cargo_err.txt
+desktop/src-tauri/_chk/

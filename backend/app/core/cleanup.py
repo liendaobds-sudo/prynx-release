@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 # ── Configuration ──
 # Files older than this (in hours) will be deleted by filesystem cleanup,
 # regardless of whether they have a DB record.
-FS_CLEANUP_MAX_AGE_HOURS = 12
+# PHẢI >= hạn sống dài nhất do route đặt (Working_File phiên edit đặt expires_at=24h
+# tại routes/edit.py). Trước đây 12h < 24h → quét sweep có thể XÓA Working_File đang
+# trong phiên chỉnh sửa dài trước hạn (audit an toàn dữ liệu). Đặt 26h (24h + biên).
+FS_CLEANUP_MAX_AGE_HOURS = 26
 
 
 async def cleanup_expired_files_loop():

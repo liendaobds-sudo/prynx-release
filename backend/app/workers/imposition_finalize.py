@@ -17,6 +17,10 @@ Quy ước toạ độ trả về:
 """
 from typing import Any, Dict, List
 
+from app.workers.rot_audit_log import get_logger as _rot_get_logger
+
+_rot_audit_log = _rot_get_logger()
+
 
 def finalize_placements(
     items: List[Dict[str, Any]],
@@ -66,6 +70,34 @@ def finalize_placements(
             'width': iw, 'height': ih,
             'original_cell_y': usable_h + margin_bottom + margin_top - abs_y_top - ih,
         })
+
+    # ── [ROT-AUDIT] Log toạ độ finalize (preview Branch A & render repeat dùng CHUNG hàm này).
+    # So sánh thứ tự hàng + cờ xoay giữa preview và render để tìm lệch lật trục.
+    try:
+        import inspect
+        _caller = "?"
+        for _fr in inspect.stack()[1:6]:
+            if 'preview_layout' in _fr.function:
+                _caller = "PREVIEW"
+                break
+            if _fr.function in ('run_nup_engine', 'process_chunk'):
+                _caller = "RENDER(" + _fr.function + ")"
+                break
+        _rows = [
+            (i, round(p['cell']['y'], 1), round(p['abs_x'], 1), round(p['abs_y'], 1),
+             round(p['original_cell_y'], 1),
+             int(p['cell'].get('isRotated', False)), int(p['cell'].get('isRotated180', False)))
+            for i, p in enumerate(placements)
+        ]
+        _rot_audit_log.warning(
+            "[ROT-AUDIT][finalize][%s] n=%d sheet_usable=%.1fx%.1f margins(l/b/t)=%.1f/%.1f/%.1f "
+            "y_off=%.1f total_h=%.1f rows(idx,cellY,absX,absY,origTopY,rot90,rot180)=%s",
+            _caller, len(placements), usable_w, usable_h,
+            margin_left, margin_bottom, margin_top, y_off, total_content_h, _rows,
+        )
+    except Exception:
+        pass
+
     return placements
 
 
@@ -105,9 +137,31 @@ def resolve_pont_collisions_on_placements(placements: List[Dict[str, Any]], req:
         base_rect_pts = (0, 0, placements[0]['width'], placements[0]['height'])
         if base_poly is not None:
             base_rect_pts = base_poly.bounds
-        if not detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h):
+        _has_col = detect_collisions(placements, zones, base_poly, base_rect_pts, sheet_h)
+        try:
+            _rot_audit_log.warning(
+                "[ROT-AUDIT][COLLISION][PREVIEW] n_in=%d zones=%s base_poly_bounds=%s "
+                "base_rect=%s sheet=%.1fx%.1f margins=%s collide=%s absXY_in=%s",
+                len(placements),
+                [tuple(round(z, 1) for z in zz) for zz in zones],
+                (tuple(round(b, 1) for b in base_poly.bounds) if base_poly is not None else None),
+                tuple(round(b, 1) for b in base_rect_pts), sheet_w, sheet_h,
+                {k: round(v, 1) for k, v in margins.items()}, bool(_has_col),
+                [(round(p['abs_x'], 1), round(p['abs_y'], 1)) for p in placements],
+            )
+        except Exception:
+            pass
+        if not _has_col:
             return placements
         resolved = smart_resolve_collisions(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+        try:
+            _rot_audit_log.warning(
+                "[ROT-AUDIT][COLLISION][PREVIEW] n_out=%d absXY_out=%s",
+                len(resolved or []),
+                [(round(p['abs_x'], 1), round(p['abs_y'], 1)) for p in (resolved or [])],
+            )
+        except Exception:
+            pass
         return resolved or placements
     except Exception as e:
         import logging

@@ -829,6 +829,47 @@ class PreviewLayoutRequest(BaseModel):
     cnc_flip_edge: Optional[str] = "long"
     cols: int = 0
     rows: int = 0
+    # Chế độ 1 Dao (LETA): KC cụm phụ (mm) — preview phải khớp nup_engine secondary_gap.
+    cut_type: Optional[str] = "default"
+    fill_block_gap: Optional[float] = 0
+
+def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_hint: str = None):
+    """Polygon va chạm boong — KHỚP nup_process_chunk (dùng kích thước Ô solver, không item_w FE)."""
+    pc = getattr(req, 'pont_config', None)
+    if not pc or pc.get('disableCollision', False):
+        return None
+    items = result.get('items') or []
+    pw = float(items[0].get('width', 0) or 0) if items else 0.0
+    ph = float(items[0].get('height', 0) or 0) if items else 0.0
+    if pw <= 0:
+        pw = float(result.get('trimW') or getattr(req, 'item_w', 0) or 0)
+    if ph <= 0:
+        ph = float(result.get('trimH') or getattr(req, 'item_h', 0) or 0)
+    shape = (result.get('shapeType') or shape_type_hint or getattr(req, 'shape_type', None) or '').upper()
+    if shape == 'CIRCLE_ELLIPSE' and pw > 0 and ph > 0:
+        from shapely.geometry import Point
+        from shapely.affinity import scale
+        return scale(Point(0, 0).buffer(1.0, resolution=64), xfact=pw / 2.0, yfact=ph / 2.0)
+    try:
+        from app.workers.pont_collision import build_shapely_polygon_from_paths
+        paths = page.extract_vector_paths()
+        if paths:
+            return build_shapely_polygon_from_paths(paths, page.rect)
+    except Exception:
+        pass
+    return None
+
+def _resolve_preview_secondary_gap(req: Any) -> Optional[float]:
+    """Cùng thứ tự ưu tiên với nup_engine (L1248-1260): one_dao+fillBlockGap → splitGap → None."""
+    from app.workers.pont_collision import MM_TO_PTS
+    cut_type = getattr(req, 'cut_type', None) or 'default'
+    fill_block_gap_mm = float(getattr(req, 'fill_block_gap', None) or 0)
+    split_gap_pt = float(getattr(req, 'split_gap', None) or 0)
+    if cut_type == 'one_dao' and fill_block_gap_mm > 0:
+        return fill_block_gap_mm * MM_TO_PTS
+    if split_gap_pt > 0:
+        return split_gap_pt
+    return None
 
 def _normalize_polygon_to_unit(poly, max_pts: int = 80):
     """Outline shapely (page coords, Y-up PDF) → list [fx, fy] phân số 0..1 đã giản hoá.
@@ -971,6 +1012,27 @@ async def preview_layout(req: PreviewLayoutRequest):
             logger.debug("[PREVIEW] file_id=%s path=%s usable=%.2fx%.2f item=%.2fx%.2f gap=%.2fx%.2f strategy=%s shape=%s props=%s",
                          req.file_id, req.path, req.usable_w, req.usable_h, req.item_w, req.item_h,
                          req.gap_x, req.gap_y, req.strategy, req.shape_type, req.shape_props)
+
+            try:
+                from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                _rot_get_logger().warning(
+                    "[ROT-AUDIT][REQ][PREVIEW] path=%s task_mode=%s layout_type=%s is_die_cut=%s "
+                    "strategy=%s shape=%s usable=%.1fx%.1f sheet=%.1fx%.1f margins(l/b/t/r)=%.1f/%.1f/%.1f/%.1f "
+                    "gap=%.1fx%.1f bleed=%.1f target_qty=%s tqbp=%s pont_type=%s pont_config=%s "
+                    "grouping=%s cut_type=%s fill_block_gap=%s split_gap=%s",
+                    req.path, getattr(req, 'task_mode', None), getattr(req, 'layout_type', None),
+                    getattr(req, 'is_die_cut', None), req.strategy, req.shape_type,
+                    req.usable_w, req.usable_h, getattr(req, 'sheet_w', 0), getattr(req, 'sheet_h', 0),
+                    getattr(req, 'margin_left', 0), getattr(req, 'margin_bottom', 0),
+                    getattr(req, 'margin_top', 0), getattr(req, 'margin_right', 0) if hasattr(req, 'margin_right') else 0,
+                    req.gap_x, req.gap_y, getattr(req, 'bleed', 0), getattr(req, 'target_quantity', 0),
+                    getattr(req, 'target_quantities_by_page', None), getattr(req, 'pont_config', None) and 'ON',
+                    getattr(req, 'pont_config', None), getattr(req, 'grouping_strategy', None),
+                    getattr(req, 'cut_type', None), getattr(req, 'fill_block_gap', None),
+                    getattr(req, 'split_gap', None),
+                )
+            except Exception:
+                pass
             
             # Desktop: đọc trực tiếp theo path (không cần upload → preview gang nhiều
             # mẫu vẫn chạy mà không phụ thuộc selectionFileId). Web: resolve từ DB.
@@ -1414,9 +1476,9 @@ async def preview_layout(req: PreviewLayoutRequest):
             # Determine shape override from frontend
             shape_override = req.shape_type if req.shape_type and req.shape_type != 'CUSTOM' else None
             if req.shape_type == 'CUSTOM':
-                shape_override = 'CUSTOM'  # Explicit CUSTOM choice
-            
-            logger.debug("shape_override=%s", shape_override)
+                shape_override = 'CUSTOM'  # Explicit CUSTOM choice → lưới thẳng
+
+            logger.debug("shape_override=%s (req.shape_type=%s)", shape_override, req.shape_type)
             logger.debug("CALLING compute_sticker_layout_for_page...")
             
             bleed_pt = req.bleed or 0
@@ -1491,7 +1553,7 @@ async def preview_layout(req: PreviewLayoutRequest):
                     # PARITY (audit): output (nup_process_chunk) truyền secondary_gap
                     # (khe block phụ / split-gap); preview trước đây BỎ → block phụ xếp
                     # khít hơn output. Truyền split_gap (points) frontend đã gửi cho khớp.
-                    secondary_gap=(getattr(req, 'split_gap', None) or None),
+                    secondary_gap=_resolve_preview_secondary_gap(req),
                 )
 
             if is_cluster:
@@ -1563,18 +1625,7 @@ async def preview_layout(req: PreviewLayoutRequest):
                     "strategyUsed": "cluster_tile",
                     "absPlacement": True,
                 }
-            base_poly = None
-            if getattr(req, 'pont_config', None) and not req.pont_config.get('disableCollision', False):
-                if getattr(req, 'shape_type', None) == 'CIRCLE_ELLIPSE':
-                    from shapely.geometry import Point
-                    from shapely.affinity import scale
-                    # Use a highly detailed mathematical polygon (256 sides) for Ellipse
-                    base_poly = scale(Point(0,0).buffer(1.0, resolution=64), xfact=req.item_w / 2.0, yfact=req.item_h / 2.0)
-                else:
-                    from app.workers.pont_collision import build_shapely_polygon_from_paths
-                    paths = page.extract_vector_paths()
-                    if paths:
-                        base_poly = build_shapely_polygon_from_paths(paths, page.rect)
+            base_poly = _build_pont_base_poly_for_preview(page, result, req, shape_override)
 
             # ── Đường bế THẬT cho preview (vẽ đúng outline, không phụ thuộc hình tổng hợp).
             # Trích cho HAMMER/DUMBBELL (bất đối xứng dễ vẽ sai) VÀ CUSTOM (khuôn tự do /
@@ -1596,10 +1647,36 @@ async def preview_layout(req: PreviewLayoutRequest):
                     logger.debug("die polygon extract failed: %s", _e)
                     die_polygon_norm = None
 
+            # Hình học khuôn THẬT để preview vẽ đường bế bằng CHÍNH transform của file xuất
+            # (transform_die_point). Dùng chung → preview không thể lệch output.
+            _die_items = None
+            _die_rect = None
+            if getattr(req, 'is_die_cut', False):
+                try:
+                    from app.workers.nup_diecut import _find_largest_die_path
+                    _lp = _find_largest_die_path(page)
+                    if _lp and _lp.get('items'):
+                        _die_items = _lp['items']
+                        _die_rect = _lp['rect']
+                except Exception as _e:
+                    logger.debug("die polylines extract failed: %s", _e)
+
             doc.close()
 
             items = result.get("items", [])
             logger.debug("PREVIEW result: items_before_collision=%d", len(items))
+
+            try:
+                from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                _rot_get_logger().warning(
+                    "[ROT-AUDIT][solver][PREVIEW] strategy=%s shapeType=%s shapeProps=%s "
+                    "secondary_gap=%s n=%d rot180_per_cell=%s",
+                    result.get('strategyUsed'), result.get('shapeType'), result.get('shapeProps'),
+                    _resolve_preview_secondary_gap(req), len(items),
+                    [int(it.get('isRotated180', False)) for it in items],
+                )
+            except Exception:
+                pass
 
             _is_relative_grid = (not getattr(req, 'is_die_cut', False)) and _tm in ('nup', 'step_repeat', 'booklet')
 
@@ -1631,22 +1708,50 @@ async def preview_layout(req: PreviewLayoutRequest):
             _mb = getattr(req, 'margin_bottom', 0) or 0
             _mt = getattr(req, 'margin_top', 0) or 0
             placements = finalize_placements(items, req.usable_w, req.usable_h, _ml, _mb, _mt, page_idx)
+            _n_before = len(placements)
+            _ays_before = sorted(round(p['abs_y'], 1) for p in placements)
             placements = resolve_pont_collisions_on_placements(placements, req, base_poly)
+            logger.warning(
+                "[PARITY-DBG PREVIEW] file=%s shape=%s strategy=%s base_poly=%s "
+                "items_in=%d items_out=%d usable=%.1fx%.1f sheet=%.1fx%.1f "
+                "margins(l/b/t)=%.1f/%.1f/%.1f abs_y_before=%s",
+                (req.path or req.file_id), result.get('shapeType'), result.get('strategyUsed'),
+                'YES' if base_poly is not None else 'NONE',
+                _n_before, len(placements), req.usable_w, req.usable_h,
+                getattr(req, 'sheet_w', 0), getattr(req, 'sheet_h', 0),
+                _ml, _mb, _mt, _ays_before,
+            )
 
             abs_cells = []
             max_w = 0.0
             max_h = 0.0
+            from app.workers.nup_artwork import die_polylines_for_placement as _die_polylines
             for p in placements:
                 c = p['cell']
                 w = p['width']
                 h = p['height']
-                abs_cells.append({
+                _cell = {
                     'x': c.get('x', 0), 'y': c.get('y', 0),
                     'absX': p['abs_x'], 'absY': p['abs_y'],
                     'width': w, 'height': h,
                     'isRotated': c.get('isRotated', False),
                     'isRotated180': c.get('isRotated180', False),
-                })
+                }
+                # Đường bế THẬT của ô (toạ độ TOP-DOWN trang đích, pt) — CÙNG transform
+                # với file xuất. Frontend chỉ vẽ y nguyên, không tự xoay/lật.
+                if _die_items is not None:
+                    _ay_td = p.get('original_cell_y')
+                    if _ay_td is None:
+                        _ay_td = (req.usable_h + _mb + _mt) - p['abs_y'] - h
+                    try:
+                        _cell['diePolylines'] = _die_polylines(
+                            _die_items, _die_rect, p['abs_x'], _ay_td,
+                            is_rotated=c.get('isRotated', False),
+                            is_rotated_180=c.get('isRotated180', False),
+                        )
+                    except Exception as _e:
+                        logger.debug("die polylines build failed: %s", _e)
+                abs_cells.append(_cell)
                 max_w = max(max_w, p['abs_x'] + w)
                 max_h = max(max_h, p['abs_y'] + h)
 

@@ -322,6 +322,8 @@ export interface ImposerDashboardProps {
     onBleedUpdate?: (show: boolean, mm: number) => void;
     onFileFixed?: (blob: Blob, name: string) => void;
     systemMergeFiles?: File[];
+    /** PDF đã bake sửa viewer (xoay/xóa/sắp trang) — preview dùng CÙNG nguồn với output. */
+    getWorkingFile?: () => Promise<File>;
 }
 
 // ═══ Khai báo capability theo profile công cụ (Task 16 / Req 6) ═══

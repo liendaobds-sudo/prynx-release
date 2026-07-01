@@ -59,7 +59,7 @@ const INSPECT_RULES = [
 
 type Phase = 'upload' | 'workspace';
 
-export default function PreflightTab() {
+export default function PreflightTab({ onDirtyChange }: any = {}) {
   const [phase, setPhase] = useState<Phase>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [fileId, setFileId] = useState('');
@@ -72,6 +72,14 @@ export default function PreflightTab() {
   const [error, setError] = useState('');
   const [selectedActions, setSelectedActions] = useState<Set<string>>(new Set());
   const [selectedRules, setSelectedRules] = useState<Set<string>>(new Set(INSPECT_RULES.map(r => r.id)));
+
+  // AN TOÀN DỮ LIỆU: sau khi CHẠY SỬA LỖI, file đã sửa chỉ nằm tạm trên server (sẽ bị
+  // dọn) + hiển thị trên viewer; chưa được lưu xuống máy. Báo "dirty" để App cảnh báo
+  // khi đóng tab/app (tránh mất kết quả sửa). Xóa cờ khi reset (làm lại từ đầu).
+  useEffect(() => {
+    onDirtyChange?.(!!(fixResult && (fixResult as any).success));
+  }, [fixResult, onDirtyChange]);
+  useEffect(() => () => { onDirtyChange?.(false); }, [onDirtyChange]);
 
   // Async physical path polyfill (non-blocking via HTTP)
   useEffect(() => {

@@ -173,6 +173,19 @@ def place_one_artwork(
     cell_x = p['abs_x']
     cell_y = p['original_cell_y']
 
+    # ── [ROT-AUDIT] Sự thật render: vị trí + cờ xoay thật khi đặt từng tem lên trang.
+    try:
+        from app.workers.rot_audit_log import get_logger as _rot_get_logger
+        _rot_get_logger().warning(
+            "[ROT-AUDIT][place][src=%d clu=%d] abs_x=%.1f original_cell_y=%.1f w=%.1f h=%.1f "
+            "rot90=%d rot180=%d die_cut=%d mirror=(%d,%d)",
+            src_page_idx, cluster_idx, cell_x, cell_y, cell['width'], cell['height'],
+            int(cell.get('isRotated', False)), int(cell.get('isRotated180', False)),
+            int(bool(is_die_cut)), int(bool(mirror_x)), int(bool(mirror_y)),
+        )
+    except Exception:
+        pass
+
     trim_rect = pdf_lib.Rect(cell_x, cell_y, cell_x + cell['width'], cell_y + cell['height'])
     bleed_rect = pdf_lib.Rect(
         trim_rect.x0 - bleed_pt, trim_rect.y0 - bleed_pt,
@@ -322,6 +335,74 @@ def place_one_artwork(
     return trim_rect, src_page_idx
 
 
+def transform_die_point(px, py, die_rect, abs_x, abs_y, is_rotated=False, is_rotated_180=False):
+    """NGUỒN CHÂN LÝ DUY NHẤT cho phép biến đổi 1 điểm đường bế (vị trí + xoay).
+
+    Dùng CHUNG bởi: draw_die_lines_for_placement (render file xuất) và preview
+    (/preview-layout) → preview KHÔNG reimplement hình học → không thể lệch output.
+
+    Toạ độ vào (px,py) theo hệ trang nguồn; ra theo hệ trang đích TOP-DOWN mà
+    cut_shape/show_pdf_page tiêu thụ (y0 nhỏ = TRÊN).
+    """
+    if is_rotated and is_rotated_180:
+        return (abs_x + (die_rect.y1 - py), abs_y + px - die_rect.x0)
+    elif is_rotated_180:
+        return (abs_x + (die_rect.x1 - px), abs_y + (die_rect.y1 - py))
+    elif is_rotated:
+        return (abs_x + (py - die_rect.y0), abs_y + (die_rect.x1 - px))
+    else:
+        return (abs_x + (px - die_rect.x0), abs_y + (py - die_rect.y0))
+
+
+def die_polylines_for_placement(die_items, die_rect, abs_x, abs_y,
+                                is_rotated=False, is_rotated_180=False, bezier_steps=10):
+    """Trả list polyline (mỗi polyline = list điểm [x,y] toạ độ trang đích TOP-DOWN),
+    dùng CHÍNH transform_die_point như render file xuất. Bezier được lấy mẫu thành
+    đoạn thẳng để frontend chỉ việc vẽ polyline (không cần engine bezier)."""
+    def T(px, py):
+        return list(transform_die_point(px, py, die_rect, abs_x, abs_y, is_rotated, is_rotated_180))
+    out = []
+    for item in die_items:
+        cmd = item[0]
+        if cmd == 'l':
+            p1 = pdf_lib.Point(item[1]); p2 = pdf_lib.Point(item[2])
+            out.append([T(p1.x, p1.y), T(p2.x, p2.y)])
+        elif cmd == 'c':
+            pts = [pdf_lib.Point(item[i]) for i in range(1, 5)]
+            samp = []
+            for k in range(bezier_steps + 1):
+                t = k / bezier_steps; mt = 1 - t
+                bx = mt**3*pts[0].x + 3*mt*mt*t*pts[1].x + 3*mt*t*t*pts[2].x + t**3*pts[3].x
+                by = mt**3*pts[0].y + 3*mt*mt*t*pts[1].y + 3*mt*t*t*pts[2].y + t**3*pts[3].y
+                samp.append(T(bx, by))
+            out.append(samp)
+        elif cmd == 're':
+            r = pdf_lib.Rect(item[1])
+            out.append([T(r.x0, r.y0), T(r.x1, r.y0), T(r.x1, r.y1), T(r.x0, r.y1), T(r.x0, r.y0)])
+        elif cmd == 'qu':
+            quad = item[1]
+            qp = [pdf_lib.Point(quad.ul), pdf_lib.Point(quad.ur),
+                  pdf_lib.Point(quad.lr), pdf_lib.Point(quad.ll)]
+            out.append([T(p.x, p.y) for p in qp] + [T(qp[0].x, qp[0].y)])
+
+    # ── [DIE-GEO] Log hình học đường bế PREVIEW (toạ độ cuối) để so với file bế xuất.
+    try:
+        from app.workers.rot_audit_log import get_logger as _rg
+        _pts = [pt for pl in out for pt in pl]
+        if _pts:
+            _xs = [p[0] for p in _pts]; _ys = [p[1] for p in _pts]
+            _rg().warning(
+                "[DIE-GEO][PREVIEW] abs=(%.1f,%.1f) die_rect=(%.1f,%.1f,%.1f,%.1f) rot90=%d rot180=%d "
+                "n_pl=%d bbox=(%.1f,%.1f,%.1f,%.1f)",
+                abs_x, abs_y, die_rect.x0, die_rect.y0, die_rect.x1, die_rect.y1,
+                int(is_rotated), int(is_rotated_180), len(out),
+                min(_xs), min(_ys), max(_xs), max(_ys),
+            )
+    except Exception:
+        pass
+    return out
+
+
 def draw_die_lines_for_placement(
     cut_shape,
     die_items,
@@ -333,80 +414,53 @@ def draw_die_lines_for_placement(
 ):
     """Vẽ đường bế của MỘT ô lên `cut_shape`, transform theo vị trí + xoay.
 
-    Rút nguyên văn tập lệnh transform (l / c / re / qu) từ process_chunk để
-    dùng chung cho trang khuôn của công cụ CNC. Caller tự gọi cut_shape.finish/commit.
+    Dùng CHUNG transform_die_point với preview (/preview-layout) → một nguồn chân lý.
+    Caller tự gọi cut_shape.finish/commit.
     """
+    def _T(px, py):
+        x, y = transform_die_point(px, py, die_rect, abs_x, abs_y, is_rotated, is_rotated_180)
+        return pdf_lib.Point(x, y)
+
+    # ── [DIE-GEO] Log hình học đường bế RENDER (file bế xuất) — CÙNG toạ độ với PREVIEW?
+    try:
+        from app.workers.rot_audit_log import get_logger as _rg
+        _pls = die_polylines_for_placement(die_items, die_rect, abs_x, abs_y, is_rotated, is_rotated_180)
+        _pts = [pt for pl in _pls for pt in pl]
+        if _pts:
+            _xs = [p[0] for p in _pts]; _ys = [p[1] for p in _pts]
+            _rg().warning(
+                "[DIE-GEO][RENDER] abs=(%.1f,%.1f) die_rect=(%.1f,%.1f,%.1f,%.1f) rot90=%d rot180=%d "
+                "n_pl=%d bbox=(%.1f,%.1f,%.1f,%.1f)",
+                abs_x, abs_y, die_rect.x0, die_rect.y0, die_rect.x1, die_rect.y1,
+                int(is_rotated), int(is_rotated_180), len(_pls),
+                min(_xs), min(_ys), max(_xs), max(_ys),
+            )
+    except Exception:
+        pass
+
     for item in die_items:
         cmd = item[0]
 
         if cmd == 'l':  # line: (cmd, p1, p2)
             p1 = pdf_lib.Point(item[1])
             p2 = pdf_lib.Point(item[2])
-            if is_rotated and is_rotated_180:
-                t1 = pdf_lib.Point(abs_x + (die_rect.y1 - p1.y), abs_y + p1.x - die_rect.x0)
-                t2 = pdf_lib.Point(abs_x + (die_rect.y1 - p2.y), abs_y + p2.x - die_rect.x0)
-            elif is_rotated_180:
-                t1 = pdf_lib.Point(abs_x + (die_rect.x1 - p1.x), abs_y + (die_rect.y1 - p1.y))
-                t2 = pdf_lib.Point(abs_x + (die_rect.x1 - p2.x), abs_y + (die_rect.y1 - p2.y))
-            elif is_rotated:
-                t1 = pdf_lib.Point(abs_x + (p1.y - die_rect.y0), abs_y + (die_rect.x1 - p1.x))
-                t2 = pdf_lib.Point(abs_x + (p2.y - die_rect.y0), abs_y + (die_rect.x1 - p2.x))
-            else:
-                t1 = pdf_lib.Point(abs_x + (p1.x - die_rect.x0), abs_y + (p1.y - die_rect.y0))
-                t2 = pdf_lib.Point(abs_x + (p2.x - die_rect.x0), abs_y + (p2.y - die_rect.y0))
-            cut_shape.draw_line(t1, t2)
+            cut_shape.draw_line(_T(p1.x, p1.y), _T(p2.x, p2.y))
 
         elif cmd == 'c':  # cubic bezier: (cmd, p1, p2, p3, p4)
             pts = [pdf_lib.Point(item[i]) for i in range(1, 5)]
-            transformed = []
-            for pt in pts:
-                if is_rotated and is_rotated_180:
-                    transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
-                elif is_rotated_180:
-                    transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
-                elif is_rotated:
-                    transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
-                else:
-                    transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
+            transformed = [_T(pt.x, pt.y) for pt in pts]
             cut_shape.draw_bezier(transformed[0], transformed[1], transformed[2], transformed[3])
 
-        elif cmd == 're':  # rect: (cmd, rect)
+        elif cmd == 're':  # rect: (cmd, rect) — dựng lại từ 4 góc đã transform (bằng KQ cũ)
             r = pdf_lib.Rect(item[1])
-            if is_rotated and is_rotated_180:
-                nr = pdf_lib.Rect(
-                    abs_x + (die_rect.y1 - r.y1), abs_y + r.x0 - die_rect.x0,
-                    abs_x + (die_rect.y1 - r.y0), abs_y + r.x1 - die_rect.x0
-                )
-            elif is_rotated_180:
-                nr = pdf_lib.Rect(
-                    abs_x + (die_rect.x1 - r.x1), abs_y + (die_rect.y1 - r.y1),
-                    abs_x + (die_rect.x1 - r.x0), abs_y + (die_rect.y1 - r.y0)
-                )
-            elif is_rotated:
-                nr = pdf_lib.Rect(
-                    abs_x + (r.y0 - die_rect.y0), abs_y + (die_rect.x1 - r.x1),
-                    abs_x + (r.y1 - die_rect.y0), abs_y + (die_rect.x1 - r.x0)
-                )
-            else:
-                nr = pdf_lib.Rect(
-                    abs_x + (r.x0 - die_rect.x0), abs_y + (r.y0 - die_rect.y0),
-                    abs_x + (r.x1 - die_rect.x0), abs_y + (r.y1 - die_rect.y0)
-                )
-            cut_shape.draw_rect(nr)
+            corners = [_T(r.x0, r.y0), _T(r.x1, r.y0), _T(r.x1, r.y1), _T(r.x0, r.y1)]
+            xs = [c.x for c in corners]; ys = [c.y for c in corners]
+            cut_shape.draw_rect(pdf_lib.Rect(min(xs), min(ys), max(xs), max(ys)))
 
         elif cmd == 'qu':  # quad: (cmd, Quad(ul, ur, ll, lr))
             quad = item[1]
             quad_pts = [pdf_lib.Point(quad.ul), pdf_lib.Point(quad.ur),
                         pdf_lib.Point(quad.lr), pdf_lib.Point(quad.ll)]
-            transformed = []
-            for pt in quad_pts:
-                if is_rotated and is_rotated_180:
-                    transformed.append(pdf_lib.Point(abs_x + (die_rect.y1 - pt.y), abs_y + pt.x - die_rect.x0))
-                elif is_rotated_180:
-                    transformed.append(pdf_lib.Point(abs_x + (die_rect.x1 - pt.x), abs_y + (die_rect.y1 - pt.y)))
-                elif is_rotated:
-                    transformed.append(pdf_lib.Point(abs_x + (pt.y - die_rect.y0), abs_y + (die_rect.x1 - pt.x)))
-                else:
-                    transformed.append(pdf_lib.Point(abs_x + (pt.x - die_rect.x0), abs_y + (pt.y - die_rect.y0)))
+            transformed = [_T(pt.x, pt.y) for pt in quad_pts]
             for qi in range(4):
                 cut_shape.draw_line(transformed[qi], transformed[(qi + 1) % 4])
