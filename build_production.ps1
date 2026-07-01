@@ -290,7 +290,7 @@ if (-not $SkipTauri) {
         exit 1
     }
 
-    $installer = Get-ChildItem "$ROOT\desktop\src-tauri\target\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $installer = Get-ChildItem "$ROOT\desktop\src-tauri\target\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
     Write-Host ""
     Write-Host "  ===========================================" -ForegroundColor Green
