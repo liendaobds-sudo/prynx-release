@@ -737,29 +737,51 @@ def smart_resolve_collisions(placements: List[Dict], zones: List[box], base_poly
     has_flippable = any(_cluster_unequal_groups(placements, idxs, ax)
                         for ax in ('row', 'col')
                         for idxs, _n in _interlocked_clusters(placements, ax))
-    if not has_flippable:
-        col_out = _resolve_by_columns(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
-        row_out = _resolve_one_orientation(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
-        if col_out is not None and len(col_out) >= len(row_out):
-            out = col_out
+    # LỒNG thật = cụm có hàng/cột ĐÈ NHAU dọc trục (n_groups>=2) VÀ có XEN KẼ HƯỚNG (cả tem xuôi
+    # lẫn tem lật 180° trong cùng cụm) — đặc trưng hình thang/bình hành/tam giác interlock (KỂ CẢ
+    # đối xứng up=down). Bắt CẢ 2 trục → lồng NGANG lẫn lồng DỌC (hình thang xoay 90°/270°).
+    # Điều kiện xen-kẽ-hướng loại được FALSE-POSITIVE: lưới CUSTOM 2 khối gần nhau theo y bị
+    # _interlocked_clusters gộp chung nhưng KHÔNG có tem lật → không phải lồng.
+    def _both_orientations(_idxs) -> bool:
+        n_up = sum(1 for i in _idxs if (placements[i].get('cell') or {}).get('isRotated180', False))
+        return 0 < n_up < len(_idxs)
+    # Trục lồng: cụm theo 'col' đè nhau theo x → lồng NGANG (cột nest cột);
+    #            cụm theo 'row' đè nhau theo y → lồng DỌC (hàng nest hàng).
+    il_horizontal = any(_n >= 2 and _both_orientations(_idxs)
+                        for _idxs, _n in _interlocked_clusters(placements, 'col'))
+    il_vertical = any(_n >= 2 and _both_orientations(_idxs)
+                      for _idxs, _n in _interlocked_clusters(placements, 'row'))
+    has_interlock = il_horizontal or il_vertical
+
+    # ── Layout LỒNG (hình thang/bình hành — ngang HOẶC dọc). Ưu tiên GIỮ TRỌN (xoay cụm / dịch cả
+    # khối); bất khả kháng thì xóa tối thiểu + dồn-căn theo TRỤC SONG SONG với trục lồng:
+    #   lồng NGANG → dồn theo HÀNG (dịch hàng theo x, giữ nest giữa các cột) — KHÔNG dồn cột dọc.
+    #   lồng DỌC   → dồn theo CỘT (dịch cột theo y, giữ nest giữa các hàng) — KHÔNG dồn hàng ngang.
+    # (Dồn sai trục = dịch vuông góc trục lồng → phá thế lồng đầu-to-đầu-nhỏ → tem đè nhau.)
+    if has_flippable or has_interlock:
+        # 1) Xoay 180° cục bộ cụm lồng lệch số lượng (chỉ hiệu quả khi up/down khác nhau).
+        local = _try_local_pair_flips(placements, zones, base_poly, base_rect_pts, sheet_h)
+        if not detect_collisions(local, zones, base_poly, base_rect_pts, sheet_h):
+            return local
+        # 2) Dịch CẢ KHỐI cứng vào vùng trống → giữ trọn tem, giữ thế lồng.
+        block_shift = _try_whole_block_shift(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+        if block_shift is not None:
+            return block_shift
+        # 3) Xóa tối thiểu + dồn-căn theo TRỤC AN TOÀN (song song trục lồng).
+        if il_vertical and not il_horizontal:
+            out = _resolve_by_columns(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+            if out is None:
+                out = _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
         else:
-            out = row_out
+            out = _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
         return out
 
-    # 1) Xoay 180° cục bộ trọn cụm lồng giáp vùng cấm.
-    local = _try_local_pair_flips(placements, zones, base_poly, base_rect_pts, sheet_h)
-    _flip_cols = detect_collisions(local, zones, base_poly, base_rect_pts, sheet_h)
-    if not _flip_cols:
-        return local
-
-    # 2) Dịch cả khối nếu xoay chưa hết va chạm.
-    block_shift = _try_whole_block_shift(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
-    if block_shift is not None:
-        return block_shift
-
-    # 3) Xóa tối thiểu + canh giữa.
-    out = _resolve_one_orientation(local, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
-    return out
+    # ── KHÔNG lồng (lưới/tròn/chữ nhật/CUSTOM) → hành vi cũ: dồn cột / dồn hàng + canh giữa.
+    col_out = _resolve_by_columns(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+    row_out = _resolve_one_orientation(placements, zones, base_poly, base_rect_pts, sheet_w, sheet_h, margins)
+    if col_out is not None and len(col_out) >= len(row_out):
+        return col_out
+    return row_out
 
 
 def _resolve_one_orientation(placements: List[Dict], zones: List[box], base_poly: Polygon, base_rect_pts: Tuple[float,float,float,float], sheet_w: float, sheet_h: float, margins: Dict[str, float]) -> List[Dict]:

@@ -378,6 +378,14 @@ def _py_solve_illustrator_trapezoid_layout(usable_w: float, usable_h: float, ite
     if best.get('totalItems', 0) == 0:
         return {'totalItems': 0, 'items': [], 'widthUsed': 0, 'heightUsed': 0, 'strategyUsed': strategy, '_main_rotated': is_rotated}
 
+    # grid_rot (lưới xoay 90°, dims hoán đổi) → PHẢI đánh dấu isRotated lên từng ô.
+    # solve_grid_layout không tự set cờ này; với các shape khác orchestrator ép ở vòng
+    # post-select, nhưng 'trapezoid_illustrator' nằm trong danh sách loại trừ của vòng đó
+    # → phải set TẠI ĐÂY, nếu không render đặt artwork sai hướng + collision dò sai góc.
+    if strategy == 'grid_rot':
+        for it in best['items']:
+            it['isRotated'] = True
+
     return {
         'totalItems': best['totalItems'],
         'items': best['items'],

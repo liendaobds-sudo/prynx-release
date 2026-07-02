@@ -4,11 +4,14 @@
  * Shows physical sheets exactly as they will be printed.
  * Simple toggle for front/back, side arrows for navigation, compact bottom bar.
  */
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, RotateCw, Layers, Grid3X3 } from 'lucide-react';
 import { generateBindingMap, type VirtualSheet, type PageSlot } from '../../lib/imposerEngine/VirtualMap';
 import { SPREAD_FOLD_REGISTRY, getPatternForPageCount } from '../../lib/imposerEngine/FoldPatterns';
+import { computeSpreadGrid } from '../../lib/imposerEngine/InstructionSerializer';
+
+const MM_TO_PT = 2.83465;
 
 const SIG_COLORS = [
     { bg: 'rgba(99,102,241,0.12)', border: 'rgba(99,102,241,0.4)', text: '#6366f1' },
@@ -38,6 +41,16 @@ interface SheetViewerDialogProps {
     /** true khi chế độ In Nhanh (digital) — ẩn sơ đồ kẽm */
     isDigital?: boolean;
     gripperMargin?: number;
+    /** Kích thước 1 trang nguồn (điểm/pt) — để preview digital tính đúng lưới step&repeat. */
+    pageWpt?: number;
+    pageHpt?: number;
+    /** Thông số layout (mm) — dùng chung computeSpreadGrid với output thật. */
+    bleed?: number;
+    gapX?: number;
+    gapY?: number;
+    marginLeft?: number;
+    marginRight?: number;
+    marginTop?: number;
 }
 
 // ─── Single page image ───
@@ -284,55 +297,112 @@ const BlueprintGrid: React.FC<{
     );
 };
 
-// ─── Digital Press Sheet Simulation Grid ───
+// ─── Digital Press Sheet Simulation Grid (SSOT: dùng computeSpreadGrid như output) ───
 const DigitalPressSheetGrid: React.FC<{
     sheets: VirtualSheet[];
     currentSheetIdx: number;
     pageOrder: number[];
     pdfFile?: any;
     scaleMode: string;
-}> = ({ sheets, currentSheetIdx, pageOrder, pdfFile, scaleMode }) => {
+    pageWpt: number;
+    pageHpt: number;
+    sheetWmm: number;
+    sheetHmm: number;
+    bleed: number;
+    gapX: number;
+    gapY: number;
+    marginLeft: number;
+    marginRight: number;
+    marginTop: number;
+    gripperMargin: number;
+}> = ({ sheets, currentSheetIdx, pageOrder, pdfFile, scaleMode, pageWpt, pageHpt, sheetWmm, sheetHmm, bleed, gapX, gapY, marginLeft, marginRight, marginTop, gripperMargin }) => {
     const cs = sheets[currentSheetIdx];
-    const halfTotalSheets = Math.ceil(sheets.length / 2);
-    const bottomSheetIdx = currentSheetIdx + halfTotalSheets;
-    const bottomSheet = bottomSheetIdx < sheets.length ? sheets[bottomSheetIdx] : null;
 
-    const topSpread = cs;
-    const bottomSpread = scaleMode === 'cut_stack' ? bottomSheet : cs;
+    // Đo vùng chứa thật để fit-contain 2 plate (tránh khổ landscape tràn giao diện).
+    const areaRef = useRef<HTMLDivElement>(null);
+    const [area, setArea] = useState({ w: 0, h: 0 });
+    useEffect(() => {
+        const el = areaRef.current;
+        if (!el) return;
+        const ro = new ResizeObserver(() => setArea({ w: el.clientWidth, h: el.clientHeight }));
+        ro.observe(el);
+        setArea({ w: el.clientWidth, h: el.clientHeight });
+        return () => ro.disconnect();
+    }, []);
 
-    const renderSpread = (spread: VirtualSheet | null, isBack: boolean) => {
-        if (!spread) return <div className="flex-1 flex items-center justify-center text-slate-400 text-sm min-h-0">Trống</div>;
+    const bleedPt = (bleed || 0) * MM_TO_PT;
+    // Spread khớp phase-1 (auto_100, clustered kéo sát gáy → trừ 2×bleed).
+    const spreadWpt = Math.max(1, pageWpt * 2 - 2 * bleedPt);
+    const spreadHpt = Math.max(1, pageHpt);
+
+    const { frameW, frameH, cols, rows, cellPos } = useMemo(() => computeSpreadGrid(
+        spreadWpt, spreadHpt,
+        (sheetWmm || 0) * MM_TO_PT, (sheetHmm || 0) * MM_TO_PT,
+        (gapX || 0) * MM_TO_PT, (gapY || 0) * MM_TO_PT,
+        (marginLeft || 0) * MM_TO_PT, (marginRight || 0) * MM_TO_PT,
+        (marginTop || 0) * MM_TO_PT, (gripperMargin || 0) * MM_TO_PT,
+    ), [spreadWpt, spreadHpt, sheetWmm, sheetHmm, gapX, gapY, marginLeft, marginRight, marginTop, gripperMargin]);
+
+    // Spread nội dung cho ô thứ i của 1 mặt. Step&Repeat: mọi ô = spread hiện tại.
+    // Cut&Stack: các ô là những tờ booklet KHÁC nhau (mô phỏng — lấp lưới tuần tự).
+    const spreadForCell = (cellIndex: number): VirtualSheet | null => {
+        if (scaleMode !== 'cut_stack') return cs;
+        const idx = (currentSheetIdx + cellIndex) % Math.max(1, sheets.length);
+        return sheets[idx] ?? null;
+    };
+
+    const renderCell = (cellIndex: number, isBack: boolean) => {
+        const spread = spreadForCell(cellIndex);
+        if (!spread) return null;
+        const side = isBack ? spread.back : spread.front;
         return (
-            <div className="flex flex-1 min-h-0 border border-slate-200 dark:border-zinc-600 justify-center">
-                <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                    <PageSlotView slot={isBack ? spread.back.left : spread.front.left} pageOrder={pageOrder} pdfFile={pdfFile} />
+            <div className="flex w-full h-full border border-slate-200 dark:border-zinc-600 bg-white dark:bg-zinc-800 overflow-hidden">
+                <div className="flex-1 min-w-0 h-full flex items-center justify-center p-1">
+                    <PageSlotView slot={side.left} pageOrder={pageOrder} pdfFile={pdfFile} />
                 </div>
-                <div className="shrink-0 w-px bg-red-400/60 z-10" />
-                <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                    <PageSlotView slot={isBack ? spread.back.right : spread.front.right} pageOrder={pageOrder} pdfFile={pdfFile} />
+                <div className="shrink-0 w-px bg-red-400/70 z-10" />
+                <div className="flex-1 min-w-0 h-full flex items-center justify-center p-1">
+                    <PageSlotView slot={side.right} pageOrder={pageOrder} pdfFile={pdfFile} />
                 </div>
             </div>
         );
     };
 
+    // Fit-contain: mỗi plate chiếm nửa vùng (trừ padding p-4=32, gap-8=32), cao trừ nhãn (~44).
+    const availW = Math.max(1, (area.w - 64) / 2);
+    const availH = Math.max(1, area.h - 44);
+    const fitScale = Math.min(availW / frameW, availH / frameH);
+    const boxW = frameW * fitScale;
+    const boxH = frameH * fitScale;
+
     const renderPlate = (label: string, isBack: boolean, colorClass: string, bgClass: string) => (
-        <div className="flex flex-col items-center gap-3 w-1/2 h-full justify-center min-h-0 min-w-0">
+        <div className="flex flex-col items-center gap-3 min-h-0 min-w-0">
             <div className={`shrink-0 inline-flex items-center justify-center h-7 text-[11px] font-bold tracking-wider uppercase px-5 rounded-md ${bgClass} ${colorClass}`}>
                 {label}
             </div>
-            <div className="flex flex-col w-full h-full bg-white dark:bg-zinc-800 rounded-lg border border-slate-200 dark:border-zinc-700 shadow-lg overflow-hidden min-h-0">
-                {renderSpread(topSpread, isBack)}
-                <div className="relative w-full shrink-0">
-                    <div className="border-t-2 border-dashed border-red-400/50" />
-                    <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-zinc-800 px-2 text-[9px] text-red-400 font-bold uppercase tracking-wider whitespace-nowrap">Xén đôi</span>
-                </div>
-                {renderSpread(bottomSpread, isBack)}
+            <div className="relative bg-slate-100 dark:bg-zinc-900 rounded-lg border border-slate-300 dark:border-zinc-700 shadow-lg" style={{ width: `${boxW}px`, height: `${boxH}px` }}>
+                {Array.from({ length: rows }).map((_, r) =>
+                    Array.from({ length: cols }).map((_, c) => {
+                        const pos = cellPos(c, r);
+                        const cellIndex = r * cols + c;
+                        return (
+                            <div key={`${c}-${r}`} className="absolute" style={{
+                                left: `${(pos.x / frameW) * 100}%`,
+                                top: `${((frameH - pos.y - spreadHpt) / frameH) * 100}%`,
+                                width: `${(spreadWpt / frameW) * 100}%`,
+                                height: `${(spreadHpt / frameH) * 100}%`,
+                            }}>
+                                {renderCell(cellIndex, isBack)}
+                            </div>
+                        );
+                    })
+                )}
             </div>
         </div>
     );
 
     return (
-        <div className="flex-1 flex items-center justify-center gap-8 p-4 min-h-0 min-w-0">
+        <div ref={areaRef} className="flex-1 flex items-center justify-center gap-8 p-4 min-h-0 min-w-0 w-full">
             {renderPlate('Mặt Trước', false, 'text-sky-500 dark:text-sky-400', 'bg-sky-100 dark:bg-sky-500/20')}
             {renderPlate('Mặt Sau', true, 'text-amber-500 dark:text-amber-400', 'bg-amber-100 dark:bg-amber-500/20')}
         </div>
@@ -340,7 +410,8 @@ const DigitalPressSheetGrid: React.FC<{
 };
 
 export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
-    isOpen, onClose, pdfFile, pageOrder, bindingMode, foliosize, sheetWidth, sheetHeight, scaleMode = '100', foldPattern = '', catalogJobs, isDigital = false, gripperMargin = 0
+    isOpen, onClose, pdfFile, pageOrder, bindingMode, foliosize, sheetWidth, sheetHeight, scaleMode = '100', foldPattern = '', catalogJobs, isDigital = false, gripperMargin = 0,
+    pageWpt = 0, pageHpt = 0, bleed = 0, gapX = 0, gapY = 0, marginLeft = 0, marginRight = 0, marginTop = 0
 }) => {
     const [currentSheetIdx, setCurrentSheetIdx] = useState(0);
     const [showBack, setShowBack] = useState(false);
@@ -529,12 +600,23 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                     ) : (isDigital && (scaleMode === 'chain_nup' || scaleMode === 'cut_stack')) ? (
                         /* ── DIGITAL PRESS SHEET SIMULATION VIEW ── */
                         <div className="flex-1 flex flex-col items-center justify-center min-h-0 min-w-0">
-                            <DigitalPressSheetGrid 
-                                sheets={sheets} 
-                                currentSheetIdx={currentSheetIdx} 
-                                pageOrder={pageOrder} 
-                                pdfFile={pdfFile} 
-                                scaleMode={scaleMode} 
+                            <DigitalPressSheetGrid
+                                sheets={sheets}
+                                currentSheetIdx={currentSheetIdx}
+                                pageOrder={pageOrder}
+                                pdfFile={pdfFile}
+                                scaleMode={scaleMode}
+                                pageWpt={pageWpt}
+                                pageHpt={pageHpt}
+                                sheetWmm={sheetWidth || 0}
+                                sheetHmm={sheetHeight || 0}
+                                bleed={bleed}
+                                gapX={gapX}
+                                gapY={gapY}
+                                marginLeft={marginLeft}
+                                marginRight={marginRight}
+                                marginTop={marginTop}
+                                gripperMargin={gripperMargin}
                             />
                             {/* Message about digital imposition */}
                             <div className="shrink-0 mt-2 bg-white/90 dark:bg-zinc-800/95 text-slate-800 dark:text-white px-6 py-3.5 rounded-xl text-sm font-medium shadow-xl dark:shadow-2xl flex items-center gap-3 border border-indigo-200 dark:border-indigo-500/30 max-w-2xl w-max text-center leading-relaxed backdrop-blur-sm z-50 relative">

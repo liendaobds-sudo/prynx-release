@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import logging
+import re
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -45,14 +46,22 @@ def _validate_file_path(path: str | None, must_exist: bool = True) -> str:
     if not path:
         raise HTTPException(status_code=400, detail="File path is required.")
 
-    # Block obvious traversal attempts
-    if '..' in path:
+    # Chặn traversal theo THÀNH PHẦN path (không chặn nhầm tên file hợp lệ có chứa
+    # chuỗi '..', ví dụ "report..final.pdf"). Chỉ chặn khi '..' là một segment đường dẫn.
+    _parts = re.split(r'[\\/]+', path)
+    if any(p == '..' for p in _parts):
         raise HTTPException(status_code=400, detail="Invalid path: directory traversal not allowed.")
 
     resolved = os.path.abspath(path)
 
-    # Reject symbolic links
+    # Reject symbolic links tại path đích. Khi BẬT chế độ hạn chế (web/đa người dùng),
+    # kiểm tra CHẶT hơn: realpath giải mọi symlink/junction ở thư mục cha; nếu khác
+    # resolved (đã chuẩn hoá hoa/thường + dấu phân cách) → có link trung gian → từ chối.
+    # KHÔNG áp realpath ở desktop mode: trên Windows realpath có thể đổi casing ổ đĩa /
+    # giải 8.3 → false-positive chặn nhầm file hợp lệ của chính người dùng.
     if os.path.islink(resolved):
+        raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed.")
+    if _RESTRICT_PATHS and os.path.normcase(os.path.realpath(resolved)) != os.path.normcase(resolved):
         raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed.")
 
     # Must be a PDF file

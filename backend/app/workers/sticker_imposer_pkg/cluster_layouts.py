@@ -253,7 +253,9 @@ def _best_fill_layout(fill_w: float, fill_h: float, avail_w: float, avail_h: flo
     # 3. Head-to-tail cluster (if params available)
     # Bỏ qua các layout dị dạng NFP cho Hình Thang/Bình Hành vì chúng đã có logic riêng,
     # tránh việc NFP trả về khoảng cách sai gây đè nhau, sau đó bị collision prune đi tạo ra gap lớn.
-    if shape_type not in ('TRAPEZOID', 'PARALLELOGRAM'):
+    # CUSTOM (Đặc biệt): khối chính đã xếp lưới sạch (không head_to_tail) → khối phụ cũng PHẢI
+    # lưới sạch, KHÔNG lồng theo NFP (p5/p6 tính từ hình học thật) — tránh rò kiểu búa/tạ vào tem đặc biệt.
+    if shape_type not in ('TRAPEZOID', 'PARALLELOGRAM', 'CUSTOM'):
         if p5_params and p5_params.get('dx_outer', 0) > 0:
             h1 = solve_cluster_grid_layout(avail_w, avail_h, fill_w, fill_h, gap_x, gap_y, p5_params, False)
             candidates.append(h1)

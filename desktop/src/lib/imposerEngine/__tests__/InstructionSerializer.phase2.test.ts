@@ -123,12 +123,14 @@ describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', ()
         expect(p.phase2!.plates.every((pl: any) => noOverlap(pl, p.phase2!.spread_w_pt, p.phase2!.spread_h_pt))).toBe(true);
     });
 
-    it('step_repeat khổ dọc → XOAY 90° (mọi placement rot 90), vẫn trong khổ', () => {
+    it('step_repeat khổ dọc → xuất khổ NGANG, spread đứng 100% (rot 0)', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 320, sheetHeight: 450, marginLeft: 8, marginRight: 8, marginTop: 8, gripperMargin: 10 });
-        expect(p.phase2!.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 90))).toBe(true);
+        // Digital: xếp xong xoay TỜ sang ngang, nội dung đứng thẳng 100% (KHÔNG xoay content).
+        expect(p.phase2!.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 0))).toBe(true);
         expect(allInBounds(p)).toBe(true);
-        // khổ thật phải là khổ đặt (xoay chỉ ảnh hưởng nội dung, không đổi khổ tờ)
-        expect(Math.round(p.phase2!.plates[0].width_pt)).toBe(Math.round(320 * MM));
+        // Khổ tờ xoay sang NGANG: 450×320 (từ khổ đặt 320×450).
+        expect(Math.round(p.phase2!.plates[0].width_pt)).toBe(Math.round(450 * MM));
+        expect(Math.round(p.phase2!.plates[0].height_pt)).toBe(Math.round(320 * MM));
     });
 
     it('fold_pattern khổ dọc → slot 0/180 cộng 90 thành 90/270', () => {
@@ -136,6 +138,27 @@ describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', ()
         const rots = new Set<number>(p.phase2!.plates.flatMap((pl: any) => pl.placements.map((q: any) => q.rotation_deg)));
         expect(rots.has(90)).toBe(true);
         expect(rots.has(270)).toBe(true);
+        expect(allInBounds(p)).toBe(true);
+    });
+
+    it('step_repeat spread rộng hơn khổ dọc → xuất khổ NGANG, spread đứng 100% (regression 209×299 → xuất 430×320)', () => {
+        // Page 209×299mm → spread 418×299mm (ngang). Khổ đặt 320×430mm (dọc).
+        // Lỗi cũ #1: tự phình khổ thành 424×430. Lỗi cũ #2: xoay content 90° ép vào tờ dọc.
+        // ĐÚNG: xếp spread 100% đứng thẳng rồi xuất TỜ nằm ngang 430×320.
+        const PW = 209 * MM, PH = 299 * MM;
+        const details2 = Array.from({ length: PAGES }, () => ({ visualW: PW, visualH: PH, angle: 0 }));
+        const map = generateBindingMap(PAGES, 'saddle', undefined, 'end').sheets;
+        const pseudo = { formsize: 'auto_100', customSheetWidth: 320, customSheetHeight: 430, bleed: 3, signatureMode: 'saddle' } as any;
+        const geo = solveGeometry(PW, PH, pseudo, {}, MM);
+        const p = serializeBookletPlan(map, details2, geo, 3 * MM, 0, true, 'none', 'normal',
+            { bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 320, sheetHeight: 430, gripperMargin: 10 } as any,
+            'src.pdf', 'out', PAGES);
+        expect(p.phase2?.mode).toBe('step_repeat');
+        // Tờ xuất ra NẰM NGANG: 430×320 (từ khổ đặt 320×430).
+        expect(Math.round(p.phase2!.plates[0].width_pt)).toBe(Math.round(430 * MM));
+        expect(Math.round(p.phase2!.plates[0].height_pt)).toBe(Math.round(320 * MM));
+        // Content KHÔNG xoay — spread đặt đứng thẳng 100%.
+        expect(p.phase2!.plates.every((pl: any) => pl.placements.every((q: any) => q.rotation_deg === 0))).toBe(true);
         expect(allInBounds(p)).toBe(true);
     });
 

@@ -80,6 +80,21 @@ export default function ImpositionTab(props: Props) {
     );
 }
 
+/**
+ * Path "phù du" của backend: file tạm nằm trong thư mục uploads/results/temp, hoặc
+ * tên dạng <uuid>.pdf do `/api/vdp/upload` sinh. KHÔNG được coi là đích lưu thật:
+ * tác vụ dọn rác backend (TTL 26h, cleanup_orphan_files) sẽ xóa các file này → nếu
+ * Ctrl+S ghi đè vào đó thì người dùng MẤT dữ liệu sau khi file bị dọn. Dùng để buộc
+ * hộp thoại "chọn nơi lưu" và để bỏ qua snapshot recovery trỏ vào path sắp biến mất.
+ */
+export function isEphemeralBackendPath(p?: string | null): boolean {
+    if (!p) return false;
+    const norm = p.replace(/\\/g, '/').toLowerCase();
+    if (/\/(uploads|results|temp)\//.test(norm)) return true;
+    if (/\/[0-9a-f]{32}\.pdf$/.test(norm)) return true;
+    return false;
+}
+
 function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, initialRecovery, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
     //#region State & Hooks
     // ═══ All state from Zustand store ═══
@@ -346,10 +361,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     }
                     
                     if (!isCancelled && tempPath) {
+                        // LƯU Ý: path này CHỈ là file tạm backend (tên <uuid>.pdf) phục vụ
+                        // render/detect — KHÔNG phải nơi lưu thật của người dùng. Đánh dấu
+                        // `isTempUploadPath` để Ctrl+S KHÔNG ghi đè vào temp + đổi tên tab
+                        // thành chuỗi uuid, mà mở hộp thoại chọn vị trí lưu (audit: file tách
+                        // trang bị đổi tên thành hash sau khi Save).
                         Object.defineProperty(file, 'path', { value: tempPath });
+                        try { Object.defineProperty(file, 'isTempUploadPath', { value: true, configurable: true }); } catch { /* ignore */ }
                         // Clone the file to trigger state update so LivePageFrame sees the path
                         const newFile = new File([file], file.name, { type: file.type });
                         Object.defineProperty(newFile, 'path', { value: tempPath });
+                        try { Object.defineProperty(newFile, 'isTempUploadPath', { value: true, configurable: true }); } catch { /* ignore */ }
                         setFile(newFile);
                         
                         // Now that we have a physical path, detectColorSpace can use the backend API
@@ -420,7 +442,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         if (!tabId) return;
         const fpath = (file as any)?.path as string | undefined;
-        if (!isDirty || !fpath) {
+        // Bỏ qua snapshot khi path là file phù du (uploads/results/temp): file này bị
+        // dọn sau 26h → khôi phục sẽ trỏ vào path đã biến mất. Chờ tới khi lưu ra vị
+        // trí thật (fpath ổn định) mới snapshot.
+        if (!isDirty || !fpath || isEphemeralBackendPath(fpath)) {
             void deleteSnapshot(tabId);
             return;
         }
@@ -1342,6 +1367,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // File kết quả đã sinh sẵn (VDP/batch...) đã bake đủ — KHÔNG áp lại edits/VDP còn
         // sót trong store (tránh bị thêm tiền tố "Edited_"/"VDP_" sai khi chạy nhiều file).
         const isGeneratedResult = !!(file as any)?.isGenerated;
+        // path chỉ là file tạm backend (<uuid>.pdf) do polyfill gán để render → KHÔNG
+        // được coi là đích lưu thật. Bắt buộc hỏi vị trí lưu (tránh ghi đè temp + đổi
+        // tên tab thành chuỗi uuid). Phòng thủ 2 lớp: cờ isTempUploadPath HOẶC path nằm
+        // trong thư mục phù du của backend (uploads/results/temp | <uuid>.pdf).
+        const isTempUploadPath = !!(file as any)?.isTempUploadPath
+            || isEphemeralBackendPath((file as any)?.path);
 
         // Chỉ bake khi có sửa đổi THẬT SỰ (xoay khác 0, hoặc thứ tự trang khác gốc /
         // có xoá/chèn). Nếu chỉ "lưu lại" không sửa gì → bỏ qua bake (lưu tức thì).
@@ -1411,7 +1442,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 let path: string | null = null;
                 // File kết quả sinh sẵn (VDP/batch) nằm ở thư mục tạm + blob in-memory chỉ
                 // là placeholder → KHÔNG ghi đè vào temp, luôn hỏi vị trí lưu.
-                if (!isSaveAs && (file as any).path && !isGeneratedResult) {
+                if (!isSaveAs && (file as any).path && !isGeneratedResult && !isTempUploadPath) {
                     path = (file as any).path; // Overwrite original
                 } else {
                     path = await save({
@@ -1422,6 +1453,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 }
 
                 if (path) {
+                    // Lưu đè đúng file nguồn mà không có gì để bake → đã là chính nó,
+                    // bỏ qua (đặt TRƯỚC khi đọc bytes để không đọc thừa file lớn qua IPC).
+                    if (path === (file as any).path && !didBake) {
+                        const fileName = path.split(/[\\/]/).pop() || targetName;
+                        setIsSaved(true);
+                        onTitleChange?.(fileName);
+                        return;
+                    }
                     // Bytes THẬT để ghi: nếu KHÔNG bake và file có path trên đĩa (kết quả VDP
                     // có blob in-memory chỉ là placeholder 5 byte, hoặc file mở từ OS có body
                     // rỗng) → đọc bytes thật từ đĩa qua lệnh Rust (không vướng fs scope).
@@ -1434,17 +1473,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     } else {
                         writeData = new Uint8Array(await targetBlob.arrayBuffer());
                     }
-                    // Lưu đè đúng file nguồn mà không có gì để bake → đã là chính nó, bỏ qua.
-                    if (path === (file as any).path && !didBake) {
-                        const fileName = path.split(/[\\/]/).pop() || targetName;
-                        setIsSaved(true);
-                        onTitleChange?.(fileName);
-                        return;
-                    }
                     try {
                         await atomicWrite(path, writeData);
                         const fileName = path.split(/[\\/]/).pop() || targetName;
-                        if (didBake) _bakeInMemory(targetBlob, fileName, path);
+                        if (didBake) {
+                            _bakeInMemory(targetBlob, fileName, path);
+                        } else if (isTempUploadPath) {
+                            // File tách/sinh trong bộ nhớ vừa được lưu ra vị trí THẬT:
+                            // trỏ `file` sang path mới + bỏ cờ tạm để Ctrl+S sau ghi đè
+                            // đúng file người dùng (không hỏi lại, không dùng path uuid).
+                            const rebased = new File([targetBlob as any], fileName, { type: 'application/pdf' });
+                            try { Object.defineProperty(rebased, 'path', { value: path }); } catch { /* ignore */ }
+                            setFile(rebased);
+                            setOriginalFileName(fileName);
+                        }
                         setIsSaved(true);
                         onTitleChange?.(fileName);
                     } catch (writeErr: any) {

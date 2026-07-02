@@ -28,6 +28,11 @@ export async function savePrintFilesToFolder(
 ): Promise<{ ok: number; total: number }> {
     const { PDFDocument } = await import('pdf-lib');
     const fs = await import('@tauri-apps/plugin-fs');
+    const { invoke } = await import('@tauri-apps/api/core');
+    // Ghi NGUYÊN TỬ qua lệnh Rust (temp+rename) — nhất quán với đường lưu chính, chống
+    // file in cụt/hỏng nếu crash giữa lúc ghi.
+    const atomicWrite = (p: string, data: Uint8Array) =>
+        invoke('write_file_atomic', { path: p, contents: data });
 
     const srcBytes = new Uint8Array(await resultBlob.arrayBuffer());
     const srcDoc = await PDFDocument.load(srcBytes);
@@ -64,16 +69,26 @@ export async function savePrintFilesToFolder(
         let name = it.filename;
         let full = joined(folder, it.folder.split('/').join(sep), name);
         let n = 1;
-        while (used.has(full)) {
+        // Chống trùng CẢ trong lượt lưu này (used) LẪN file đã tồn tại trên đĩa → không
+        // ghi đè im lặng lên file người dùng có sẵn cùng tên.
+        while (used.has(full) || await fileExists(fs, full)) {
             name = it.filename.replace(/\.pdf$/i, ` (${++n}).pdf`);
             full = joined(folder, it.folder.split('/').join(sep), name);
         }
         used.add(full);
-        await fs.writeFile(full, bytes);
+        await atomicWrite(full, bytes);
         ok++;
         if (opts.onProgress) opts.onProgress(ok, plan.length);
     }
     return { ok, total: plan.length };
+}
+
+/** Kiểm tra file tồn tại trên đĩa (an toàn nếu plugin không có `exists`). */
+async function fileExists(fs: any, path: string): Promise<boolean> {
+    try {
+        if (typeof fs.exists === 'function') return await fs.exists(path);
+    } catch { /* coi như chưa tồn tại */ }
+    return false;
 }
 
 /** Số trang mỗi đơn vị theo chế độ (để suy số loại khi không có types). */

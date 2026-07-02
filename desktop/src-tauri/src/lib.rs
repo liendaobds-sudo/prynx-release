@@ -523,6 +523,26 @@ fn is_sensitive_path(path: &str) -> bool {
         .any(|s| norm.starts_with(&format!("{}\\{}", home_l, s)))
 }
 
+/// Guard RIÊNG cho GHI: ngoài các vị trí nhạy cảm dùng chung (is_sensitive_path),
+/// chặn thêm thư mục hệ thống Windows/Program Files để renderer (nếu bị chèn mã) KHÔNG
+/// ghi đè file hệ thống. KHÔNG gộp vào is_sensitive_path vì lệnh ĐỌC cần truy cập
+/// C:\Windows\Fonts (đọc font hệ thống hợp lệ).
+fn is_sensitive_write_path(path: &str) -> bool {
+    if is_sensitive_path(path) {
+        return true;
+    }
+    let norm = path.replace('/', "\\").to_lowercase();
+    let mut sys_dirs: Vec<String> = Vec::new();
+    for var in ["WINDIR", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+        if let Ok(v) = std::env::var(var) {
+            if !v.is_empty() {
+                sys_dirs.push(v.replace('/', "\\").to_lowercase());
+            }
+        }
+    }
+    sys_dirs.iter().any(|d| norm == *d || norm.starts_with(&format!("{}\\", d)))
+}
+
 #[tauri::command]
 fn read_system_file(path: String) -> Result<Response, String> {
     // Security: only allow known file types to prevent arbitrary file reads
@@ -566,7 +586,7 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
     if !allowed.contains(&ext.as_str()) {
         return Err(format!("File type .{} not allowed", ext));
     }
-    if is_sensitive_path(&path) {
+    if is_sensitive_write_path(&path) {
         return Err("Access to this location is not allowed".to_string());
     }
     let target = std::path::Path::new(&path);

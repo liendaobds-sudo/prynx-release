@@ -601,12 +601,22 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 effMarginBottom += s.gripperMargin;
             }
 
-            let splitGap = s.clusterGap && s.clusterGap > 0 ? s.clusterGap : Math.max(s.gapX || 0, s.gapY || 0, 5);
-            if ((s.markType === 'guillotine' || s.markType === 'corners') && 
-                (!s.clusterGap || s.clusterGapMode === 'mark')) {
-                const markClearance = (s.marksConfig?.length ?? 5.0) + (s.marksConfig?.distance ?? 3.0);
-                // Gap = chính xác 2×markClearance để đỉnh mark 2 cụm CHẠM NHAU.
-                splitGap = 2 * markClearance;
+            // splitGap (khe khối chính↔khối phụ của L-shape).
+            //  - Bình bài XÉN (guillotine N-Up): 2×markClearance (đỉnh dấu cắt 2 cụm chạm) / clusterGap.
+            //  - Tem bế / bế rớt (die-cut/CNC): = HỞ TEM. KHÔNG dùng clusterGap (mặc định 10mm của
+            //    cluster-tile) và KHÔNG dùng khe dấu cắt guillotine → tránh rò 6/10mm sang tem bế.
+            const _isDieCutOrCnc = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
+            let splitGap: number;
+            if (_isDieCutOrCnc) {
+                splitGap = Math.max(s.gapX || 0, s.gapY || 0);
+            } else {
+                splitGap = s.clusterGap && s.clusterGap > 0 ? s.clusterGap : Math.max(s.gapX || 0, s.gapY || 0, 5);
+                if ((s.markType === 'guillotine' || s.markType === 'corners') &&
+                    (!s.clusterGap || s.clusterGapMode === 'mark')) {
+                    const markClearance = (s.marksConfig?.length ?? 5.0) + (s.marksConfig?.distance ?? 3.0);
+                    // Gap = chính xác 2×markClearance để đỉnh mark 2 cụm CHẠM NHAU.
+                    splitGap = 2 * markClearance;
+                }
             }
 
             // Tự động lưu: nếu đã tick nhưng CHƯA chọn thư mục → hỏi ngay (không im lặng).
@@ -943,12 +953,19 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                     effMarginRight += markSpace;
                                 }
 
-                                let splitGap = s.clusterGap && s.clusterGap > 0 ? s.clusterGap : Math.max(s.gapX || 0, s.gapY || 0, 5);
-                                if ((s.markType === 'guillotine' || s.markType === 'corners') && 
-                                    (!s.clusterGap || s.clusterGapMode === 'mark')) {
-                                    const markClearance = (s.marksConfig?.length ?? 5.0) + (s.marksConfig?.distance ?? 3.0);
-                                    // Gap = chính xác 2×markClearance để đỉnh mark 2 cụm CHẠM NHAU.
-                                    splitGap = 2 * markClearance;
+                                // splitGap: XÉN dùng 2×markClearance/clusterGap; tem bế/bế rớt
+                                // (stickerLike) = HỞ TEM (bỏ clusterGap mặc định 10mm + khe dấu cắt).
+                                let splitGap: number;
+                                if (stickerLike) {
+                                    splitGap = Math.max(s.gapX || 0, s.gapY || 0);
+                                } else {
+                                    splitGap = s.clusterGap && s.clusterGap > 0 ? s.clusterGap : Math.max(s.gapX || 0, s.gapY || 0, 5);
+                                    if ((s.markType === 'guillotine' || s.markType === 'corners') &&
+                                        (!s.clusterGap || s.clusterGapMode === 'mark')) {
+                                        const markClearance = (s.marksConfig?.length ?? 5.0) + (s.marksConfig?.distance ?? 3.0);
+                                        // Gap = chính xác 2×markClearance để đỉnh mark 2 cụm CHẠM NHAU.
+                                        splitGap = 2 * markClearance;
+                                    }
                                 }
 
                                 return (
@@ -1028,7 +1045,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             <PontSettingsDialog isOpen={s.showPontModal} onClose={() => s.setShowPontModal(false)} config={s.pontConfig} onSave={(cfg) => { s.setPontConfig(cfg); }} />
             <PresetSelector isOpen={s.isPresetOpen} onClose={() => s.setIsPresetOpen(false)} onLoadPreset={handleLoadPreset} onGetCurrentSettings={getCurrentSettings} />
             <FlipbookDialog isOpen={s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} bindingMode={s.signatureMode} foliosize={s.foliosize} />
-            <SheetViewerDialog isOpen={s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.foldPattern} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.gripperMargin} />
+            <SheetViewerDialog isOpen={s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.foldPattern} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.gripperMargin} pageWpt={s.sourcePageDim?.w} pageHpt={s.sourcePageDim?.h} bleed={s.bleed} gapX={s.gapX} gapY={s.gapY} marginLeft={s.marginLeft} marginRight={s.marginRight} marginTop={s.marginTop} />
         </div>
     );
 }

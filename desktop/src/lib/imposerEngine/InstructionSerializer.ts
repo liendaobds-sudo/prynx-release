@@ -331,6 +331,57 @@ export function serializeBookletPlan(
  *     Người dùng cần chọn khổ kẽm có chiều phù hợp với spread.
  *   - rotation per-slot chỉ 0/180 (đúng theo SpreadFoldPattern).
  */
+export interface SpreadGridLayout {
+    /** Khổ tờ in output (pt) — ĐÃ xoay landscape cho digital nếu cần. */
+    frameW: number;
+    frameH: number;
+    cols: number;
+    rows: number;
+    /** Gốc dưới-trái (pt) của ô lưới (col, row); row 0 = hàng dưới cùng. */
+    cellPos: (col: number, row: number) => { x: number; y: number };
+}
+
+/**
+ * Lưới step & repeat / cut-stack cho 1 spread trên tờ in. NGUỒN CHÂN LÝ DUY NHẤT
+ * dùng chung bởi serializer (output thật) và preview "Xem Bài In" để khớp tuyệt đối.
+ * Mọi tham số theo POINTS. Trả về khổ tờ đã xoay landscape (digital) + lưới ô.
+ */
+export function computeSpreadGrid(
+    spreadW: number, spreadH: number,
+    pressW: number, pressH: number,
+    gapXPt: number, gapYPt: number,
+    marginLeftPt: number, marginRightPt: number, marginTopPt: number, gripperPt: number,
+): SpreadGridLayout {
+    const hasPress = pressW > 0 && pressH > 0;
+    const sheetW = hasPress ? pressW : spreadW + marginLeftPt + marginRightPt;
+    const sheetH = hasPress ? pressH : spreadH + gripperPt + marginTopPt;
+
+    const usableW0 = sheetW - marginLeftPt - marginRightPt;
+    const usableH0 = sheetH - gripperPt - marginTopPt;
+    const gridRatio = spreadW / spreadH;
+    const sheetRatio = usableW0 / usableH0;
+    let isRotated = false;
+    if (gridRatio < 1 && sheetRatio > 1.05) isRotated = true;
+    else if (gridRatio > 1 && sheetRatio < 0.95) isRotated = true;
+
+    const frameW = isRotated ? sheetH : sheetW;
+    const frameH = isRotated ? sheetW : sheetH;
+
+    const usableW = frameW - marginLeftPt - marginRightPt;
+    const usableH = frameH - gripperPt - marginTopPt;
+    const cols = Math.max(1, Math.floor((usableW + gapXPt) / (spreadW + gapXPt)));
+    const rows = Math.max(1, Math.floor((usableH + gapYPt) / (spreadH + gapYPt)));
+    const gridW = cols * spreadW + (cols - 1) * gapXPt;
+    const gridH = rows * spreadH + (rows - 1) * gapYPt;
+    const oX = marginLeftPt + (usableW - gridW) / 2;
+    const oY = gripperPt + (usableH - gridH) / 2;
+    const cellPos = (c: number, r: number) => ({
+        x: oX + c * (spreadW + gapXPt),
+        y: oY + (rows - 1 - r) * (spreadH + gapYPt),
+    });
+    return { frameW, frameH, cols, rows, cellPos };
+}
+
 function buildPhase2(
     mode: 'step_repeat' | 'fold_pattern' | 'cut_stack',
     pattern: SpreadFoldPattern | null,
@@ -354,8 +405,13 @@ function buildPhase2(
     const gripperPt = ((settings as any).gripperMargin || 0) * MM_TO_POINTS;
     const isEven = (settings as any).spreadDistribution === 'even';
 
-    const sheetW = pressW > spreadW ? pressW : spreadW + marginLeftPt + marginRightPt;
-    const sheetH = pressH > spreadH ? pressH : spreadH + gripperPt + marginTopPt;
+    // Honor the user-specified press sheet. A booklet spread is ~2× a page wide,
+    // so it is often wider than a portrait press sheet — the rotation step below
+    // turns the spread 90° to fit (e.g. 418mm spread onto a 320×430 sheet). Only
+    // grow the sheet to the spread when the user gave no press size.
+    const hasPress = pressW > 0 && pressH > 0;
+    const sheetW = hasPress ? pressW : spreadW + marginLeftPt + marginRightPt;
+    const sheetH = hasPress ? pressH : spreadH + gripperPt + marginTopPt;
 
     // ── Quyết định xoay lưới 90° để fit khổ (giống SpreadPlacer/NupRenderer) ──
     let gW: number, gH: number;
@@ -378,9 +434,13 @@ function buildPhase2(
     const frameH = isRotated ? sheetW : sheetH;
 
     const black: [number, number, number, number] = [0, 0, 0, 1];
+    const red: [number, number, number, number] = [0, 1, 1, 0]; // Magenta+Yellow ≈ Đỏ (CMYK) cho dấu gấp gáy
+    const bindingMode = (settings as any).bindingMode;
+    const isFoldable = bindingMode === 'saddle' || bindingMode === 'thread';
     const showMarks = !!markType && markType !== 'none';
 
-    // Trim marks 4 góc cho 1 cell (gốc bottom-left của khung dựng).
+    // Trim marks 4 góc + dấu gáy giữa spread. Gáy: đỏ (gấp) cho saddle/thread,
+    // đen (xẻ/cắt) cho continuous/cut_stacks.
     const cellTrimMarks = (cellX: number, cellY: number): MarkInstruction[] => {
         if (!showMarks) return [];
         const tx = cellX + bleedPt, ty = cellY + bleedPt;
@@ -388,6 +448,11 @@ function buildPhase2(
         const r = tx + tw, t = ty + th;
         const mk = (x1: number, y1: number, x2: number, y2: number): MarkInstruction =>
             ({ type: 'trim_line', x1, y1, x2, y2, color: black, thickness_pt: markThickPt });
+        const spineX = cellX + spreadW / 2;
+        const spineColor = isFoldable ? red : black;
+        const spineType: MarkInstruction['type'] = isFoldable ? 'fold_mark' : 'slit_mark';
+        const spineMk = (y1: number, y2: number): MarkInstruction =>
+            ({ type: spineType, x1: spineX, y1, x2: spineX, y2, color: spineColor, thickness_pt: markThickPt });
         return [
             mk(tx, t + markOffPt, tx, t + markOffPt + markLenPt),
             mk(tx - markOffPt, t, tx - markOffPt - markLenPt, t),
@@ -397,22 +462,23 @@ function buildPhase2(
             mk(tx - markOffPt, ty, tx - markOffPt - markLenPt, ty),
             mk(r, ty - markOffPt, r, ty - markOffPt - markLenPt),
             mk(r + markOffPt, ty, r + markOffPt + markLenPt, ty),
+            spineMk(t + markOffPt, t + markOffPt + markLenPt),
+            spineMk(ty - markOffPt, ty - markOffPt - markLenPt),
         ];
     };
 
-    // Lưới đơn (step_repeat / cut_stack) trong khung.
+    // usableW/H trong khung logic (fold_pattern dùng để căn giữa lưới even).
     const usableW = frameW - marginLeftPt - marginRightPt;
     const usableH = frameH - gripperPt - marginTopPt;
-    const simpleCols = Math.max(1, Math.floor((usableW + gapXPt) / (spreadW + gapXPt)));
-    const simpleRows = Math.max(1, Math.floor((usableH + gapYPt) / (spreadH + gapYPt)));
-    const simpleGridW = simpleCols * spreadW + (simpleCols - 1) * gapXPt;
-    const simpleGridH = simpleRows * spreadH + (simpleRows - 1) * gapYPt;
-    const simpleOX = marginLeftPt + (usableW - simpleGridW) / 2;
-    const simpleOY = gripperPt + (usableH - simpleGridH) / 2;
-    const simpleCellPos = (c: number, r: number) => ({
-        x: simpleOX + c * (spreadW + gapXPt),
-        y: simpleOY + (simpleRows - 1 - r) * (spreadH + gapYPt),
-    });
+
+    // Lưới đơn (step_repeat / cut_stack) — dùng CHUNG computeSpreadGrid với preview.
+    const simpleGrid = computeSpreadGrid(
+        spreadW, spreadH, pressW, pressH,
+        gapXPt, gapYPt, marginLeftPt, marginRightPt, marginTopPt, gripperPt,
+    );
+    const simpleCols = simpleGrid.cols;
+    const simpleRows = simpleGrid.rows;
+    const simpleCellPos = simpleGrid.cellPos;
 
     let plates: Phase2Plate[] = [];
 
@@ -501,8 +567,12 @@ function buildPhase2(
         }
     }
 
-    // ── Xoay lưới 90° CCW từ khung logic sang khổ thật (nếu cần) ──
-    if (isRotated) {
+    // ── Xoay lưới 90° sang khổ thật ──
+    // Offset (fold_pattern): giữ tờ kẽm ĐÚNG hướng người dùng đặt (feed vật lý trên máy
+    // in) → xoay NỘI DUNG 90° cho vừa. Digital (step_repeat/cut_stack): người dùng muốn
+    // kết quả NẰM NGANG, nội dung đứng đọc được → xuất luôn khổ landscape (frameW×frameH),
+    // KHÔNG xoay nội dung lại (tờ đã landscape sẵn, spread đặt 100% đứng thẳng).
+    if (isRotated && mode === 'fold_pattern') {
         plates = plates.map(pl => rotatePlate90(pl, frameW, spreadW, spreadH));
     }
 
