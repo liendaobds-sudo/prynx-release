@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PrynX",
-  "version": "1.0.0-beta.2",
+  "version": "1.0.0-beta.7",
   "identifier": "com.prynx.app",
   "build": {
     "frontendDist": "../dist",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "PrynX — Print made easy!",
+        "title": "PrynX - Print made easy!",
         "width": 1400,
         "height": 900,
         "minWidth": 900,
@@ -82,7 +82,8 @@
     ],
     "windows": {
       "nsis": {
-        "installerIcon": "icons/icon.ico"
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "installer-hooks.nsh"
       }
     }
   }

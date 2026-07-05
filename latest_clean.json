@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0-beta.4",
+  "notes": "PrynX 1.0.0-beta.4",
+  "pub_date": "2026-07-03T03:05:31Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTYWJEYUNUSWVWeHFaYUtRZUtaSUxFT2V2RG8yMmlGUitLYmkwYzhJWlBzS1JDMm1uTDF5LzJtNDdUUDdTanVkc3RDNCt4VWFWVVhBdGVUdzZZd09pazRIaW5rbFc4U0EwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzMDQ3OTMxCWZpbGU6UHJ5blhfMS4wLjAtYmV0YS40X3g2NC1zZXR1cC5leGUKQlRhWTZrSXlPYkVLNTZOZmhzVmhmN2NmdVR5RUx1ckFyMGFHQkltRTNrNGc4YkNTY3RmTmpWVjNFL2V4WU5XZmgwYk1CWlNXYWpuMG9xdm4xcjFxREE9PQo=",
+      "url": "https://github.com/liendaobds-sudo/prynx-release/releases/download/v1.0.0-beta.4/PrynX_1.0.0-beta.4_x64-setup.exe"
+    }
+  }
+}

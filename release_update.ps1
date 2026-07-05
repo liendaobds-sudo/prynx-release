@@ -126,21 +126,30 @@ $latest = [ordered]@{
     }
 }
 $latestPath = "$nsisDir\latest.json"
-$latest | ConvertTo-Json -Depth 6 | Set-Content $latestPath -Encoding utf8
+# CRITICAL: PowerShell -Encoding utf8 = UTF-8 WITH BOM. Tauri updater (serde_json)
+# KHONG chap nhan BOM → parse fail → client KHONG thay update. Dung .NET ghi KHONG BOM.
+$jsonText = $latest | ConvertTo-Json -Depth 6
+[System.IO.File]::WriteAllText($latestPath, $jsonText, [System.Text.UTF8Encoding]::new($false))
 Write-Host "  [OK] Da tao latest.json (url -> $downloadUrl)" -ForegroundColor Green
 
 # ---- 6. Publish len GitHub Releases ----
 Write-Host "  [..] Tao/cap nhat release $tag tren $ReleaseRepo va upload..." -ForegroundColor Yellow
 # AN TOAN: KHONG xoa release cu truoc (tranh khoang trong neu create loi -> client mat 'latest').
-# Neu tag da ton tai -> ghi de asset (--clobber); neu chua -> tao moi.
-& gh release view $tag --repo $ReleaseRepo *> $null
-if ($LASTEXITCODE -eq 0) {
+# Tam tat Stop de gh.exe stderr ("release not found") khong abort script.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$null = & gh release view $tag --repo $ReleaseRepo 2>&1
+$releaseExists = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEAP
+
+if ($releaseExists) {
     Write-Host "  [..] Release $tag da ton tai -> ghi de asset (clobber)..." -ForegroundColor Yellow
     & gh release upload $tag --repo $ReleaseRepo --clobber `
         "$($setup.FullName)" "$sigFile" "$latestPath"
     if ($LASTEXITCODE -ne 0) { throw "gh release upload (clobber) that bai." }
 }
 else {
+    Write-Host "  [..] Release $tag chua ton tai -> tao moi..." -ForegroundColor Yellow
     & gh release create $tag --repo $ReleaseRepo --title "PrynX $Version" --notes $Notes `
         "$($setup.FullName)" "$sigFile" "$latestPath"
     if ($LASTEXITCODE -ne 0) { throw "gh release create that bai." }
