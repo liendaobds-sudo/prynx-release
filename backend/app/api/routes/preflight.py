@@ -307,14 +307,22 @@ async def list_actions():
 async def download_fixed_pdf(filename: str):
     """Download file PDF đã được sửa."""
     output_dir = Path(settings.RESULTS_DIR) / "preflight_output"
-    file_path = output_dir / filename
+
+    # CONTAINMENT: filename tới thẳng từ URL. Trên Windows `%5C` decode thành `\`
+    # nên `..\..\Windows\win.ini` có thể thoát output_dir → đọc file hệ thống bất kỳ.
+    # Chỉ nhận tên file trần (không phân đoạn thư mục), rồi xác nhận path đã resolve
+    # vẫn nằm TRONG output_dir. Reject mọi thứ khác.
+    base = output_dir.resolve()
+    file_path = (base / filename).resolve()
+    if base not in file_path.parents:
+        raise HTTPException(status_code=400, detail="Tên file không hợp lệ.")
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File không tìm thấy hoặc đã hết hạn.")
 
     return FileResponse(
         path=str(file_path),
-        filename=filename,
+        filename=file_path.name,
         media_type="application/pdf",
     )
 
