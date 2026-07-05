@@ -568,6 +568,27 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
     // ═══ Guide handlers ═══
     const guidesRef = useRef<Guide[]>([]);
     useEffect(() => { guidesRef.current = guides; }, [guides]);
+    // Giữ activePage cho handler (useCallback [] → tránh stale closure).
+    const activePageRef = useRef(activePage);
+    useEffect(() => { activePageRef.current = activePage; }, [activePage]);
+
+    // Đổi toạ độ chuột (client) → pos guide lưu theo MÉP TRANG thật (khớp GuideLayer/Ruler).
+    // Fallback về hệ gốc-cuộn cũ nếu không tìm thấy trang active.
+    const clientToGuidePos = useCallback((clientX: number, clientY: number, orientation: 'horizontal' | 'vertical') => {
+        const anchorEl = document.getElementById(`pdf-page-container-${activePageRef.current}`);
+        if (anchorEl) {
+            const pr = anchorEl.getBoundingClientRect();
+            return orientation === 'horizontal' ? clientY - pr.top : clientX - pr.left;
+        }
+        // Fallback: hệ cũ (mép container + scroll)
+        const scrollContainer = internalScrollRef.current;
+        const viewerContainer = containerRef.current;
+        if (!scrollContainer || !viewerContainer) return orientation === 'horizontal' ? clientY : clientX;
+        const rect = viewerContainer.getBoundingClientRect();
+        return orientation === 'horizontal'
+            ? (clientY - rect.top) + scrollContainer.scrollTop
+            : (clientX - rect.left) + scrollContainer.scrollLeft;
+    }, []);
 
     const handleRulerMouseDown = useCallback((e: React.MouseEvent, orientation: 'horizontal' | 'vertical') => {
         e.preventDefault(); e.stopPropagation();
@@ -575,29 +596,25 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         const viewerContainer = containerRef.current;
         if (!scrollContainer || !viewerContainer) return;
         const rect = viewerContainer.getBoundingClientRect();
-        let clientPos = orientation === 'horizontal' ? e.clientY - rect.top : e.clientX - rect.left;
-        let startPos = orientation === 'horizontal' ? clientPos + scrollContainer.scrollTop : clientPos + scrollContainer.scrollLeft;
         const newGuideId = Date.now().toString();
-        setDraggingGuide({ id: newGuideId, type: orientation, pos: startPos });
+        setDraggingGuide({ id: newGuideId, type: orientation, pos: clientToGuidePos(e.clientX, e.clientY, orientation) });
         setSelectedGuideId(newGuideId);
         const handleMouseMove = (moveEvent: MouseEvent) => {
-            let mClientPos = orientation === 'horizontal' ? moveEvent.clientY - rect.top : moveEvent.clientX - rect.left;
-            let mPos = orientation === 'horizontal' ? mClientPos + scrollContainer.scrollTop : mClientPos + scrollContainer.scrollLeft;
-            setDraggingGuide({ id: newGuideId, type: orientation, pos: mPos });
+            setDraggingGuide({ id: newGuideId, type: orientation, pos: clientToGuidePos(moveEvent.clientX, moveEvent.clientY, orientation) });
         };
         const handleMouseUp = (upEvent: MouseEvent) => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
             let uClientPos = orientation === 'horizontal' ? upEvent.clientY - rect.top : upEvent.clientX - rect.left;
             if (uClientPos < 0) { setDraggingGuide(null); setSelectedGuideId(null); return; }
-            let finalPos = orientation === 'horizontal' ? uClientPos + scrollContainer.scrollTop : uClientPos + scrollContainer.scrollLeft;
+            const finalPos = clientToGuidePos(upEvent.clientX, upEvent.clientY, orientation);
             setGuidesHistory(prev => [...prev, guidesRef.current]);
             setGuides(prev => [...prev, { id: newGuideId, type: orientation, pos: finalPos }]);
             setDraggingGuide(null);
         };
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
-    }, []);
+    }, [clientToGuidePos]);
 
     const handleGuideMouseDown = useCallback((e: React.MouseEvent, guide: Guide) => {
         e.preventDefault(); e.stopPropagation();
@@ -610,22 +627,20 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         setGuides(prev => prev.filter(g => g.id !== guide.id));
         setDraggingGuide(guide);
         const handleMouseMove = (moveEvent: MouseEvent) => {
-            let mClientPos = guide.type === 'horizontal' ? moveEvent.clientY - rect.top : moveEvent.clientX - rect.left;
-            let mPos = guide.type === 'horizontal' ? mClientPos + scrollContainer.scrollTop : mClientPos + scrollContainer.scrollLeft;
-            setDraggingGuide({ ...guide, pos: mPos });
+            setDraggingGuide({ ...guide, pos: clientToGuidePos(moveEvent.clientX, moveEvent.clientY, guide.type) });
         };
         const handleMouseUp = (upEvent: MouseEvent) => {
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
             let uClientPos = guide.type === 'horizontal' ? upEvent.clientY - rect.top : upEvent.clientX - rect.left;
             if (uClientPos < 0) { setDraggingGuide(null); setSelectedGuideId(null); return; }
-            let finalPos = guide.type === 'horizontal' ? uClientPos + scrollContainer.scrollTop : uClientPos + scrollContainer.scrollLeft;
+            const finalPos = clientToGuidePos(upEvent.clientX, upEvent.clientY, guide.type);
             setGuides(prev => [...prev, { ...guide, pos: finalPos }]);
             setDraggingGuide(null);
         };
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
-    }, []);
+    }, [clientToGuidePos]);
 
     // ═══ Scroll Sync ═══
     const syncing = useRef(false);
@@ -851,8 +866,8 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                         <div className="flex-1 flex min-w-0 min-h-0 relative">
                             {showRulers && (
                                 <>
-                                    <Ruler orientation="vertical" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} />
-                                    <Ruler orientation="horizontal" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} />
+                                    <Ruler orientation="vertical" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} />
+                                    <Ruler orientation="horizontal" scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} zoom={zoom} unit={measurementUnit} onMouseDown={handleRulerMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} />
                                 </>
                             )}
                             <div
@@ -861,7 +876,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
                                 onMouseDown={(e) => { setSelectedGuideId(null); handleDragStart(e); }}
                                 style={{ left: showRulers ? 20 : 0, top: showRulers ? 20 : 0 }}
                             >
-                                <GuideLayer scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} guides={guides} draggingGuide={draggingGuide} selectedGuideId={selectedGuideId} onGuideMouseDown={handleGuideMouseDown} />
+                                <GuideLayer scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} guides={guides} draggingGuide={draggingGuide} selectedGuideId={selectedGuideId} onGuideMouseDown={handleGuideMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} />
 
                                 {pageDim && (
                                     <div className="absolute bottom-0 left-0 w-40 h-24 z-[50] group flex items-end p-6">

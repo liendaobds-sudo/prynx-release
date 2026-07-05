@@ -7,12 +7,15 @@ interface RulerProps {
   unit: 'mm' | 'cm' | 'inch';
   thickness?: number;
   onMouseDown?: (e: React.MouseEvent, orientation: 'horizontal' | 'vertical') => void;
+  /** id phần tử trang dùng làm gốc "0" của thước (mép trang thật). Nếu không có
+   *  hoặc không tìm thấy → fallback về gốc vùng cuộn (hành vi cũ). */
+  pageAnchorId?: string;
 }
 
 const DPI = 96;
 const INCH_TO_MM = 25.4;
 
-export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness = 20, onMouseDown }: RulerProps) {
+export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness = 20, onMouseDown, pageAnchorId }: RulerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mousePosRef = useRef<{x: number, y: number} | null>(null);
@@ -165,17 +168,30 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
       }
 
       const length = orientation === 'horizontal' ? size.width : size.height;
-      const startPx = scrollOffset;
-      const endPx = scrollOffset + length;
 
-      const startVal = Math.floor(startPx / pxPerUnit / tickStep) * tickStep;
-      const endVal = Math.ceil(endPx / pxPerUnit / tickStep) * tickStep;
+      // Gốc "0" của thước = mép trang thật (đo DOM mỗi frame → tự bám trang dù
+      // scroll hay re-center do panel đổi width). Fallback về gốc cuộn nếu không
+      // tìm thấy trang (giữ hành vi cũ). Vì draw() chạy trong RAF loop liên tục,
+      // getBoundingClientRect luôn phản ánh vị trí trang hiện tại.
+      const canvasRect = canvas.getBoundingClientRect();
+      const anchorEl = pageAnchorId ? document.getElementById(pageAnchorId) : null;
+      let anchorOffset: number;
+      if (anchorEl) {
+        const pr = anchorEl.getBoundingClientRect();
+        anchorOffset = orientation === 'horizontal' ? (pr.left - canvasRect.left) : (pr.top - canvasRect.top);
+      } else {
+        anchorOffset = -scrollOffset;
+      }
+
+      // value tại canvas-pos p: v = (p - anchorOffset) / pxPerUnit
+      const startVal = Math.floor((0 - anchorOffset) / pxPerUnit / tickStep) * tickStep;
+      const endVal = Math.ceil((length - anchorOffset) / pxPerUnit / tickStep) * tickStep;
       const epsilon = tickStep * 0.01;
 
       ctx.beginPath();
       // Draw ticks
       for (let v = startVal; v <= endVal + epsilon; v += tickStep) {
-        const pos = Math.round(v * pxPerUnit - scrollOffset) + 0.5;
+        const pos = Math.round(v * pxPerUnit + anchorOffset) + 0.5;
         if (pos < 0 || pos > length) continue;
 
         const isLabel = Math.abs(v % labelStep) < epsilon || Math.abs((v % labelStep) - labelStep) < epsilon;
@@ -201,7 +217,7 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
       // Draw labels in a separate pass to overlap ticks nicely
       ctx.fillStyle = isDark ? '#60a5fa' : '#4178b9'; // Acrobat Blue text
       for (let v = startVal; v <= endVal + epsilon; v += tickStep) {
-        const pos = Math.round(v * pxPerUnit - scrollOffset) + 0.5;
+        const pos = Math.round(v * pxPerUnit + anchorOffset) + 0.5;
         if (pos >= 0 && pos <= length) {
           const isLabel = Math.abs(v % labelStep) < epsilon || Math.abs((v % labelStep) - labelStep) < epsilon;
           if (isLabel) {

@@ -8,9 +8,13 @@ interface GuideLayerProps {
   draggingGuide: Guide | null;
   selectedGuideId: string | null;
   onGuideMouseDown: (e: React.MouseEvent, guide: Guide) => void;
+  /** id phần tử trang dùng làm gốc "0" (mép trang thật). guide.pos được lưu theo
+   *  toạ độ TƯƠNG ĐỐI mép trang → tự bám trang dù scroll hay re-center. Fallback
+   *  về gốc cuộn nếu không có/không tìm thấy (hành vi cũ). */
+  pageAnchorId?: string;
 }
 
-export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selectedGuideId, onGuideMouseDown }: GuideLayerProps) {
+export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selectedGuideId, onGuideMouseDown, pageAnchorId }: GuideLayerProps) {
   const layerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,6 +28,18 @@ export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selected
       const scrollX = scroller.scrollLeft;
       const scrollY = scroller.scrollTop;
 
+      // Gốc "0" = mép trang thật (đo DOM), để guide bám trang y hệt thước. Nếu
+      // không có anchor → dùng -scroll (tương đương hành vi cũ theo gốc cuộn).
+      const layerRect = layer.getBoundingClientRect();
+      const anchorEl = pageAnchorId ? document.getElementById(pageAnchorId) : null;
+      let originX = -scrollX;
+      let originY = -scrollY;
+      if (anchorEl) {
+        const pr = anchorEl.getBoundingClientRect();
+        originX = pr.left - layerRect.left;
+        originY = pr.top - layerRect.top;
+      }
+
       // Update guide positions
       const guideElements = layer.querySelectorAll('.acrobat-guide');
       guideElements.forEach(el => {
@@ -31,9 +47,9 @@ export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selected
         const pos = parseFloat(el.getAttribute('data-pos') || '0');
 
         if (type === 'horizontal') {
-          (el as HTMLElement).style.transform = `translateY(${pos - scrollY}px)`;
+          (el as HTMLElement).style.transform = `translateY(${pos + originY}px)`;
         } else {
-          (el as HTMLElement).style.transform = `translateX(${pos - scrollX}px)`;
+          (el as HTMLElement).style.transform = `translateX(${pos + originX}px)`;
         }
       });
 
@@ -42,7 +58,7 @@ export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selected
 
     rafId = requestAnimationFrame(sync);
     return () => cancelAnimationFrame(rafId);
-  }, [guides, draggingGuide, scrollContainerRef]);
+  }, [guides, draggingGuide, scrollContainerRef, pageAnchorId]);
 
   return (
     <div ref={layerRef} className="absolute inset-0 pointer-events-none z-[45] overflow-hidden">
