@@ -75,7 +75,28 @@ async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
       }) as Record<string, string>;
       Object.assign(headers, signedHeaders);
     } catch (signErr) {
-      console.debug('[API] Rust signing unavailable:', signErr);
+      // sign_api_request fail thường do Rust cache 2h expired → re-register rồi thử lại.
+      // Nếu vẫn fail thì trả headers thiếu token → request sẽ bị 403 rõ ràng.
+      console.debug('[API] Rust signing failed, attempting re-register:', signErr);
+      try {
+        const { useAuthStore } = await import('../stores/useAuthStore');
+        const key = useAuthStore.getState().licenseKey || '';
+        if (key) {
+          // Re-register key trong Rust cache
+          let hwid = '';
+          try { hwid = await invoke('get_hardware_id') as string; } catch {}
+          const token = useAuthStore.getState().licenseToken || '';
+          await invoke('register_validated_key', { licenseKey: key, hwid, token });
+          // Thử ký lại
+          const retryHeaders = await invoke('sign_api_request', {
+            urlPath,
+            licenseKey: key,
+          }) as Record<string, string>;
+          Object.assign(headers, retryHeaders);
+        }
+      } catch (retryErr) {
+        console.debug('[API] Rust signing retry also failed:', retryErr);
+      }
     }
   } catch (e) {
     console.debug('[API] Could not get license headers:', e);

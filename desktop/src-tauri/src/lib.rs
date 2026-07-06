@@ -30,6 +30,25 @@ fn get_doc_pool_size() -> usize {
 // mở lại / cuộn lại / zoom về mức cũ là LẤY TỪ ĐĨA, không render lại (file nặng ~1s).
 static DISK_CACHE_WRITES: AtomicUsize = AtomicUsize::new(0);
 
+// PID tiến trình sidecar Python — để KILL khi thoát app. Nếu không kill,
+// pdf-inspector-backend.exe treo ngầm sau khi đóng app → lần UPDATE, NSIS không
+// ghi đè được file đang chạy ("Error opening file for writing"). Chỉ dùng ở release
+// (dev không spawn sidecar). Nuitka --onefile spawn tiến trình con nên phải taskkill
+// /T (cả cây) theo PID, không thể chỉ child.kill() (chỉ diệt bootstrap, python treo).
+#[cfg(not(debug_assertions))]
+static SIDECAR_PID: OnceLock<u32> = OnceLock::new();
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn kill_sidecar() {
+    if let Some(&pid) = SIDECAR_PID.get() {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(0x08000000)
+            .output();
+        log::warn!("[SIDECAR] taskkill /T /F PID={} khi thoat app", pid);
+    }
+}
+
 fn tile_cache_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("prynx_tile_cache");
     let _ = std::fs::create_dir_all(&dir);
@@ -485,9 +504,25 @@ async fn render_pdf_page(
     clip_x: Option<i32>, clip_y: Option<i32>, clip_w: Option<i32>, clip_h: Option<i32>,
 ) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let data = render_tile_jpeg(&file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h)?;
-        Ok(tauri::ipc::Response::new(data))
-    }).await.unwrap_or_else(|_| Err("Task panicked".into()))
+        match render_tile_jpeg(&file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h) {
+            Ok(data) => Ok(tauri::ipc::Response::new(data)),
+            Err(e) => {
+                // Ghi LÝ DO thật ra log (release tắt devtools → console.error phía JS biến
+                // mất). Đây là manh mối chẩn đoán "xem trước trắng" trên máy khách: pdfium
+                // OOM/clamp tờ lớn, file backend sinh hỏng, hết RAM, page out of bounds...
+                log::error!(
+                    "[RENDER] Fail file='{}' page={} zoom={} rot={}: {}",
+                    file_path, page, zoom, rotation, e
+                );
+                Err(e)
+            }
+        }
+    }).await.unwrap_or_else(|_| {
+        // Task panic (vd STATUS_STACK_BUFFER_OVERRUN khi bitmap tờ booklet quá lớn) —
+        // trước đây nuốt lý do thành "Task panicked" chung chung. Ghi lại để lần theo.
+        log::error!("[RENDER] Task panicked (khả năng pdfium crash: bitmap quá lớn / OOM)");
+        Err("Task panicked".into())
+    })
 }
 
 #[tauri::command]
@@ -696,13 +731,22 @@ fn verify_sidecar_integrity(sidecar_path: &std::path::Path) -> Result<(), String
         );
     }
     
-    // Không tìm/đọc được file → cảnh báo nhưng KHÔNG chặn khởi động (tránh brick app nếu
-    // đường dẫn sidecar khác kỳ vọng). Chỉ chặn khi hash thực sự LỆCH.
+    // FAIL-CLOSED: không đọc được file sidecar = từ chối khởi động. Trên máy khách bình
+    // thường file LUÔN nằm cạnh .exe nên đọc-lỗi gần như chỉ xảy ra khi bị nghịch (đổi
+    // tên/chặn quyền đọc để né integrity check). Trước đây nhánh này return Ok(()) →
+    // cracker chỉ cần làm sha256_file lỗi là bỏ qua toàn bộ check mà KHÔNG cần khớp hash.
+    // Log kèm path để nếu brick oan (AV cách ly, path lạ) thì dev chẩn đoán được ngay.
     let actual_hash = match sha256_file(sidecar_path) {
         Ok(h) => h,
         Err(e) => {
-            log::warn!("[INTEGRITY] Cannot hash sidecar ({}); skipping integrity check.", e);
-            return Ok(());
+            log::error!(
+                "[INTEGRITY] Cannot hash sidecar at {} ({}); refusing to start (fail-closed).",
+                sidecar_path.display(), e
+            );
+            return Err(format!(
+                "Security error: cannot verify backend integrity ({}). \
+                 The backend file may be missing, quarantined by antivirus, or tampered with.", e
+            ));
         }
     };
     if actual_hash != expected_hash {
@@ -741,13 +785,22 @@ fn verify_frontend_integrity(app: &tauri::App) -> Result<(), String> {
         .map_err(|e| format!("Cannot find resource dir: {}", e))?;
     
     // Try multiple possible dist locations
+    // FAIL-CLOSED: nếu KHÔNG tìm thấy nơi chứa frontend (dist/ hoặc index.html) thì
+    // KHÔNG cho qua — đây là dấu hiệu bị nghịch (đổi tên/di dời file để né check).
+    // Bản cài hợp lệ LUÔN có dist ở resource_dir; thiếu = bất thường → chặn khởi động.
     let dist_dir = if resource_dir.join("dist").is_dir() {
         resource_dir.join("dist")
     } else if resource_dir.join("index.html").exists() {
         resource_dir.clone()
     } else {
-        log::warn!("[INTEGRITY] Frontend dist dir not found, skipping check.");
-        return Ok(());
+        log::error!(
+            "[INTEGRITY] Frontend dist dir not found under {} — refusing to start.",
+            resource_dir.display()
+        );
+        return Err(
+            "Security error: cannot locate frontend files to verify integrity. \
+             The application may have been tampered with.".to_string()
+        );
     };
     
     // Hash ALL files in dist/ recursively, sorted by path for determinism
@@ -840,7 +893,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -863,12 +916,31 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
+            // Log LUÔN được bật — kể cả release. Trước đây guard `cfg!(debug_assertions)`
+            // khiến bản đóng gói KHÔNG ghi log gì → mọi `log::error!` (pdfium warmup FAIL,
+            // sidecar spawn fail, render lỗi) rơi vào hư không → không thể chẩn đoán lỗi
+            // "máy khách xem preview trắng". Ghi ra file trong LogDir (mở lại/gửi được).
+            {
+                let level = if cfg!(debug_assertions) {
+                    log::LevelFilter::Info
+                } else {
+                    // Release: ghi từ Warn trở lên để bắt lỗi mà không phình file log.
+                    log::LevelFilter::Warn
+                };
+                let mut builder = tauri_plugin_log::Builder::default().level(level);
+                if !cfg!(debug_assertions) {
+                    // Release: CHỈ ghi file (không có Stdout vì console bị ẩn; không có
+                    // Webview vì devtools bị tắt). File nằm trong thư mục log của app —
+                    // %LOCALAPPDATA%\com.prynx.app\logs\PrynX.log (hoặc tương đương).
+                    builder = builder
+                        .clear_targets()
+                        .target(tauri_plugin_log::Target::new(
+                            tauri_plugin_log::TargetKind::LogDir {
+                                file_name: Some("PrynX".into()),
+                            },
+                        ));
+                }
+                app.handle().plugin(builder.build())?;
             }
 
             // ══════════════════════════════════════════════════════════════
@@ -955,11 +1027,14 @@ pub fn run() {
             {
                 if let Err(e) = verify_frontend_integrity(app) {
                     log::error!("[SECURITY] {}", e);
-                    // Show error dialog and exit
+                    // Show error dialog and exit. Escape ' — `e` có thể chứa tên file (từ
+                    // sha256_directory: "Cannot open {path}: {e}") mà kẻ nghịch dist/ đặt tên
+                    // chứa dấu nháy để thoát khỏi chuỗi PS single-quote → chèn lệnh. Escape
+                    // như 2 dialog sidecar bên dưới.
                     let _ = std::process::Command::new("powershell")
                         .args(["-NoProfile", "-Command", &format!(
                             "[System.Windows.MessageBox]::Show('{}', 'PrynX Security', 'OK', 'Error')",
-                            e
+                            e.replace('\'', "''")
                         )])
                         .creation_flags(0x08000000)
                         .output();
@@ -990,22 +1065,41 @@ pub fn run() {
                 use tauri_plugin_shell::ShellExt;
                 
                 // VECTOR #3 FIX: verify tính toàn vẹn binary sidecar TRƯỚC khi chạy.
-                // No-op nếu PRYNX_SIDECAR_HASH chưa set hoặc không tìm thấy file; chỉ chặn khi hash lệch.
-                if let Ok(exe) = std::env::current_exe() {
-                    if let Some(dir) = exe.parent() {
-                        let sidecar_path = dir.join("pdf-inspector-backend.exe");
-                        if let Err(e) = verify_sidecar_integrity(&sidecar_path) {
-                            log::error!("[SECURITY] {}", e);
-                            let _ = std::process::Command::new("powershell")
-                                .args(["-NoProfile", "-Command", &format!(
-                                    "[System.Windows.MessageBox]::Show('{}', 'PrynX Security', 'OK', 'Error')",
-                                    e.replace('\'', "''")
-                                )])
-                                .creation_flags(0x08000000)
-                                .output();
-                            std::process::exit(1);
-                        }
+                // FAIL-CLOSED: không phân giải được path exe (current_exe lỗi / không có parent)
+                // = từ chối chạy, KHÔNG spawn sidecar chưa verify. Trên máy thật current_exe()
+                // (GetModuleFileNameW) gần như không bao giờ lỗi cho tiến trình đang chạy; nếu lỗi
+                // nghĩa là process đã hỏng nặng. Trước đây 2 lớp `if let` là cửa thoát im lặng:
+                // path lỗi → bỏ qua verify → spawn thẳng. Bịt nốt cửa này.
+                let sidecar_path = match std::env::current_exe()
+                    .map_err(|e| format!("Cannot resolve exe path: {}", e))
+                    .and_then(|exe| {
+                        exe.parent()
+                            .map(|dir| dir.join("pdf-inspector-backend.exe"))
+                            .ok_or_else(|| "Exe path has no parent directory".to_string())
+                    }) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::error!("[SECURITY] {}", e);
+                        let _ = std::process::Command::new("powershell")
+                            .args(["-NoProfile", "-Command", &format!(
+                                "[System.Windows.MessageBox]::Show('Khong xac dinh duoc duong dan ung dung ({}). Vui long cai dat lai.', 'PrynX Security', 'OK', 'Error')",
+                                e.replace('\'', "''")
+                            )])
+                            .creation_flags(0x08000000)
+                            .output();
+                        std::process::exit(1);
                     }
+                };
+                if let Err(e) = verify_sidecar_integrity(&sidecar_path) {
+                    log::error!("[SECURITY] {}", e);
+                    let _ = std::process::Command::new("powershell")
+                        .args(["-NoProfile", "-Command", &format!(
+                            "[System.Windows.MessageBox]::Show('{}', 'PrynX Security', 'OK', 'Error')",
+                            e.replace('\'', "''")
+                        )])
+                        .creation_flags(0x08000000)
+                        .output();
+                    std::process::exit(1);
                 }
 
                 let sidecar = match app.shell().sidecar("pdf-inspector-backend") {
@@ -1049,13 +1143,17 @@ pub fn run() {
                     }
                 };
                 
+                // Lưu PID để KILL cả cây tiến trình khi thoát app (chống treo ngầm →
+                // update NSIS không ghi đè được file). set() 1 lần, bỏ qua nếu đã có.
+                let _ = SIDECAR_PID.set(child.pid());
+
                 // Write token via stdin pipe — no file on disk ever
                 let token_line = format!("TOKEN:{}\n", sidecar_token);
                 if let Err(e) = child.write(token_line.as_bytes()) {
                     // Không panic: log lại; backend không có token sẽ tự từ chối request (fail-closed).
                     log::error!("[SIDECAR] Ghi token vao stdin that bai: {}", e);
                 }
-                
+
                 log::info!("Python backend sidecar started on port 8321 (token via stdin pipe)");
             }
 
@@ -1163,6 +1261,14 @@ pub fn run() {
                 }
             });
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, _event| {
+            // Kill sidecar khi app thoát (mọi lý do) → chống pdf-inspector-backend.exe
+            // treo ngầm làm NSIS update báo "Error opening file for writing".
+            #[cfg(all(not(debug_assertions), target_os = "windows"))]
+            if let tauri::RunEvent::Exit = _event {
+                kill_sidecar();
+            }
+        });
 }

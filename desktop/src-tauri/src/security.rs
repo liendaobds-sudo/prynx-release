@@ -4,54 +4,71 @@ use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
+/// Escape a value để nhúng an toàn vào PowerShell SINGLE-quoted string ('...').
+/// Trong single-quoted string của PowerShell, MỌI ký tự đều literal (backtick, $,
+/// $(...), newline...) — chỉ dấu nháy đơn ' là ký tự đóng chuỗi, nên chỉ cần double
+/// nó thành ''. TUYỆT ĐỐI không nhúng vào double-quoted string (ở đó $ và ` mới sống).
+/// Đây là nguồn chân lý duy nhất cho mọi chỗ nội suy path/value vào script PS.
+fn ps_single_quote_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 /// Collect multiple hardware identifiers and combine them into a single hash.
 /// This is much harder to spoof than a single WMI UUID query.
 fn collect_hardware_fingerprint() -> Result<String, String> {
     let mut components: Vec<String> = Vec::new();
-    
+    // DIAG: cờ có/không của TỪNG nguồn WMI (theo đúng thứ tự uuid|cpu|bios). Nếu HWID vẫn
+    // trôi trên máy khách, so cờ này giữa 2 lần tính sẽ chỉ thẳng nguồn nào rớt. KHÔNG log
+    // serial thô (tránh rò dữ liệu máy) — chỉ log true/false.
+    let (mut has_uuid, mut has_cpu, mut has_bios) = (false, false, false);
+
     // 1. System UUID (Win32_ComputerSystemProduct)
     if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-NoLogo", "-Command", 
+        .args(["-NoProfile", "-NoLogo", "-Command",
                "(Get-CimInstance Win32_ComputerSystemProduct).UUID"])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW — hide console flash
-        .output() 
+        .output()
     {
         let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !val.is_empty() && val != "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF" {
+            has_uuid = true;
             components.push(val);
         }
     }
-    
+
     // 2. CPU ProcessorId (hardware serial burned into silicon)
     if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-NoLogo", "-Command", 
+        .args(["-NoProfile", "-NoLogo", "-Command",
                "(Get-CimInstance Win32_Processor).ProcessorId"])
         .creation_flags(0x08000000)
         .output()
     {
         let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !val.is_empty() {
+            has_cpu = true;
             components.push(val);
         }
     }
-    
+
     // 3. BIOS Serial Number
     if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-NoLogo", "-Command", 
+        .args(["-NoProfile", "-NoLogo", "-Command",
                "(Get-CimInstance Win32_BIOS).SerialNumber"])
         .creation_flags(0x08000000)
         .output()
     {
         let val = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !val.is_empty() && val != "To Be Filled By O.E.M." && val != "Default string" {
+            has_bios = true;
             components.push(val);
         }
     }
-    
+
     if components.is_empty() {
+        log::warn!("[HWID] collect FAILED: khong lay duoc component nao (uuid/cpu/bios deu rong)");
         return Err("Could not collect any hardware identifiers".to_string());
     }
-    
+
     // Combine all components into a single deterministic hash.
     // SHA-256 (ổn định vĩnh viễn) thay cho DefaultHasher/SipHash — vốn KHÔNG được Rust
     // đảm bảo ổn định giữa các bản toolchain (nâng cấp Rust có thể đổi mọi HWID → vỡ license).
@@ -61,12 +78,140 @@ fn collect_hardware_fingerprint() -> Result<String, String> {
     let mut hasher = Sha256::new();
     hasher.update(combined.as_bytes());
     let digest = hasher.finalize();
-    Ok(hex::encode(&digest[..8]).to_uppercase())
+    let hwid = hex::encode(&digest[..8]).to_uppercase();
+    // DIAG (warn → có ở release): số component + cờ từng nguồn + đuôi HWID. Nếu 2 lần tính
+    // ra cờ KHÁC nhau (vd count=3 rồi count=2) → đúng nguồn rớt làm HWID trôi.
+    log::warn!(
+        "[HWID] collect OK: count={} uuid={} cpu={} bios={} hwid=...{}",
+        components.len(), has_uuid, has_cpu, has_bios,
+        &hwid[hwid.len().saturating_sub(4)..]
+    );
+    Ok(hwid)
+}
+
+// ── HWID PHẢI ỔN ĐỊNH TUYỆT ĐỐI ──────────────────────────────────────────────
+// collect_hardware_fingerprint() chạy 3 lệnh WMI rồi ghép hash; nếu 1 lệnh hiccup/
+// trả rỗng ở lần chạy sau thì tập component đổi → hash đổi → HWID TRÔI. Hậu quả:
+//  1) token mới ký với 'm'=HWID_mới nhưng header X-Hardware-Id (cache cứng ở api.ts)
+//     vẫn là HWID_cũ → backend 403 "machine mismatch" (mất kết nối sidecar).
+//  2) HWID mới ăn thêm 1 slot license_activations → chạm max_activations → DEVICE_LIMIT
+//     → khóa cứng UI. (Đo thật: 1 máy sinh 2 machine_id cách nhau đúng ~30' heartbeat.)
+// Fix: TÍNH ĐÚNG 1 LẦN rồi đóng băng — memory cache (ổn định trong phiên) + DPAPI trên
+// đĩa (ổn định qua các lần mở lại, kể cả khi WMI về sau hiccup). File DPAPI ràng user+máy
+// nên copy sang máy khác không giải mã được → máy mới tự tính lại, không phá binding.
+static CACHED_HWID: std::sync::LazyLock<Mutex<Option<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+const HWID_FILE: &str = "prynx_hwid.dat";
+
+fn get_hwid_path() -> Result<std::path::PathBuf, String> {
+    let appdata = std::env::var("APPDATA").map_err(|_| "Cannot find APPDATA".to_string())?;
+    let dir = std::path::Path::new(&appdata).join("PrynX");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create dir: {}", e))?;
+    Ok(dir.join(HWID_FILE))
+}
+
+fn store_hwid_to_disk(hwid: &str) -> Result<(), String> {
+    let path = get_hwid_path()?;
+    let path_str = ps_single_quote_escape(&path.to_string_lossy());
+    let ps_script = format!(
+        r#"
+        Add-Type -AssemblyName System.Security
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes('{}')
+        $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
+            $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        [System.IO.File]::WriteAllBytes('{}', $encrypted)
+        "#,
+        ps_single_quote_escape(hwid),
+        path_str
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("DPAPI hwid encrypt failed: {}", e))?;
+    if !output.status.success() {
+        return Err("DPAPI hwid encrypt failed".to_string());
+    }
+    Ok(())
+}
+
+fn load_hwid_from_disk() -> Result<String, String> {
+    let path = get_hwid_path()?;
+    if !path.exists() {
+        return Err("No stored hwid".to_string());
+    }
+    let path_str = ps_single_quote_escape(&path.to_string_lossy());
+    let ps_script = format!(
+        r#"
+        Add-Type -AssemblyName System.Security
+        $encrypted = [System.IO.File]::ReadAllBytes('{}')
+        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $encrypted, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        [System.Text.Encoding]::UTF8.GetString($decrypted)
+        "#,
+        path_str
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|e| format!("DPAPI hwid decrypt failed: {}", e))?;
+    if !output.status.success() {
+        return Err("DPAPI hwid decrypt failed".to_string());
+    }
+    let h = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if h.is_empty() {
+        return Err("Decrypted hwid is empty".to_string());
+    }
+    Ok(h)
 }
 
 #[command]
 pub fn get_hardware_id() -> Result<String, String> {
-    collect_hardware_fingerprint()
+    // 1. Memory cache — mấu chốt chống trôi giữa các heartbeat trong cùng phiên.
+    {
+        let cache = CACHED_HWID.lock().map_err(|e| format!("Lock: {}", e))?;
+        if let Some(h) = cache.as_ref() {
+            if !h.is_empty() {
+                // KHÔNG log ở nhánh này: gọi mỗi request → sẽ ngập log. Chỉ log khi
+                // HWID phải RESOLVE lại (disk/compute) — đó mới là lúc có nguy cơ trôi.
+                return Ok(h.clone());
+            }
+        }
+    }
+
+    // 2. Disk cache (DPAPI) — ổn định qua các lần mở lại app, kể cả khi WMI về sau hiccup.
+    if let Ok(h) = load_hwid_from_disk() {
+        log::warn!("[HWID] resolve: nguon=DISK hwid=...{}", &h[h.len().saturating_sub(4)..]);
+        if let Ok(mut cache) = CACHED_HWID.lock() {
+            *cache = Some(h.clone());
+        }
+        return Ok(h);
+    }
+
+    // 3. Chưa có cache ở đâu → tính mới rồi ĐÓNG BĂNG (lưu đĩa + memory).
+    // Đây là lần DUY NHẤT nên chạy WMI cho cả vòng đời cài đặt. Nếu log này xuất hiện
+    // NHIỀU LẦN trên 1 máy (khác lần cài đầu) → DPAPI lưu/đọc đĩa đang hỏng → điều tra tiếp.
+    let hwid = collect_hardware_fingerprint()?;
+    match store_hwid_to_disk(&hwid) {
+        Ok(()) => log::warn!(
+            "[HWID] resolve: nguon=COMPUTE (tinh moi) + luu DISK OK hwid=...{}",
+            &hwid[hwid.len().saturating_sub(4)..]
+        ),
+        // Lưu đĩa hỏng = mất neo ổn định qua các lần mở app → CẢNH BÁO to. Vẫn còn memory
+        // cache nên trong phiên không trôi, nhưng mở lại app sẽ tính mới → nguy cơ trôi lại.
+        Err(e) => log::warn!(
+            "[HWID] resolve: nguon=COMPUTE nhung LUU DISK THAT BAI ({}) — chi con memory cache hwid=...{}",
+            e, &hwid[hwid.len().saturating_sub(4)..]
+        ),
+    }
+    if let Ok(mut cache) = CACHED_HWID.lock() {
+        *cache = Some(hwid.clone());
+    }
+    Ok(hwid)
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -118,6 +263,17 @@ pub fn register_validated_key(license_key: String, hwid: Option<String>, token: 
         .as_secs();
     let mut cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock error: {}", e))?;
     cache.insert(license_key, now);
+    Ok(())
+}
+
+/// Xoá sạch cache key đã xác thực → sign_api_request lập tức từ chối ký request mới
+/// (backend trả 403 "invalid sidecar token"). Gọi khi license bị thu hồi/khóa để
+/// chặn quyền dùng NGAY trong phiên, không chờ TTL 2h của cache tự hết.
+/// Best-effort: lỗi lock chỉ trả về String, không panic.
+#[command]
+pub fn clear_validated_keys() -> Result<(), String> {
+    let mut cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock error: {}", e))?;
+    cache.clear();
     Ok(())
 }
 
@@ -188,6 +344,46 @@ fn verify_token_with_pubkey(token: &str, hwid: &str, license_key: &str, pub_b64:
         if k != &kh[..16] { return Err("license token key mismatch".to_string()); }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ps_escape_tests {
+    use super::*;
+
+    // Regression: path/value nội suy vào PowerShell single-quoted string PHẢI escape
+    // dấu nháy đơn. Bug cũ escape nhầm '\' (double-backslash) — vô nghĩa trong
+    // single-quoted string, để ' lọt qua → path như a'$(calc)'b (username Windows hợp lệ
+    // chứa ') thoát chuỗi + thực thi lệnh. Test khoá đúng hành vi: chỉ ' bị double.
+
+    #[test]
+    fn escapes_single_quote() {
+        assert_eq!(ps_single_quote_escape("a'b"), "a''b");
+    }
+
+    #[test]
+    fn command_injection_attempt_neutralized() {
+        // $(calc) chỉ nguy hiểm nếu ' thoát được chuỗi. Sau escape, ' bị double nên
+        // toàn bộ payload nằm gọn trong single-quoted string → PS coi là literal.
+        let evil = "a'$(calc)'b";
+        assert_eq!(ps_single_quote_escape(evil), "a''$(calc)''b");
+    }
+
+    #[test]
+    fn backslash_left_literal() {
+        // Backslash KHÔNG đặc biệt trong single-quoted string → giữ nguyên (không double).
+        assert_eq!(ps_single_quote_escape(r"C:\Users\a"), r"C:\Users\a");
+    }
+
+    #[test]
+    fn dollar_and_backtick_left_literal() {
+        // $ và ` chỉ sống trong double-quoted string; ở single-quoted chúng literal.
+        assert_eq!(ps_single_quote_escape("$env:x`n"), "$env:x`n");
+    }
+
+    #[test]
+    fn clean_string_unchanged() {
+        assert_eq!(ps_single_quote_escape("PRYNX-1234-ABCD"), "PRYNX-1234-ABCD");
+    }
 }
 
 #[cfg(test)]
@@ -450,7 +646,7 @@ pub fn sign_api_request(url_path: String, license_key: String) -> Result<HashMap
     {
         let cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock: {}", e))?;
         let is_valid = if let Some(&validated_at) = cache.get(&license_key) {
-            now_secs - validated_at < 7200 // 2h cache
+            now_secs - validated_at < 28800 // 8h cache — đồng bộ heartbeat 30 phút (16 cơ hội re-register)
         } else {
             false
         };
@@ -517,8 +713,8 @@ fn get_credential_path() -> Result<std::path::PathBuf, String> {
 #[command]
 pub fn store_license(license_key: String) -> Result<(), String> {
     let cred_path = get_credential_path()?;
-    let cred_path_str = cred_path.to_string_lossy().replace('\\', "\\\\");
-    
+    let cred_path_str = ps_single_quote_escape(&cred_path.to_string_lossy());
+
     // Use PowerShell + DPAPI to encrypt and save
     let ps_script = format!(
         r#"
@@ -529,7 +725,7 @@ pub fn store_license(license_key: String) -> Result<(), String> {
         )
         [System.IO.File]::WriteAllBytes('{}', $encrypted)
         "#,
-        license_key.replace("'", "''"),
+        ps_single_quote_escape(&license_key),
         cred_path_str
     );
     
@@ -555,8 +751,8 @@ pub fn load_license() -> Result<String, String> {
         return Err("No stored license found".to_string());
     }
     
-    let cred_path_str = cred_path.to_string_lossy().replace('\\', "\\\\");
-    
+    let cred_path_str = ps_single_quote_escape(&cred_path.to_string_lossy());
+
     // Use PowerShell + DPAPI to decrypt
     let ps_script = format!(
         r#"
@@ -645,7 +841,7 @@ pub fn store_last_online(timestamp_ms: u64) -> Result<(), String> {
     }
 
     let path = get_timestamp_path()?;
-    let cred_path_str = path.to_string_lossy().replace('\\', "\\\\");
+    let cred_path_str = ps_single_quote_escape(&path.to_string_lossy());
     let ts_str = timestamp_ms.to_string();
     
     // Use DPAPI to encrypt timestamp (same mechanism as license key)
@@ -681,7 +877,7 @@ pub fn load_last_online() -> Result<u64, String> {
         return Ok(0);
     }
     
-    let cred_path_str = path.to_string_lossy().replace('\\', "\\\\");
+    let cred_path_str = ps_single_quote_escape(&path.to_string_lossy());
     
     let ps_script = format!(
         r#"
@@ -734,7 +930,7 @@ fn get_token_path() -> Result<std::path::PathBuf, String> {
 #[command]
 pub fn store_license_token(token: String) -> Result<(), String> {
     let path = get_token_path()?;
-    let path_str = path.to_string_lossy().replace('\\', "\\\\");
+    let path_str = ps_single_quote_escape(&path.to_string_lossy());
     let ps_script = format!(
         r#"
         Add-Type -AssemblyName System.Security
@@ -744,7 +940,7 @@ pub fn store_license_token(token: String) -> Result<(), String> {
         )
         [System.IO.File]::WriteAllBytes('{}', $encrypted)
         "#,
-        token.replace("'", "''"),
+        ps_single_quote_escape(&token),
         path_str
     );
     let output = Command::new("powershell")
@@ -765,7 +961,7 @@ pub fn load_license_token() -> Result<String, String> {
     if !path.exists() {
         return Err("No stored license token".to_string());
     }
-    let path_str = path.to_string_lossy().replace('\\', "\\\\");
+    let path_str = ps_single_quote_escape(&path.to_string_lossy());
     let ps_script = format!(
         r#"
         Add-Type -AssemblyName System.Security

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
+import { isLicenseTokenValid } from './licenseToken';
 
 /**
  * SECURITY PATCHES:
@@ -90,20 +91,18 @@ async function deleteTokenFromDPAPI(): Promise<void> {
   } catch { /* ignore */ }
 }
 
-/** Đọc 'exp' (unix giây) từ token "<payload_b64url>.<sig>" và kiểm tra còn hạn (đệm 60s). */
-function isLicenseTokenValid(token: string | null): boolean {
-  if (!token || token.indexOf('.') < 0) return false;
+// ── Xoá cache VALIDATED_KEYS phía Rust (chặn ký sidecar token → backend 403) ──
+// Gọi khi khóa cứng/thu hồi/đăng xuất. Nếu KHÔNG gọi, dù UI đã khóa, sign_api_request
+// (Rust) vẫn ký request hợp lệ tới hết TTL cache (2h) → backend vẫn xử lý PDF.
+// Best-effort: không có Tauri (dev/web) thì bỏ qua êm.
+async function clearValidatedKeysInRust(): Promise<void> {
   try {
-    let p = token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
-    while (p.length % 4) p += '=';
-    const payload = JSON.parse(decodeURIComponent(escape(atob(p))));
-    const exp = Number(payload?.exp || 0);
-    if (!exp) return false;
-    return exp * 1000 > Date.now() + 60_000;
-  } catch {
-    return false;
-  }
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('clear_validated_keys');
+  } catch { /* ignore (dev/web mode) */ }
 }
+
+// isLicenseTokenValid tách sang ./licenseToken (module thuần, unit-test được).
 
 // ── localStorage fallback (for dev mode / web mode) ──
 
@@ -163,24 +162,43 @@ interface AuthState {
   /** Soft lock: blocks UI but does NOT sign out. Auto-unlocks when internet returns. */
   isLicenseLocked: boolean;
   lockReason: string;
-  
+  /** Thu hồi có ân hạn: khi server báo key bị khóa/hết hạn, hiện popup đếm ngược
+   *  REVOKE_GRACE_MS để khách kịp lưu file trước khi khóa cứng. Tự huỷ nếu key VALID lại. */
+  isRevoking: boolean;
+  /** Epoch ms hết giờ đếm ngược thu hồi. null khi không trong trạng thái thu hồi. */
+  revokeDeadline: number | null;
+  revokeReason: string;
+
   setUser: (user: User | null, session: Session | null) => void;
   setLicenseKey: (key: string | null) => void;
   setIsChecking: (isChecking: boolean) => void;
-  
+
   signOut: () => Promise<void>;
   checkSession: () => Promise<void>;
   validateLicense: () => Promise<boolean>;
   retryValidation: () => Promise<void>;
   startHeartbeat: () => void;
   stopHeartbeat: () => void;
+  /** Bắt đầu quy trình thu hồi có ân hạn (idempotent — gọi lại không reset deadline). */
+  beginRevocation: (reason: string) => void;
+  /** Huỷ thu hồi khi key hợp lệ trở lại (admin mở khóa trong thời gian ân hạn). */
+  cancelRevocation: () => void;
+  /** Khóa cứng ngay: overlay + xoá cache ký Rust + dọn token. Gọi khi hết giờ ân hạn. */
+  enforceHardLock: (reason: string) => Promise<void>;
 }
 
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 let retryInterval: ReturnType<typeof setInterval> | null = null;
-const HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;    // 30 minutes
+let revokeTimer: ReturnType<typeof setTimeout> | null = null;
+const HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;     // 30 phút — tránh rate limit Supabase (60s cũ = 120 req/giờ → hit limit)
 const RETRY_INTERVAL_MS = 30 * 1000;              // 30 seconds (when locked)
-const MAX_OFFLINE_MS = 24 * 60 * 60 * 1000;       // 24 hours max offline
+// FALLBACK offline grace CHỈ cho client CHƯA có token ký (rollout/token fetch lỗi).
+// Với client đã có token Ed25519, "ngân sách offline" THẬT là hạn (exp) của token do
+// server ký — xem nhánh token-driven trong validateLicense. KHÔNG rút số này xuống thấp:
+// nó KHÔNG giúp thu hồi nhanh (thu hồi chỉ xảy ra khi online) mà chỉ phạt khách offline
+// hợp pháp (tắt máy nghỉ cuối tuần, đi công tác không mạng).
+const MAX_OFFLINE_MS = 24 * 60 * 60 * 1000;       // 24h — fallback cho client chưa có token
+const REVOKE_GRACE_MS = 5 * 60 * 1000;            // 5 phút ân hạn để khách kịp lưu file trước khi khóa cứng
 const LAST_ONLINE_KEY = 'prynx_last_online';
 
 /**
@@ -267,6 +285,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   lastValidated: 0,
   isLicenseLocked: false,
   lockReason: '',
+  isRevoking: false,
+  revokeDeadline: null,
+  revokeReason: '',
 
   setUser: (user, session) => set({ user, session }),
   
@@ -295,11 +316,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signOut: async () => {
     get().stopHeartbeat();
+    await clearValidatedKeysInRust(); // dọn cache ký Rust → backend không còn nhận request
     await supabase.auth.signOut();
     get().setLicenseKey(null);
     await deleteFromDPAPI(); // Explicitly clear DPAPI
     await deleteTokenFromDPAPI(); // C-1: dọn token đã lưu
-    set({ user: null, session: null, licenseValid: false, lastValidated: 0, remainingDays: null, licenseExpiresAt: null, licenseToken: null });
+    set({
+      user: null, session: null, licenseValid: false, lastValidated: 0,
+      remainingDays: null, licenseExpiresAt: null, licenseToken: null,
+      isRevoking: false, revokeDeadline: null, revokeReason: '',
+    });
   },
 
   checkSession: async () => {
@@ -328,8 +354,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const isValid = await get().validateLicense();
         if (!isValid) {
           console.warn('[AUTH] Stored license key is no longer valid — clearing');
+          // Lúc KHỞI ĐỘNG không có việc gì đang làm để lưu → không hiện popup đếm ngược
+          // (validateLicense có thể vừa bật beginRevocation). Huỷ thu hồi + xoá key về
+          // Login sạch. Chỉ khi key bị thu hồi GIỮA phiên đang dùng mới cần ân hạn 5 phút.
+          get().cancelRevocation();
           get().setLicenseKey(null);
-          set({ licenseValid: false });
+          set({ licenseValid: false, isLicenseLocked: false, lockReason: '' });
         } else {
           // Start heartbeat after successful validation
           get().startHeartbeat();
@@ -393,6 +423,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // VECTOR #11: Anti-forward-jump — if time jumped >25h, require online validation
         // Prevents chaining T+23h → T+46h → T+69h while staying in grace window
         const MAX_JUMP_MS = 25 * 60 * 60 * 1000;
+        // ── Token-driven offline grace (ưu tiên hơn heuristic thời gian) ──
+        // "Ngân sách offline" THẬT = hạn (exp) của token Ed25519 do server ký. Token chống
+        // chỉnh đồng hồ (backend tự verify exp + anti-rollback độc lập), nên còn token hợp lệ
+        // thì cho dùng offline BẤT KỂ đã offline bao lâu → khách nghỉ cuối tuần / đi công tác
+        // không mạng KHÔNG bị khóa oan. Anti-clockback ở trên vẫn gác (đồng hồ LÙI thì không
+        // tin token vì exp so với Date.now() sẽ sai lệch). Muốn khách offline lâu hơn: tăng
+        // TOKEN_TTL phía server — 1 knob duy nhất, không cần build lại app.
+        const offlineToken = get().licenseToken || await loadTokenFromDPAPI();
+        if (isLicenseTokenValid(offlineToken)) {
+          if (offlineToken && get().licenseToken !== offlineToken) set({ licenseToken: offlineToken });
+          await ensureKeyRegisteredInRust(licenseKey);
+          set({ licenseValid: true, lastValidated: Date.now() });
+          return true;
+        }
+        // Không còn token hợp lệ (chưa kịp nhận token, hoặc token đã hết hạn) → dùng fallback
+        // thời gian bên dưới (forward-jump + MAX_OFFLINE) để vẫn có giới hạn an toàn.
         if (lastOnline > 0 && offlineMs > MAX_JUMP_MS) {
           logSecurityEvent('forward_clock_jump', { lastOnline, now, jumpHours: Math.round(offlineMs / 3600000) });
           // Don't grant grace — force online check
@@ -473,6 +519,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
           get().startHeartbeat();
         }
+        // Admin mở khóa lại trong thời gian ân hạn → huỷ đếm ngược thu hồi.
+        if (get().isRevoking) {
+          get().cancelRevocation();
+        }
         try {
           const { invoke } = await import('@tauri-apps/api/core');
 
@@ -504,6 +554,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       
       if (!isValid) {
         console.warn('[AUTH] License revoked or invalid:', data?.message);
+        // Chỉ THU HỒI khi server nói rõ key bị khóa/hết hạn — KHÔNG với 'ERROR'
+        // (lỗi server tạm thời) để tránh khóa oan khi RPC trục trặc.
+        const st = data?.status;
+        if (st === 'INVALID' || st === 'EXPIRED') {
+          const reason = st === 'EXPIRED'
+            ? 'Bản quyền đã hết hạn. Vui lòng gia hạn để tiếp tục sử dụng.'
+            : 'Bản quyền đã bị thu hồi. Vui lòng liên hệ để được hỗ trợ.';
+          get().beginRevocation(reason);
+        }
       }
       
       return isValid;
@@ -522,6 +581,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         logSecurityEvent('clock_manipulation', { lastOnline, now: now2 });
         set({ licenseValid: false, isLicenseLocked: true, lockReason: 'Phát hiện đồng hồ hệ thống bị thay đổi.' });
         return false;
+      }
+      // Token-driven offline grace (giống nhánh if(error) ở trên): còn token hợp lệ →
+      // cho dùng offline bất kể đã offline bao lâu. Anti-clockback ở trên vẫn gác.
+      const offlineToken2 = get().licenseToken || await loadTokenFromDPAPI();
+      if (isLicenseTokenValid(offlineToken2)) {
+        if (offlineToken2 && get().licenseToken !== offlineToken2) set({ licenseToken: offlineToken2 });
+        await ensureKeyRegisteredInRust(licenseKey);
+        set({ licenseValid: true, lastValidated: Date.now() });
+        return true;
       }
       if (lastOnline > 0 && offlineMs > MAX_OFFLINE_MS) {
         const connectivity = await checkConnectivity();
@@ -551,6 +619,45 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  // ── Thu hồi có ân hạn ─────────────────────────────────────────────────────
+  // Server báo key bị khóa/hết hạn (INVALID/EXPIRED) → KHÔNG khóa cứng ngay mà cho
+  // REVOKE_GRACE_MS để khách lưu file. Idempotent: gọi lại khi đang thu hồi không
+  // reset deadline (đồng hồ đếm ngược chạy liên tục qua các nhịp heartbeat).
+  beginRevocation: (reason: string) => {
+    if (get().isRevoking || get().isLicenseLocked) return;
+    const deadline = Date.now() + REVOKE_GRACE_MS;
+    set({ isRevoking: true, revokeDeadline: deadline, revokeReason: reason, licenseValid: false });
+    if (revokeTimer) clearTimeout(revokeTimer);
+    revokeTimer = setTimeout(() => {
+      void get().enforceHardLock(reason);
+    }, REVOKE_GRACE_MS);
+  },
+
+  // Admin mở khóa lại trong thời gian ân hạn → key VALID trở lại → huỷ đếm ngược.
+  cancelRevocation: () => {
+    if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
+    if (get().isRevoking) {
+      set({ isRevoking: false, revokeDeadline: null, revokeReason: '' });
+    }
+  },
+
+  // Hết giờ ân hạn → khóa cứng: overlay + XOÁ cache ký Rust (chặn mọi request backend
+  // ngay trong phiên, không đợi TTL 2h) + dọn token đã lưu.
+  enforceHardLock: async (reason: string) => {
+    if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
+    await clearValidatedKeysInRust();
+    await deleteTokenFromDPAPI();
+    set({
+      isRevoking: false,
+      revokeDeadline: null,
+      revokeReason: '',
+      licenseValid: false,
+      licenseToken: null,
+      isLicenseLocked: true,
+      lockReason: reason || 'Bản quyền đã bị thu hồi. Vui lòng liên hệ để được hỗ trợ.',
+    });
+  },
+
   startHeartbeat: () => {
     get().stopHeartbeat();
     heartbeatInterval = setInterval(async () => {
@@ -570,5 +677,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   stopHeartbeat: () => {
     if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
     if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
+    if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
   },
 }));
