@@ -25,13 +25,13 @@ const CORNER_STYLES = [
 
 const BLEED_COLOR_MODES_STICKER = [
     { value: 'image', title: '🖼️ Lấy theo màu viền tem', desc: 'Tự động kéo giãn dải màu sát mép tem ra ngoài để lấp đầy vùng cắt.' },
-    { value: 'inpaint', title: '✨ Làm mượt thông minh', desc: 'Tự động tính toán và vẽ tiếp dải màu. Chậm nhưng cho kết quả mượt mà.' },
+    { value: 'inpaint', title: '✨ Làm mượt thông minh', desc: 'CHỈ hợp mép ảnh chụp/gradient mềm. KHÔNG hợp dải màu phẳng (logo, tem chữ) — sẽ loang, mất nét. Dải màu phẳng nên chọn "Lấy theo màu viền tem".' },
     { value: 'solid', title: '🎨 Đổ màu trơn', desc: 'Bo viền nền bằng hệ màu in ấn chuyên nghiệp (CMYK).' },
 ];
 
 const BLEED_COLOR_MODES_RECTANGLE = [
     { value: 'mirror', title: '🪞 Lật gương tự động', desc: 'Lật ngược mép ảnh siêu tốc. Giữ nguyên 100% độ sắc nét ban đầu.' },
-    { value: 'inpaint', title: '✨ Làm mượt thông minh', desc: 'Tự động tính toán và vẽ tiếp dải màu cong, hạn chế viền gãy góc.' },
+    { value: 'inpaint', title: '✨ Làm mượt thông minh', desc: 'CHỈ hợp mép ảnh chụp/gradient mềm. KHÔNG hợp dải màu phẳng (banner, card, khối màu) — sẽ loang, không phân biệt được dải màu. Dải màu phẳng nên chọn "Kéo giãn mép ảnh".' },
     { value: 'image', title: '🖼️ Kéo giãn mép ảnh', desc: 'Tự động kéo giãn dải màu sát mép ảnh ra ngoài lề.' },
     { value: 'solid', title: '🎨 Đổ màu trơn', desc: 'Bo viền nền bằng hệ màu in ấn chuyên nghiệp (CMYK).' },
 ];
@@ -64,6 +64,9 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const [trimWhiteEdge, setTrimWhiteEdge] = useState<boolean>(() => getSaved('trimWhiteEdge', true));
     const [bleedColorType, setBleedColorType] = useState(() => getSaved('bleedColorType', 'image')); // 'mirror', 'image', 'inpaint', 'solid'
     const [bleedColorHex, setBleedColorHex] = useState(() => getSaved('bleedColorHex', '#FFFFFF'));
+    // "Lẹm mép" (rectangle): hút màu sâu vào trong để doa viền trắng mảnh của file không tràn lề.
+    // Con dao 2 lưỡi — lẹm quá ăn vào nội dung sát mép → default nhỏ, cho chỉnh/tắt (0).
+    const [edgeBiteMm, setEdgeBiteMm] = useState<number>(() => getSaved('edgeBiteMm', 0.4));
 
     // Đổi kiểu màu nền: khi chọn "Đổ màu trơn" mà giá trị hiện tại chưa ở dạng CMYK
     // ("C,M,Y,K"), khởi tạo về "0,0,0,0" để khung CMYK và giá trị gửi backend khớp
@@ -86,7 +89,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         localStorage.setItem('ps_sticker_trimWhiteEdge', JSON.stringify(trimWhiteEdge));
         localStorage.setItem('ps_sticker_bleedColorType', JSON.stringify(bleedColorType));
         localStorage.setItem('ps_sticker_bleedColorHex', JSON.stringify(bleedColorHex));
-    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex]);
+        localStorage.setItem('ps_sticker_edgeBiteMm', JSON.stringify(edgeBiteMm));
+    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex, edgeBiteMm]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -163,6 +167,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         formData.append('draw_cut_contour', productType === 'rectangle' ? 'false' : (cutMode !== 'none' ? 'true' : 'false'));
         formData.append('bleed_color_type', bleedColorType); // 'image', 'inpaint', 'solid'
         formData.append('bleed_color_hex', bleedColorHex);
+        formData.append('edge_bite_mm', productType === 'rectangle' ? String(edgeBiteMm) : '0');
+        if (productType === 'rectangle') {
+            formData.append('rectangle_mode', 'true');
+        }
         
         const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, {
             method: 'POST',
@@ -202,7 +210,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         // ─── Recipe record hook ─── (params tất định; phát lại dò contour lại trên file mới)
         recipeRecorder.noteOperation('sticker_dieline', {
             productType, cutMode, offsetMm, cornerStyle, fillHoles,
-            bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex,
+            bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex, edgeBiteMm,
         });
 
         try {
@@ -474,6 +482,25 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 </div>
                             )}
                         </div>
+
+                        {/* Lẹm mép (doa nền): chỉ hiển thị khi hút màu từ ảnh (image/inpaint).
+                            "Đổ màu trơn" và "Lật gương" không cần vì không phụ thuộc màu mép nguồn. */}
+                        {(bleedColorType === 'image' || bleedColorType === 'inpaint') && (
+                            <div className="mt-3 flex gap-2 items-end">
+                                <ToolNumberInput
+                                    label="Độ lẹm mép"
+                                    value={edgeBiteMm}
+                                    onChange={setEdgeBiteMm}
+                                    suffix="mm"
+                                    step={0.1}
+                                    min={0}
+                                    className="w-[90px] shrink-0"
+                                />
+                                <p className="flex-1 text-[10.5px] text-slate-500 dark:text-zinc-400 leading-snug pb-1">
+                                    Lẹm nhẹ vào trong để <strong>doa viền trắng mảnh</strong> khi file không tràn lề. Đặt <strong>0</strong> nếu có chữ/chi tiết sát mép.
+                                </p>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
