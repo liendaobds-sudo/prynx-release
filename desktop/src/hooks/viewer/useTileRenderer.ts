@@ -67,6 +67,11 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
         // lấy bytes JPEG qua IPC `invoke('render_pdf_page')` (giống tách nền dùng invoke→blob,
         // đã chạy ở release) rồi tạo blob:. LiveTile tự cache + revoke blob.
         if ((file as any)?.path) {
+            // Tile thật khi clipW/clipH > 0. Lúc đó clipX/clipY PHẢI truyền nguyên
+            // giá trị (kể cả 0 — ô góc trên-trái) để backend nhận đủ 4 Some → vào
+            // nhánh clip. Trước đây `clipX && clipX!==0 ? clipX : null` biến clipX=0
+            // thành null → ô góc rơi nhầm vào nhánh render full-page.
+            const isTile = !!(clipW && clipW > 0 && clipH && clipH > 0);
             return (async () => {
                 const { invoke } = await import('@tauri-apps/api/core');
                 const bytes: ArrayBuffer = await invoke('render_pdf_page', {
@@ -74,10 +79,10 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
                     page: pageNum,
                     zoom: zoomScale,
                     rotation: rotation || 0,
-                    clipX: (clipX && clipX !== 0) ? clipX : null,
-                    clipY: (clipY && clipY !== 0) ? clipY : null,
-                    clipW: (clipW && clipW !== 0) ? clipW : null,
-                    clipH: (clipH && clipH !== 0) ? clipH : null,
+                    clipX: isTile ? (clipX ?? 0) : null,
+                    clipY: isTile ? (clipY ?? 0) : null,
+                    clipW: isTile ? clipW : null,
+                    clipH: isTile ? clipH : null,
                 });
                 const blob = new Blob([bytes as any], { type: 'image/jpeg' });
                 return URL.createObjectURL(blob);

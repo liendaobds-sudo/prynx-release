@@ -296,6 +296,126 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
     );
 });
 
+// ═══ Viewport tile grid (chỉ bật ở zoom cao — audit render 2026-07-06) ═══
+// Ở zoom cao, single-tile bị cap (computeRenderZoom ≤24 + native max_dim=8000) → bitmap
+// nhỏ hơn kích thước hiển thị → browser phóng CSS → mờ. TileLayer chồng LÊN nền single-tile:
+// render MỘT tile phủ ĐÚNG vùng đang nhìn (không phải lưới N ô) ở đúng zoom×dpr → sắc như
+// Acrobat mà bitmap chặn theo màn hình. Nền single-tile vẫn giữ bên dưới nên không bao giờ
+// trắng. Chỉ dùng cho PDF, rot===0 (tránh lệch toạ độ khi trang xoay).
+//
+// VÌ SAO 1 TILE (không lưới): pdfium duyệt display-list CẢ TRANG cho MỖI lần render + render
+// TUẦN TỰ (pool 1 handle, khóa handle.lock). Lưới N ô = N lần duyệt-cả-trang nối đuôi → chậm
+// tuyến tính theo số ô. Một tile phủ viewport = 1 lần duyệt + 1 encode + 1 IPC → nhanh nhất.
+// Đánh đổi: pan phải render lại (lưới cache được ô cũ). Bù bằng PAD (phủ rộng hơn viewport)
+// + SNAP (bo origin về lưới → pan nhỏ trùng key cache cũ, khỏi render lại).
+const TILE_PAD = 256;   // device px phủ thêm quanh viewport → pan nhỏ vẫn trong tile
+const TILE_SNAP = 256;  // bo origin/extent về bội số này → pan nhỏ tái dùng cache
+const TILE_MAX = 4000;  // trần set_fixed_size của native (an toàn OOM)
+
+const TileLayer = React.memo(({ fileKey, pageNum, zoom, dpr, displayWidth, displayHeight, containerRef, getTileUrl, onVisible }: any) => {
+    // Vùng nhìn (CSS px, gốc = góc trên-trái trang) — tính lại khi cuộn/zoom/resize.
+    const [visRect, setVisRect] = useState<{ left: number; top: number; right: number; bottom: number } | null>(null);
+
+    // DEBOUNCE zoom (audit tốc độ 2026-07-06): zoom liên tục sinh HÀNG TRĂM render trung
+    // gian (log: 278 render/phiên, mỗi cái ~160ms tuần tự → chờ vài giây). Chỉ render tile
+    // SẮC khi zoom ĐÃ DỪNG (~180ms); trong lúc zoom nền mờ lo hiển thị. displayWidth/Height
+    // đổi theo zoom nên cũng phải "đóng băng" theo settledZoom để clip/CSS khớp.
+    const [settled, setSettled] = useState({ zoom, displayWidth, displayHeight });
+    useEffect(() => {
+        const id = setTimeout(() => setSettled({ zoom, displayWidth, displayHeight }), 180);
+        return () => clearTimeout(id);
+    }, [zoom, displayWidth, displayHeight]);
+    const sZoom = settled.zoom;
+    const sDisplayW = settled.displayWidth;
+    const sDisplayH = settled.displayHeight;
+
+    useEffect(() => {
+        const pageEl = containerRef?.current as HTMLElement | null;
+        if (!pageEl) return;
+        // Tìm tổ tiên cuộn được (Virtuoso Scroller) để lấy khung nhìn thực.
+        let scrollEl: HTMLElement | null = pageEl.parentElement;
+        while (scrollEl) {
+            const oy = getComputedStyle(scrollEl).overflowY;
+            if (oy === 'auto' || oy === 'scroll') break;
+            scrollEl = scrollEl.parentElement;
+        }
+        const compute = () => {
+            const pageRect = pageEl.getBoundingClientRect();
+            const vp = scrollEl ? scrollEl.getBoundingClientRect() : null;
+            const vpLeft = vp ? vp.left : 0;
+            const vpTop = vp ? vp.top : 0;
+            const vpRight = vp ? vp.right : window.innerWidth;
+            const vpBottom = vp ? vp.bottom : window.innerHeight;
+            const left = Math.max(0, vpLeft - pageRect.left);
+            const top = Math.max(0, vpTop - pageRect.top);
+            const right = Math.min(pageRect.width, vpRight - pageRect.left);
+            const bottom = Math.min(pageRect.height, vpBottom - pageRect.top);
+            if (right <= left || bottom <= top) { setVisRect(null); return; }
+            setVisRect({ left, top, right, bottom });
+        };
+        compute();
+        const target: any = scrollEl || window;
+        target.addEventListener('scroll', compute, { passive: true });
+        window.addEventListener('resize', compute);
+        return () => {
+            target.removeEventListener('scroll', compute);
+            window.removeEventListener('resize', compute);
+        };
+    }, [containerRef, sDisplayW, sDisplayH, sZoom]);
+
+    // Trong lúc zoom ĐANG chuyển (live zoom/size ≠ settled đã đóng băng): tile sắc được
+    // tính clip/định vị theo settled CŨ nhưng container đã phóng tới size MỚI → tile lệch/
+    // vỡ (khung lệch, dải thừa, mảng trắng). Ẩn tile sắc tới khi settle → chỉ nền single-tile
+    // (scale CSS theo size sống, luôn phủ đúng, chỉ mờ) hiển thị. Hết chớp trắng khi zoom.
+    const zoomSettling = zoom !== sZoom || displayWidth !== sDisplayW || displayHeight !== sDisplayH;
+    if (zoomSettling || !visRect) return null;
+
+    const pageDevW = sDisplayW * dpr;
+    const pageDevH = sDisplayH * dpr;
+
+    // Vùng nhìn (device px) + PAD quanh mép, rồi SNAP origin/extent về bội số TILE_SNAP.
+    // Snap → khi pan nhỏ, clip_x/y/w/h giữ NGUYÊN giá trị → trùng key cache (3 tầng) → khỏi
+    // render lại. Clamp trong [0, pageDev] và trần TILE_MAX (giới hạn set_fixed_size native).
+    const snapDown = (v: number) => Math.floor(v / TILE_SNAP) * TILE_SNAP;
+    const snapUp = (v: number) => Math.ceil(v / TILE_SNAP) * TILE_SNAP;
+
+    let clipX = snapDown(Math.max(0, visRect.left * dpr - TILE_PAD));
+    let clipY = snapDown(Math.max(0, visRect.top * dpr - TILE_PAD));
+    const rawRight = snapUp(Math.min(pageDevW, visRect.right * dpr + TILE_PAD));
+    const rawBottom = snapUp(Math.min(pageDevH, visRect.bottom * dpr + TILE_PAD));
+
+    let clipW = Math.min(TILE_MAX, rawRight - clipX);
+    let clipH = Math.min(TILE_MAX, rawBottom - clipY);
+    if (clipW <= 0 || clipH <= 0) return null;
+
+    // Nếu viewport vượt TILE_MAX (zoom vừa, vùng nhìn rộng): tile không phủ hết. Không sao —
+    // nền single-tile lo phần ngoài; tile sắc phủ TILE_MAX quanh tâm (nơi mắt nhìn). Kẹp origin
+    // để tile bám tâm vùng nhìn khi bị trần.
+    const viewCxDev = (visRect.left + visRect.right) / 2 * dpr;
+    const viewCyDev = (visRect.top + visRect.bottom) / 2 * dpr;
+    if (clipW === TILE_MAX) clipX = snapDown(Math.max(0, Math.min(pageDevW - TILE_MAX, viewCxDev - TILE_MAX / 2)));
+    if (clipH === TILE_MAX) clipY = snapDown(Math.max(0, Math.min(pageDevH - TILE_MAX, viewCyDev - TILE_MAX / 2)));
+
+    const cssLeft = clipX / dpr;
+    const cssTop = clipY / dpr;
+    const cssW = clipW / dpr; // khớp bitmap → KHÔNG stretch
+    const cssH = clipH / dpr;
+
+    return (
+        <LiveTile
+            key={`vp_${clipX}_${clipY}_${clipW}_${clipH}`}
+            fileKey={fileKey}
+            pageNum={pageNum}
+            zoom={sZoom * dpr}
+            rot={0}
+            clipX={clipX} clipY={clipY} clipW={clipW} clipH={clipH}
+            cssLeft={cssLeft} cssTop={cssTop} cssW={cssW} cssH={cssH}
+            getTileUrl={getTileUrl}
+            onVisible={onVisible}
+        />
+    );
+});
+
 // ═══ VDP text preview với AUTO-FIT ═══
 // Bóp cỡ chữ (xuống tối thiểu) để text vừa CHIỀU CAO khung, khớp với engine backend
 // (ReportLab cũng bóp theo chiều cao). Khi autoFit === false thì giữ nguyên cỡ chữ.
@@ -360,7 +480,7 @@ export const LivePageFrame = (props: any) => {
     const { originalPageNum, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
         onObjectDelete,
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
-        setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage
+        setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage, isImage
     } = props;
     // Trang ĐANG xem (active) trong danh sách ảo (Virtuoso). Chỉ frame active mới
     // đẩy editObjects của mình lên store `currentEditObjects` → panel "Thành phần"
@@ -1680,10 +1800,18 @@ export const LivePageFrame = (props: any) => {
                 /* Trang trắng mới tạo: kích thước đã biết, không cần render qua engine nào — hiện nền trắng tức thì */
                 <div style={{ width: displayWidth, height: displayHeight, background: 'white' }} />
             ) : getTileUrl ? (() => {
-                // 1 TILE phủ cả trang, render ĐÚNG 1 LẦN/scale (KHÔNG chia lưới: pdfium
-                // render cả trang dù cắt ô → chia lưới chỉ nhân chi phí ×N). renderZoom đã
-                // được lượng tử hoá nên zoom qua lại tái dùng ảnh cache, đỡ render lại.
+                // Nền: 1 TILE phủ cả trang ở renderZoom (đã lượng tử hoá, cache tốt). Luôn có
+                // ảnh → không bao giờ trắng. Ở zoom cao renderZoom bị cap < zoom×dpr → nền mờ.
                 const S = renderZoom;
+                // Hybrid gate: chỉ chồng lưới tile SẮC khi nền single-tile thật sự bị cap
+                // (renderZoom không theo kịp zoom×dpr) → zoom cao mới nét như Acrobat. Chỉ
+                // áp cho PDF, rot===0 (tránh bug toạ độ xoay), tránh trang trắng/ảnh.
+                // CHỈ trang ĐANG XEM (isActiveFrame): log profiling cho thấy mọi trang mounted
+                // (Virtuoso giữ ~9 trang) đều render tile sắc dù người dùng chỉ nhìn 1 → 9× công
+                // thừa xếp hàng tuần tự. Trang khác giữ nền single-tile là đủ (audit tốc độ).
+                const dpr = window.devicePixelRatio || 1;
+                const needsTiling = isActiveFrame && !isImage && (rotation || 0) % 360 === 0
+                    && renderZoom < zoom * dpr * 0.95;
                 return (
                     <div style={{ width: displayWidth, height: displayHeight, position: 'relative' }}>
                         {/* Loading Skeleton */}
@@ -1696,6 +1824,21 @@ export const LivePageFrame = (props: any) => {
                         <div className="absolute inset-0 z-10">
                             <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={S} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} />
                         </div>
+                        {needsTiling && (
+                            <div className="absolute inset-0 z-[11]">
+                                <TileLayer
+                                    fileKey={pdfUrl || 'unknown'}
+                                    pageNum={originalPageNum}
+                                    zoom={zoom}
+                                    dpr={dpr}
+                                    displayWidth={displayWidth}
+                                    displayHeight={displayHeight}
+                                    containerRef={containerRef}
+                                    getTileUrl={getTileUrl}
+                                    onVisible={handleTileVisibility}
+                                />
+                            </div>
+                        )}
                     </div>
                 );
             })() : (

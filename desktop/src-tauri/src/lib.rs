@@ -234,7 +234,7 @@ async fn get_pdf_metadata(app_handle: tauri::AppHandle, file_path: String) -> Re
             for _ in 0..pool_size {
                 pool.push(OnceLock::new());
             }
-            let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(4)) });
+            let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(10)) });
             cache.insert(file_path.clone(), Arc::new(CachedDocument {
                 pool,
                 next: AtomicUsize::new(0),
@@ -319,10 +319,10 @@ fn render_tile_jpeg(
     // RENDER_VER: đổi token này mỗi khi thay đổi cách render/encode (LCD text, JPEG
     // quality...) → vô hiệu MỌI tile cache cũ (RAM + đĩa) render bằng cấu hình cũ.
     // Nếu không, tile q92/không-LCD đã lưu vẫn được đọc lại, che mất thay đổi (2026-07-06).
-    const RENDER_VER: &str = "v3_lcd_q98_scale24";
+    const RENDER_VER: &str = "v5_q90";
     let cache_key = format!("{}_{}_{}_{}_{}_{}_{}_{}_{}", RENDER_VER, file_path, page, zoom, rotation,
         clip_x.unwrap_or(0), clip_y.unwrap_or(0), clip_w.unwrap_or(0), clip_h.unwrap_or(0));
-    
+
     {
         let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
         if let Ok(mut cache) = cache_lock.lock() {
@@ -364,7 +364,7 @@ fn render_tile_jpeg(
             pdfium.load_pdf_from_byte_vec(bytes, None)
                 .map_err(|e| format!("Failed to open PDF: {:?}", e))?
         };
-        let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(4)) });
+        let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(10)) });
         cache.insert(file_path.to_string(), Arc::new(CachedDocument {
             pool,
             next: AtomicUsize::new(0),
@@ -389,11 +389,10 @@ fn render_tile_jpeg(
                 .map_err(|e| format!("Failed to open PDF (lazy): {:?}", e))?
         };
         // Race-safe: nếu thread khác set trước, set này trả Err → bỏ qua (doc thừa drop, vô hại).
-        let _ = cell.set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(4)) });
+        let _ = cell.set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(10)) });
     }
     let handle = cell.get().ok_or_else(|| "DocHandle init failed".to_string())?;
     
-    let start_render = std::time::Instant::now();
     let rgba_image = {
         let _guard = handle.lock.lock().unwrap();
         let page_index = (page - 1) as u16;
@@ -430,10 +429,12 @@ fn render_tile_jpeg(
         if render_scale.is_nan() || render_scale.is_infinite() {
             render_scale = 1.0;
         }
-        // Trần scale nâng lên 34 (≈96/72×24) khớp trần zoom frontend mới → file nhỏ
-        // (danh thiếp) zoom sâu vẫn nét. An toàn OOM vì bitmap còn bị chặn cứng bởi
-        // max_dim=8000 (nhánh full-page) và w/h.clamp(4000) (nhánh clip) bên dưới.
-        render_scale = render_scale.clamp(0.01, 34.0);
+        // CHỈ chặn cận DƯỚI. KHÔNG clamp cận trên: clip_x/y do frontend tính ở scale
+        // THẬT (zoom×dpr); nếu clamp render_scale mà translate = -x/render_scale thì tile
+        // trỏ SAI vùng → mất nội dung ở zoom cao (bug viewport-tiling). An toàn OOM vì:
+        // nhánh clip bị set_fixed_size ≤4000px chặn bitmap; nhánh full-page tự hạ scale
+        // bằng max_dim=8000 bên dưới. Nên trần scale là THỪA và chính là thứ phá tile.
+        render_scale = render_scale.max(0.01);
 
         let render_config = if let (Some(x), Some(y), Some(w), Some(h)) = (clip_x, clip_y, clip_w, clip_h) {
             let safe_w = w.clamp(1, 4000) as i32;
@@ -472,19 +473,15 @@ fn render_tile_jpeg(
             .map_err(|e| format!("Failed to render page: {:?}", e))?;
         bitmap.as_image().to_rgba8()
     };
-    let render_ms = start_render.elapsed().as_millis();
-    
-    let start_encode = std::time::Instant::now();
+
     let mut buffer = Vec::new();
-    // JPEG-98: nhanh + nhẹ cho mọi loại nội dung (kể cả trang đồ hoạ/ảnh nặng). PNG
-    // lossless từng thử nhưng encode/transfer rất chậm ở bitmap lớn (zoom cao ~280ms)
-    // cho nội dung phức tạp → bỏ. Nâng 92→98 (audit render 2026-07-06): gần hết ringing
-    // DCT ở cạnh chữ/nét mảnh (nét hơn rõ), JPEG encode vẫn nhanh, kích thước ~2x (không
-    // 4x như lossless). ≥90 nên image-crate giữ 4:4:4 (không subsample màu → biên sắc).
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 98);
+    // JPEG-90: encode ~40% nhanh hơn q98 (audit tốc độ 2026-07-06: encode ~59ms là khâu
+    // LỚN NHẤT/tile sau khi debounce cắt render thừa). q90 vẫn ≥90 → image-crate giữ 4:4:4
+    // (KHÔNG subsample màu → biên màu vẫn sắc); chỉ giảm nhẹ lượng tử hoá DCT, mắt thường
+    // gần như không phân biệt với q98 trên ảnh render màn hình. (Từng: q92→q98 cho nét, nay
+    // hạ q90 đổi lấy tốc độ vì debounce đã đảm bảo mỗi lần zoom chỉ 1 render.)
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 90);
     encoder.encode_image(&rgba_image).map_err(|e| format!("Encode error: {:?}", e))?;
-    let _encode_ms = start_encode.elapsed().as_millis();
-    let _ = render_ms;
     // LƯU Ý: ĐÃ GỠ block ghi PrynX_Performance.log ở đây — nó gọi chrono::Local::now()
     // và PANIC ở bản release ("Task panicked"), khiến render_tile_jpeg trả 500 → main view
     // kẹt RENDERING + thumbnail vỡ. Đây là nguyên nhân gốc thật sự (xem frontend_debug.log).
@@ -510,12 +507,20 @@ fn render_tile_jpeg(
     Ok(buffer)
 }
 
+// Giới hạn render đồng thời cho lệnh IPC render_pdf_page (giống TILE_SEMAPHORE của
+// đường tile://). Viewport-tiling gửi nhiều ô cùng lúc → nếu không chặn, mỗi render
+// round-robin qua doc pool khiến mỗi handle decode lại page (RAM) + spawn_blocking
+// không giới hạn. Semaphore ~4 giữ song song vừa phải, tránh thrash (audit render).
+static RENDER_SEMAPHORE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+
 #[tauri::command]
 async fn render_pdf_page(
     _app_handle: tauri::AppHandle,
     file_path: String, page: i32, zoom: f32, rotation: i32,
     clip_x: Option<i32>, clip_y: Option<i32>, clip_w: Option<i32>, clip_h: Option<i32>,
 ) -> Result<tauri::ipc::Response, String> {
+    let sem = RENDER_SEMAPHORE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
+    let _permit = sem.acquire().await.map_err(|_| "Render semaphore closed".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         match render_tile_jpeg(&file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h) {
             Ok(data) => Ok(tauri::ipc::Response::new(data)),
