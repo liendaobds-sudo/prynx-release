@@ -16,7 +16,7 @@ import threading
 import httpx
 import onnxruntime as ort
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -133,13 +133,14 @@ def remove_background(image: Image.Image, variant: str = "full") -> Image.Image:
     mask_prob = 1.0 / (1.0 + np.exp(-mask_logits))
     mask_prob = np.squeeze(mask_prob)
 
+    # BILINEAR (không overshoot) thay BICUBIC: mask xác suất phóng to bằng BICUBIC bị
+    # vọt lố quanh mép cứng → sinh vành alpha bán trong suốt ("viền rác"). BILINEAR êm hơn.
     mask_img = Image.fromarray((mask_prob * 255).astype(np.uint8), mode="L")
-    mask_final = mask_img.resize((orig_w, orig_h), Image.BICUBIC)
-    mask_final = mask_final.filter(ImageFilter.GaussianBlur(radius=0.75))
+    mask_final = mask_img.resize((orig_w, orig_h), Image.BILINEAR)
 
-    result_img = image.convert("RGBA")
-    result_img.putalpha(mask_final)
-    return result_img
+    # refine_foreground: tẩy màu nền lẫn ở mép (thay cho GaussianBlur làm nhoè).
+    from app.workers.image_postprocessor import refine_foreground_rgba
+    return refine_foreground_rgba(image, mask_final)
 
 
 def warmup(variant: str = "lite") -> bool:

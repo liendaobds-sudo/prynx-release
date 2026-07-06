@@ -51,9 +51,12 @@ openpyxl==3.1.5
 shapely==2.0.6
 scipy==1.12.0
 
-# Background removal (route /pdf-tools remove-background -> isnet/birefnet engines).
-# HARD import trong birefnet_engine.py/isnet_engine.py — BẮT BUỘC có để feature chạy
-# trong bản đóng gói (trước đây chỉ cài ad-hoc trong venv, không khai báo → Nuitka sót).
+# Background removal (isnet/birefnet) + Upscale (realesrgan) — cả 3 engine chạy ONNX.
+# HARD import trong birefnet_engine.py/isnet_engine.py/realesrgan_engine.py — BẮT BUỘC
+# có để feature chạy trong bản đóng gói (trước đây chỉ cài ad-hoc trong venv → Nuitka sót).
+# LƯU Ý upscale: repo Real-ESRGAN chỉ phát hành .pth → phải convert sang .onnx ở BƯỚC
+# BUILD bằng scripts/convert_realesrgan_onnx.py (cần torch+onnx, CHỈ ở máy build; runtime
+# KHÔNG cần torch). build_production.ps1 tự chạy convert nếu build venv có torch.
 onnxruntime==1.24.4
 
 # Serial transport cho Cut Export (spec gui-may-be 5.3/5.5 — gửi lệnh cắt qua cổng COM).

@@ -1,276 +1,207 @@
-import React, { useState, useRef, useEffect } from 'react';
-import weightsAnime from '@websr/websr/weights/anime4k/cnn-2x-l-an.json';
-import weightsReal from '@websr/websr/weights/anime4k/cnn-2x-l-rl.json';
-import { ToolSectionLabel, ToolCardOption, ToolInfo } from './ToolUI';
-import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import React, { useRef } from 'react';
+import { getApiUrl, authenticatedFetch } from '../../lib/api';
+import { ToolSectionLabel } from './ToolUI';
+import { useUpscaleStore } from './useUpscaleStore';
+import { normalizeAndAddFiles, openFilePicker, saveBatch } from './imageBatch/helpers';
+import { ImageBatchPreview } from './imageBatch/ImageBatchPreview';
+import { toast } from '../ui/Toast';
+import { RotateCcw } from 'lucide-react';
 
-const getWebSR = () => {
-    return (window as any).WebSR?.default || (window as any).WebSR;
-};
-
+// ─── Props ───────────────────────────────────────────────────────────────────
 interface Props {
+    tabId: string;
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string) => void;
 }
 
-export default function UpscaleTool({ pdfFile, onFileFixed }: Props) {
-    const [model, setModel] = useState<'anime' | 'real'>('real');
-    const [scaleFactor, setScaleFactor] = useState<2 | 4>(4);
-    const [isProcessing, setIsProcessing] = useState(false);
-    const [progress, setProgress] = useState('');
-    const [error, setError] = useState('');
-    const canvasRef = useRef<HTMLCanvasElement>(null);
+// ─── Downscale 2x ─────────────────────────────────────────────────────────────
+// Backend chạy scale x4 cố định. Nếu người dùng chọn 2x, hạ ảnh kết
+// quả xuống 1/2 bằng canvas chất lượng cao (vẫn nét hơn nội suy trực tiếp từ ảnh
+// gốc vì đã qua tái tạo chi tiết AI ở 4x).
+async function downscaleBlob(sourceBlob: Blob, factor: number): Promise<Blob> {
+    if (factor >= 4) return sourceBlob;
+    const img = new Image();
+    const url = URL.createObjectURL(sourceBlob);
+    try {
+        img.src = url;
+        await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('Lỗi đọc ảnh kết quả')); });
+        const targetW = Math.round(img.width * (factor / 4));
+        const targetH = Math.round(img.height * (factor / 4));
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d')!;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+        return await new Promise<Blob>((resolve, reject) =>
+            canvas.toBlob(b => b ? resolve(b) : reject(new Error('Canvas toBlob failed')), 'image/png'));
+    } finally {
+        URL.revokeObjectURL(url);
+    }
+}
 
-    // Register global flag for App.tsx
-    useEffect(() => {
-        (window as any).__isUpscalerActive = true;
-        return () => { (window as any).__isUpscalerActive = false; };
-    }, []);
-
-    const handleRun = async () => {
-        if (!pdfFile || !canvasRef.current) return;
-        
-        setIsProcessing(true);
-        setError('');
-        setProgress('Đang nạp dữ liệu ảnh...');
-
+// ─── Process batch (riêng cho upscale — gọi /upscale) ─────────────────────────
+async function processBatch(tabId: string) {
+    const store = useUpscaleStore.getState();
+    const tabState = store.getTab(tabId);
+    const { options, batchItems } = tabState;
+    store.setIsProcessing(tabId, true);
+    const items = [...batchItems];
+    let processed = 0;
+    const apiUrl = getApiUrl();
+    for (let i = 0; i < items.length; i++) {
+        if (items[i].status === 'success') continue;
+        processed++;
+        store.setProgress(tabId, `Đang phóng to ${processed} / ${items.length}...`);
+        items[i] = { ...items[i], status: 'processing', error: undefined };
+        store.setBatchItems(tabId, [...items]);
         try {
-            const isImage = pdfFile.type.startsWith('image/') || pdfFile.name.match(/\.(jpg|jpeg|png|webp|gif)$/i);
-            if (!isImage) {
-                throw new Error("Công cụ này hiện chỉ hỗ trợ các file ảnh đơn lẻ (JPG, PNG). Vui lòng Tách trang PDF thành ảnh trước.");
-            }
-
-            let imgUrl = '';
-            if ((window as any).__TAURI_INTERNALS__ && (pdfFile as any).path) {
-                const { readFile } = await import('@tauri-apps/plugin-fs');
-                const bytes = await readFile((pdfFile as any).path);
-                const type = pdfFile.name.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-                const blob = new Blob([bytes], { type });
-                imgUrl = URL.createObjectURL(blob);
+            const formData = new FormData();
+            const item = items[i];
+            if (item.fileObj && item.fileObj.size > 0) {
+                formData.append('file', item.fileObj, item.fileName);
+            } else if (item.path && item.path !== 'browser-file') {
+                formData.append('file_path', item.path);
             } else {
-                imgUrl = URL.createObjectURL(pdfFile);
+                throw new Error('Không tìm thấy file gốc');
             }
-
-            const img = new Image();
-            img.src = imgUrl;
-            await new Promise((res, rej) => {
-                img.onload = res;
-                img.onerror = () => rej(new Error("Lỗi đọc ảnh"));
-            });
-
-            setProgress('Đang khởi tạo WebGPU (Hardware Acceleration)...');
-            const WebSR_class = getWebSR();
-            
-            if (!(navigator as any).gpu) {
-                throw new Error("Trình duyệt hoặc hệ điều hành của bạn không hỗ trợ WebGPU.");
+            formData.append('engine', 'general');
+            // authenticatedFetch: router /pdf-tools yêu cầu X-PrynX-Token + chữ ký HMAC
+            // ở bản đóng gói. Raw fetch thiếu header → 403 (chỉ dev mới lọt).
+            const res = await authenticatedFetch(`${apiUrl}/pdf-tools/upscale`, { method: 'POST', body: formData });
+            if (!res.ok) {
+                const errorText = await res.text();
+                console.error('[Upscale] Server error:', errorText);
+                throw new Error(`Lỗi Server (${res.status}): ${errorText}`);
             }
-            const adapter = await (navigator as any).gpu.requestAdapter();
-            if (!adapter) {
-                throw new Error("Không tìm thấy WebGPU Adapter.");
+            let outBlob = await res.blob();
+            if (options.scaleFactor === 2) {
+                outBlob = await downscaleBlob(outBlob, 2);
             }
-            
-            const gpu = await adapter.requestDevice({
-                requiredLimits: {
-                    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-                    maxBufferSize: adapter.limits.maxBufferSize,
-                    maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize,
-                    maxTextureDimension1D: adapter.limits.maxTextureDimension1D,
-                    maxTextureDimension2D: adapter.limits.maxTextureDimension2D,
-                    maxTextureDimension3D: adapter.limits.maxTextureDimension3D,
-                }
-            });
-
-            const originalDeviceDestroy = gpu.destroy.bind(gpu);
-            gpu.destroy = () => {};
-
-            const targetWeights = model === 'anime' ? weightsAnime : weightsReal;
-            const upscaler = new WebSR_class({
-                canvas: canvasRef.current,
-                weights: targetWeights,
-                network_name: "anime4k/cnn-2x-l",
-                gpu: gpu
-            });
-
-            const originalGetCurrentTexture = GPUCanvasContext.prototype.getCurrentTexture;
-            let customTexture: GPUTexture | null = null;
-            
-            GPUCanvasContext.prototype.getCurrentTexture = function() {
-                const width = upscaler.resolution!.width * upscaler.scale;
-                const height = upscaler.resolution!.height * upscaler.scale;
-                if (!customTexture || customTexture.width !== width || customTexture.height !== height) {
-                    if (customTexture) customTexture.destroy();
-                    customTexture = gpu.createTexture({
-                        size: [width, height, 1],
-                        format: navigator.gpu.getPreferredCanvasFormat(),
-                        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
-                    });
-                }
-                return customTexture as GPUTexture;
-            };
-
-            const readTextureToBlob = async (texture: GPUTexture, width: number, height: number): Promise<Blob> => {
-                const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
-                const buffer = gpu.createBuffer({
-                    size: bytesPerRow * height,
-                    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-                });
-                const encoder = gpu.createCommandEncoder();
-                encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, { width, height });
-                gpu.queue.submit([encoder.finish()]);
-                
-                await buffer.mapAsync(GPUMapMode.READ);
-                const arrayBuffer = buffer.getMappedRange();
-                const imgData = new ImageData(width, height);
-                
-                const isBGRA = navigator.gpu.getPreferredCanvasFormat() === 'bgra8unorm';
-                
-                for (let y = 0; y < height; y++) {
-                    const srcRow = new Uint8Array(arrayBuffer, y * bytesPerRow, width * 4);
-                    const destOffset = y * width * 4;
-                    
-                    if (isBGRA) {
-                        for (let x = 0; x < width; x++) {
-                            const srcOffset = x * 4;
-                            const destIdx = destOffset + srcOffset;
-                            imgData.data[destIdx]     = srcRow[srcOffset + 2]; // R <- B
-                            imgData.data[destIdx + 1] = srcRow[srcOffset + 1]; // G <- G
-                            imgData.data[destIdx + 2] = srcRow[srcOffset];     // B <- R
-                            imgData.data[destIdx + 3] = srcRow[srcOffset + 3]; // A <- A
-                        }
-                    } else {
-                        imgData.data.set(srcRow, destOffset);
-                    }
-                }
-                buffer.unmap();
-                buffer.destroy();
-                
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = width;
-                tempCanvas.height = height;
-                tempCanvas.getContext('2d')!.putImageData(imgData, 0, 0);
-                return new Promise((resolve, reject) => {
-                    tempCanvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Canvas toBlob failed")), 'image/png');
-                });
-            };
-
-            const resizeToTarget = async (sourceBlob: Blob, targetW: number, targetH: number): Promise<Blob> => {
-                const tempImg = new Image();
-                const tempUrl = URL.createObjectURL(sourceBlob);
-                tempImg.src = tempUrl;
-                await new Promise(res => tempImg.onload = res);
-                const canvas = document.createElement('canvas');
-                canvas.width = targetW;
-                canvas.height = targetH;
-                const ctx = canvas.getContext('2d')!;
-                ctx.imageSmoothingEnabled = true;
-                ctx.imageSmoothingQuality = 'high';
-                ctx.drawImage(tempImg, 0, 0, targetW, targetH);
-                URL.revokeObjectURL(tempUrl);
-                return new Promise((resolve, reject) => {
-                    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Resize toBlob failed")), 'image/png');
-                });
-            };
-
-            try {
-                // Pass 1: AI 2x
-                setProgress(`Đang tiến hành chạy AI (Pass 1 - 2x)...`);
-                await upscaler.render(img);
-                let finalBlob = await readTextureToBlob(customTexture!, upscaler.resolution!.width * 2, upscaler.resolution!.height * 2);
-
-                if (scaleFactor === 4) {
-                    const finalWidth = img.width * 4;
-                    const finalHeight = img.height * 4;
-                    const estimatedVramGB = (finalWidth * finalHeight * 16 * 15) / (1024 * 1024 * 1024);
-                    
-                    if (estimatedVramGB > 10) {
-                        setProgress(`VRAM không đủ cho Full AI 4x. Đang dùng Hybrid AI Scaling...`);
-                        // Fallback: AI 2x -> Canvas 2x
-                        finalBlob = await resizeToTarget(finalBlob, finalWidth, finalHeight);
-                    } else {
-                        // Full AI 4x (Pass 2)
-                        setProgress(`Đang tiến hành chạy AI (Pass 2 - 4x)...`);
-                        const img2 = new Image();
-                        const img2Url = URL.createObjectURL(finalBlob);
-                        img2.src = img2Url;
-                        await new Promise(res => img2.onload = res);
-                        await upscaler.render(img2);
-                        finalBlob = await readTextureToBlob(customTexture!, upscaler.resolution!.width * 2, upscaler.resolution!.height * 2);
-                        URL.revokeObjectURL(img2Url);
-                    }
-                }
-                
-                if (onFileFixed) {
-                    const newName = `${pdfFile.name.replace(/\.[^/.]+$/, "")}_upscale.png`;
-                    onFileFixed(finalBlob, newName);
-                }
-            } finally {
-                GPUCanvasContext.prototype.getCurrentTexture = originalGetCurrentTexture;
-                if (customTexture) (customTexture as GPUTexture).destroy();
-                originalDeviceDestroy();
-                if (imgUrl) URL.revokeObjectURL(imgUrl);
-            }
-            setProgress('');
+            const outUrl = URL.createObjectURL(outBlob);
+            items[i] = { ...items[i], status: 'success', resultBlob: outBlob, resultUrl: outUrl };
         } catch (e: any) {
-            console.error(e);
-            setError(e.message || "Lỗi xử lý");
-        } finally {
-            setIsProcessing(false);
+            console.error('[Upscale] Error:', e);
+            items[i] = { ...items[i], status: 'error', error: e.message };
         }
+        store.setBatchItems(tabId, [...items]);
+    }
+    store.setProgress(tabId, '');
+    store.setIsProcessing(tabId, false);
+}
+
+async function handleSave(tabId: string) {
+    const { saved, ok } = await saveBatch(tabId, useUpscaleStore, 'upscaled');
+    if (!ok) toast.error('Lỗi khi lưu file.');
+    else if (saved > 0) toast.success(`✅ Đã lưu thành công ${saved} ảnh!`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIDEBAR — Rendered in the right settings panel
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export default function UpscaleTool({ tabId, pdfFile }: Props) {
+    const tabState = useUpscaleStore(state => state.tabs[tabId] || useUpscaleStore.getState().getTab(tabId));
+    const storeActions = useUpscaleStore.getState();
+    const { batchItems, selectedId, options, isProcessing, progress, error } = tabState;
+
+    const hasPending = batchItems.some(i => i.status === 'pending' || i.status === 'error');
+    const hasSuccess = batchItems.some(i => i.status === 'success');
+
+    // Auto-add pdfFile khi mount (dedup theo path|name|size)
+    const addedRef = useRef<Set<string>>(new Set());
+    React.useEffect(() => {
+        useUpscaleStore.getState().initTab(tabId);
+        if (!pdfFile) return;
+        const isImage = pdfFile.type.startsWith('image/') || pdfFile.name.match(/\.(jpg|jpeg|png|webp|gif|tiff?|bmp)$/i);
+        if (!isImage) return;
+        const key = ((pdfFile as any).path || '') + '|' + pdfFile.name + '|' + pdfFile.size;
+        if (addedRef.current.has(key)) return;
+        addedRef.current.add(key);
+        normalizeAndAddFiles([pdfFile], tabId, useUpscaleStore);
+    }, [pdfFile, tabId]);
+
+    // Global flag + warm model (fire-and-forget).
+    React.useEffect(() => {
+        (window as any).__isUpscalerActive = true;
+        try {
+            const fd = new FormData();
+            fd.append('engine', 'general');
+            authenticatedFetch(`${getApiUrl()}/pdf-tools/upscale/warmup`, { method: 'POST', body: fd }).catch(() => {});
+        } catch { /* ignore */ }
+        return () => { (window as any).__isUpscalerActive = false; };
+    }, [tabId]);
+
+    const setOption = <K extends keyof typeof options>(key: K, val: (typeof options)[K]) => {
+        storeActions.setOptions(tabId, { ...options, [key]: val });
     };
 
     return (
-        <div className="flex flex-col gap-4 animate-in fade-in duration-300">
-            <canvas ref={canvasRef} style={{ position: 'absolute', opacity: 0.001, pointerEvents: 'none', zIndex: -1, width: '10px', height: '10px' }} />
-
-            <div>
-                <ToolSectionLabel>Mô hình AI (Upscale Model)</ToolSectionLabel>
-                <div className="grid grid-cols-2 gap-1.5 mt-2">
-                    <ToolCardOption
-                        label="Ảnh thực tế"
-                        desc="Phong cảnh, người, động vật"
-                        selected={model === 'real'}
-                        onClick={() => setModel('real')}
-                    />
-                    <ToolCardOption
-                        label="Đồ họa / Anime"
-                        desc="Tranh vẽ 2D, line-art"
-                        selected={model === 'anime'}
-                        onClick={() => setModel('anime')}
-                    />
+        <div className="flex flex-col gap-3 animate-in fade-in duration-300">
+            {/* Batch Thumbnails */}
+            {batchItems.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-thin flex-wrap">
+                    {batchItems.map(item => (
+                        <div key={item.id} onClick={() => storeActions.setSelectedId(tabId, item.id)}
+                            className={`relative shrink-0 w-14 h-14 rounded-lg overflow-hidden cursor-pointer border-2 transition-all ${
+                                selectedId === item.id ? 'border-indigo-500 ring-2 ring-indigo-300'
+                                : 'border-slate-200 dark:border-zinc-700 hover:border-slate-400'}`}>
+                            <img src={item.resultUrl || item.originalUrl} alt={item.fileName}
+                                className="w-full h-full object-cover" draggable={false} />
+                            <div className={`absolute bottom-0 left-0 right-0 text-center text-[8px] font-bold py-[1px] ${
+                                item.status === 'success' ? 'bg-emerald-500 text-white'
+                                : item.status === 'processing' ? 'bg-amber-500 text-white'
+                                : item.status === 'error' ? 'bg-red-500 text-white'
+                                : 'bg-slate-400/80 text-white'}`}>
+                                {item.status === 'success' ? '✓' : item.status === 'processing' ? '⏳' : item.status === 'error' ? '✗' : '•'}
+                            </div>
+                            <button onClick={e => { e.stopPropagation(); storeActions.removeItem(tabId, item.id); }}
+                                className="absolute top-0 right-0 w-4 h-4 bg-red-500 text-white text-[8px] rounded-bl flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">×</button>
+                        </div>
+                    ))}
+                    <div onClick={() => openFilePicker(tabId, useUpscaleStore)}
+                        className="shrink-0 w-14 h-14 rounded-lg border-2 border-dashed border-slate-300 dark:border-zinc-600 flex items-center justify-center cursor-pointer hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors">
+                        <span className="text-lg text-slate-400">+</span>
+                    </div>
                 </div>
-            </div>
+            )}
 
+            {/* Options */}
             <div>
                 <ToolSectionLabel>Mức độ phóng to (Upscale Factor)</ToolSectionLabel>
                 <select
-                    value={scaleFactor}
-                    onChange={(e) => setScaleFactor(parseInt(e.target.value) as 2 | 4)}
+                    value={options.scaleFactor}
+                    onChange={(e) => setOption('scaleFactor', parseInt(e.target.value) as 2 | 4)}
                     className="w-full h-10 mt-1 bg-white dark:bg-[#27272a] border border-slate-200 dark:border-white/10 rounded-lg px-3 text-[13px] font-medium text-slate-700 dark:text-zinc-200 outline-none"
                 >
                     <option value={2}>Gấp 2 lần (2x)</option>
                     <option value={4}>Gấp 4 lần (4x)</option>
                 </select>
-                <p className="text-[11px] text-slate-500 mt-2 text-center px-2">
-                    Ảnh sẽ được chạy qua AI Upscale và tự động nội suy kích thước.
-                </p>
             </div>
-            <ToolInfo desc={
-                <>
-                    Phóng to ảnh nhưng vẫn giữ được độ sắc nét, không bị vỡ hạt. Tính năng chạy hoàn toàn trên máy của bạn nên đảm bảo bảo mật tuyệt đối.
-                </>
-            } />
 
-            <button
-                onClick={handleRun}
-                disabled={isProcessing || !pdfFile}
-                className={`w-full h-12 rounded-xl text-[14px] font-bold transition-all shadow-lg flex items-center justify-center gap-2 ${
-                    isProcessing || !pdfFile
-                        ? 'bg-slate-300 dark:bg-zinc-700 text-slate-500 cursor-not-allowed'
-                        : 'bg-gradient-to-r from-violet-500 to-indigo-600 hover:from-violet-600 hover:to-indigo-700 text-white shadow-indigo-500/25 hover:shadow-indigo-500/40'
-                }`}
-            >
-                {isProcessing ? '⏳ Đang xử lý...' : '🚀 Bắt Đầu Phóng To Ảnh'}
-            </button>
+            <div className="flex flex-col gap-2">
+                <button onClick={() => processBatch(tabId)} disabled={isProcessing || !hasPending}
+                    className={`w-full h-11 rounded-xl text-[13px] font-bold transition-all flex items-center justify-center gap-2 shadow-sm ${
+                        isProcessing || !hasPending
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-400'
+                        : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>
+                    {isProcessing ? '⏳ Đang xử lý...' : '🚀 Bắt Đầu Phóng To Ảnh'}
+                </button>
+                {hasSuccess && (
+                    <div className="flex gap-2">
+                        <button onClick={() => handleSave(tabId)}
+                            className="flex-1 h-11 rounded-xl text-[13px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm flex items-center justify-center gap-2 transition-all">
+                            💾 Lưu tất cả ({batchItems.filter(i => i.status === 'success').length})
+                        </button>
+                        {batchItems.find(i => i.id === selectedId)?.status === 'success' && (
+                            <button onClick={() => selectedId && storeActions.undoItem(tabId, selectedId)} title="Hoàn tác để chỉnh sửa lại"
+                                className="px-4 h-11 rounded-xl text-[13px] font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-sm flex items-center justify-center gap-1.5 transition-all">
+                                <RotateCcw className="w-4 h-4" /> Hoàn tác
+                            </button>
+                        )}
+                    </div>
+                )}
+            </div>
 
             {progress && (
                 <div className="flex items-center gap-3 bg-indigo-50 dark:bg-indigo-900/20 p-3 rounded-lg border border-indigo-200 dark:border-indigo-800/50">
@@ -278,12 +209,32 @@ export default function UpscaleTool({ pdfFile, onFileFixed }: Props) {
                     <span className="text-[12px] text-indigo-700 dark:text-indigo-300 font-medium">{progress}</span>
                 </div>
             )}
-
             {error && (
                 <div className="bg-red-50 dark:bg-red-900/20 p-3 rounded-lg border border-red-200 dark:border-red-800/50">
                     <span className="text-[12px] text-red-600 dark:text-red-400 font-medium">❌ {error}</span>
                 </div>
             )}
         </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PREVIEW — Rendered in the MAIN content area
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export function UpscalePreview({ tabId }: { tabId: string }) {
+    return (
+        <ImageBatchPreview
+            tabId={tabId}
+            store={useUpscaleStore}
+            labels={{
+                resultBadge: '🪄 ĐÃ PHÓNG TO',
+                originalBadge: '👁 ẢNH GỐC',
+                emptyTitle: 'Phóng to ảnh AI',
+                emptyHint: <>Kéo thả ảnh vào đây hoặc bấm để chọn file.<br/>Hỗ trợ JPG, PNG, TIFF, WebP, BMP.</>,
+                emptyIcon: '🪄',
+                processingText: 'Đang phóng to ảnh...',
+            }}
+        />
     );
 }

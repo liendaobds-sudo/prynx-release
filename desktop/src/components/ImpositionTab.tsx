@@ -44,6 +44,7 @@ import { WorkspaceContext, createWorkspaceStore, useWorkspaceStore } from '../st
 import { useShallow } from 'zustand/react/shallow';
 import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
+import { UpscalePreview } from './preprocess-tools/UpscaleTool';
 
 // Phase type is now defined in useWorkspaceStore
 
@@ -323,6 +324,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             if (!file) {
                 const names: Record<string, string> = {
                     'bgremover': 'Tách Nền AI',
+                    'upscale': 'Phóng To Ảnh',
                     'sticker': 'Tạo Viền Cắt Bế',
                     'split': 'Tách File',
                     'datamerge': 'Trộn Dữ Liệu VDP',
@@ -1762,8 +1764,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </div>
                         )}
 
-                        {/* Empty State Overlay — hidden when bgremover is active */}
-                        {!pdfUrl && activeDashboardTool !== 'bgremover' && (
+                        {activeDashboardTool === 'upscale' && (
+                            <div className="absolute top-0 left-0 bottom-0 z-40" style={{ right: isSidebarOpen ? (sidebarWidth + (isMiniToolbarExpanded ? 220 : 48)) : (isMiniToolbarExpanded ? 220 : 48) }}>
+                                <UpscalePreview tabId={tabId || ''} />
+                            </div>
+                        )}
+
+                        {/* Empty State Overlay — hidden when bgremover/upscale active */}
+                        {!pdfUrl && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (
                             <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style={{ right: isSidebarOpen ? sidebarWidth : 0 }}>
                                 <div className="pointer-events-auto max-w-2xl w-full px-6">
                                     <div 
@@ -1855,8 +1863,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 {/* Sidebar Header */}
                                                 <div className="px-4 h-12 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-slate-100 dark:bg-[#1a1a1a] shrink-0 shadow-sm relative z-10">
                                                     <h2 className="text-[13px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-1.5 uppercase tracking-wide">
-                                                        {activeDashboardTool === 'bgremover' ? (
-                                                            <button 
+                                                        {(activeDashboardTool === 'bgremover' || activeDashboardTool === 'upscale') ? (
+                                                            <button
                                                                 onClick={() => setActiveDashboardTool('none')}
                                                                 className="flex items-center gap-1.5 text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors"
                                                                 title="Quay lại danh sách công cụ"
@@ -1905,7 +1913,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             </button>
                                                         )}
 
-                                                        {(isObjectEditMode ? editHistory.canUndo : history.length > 0) && activeDashboardTool !== 'bgremover' && (
+                                                        {(isObjectEditMode ? editHistory.canUndo : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (
                                                             <button
                                                                 onClick={() => { if (isObjectEditMode) editHistory.undo(); else handleUndo(); }}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"

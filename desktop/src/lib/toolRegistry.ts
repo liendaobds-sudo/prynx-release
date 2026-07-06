@@ -515,7 +515,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     tabTitle: 'Bình bài (Chưa có file)',
     icon: '🪄',
     description: 'Phóng to ảnh nét căng (2x, 4x)',
-    longDescription: 'Sử dụng siêu độ phân giải (WebSR) để phóng to ảnh gấp 2x, 4x ngay trên trình duyệt mà không làm vỡ hạt.',
+    longDescription: 'AI siêu phân giải phóng to ảnh 2x, 4x, phục hồi chi tiết ảnh chụp/sản phẩm và khử nhiễu mà không vỡ hạt. Xử lý ngay trên máy.',
     category: 'util',
     component: ImpositionTab,
     isEnabled: true,

@@ -1,7 +1,7 @@
 {
   "name": "prynx",
   "private": true,
-  "version": "1.0.0-beta.2",
+  "version": "1.0.0-beta.7",
   "type": "module",
   "scripts": {
     "dev": "vite --force",
@@ -34,7 +34,6 @@
     "@turf/polygonize": "^7.3.5",
     "@turf/union": "^7.3.5",
     "@types/pako": "^2.0.4",
-    "@websr/websr": "^0.0.16",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "diff": "^8.0.4",

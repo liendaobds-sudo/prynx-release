@@ -35,7 +35,6 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: ['pdf-lib', 'pdfjs-dist', 'papaparse', '@pdfme/common', '@pdfme/generator'],
-    exclude: ['@websr/websr'],
     entries: ['index.html']
   }
 })

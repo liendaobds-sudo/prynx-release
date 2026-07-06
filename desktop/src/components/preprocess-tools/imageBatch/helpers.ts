@@ -1,0 +1,124 @@
+import type { StoreApi, UseBoundStore } from 'zustand';
+import type { BatchItem, ImageBatchStore } from './store';
+
+// Helper dùng chung cho các công cụ batch ảnh (tách nền, upscale). Tham số hoá theo
+// `store` để mỗi công cụ truyền store riêng — phần đọc/ghi file + picker hoàn toàn
+// giống nhau.
+
+type BatchStore<O> = UseBoundStore<StoreApi<ImageBatchStore<O>>>;
+
+// ─── MIME từ phần mở rộng ────────────────────────────────────────────────────
+export function mimeFromName(name: string): string {
+    const n = name.toLowerCase();
+    if (n.endsWith('.png')) return 'image/png';
+    if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg';
+    if (n.endsWith('.webp')) return 'image/webp';
+    if (n.endsWith('.gif')) return 'image/gif';
+    if (n.endsWith('.bmp')) return 'image/bmp';
+    if (n.endsWith('.tif') || n.endsWith('.tiff')) return 'image/tiff';
+    return 'application/octet-stream';
+}
+
+// ─── Add files vào store ──────────────────────────────────────────────────────
+export async function normalizeAndAddFiles<O>(files: File[], tabId: string, store: BatchStore<O>) {
+    const s = store.getState();
+    s.initTab(tabId);
+    const newItems: BatchItem[] = [];
+    for (const file of files) {
+        const isImage = file.type.startsWith('image/') || file.name.match(/\.(jpg|jpeg|png|webp|gif|tiff?|bmp)$/i);
+        if (!isImage) continue;
+        const path = (file as any).path || '';
+        let url = '';
+        let fileObj = file;
+        if (path && (window as any).__TAURI_INTERNALS__) {
+            // Trong app Tauri đóng gói, file picker trả về File([]) RỖNG chỉ mang theo `path`.
+            // Phải đọc bytes thật từ đĩa (capabilities cho phép $HOME/$DESKTOP/$DOCUMENT/...).
+            // Lưu ý: KHÔNG dựa vào lệnh Rust image::open cho mọi định dạng — crate `image`
+            // không bật webp/gif nên sẽ throw và làm preview vỡ ở bản release.
+            try {
+                const { readFile } = await import('@tauri-apps/plugin-fs');
+                const raw = await readFile(path); // Uint8Array dữ liệu thật
+                const isTiff = /\.tiff?$/i.test(file.name);
+                if (isTiff) {
+                    // Webview không render được TIFF → convert sang PNG bằng Rust (feature tiff đã bật).
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    const png: ArrayBuffer = await invoke('normalize_image_bytes', { bytes: raw });
+                    const blob = new Blob([png as any], { type: 'image/png' });
+                    url = URL.createObjectURL(blob);
+                    fileObj = new File([blob], file.name.replace(/\.[^/.]+$/, '.png'), { type: 'image/png' });
+                } else {
+                    // png/jpg/webp/gif/bmp đều được webview hiển thị trực tiếp.
+                    const mime = mimeFromName(file.name);
+                    const blob = new Blob([raw as any], { type: mime });
+                    url = URL.createObjectURL(blob);
+                    fileObj = new File([blob], file.name, { type: mime });
+                }
+                Object.defineProperty(fileObj, 'path', { value: path });
+            } catch (e) {
+                console.error('Tauri image load failed:', e);
+                url = URL.createObjectURL(file);
+            }
+        } else {
+            url = URL.createObjectURL(file);
+        }
+        newItems.push({
+            id: Math.random().toString(36).substring(7),
+            path: path || 'browser-file',
+            fileName: file.name,
+            originalUrl: url,
+            status: 'pending',
+            fileObj,
+        });
+    }
+    if (newItems.length > 0) s.addItems(tabId, newItems);
+}
+
+// ─── File picker ──────────────────────────────────────────────────────────────
+export async function openFilePicker<O>(tabId: string, store: BatchStore<O>) {
+    if ((window as any).__TAURI_INTERNALS__) {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const selected = await open({
+            multiple: true,
+            title: 'Chọn ảnh (Có thể chọn nhiều)',
+            filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp', 'tif', 'tiff', 'bmp'] }],
+        });
+        if (selected && Array.isArray(selected)) {
+            const files = selected.map(path => {
+                const name = path.split('\\').pop()?.split('/').pop() || 'image.png';
+                const f = new File([], name);
+                Object.defineProperty(f, 'path', { value: path });
+                return f;
+            });
+            normalizeAndAddFiles(files, tabId, store);
+        }
+    } else {
+        const input = document.createElement('input');
+        input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
+        input.onchange = () => { if (input.files) normalizeAndAddFiles(Array.from(input.files), tabId, store); };
+        input.click();
+    }
+}
+
+// ─── Save batch ───────────────────────────────────────────────────────────────
+export async function saveBatch<O>(tabId: string, store: BatchStore<O>, prefix: string) {
+    const items = store.getState().getTab(tabId).batchItems.filter(i => i.status === 'success' && i.resultBlob);
+    if (items.length === 0) return { saved: 0, ok: true };
+    try {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const { writeFile } = await import('@tauri-apps/plugin-fs');
+        const { join } = await import('@tauri-apps/api/path');
+        const dir = await open({ directory: true, multiple: false, title: 'Chọn thư mục lưu ảnh' });
+        if (!dir || typeof dir !== 'string') return { saved: 0, ok: true };
+        let saved = 0;
+        for (const item of items) {
+            const outName = `${prefix}_${item.fileName.replace(/\.[^/.]+$/, '')}.png`;
+            const outPath = await join(dir, outName);
+            await writeFile(outPath, new Uint8Array(await item.resultBlob!.arrayBuffer()));
+            saved++;
+        }
+        return { saved, ok: true };
+    } catch (e) {
+        console.error(e);
+        return { saved: 0, ok: false };
+    }
+}

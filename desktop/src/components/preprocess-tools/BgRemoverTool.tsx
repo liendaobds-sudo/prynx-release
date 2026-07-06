@@ -1,7 +1,9 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useRef } from 'react';
 import { getApiUrl, authenticatedFetch } from '../../lib/api';
-import BgRemoverOptions, { BgRemoverOptionsState } from './BgRemoverOptions';
-import { useBgRemoverStore, defaultTabState, type BatchItem } from './useBgRemoverStore';
+import BgRemoverOptions from './BgRemoverOptions';
+import { useBgRemoverStore, defaultTabState } from './useBgRemoverStore';
+import { normalizeAndAddFiles, openFilePicker, saveBatch } from './imageBatch/helpers';
+import { ImageBatchPreview } from './imageBatch/ImageBatchPreview';
 import { toast } from '../ui/Toast';
 import { RotateCcw } from 'lucide-react';
 
@@ -11,99 +13,7 @@ interface Props {
     pdfFile: File | null;
 }
 
-// ─── Helper: MIME từ phần mở rộng ────────────────────────────────────────────
-function mimeFromName(name: string): string {
-    const n = name.toLowerCase();
-    if (n.endsWith('.png')) return 'image/png';
-    if (n.endsWith('.jpg') || n.endsWith('.jpeg')) return 'image/jpeg';
-    if (n.endsWith('.webp')) return 'image/webp';
-    if (n.endsWith('.gif')) return 'image/gif';
-    if (n.endsWith('.bmp')) return 'image/bmp';
-    if (n.endsWith('.tif') || n.endsWith('.tiff')) return 'image/tiff';
-    return 'application/octet-stream';
-}
-
-// ─── Helper: Add files ──────────────────────────────────────────────────────
-async function normalizeAndAddFiles(files: File[], tabId: string) {
-    const store = useBgRemoverStore.getState();
-    store.initTab(tabId);
-    const newItems: BatchItem[] = [];
-    for (const file of files) {
-        const isImage = file.type.startsWith('image/') || file.name.match(/\.(jpg|jpeg|png|webp|gif|tiff?|bmp)$/i);
-        if (!isImage) continue;
-        const path = (file as any).path || '';
-        let url = '';
-        let fileObj = file;
-        if (path && (window as any).__TAURI_INTERNALS__) {
-            // Trong app Tauri đóng gói, file picker trả về File([]) RỖNG chỉ mang theo `path`.
-            // Phải đọc bytes thật từ đĩa (capabilities cho phép $HOME/$DESKTOP/$DOCUMENT/...).
-            // Lưu ý: KHÔNG dựa vào lệnh Rust image::open cho mọi định dạng — crate `image`
-            // không bật webp/gif nên sẽ throw và làm preview vỡ ở bản release.
-            try {
-                const { readFile } = await import('@tauri-apps/plugin-fs');
-                const raw = await readFile(path); // Uint8Array dữ liệu thật
-                const isTiff = /\.tiff?$/i.test(file.name);
-                if (isTiff) {
-                    // Webview không render được TIFF → convert sang PNG bằng Rust (feature tiff đã bật).
-                    const { invoke } = await import('@tauri-apps/api/core');
-                    const png: ArrayBuffer = await invoke('normalize_image_bytes', { bytes: raw });
-                    const blob = new Blob([png as any], { type: 'image/png' });
-                    url = URL.createObjectURL(blob);
-                    fileObj = new File([blob], file.name.replace(/\.[^/.]+$/, '.png'), { type: 'image/png' });
-                } else {
-                    // png/jpg/webp/gif/bmp đều được webview hiển thị trực tiếp.
-                    const mime = mimeFromName(file.name);
-                    const blob = new Blob([raw as any], { type: mime });
-                    url = URL.createObjectURL(blob);
-                    fileObj = new File([blob], file.name, { type: mime });
-                }
-                Object.defineProperty(fileObj, 'path', { value: path });
-            } catch (e) {
-                console.error('Tauri image load failed:', e);
-                url = URL.createObjectURL(file);
-            }
-        } else {
-            url = URL.createObjectURL(file);
-        }
-        newItems.push({
-            id: Math.random().toString(36).substring(7),
-            path: path || 'browser-file',
-            fileName: file.name,
-            originalUrl: url,
-            status: 'pending',
-            fileObj,
-        });
-    }
-    if (newItems.length > 0) store.addItems(tabId, newItems);
-}
-
-// ─── Helper: File picker ────────────────────────────────────────────────────
-async function openFilePicker(tabId: string) {
-    if ((window as any).__TAURI_INTERNALS__) {
-        const { open } = await import('@tauri-apps/plugin-dialog');
-        const selected = await open({
-            multiple: true,
-            title: 'Chọn ảnh (Có thể chọn nhiều)',
-            filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp', 'tif', 'tiff', 'bmp'] }],
-        });
-        if (selected && Array.isArray(selected)) {
-            const files = selected.map(path => {
-                const name = path.split('\\').pop()?.split('/').pop() || 'image.png';
-                const f = new File([], name);
-                Object.defineProperty(f, 'path', { value: path });
-                return f;
-            });
-            normalizeAndAddFiles(files, tabId);
-        }
-    } else {
-        const input = document.createElement('input');
-        input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
-        input.onchange = () => { if (input.files) normalizeAndAddFiles(Array.from(input.files), tabId); };
-        input.click();
-    }
-}
-
-// ─── Helper: Process batch ──────────────────────────────────────────────────
+// ─── Process batch (riêng cho tách nền — gọi /remove-background) ──────────────
 async function processBatch(tabId: string) {
     const store = useBgRemoverStore.getState();
     const tabState = store.getTab(tabId);
@@ -112,7 +22,6 @@ async function processBatch(tabId: string) {
     const items = [...batchItems];
     let processed = 0;
     const apiUrl = getApiUrl();
-    // console.log('[BgRemover] Starting batch, API URL:', apiUrl, 'Items:', items.length);
     for (let i = 0; i < items.length; i++) {
         if (items[i].status === 'success') continue;
         processed++;
@@ -124,10 +33,8 @@ async function processBatch(tabId: string) {
             const item = items[i];
             // Always send file content if available (normalized PNG)
             if (item.fileObj && item.fileObj.size > 0) {
-                // console.log(`[BgRemover] Sending file content: ${item.fileName} (${item.fileObj.size} bytes)`);
                 formData.append('file', item.fileObj, item.fileName);
             } else if (item.path && item.path !== 'browser-file') {
-                // console.log(`[BgRemover] Sending file_path: ${item.path}`);
                 formData.append('file_path', item.path);
             } else {
                 throw new Error('Không tìm thấy file gốc');
@@ -137,19 +44,16 @@ async function processBatch(tabId: string) {
             formData.append('bg_color', options.bgColor);
             formData.append('custom_hex', options.customHex);
             formData.append('auto_crop', options.autoCrop ? 'true' : 'false');
-            // console.log(`[BgRemover] Fetching: ${apiUrl}/pdf-tools/remove-background`);
             // PHẢI dùng authenticatedFetch: router /pdf-tools có Depends(require_license)
             // → ở production cần X-PrynX-Token + chữ ký HMAC (Rust sign_api_request).
             // Raw fetch thiếu các header này → 403 trên bản đóng gói (chỉ dev mới lọt).
             const res = await authenticatedFetch(`${apiUrl}/pdf-tools/remove-background`, { method: 'POST', body: formData });
-            // console.log(`[BgRemover] Response status: ${res.status}, type: ${res.headers.get('content-type')}`);
             if (!res.ok) {
                 const errorText = await res.text();
                 console.error('[BgRemover] Server error:', errorText);
                 throw new Error(`Lỗi Server (${res.status}): ${errorText}`);
             }
             const outBlob = await res.blob();
-            // console.log(`[BgRemover] Result blob: ${outBlob.size} bytes, type: ${outBlob.type}`);
             const outUrl = URL.createObjectURL(outBlob);
             items[i] = { ...items[i], status: 'success', resultBlob: outBlob, resultUrl: outUrl };
         } catch (e: any) {
@@ -162,25 +66,10 @@ async function processBatch(tabId: string) {
     store.setIsProcessing(tabId, false);
 }
 
-// ─── Helper: Save batch ─────────────────────────────────────────────────────
-async function saveBatch(tabId: string) {
-    const items = useBgRemoverStore.getState().getTab(tabId).batchItems.filter(i => i.status === 'success' && i.resultBlob);
-    if (items.length === 0) return;
-    try {
-        const { open } = await import('@tauri-apps/plugin-dialog');
-        const { writeFile } = await import('@tauri-apps/plugin-fs');
-        const { join } = await import('@tauri-apps/api/path');
-        const dir = await open({ directory: true, multiple: false, title: 'Chọn thư mục lưu ảnh' });
-        if (!dir || typeof dir !== 'string') return;
-        let saved = 0;
-        for (const item of items) {
-            const outName = `nobg_${item.fileName.replace(/\.[^/.]+$/, '')}.png`;
-            const outPath = await join(dir, outName);
-            await writeFile(outPath, new Uint8Array(await item.resultBlob!.arrayBuffer()));
-            saved++;
-        }
-        toast.success(`✅ Đã lưu thành công ${saved} ảnh!`);
-    } catch (e) { console.error(e); toast.error('Lỗi khi lưu file.'); }
+async function handleSave(tabId: string) {
+    const { saved, ok } = await saveBatch(tabId, useBgRemoverStore, 'nobg');
+    if (!ok) toast.error('Lỗi khi lưu file.');
+    else if (saved > 0) toast.success(`✅ Đã lưu thành công ${saved} ảnh!`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -215,8 +104,7 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
             return;
         }
         addedRef.current.add(key);
-        // console.log('[BgRemover] Auto-add: calling normalizeAndAddFiles');
-        normalizeAndAddFiles([pdfFile], tabId);
+        normalizeAndAddFiles([pdfFile], tabId, useBgRemoverStore);
     }, [pdfFile, tabId]);
 
     // Global flag
@@ -237,9 +125,9 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
     React.useEffect(() => {
         const handleAdd = (e: Event) => {
             const files = (e as CustomEvent).detail?.files as File[];
-            if (files?.length) normalizeAndAddFiles(files, tabId);
+            if (files?.length) normalizeAndAddFiles(files, tabId, useBgRemoverStore);
         };
-        const handleTrigger = () => openFilePicker(tabId);
+        const handleTrigger = () => openFilePicker(tabId, useBgRemoverStore);
         window.addEventListener('prynx-bgremover-add-files', handleAdd);
         window.addEventListener('prynx-bgremover-trigger-select', handleTrigger);
         return () => {
@@ -274,7 +162,7 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
                                 className="absolute top-0 right-0 w-4 h-4 bg-red-500 text-white text-[8px] rounded-bl flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">×</button>
                         </div>
                     ))}
-                    <div onClick={() => openFilePicker(tabId)}
+                    <div onClick={() => openFilePicker(tabId, useBgRemoverStore)}
                         className="shrink-0 w-14 h-14 rounded-lg border-2 border-dashed border-slate-300 dark:border-zinc-600 flex items-center justify-center cursor-pointer hover:bg-slate-50 dark:hover:bg-zinc-800 transition-colors">
                         <span className="text-lg text-slate-400">+</span>
                     </div>
@@ -293,7 +181,7 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
                 </button>
                 {hasSuccess && (
                     <div className="flex gap-2">
-                        <button onClick={() => saveBatch(tabId)}
+                        <button onClick={() => handleSave(tabId)}
                             className="flex-1 h-11 rounded-xl text-[13px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm flex items-center justify-center gap-2 transition-all">
                             💾 Lưu tất cả ({batchItems.filter(i => i.status === 'success').length})
                         </button>
@@ -324,209 +212,23 @@ export default function BgRemoverTool({ tabId, pdfFile }: Props) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PREVIEW — Rendered in the MAIN content area (replaces AcrobatViewer)
+// PREVIEW — wrapper mỏng quanh ImageBatchPreview dùng chung (zoom/pan/slider).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const checkerboardStyle: React.CSSProperties = {
-    backgroundImage: `
-        linear-gradient(45deg, #d1d5db 25%, transparent 25%),
-        linear-gradient(-45deg, #d1d5db 25%, transparent 25%),
-        linear-gradient(45deg, transparent 75%, #d1d5db 75%),
-        linear-gradient(-45deg, transparent 75%, #d1d5db 75%)
-    `,
-    backgroundSize: '20px 20px',
-    backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px',
-};
-
 export function BgRemoverPreview({ tabId }: { tabId: string }) {
-    const tabState = useBgRemoverStore(state => state.tabs[tabId] || defaultTabState);
-    const { batchItems, selectedId, isProcessing } = tabState;
-    // console.log(`[BgRemoverPreview] render tabId="${tabId}", batchItems=${batchItems.length}`);
-    const [sliderPos, setSliderPos] = useState(50);
-    const [isSliderDragging, setIsSliderDragging] = useState(false);
-    const [isDragOver, setIsDragOver] = useState(false);
-    const [zoom, setZoom] = useState(1);
-    const [pan, setPan] = useState({ x: 0, y: 0 });
-    const [isPanning, setIsPanning] = useState(false);
-    const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
-    const containerRef = useRef<HTMLDivElement>(null);
-    const imageRef = useRef<HTMLImageElement>(null);
-    const spaceHeld = useRef(false);
-
-    const selectedItem = batchItems.find(i => i.id === selectedId) || batchItems[0] || null;
-    const hasResult = !!(selectedItem?.resultUrl);
-
-    // Reset on image change
-    React.useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }); setSliderPos(50); }, [selectedId]);
-
-    // Track Space key for hand-tool panning
-    React.useEffect(() => {
-        const onKeyDown = (e: KeyboardEvent) => { if (e.code === 'Space' && !e.repeat) { spaceHeld.current = true; e.preventDefault(); } };
-        const onKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') spaceHeld.current = false; };
-        window.addEventListener('keydown', onKeyDown);
-        window.addEventListener('keyup', onKeyUp);
-        return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-    }, []);
-
-    // Slider drag
-    const handleSliderMove = useCallback((clientX: number) => {
-        if (!containerRef.current) return;
-        const rect = containerRef.current.getBoundingClientRect();
-        const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
-        setSliderPos((x / rect.width) * 100);
-    }, []);
-
-    React.useEffect(() => {
-        if (!isSliderDragging) return;
-        const onMove = (e: MouseEvent) => handleSliderMove(e.clientX);
-        const onUp = () => setIsSliderDragging(false);
-        window.addEventListener('mousemove', onMove);
-        window.addEventListener('mouseup', onUp);
-        return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-    }, [isSliderDragging, handleSliderMove]);
-
-    // Pan drag
-    React.useEffect(() => {
-        if (!isPanning) return;
-        const onMove = (e: MouseEvent) => {
-            setPan({
-                x: panStart.current.panX + (e.clientX - panStart.current.x),
-                y: panStart.current.panY + (e.clientY - panStart.current.y),
-            });
-        };
-        const onUp = () => setIsPanning(false);
-        window.addEventListener('mousemove', onMove);
-        window.addEventListener('mouseup', onUp);
-        return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-    }, [isPanning]);
-
-    // Zoom with wheel
-    const handleWheel = useCallback((e: React.WheelEvent) => {
-        e.stopPropagation();
-        setZoom(prev => Math.max(0.2, Math.min(10, prev * (e.deltaY < 0 ? 1.15 : 0.87))));
-    }, []);
-
-    // Space+click, Middle-click, or Ctrl+click to pan
-    const handleMouseDown = useCallback((e: React.MouseEvent) => {
-        if (e.button === 1 || (e.button === 0 && (e.ctrlKey || spaceHeld.current))) {
-            e.preventDefault();
-            setIsPanning(true);
-            panStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
-        }
-    }, [pan]);
-
-    // Double-click to reset zoom
-    const handleDoubleClick = useCallback(() => { setZoom(1); setPan({ x: 0, y: 0 }); }, []);
-
-    const handleDrop = (e: React.DragEvent) => {
-        e.preventDefault();
-        setIsDragOver(false);
-        normalizeAndAddFiles(Array.from(e.dataTransfer.files), tabId);
-    };
-
-    const imgTransform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
-    const imgClass = "max-w-[90vw] max-h-[85vh] pointer-events-none";
-    const imgTransition = isPanning ? 'none' : 'transform 0.1s ease-out';
-
     return (
-        <div
-            ref={containerRef}
-            className={`w-full h-full flex flex-col items-center justify-center relative select-none transition-colors overflow-hidden ${
-                isDragOver ? 'bg-indigo-50 dark:bg-indigo-950/30' : 'bg-slate-100 dark:bg-[#1e1e1e]'
-            }`}
-            onDragOver={e => { e.preventDefault(); setIsDragOver(true); }}
-            onDragLeave={() => setIsDragOver(false)}
-            onDrop={handleDrop}
-            onWheel={handleWheel}
-            onMouseDown={handleMouseDown}
-            onDoubleClick={handleDoubleClick}
-        >
-            {/* Empty state */}
-            {!selectedItem && (
-                <div className="flex flex-col items-center justify-center cursor-pointer p-12 max-w-lg text-center"
-                    onClick={() => openFilePicker(tabId)}>
-                    <div className="w-28 h-28 rounded-3xl bg-indigo-50 dark:bg-indigo-500/10 flex items-center justify-center text-6xl mb-6 shadow-lg">✨</div>
-                    <h2 className="text-2xl font-bold text-slate-800 dark:text-white mb-3">Tách nền AI</h2>
-                    <p className="text-slate-500 dark:text-zinc-400 text-[14px] leading-relaxed">
-                        Kéo thả ảnh vào đây hoặc bấm để chọn file.<br/>Hỗ trợ JPG, PNG, TIFF, WebP, BMP.
-                    </p>
-                </div>
-            )}
-
-            {/* Image Rendering */}
-            {selectedItem && (
-                <div className="relative w-full h-full flex items-center justify-center overflow-hidden" style={hasResult ? checkerboardStyle : undefined}>
-                    
-                    {/* If hasResult -> Show Slider */}
-                    {hasResult ? (
-                        <>
-                            {/* Result layer (full, below) */}
-                            <div style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
-                                <img src={selectedItem.resultUrl!} alt="Đã tách nền" className={imgClass} draggable={false} />
-                            </div>
-
-                            {/* Original layer (clipped from the right side of slider) */}
-                            <div className="absolute inset-0 flex items-center justify-center overflow-hidden"
-                                style={{ clipPath: `inset(0 0 0 ${sliderPos}%)` }}>
-                                <div style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
-                                    <img src={selectedItem.originalUrl} alt="Ảnh gốc" className={imgClass} draggable={false} />
-                                </div>
-                            </div>
-
-                            {/* Slider handle */}
-                            <div className="absolute top-0 bottom-0 z-20 cursor-ew-resize"
-                                style={{ left: `${sliderPos}%`, transform: 'translateX(-50%)', width: 40 }}
-                                onMouseDown={e => { e.preventDefault(); e.stopPropagation(); setIsSliderDragging(true); }}>
-                                <div className="absolute inset-y-0 left-1/2 w-[3px] bg-white/90 shadow-[0_0_12px_rgba(0,0,0,0.4)]" style={{ transform: 'translateX(-50%)' }} />
-                                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white shadow-xl border-2 border-indigo-500 flex items-center justify-center text-indigo-600 font-bold text-lg select-none cursor-ew-resize">
-                                    ↔
-                                </div>
-                            </div>
-
-                            {/* Labels */}
-                            <span className="absolute top-4 left-4 text-[11px] font-bold bg-indigo-600/80 text-white px-3 py-1.5 rounded-full backdrop-blur-sm z-10">✨ ĐÃ TÁCH NỀN</span>
-                            <span className="absolute top-4 right-4 text-[11px] font-bold bg-black/60 text-white px-3 py-1.5 rounded-full backdrop-blur-sm z-10">👁 ẢNH GỐC</span>
-                        </>
-                    ) : (
-                        /* Standard Single Image (No Result yet) */
-                        <div style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center', position: 'relative' }}>
-                            <img ref={imageRef} src={selectedItem.originalUrl} alt="Preview" className={imgClass} draggable={false} 
-                                style={{ cursor: 'default' }} />
-                                
-                            {/* Error Overlay */}
-                            {selectedItem.error && (
-                                <div className="absolute bottom-16 left-1/2 -translate-x-1/2 bg-red-600/90 backdrop-blur-sm text-white px-4 py-2 rounded-full z-30 shadow-lg border border-red-400">
-                                    <span className="text-[12px] font-bold">❌ {selectedItem.error}</span>
-                                </div>
-                            )}
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* Processing overlay (Full screen for batch processing) */}
-            {isProcessing && (
-                <div className="absolute inset-0 bg-black/40 backdrop-blur-sm flex flex-col items-center justify-center z-30">
-                    <div className="w-12 h-12 rounded-full border-4 border-white/30 border-t-white animate-spin mb-4" />
-                    <p className="text-white font-bold text-sm">Đang tách nền...</p>
-                </div>
-            )}
-
-            {/* Zoom indicator */}
-            {zoom !== 1 && (
-                <span className="absolute bottom-12 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-sm text-white text-[11px] font-mono px-3 py-1 rounded-full z-10">
-                    {Math.round(zoom * 100)}%
-                </span>
-            )}
-
-            {/* File name */}
-            {selectedItem && (
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-sm text-white text-[11px] font-medium px-4 py-1.5 rounded-lg z-10 max-w-[80%] truncate">
-                    {selectedItem.fileName}
-                    {selectedItem.status === 'error' && <span className="text-red-300 ml-2">— {selectedItem.error}</span>}
-                </div>
-            )}
-        </div>
+        <ImageBatchPreview
+            tabId={tabId}
+            store={useBgRemoverStore}
+            labels={{
+                resultBadge: '✨ ĐÃ TÁCH NỀN',
+                originalBadge: '👁 ẢNH GỐC',
+                emptyTitle: 'Tách nền AI',
+                emptyHint: <>Kéo thả ảnh vào đây hoặc bấm để chọn file.<br/>Hỗ trợ JPG, PNG, TIFF, WebP, BMP.</>,
+                emptyIcon: '✨',
+                processingText: 'Đang tách nền...',
+            }}
+        />
     );
 }
 

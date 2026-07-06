@@ -27,19 +27,19 @@ export default function BgRemoverOptions({ options, onChange }: Props) {
                 <div className="grid grid-cols-1 gap-1.5">
                     <ToolCardOption
                         label="Chất lượng cao (Khuyên dùng)"
-                        desc="BiRefNet-lite: viền sắc nét, bám chi tiết tốt. Cân bằng đẹp/nhanh (~vài giây). Dùng cho hầu hết sản phẩm, tem, người, vật thể."
+                        desc="Viền sắc nét, bám chi tiết tốt. Cân bằng đẹp/nhanh (~vài giây). Dùng cho hầu hết sản phẩm, tem, người, vật thể."
                         selected={options.aiEngine === 'general'}
                         onClick={() => update('aiEngine', 'general')}
                     />
                     <ToolCardOption
                         label="Nhanh (xử lý hàng loạt)"
-                        desc="ISNet: tách gần như tức thì, nhẹ. Chất lượng khá — hợp khi cần nhanh nhiều ảnh hoặc nền đơn giản."
+                        desc="Tách gần như tức thì, nhẹ. Chất lượng khá — hợp khi cần nhanh nhiều ảnh hoặc nền đơn giản."
                         selected={options.aiEngine === 'fast'}
                         onClick={() => update('aiEngine', 'fast')}
                     />
                     <ToolCardOption
                         label="Tối đa — Lông, Tóc & Kính"
-                        desc="BiRefNet full: chất lượng cao nhất cho tóc rối, lông thú, lưới, kính bán trong suốt. CHẬM (GPU yếu sẽ chạy CPU, có thể ~10–15s/ảnh)."
+                        desc="Chất lượng cao nhất cho tóc rối, lông thú, lưới, kính bán trong suốt. CHẬM (GPU yếu sẽ chạy CPU, có thể ~10–15s/ảnh)."
                         selected={options.aiEngine === 'hair'}
                         onClick={() => update('aiEngine', 'hair')}
                     />

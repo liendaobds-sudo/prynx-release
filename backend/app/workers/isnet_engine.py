@@ -18,7 +18,7 @@ import threading
 import httpx
 import onnxruntime as ort
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +111,13 @@ def remove_background(image: Image.Image) -> Image.Image:
     pred = (pred - mi) / (ma - mi + 1e-8)
     pred = np.squeeze(pred)
 
-    mask = Image.fromarray((pred * 255).astype(np.uint8), mode="L").resize((orig_w, orig_h), Image.LANCZOS)
-    mask = mask.filter(ImageFilter.GaussianBlur(radius=0.5))  # mềm mép nhẹ
+    # BILINEAR (không overshoot) thay LANCZOS: mask xác suất phóng to bằng LANCZOS bị
+    # vọt lố quanh mép cứng → sinh vành alpha bán trong suốt ("viền rác"). BILINEAR êm hơn.
+    mask = Image.fromarray((pred * 255).astype(np.uint8), mode="L").resize((orig_w, orig_h), Image.BILINEAR)
 
-    result = image.convert("RGBA")
-    result.putalpha(mask)
-    return result
+    # refine_foreground: tẩy màu nền lẫn ở mép (thay cho GaussianBlur làm nhoè).
+    from app.workers.image_postprocessor import refine_foreground_rgba
+    return refine_foreground_rgba(image, mask)
 
 
 def warmup() -> bool:

@@ -227,7 +227,7 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'upscale' && (
-                <UpscaleTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <UpscaleTool tabId={tabId} pdfFile={pdfFile} />
             )}
         </>
     );

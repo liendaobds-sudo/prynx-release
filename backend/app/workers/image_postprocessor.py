@@ -2,6 +2,44 @@ import numpy as np
 import cv2
 from PIL import Image
 
+
+def _fb_blur_fusion(image: np.ndarray, F: np.ndarray, B: np.ndarray, alpha: np.ndarray, r: int):
+    """1 vòng ước lượng foreground/background bằng box-blur (blur-fusion)."""
+    a = alpha[:, :, None]
+    blurred_alpha = cv2.blur(alpha, (r, r))[:, :, None]
+    blurred_FA = cv2.blur(F * a, (r, r))
+    blurred_F = blurred_FA / (blurred_alpha + 1e-5)
+    blurred_B1A = cv2.blur(B * (1.0 - a), (r, r))
+    blurred_B = blurred_B1A / ((1.0 - blurred_alpha) + 1e-5)
+    F_new = blurred_F + a * (image - a * blurred_F - (1.0 - a) * blurred_B)
+    return np.clip(F_new, 0.0, 1.0), blurred_B
+
+
+def refine_foreground_rgba(image: Image.Image, mask: Image.Image, r: int = 90) -> Image.Image:
+    """Ước lượng lại MÀU foreground thật ở vùng biên rồi gán alpha = mask.
+
+    Đây là thuật toán 'refine_foreground' của BiRefNet (Fast Multi-Level Foreground
+    Estimation, blur-fusion): tẩy màu nền lẫn trong các pixel bán trong suốt ở mép,
+    triệt 'viền trắng/xám rác' khi đặt ảnh lên nền khác. Nhẹ (chỉ box-blur numpy) —
+    KHÔNG cần pymatting/cupy như alpha_matting của rembg.
+    """
+    rgb = image.convert("RGB")
+    if mask.size != rgb.size:
+        mask = mask.resize(rgb.size, Image.BILINEAR)
+
+    img = np.asarray(rgb, dtype=np.float32) / 255.0
+    alpha = np.asarray(mask, dtype=np.float32) / 255.0
+
+    # Bán kính blur không được vượt cạnh ảnh (ảnh nhỏ) và phải >=1.
+    r1 = max(1, min(r, min(img.shape[0], img.shape[1]) - 1))
+    F, blur_B = _fb_blur_fusion(img, img, img, alpha, r1)
+    F, _ = _fb_blur_fusion(img, F, blur_B, alpha, max(1, min(6, r1)))
+
+    fg = (F * 255.0).astype(np.uint8)
+    out = np.dstack([fg, (alpha * 255.0).astype(np.uint8)])
+    return Image.fromarray(out, "RGBA")
+
+
 def apply_edge_shift(image: Image.Image, shift: int) -> Image.Image:
     """
     Kéo giãn hoặc thu hẹp viền của hình ảnh có nền trong suốt.

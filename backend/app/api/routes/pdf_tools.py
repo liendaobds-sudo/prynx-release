@@ -751,3 +751,79 @@ async def remove_background_warmup(engine: str = Form("general")):
         from app.workers.birefnet_engine import warmup
         ok = await run_in_threadpool(warmup, "lite")
     return {"ok": bool(ok)}
+
+
+@router.post("/upscale")
+async def upscale_endpoint(
+    file: Optional[UploadFile] = File(None),
+    file_path: Optional[str] = Form(None),
+    engine: str = Form('general'),
+):
+    """Phóng to ảnh 4x bằng AI super-resolution (ONNX). Nhận JPG/PNG/WebP..., trả PNG.
+
+    Chỉ còn một model (general). Giữ alpha nếu ảnh có.
+    """
+    from fastapi.concurrency import run_in_threadpool
+    from PIL import Image
+
+    if file:
+        source_path = await save_upload(file)
+        is_temp = True
+    elif file_path:
+        # Defense-in-depth: validate client-supplied path (giống remove-background).
+        if '..' in file_path:
+            raise HTTPException(status_code=400, detail="Invalid path: directory traversal not allowed")
+        real = os.path.realpath(file_path)
+        if os.path.islink(real):
+            raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed")
+        if not os.path.isfile(real):
+            raise HTTPException(status_code=400, detail="File not found")
+        allowed_exts = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff')
+        if not real.lower().endswith(allowed_exts):
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        source_path = real
+        is_temp = False
+    else:
+        raise HTTPException(status_code=400, detail="Vui lòng cung cấp file hoặc file_path hợp lệ")
+
+    variant = 'general'  # chỉ còn một model
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"upscaled_{job_id}.png")
+
+    def _process_upscale():
+        from app.workers.realesrgan_engine import upscale as _upscale
+        with Image.open(source_path) as img:
+            img.load()
+            work = img
+            # Chặn OOM: model x4 → ảnh vào quá lớn sẽ ra ảnh khổng lồ (RAM + thời gian
+            # phi thực tế). Giới hạn cạnh vào 2000px (ra 8000px) — quá ngưỡng in thường.
+            MAX_SIDE = 2000
+            if max(work.size) > MAX_SIDE:
+                ratio = MAX_SIDE / float(max(work.size))
+                work = work.resize((max(1, int(work.width * ratio)), max(1, int(work.height * ratio))), Image.LANCZOS)
+            result_img = _upscale(work, variant=variant)
+            result_img.save(output_path, format="PNG")
+
+    try:
+        await run_in_threadpool(_process_upscale)
+        return FileResponse(
+            path=output_path,
+            filename=f"upscaled_{file.filename.split('.')[0]}.png" if file and file.filename else f"upscaled_{job_id}.png",
+            media_type="image/png",
+        )
+    except Exception as e:
+        logger.error("upscale thất bại: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Phóng to ảnh thất bại ({type(e).__name__})")
+    finally:
+        if is_temp:
+            try: os.remove(source_path)
+            except OSError: pass
+
+
+@router.post("/upscale/warmup")
+async def upscale_warmup(engine: str = Form("general")):
+    """Nạp sẵn model upscale (chạy nền) để lần bấm đầu không phải chờ cold-start."""
+    from fastapi.concurrency import run_in_threadpool
+    from app.workers.realesrgan_engine import warmup
+    ok = await run_in_threadpool(warmup, "general")
+    return {"ok": bool(ok)}

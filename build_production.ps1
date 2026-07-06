@@ -117,6 +117,31 @@ if (-not $SkipNuitka) {
         Write-Host "  DirectML.dll not found (onnxruntime CPU) - shipping CPU inference." -ForegroundColor DarkGray
     }
 
+    # ---- Model Real-ESRGAN (upscale): convert .pth -> .onnx roi bundle vao exe ----
+    # KHAC isnet/birefnet (tai runtime tu URL): repo goc xinntao CHI phat hanh .pth nen
+    # KHONG co URL .onnx de tai. Phai convert san (scripts/convert_realesrgan_onnx.py,
+    # can torch) roi gom .onnx vao app/data/models -> engine doc tu do (fallback sau
+    # ~/.u2net). torch CHI o may build, KHONG bundle (app runtime chi import onnxruntime).
+    $UPSCALE_MODELS_FLAG = ""
+    $MODELS_DIR = "$ROOT\backend\app\data\models"
+    $GEN_ONNX = "$MODELS_DIR\realesr-general-x4v3.onnx"
+    if (-not (Test-Path $GEN_ONNX)) {
+        # Thu convert neu build venv co torch; neu khong -> fail-soft (ship khong co upscale).
+        & $VENV_PYTHON -c "import torch" *> $null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  Converting Real-ESRGAN .pth -> .onnx (build-time)..." -ForegroundColor DarkGray
+            & $VENV_PYTHON "$ROOT\backend\scripts\convert_realesrgan_onnx.py" --out "$MODELS_DIR"
+        } else {
+            Write-Host "  torch not in build venv - SKIP upscale models. To enable: pip install torch onnx; python backend/scripts/convert_realesrgan_onnx.py --out backend/app/data/models" -ForegroundColor Yellow
+        }
+    }
+    if (Test-Path $GEN_ONNX) {
+        $UPSCALE_MODELS_FLAG = "--include-data-dir=app/data/models=app/data/models"
+        Write-Host "  Real-ESRGAN models bundled: $MODELS_DIR" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  Real-ESRGAN models absent - upscale feature will error at runtime until models present." -ForegroundColor Yellow
+    }
+
     & $VENV_PYTHON -m nuitka `
         --standalone `
         --onefile `
@@ -158,6 +183,7 @@ if (-not $SkipNuitka) {
         --include-data-dir=app/assets=app/assets `
         $PDFIUM_FLAG `
         $DML_FLAG `
+        $UPSCALE_MODELS_FLAG `
         --nofollow-import-to=tkinter `
         --nofollow-import-to=unittest `
         --nofollow-import-to=test `
