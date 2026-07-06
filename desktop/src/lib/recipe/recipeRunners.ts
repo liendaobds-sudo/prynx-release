@@ -27,7 +27,7 @@
 import type { RecipeRunner, RecipeRunnerRegistry } from './PlaybackRunner';
 import type { RecipeOpId } from './recipeTypes';
 import type { ProcessContext } from '../processHandlers';
-import { runProcessEngine, runShuffle, runResize, runSplit, runMerge } from '../processHandlers';
+import { runProcessEngine, runShuffle, runResize, runTrimShift, runSplit, runMerge } from '../processHandlers';
 import { authenticatedFetch, getApiUrl, uploadPDF, prepareFileForUpload } from '../api';
 
 // ─────────────── Imposition (qua runProcessEngine, ép spawnNewTab=false) ───────────────
@@ -43,6 +43,9 @@ const runShuffleStep: RecipeRunner = async (ctx, params) => {
 };
 const runResizeStep: RecipeRunner = async (ctx, params) => {
     await runResize(ctx, { ...params, spawnNewTab: false });
+};
+const runTrimShiftStep: RecipeRunner = async (ctx, params) => {
+    await runTrimShift(ctx, { ...params, spawnNewTab: false });
 };
 const runSplitStep: RecipeRunner = async (ctx, params) => {
     await runSplit(ctx, { ...params, spawnNewTab: false });
@@ -249,6 +252,7 @@ export const RECIPE_RUNNERS: RecipeRunnerRegistry = {
     // Preprocess
     shuffle: runShuffleStep,
     resize: runResizeStep,
+    trim_shift: runTrimShiftStep,
     split: runSplitStep,
     // Merge
     merge: runMergeStep,

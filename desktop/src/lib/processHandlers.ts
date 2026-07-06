@@ -424,6 +424,41 @@ export async function runResize(ctx: ProcessContext, settings: any) {
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
+export async function runTrimShift(ctx: ProcessContext, settings: any) {
+    const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
+    setError(''); setIsProcessing(true); setProcessStatus('Đang cắt xén & dời nội dung...');
+    try {
+        const inputBytes = await getWorkingBytes();
+        const { backendTrimShift } = await import('../lib/api');
+        const { UNIT_TO_MM } = await import('../components/preprocess-tools/TrimShiftTool');
+        const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
+        // Backend luôn nhận mm; quy đổi từ đơn vị người dùng chọn.
+        const k = UNIT_TO_MM[settings.unit as keyof typeof UNIT_TO_MM] ?? 1;
+        const config = {
+            trimTop: (settings.trimTop || 0) * k,
+            trimBottom: (settings.trimBottom || 0) * k,
+            trimLeft: (settings.trimLeft || 0) * k,
+            trimRight: (settings.trimRight || 0) * k,
+            shiftX: (settings.shiftX || 0) * k,
+            shiftY: (settings.shiftY || 0) * k,
+            bindingEnabled: !!settings.bindingEnabled,
+            bindingMm: (settings.bindingMm || 0) * k,
+            bindingInward: settings.bindingInward !== false,
+            creepEnabled: !!settings.creepEnabled,
+            creepMm: (settings.creepMm || 0) * k,
+            creepAxis: settings.creepAxis === 'y' ? 'y' : 'x',
+            mirrorFill: !!settings.mirrorFill,
+            contentMode: settings.contentMode === 'clip' ? 'clip' : 'original',
+            keepBleed: !!settings.keepBleed,
+        };
+        const blob = await backendTrimShift(workingFile, settings.applyToStr || 'all', config);
+        const newFileName = `TrimShift_${file.name}`;
+        if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+        else { commitWorkingFile(blob, newFileName); }
+    } catch (err: any) { setError('Lỗi cắt xén & dời: ' + err.message); }
+    finally { setIsProcessing(false); setProcessStatus(''); }
+}
+
 export async function runSplit(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg, getWorkingBytes } = ctx;
     setError(''); setIsProcessing(true); setProcessStatus('Đang tách PDF...');

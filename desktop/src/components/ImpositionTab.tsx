@@ -1019,6 +1019,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         await runResize(buildProcessContext(), settings);
     };
 
+    const handleStartTrimShift = async (settings: any) => {
+        if (!file) return;
+        if (!settings.spawnNewTab) recipeRecorder.noteOperation('trim_shift', settings);
+        const { runTrimShift } = await import('../lib/processHandlers');
+        await runTrimShift(buildProcessContext(), settings);
+    };
+
     const handleStartSplit = useCallback(async (settings: any) => {
         if (!file) return;
         if (!settings.spawnNewTab) recipeRecorder.noteOperation('split', settings);
@@ -2029,6 +2036,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onStartNup={handleStartNup}
                                                             onStartShuffle={handleStartShuffle}
                                                             onStartResize={handleStartResize}
+                                                            onStartTrimShift={handleStartTrimShift}
                                                             onStartSplit={handleStartSplit}
                                                             onStartMerge={handleStartMerge}
                                                             onStartCatalogPlan={handleStartCatalogPlan}

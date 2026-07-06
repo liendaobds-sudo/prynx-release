@@ -507,6 +507,20 @@ export async function backendShufflePages(file: File, action: string, mapping: n
   return await res.blob();
 }
 
+export async function backendTrimShift(file: File, applyTo: string, config: any): Promise<Blob> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('apply_to', applyTo);
+  formData.append('config', JSON.stringify(config));
+
+  const res = await authenticatedFetch(`${API_BASE}/api/pdf-tools/trim-shift`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) throw new Error('Backend trim-shift failed: ' + await res.text());
+  return await res.blob();
+}
+
 export async function getSystemFonts(): Promise<{name: string, path: string}[]> {
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/fonts`);
   if (!res.ok) throw new Error('Không thể lấy danh sách font');

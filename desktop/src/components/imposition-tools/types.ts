@@ -238,7 +238,7 @@ export const DEFAULT_REPORT_CONFIG: ReportDisplayConfig = {
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';
 
-export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages';
+export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages' | 'trim_shift';
 
 /**
  * Loại panel mà một công cụ hiển thị trong workspace bình bài.
@@ -287,6 +287,7 @@ export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = 
     bgremover: 'preprocess',
     watermark: 'preprocess',
     upscale: 'preprocess',
+    trim_shift: 'preprocess',
 };
 
 /**
@@ -314,6 +315,7 @@ export interface ImposerDashboardProps {
     onStartNup: (settings: NupSettings) => void;
     onStartShuffle?: (settings: any) => void;
     onStartResize?: (settings: any) => void;
+    onStartTrimShift?: (settings: any) => void;
     onStartSplit?: (settings: any) => void;
     onStartMerge?: (settings: MergeSettings) => void;
     onStartCatalogPlan?: (planConfig: any, sheetSettings: any) => void;

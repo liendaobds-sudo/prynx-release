@@ -15,7 +15,7 @@ export type RecipeOpId =
     // Bình bài
     | 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer'
     // Tiền xử lý (engine pdf-lib / backend)
-    | 'shuffle' | 'resize' | 'split' | 'merge'
+    | 'shuffle' | 'resize' | 'trim_shift' | 'split' | 'merge'
     // Tạo đường cắt / bù xén tem (dò contour server-side per-file → phát lại được)
     | 'sticker_dieline'
     // Prepress (backend REST)

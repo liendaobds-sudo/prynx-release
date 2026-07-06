@@ -43,6 +43,7 @@ export const RECIPE_OP_META: Record<RecipeOpId, RecipeOpMeta> = {
     // ── Tiền xử lý (engine) ──
     shuffle: { label: 'Xáo trộn trang', recordable: true, needsExternalInput: null, group: 'preprocess' },
     resize: { label: 'Co giãn trang', recordable: true, needsExternalInput: null, group: 'preprocess' },
+    trim_shift: { label: 'Cắt xén & Dời nội dung', recordable: true, needsExternalInput: null, group: 'preprocess' },
     split: { label: 'Tách file', recordable: true, needsExternalInput: null, group: 'preprocess' },
     // Tạo đường cắt / bù xén tem: dò contour server-side mỗi file → tất định, phát lại được.
     sticker_dieline: { label: 'Tạo đường cắt (bù xén)', recordable: true, needsExternalInput: null, group: 'preprocess' },

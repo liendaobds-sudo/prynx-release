@@ -12,6 +12,7 @@ import { useShallow } from 'zustand/react/shallow';
 
 import ShuffleTool from '../../preprocess-tools/ShuffleTool';
 import PageResizerTool from '../../preprocess-tools/PageResizerTool';
+import TrimShiftTool from '../../preprocess-tools/TrimShiftTool';
 import SplitTool from '../../preprocess-tools/SplitTool';
 import MergeTool from '../../preprocess-tools/MergeTool';
 import PreflightTool from '../../preprocess-tools/PreflightTool';
@@ -34,6 +35,7 @@ import { PREPROCESS_ROUTER_TOOLS } from './preprocessRouterTools';
 const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }> = {
     shuffle: { icon: '🔀', title: 'Xáo trộn trang (Shuffle)', desc: 'Sắp xếp, đảo ngược, xoay chiều trang tự động.' },
     resize: { icon: '📏', title: 'Co giãn trang (Resize)', desc: 'Thu phóng nội dung fit vào khổ giấy mới.' },
+    trim_shift: { icon: '⇔', title: 'Cắt xén & Dời (Trim & Shift)', desc: 'Chỉnh khổ từng cạnh, dời nội dung, bù lề gáy & creep.' },
     split: { icon: '✂', title: 'Tách file (Split)', desc: 'Tách lẻ trang hoặc chia nhóm file đều đặn.' },
     merge: { icon: '🔗', title: 'Ghép file & Chèn trang (Merge/Insert)', desc: 'Gộp nhiều PDF, trộn xen kẽ lẻ chẵn, chèn trang đệm.' },
     preflight: { icon: '🩺', title: 'Preflight (Kiểm tra chuẩn in)', desc: 'Quét lỗi hệ màu, font, DPI và tự động sửa.' },
@@ -63,6 +65,7 @@ interface PreprocessingRouterProps {
     isProcessing: boolean;
     onStartShuffle?: (settings: any) => void;
     onStartResize?: (settings: any) => void;
+    onStartTrimShift?: (settings: any) => void;
     onStartSplit?: (settings: any) => void;
     onStartMerge?: (settings: any) => void;
     onIssueSelect: (issue: any) => void;
@@ -72,13 +75,14 @@ interface PreprocessingRouterProps {
 
 export default function PreprocessingRouter({
     tabId, activeTool, pdfFile, isProcessing,
-    onStartShuffle, onStartResize, onStartSplit, onStartMerge,
+    onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
     onIssueSelect, onOpenOutputPreview, onFileFixed,
 }: PreprocessingRouterProps) {
     const s = useImposerSettingsStore(useShallow(state => ({
         spawnNewTab: state.spawnNewTab, setSpawnNewTab: state.setSpawnNewTab,
         shuffleSettings: state.shuffleSettings, setShuffleSettings: state.setShuffleSettings,
         resizeSettings: state.resizeSettings, setResizeSettings: state.setResizeSettings,
+        trimShiftSettings: state.trimShiftSettings, setTrimShiftSettings: state.setTrimShiftSettings,
         splitSettings: state.splitSettings, setSplitSettings: state.setSplitSettings,
     })));
 
@@ -131,6 +135,22 @@ export default function PreprocessingRouter({
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
                         {isProcessing ? 'Đang áp dụng...' : 'Thực Thi Đổi Khổ'}
+                    </button>
+                </div>
+            )}
+
+            {activeTool === 'trim_shift' && (
+                <div>
+                    <TrimShiftTool settings={s.trimShiftSettings} onChange={s.setTrimShiftSettings} />
+                    <div className="mt-4 mb-2">
+                        <Checkbox checked={s.spawnNewTab} onChange={s.setSpawnNewTab} label="Mở kết quả sang Tab mới" />
+                    </div>
+                    <button
+                        onClick={() => onStartTrimShift && onStartTrimShift({ ...s.trimShiftSettings, spawnNewTab: s.spawnNewTab })}
+                        disabled={isProcessing}
+                        className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
+                    >
+                        {isProcessing ? 'Đang áp dụng...' : 'Thực Thi Trim & Shift'}
                     </button>
                 </div>
             )}

@@ -8,7 +8,7 @@
  * lỗi merge lòi panel & pageboxes panel trống trước đây).
  */
 export const PREPROCESS_ROUTER_TOOLS = [
-    'shuffle', 'resize', 'split', 'pages',
+    'shuffle', 'resize', 'trim_shift', 'split', 'pages',
     'preflight', 'hairlines', 'convertcolors', 'trapping', 'pdfx',
     'ocr', 'optimize', 'sticker', 'bgremover', 'watermark', 'upscale',
 ] as const;

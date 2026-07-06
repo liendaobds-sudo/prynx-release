@@ -46,7 +46,7 @@ import type { ImpositionPreset } from '../../lib/presetManager';
 import { toast } from '../ui/Toast';
 
 
-export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, getWorkingFile }: ImposerDashboardProps) {
+export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, getWorkingFile }: ImposerDashboardProps) {
 
     // ═══ Workspace State ═══
     const {
@@ -83,7 +83,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         if (lockedMode === 'booklet' || lockedMode === 'nup') return lockedMode;
         if (lockedMode === 'sticker_imposer') return 'sticker_imposer';
         if (lockedMode === 'cnc_imposer') return 'cnc_imposer';
-        const allowedFeatures = ['shuffle', 'resize', 'split', 'merge', 'preflight', 'sticker', 'bgremover', 'optimize', 'numbering', 'datamerge', 'ocr'];
+        const allowedFeatures = ['shuffle', 'resize', 'trim_shift', 'split', 'merge', 'preflight', 'sticker', 'bgremover', 'optimize', 'numbering', 'datamerge', 'ocr'];
         if (initialFeature && allowedFeatures.includes(initialFeature)) return initialFeature as any;
         return 'none';
     });
@@ -801,6 +801,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 <PreprocessingRouter
                     tabId={tabId} activeTool={activeTool} pdfFile={pdfFile || null} isProcessing={isProcessing}
                     onStartShuffle={onStartShuffle} onStartResize={onStartResize}
+                    onStartTrimShift={onStartTrimShift}
                     onStartSplit={onStartSplit} onStartMerge={onStartMerge}
                     onIssueSelect={onIssueSelect} onOpenOutputPreview={onOpenOutputPreview} onFileFixed={onFileFixed}
                 />

@@ -210,6 +210,62 @@ async def resize_pages_endpoint(
         except OSError: pass
 
 
+@router.post("/trim-shift")
+async def trim_shift_endpoint(
+    file: UploadFile = File(...),
+    apply_to: str = Form("all"),
+    config: str = Form("{}"),
+    license_info: dict = Depends(require_license),
+):
+    """Trim & Shift — chỉnh box từng cạnh + dịch nội dung (binding/creep).
+
+    Config JSON: {
+        trimTop, trimBottom, trimLeft, trimRight,   # mm, ± (dương=nở, âm=cắt)
+        shiftX, shiftY,                              # mm
+        bindingEnabled, bindingMm, bindingInward,
+        creepEnabled, creepMm, creepAxis             # 'x' | 'y'
+    }
+    """
+    from app.workers.trim_shift_engine import trim_shift
+
+    source_path = await save_upload(file)
+    cfg = json.loads(config)
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"trimshift_{job_id}.pdf")
+
+    try:
+        trim_shift(
+            source_path, output_path,
+            apply_to=apply_to,
+            trim_top_mm=float(cfg.get('trimTop', 0)),
+            trim_bottom_mm=float(cfg.get('trimBottom', 0)),
+            trim_left_mm=float(cfg.get('trimLeft', 0)),
+            trim_right_mm=float(cfg.get('trimRight', 0)),
+            shift_x_mm=float(cfg.get('shiftX', 0)),
+            shift_y_mm=float(cfg.get('shiftY', 0)),
+            binding_enabled=bool(cfg.get('bindingEnabled', False)),
+            binding_mm=float(cfg.get('bindingMm', 0)),
+            binding_inward=bool(cfg.get('bindingInward', True)),
+            creep_enabled=bool(cfg.get('creepEnabled', False)),
+            creep_mm=float(cfg.get('creepMm', 0)),
+            creep_axis=str(cfg.get('creepAxis', 'x')),
+            mirror_fill=bool(cfg.get('mirrorFill', False)),
+            content_mode=str(cfg.get('contentMode', 'original')),
+            keep_bleed=bool(cfg.get('keepBleed', False)),
+        )
+        _safe_watermark(output_path, license_info)
+        return FileResponse(
+            path=output_path,
+            filename=f"trimshift_{file.filename}",
+            media_type="application/pdf"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+    finally:
+        try: os.remove(source_path)
+        except OSError: pass
+
+
 @router.post("/shuffle")
 async def shuffle_pages_endpoint(
     file: UploadFile = File(...),
