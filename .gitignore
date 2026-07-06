@@ -106,3 +106,13 @@ _diag*.txt
 desktop/src-tauri/_cargo_out.txt
 desktop/src-tauri/_cargo_err.txt
 desktop/src-tauri/_chk/
+
+# Claude Code local data (memory/plans/session — per-machine, not source)
+.claude/
+
+# Local terminal scratch
+terminals/
+
+# Icon backups (kept locally before white/transparent conversion)
+desktop/src-tauri/icons/_backup_before_white/
+desktop/src-tauri/icons/_backup_transparent/
