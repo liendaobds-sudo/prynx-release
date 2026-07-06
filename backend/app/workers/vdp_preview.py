@@ -30,6 +30,7 @@ from app.workers import pdf_wrapper as pdf_lib
 from app.workers.vdp_engine import (
     CSS_TO_PT_FACTOR,
     MM_TO_PTS,
+    _canonicalize_template_to_cropbox,
     _register_font_family,
     render_one_record,
 )
@@ -166,6 +167,10 @@ def render_record_preview(
     row = dict(rows[index - 1])
     fields_dict = [_as_dict(f) for f in fields]
 
+    # Chuẩn hoá CropBox→MediaBox (sau Crop) để preview khớp output — CÙNG phép
+    # canonical như run_vdp_engine, giữ parity preview ↔ bản in.
+    template_path, _canon_tmp = _canonicalize_template_to_cropbox(template_path)
+
     doc_template = pdf_lib.open(template_path)
     tmp_path = None
     try:
@@ -264,5 +269,10 @@ def render_record_preview(
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
+            except Exception:
+                pass
+        if _canon_tmp and os.path.exists(template_path):
+            try:
+                os.remove(template_path)
             except Exception:
                 pass

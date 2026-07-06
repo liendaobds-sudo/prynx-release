@@ -424,8 +424,10 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
         # trên) — dùng để báo lỗi field cho Preview_Service. KHÔNG bị ảnh hưởng
         # bởi phép xoay bên dưới (f_rect bị gán lại khi xoay, report_rect thì không).
         report_rect = {'x': _fx, 'y': _fy, 'w': _fw, 'h': _fh}
-        # Frontend coordinates are MediaBox-relative (viewer shows MediaBox)
-        # ReportLab origin is bottom-left, frontend origin is top-left
+        # Toạ độ field từ frontend theo VÙNG HIỂN THỊ của viewer, gốc trên-trái.
+        # Viewer render theo CropBox; template đã được _canonicalize_template_to_cropbox
+        # đưa CropBox về MediaBox gốc (0,0) TRƯỚC khi tới đây, nên pw/ph (=MediaBox)
+        # chính là vùng hiển thị và field khớp vị trí. ReportLab gốc dưới-trái nên lật y.
         rl_x = f_rect['x']
         rl_y = ph - f_rect['y'] - f_rect['h']
 
@@ -714,42 +716,43 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                 p = Paragraph(text_html, style)
                 w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
 
-                # AUTO-FIT: bóp dần cỡ chữ tới khi đoạn văn (đã xuống dòng theo bề rộng
-                # khung) vừa CHIỀU CAO khung → tránh chữ tràn xuống dưới khung.
+                # AUTO-FIT = NÉN BỀ RỘNG (horizontal scale), GIỮ NGUYÊN cỡ chữ/chiều
+                # cao. KHÔNG cho tự xuống dòng — chỉ ngắt ở '\n' người dùng gõ. Tính
+                # sx = bề ngang khung / bề rộng dòng DÀI NHẤT (đo bằng stringWidth); nếu
+                # chữ tràn ngang thì nén ngang cho vừa. Vẽ bằng canvas scale(sx, 1) để
+                # chỉ co chiều rộng. Parity với preview (whitespace:pre + scaleX).
                 auto_fit = field.get('autoFit', True)
-                if auto_fit and h > f_rect['h']:
-                    fs = float(fontsize)
-                    guard = 0
-                    while h > f_rect['h'] and fs > 2 and guard < 200:
-                        fs -= max(0.5, fs * 0.06)
-                        style = ParagraphStyle(
-                            name='VDP',
-                            fontName=font_name,
-                            fontSize=fs,
-                            textColor=text_color,
-                            leading=fs * line_h,
-                            alignment=text_align
-                        )
-                        p = Paragraph(text_html, style)
-                        w, h = p.wrapOn(c, f_rect['w'], f_rect['h'])
-                        guard += 1
+                sx = 1.0
+                if auto_fit:
+                    raw_lines = str(val).split('\n') or ['']
+                    maxw = max(
+                        (c.stringWidth(ln, font_name, fontsize) for ln in raw_lines if ln),
+                        default=0.0,
+                    )
+                    if maxw > f_rect['w'] and maxw > 0:
+                        sx = max(0.05, f_rect['w'] / maxw)
+
+                # Wrap với bề rộng khả dụng = f_rect['w']/sx (không gian TRƯỚC khi nén)
+                # để Paragraph không tự xuống dòng — sau khi scale(sx,1) chiều rộng thật
+                # đúng bằng f_rect['w'].
+                avail_w = f_rect['w'] / sx if sx > 0 else f_rect['w']
+                w, h = p.wrapOn(c, avail_w, f_rect['h'])
 
                 # Canh GIỮA theo chiều dọc trong khung: chừa đều trên/dưới.
                 # #7: dùng font Bold/Italic THẬT khi có (need_faux_* = False);
                 # chỉ faux phần thiếu (bold = double-strike, italic = nghiêng shear).
                 ty = rl_y + (f_rect['h'] - h) / 2.0
-                if need_faux_bold or need_faux_italic:
-                    c.saveState()
-                    c.translate(rl_x, ty)
-                    if need_faux_italic:
-                        c.transform(1, 0, 0.21, 1, 0, 0)  # nghiêng ~12°
-                    p.drawOn(c, 0, 0)
-                    if need_faux_bold:
-                        # vẽ lại lệch ~3% cỡ chữ → dày nét (giả bold)
-                        p.drawOn(c, max(0.3, float(style.fontSize) * 0.03), 0)
-                    c.restoreState()
-                else:
-                    p.drawOn(c, rl_x, ty)
+                c.saveState()
+                c.translate(rl_x, ty)
+                if sx != 1.0:
+                    c.scale(sx, 1)  # nén ngang, giữ nguyên chiều cao
+                if need_faux_italic:
+                    c.transform(1, 0, 0.21, 1, 0, 0)  # nghiêng ~12°
+                p.drawOn(c, 0, 0)
+                if need_faux_bold:
+                    # vẽ lại lệch ~3% cỡ chữ → dày nét (giả bold)
+                    p.drawOn(c, max(0.3, float(style.fontSize) * 0.03), 0)
+                c.restoreState()
         except Exception as e:
             c.setFillColorCMYK(0, 1, 1, 0)  # đỏ (CMYK)
             c.setFont("Helvetica", 7)
@@ -918,11 +921,122 @@ def process_chunk(args) -> str:
     doc_template.close()
     return tmp_path
 
+def _canonicalize_template_to_cropbox(template_path: str) -> tuple:
+    """Chuẩn hoá template về hệ toạ độ mà VDP giả định: vùng hiển thị bắt đầu ở
+    gốc (0,0), MediaBox = khổ hiển thị THẬT, và /Rotate = 0. Trả (path, is_temp);
+    không cần đổi → (template_path, False).
+
+    Vì sao cần: cả preview lẫn run đặt field theo gốc (0,0) + kích thước theo
+    MediaBox (render_one_record dùng pw/ph = MediaBox; show_pdf_page đặt overlay
+    tại rect gốc 0,0 — xem pdf_ops.page_rect luôn trả Rect(0,0,mb_w,mb_h)). Giả
+    định ngầm: "MediaBox LÀ vùng hiển thị, bắt đầu ở (0,0), không xoay". Hai thứ
+    phá giả định này:
+
+    1. CropBox lệch MediaBox (sau khi Crop chỉ set CropBox) → viewer render theo
+       CropBox có gốc lệch → field lệch cả VỊ TRÍ lẫn KHỔ.
+    2. /Rotate ≠ 0 → viewer (pdfium) hiển thị trang ĐÃ XOAY và báo khổ đã hoán w/h
+       (xem get_pdf_metadata bên Rust), nên field đặt theo khổ đã xoay; nhưng nếu
+       backend render theo MediaBox CHƯA xoay thì lệch cả vị trí lẫn trục.
+
+    Cả hai được canonical hoá 1 LẦN bằng cách bọc nội dung trong ``q <cm> ... Q``:
+    dịch gốc vùng crop về (0,0) RỒI xoay theo /Rotate (clockwise, hệ PDF y-up), đặt
+    MediaBox/CropBox = khổ hiển thị (hoán w/h khi 90/270) và /Rotate = 0. Sau đó cả
+    preview lẫn output tự khớp với view chính mà không phải sửa từng chỗ đặt toạ độ.
+    """
+    import pikepdf
+    pdf = pikepdf.Pdf.open(template_path)
+    changed = False
+    try:
+        for page in pdf.pages:
+            rotate = int(page.get("/Rotate", 0) or 0) % 360
+            mb = [float(x) for x in page.MediaBox]
+            if "/CropBox" in page:
+                cb = [float(x) for x in page.CropBox]
+            else:
+                cb = mb
+            cx0, cy0, cx1, cy1 = cb
+            crop_matches_media = (
+                abs(cx0 - mb[0]) < 0.01 and abs(cy0 - mb[1]) < 0.01
+                and abs(cx1 - mb[2]) < 0.01 and abs(cy1 - mb[3]) < 0.01
+            )
+            # Gốc vùng hiển thị đã ở (0,0)? pdfium (view chính) LUÔN chuẩn hoá gốc
+            # vùng hiển thị về (0,0); nếu gốc box ≠ (0,0) — dù MediaBox = CropBox (chỉ
+            # là MediaBox có offset, ví dụ [10,20,610,812]) — backend đặt overlay tại
+            # (0,0) sẽ lệch đúng offset đó. Phải canonical hoá cả case này.
+            display_at_origin = abs(cx0) < 0.01 and abs(cy0) < 0.01
+            # Đã canonical (vùng hiển thị = MediaBox, gốc (0,0), không xoay) → bỏ qua.
+            if crop_matches_media and display_at_origin and rotate == 0:
+                continue
+
+            cw = cx1 - cx0
+            ch = cy1 - cy0
+
+            # Ma trận cm: crop-về-gốc RỒI xoay clockwise theo /Rotate, đưa nội dung
+            # vào góc phần tư dương. Điểm nội dung gốc (X,Y) → toạ độ canonical.
+            # new_w/new_h là khổ hiển thị (hoán w/h cho 90/270).
+            if rotate == 90:
+                mtx = (0.0, -1.0, 1.0, 0.0, -cy0, cx0 + cw)
+                new_w, new_h = ch, cw
+            elif rotate == 180:
+                mtx = (-1.0, 0.0, 0.0, -1.0, cx0 + cw, cy0 + ch)
+                new_w, new_h = cw, ch
+            elif rotate == 270:
+                mtx = (0.0, 1.0, -1.0, 0.0, cy0 + ch, -cx0)
+                new_w, new_h = ch, cw
+            else:  # rotate == 0, chỉ crop lệch
+                mtx = (1.0, 0.0, 0.0, 1.0, -cx0, -cy0)
+                new_w, new_h = cw, ch
+
+            ma, mb_, mc, md, me, mf = mtx
+            # Bọc nội dung trong q..Q + cm. q/Q bảo toàn cân bằng graphics-state dù
+            # stream gốc có để lại trạng thái.
+            page.contents_coalesce()
+            stream = page.obj["/Contents"]
+            old = stream.read_bytes()
+            prefix = (
+                f"q {ma:.6g} {mb_:.6g} {mc:.6g} {md:.6g} {me:.4f} {mf:.4f} cm\n"
+            ).encode("ascii")
+            stream.write(prefix + old + b"\nQ")
+
+            page.MediaBox = pikepdf.Array([0, 0, new_w, new_h])
+            page.CropBox = pikepdf.Array([0, 0, new_w, new_h])
+            if rotate != 0:
+                page.Rotate = 0  # đã bake vào content → không để viewer xoay lần nữa
+            # Các box khác (nếu có): biến đổi 4 góc qua CÙNG ma trận rồi lấy bao lồi.
+            for box in ("/TrimBox", "/ArtBox", "/BleedBox"):
+                if box in page:
+                    b4 = [float(x) for x in page[box]]
+                    corners = [
+                        (b4[0], b4[1]), (b4[2], b4[1]),
+                        (b4[2], b4[3]), (b4[0], b4[3]),
+                    ]
+                    xs = [ma * px + mc * py + me for px, py in corners]
+                    ys = [mb_ * px + md * py + mf for px, py in corners]
+                    page[box] = pikepdf.Array([min(xs), min(ys), max(xs), max(ys)])
+            changed = True
+        if not changed:
+            pdf.close()
+            return template_path, False
+        out = os.path.join(tempfile.gettempdir(), f"vdp_canon_{uuid.uuid4().hex}.pdf")
+        pdf.save(out)
+        pdf.close()
+        return out, True
+    except Exception as e:
+        logger.warning(f"VDP canonicalize CropBox/Rotate skipped ({e}); dùng template gốc.")
+        try:
+            pdf.close()
+        except Exception:
+            pass
+        return template_path, False
+
+
 def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[str, str]], output_path: str, job_id: str = None, **kwargs):
     from concurrent.futures import ProcessPoolExecutor
     import math
-    
+
     fields_dict = [f.model_dump() for f in fields]
+    # Chuẩn hoá CropBox→MediaBox (sau Crop) MỘT LẦN trước khi fan-out chunk.
+    template_path, _canon_tmp = _canonicalize_template_to_cropbox(template_path)
     available_cores = max(1, os.cpu_count() - 1)
     optimal_chunk_size = math.ceil(len(data) / available_cores) if available_cores > 0 else 5000
     CHUNK_SIZE = max(100, optimal_chunk_size)
@@ -951,9 +1065,16 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
             with ProcessPoolExecutor(max_workers=num_workers) as pool:
                 chunk_paths = list(pool.map(process_chunk, args_list))
     
+    # Chunk đã đọc xong template → xoá bản canonical tạm (nếu có).
+    if _canon_tmp:
+        try:
+            os.remove(template_path)
+        except Exception:
+            pass
+
     if 'on_saving' in kwargs and kwargs['on_saving']:
         kwargs['on_saving']()
-    
+
     import pypdfium2 as pdfium
     final_doc = pdfium.PdfDocument.new()
     for chunk_pdf_path in chunk_paths:

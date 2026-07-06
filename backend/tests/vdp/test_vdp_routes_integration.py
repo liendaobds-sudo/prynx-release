@@ -178,6 +178,77 @@ def test_datasource_reads_selected_xlsx_sheet(client):
     assert body["record_count"] == 1
 
 
+# ─── /api/vdp/datasource include_all_rows (regression F2) ────────────────────
+# Bug F2: generate với nguồn xlsx/gsheet chỉ dùng ``preview_rows`` (≤20 dòng) →
+# job chỉ sinh 20 trang, mất dữ liệu âm thầm. Fix: ``include_all_rows=True`` trả
+# thêm ``rows`` chứa TOÀN BỘ record cho bước sinh lô.
+
+
+def test_datasource_preview_rows_capped_but_record_count_full(client):
+    """Mặc định preview_rows bị giới hạn 20 dòng, còn record_count là số THẬT."""
+    from app.api.routes.vdp import DATASOURCE_PREVIEW_ROWS
+
+    n = DATASOURCE_PREVIEW_ROWS + 15  # cố tình vượt ngưỡng preview
+    lines = ["Ten,Ma"] + [f"KH{i},SP{i}" for i in range(n)]
+    csv_text = "\n".join(lines) + "\n"
+    resp = client.post(
+        "/api/vdp/datasource",
+        data={"kind": "csv", "text": csv_text, "has_header": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["record_count"] == n
+    assert len(body["preview_rows"]) == DATASOURCE_PREVIEW_ROWS
+    assert "rows" not in body  # không yêu cầu → không trả full rows
+
+
+def test_datasource_include_all_rows_returns_full_dataset(client):
+    """include_all_rows=True → trả TOÀN BỘ rows, không bị cắt ở ngưỡng preview (F2)."""
+    from app.api.routes.vdp import DATASOURCE_PREVIEW_ROWS
+
+    n = DATASOURCE_PREVIEW_ROWS + 15
+    lines = ["Ten,Ma"] + [f"KH{i},SP{i}" for i in range(n)]
+    csv_text = "\n".join(lines) + "\n"
+    resp = client.post(
+        "/api/vdp/datasource",
+        data={
+            "kind": "csv",
+            "text": csv_text,
+            "has_header": "true",
+            "include_all_rows": "true",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["record_count"] == n
+    assert len(body["preview_rows"]) == DATASOURCE_PREVIEW_ROWS  # preview vẫn cắt
+    assert len(body["rows"]) == n                                # full rows đủ
+    assert body["rows"][0] == {"Ten": "KH0", "Ma": "SP0"}
+    assert body["rows"][-1] == {"Ten": f"KH{n - 1}", "Ma": f"SP{n - 1}"}
+
+
+def test_datasource_xlsx_include_all_rows(client):
+    """include_all_rows=True với xlsx → trả đủ mọi record của sheet (F2)."""
+    xlsx = _make_xlsx_bytes()  # sheet 'Khách hàng' có 2 record
+    resp = client.post(
+        "/api/vdp/datasource",
+        data={"kind": "xlsx", "sheet": "Khách hàng", "include_all_rows": "true"},
+        files={
+            "file": (
+                "book.xlsx",
+                xlsx,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["record_count"] == 2
+    assert len(body["rows"]) == 2
+    assert body["rows"][0]["Tên"] == "Nguyễn Văn A"
+    assert body["rows"][1]["Tên"] == "Trần Thị B"
+
+
 # ─── /api/vdp/validate (gating + KHÔNG sinh PDF) ─────────────────────────────
 
 

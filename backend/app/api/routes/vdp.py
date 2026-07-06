@@ -454,18 +454,27 @@ async def read_datasource(
     text: Optional[str] = Form(None),
     sheet: Optional[str] = Form(None),
     has_header: bool = Form(True),
+    include_all_rows: bool = Form(False),
     license_info: dict = Depends(require_license),
 ):
     """Đọc nguồn dữ liệu (csv/xlsx/gsheet) → cột + số record + xem trước (Req 1.1, 1.3).
 
+    Mặc định chỉ trả ``preview_rows`` (tối đa ``DATASOURCE_PREVIEW_ROWS`` dòng) để
+    UI hiển thị mẫu cột. Khi ``include_all_rows=True``, trả thêm ``rows`` chứa
+    TOÀN BỘ record — dùng cho bước sinh lô (generate) với nguồn xlsx/gsheet, tránh
+    việc chỉ sinh theo 20 dòng preview (mất dữ liệu âm thầm).
+
     ``DataSourceError`` → HTTP 400 với thông báo tiếng Việt.
     """
     table = await _read_table_from_source(kind, file, url, text, sheet, has_header)
-    return {
+    result = {
         "columns": table.columns,
         "record_count": len(table.rows),
         "preview_rows": table.rows[:DATASOURCE_PREVIEW_ROWS],
     }
+    if include_all_rows:
+        result["rows"] = table.rows
+    return result
 
 
 @router.post("/datasource/sheets")

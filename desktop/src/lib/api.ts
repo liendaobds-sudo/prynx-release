@@ -534,6 +534,7 @@ export interface VdpDatasourceResult {
   columns: string[];
   record_count: number;
   preview_rows: Record<string, string>[];
+  rows?: Record<string, string>[];   // chỉ có khi gọi với includeAllRows=true
 }
 
 /**
@@ -553,6 +554,7 @@ export async function readVdpDatasource(params: {
   text?: string;
   sheet?: string;
   hasHeader?: boolean;
+  includeAllRows?: boolean;   // true → backend trả TOÀN BỘ rows (dùng cho generate)
 }): Promise<VdpDatasourceResult> {
   const formData = new FormData();
   formData.append('kind', params.kind);
@@ -561,6 +563,7 @@ export async function readVdpDatasource(params: {
   if (params.text !== undefined) formData.append('text', params.text);
   if (params.sheet) formData.append('sheet', params.sheet);
   formData.append('has_header', String(params.hasHeader ?? true));
+  if (params.includeAllRows) formData.append('include_all_rows', 'true');
 
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/datasource`, {
     method: 'POST',

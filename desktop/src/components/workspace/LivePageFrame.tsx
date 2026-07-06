@@ -285,44 +285,41 @@ const LiveTile = React.memo(({ fileKey, pageNum, zoom, coarseZoom, rot, clipX, c
 // ═══ VDP text preview với AUTO-FIT ═══
 // Bóp cỡ chữ (xuống tối thiểu) để text vừa CHIỀU CAO khung, khớp với engine backend
 // (ReportLab cũng bóp theo chiều cao). Khi autoFit === false thì giữ nguyên cỡ chữ.
-const VdpAutoFitText = ({ field, scale, text, onAutoFit }: any) => {
+const VdpAutoFitText = ({ field, scale, text }: any) => {
     const ref = useRef<HTMLSpanElement>(null);
     // Backend render fontSize ở pt THẬT, nhưng khung dùng đơn vị CSS (×96/72). Để preview
     // khớp output, cỡ chữ trên màn = fontSize(pt) × scale × (96/72). scale = displayWidth/pageDim.w.
-    const maxPx = (field.fontSize || 10) * scale * (96 / 72);
-    const [fitPx, setFitPx] = useState<number>(maxPx);
+    const fontPx = (field.fontSize || 10) * scale * (96 / 72);
+    const [scaleX, setScaleX] = useState<number>(1);
+    const align = field.alignment || 'left';
 
     useLayoutEffect(() => {
-        if (field.autoFit === false) { setFitPx(maxPx); return; }
+        if (field.autoFit === false) { setScaleX(1); return; }
         const el = ref.current;
-        const parent = el?.parentElement;
-        if (!el || !parent) return;
-        let size = maxPx;
-        el.style.fontSize = `${size}px`;
-        let guard = 0;
-        while (guard++ < 300 && size > 1 &&
-               (el.scrollHeight > parent.clientHeight + 0.5 || el.scrollWidth > parent.clientWidth + 0.5)) {
-            size -= Math.max(0.5, size * 0.06);
-            el.style.fontSize = `${size}px`;
-        }
-        setFitPx(size);
-        // Ghi cỡ chữ THỰC TẾ (sau khi bóp) về field.fontSize → ô "Cỡ chữ" trên UI luôn khớp
-        // preview & output. Chỉ ghi khi đã bị bóp nhỏ hơn để tránh vòng lặp (đã hội tụ).
-        if (onAutoFit && scale > 0 && size < maxPx - 0.5) {
-            onAutoFit(size / (scale * (96 / 72)));
-        }
-    }, [text, maxPx, field.width, field.height, field.autoFit, field.fontName, field.fontStyle, field.lineHeight, field.characterSpacing, field.alignment]);
+        if (!el) return;
+        // "Tự bóp chữ vừa khung" = NÉN BỀ RỘNG (scaleX), GIỮ NGUYÊN cỡ chữ/chiều cao.
+        // Đo bề rộng tự nhiên (scrollWidth khi whitespace:pre — không xuống dòng) so với
+        // bề rộng khung (clientWidth). Nếu tràn ngang → nén ngang cho vừa. Chỉ ngắt dòng
+        // ở '\n' người dùng gõ. Parity với backend (canvas scale(sx,1)).
+        const natural = el.scrollWidth;
+        const avail = el.clientWidth;
+        const sx = natural > avail && natural > 0 ? Math.max(0.05, avail / natural) : 1;
+        setScaleX(sx);
+    }, [text, fontPx, field.width, field.height, field.autoFit, field.fontName, field.fontStyle, field.lineHeight, align]);
 
-    const fontPx = field.autoFit === false ? maxPx : fitPx;
+    // Nén từ mép TRÁI để khớp backend (canvas scale(sx,1) sau translate về mép trái
+    // khung, map [0, bề_rộng_tự_nhiên] → [0, bề_ngang_khung]). Text-align vẫn xử lý
+    // vị trí chữ trong khung khi KHÔNG nén (sx=1).
     return (
         <span
-            className="px-1 overflow-hidden w-full h-full"
+            className="overflow-hidden w-full h-full"
             style={{ display: 'flex', alignItems: 'center' }}
         >
             <span
                 ref={ref}
-                className="whitespace-pre-wrap break-words"
+                className="whitespace-pre"
                 style={{
+                    display: 'block',
                     width: '100%',
                     color: field.fontColor || '#1e293b',
                     fontSize: `${fontPx}px`,
@@ -332,7 +329,10 @@ const VdpAutoFitText = ({ field, scale, text, onAutoFit }: any) => {
                     lineHeight: field.lineHeight ? `${field.lineHeight}em` : 1,
                     // Backend (ReportLab Paragraph) chưa hỗ trợ tracking → preview cũng bỏ qua để khớp output.
                     letterSpacing: 0,
-                    textAlign: field.alignment || 'left'
+                    textAlign: align,
+                    // NÉN NGANG khi chữ tràn; neo theo hướng căn lề để chữ không trôi khỏi khung.
+                    transform: field.autoFit === false ? 'none' : `scaleX(${scaleX})`,
+                    transformOrigin: 'left center',
                 }}
             >
                 {text}
@@ -397,7 +397,12 @@ export const LivePageFrame = (props: any) => {
     const viewerNumPages = useWorkspaceStore(s => s.viewerNumPages);
 
     // VDP Drag/Resize interaction state
-    const [vdpInteraction, setVdpInteraction] = useState<{ type: 'move'|'resize', handle?: 'nw'|'ne'|'sw'|'se'|'n'|'s'|'e'|'w', fieldIds: string[], startX: number, startY: number, startFields: Record<string, {x: number, y: number, w: number, h: number}> } | null>(null);
+    const [vdpInteraction, setVdpInteraction] = useState<{ type: 'move'|'resize', handle?: 'nw'|'ne'|'sw'|'se'|'n'|'s'|'e'|'w', fieldIds: string[], startX: number, startY: number, startFields: Record<string, {x: number, y: number, w: number, h: number, fontSize?: number}> } | null>(null);
+
+    // Menu chuột phải cho khung VDP: xoay nhanh 90° trực tiếp trên khung (song song
+    // với dropdown "Xoay (độ)" ở panel). x/y là toạ độ màn hình (fixed), fieldId là
+    // field được nhấp phải. Đóng khi click ra ngoài / Escape / chọn xong.
+    const [vdpCtxMenu, setVdpCtxMenu] = useState<{ x: number; y: number; fieldId: string } | null>(null);
 
     // ─── VDP drag/resize: áp dụng theo THỜI GIAN THỰC qua listener WINDOW ───────
     // Bắt sự kiện ở window (không phải div trang) → con trỏ ra ngoài khung vẫn theo
@@ -458,9 +463,36 @@ export const LivePageFrame = (props: any) => {
                 newH = Math.min(newH, pageHmm - newY);
                 if (f.type === 'qrcode') { const s = Math.max(5, Math.min(newW, newH)); newW = s; newH = s; }
                 else { newW = Math.max(5, newW); newH = Math.max(5, newH); }
+                // Text + handle GÓC (nw/ne/sw/se): scale cỡ chữ theo khung như Illustrator,
+                // thay vì chỉ đổi khung rồi để auto-fit bóp lúc tràn (chữ "kẹt" không co
+                // theo khung nữa). Handle CẠNH (n/s/e/w) giữ cỡ chữ — chỉ đổi vùng chảy
+                // chữ (giống nới rộng text box). QR/barcode/image không dính.
+                if (f.type === 'text' && handle.length === 2 && startData.fontSize) {
+                    const ratio = Math.min(newW / startData.w, newH / startData.h);
+                    const scaledFs = Math.max(1, Math.round(startData.fontSize * ratio * 10) / 10);
+                    return { ...f, x: newX, y: newY, width: newW, height: newH, fontSize: scaledFs };
+                }
                 return { ...f, x: newX, y: newY, width: newW, height: newH };
             }
             return f;
+        }));
+    };
+
+    // Xoay field VDP về mức 0/90/180/270 (backend chỉ render 4 mức này). Khi
+    // chuyển giữa dọc↔ngang (90/270 vs 0/180) thì hoán width↔height để footprint
+    // khung khớp hướng — CÙNG quy ước với updateSelectedField bên DataMergeTool.
+    const rotateVdpField = (fieldId: string, newRot: number) => {
+        if (!onVdpFieldsChange) return;
+        const nr = ((newRot % 360) + 360) % 360;
+        onVdpFieldsChange((prev: any[]) => prev.map((f: any) => {
+            if (f.id !== fieldId) return f;
+            const oldRot = ((Number(f.rotation) || 0) % 360 + 360) % 360;
+            const oldVert = oldRot === 90 || oldRot === 270;
+            const newVert = nr === 90 || nr === 270;
+            if (oldVert !== newVert) {
+                return { ...f, rotation: nr, width: f.height, height: f.width };
+            }
+            return { ...f, rotation: nr };
         }));
     };
 
@@ -496,6 +528,16 @@ export const LivePageFrame = (props: any) => {
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [vdpInteraction]);
+
+    // Đóng menu chuột phải VDP bằng Esc. Click ra ngoài đóng qua BACKDROP (xem
+    // phần render) — KHÔNG dùng window 'pointerdown' vì cú chuột phải mở menu có
+    // thể tự đóng ngay (race giữa pointerdown mở và listener đóng).
+    useEffect(() => {
+        if (!vdpCtxMenu) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setVdpCtxMenu(null); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [vdpCtxMenu]);
 
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
@@ -2317,8 +2359,23 @@ export const LivePageFrame = (props: any) => {
                                  }
                              }}
                              onMouseDown={(e) => e.stopPropagation()}
+                             onContextMenu={(e) => {
+                                 if (!isVdpMode) return;
+                                 e.preventDefault();
+                                 e.stopPropagation();
+                                 // Chọn field (nếu chưa) rồi mở menu xoay tại vị trí chuột.
+                                 if (!safeSelectedIds.includes(field.id)) {
+                                     const sel = [field.id];
+                                     setSelectedVdpFieldIds(sel);
+                                     onVdpBoxSelect?.(sel);
+                                 }
+                                 setVdpCtxMenu({ x: e.clientX, y: e.clientY, fieldId: field.id });
+                             }}
                              onPointerDown={(e) => {
                                  if (editingTextId === field.id) return;
+                                 // Nút phải: để onContextMenu xử lý (mở menu xoay), KHÔNG
+                                 // khởi động move — nếu không sẽ vừa mở menu vừa kéo nhầm.
+                                 if (e.button === 2) return;
                                  e.stopPropagation();
                                  let newSelection = [...safeSelectedIds];
                                  
@@ -2351,7 +2408,7 @@ export const LivePageFrame = (props: any) => {
                                      const newGroupId = `group_${Date.now()}`;
                                      const hasMultiple = fieldsToMove.length > 1 || field.groupId;
                                      const newFieldsToMove: string[] = [];
-                                     const startFields: Record<string, {x: number, y: number, w: number, h: number}> = {};
+                                     const startFields: Record<string, {x: number, y: number, w: number, h: number, fontSize?: number}> = {};
                                      
                                      onVdpFieldsChange?.((prev: any[]) => {
                                          const copies: any[] = [];
@@ -2361,7 +2418,7 @@ export const LivePageFrame = (props: any) => {
                                              
                                              const copyId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
                                              newFieldsToMove.push(copyId);
-                                             startFields[copyId] = { x: f.x, y: f.y, w: f.width, h: f.height };
+                                             startFields[copyId] = { x: f.x, y: f.y, w: f.width, h: f.height, fontSize: f.fontSize };
                                              
                                              let newName = f.name;
                                              let newTextContent = f.textContent;
@@ -2428,11 +2485,11 @@ export const LivePageFrame = (props: any) => {
                                      });
                                  } else {
                                      // STANDARD MOVE/RESIZE
-                                     const startFields: Record<string, {x: number, y: number, w: number, h: number}> = {};
+                                     const startFields: Record<string, {x: number, y: number, w: number, h: number, fontSize?: number}> = {};
                                      fieldsToMove.forEach((id: string) => {
                                          const f = vdpFields.find((tf: any) => tf.id === id);
                                          if (f) {
-                                             startFields[id] = { x: f.x, y: f.y, w: f.width, h: f.height };
+                                             startFields[id] = { x: f.x, y: f.y, w: f.width, h: f.height, fontSize: f.fontSize };
                                          }
                                      });
                                      
@@ -2451,8 +2508,28 @@ export const LivePageFrame = (props: any) => {
                                  {field.fieldName || field.name || 'Chưa đặt tên'} ({field.type})
                              </div>
                              
-                             {/* Visual Placeholders */}
-                             <div className={`absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden ${(field.type === 'qrcode' || field.type === 'barcode') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')} ${field.type === 'text' ? 'p-1' : ''}`}>
+                             {/* Visual Placeholders — xoay nội dung quanh tâm box theo
+                                 field.rotation để khớp backend render_one_record. Box (w,h)
+                                 là footprint ĐÃ hoán cho 90/270; nội dung trước xoay có kích
+                                 thước hoán NGƯỢC lại (rotContentW/H), rồi rotate() quanh tâm. */}
+                             {(() => {
+                             // Đang sửa text: KHÔNG xoay wrapper (textarea xoay 90° rất khó gõ);
+                             // xoay lại ngay khi blur. Các loại field khác luôn xoay theo rotation.
+                             const editingThis = editingTextId === field.id;
+                             const rot = editingThis ? 0 : ((Number(field.rotation) || 0) % 360 + 360) % 360;
+                             const isVert = rot === 90 || rot === 270;
+                             const rotStyle: React.CSSProperties = rot === 0 ? {} : (isVert ? {
+                                 // Nội dung trước xoay: hoán w/h so với box footprint, căn giữa.
+                                 width: h, height: w, left: (w - h) / 2, top: (h - w) / 2,
+                                 transform: `rotate(${rot}deg)`, transformOrigin: 'center center',
+                             } : {
+                                 transform: `rotate(${rot}deg)`, transformOrigin: 'center center',
+                             });
+                             return (
+                             <div
+                                 className={`absolute flex items-center justify-center pointer-events-none overflow-hidden ${rot === 0 ? 'inset-0' : ''} ${(field.type === 'qrcode' || field.type === 'barcode') ? 'opacity-100' : 'mix-blend-multiply ' + (field.type === 'image' ? 'opacity-50' : 'opacity-80')} ${field.type === 'text' ? 'p-1' : ''}`}
+                                 style={rotStyle}
+                             >
                                  {(field.type === 'qrcode' || field.type === 'barcode') && (
                                      <VdpPreviewImage field={field} />
                                  )}
@@ -2507,17 +2584,13 @@ export const LivePageFrame = (props: any) => {
                                              field={field}
                                              scale={scale}
                                              text={field.textContent !== undefined ? field.textContent : `{${field.name}}`}
-                                             onAutoFit={(pt: number) => {
-                                                 const rounded = Math.round(pt * 10) / 10;
-                                                 if (onVdpFieldsChange && Math.abs((field.fontSize || 10) - rounded) > 0.2) {
-                                                     onVdpFieldsChange((prev: any[]) => prev.map((f: any) => f.id === field.id ? { ...f, fontSize: rounded } : f));
-                                                 }
-                                             }}
                                          />
                                      )
                                  )}
                              </div>
-                             
+                             );
+                             })()}
+
                              {/* Resize Handles: 4 góc + 4 cạnh (giống Illustrator) */}
                              {isSelected && (() => {
                                  const isQr = field.type === 'qrcode';
@@ -2551,7 +2624,7 @@ export const LivePageFrame = (props: any) => {
                                                  startX: e.clientX - rect.left,
                                                  startY: e.clientY - rect.top,
                                                  startFields: {
-                                                     [field.id]: { x: field.x, y: field.y, w: field.width, h: field.height }
+                                                     [field.id]: { x: field.x, y: field.y, w: field.width, h: field.height, fontSize: field.fontSize }
                                                  }
                                              });
                                          }}
@@ -2561,6 +2634,64 @@ export const LivePageFrame = (props: any) => {
                          </div>
                      );
                  });
+             })()}
+
+             {/* Menu chuột phải cho khung VDP: xoay nhanh (dùng chung field.rotation
+                 với dropdown "Xoay (độ)" bên panel). Backend chỉ render 0/90/180/270
+                 nên chỉ cung cấp các mức đó + xoay tương đối 90° CW/CCW. */}
+             {vdpCtxMenu && (() => {
+                 const target = vdpFields.find((f: any) => f.id === vdpCtxMenu.fieldId);
+                 if (!target) return null;
+                 const cur = ((Number(target.rotation) || 0) % 360 + 360) % 360;
+                 const items: { label: string; rot: number; active?: boolean }[] = [
+                     { label: 'Xoay 90° theo chiều kim đồng hồ', rot: (cur + 90) % 360 },
+                     { label: 'Xoay 90° ngược chiều kim đồng hồ', rot: (cur + 270) % 360 },
+                 ];
+                 const presets = [0, 90, 180, 270];
+                 // Portal ra document.body: overlay VDP nằm trong div trang có CSS
+                 // `transform` (rotate/scale trang) — position:fixed sẽ neo theo tổ
+                 // tiên transform đó chứ KHÔNG phải viewport, khiến menu (định vị bằng
+                 // clientX/clientY viewport) văng ra ngoài màn hình. Portal đưa menu ra
+                 // body để fixed + toạ độ chuột hoạt động đúng.
+                 return createPortal((
+                     <>
+                     {/* Backdrop bắt click NGOÀI menu để đóng — dùng backdrop thay vì
+                         window pointerdown listener để tránh race: cú chuột phải MỞ menu
+                         cũng phát pointerdown, listener window sẽ đóng ngay. Backdrop chỉ
+                         tồn tại SAU khi menu đã render nên không dính cú mở. */}
+                     <div className="fixed inset-0 z-context-menu" onPointerDown={() => setVdpCtxMenu(null)} onContextMenu={(e) => { e.preventDefault(); setVdpCtxMenu(null); }} />
+                     <div
+                         className="fixed z-context-menu min-w-[210px] bg-white dark:bg-[#1e1e1e] border border-slate-200 dark:border-white/10 shadow-[0_10px_30px_rgb(0,0,0,0.1)] dark:shadow-xl p-2 rounded-xl flex flex-col gap-0.5"
+                         style={{ left: Math.min(vdpCtxMenu.x, window.innerWidth - 220), top: Math.min(vdpCtxMenu.y, window.innerHeight - 260) }}
+                         onPointerDown={(e) => e.stopPropagation()}
+                         onClick={(e) => e.stopPropagation()}
+                         onContextMenu={(e) => e.preventDefault()}
+                     >
+                         <div className="px-3 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Xoay khung</div>
+                         {items.map((it) => (
+                             <button
+                                 key={it.label}
+                                 onClick={() => { rotateVdpField(vdpCtxMenu.fieldId, it.rot); setVdpCtxMenu(null); }}
+                                 className="w-full text-left px-3 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg outline-none transition-colors"
+                             >
+                                 {it.label}
+                             </button>
+                         ))}
+                         <div className="h-px bg-slate-100 dark:bg-white/5 my-1 mx-2"></div>
+                         <div className="grid grid-cols-4 gap-1 px-1">
+                             {presets.map((p) => (
+                                 <button
+                                     key={p}
+                                     onClick={() => { rotateVdpField(vdpCtxMenu.fieldId, p); setVdpCtxMenu(null); }}
+                                     className={`px-2 py-1.5 text-[12px] font-semibold rounded-lg outline-none transition-colors ${cur === p ? 'bg-blue-500 text-white' : 'text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-white/5'}`}
+                                 >
+                                     {p}°
+                                 </button>
+                             ))}
+                         </div>
+                     </div>
+                     </>
+                 ), document.body);
              })()}
 
 

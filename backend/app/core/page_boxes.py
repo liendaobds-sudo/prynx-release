@@ -159,10 +159,13 @@ class PageBoxesEngine:
                 page = doc.pages[pnum - 1]
                 render_page = pdf_render[pnum - 1]
 
-                # Get page dimensions
-                mb = _get_page_box(page, "/MediaBox")
-                page_w = mb[2] - mb[0]
-                page_h = mb[3] - mb[1]
+                # Hệ quy chiếu phải là CROPBOX, không phải MediaBox: pdfium
+                # render đúng vùng CropBox. Nếu lấy MediaBox làm gốc/tỉ lệ khi
+                # CropBox ≠ MediaBox thì pixel→point sẽ lệch (từng ra nguyên khổ
+                # gốc thay vì vùng nội dung). .cropbox tự fallback về MediaBox.
+                cb = _get_page_box(page, "/CropBox", fallback=_get_page_box(page, "/MediaBox"))
+                page_w = cb[2] - cb[0]
+                page_h = cb[3] - cb[1]
 
                 # Render at low DPI for fast detection
                 bitmap = render_page.render(scale=1.0)  # 72 DPI
@@ -184,21 +187,21 @@ class PageBoxesEngine:
                 y0, y1 = np.where(rows)[0][[0, -1]]
                 x0, x1 = np.where(cols)[0][[0, -1]]
 
-                # Convert pixel coords to points
+                # Convert pixel coords to points (gốc theo CropBox)
                 scale_x = page_w / pix_w
                 scale_y = page_h / pix_h
 
                 # pikepdf uses bottom-left origin (PDF standard)
-                crop_x0 = mb[0] + x0 * scale_x - margin_pt
-                crop_y0 = mb[1] + (pix_h - y1 - 1) * scale_y - margin_pt
-                crop_x1 = mb[0] + (x1 + 1) * scale_x + margin_pt
-                crop_y1 = mb[1] + (pix_h - y0) * scale_y + margin_pt
+                crop_x0 = cb[0] + x0 * scale_x - margin_pt
+                crop_y0 = cb[1] + (pix_h - y1 - 1) * scale_y - margin_pt
+                crop_x1 = cb[0] + (x1 + 1) * scale_x + margin_pt
+                crop_y1 = cb[1] + (pix_h - y0) * scale_y + margin_pt
 
-                # Clamp to mediabox
-                crop_x0 = max(mb[0], crop_x0)
-                crop_y0 = max(mb[1], crop_y0)
-                crop_x1 = min(mb[2], crop_x1)
-                crop_y1 = min(mb[3], crop_y1)
+                # Clamp trong CropBox (không vượt vùng đang hiển thị)
+                crop_x0 = max(cb[0], crop_x0)
+                crop_y0 = max(cb[1], crop_y0)
+                crop_x1 = min(cb[2], crop_x1)
+                crop_y1 = min(cb[3], crop_y1)
 
                 page[pikepdf.Name("/CropBox")] = pikepdf.Array([crop_x0, crop_y0, crop_x1, crop_y1])
 
@@ -301,9 +304,38 @@ class PageBoxesEngine:
                 page[pikepdf.Name("/TrimBox")] = pikepdf.Array(trim)
                 continue
 
-            # Snapshot nội dung trang hiện tại thành Form XObject (vector nguyên bản).
-            fx = page.as_form_xobject()
-            fx_name = page.add_resource(fx, pikepdf.Name.XObject)
+            # Snapshot nội dung GỐC của trang thành Form XObject ĐỘC LẬP.
+            # QUAN TRỌNG (chống đệ quy vô hạn): KHÔNG dùng page.as_form_xobject() —
+            # nó trả về form DÙNG CHUNG chính stream-object với page.Contents. Khi ta
+            # ghi đè page.Contents = nội-dung-mirror (có lệnh "/Fmx Do"), stream của
+            # form cũng bị đổi thành nội-dung-mirror → form vẽ lại CHÍNH NÓ → đệ quy
+            # vô hạn, mọi trình render (pdfium) TREO kể cả file MediaBox==CropBox.
+            # Cách chặn: đọc BYTES nội dung gốc TRƯỚC, dựng stream MỚI hoàn toàn tách
+            # rời page.Contents; cấp cho fx bản sao Resources gốc (không chứa /Fmx).
+            contents_obj = page.obj.get("/Contents")
+            if isinstance(contents_obj, pikepdf.Array):
+                orig_bytes = b"\n".join(bytes(s.read_bytes()) for s in contents_obj)
+            elif contents_obj is not None:
+                orig_bytes = bytes(contents_obj.read_bytes())
+            else:
+                orig_bytes = b""
+
+            try:
+                res_src = page.Resources
+            except Exception:
+                res_src = pikepdf.Dictionary()
+            orig_res = doc.make_indirect(pikepdf.Dictionary(res_src))
+
+            fx = pikepdf.Stream(doc, orig_bytes)
+            fx.Type = pikepdf.Name.XObject
+            fx.Subtype = pikepdf.Name.Form
+            fx.BBox = pikepdf.Array([mb[0], mb[1], mb[2], mb[3]])
+            fx.Resources = orig_res
+            fx_ref = doc.make_indirect(fx)
+            page[pikepdf.Name("/Resources")] = pikepdf.Dictionary({
+                "/XObject": pikepdf.Dictionary({"/Fmx": fx_ref})
+            })
+            fx_name = "/Fmx"
 
             def _draw(clip, matrix):
                 cx, cy, cw, ch = clip

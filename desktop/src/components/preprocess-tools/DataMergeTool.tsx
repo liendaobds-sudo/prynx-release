@@ -8,7 +8,7 @@ import { generateBarcodeDataURL } from '@/engine/barcode/barcodeEngine';
 import { FontSelector } from './FontSelector';
 import { ToolSectionLabel, ToolDivider, ToolNumberInput } from './ToolUI';
 import { useVdpTool } from '@/hooks/useVdpTool';
-import { sortFieldsGeometrically } from '@/lib/vdpUtils';
+import { sortFieldsGeometrically, buildMultiUpJobInput } from '@/lib/vdpUtils';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 
@@ -684,10 +684,13 @@ export default function DataMergeTool({
     const updateSelectedField = (changes: any) => {
         if (!setVdpFields || selectedFieldIds.length === 0) return;
 
-        // When rotation changes on a barcode, swap width↔height so the box rotates with it
+        // Khi đổi góc xoay: hoán width↔height cho MỌI loại field khi chuyển
+        // dọc↔ngang (90/270 ↔ 0/180). Backend render_one_record giả định
+        // "frontend đã hoán w/h cho field dọc" và áp cho mọi type, nên phải
+        // hoán ở đây cho cả text/image, không riêng barcode/qrcode.
         if (changes.rotation !== undefined) {
             const field = vdpFields.find(f => f.id === selectedFieldIds[0]);
-            if (field && (field.type === 'barcode' || field.type === 'qrcode')) {
+            if (field) {
                 const oldRot = field.rotation || 0;
                 const newRot = changes.rotation;
                 const oldIsVertical = (oldRot === 90 || oldRot === 270);
@@ -847,51 +850,7 @@ export default function DataMergeTool({
     // Xây dựng (fields, data) cho 1 job từ dữ liệu CSV — hỗ trợ chế độ Multi-up.
     const buildJobInput = (sourceData: Record<string, string>[]): { fields: any[]; data: Record<string, string>[] } => {
         if (!isMultiUp) return { fields: vdpFields, data: sourceData };
-        const slots: any[] = [];
-        const groupMap = new Map<string, any[]>();
-        vdpFields.forEach(f => {
-            if (f.groupId) {
-                if (!groupMap.has(f.groupId)) groupMap.set(f.groupId, []);
-                groupMap.get(f.groupId)!.push(f);
-            } else {
-                slots.push({ ...f, isSlot: true, fields: [f] });
-            }
-        });
-        groupMap.forEach((fieldsInGroup, groupId) => {
-            let minX = fieldsInGroup[0].x || fieldsInGroup[0].position?.x;
-            let minY = fieldsInGroup[0].y || fieldsInGroup[0].position?.y;
-            fieldsInGroup.forEach(f => {
-                const fx = f.x || f.position?.x;
-                const fy = f.y || f.position?.y;
-                if (fx < minX) minX = fx;
-                if (fy < minY) minY = fy;
-            });
-            slots.push({ id: `slot_${groupId}`, name: `Group_${groupId}`, position: { x: minX, y: minY }, isSlot: true, fields: fieldsInGroup });
-        });
-        slots.forEach(s => { if (!s.position) s.position = { x: s.x, y: s.y }; });
-        const sortedSlots = sortFieldsGeometrically(slots, 'rows');
-        const numSlots = sortedSlots.length;
-        const totalPages = Math.ceil(sourceData.length / numSlots);
-        const multiUpVdpFields: any[] = [];
-        for (let s = 0; s < numSlots; s++) {
-            sortedSlots[s].fields.forEach((originalField: any) => {
-                const newFieldName = `${originalField.name}_slot${s}`;
-                multiUpVdpFields.push({ ...originalField, name: newFieldName, textContent: originalField.textContent?.replace(new RegExp(`\\{${originalField.name}\\}`, 'g'), `{${newFieldName}}`) });
-            });
-        }
-        const data: Record<string, string>[] = [];
-        for (let p = 0; p < totalPages; p++) {
-            const pageRow: Record<string, string> = {};
-            for (let s = 0; s < numSlots; s++) {
-                const rowIndex = p * numSlots + s;
-                const srcRow = sourceData[rowIndex] || {};
-                sortedSlots[s].fields.forEach((originalField: any) => {
-                    pageRow[`${originalField.name}_slot${s}`] = srcRow[originalField.name] || '';
-                });
-            }
-            data.push(pageRow);
-        }
-        return { fields: multiUpVdpFields, data };
+        return buildMultiUpJobInput(vdpFields, csvHeaders, sourceData);
     };
 
     // Đọc 1 file CSV → { headers, data }. Hỗ trợ file KHÔNG có hàng tiêu đề:
@@ -1120,6 +1079,29 @@ export default function DataMergeTool({
         return { rows: csvData, columns: csvHeaders };
     };
 
+    // Lấy TOÀN BỘ record để sinh lô. Với xlsx/gsheet, csvData chỉ chứa 20 dòng
+    // PREVIEW (từ /datasource) → phải đọc lại full source ở backend, nếu không
+    // job chỉ sinh 20 trang (mất dữ liệu âm thầm). csv/manual đã nạp đủ dòng nên
+    // trả thẳng csvData.
+    const resolveFullSourceData = async (): Promise<Record<string, string>[]> => {
+        if (dataMode === 'xlsx' && xlsxFile) {
+            const result = await readVdpDatasource({
+                kind: 'xlsx', file: xlsxFile,
+                ...(selectedSheet ? { sheet: selectedSheet } : {}),
+                hasHeader: csvHasHeader, includeAllRows: true,
+            });
+            return result.rows ?? result.preview_rows;
+        }
+        if (dataMode === 'gsheet' && gsheetUrl.trim()) {
+            const result = await readVdpDatasource({
+                kind: 'gsheet', url: gsheetUrl.trim(),
+                hasHeader: csvHasHeader, includeAllRows: true,
+            });
+            return result.rows ?? result.preview_rows;
+        }
+        return csvData;
+    };
+
     // Chạy validate qua backend, cập nhật gating + issues vào state. Trả kết quả
     // gating để caller (handleGenerate / nút kiểm tra) quyết định hành vi.
     const runValidate = async (): Promise<{ gating: VdpGating; issues: VdpIssue[] } | null> => {
@@ -1238,27 +1220,29 @@ export default function DataMergeTool({
 
         setIsGenerating(true);
         try {
-            setStatusMessage(`Đang đẩy dữ liệu lên máy chủ...`);
-
             // Tuân thủ kết quả cuối cùng: dùng file đã áp dụng sửa đổi trang
             // (xóa/xoay/sắp xếp) làm template, không dùng file gốc.
             const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
 
-            const { fields: jobFields, data: jobData } = buildJobInput(csvData);
+            // Nguồn xlsx/gsheet: csvData chỉ là 20 dòng PREVIEW. Đọc lại TOÀN BỘ
+            // record ở backend trước khi sinh lô, tránh xuất thiếu dữ liệu âm thầm.
+            const fullData = await resolveFullSourceData();
+
+            const { fields: jobFields, data: jobData } = buildJobInput(fullData);
             const jobId = await startVdpJobBackend(templateFile, jobFields, jobData);
-            
+
             // Poll
             pollAbortRef.current = new AbortController();
             const result = await pollVdpJob(jobId, setStatusMessage, true, pollAbortRef.current.signal);
             const blob = result.blob;
             const path = result.path;
             if (!blob) throw new Error('Không nhận được file kết quả từ máy chủ');
-            
+
             const originalName = pdfFile.name.replace(/\.[^/.]+$/, "") || "Document";
-            const outName = `VDP_${originalName}_${csvData.length || 1}records.pdf`;
+            const outName = `VDP_${originalName}_${fullData.length || 1}records.pdf`;
             
             if (spawnNewTab && onSpawnTab) {
-                setStatusMessage(`Đang mở file kết quả (${csvData.length} bản ghi)...`);
+                setStatusMessage(`Đang mở file kết quả (${fullData.length} bản ghi)...`);
                 // Small delay so the UI updates with the message before the heavy tab creation
                 await new Promise(r => setTimeout(r, 100));
                 onSpawnTab(blob, outName, path ?? undefined);
@@ -1658,6 +1642,23 @@ export default function DataMergeTool({
                                 pageDimMm={viewerPageDimMm}
                             />
                         )}
+                        {/* Xoay: áp cho MỌI loại field (text/qr/barcode/image). Backend
+                            render_one_record xử lý field.rotation cho tất cả; trước đây
+                            control này chỉ hiện trong khối barcode nên text/qr/ảnh không
+                            xoay được. */}
+                        <div className="flex flex-col gap-1 mt-1">
+                            <span className="text-[11px] font-medium text-slate-500 block mb-1">Xoay (độ)</span>
+                            <select
+                                value={selectedField.rotation || 0}
+                                onChange={(e) => updateSelectedField({ rotation: Number(e.target.value) })}
+                                className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
+                            >
+                                <option value={0}>0°</option>
+                                <option value={90}>90°</option>
+                                <option value={180}>180°</option>
+                                <option value={270}>270°</option>
+                            </select>
+                        </div>
                         {['text', 'qrcode', 'barcode'].includes(selectedField.type) && (
                             <div className="flex flex-col gap-3 mt-1">
                                 <div className="flex flex-col gap-1">
@@ -2033,19 +2034,6 @@ export default function DataMergeTool({
                                                 </div>
                                             </div>
                                         )}
-                                    </div>
-                                    <div className="flex flex-col gap-1 col-span-2 mt-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Xoay (độ)</span>
-                                        <select 
-                                            value={selectedField.rotation || 0}
-                                            onChange={(e) => updateSelectedField({ rotation: Number(e.target.value) })}
-                                            className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
-                                        >
-                                            <option value={0}>0°</option>
-                                            <option value={90}>90°</option>
-                                            <option value={180}>180°</option>
-                                            <option value={270}>270°</option>
-                                        </select>
                                     </div>
                                 </div>
                             </div>
