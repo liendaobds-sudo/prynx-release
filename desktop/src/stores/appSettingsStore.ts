@@ -9,6 +9,7 @@ interface AppSettingsState {
   measurementUnit: 'mm' | 'cm' | 'inch';
   previewQuality: 'high' | 'fast';
   showRulers: boolean;
+  showMenuBar: boolean;
   toggleToolVisibility: (toolKey: string) => void;
   toggleFavoriteTool: (toolKey: string) => void;
   setDefaultExportPath: (path: string | null) => void;
@@ -16,6 +17,7 @@ interface AppSettingsState {
   setMeasurementUnit: (unit: 'mm' | 'cm' | 'inch') => void;
   setPreviewQuality: (quality: 'high' | 'fast') => void;
   toggleRulers: () => void;
+  setShowMenuBar: (show: boolean) => void;
   toolMenuWidth: number;
   homeToolMenuWidth: number;
   isToolMenuExpanded: boolean;
@@ -40,6 +42,7 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       measurementUnit: 'mm',
       previewQuality: 'high',
       showRulers: false,
+      showMenuBar: true,
       toggleToolVisibility: (toolKey) => set((state) => ({
         hiddenTools: state.hiddenTools.includes(toolKey)
           ? state.hiddenTools.filter((k) => k !== toolKey)
@@ -55,6 +58,7 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       setMeasurementUnit: (unit) => set({ measurementUnit: unit }),
       setPreviewQuality: (quality) => set({ previewQuality: quality }),
       toggleRulers: () => set((state) => ({ showRulers: !state.showRulers })),
+      setShowMenuBar: (show) => set({ showMenuBar: show }),
       toolMenuWidth: 390,
       homeToolMenuWidth: 320,
       isToolMenuExpanded: false,

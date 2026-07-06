@@ -10,20 +10,25 @@ import { Button } from './Button';
 import CutterMachinesPanel from './imposition-tools/cut-export/CutterMachinesPanel';
 import { Star, X } from 'lucide-react';
 
+type SettingsTab = 'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter';
+
 interface SettingsModalProps {
   onClose: () => void;
+  /** Tab mở sẵn khi vào (VD từ menu Help > Phím tắt). Mặc định 'tools'. */
+  initialTab?: SettingsTab;
 }
 
-export default function SettingsModal({ onClose }: SettingsModalProps) {
+export default function SettingsModal({ onClose, initialTab = 'tools' }: SettingsModalProps) {
   const { 
     hiddenTools, toggleToolVisibility, favoriteTools, toggleFavoriteTool,
     defaultExportPath, setDefaultExportPath,
     autoRenameFormat, setAutoRenameFormat,
     measurementUnit, setMeasurementUnit,
-    previewQuality, setPreviewQuality
+    previewQuality, setPreviewQuality,
+    showMenuBar, setShowMenuBar
   } = useAppSettingsStore();
 
-  const [activeTab, setActiveTab] = useState<'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter'>('tools');
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -197,6 +202,27 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 </p>
 
                 <div className="space-y-6 flex-1 pr-4">
+                  <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200">Thanh menu (File / Edit / View…)</h4>
+                        <p className="text-[12px] text-slate-500 dark:text-zinc-400 mt-1 leading-snug">
+                          Hiện thanh menu ngang kiểu Acrobat cho khách quen thao tác bằng chuột. Tắt đi để giao diện gọn tối giản.
+                        </p>
+                      </div>
+                      <label className="relative flex items-center cursor-pointer group shrink-0 mt-0.5">
+                        <input
+                          type="checkbox"
+                          className="sr-only peer"
+                          checked={showMenuBar}
+                          onChange={() => setShowMenuBar(!showMenuBar)}
+                        />
+                        <div className="w-11 h-6 bg-slate-200 dark:!bg-zinc-700 border border-slate-300 dark:!border-white/10 rounded-lg peer-checked:bg-emerald-500 peer-checked:border-emerald-600 shadow-inner transition-all duration-300"></div>
+                        <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-md h-[18px] w-[18px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[20px]"></div>
+                      </label>
+                    </div>
+                  </div>
+
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
                     <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">Đơn vị đo lường mặc định</h4>
                     <div className="flex gap-4">

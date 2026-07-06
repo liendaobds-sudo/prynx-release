@@ -28,6 +28,8 @@ import type { UseEditSession } from '../hooks/useEditSession';
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
 interface Props {
+    /** Tab đang hiển thị? — chỉ tab active mới xử lý lệnh menu (tránh mọi tab mounted cùng phản ứng). */
+    isActive?: boolean;
     onViewerDirtyChange?: (isDirty: boolean) => void;
     onExtractPages?: (indices: number[], deleteAfter: boolean) => void;
     onObjectDelete?: (objs: any[], pageNum: number) => void;
@@ -41,7 +43,7 @@ interface Props {
     editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, onViewerDirtyChange, editSession }: Props) {
+export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, onViewerDirtyChange, editSession }: Props) {
     // ═══ Global Store ═══
     const {
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue,
@@ -104,6 +106,7 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
     // ── Crop PDF: lấy/đảm bảo file_id + áp kết quả crop vào viewer ──
     const setSelectionFileId = useWorkspaceStore(s => s.setSelectionFileId);
     const setIsCropMode = useWorkspaceStore(s => s.setIsCropMode);
+    const setIsObjectEditMode = useWorkspaceStore(s => s.setIsObjectEditMode);
 
     const ensureCropFileId = useCallback(async () => {
         if (selectionFileId) return selectionFileId;
@@ -293,6 +296,39 @@ export default function AcrobatViewer({ onExtractPages, onObjectDelete, fetchObj
         window.addEventListener('prynx-toggle-layer-panel', handleToggleLayerPanel);
         return () => window.removeEventListener('prynx-toggle-layer-panel', handleToggleLayerPanel);
     }, [setIsLayerPanelOpen]);
+
+    // ── Menu bar (kiểu Acrobat) → lệnh thao tác trên viewer. Mọi tab đều mounted nên
+    //    CHỈ tab active mới xử lý (tránh mọi tab cùng phản ứng). App-level (New/Open/Save…)
+    //    xử lý ở AppInner; ở đây chỉ nhận lệnh liên quan trực tiếp tới viewer trang hiện tại.
+    useEffect(() => {
+        if (!isActive) return;
+        const handleMenuCommand = (e: Event) => {
+            const cmd = (e as CustomEvent).detail?.cmd as string;
+            switch (cmd) {
+                case 'zoom-in': setZoom(z => Math.min(64, z * 1.25)); setFitMode('custom'); break;
+                case 'zoom-out': setZoom(z => Math.max(0.01, z / 1.25)); setFitMode('custom'); break;
+                case 'zoom-100': setZoom(1); setFitMode('custom'); break;
+                case 'fit-width': applyFitWidth(); break;
+                case 'fit-page': applyFitPage(); break;
+                case 'layout-single-fit': setPageDisplayMode('single_fit'); break;
+                case 'layout-single-scroll': setPageDisplayMode('single_scroll'); break;
+                case 'layout-two-fit': setPageDisplayMode('two_fit'); break;
+                case 'layout-two-scroll': setPageDisplayMode('two_scroll'); break;
+                case 'first-page': navigatePage(1); break;
+                case 'last-page': navigatePage(pageOrder.length); break;
+                case 'prev-page': navigatePage(activePage - 1); break;
+                case 'next-page': navigatePage(activePage + 1); break;
+                case 'toggle-rulers': toggleRulers(); break;
+                case 'toggle-object-edit': setIsObjectEditMode(v => !v); break;
+                case 'crop': setIsCropMode(true); setIsObjectEditMode(false); setToolMode('pointer'); break;
+                case 'delete-pages': setIsDeleteModalOpen(true); break;
+                case 'undo': undo(); break;
+                case 'redo': redo(); break;
+            }
+        };
+        window.addEventListener('prynx-menu-command', handleMenuCommand);
+        return () => window.removeEventListener('prynx-menu-command', handleMenuCommand);
+    }, [isActive, setZoom, setFitMode, applyFitWidth, applyFitPage, setPageDisplayMode, navigatePage, pageOrder.length, activePage, toggleRulers, setIsObjectEditMode, setIsCropMode, setToolMode, undo, redo]);
 
     // Jump to highlighted issue or specific page
     useEffect(() => {

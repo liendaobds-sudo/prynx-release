@@ -8,7 +8,12 @@ import { createBlankPdfFile } from './lib/createBlankPdf';
 import { scheduleWarmupPdfjs } from './lib/pdfWarmup';
 import SystemIntegrations from './components/SystemIntegrations';
 import UpdateChecker from './components/UpdateChecker';
-import { TOOL_REGISTRY, getTabTitle, getExistingInstance, type AppToolId } from './lib/toolRegistry';
+import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, type AppToolId } from './lib/toolRegistry';
+import { MenuBar, type MenuDef } from './components/MenuBar';
+import AboutModal, { SUPPORT } from './components/AboutModal';
+import { useAppSettingsStore } from './stores/appSettingsStore';
+import { useTheme } from './hooks/useTheme';
+import { useRecentFiles } from './lib/useRecentFiles';
 import { FileProvider, useFileContext } from './lib/fileContext';
 import { isOutputFile } from './lib/constants';
 import { useAuthStore } from './stores/useAuthStore';
@@ -196,7 +201,12 @@ function AppInner() {
   const [recoverySnaps, setRecoverySnaps] = useState<RecoverySnapshot[] | null>(null);
   const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
   const [isNewDocOpen, setIsNewDocOpen] = useState(false);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [aboutAutoCheck, setAboutAutoCheck] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter'>('tools');
   const fileCtx = useFileContext();
+  const { showMenuBar, showRulers, hiddenTools } = useAppSettingsStore();
+  const { theme, toggleTheme } = useTheme();
 
   // Warm-up pdfjs worker lúc app rảnh để loại bỏ cold-start vài giây ở lần
   // mở/tạo PDF đầu tiên (qua pdfjs). Chạy nền, không chặn UI.
@@ -619,6 +629,35 @@ function AppInner() {
     return () => window.removeEventListener('prynx-request-quit', onQuit);
   }, []);
 
+  // Mở file (PDF/ảnh) — dùng chung cho phím tắt Ctrl+O và menu File > Mở.
+  const handleOpenFile = useCallback(() => {
+    if ((window as any).__TAURI_INTERNALS__) {
+      import('@tauri-apps/plugin-dialog').then(async ({ open }) => {
+        try {
+          const selected = await open({
+            multiple: false,
+            filters: [{ name: 'Tài liệu & Hình ảnh', extensions: ['pdf', 'png', 'jpg', 'jpeg'] }]
+          });
+          if (selected && typeof selected === 'string') {
+            const { stat } = await import('@tauri-apps/plugin-fs');
+            const fileStat = await stat(selected);
+            const name = selected.split('\\').pop() || selected.split('/').pop() || 'unknown';
+            const lower = name.toLowerCase();
+            const type = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
+            const fileObj = new File([], name, { type });
+            Object.defineProperty(fileObj, 'path', { value: selected });
+            Object.defineProperty(fileObj, 'size', { value: fileStat.size });
+            handleOpenApp('imposition', { file: fileObj });
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      });
+    } else {
+      document.getElementById('home-generic-pdf-input')?.click();
+    }
+  }, [handleOpenApp]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Block F5 and Ctrl+R (reload) completely
@@ -648,36 +687,12 @@ function AppInner() {
       }
       if (e.ctrlKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        if ((window as any).__TAURI_INTERNALS__) {
-          import('@tauri-apps/plugin-dialog').then(async ({ open }) => {
-            try {
-              const selected = await open({
-                multiple: false,
-                filters: [{ name: 'Tài liệu & Hình ảnh', extensions: ['pdf', 'png', 'jpg', 'jpeg'] }]
-              });
-              if (selected && typeof selected === 'string') {
-                const { stat } = await import('@tauri-apps/plugin-fs');
-                const fileStat = await stat(selected);
-                const name = selected.split('\\').pop() || selected.split('/').pop() || 'unknown';
-                const lower = name.toLowerCase();
-                const type = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
-                const fileObj = new File([], name, { type });
-                Object.defineProperty(fileObj, 'path', { value: selected });
-                Object.defineProperty(fileObj, 'size', { value: fileStat.size });
-                handleOpenApp('imposition', { file: fileObj });
-              }
-            } catch (err) {
-              console.error(err);
-            }
-          });
-        } else {
-            document.getElementById('home-generic-pdf-input')?.click();
-        }
+        handleOpenFile();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleCloseTab, handleOpenApp]);
+  }, [handleCloseTab, handleOpenApp, handleOpenFile]);
 
   const accumulatedFiles = useRef<File[]>([]);
   const sysTimeoutRef = useRef<any>(null);
@@ -726,12 +741,147 @@ function AppInner() {
     return () => window.removeEventListener('system-files-received', handleSystemFiles);
   }, [handleOpenApp]);
 
+  // ── MENU BAR (kiểu Acrobat) — lệnh viewer đi qua sự kiện 'prynx-menu-command'
+  //    (chỉ tab active xử lý); lệnh app-level gọi handler trực tiếp. ─────────────
+  const recentFiles = useRecentFiles((s) => s.files);
+  const viewerCmd = useCallback((cmd: string) => {
+    window.dispatchEvent(new CustomEvent('prynx-menu-command', { detail: { cmd } }));
+  }, []);
+  const isToolActive = activeTabId !== 'home';
+
+  const openRecentFile = useCallback(async (rf: { path: string; name: string; size: number }) => {
+    if (!(window as any).__TAURI_INTERNALS__) return;
+    try {
+      const lower = rf.name.toLowerCase();
+      const type = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      const fileObj = new File([], rf.name, { type });
+      Object.defineProperty(fileObj, 'path', { value: rf.path });
+      Object.defineProperty(fileObj, 'size', { value: rf.size });
+      handleOpenApp('imposition', { file: fileObj });
+    } catch (err) {
+      console.error(err);
+    }
+  }, [handleOpenApp]);
+
+  const openExternal = useCallback(async (url: string) => {
+    try {
+      if ((window as any).__TAURI_INTERNALS__) {
+        const { open } = await import('@tauri-apps/plugin-shell');
+        await open(url);
+      } else {
+        window.open(url, '_blank', 'noopener');
+      }
+    } catch (e) {
+      console.error('[Link] open failed:', e);
+    }
+  }, []);
+
+  const menus: MenuDef[] = [
+    {
+      label: 'File',
+      items: [
+        { label: 'Tài liệu mới', shortcut: 'Ctrl+N', onClick: () => setIsNewDocOpen(true) },
+        { label: 'Mở file…', shortcut: 'Ctrl+O', onClick: handleOpenFile },
+        { label: 'Mở gần đây', disabled: recentFiles.length === 0,
+          submenu: recentFiles.slice(0, 12).map((rf) => ({ label: rf.name, onClick: () => openRecentFile(rf) })) },
+        { separator: true },
+        { label: 'Lưu', shortcut: 'Ctrl+S', disabled: !isToolActive,
+          onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: false } })) },
+        { label: 'Lưu thành…', shortcut: 'Ctrl+Shift+S', disabled: !isToolActive,
+          onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: true } })) },
+        { separator: true },
+        { label: 'Đóng tab', shortcut: 'Ctrl+W', disabled: !isToolActive, onClick: () => handleCloseTab(activeTabId) },
+        { label: 'Thoát', shortcut: 'Alt+F4', onClick: () => window.dispatchEvent(new CustomEvent('prynx-request-quit')) },
+      ],
+    },
+    {
+      label: 'Edit',
+      items: [
+        { label: 'Hoàn tác', shortcut: 'Ctrl+Z', disabled: !isToolActive, onClick: () => viewerCmd('undo') },
+        { label: 'Làm lại', shortcut: 'Ctrl+Y', disabled: !isToolActive, onClick: () => viewerCmd('redo') },
+        { separator: true },
+        { label: 'Chỉnh sửa đối tượng', disabled: !isToolActive, onClick: () => viewerCmd('toggle-object-edit') },
+        { label: 'Cắt khổ (Crop)', disabled: !isToolActive, onClick: () => viewerCmd('crop') },
+        { label: 'Xóa trang…', disabled: !isToolActive, onClick: () => viewerCmd('delete-pages') },
+      ],
+    },
+    {
+      label: 'View',
+      items: [
+        { label: 'Phóng to', shortcut: 'Ctrl++', disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
+        { label: 'Thu nhỏ', shortcut: 'Ctrl+-', disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
+        { label: 'Về 100%', disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
+        { separator: true },
+        { label: 'Vừa chiều ngang', disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },
+        { label: 'Vừa trọn trang', disabled: !isToolActive, onClick: () => viewerCmd('fit-page') },
+        { separator: true },
+        { label: 'Xem một trang', disabled: !isToolActive, onClick: () => viewerCmd('layout-single-fit') },
+        { label: 'Cuộn trang dọc', disabled: !isToolActive, onClick: () => viewerCmd('layout-single-scroll') },
+        { label: 'Xem hai trang', disabled: !isToolActive, onClick: () => viewerCmd('layout-two-fit') },
+        { label: 'Cuộn hai trang', disabled: !isToolActive, onClick: () => viewerCmd('layout-two-scroll') },
+        { separator: true },
+        { label: 'Thước đo (Rulers)', checked: showRulers, disabled: !isToolActive, onClick: () => viewerCmd('toggle-rulers') },
+        { label: 'Giao diện Tối', checked: theme === 'dark', onClick: toggleTheme },
+      ],
+    },
+    {
+      label: 'Tools',
+      // Mỗi category = 1 mục cha có ▶, rê chuột xổ ra tool con (tránh đổ hết ~25 tool ra 1 cột).
+      items: TOOL_CATEGORIES.flatMap((cat) => {
+        const tools = getToolsByCategory(cat.id).filter((t) => t.isEnabled && !hiddenTools.includes(getToolUniqueKey(t)));
+        if (tools.length === 0) return [];
+        return [{
+          label: cat.title,
+          submenu: tools.map((t) => ({
+            label: t.title,
+            icon: t.icon,
+            onClick: () => handleOpenApp(t.id, t.defaultPayload),
+          })),
+        }];
+      }),
+    },
+    {
+      label: 'Window',
+      items: tabs.length > 1
+        ? tabs.map((t) => ({
+            label: t.title,
+            checked: t.id === activeTabId,
+            onClick: () => setActiveTabId(t.id),
+          }))
+        : [{ label: 'Chỉ có tab Home', disabled: true }],
+    },
+    {
+      label: 'Help',
+      items: [
+        { label: 'Cài đặt & Cấu hình', shortcut: 'Ctrl+K', onClick: () => { setSettingsInitialTab('tools'); setIsGlobalSettingsOpen(true); } },
+        { label: 'Phím tắt', onClick: () => { setSettingsInitialTab('shortcuts'); setIsGlobalSettingsOpen(true); } },
+        { separator: true },
+        { label: 'Trang chủ PrintSolutions.vn', onClick: () => openExternal(SUPPORT.website) },
+        { label: 'Liên hệ hỗ trợ', submenu: [
+          { label: `Email: ${SUPPORT.email}`, onClick: () => openExternal(`mailto:${SUPPORT.email}`) },
+          { label: `Điện thoại: ${SUPPORT.phone}`, onClick: () => openExternal(`tel:${SUPPORT.phone}`) },
+          { label: `Zalo: ${SUPPORT.phone}`, onClick: () => openExternal(SUPPORT.zalo) },
+        ] },
+        { label: 'Kiểm tra cập nhật', onClick: () => { setAboutAutoCheck(true); setIsAboutOpen(true); } },
+        { separator: true },
+        { label: 'Giới thiệu PrynX', onClick: () => { setAboutAutoCheck(false); setIsAboutOpen(true); } },
+      ],
+    },
+  ];
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-[#e6e8eb] dark:bg-[#1a1a1a] select-none text-slate-800 dark:text-zinc-200 relative">
       <SystemIntegrations />
       <UpdateChecker />
 
       <TitleBar onOpenSettings={() => setIsGlobalSettingsOpen(true)} />
+
+      {/* MENU BAR (kiểu Acrobat) — bật/tắt trong Cài đặt > Không gian làm việc */}
+      {showMenuBar && (
+        <div className="h-7 w-full shrink-0 bg-[#f0f0f0] dark:bg-[#121212] border-b border-black/10 dark:border-white/10 flex items-center pl-4 z-[100] relative">
+          <MenuBar menus={menus} />
+        </div>
+      )}
 
       {/* ACROBAT MDI TAB BAR */}
       <div className="flex items-end min-h-[34px] bg-[#f0f0f0] dark:bg-[#121212] shrink-0 overflow-x-auto overflow-y-hidden border-b border-black/10 dark:border-white/10 pl-6 pr-4 pt-1 gap-1.5 focus:outline-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
@@ -953,7 +1103,11 @@ function AppInner() {
       )}
 
       {isGlobalSettingsOpen && (
-        <SettingsModal onClose={() => setIsGlobalSettingsOpen(false)} />
+        <SettingsModal initialTab={settingsInitialTab} onClose={() => setIsGlobalSettingsOpen(false)} />
+      )}
+
+      {isAboutOpen && (
+        <AboutModal autoCheck={aboutAutoCheck} onClose={() => setIsAboutOpen(false)} />
       )}
 
       <NewDocumentModal
