@@ -445,7 +445,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
         if (file && isOutputFile(file.name)) return true;
 
-        if (viewerPageRotations && Object.keys(viewerPageRotations).length > 0) return true;
+        // viewerPageRotations là number[] THEO VỊ TRÍ, luôn đầy đủ độ dài (kể cả toàn 0).
+        // Phải kiểm CÓ GÓC KHÁC 0 — KHÔNG dùng .length (bật oan cờ "đang sửa" → auto-save +
+        // prompt lưu oan dù chưa xoay gì). Object.values chạy đúng cả trên array lẫn record cũ.
+        if (viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0)) return true;
         if (vdpFields && vdpFields.length > 0) return true;
         return false;
     }, [isSaved, history.length, file, viewerPageRotations, vdpFields, viewerDirty]);
@@ -491,7 +494,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         if (!initialRecovery) return;
         if (initialRecovery.viewerPageOrder) setViewerPageOrder(initialRecovery.viewerPageOrder);
-        if (initialRecovery.viewerPageRotations) setViewerPageRotations(initialRecovery.viewerPageRotations);
+        if (initialRecovery.viewerPageRotations) {
+            const raw = initialRecovery.viewerPageRotations;
+            // Migrate dạng CŨ Record<pageNum,deg> → number[] THEO VỊ TRÍ (out[i]=góc trang
+            // ở vị trí i trong pageOrder). Snapshot mới đã là mảng → dùng thẳng.
+            if (Array.isArray(raw)) {
+                setViewerPageRotations(raw);
+            } else {
+                const order = initialRecovery.viewerPageOrder || [];
+                setViewerPageRotations(order.map((pn: number) => (raw as Record<string, number>)[String(pn)] || 0));
+            }
+        }
         if (initialRecovery.vdpFields) setVdpFields(initialRecovery.vdpFields);
         setIsSaved(false);  // khôi phục = trạng thái ĐANG-SỬA
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1347,14 +1360,21 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
 
-        for (const pIdx of viewerPageOrder) {
+        // rotations là number[] THEO VỊ TRÍ (per-instance rotation) — đọc theo index vòng
+        // lặp, KHÔNG theo số trang pIdx. Fallback dữ liệu cũ Record<pageNum,deg>.
+        const rotAt = (i: number, pIdx: number): number => {
+            if (Array.isArray(rotations)) return rotations[i] || 0;
+            return (rotations as Record<number, number>)[pIdx] || 0;
+        };
+        for (let i = 0; i < viewerPageOrder.length; i++) {
+            const pIdx = viewerPageOrder[i];
             if (pIdx === -1) {
                 const firstPage = srcDoc.getPages()[0];
                 const defaultDim = firstPage ? { w: firstPage.getSize().width, h: firstPage.getSize().height } : { w: 595.28, h: 841.89 };
                 newDoc.addPage([defaultDim.w, defaultDim.h]);
             } else {
                 const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
-                const rot = rotations[pIdx];
+                const rot = rotAt(i, pIdx);
                 if (rot) {
                     const currentRot = copiedPage.getRotation().angle;
                     copiedPage.setRotation(degrees(currentRot + rot));
@@ -1387,7 +1407,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
      */
     const getWorkingFile = async (): Promise<File> => {
         const hasOrderEdits = !!(viewerPageOrder && viewerPageOrder.length > 0);
-        const hasRotEdits = !!(viewerPageRotations && Object.keys(viewerPageRotations).length > 0);
+        // viewerPageRotations giờ là number[] THEO VỊ TRÍ, flattenRotations luôn tạo mảng
+        // đầy đủ độ dài KỂ CẢ khi mọi góc = 0 → phải kiểm "có góc ≠ 0", không phải "có key"
+        // (nếu dùng .length sẽ bật cờ sửa oan → bake file thừa).
+        const hasRotEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
         if ((hasOrderEdits || hasRotEdits) && file) {
             const baked = await applyAcrobatEdits();
             if (baked) return new File([baked], file.name, { type: 'application/pdf' });
@@ -1598,12 +1621,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const firstPage = srcDoc.getPages()[0];
             const defaultDim = firstPage ? { w: firstPage.getSize().width, h: firstPage.getSize().height } : { w: 595.28, h: 841.89 }; // A4 fallback
 
+            // viewerPageRotations giờ là number[] THEO VỊ TRÍ. indices ở đây là SỐ TRANG
+            // (do AcrobatViewer truyền pageOrder[pos]) → map số trang về vị trí đầu tiên
+            // trong viewerPageOrder để tra góc. Fallback dữ liệu CŨ: nếu là Record<pageNum,deg>
+            // thì tra thẳng theo số trang (per-instance rotation 2026-07-06).
+            const rotsAny = viewerPageRotations as any;
+            const rotIsArray = Array.isArray(rotsAny);
             for (const pIdx of indices) {
                 if (pIdx === -1) {
                     newDoc.addPage([defaultDim.w, defaultDim.h]);
                 } else {
                     const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
-                    const rot = viewerPageRotations[pIdx];
+                    const rot = rotIsArray
+                        ? (rotsAny[viewerPageOrder.indexOf(pIdx)] || 0)
+                        : (rotsAny[pIdx] || 0);
                     if (rot) {
                         const currentRot = copiedPage.getRotation().angle;
                         copiedPage.setRotation(degrees(currentRot + rot));

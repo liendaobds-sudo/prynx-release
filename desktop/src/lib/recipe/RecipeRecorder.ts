@@ -23,7 +23,9 @@ import { RECIPE_OP_META, buildRecipeStep } from './recipeOps';
 /** Snapshot phụ kèm Step khi cần (chụp tại thời điểm commit). */
 export interface RecorderExtras {
     viewerPageOrder?: number[];
-    viewerPageRotations?: Record<number, number>;
+    // number[] THEO VỊ TRÍ (out[i]=góc trang ở vị trí i) — khớp store sau khi đổi sang
+    // per-instance rotation (2026-07-06). Dạng cũ Record đã được migrate ở biên restore.
+    viewerPageRotations?: number[];
 }
 
 interface PendingNote {

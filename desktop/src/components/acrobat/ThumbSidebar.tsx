@@ -6,6 +6,8 @@ interface ThumbSidebarProps {
     // Page state
     pageOrder: number[];
     setPageOrder: React.Dispatch<React.SetStateAction<number[]>>;
+    pageInstanceIds: string[];
+    setPageInstanceIds: React.Dispatch<React.SetStateAction<string[]>>;
     selectedIndices: Set<number>;
     setSelectedIndices: React.Dispatch<React.SetStateAction<Set<number>>>;
     lastSelectedIndex: number | null;
@@ -13,7 +15,8 @@ interface ThumbSidebarProps {
     activePage: number;
     setActivePage: (p: number) => void;
     numPages: number;
-    pageRotations: Record<number, number>;
+    pageRotations: Record<string, number>;
+    setPageRotations: React.Dispatch<React.SetStateAction<Record<string, number>>>;
     allPageDims: Record<number, { w: number; h: number; widthPt: number }>;
     // Thumbnail state
     thumbBaseWidth: number;
@@ -50,12 +53,15 @@ const MemoThumbItem = React.memo((props: any) => {
     const isBlankDoc = !!(file as any)?.isBlank;
 
     const exactRatio = localDim ? localDim.h / localDim.w : 1.414;
-    const isRotated = rot % 180 !== 0;
-    const containerW = thumbBaseWidth;
-    const containerH = isRotated ? Math.round(thumbBaseWidth / exactRatio) : Math.round(thumbBaseWidth * exactRatio);
+    const normRot = (((rot || 0) % 360) + 360) % 360;
+    const isRotated = normRot % 180 !== 0;
     const imgW = thumbBaseWidth;
     const imgH = Math.round(thumbBaseWidth * exactRatio);
-    const scale = isRotated ? (containerW / imgH) : 1;
+    // KHUNG + RUỘT xoay CÙNG NHAU như một khối (page wrapper). Slot ngoài dành đúng footprint
+    // SAU xoay: 90/270 hoán rộng↔cao (khối imgW×imgH xoay 90° chiếm imgH×imgW). Nhờ vậy khung
+    // luôn khớp hướng ruột, dải thumbnail xếp đúng, KHÔNG chừa dải trắng.
+    const footprintW = isRotated ? imgH : imgW;
+    const footprintH = isRotated ? imgW : imgH;
 
     let finalSrc = thumbCacheRef.current.get(`${pdfUrl}_${originalPageNum}_0_400`);
     const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
@@ -131,34 +137,40 @@ const MemoThumbItem = React.memo((props: any) => {
                     <span className="text-[11px] leading-none">＋</span> Sao chép
                 </div>
             )}
+            {/* SLOT ngoài = footprint SAU xoay (đã hoán rộng↔cao khi 90/270). Outline chọn bao
+                quanh slot. Khung trắng + ảnh nằm trong 1 KHỐI xoay cùng nhau bên trong slot →
+                khung luôn khớp hướng ruột, không còn "khung 1 hướng ruột 1 hướng". */}
             <div className={`
-                bg-white flex relative items-center justify-center
+                relative flex items-center justify-center
                 ${isSelected ? 'outline outline-3 outline-blue-500' : 'outline outline-1 outline-black/20 dark:outline-white/10'}
-            `} style={{ padding: 1 }}>
+            `} style={{ width: footprintW, height: footprintH }}>
                 {originalPageNum === -1 ? (
-                    <div style={{ width: thumbBaseWidth, height: thumbBaseWidth * 1.414 }} className="bg-white border-2 border-dashed border-slate-300 flex items-center justify-center">
+                    <div style={{
+                        width: imgW, height: imgH, position: 'absolute', left: '50%', top: '50%',
+                        transform: `translate(-50%, -50%) rotate(${normRot}deg)`, transformOrigin: 'center center',
+                    }} className="bg-white border-2 border-dashed border-slate-300 flex items-center justify-center">
                         <span className="text-slate-300 text-xs font-semibold -rotate-45 block">TRANG TRỐNG</span>
                     </div>
                 ) : (
                     <>
-                        <div style={{ width: containerW, height: containerH, position: 'relative', overflow: 'hidden' }} className="flex items-center justify-center">
+                        {/* Khối trang (giấy trắng + ảnh) — xoay như MỘT thể. Kích thước = trang gốc
+                            imgW×imgH; xoay quanh tâm slot (translate -50% rồi rotate). Bounding box
+                            sau xoay = footprint = slot → lấp khít, không dải trắng. */}
+                        <div style={{
+                            width: imgW, height: imgH, position: 'absolute', left: '50%', top: '50%',
+                            transform: `translate(-50%, -50%) rotate(${normRot}deg)`, transformOrigin: 'center center',
+                            overflow: 'hidden',
+                        }} className="bg-white">
                             {finalSrc ? (
                                 <img
                                     ref={thumbImgRef}
                                     alt={`Page ${originalPageNum}`}
-                                    style={{
-                                        width: imgW,
-                                        height: imgH,
-                                        position: 'absolute',
-                                        transform: `rotate(${rot}deg) scale(${scale})`,
-                                        transformOrigin: 'center center',
-                                        objectFit: 'contain'
-                                    }}
+                                    style={{ width: '100%', height: '100%', display: 'block', objectFit: 'fill' }}
                                     className="pointer-events-none bg-white"
                                     draggable={false}
                                 />
                             ) : (
-                                <div style={{ width: containerW, height: containerH }} className={`absolute inset-0 flex items-center justify-center ${isBlankDoc ? 'bg-white' : 'bg-slate-100 dark:bg-zinc-800 animate-pulse'}`}>
+                                <div className={`w-full h-full flex items-center justify-center ${isBlankDoc ? 'bg-white' : 'bg-slate-100 dark:bg-zinc-800 animate-pulse'}`}>
                                     {!isBlankDoc && <div className="w-5 h-5 border-2 border-slate-300 border-t-transparent rounded-full animate-spin" />}
                                 </div>
                             )}
@@ -184,7 +196,7 @@ const MemoThumbItem = React.memo((props: any) => {
                 )}
             </div>
             <span className={`text-[11px] mt-3 font-mono tracking-widest ${isActive ? 'text-blue-600 dark:text-blue-400 font-extrabold' : 'text-slate-500 dark:text-zinc-400'}`}>
-                {logicalPageLabel} {originalPageNum !== logicalPageLabel && originalPageNum !== -1 && <span className="text-slate-400 font-normal ml-1 text-[9px]">(T.{originalPageNum})</span>}
+                {logicalPageLabel}
             </span>
         </div>
     );
@@ -198,6 +210,11 @@ const MemoThumbItem = React.memo((props: any) => {
         prev.hoverTargetState === next.hoverTargetState &&
         prev.rot === next.rot &&
         prev.thumbBaseWidth === next.thumbBaseWidth &&
+        // localDim quyết định tỷ lệ ô (exactRatio) → PHẢI so, nếu không dims đến sau
+        // lần render đầu bị memo chặn → ô kẹt tỷ lệ fallback 1.414 (A4 dọc) trong khi
+        // trang thực có thể ngang → xoay lệch, chừa nền thừa quanh trang.
+        prev.localDim?.w === next.localDim?.w &&
+        prev.localDim?.h === next.localDim?.h &&
         prev.isLoadable === next.isLoadable &&
         prev.pdfUrl === next.pdfUrl;
 });
@@ -227,9 +244,10 @@ function useThumbLoadGate(pdfUrl: string | null, skipReset?: boolean) {
 export function ThumbSidebar(props: ThumbSidebarProps) {
     const {
         pageOrder, setPageOrder,
+        pageInstanceIds, setPageInstanceIds,
         selectedIndices, setSelectedIndices,
         lastSelectedIndex, setLastSelectedIndex,
-        activePage, setActivePage, numPages, pageRotations,
+        activePage, setActivePage, numPages, pageRotations, setPageRotations,
         allPageDims, thumbBaseWidth,
         isThumbMenuOpen, setIsThumbMenuOpen,
         commitSnapshot, handleQuickRotate,
@@ -253,6 +271,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         handleMarqueeMouseDown
     } = useThumbSidebar({
         pageOrder, setPageOrder,
+        pageInstanceIds, setPageInstanceIds, setPageRotations,
         selectedIndices, setSelectedIndices,
         lastSelectedIndex, setLastSelectedIndex,
         setActivePage, commitSnapshot,
@@ -411,7 +430,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         isDragged={isDragged}
                                         showCopyBadge={isDragged && isCopyDrag}
                                         hoverTargetState={hoverTargetState}
-                                        rot={pageRotations[originalPageNum] || 0}
+                                        rot={pageInstanceIds[index] ? (pageRotations[pageInstanceIds[index]] || 0) : 0}
                                         localDim={allPageDims[originalPageNum]}
                                         thumbBaseWidth={thumbBaseWidth}
                                         pdfUrl={pdfUrl}

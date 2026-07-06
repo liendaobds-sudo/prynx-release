@@ -13,7 +13,7 @@ import {
 const sampleSteps: RecipeStep[] = [
     { opId: 'convertcolors', label: 'Chuyển màu RGB→CMYK', params: { conversions: ['rgb_to_cmyk'], preserve_black: true }, recordable: true },
     { opId: 'pdfx', label: 'Xuất PDF/X-1a', params: { standard: 'x1a' }, recordable: true },
-    { opId: 'booklet', label: 'Bình sách SRA3', params: { sheetWidth: 320, sheetHeight: 450, signatureMode: 'saddle' }, recordable: true, viewerPageOrder: [1, 2, 3, 4], viewerPageRotations: { 2: 90 } },
+    { opId: 'booklet', label: 'Bình sách SRA3', params: { sheetWidth: 320, sheetHeight: 450, signatureMode: 'saddle' }, recordable: true, viewerPageOrder: [1, 2, 3, 4], viewerPageRotations: [0, 90, 0, 0] },
     { opId: 'datamerge', label: 'Trộn dữ liệu (CSV)', params: {}, recordable: true, needsExternalInput: 'csv' },
     { opId: 'object_edit', label: 'Sửa object (phụ thuộc file)', params: { id: 'x' }, recordable: false },
 ];
@@ -66,7 +66,7 @@ describe('recipeTypes — round-trip serialize/deserialize (Property 1)', () => 
         const restored = deserializeRecipe(serializeRecipe(r));
         const booklet = restored.steps.find(s => s.opId === 'booklet')!;
         expect(booklet.viewerPageOrder).toEqual([1, 2, 3, 4]);
-        expect(booklet.viewerPageRotations).toEqual({ 2: 90 });
+        expect(booklet.viewerPageRotations).toEqual([0, 90, 0, 0]);
         expect(restored.steps.find(s => s.opId === 'datamerge')!.needsExternalInput).toBe('csv');
         expect(restored.steps.find(s => s.opId === 'object_edit')!.recordable).toBe(false);
     });

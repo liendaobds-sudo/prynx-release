@@ -17,7 +17,7 @@ import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, ThumbSidebar, ViewerContextMenu, type Guide } from './acrobat';
 import LayerPanel from './acrobat/LayerPanel';
 
-import { usePdfLoader } from '../hooks/viewer/usePdfLoader';
+import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
 import { useTileRenderer } from '../hooks/viewer/useTileRenderer';
 import { useViewerHotkeys } from '../hooks/viewer/useViewerHotkeys';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
@@ -175,10 +175,22 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     });
     const {
         pdfRef, thumbPdfRef, pageDim, allPageDims, pageWidthPt, plateLabels,
-        pageOrder, setPageOrder, selectedIndices, setSelectedIndices, lastSelectedIndex, setLastSelectedIndex,
+        pageOrder, setPageOrder, pageInstanceIds, setPageInstanceIds,
+        selectedIndices, setSelectedIndices, lastSelectedIndex, setLastSelectedIndex,
         pageRotations, setPageRotations, pastStack, setPastStack, futureStack, setFutureStack,
         updatePageDimForPage, generateThumb, loadError
     } = loader;
+
+    // Helper: mọi thao tác đổi thứ tự trang PHẢI cập nhật pageOrder VÀ pageInstanceIds
+    // cùng lúc (bất biến: 2 mảng luôn cùng độ dài). Rotation keyed theo instance-id nên
+    // nếu 2 mảng lệch → gán góc nhầm trang. Gói qua đây để không quên đồng bộ ở handler nào.
+    const applyOrderChange = useCallback((newOrder: number[], newIds: string[]) => {
+        if (newOrder.length !== newIds.length) {
+            console.error('[applyOrderChange] order/ids length mismatch', newOrder.length, newIds.length);
+        }
+        setPageOrder(newOrder);
+        setPageInstanceIds(newIds);
+    }, [setPageOrder, setPageInstanceIds]);
 
     // LƯU Ý: KHÔNG return sớm ở đây. Trước kia `if (loadError) return ...` đặt
     // TRƯỚC hàng loạt hook bên dưới (useTileRenderer, useViewerZoom, useEffect...),
@@ -274,7 +286,11 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     // ═══ Sync Effects ═══
     useEffect(() => { setViewerPageOrder?.(pageOrder); setNumPages(pageOrder.length); }, [pageOrder]);
     useEffect(() => { if (pageOrder.length > 0 && activePage > pageOrder.length) setActivePage(pageOrder.length); }, [pageOrder.length, activePage]);
-    useEffect(() => { setViewerPageRotations?.(pageRotations); }, [pageRotations]);
+    // Đẩy rotation ra store dạng number[] THEO VỊ TRÍ (out[i] = góc trang ở vị trí i).
+    // Trong viewer rotation keyed theo instance-id (xoay độc lập bản nhân bản), nhưng ra
+    // store/backend chỉ cần góc-theo-vị-trí (thứ tự mảng đã cố định). Backend impose + bake
+    // đều lặp theo vị trí nên nhận trực tiếp. Xem flattenRotations (per-instance rotation).
+    useEffect(() => { setViewerPageRotations?.(flattenRotations(pageInstanceIds, pageRotations)); }, [pageRotations, pageInstanceIds]);
     useEffect(() => { setViewerDirty(pastStack.length > 0); }, [pastStack.length, setViewerDirty]);
     useEffect(() => { if (isObjectEditMode || isVdpMode) setToolMode('pointer'); }, [isObjectEditMode, isVdpMode]);
     useEffect(() => { updatePageDimForPage(activePage, numPages); }, [pdfRef, activePage, numPages, updatePageDimForPage]);
@@ -381,8 +397,9 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
             for (let i = 0; i < maxThumbsToGen; i++) {
                 if (cancelled) return;
                 const pageNum = i + 1;
-                const rot = pageRotations[pageNum] || 0;
-                await generateThumb(thumbPdfRef, pageNum, rot, 400);
+                // Warmup cache base CHƯA xoay (rot=0): rotation giờ theo instance-id, không
+                // map vào bare pageNum. Thumbnail áp góc xoay qua CSS ở ThumbSidebar.
+                await generateThumb(thumbPdfRef, pageNum, 0, 400);
                 await new Promise(r => setTimeout(r, 10));
             }
         };
@@ -408,21 +425,24 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     // ═══ Page Tool Handlers ═══
     const handleQuickDeleteConfirm = () => {
         commitSnapshot();
-        const newOrder = pageOrder.filter((_, idx) => !selectedIndices.has(idx));
-        setPageOrder(newOrder);
+        const keep = (_: any, idx: number) => !selectedIndices.has(idx);
+        const newOrder = pageOrder.filter(keep);
+        const newIds = pageInstanceIds.filter(keep);
+        applyOrderChange(newOrder, newIds);
         setSelectedIndices(new Set(newOrder.length > 0 ? [0] : []));
-        setLastSelectedIndex(0);
+        setLastSelectedIndex(newOrder.length > 0 ? 0 : null);
         setIsDeleteModalOpen(false);
     };
 
     const handleQuickRotate = (degrees: number) => {
         commitSnapshot();
+        // Rotation keyed theo INSTANCE-ID (không phải số trang gốc) → mỗi bản nhân bản /
+        // mỗi trang trắng xoay ĐỘC LẬP. Mỗi index = 1 instance duy nhất nên KHÔNG cần dedupe.
         const newRotations = { ...pageRotations };
         for (const idx of selectedIndices) {
-            const originalPageNum = pageOrder[idx];
-            if (originalPageNum !== undefined) {
-                newRotations[originalPageNum] = (newRotations[originalPageNum] || 0) + degrees;
-            }
+            const id = pageInstanceIds[idx];
+            if (!id) continue;
+            newRotations[id] = ((newRotations[id] || 0) + degrees) % 360;
         }
         setPageRotations(newRotations);
     };
@@ -435,18 +455,64 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         else { const s = Math.max(0, range[0] - 1); const e = Math.min(pageOrder.length - 1, range[1] - 1); for (let i = s; i <= e; i++) sourceIndices.push(i); }
         if (sourceIndices.length === 0) return;
         const newOrder = [...pageOrder];
+        const newIds = [...pageInstanceIds];
+        // Bản sao: id MỚI (xoay độc lập) nhưng KẾ THỪA góc hiện tại của trang nguồn.
+        const newRot = { ...pageRotations };
+        const makeDup = (srcIdx: number): { page: number; id: string } => {
+            const id = genPageId();
+            const srcId = pageInstanceIds[srcIdx];
+            if (srcId && pageRotations[srcId]) newRot[id] = pageRotations[srcId];
+            return { page: pageOrder[srcIdx], id };
+        };
         if (collate) {
-            const block = sourceIndices.map(idx => pageOrder[idx]);
-            const allDups: number[] = [];
-            for (let c = 0; c < copies; c++) allDups.push(...block);
-            newOrder.splice(sourceIndices[sourceIndices.length - 1] + 1, 0, ...allDups);
+            const dups: { page: number; id: string }[] = [];
+            for (let c = 0; c < copies; c++) for (const idx of sourceIndices) dups.push(makeDup(idx));
+            const at = sourceIndices[sourceIndices.length - 1] + 1;
+            newOrder.splice(at, 0, ...dups.map(d => d.page));
+            newIds.splice(at, 0, ...dups.map(d => d.id));
         } else {
             for (let i = sourceIndices.length - 1; i >= 0; i--) {
                 const idx = sourceIndices[i];
-                newOrder.splice(idx + 1, 0, ...Array(copies).fill(pageOrder[idx]));
+                const dups = Array.from({ length: copies }, () => makeDup(idx));
+                newOrder.splice(idx + 1, 0, ...dups.map(d => d.page));
+                newIds.splice(idx + 1, 0, ...dups.map(d => d.id));
             }
         }
-        setPageOrder(newOrder);
+        setPageRotations(newRot);
+        applyOrderChange(newOrder, newIds);
+        // pageOrder đổi độ dài/thứ tự → selectedIndices cũ trỏ SAI trang. Reset về rỗng
+        // + anchor null để thao tác chọn kế tiếp bắt đầu sạch (tránh chọn/xoá nhầm trang).
+        setSelectedIndices(new Set());
+        setLastSelectedIndex(null);
+    };
+
+    // Nhân bản NHANH các trang đang chọn (menu chuột phải). Chèn bản sao ngay sau mỗi
+    // trang gốc; bản sao có id MỚI + kế thừa góc xoay nguồn (per-instance rotation).
+    const handleQuickDuplicate = () => {
+        const sel = Array.from(selectedIndices).sort((a, b) => a - b);
+        if (sel.length === 0) return;
+        commitSnapshot();
+        const newOrder = [...pageOrder];
+        const newIds = [...pageInstanceIds];
+        const newRot = { ...pageRotations };
+        const makeDup = (srcIdx: number): { page: number; id: string } => {
+            const id = genPageId();
+            const srcId = pageInstanceIds[srcIdx];
+            if (srcId && pageRotations[srcId]) newRot[id] = pageRotations[srcId];
+            return { page: pageOrder[srcIdx], id };
+        };
+        // Chèn từ CUỐI về ĐẦU để index chèn không bị dịch bởi lần chèn trước.
+        for (let i = sel.length - 1; i >= 0; i--) {
+            const idx = sel[i];
+            const dup = makeDup(idx);
+            newOrder.splice(idx + 1, 0, dup.page);
+            newIds.splice(idx + 1, 0, dup.id);
+        }
+        setPageRotations(newRot);
+        applyOrderChange(newOrder, newIds);
+        setSelectedIndices(new Set());
+        setLastSelectedIndex(null);
+        setContextMenu(null);
     };
 
     const handlePageToolsMove = (startPage: number, endPage: number, targetType: string, targetPage: number) => {
@@ -461,13 +527,18 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         else if (targetType === 'after_last') targetIndex = pageOrder.length;
         else targetIndex = Math.max(0, Math.min(pageOrder.length, targetPage));
         const newOrder: number[] = [];
+        const newIds: string[] = [];
         const movedPages: number[] = [];
-        for (let i = 0; i < pageOrder.length; i++) { if (indicesToMove.has(i)) movedPages.push(pageOrder[i]); }
+        const movedIds: string[] = [];
+        for (let i = 0; i < pageOrder.length; i++) { if (indicesToMove.has(i)) { movedPages.push(pageOrder[i]); movedIds.push(pageInstanceIds[i]); } }
         for (let i = 0; i <= pageOrder.length; i++) {
-            if (i === targetIndex) newOrder.push(...movedPages);
-            if (i < pageOrder.length && !indicesToMove.has(i)) newOrder.push(pageOrder[i]);
+            if (i === targetIndex) { newOrder.push(...movedPages); newIds.push(...movedIds); }
+            if (i < pageOrder.length && !indicesToMove.has(i)) { newOrder.push(pageOrder[i]); newIds.push(pageInstanceIds[i]); }
         }
-        setPageOrder(newOrder);
+        applyOrderChange(newOrder, newIds);
+        // Thứ tự đổi → selection cũ trỏ sai trang. Reset sạch (xem handlePageToolsDuplicate).
+        setSelectedIndices(new Set());
+        setLastSelectedIndex(null);
     };
 
     const handlePageToolsDelete = (target: 'current' | 'range', range: [number, number], filter: string) => {
@@ -483,9 +554,13 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                 deleteIndices.add(i);
             }
         }
-        setPageOrder(pageOrder.filter((_, idx) => !deleteIndices.has(idx)));
-        setSelectedIndices(new Set([0]));
-        setLastSelectedIndex(0);
+        const keep = (_: any, idx: number) => !deleteIndices.has(idx);
+        const afterDelete = pageOrder.filter(keep);
+        applyOrderChange(afterDelete, pageInstanceIds.filter(keep));
+        // Clamp: khi xóa HẾT trang, index 0 không tồn tại → selection rỗng + anchor null
+        // (nếu để [0]/0 thì shift-click sau tính range từ anchor không hợp lệ).
+        setSelectedIndices(new Set(afterDelete.length > 0 ? [0] : []));
+        setLastSelectedIndex(afterDelete.length > 0 ? 0 : null);
     };
 
     const handlePageToolsRotate = (target: string, range: [number, number], filter: string, degrees: number) => {
@@ -495,7 +570,12 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         else if (target === 'all') { for (let i = 0; i < pageOrder.length; i++) { const pn = i + 1; if (filter === 'odd' && pn % 2 === 0) continue; if (filter === 'even' && pn % 2 !== 0) continue; rotateIndices.add(i); } }
         else { const s = Math.max(0, range[0] - 1); const e = Math.min(pageOrder.length - 1, range[1] - 1); for (let i = s; i <= e; i++) { const pn = i + 1; if (filter === 'odd' && pn % 2 === 0) continue; if (filter === 'even' && pn % 2 !== 0) continue; rotateIndices.add(i); } }
         const newRot = { ...pageRotations };
-        for (const idx of rotateIndices) { const opn = pageOrder[idx]; if (opn !== undefined) newRot[opn] = (newRot[opn] || 0) + degrees; }
+        // Rotation keyed theo INSTANCE-ID → mỗi index xoay độc lập, không cần dedupe.
+        for (const idx of rotateIndices) {
+            const id = pageInstanceIds[idx];
+            if (!id) continue;
+            newRot[id] = ((newRot[id] || 0) + degrees) % 360;
+        }
         setPageRotations(newRot);
     };
 
@@ -506,8 +586,13 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         else if (insertTarget === 'last') ti = insertLocation === 'before' ? pageOrder.length - 1 : pageOrder.length;
         else { const p = Math.max(1, Math.min(pageOrder.length, insertTargetPage)); ti = insertLocation === 'before' ? p - 1 : p; }
         const newOrder = [...pageOrder];
+        const newIds = [...pageInstanceIds];
         newOrder.splice(ti, 0, -1);
-        setPageOrder(newOrder);
+        newIds.splice(ti, 0, genPageId());
+        applyOrderChange(newOrder, newIds);
+        // Chèn trang → index cũ dịch → selectedIndices trỏ sai trang. Reset về rỗng.
+        setSelectedIndices(new Set());
+        setLastSelectedIndex(null);
         setIsInsertModalOpen(false);
         setContextMenu(null);
     };
@@ -527,7 +612,12 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         if (indicesToExtract.size > 0 && onExtractPages) {
             const sorted = Array.from(indicesToExtract).sort((a, b) => a - b);
             onExtractPages(sorted.map(idx => pageOrder[idx]), extractDeleteAfter);
-            if (extractDeleteAfter) { setPageOrder(pageOrder.filter((_, idx) => !indicesToExtract.has(idx))); setSelectedIndices(new Set()); }
+            if (extractDeleteAfter) {
+                const keep = (_: any, idx: number) => !indicesToExtract.has(idx);
+                applyOrderChange(pageOrder.filter(keep), pageInstanceIds.filter(keep));
+                setSelectedIndices(new Set());
+                setLastSelectedIndex(null);
+            }
         }
         setIsExtractModalOpen(false);
         setContextMenu(null);
@@ -542,8 +632,13 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         else { const p = Math.max(1, Math.min(pageOrder.length, targetPage)); ti = location === 'before' ? p - 1 : p; }
         ti = Math.max(0, Math.min(pageOrder.length, ti));
         const newOrder = [...pageOrder];
+        const newIds = [...pageInstanceIds];
         newOrder.splice(ti, 0, ...Array(n).fill(-1));
-        setPageOrder(newOrder);
+        newIds.splice(ti, 0, ...genPageIds(n));
+        applyOrderChange(newOrder, newIds);
+        // Chèn trang → index cũ dịch → selectedIndices trỏ sai trang. Reset về rỗng.
+        setSelectedIndices(new Set());
+        setLastSelectedIndex(null);
     };
 
     const handlePageToolsExtract = (range: [number, number], deleteAfter: boolean) => {
@@ -703,10 +798,20 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                     bestPage = Math.min(numPages, Math.max(1, Math.round(scrollPercent * numPages) + 1));
                 }
                 setActivePage(bestPage);
-                setSelectedIndices(prev => { if (prev.size <= 1 && pageOrder) return new Set([pageOrder.indexOf(bestPage!)]); return prev; });
+                setSelectedIndices(prev => {
+                    if (prev.size <= 1 && pageOrder) {
+                        const idx = pageOrder.indexOf(bestPage!);
+                        // Đồng bộ anchor shift-select theo trang vừa active (cuộn/điều hướng
+                        // main view). Nếu KHÔNG set, anchor kẹt ở giá trị cũ (khởi tạo 0) →
+                        // shift-click sau đó tính range từ 0 → chọn nhầm cả các trang đầu.
+                        if (idx >= 0) setLastSelectedIndex(idx);
+                        return new Set([idx]);
+                    }
+                    return prev;
+                });
             }
         }, 150);
-    }, [numPages, pageDisplayMode, pageOrder, setSelectedIndices]);
+    }, [numPages, pageDisplayMode, pageOrder, setSelectedIndices, setLastSelectedIndex]);
 
     // ═══ Render Rows Memoization ═══
     const visitedIndicesRef = useRef<Set<number>>(new Set());
@@ -750,11 +855,17 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
 
     const renderRows = pageDisplayMode.includes('scroll') ? scrollRowsMemo : fitRowsMemo;
 
+    const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
+
     // ═══ Page Renderer ═══
-    const renderPdfPage = useCallback((originalPageNum: number) => {
+    const renderPdfPage = useCallback((originalPageNum: number, flatIndex?: number) => {
         if (!originalPageNum) return null;
         const plateLabel = plateLabels[originalPageNum];
-        const rot = pageRotations[originalPageNum] || 0;
+        // Rotation keyed theo INSTANCE-ID (mỗi vị trí 1 id riêng) → bản nhân bản / trang
+        // trắng xoay ĐỘC LẬP. flatIndex = vị trí trong pageOrder → tra id. Fallback về 0
+        // khi thiếu index (không nên xảy ra ở luồng render rows).
+        const instId = flatIndex !== undefined ? pageInstanceIds[flatIndex] : undefined;
+        const rot = instId ? (pageRotations[instId] || 0) : 0;
         const localDim = allPageDims[originalPageNum] || pageDim;
         const localWidth100 = localDim ? localDim.w : actualWidth100;
 
@@ -784,6 +895,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                         textBlocks={nativeTextBlocks[originalPageNum]}
                         setHoveredPdfPosition={setHoveredPdfPosition}
                         isBlankDoc={!!(file as any)?.isBlank}
+                        isImageFile={isImage}
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
                         editSession={editSession}
                         isActivePage={originalPageNum === activePage}
@@ -799,9 +911,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                 </div>
             </div>
         );
-    }, [pageRotations, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession]);
-
-    const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, zoom, bleedView, highlightBoxes, isVdpMode, getTileUrl, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage]);
 
     // Kiểm tra loadError SAU khi mọi hook đã được gọi (xem ghi chú ở đầu component).
     if (loadError) {
@@ -871,10 +981,11 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                     {numPages > 0 && !isImage && (
                         <ThumbSidebar
                             pageOrder={pageOrder} setPageOrder={setPageOrder}
+                            pageInstanceIds={pageInstanceIds} setPageInstanceIds={setPageInstanceIds}
                             selectedIndices={selectedIndices} setSelectedIndices={setSelectedIndices}
                             lastSelectedIndex={lastSelectedIndex} setLastSelectedIndex={setLastSelectedIndex}
                             activePage={activePage} setActivePage={setActivePage}
-                            numPages={numPages} pageRotations={pageRotations} allPageDims={allPageDims}
+                            numPages={numPages} pageRotations={pageRotations} setPageRotations={setPageRotations} allPageDims={allPageDims}
                             thumbBaseWidth={thumbBaseWidth}
                             isThumbMenuOpen={isThumbMenuOpen} setIsThumbMenuOpen={setIsThumbMenuOpen}
                             commitSnapshot={commitSnapshot} handleQuickRotate={handleQuickRotate}
@@ -934,7 +1045,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                                                                 <div key={row.indices.join('_')} className={`flex min-w-full ${toolMode === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-auto'}`}
                                                                     style={{ display: 'flex', alignItems: 'safe center', justifyContent: 'safe center', position: isActive ? 'relative' : 'absolute', opacity: isActive ? 1 : 0, pointerEvents: isActive ? 'auto' : 'none', visibility: isActive ? 'visible' : 'hidden', zIndex: isActive ? 10 : 0, paddingTop: 32, paddingBottom: 32, paddingLeft: 24, paddingRight: 24, gap: 12, width: 'max-content' }}>
                                                                     <div className="flex items-center" style={{ gap: 12 }}>
-                                                                        {row.pages.map((p: number, idx: number) => <div key={row.indices[idx]}>{renderPdfPage(p)}</div>)}
+                                                                        {row.pages.map((p: number, idx: number) => <div key={row.indices[idx]}>{renderPdfPage(p, row.indices[idx])}</div>)}
                                                                     </div>
                                                                 </div>
                                                             );
@@ -966,7 +1077,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                                                         <div className={`flex items-center justify-center min-w-full ${toolMode === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-auto'}`}
                                                             style={{ paddingTop: 32, paddingBottom: 32, paddingLeft: 24, paddingRight: 24, gap: 12, width: 'max-content' }}>
                                                             <div className="flex items-center" style={{ gap: 12 }}>
-                                                                {row.pages.map((p: number, pIdx: number) => <div key={row.indices[pIdx]}>{renderPdfPage(p)}</div>)}
+                                                                {row.pages.map((p: number, pIdx: number) => <div key={row.indices[pIdx]}>{renderPdfPage(p, row.indices[pIdx])}</div>)}
                                                             </div>
                                                         </div>
                                                     );
@@ -1009,6 +1120,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                 setIsInsertModalOpen={setIsInsertModalOpen} setIsExtractModalOpen={setIsExtractModalOpen}
                 setExtractPagesStrForModal={setExtractPagesStrForModal} setIsDeleteModalOpen={setIsDeleteModalOpen}
                 setActiveDashboardTool={setActiveDashboardTool} setIsSidebarOpen={setIsSidebarOpen}
+                onQuickDuplicate={handleQuickDuplicate}
             />
         </div>
     );

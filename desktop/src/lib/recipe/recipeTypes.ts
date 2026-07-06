@@ -45,8 +45,11 @@ export interface RecipeStep {
     needsExternalInput?: RecipeExternalInput | null;
     /** Chụp thứ tự trang tại thời điểm ghi (1-based; -1 = trang trắng). */
     viewerPageOrder?: number[];
-    /** Chụp góc xoay theo trang tại thời điểm ghi ({ pageNum: deg }). */
-    viewerPageRotations?: Record<number, number>;
+    /** Chụp góc xoay THEO VỊ TRÍ tại thời điểm ghi (out[i]=góc trang ở vị trí i trong
+     *  viewerPageOrder). Đổi từ Record<pageNum,deg> để khớp per-instance rotation
+     *  (bản nhân bản xoay độc lập). Recipe cũ dạng Record vẫn parse (JSON), nhưng phát
+     *  lại chỉ đúng khi khớp thứ tự — recipe không mang instance-id. */
+    viewerPageRotations?: number[];
 }
 
 export interface Recipe {
@@ -98,7 +101,7 @@ function cloneStep(s: RecipeStep): RecipeStep {
         recordable: s.recordable,
         ...(s.needsExternalInput !== undefined ? { needsExternalInput: s.needsExternalInput } : {}),
         ...(s.viewerPageOrder ? { viewerPageOrder: [...s.viewerPageOrder] } : {}),
-        ...(s.viewerPageRotations ? { viewerPageRotations: { ...s.viewerPageRotations } } : {}),
+        ...(s.viewerPageRotations ? { viewerPageRotations: [...s.viewerPageRotations] } : {}),
     };
 }
 

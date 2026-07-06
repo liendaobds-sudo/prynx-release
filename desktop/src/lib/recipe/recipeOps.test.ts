@@ -80,10 +80,10 @@ describe('recipeOps — buildRecipeStep', () => {
 
     it('gắn kèm viewerPageOrder/Rotations khi truyền extras', () => {
         const step = buildRecipeStep('booklet', { sheetWidth: 320, sheetHeight: 450 }, {
-            viewerPageOrder: [1, 2, 3, 4], viewerPageRotations: { 2: 90 },
+            viewerPageOrder: [1, 2, 3, 4], viewerPageRotations: [0, 90, 0, 0],
         });
         expect(step.viewerPageOrder).toEqual([1, 2, 3, 4]);
-        expect(step.viewerPageRotations).toEqual({ 2: 90 });
+        expect(step.viewerPageRotations).toEqual([0, 90, 0, 0]);
     });
 
     it('op file-dependent → step.recordable=false', () => {

@@ -23,7 +23,9 @@ export interface RecoverySnapshot {
     feature?: string;              // initialFeature (focusFeature)
     lockedMode?: string;           // 'booklet'|'nup'|'sticker_imposer'|'cnc_imposer'
     viewerPageOrder?: number[];
-    viewerPageRotations?: Record<string, number>;
+    // number[] THEO VỊ TRÍ (out[i]=góc trang ở vị trí i). Dạng CŨ Record<pageNum,deg>
+    // vẫn đọc được: restore tự migrate sang mảng theo vị trí (per-instance rotation).
+    viewerPageRotations?: number[] | Record<string, number>;
     vdpFields?: any[];
 }
 

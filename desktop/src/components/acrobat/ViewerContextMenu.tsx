@@ -10,6 +10,7 @@ interface ViewerContextMenuProps {
     setIsDeleteModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setActiveDashboardTool: (tool: string) => void;
     setIsSidebarOpen: (open: boolean) => void;
+    onQuickDuplicate: () => void;
 }
 
 export function ViewerContextMenu(props: ViewerContextMenuProps) {
@@ -17,6 +18,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
         contextMenu, selectedIndices, setContextMenu,
         setIsInsertModalOpen, setIsExtractModalOpen, setExtractPagesStrForModal,
         setIsDeleteModalOpen, setActiveDashboardTool, setIsSidebarOpen,
+        onQuickDuplicate,
     } = props;
 
     if (!contextMenu || !contextMenu.visible) return null;
@@ -47,7 +49,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
             </button>
 
             <button
-                onClick={() => { setActiveDashboardTool('pages'); setIsSidebarOpen(true); setContextMenu(null); }}
+                onClick={() => onQuickDuplicate()}
                 className="w-full text-left px-4 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg outline-none transition-colors"
             >
                 Nhân bản (Duplicate)

@@ -23,7 +23,10 @@ export function useWorkingPdf(): () => Promise<File | null> {
         if (!file) return null;
 
         const hasOrderEdits = !!(viewerPageOrder && viewerPageOrder.length > 0);
-        const hasRotEdits = !!(viewerPageRotations && Object.keys(viewerPageRotations).length > 0);
+        // viewerPageRotations là number[] THEO VỊ TRÍ (luôn đầy độ dài, kể cả toàn 0 khi
+        // chưa xoay gì) → KHÔNG dùng .length/keys để đoán "có sửa" (sẽ bật oan → bake thừa).
+        // Kiểm CÓ GÓC KHÁC 0. Dữ liệu cũ Record<pageNum,deg> thì Object.values cũng chạy.
+        const hasRotEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => (((r as number) % 360) + 360) % 360 !== 0));
         if (!hasOrderEdits && !hasRotEdits) return file;
 
         const rotations = viewerPageRotations || {};
@@ -35,7 +38,17 @@ export function useWorkingPdf(): () => Promise<File | null> {
             ? viewerPageOrder
             : srcDoc.getPageIndices().map(i => i + 1);
 
-        for (const pIdx of order) {
+        // rotations là number[] THEO VỊ TRÍ (out[i] = góc trang ở vị trí i) — khớp
+        // per-instance rotation (bản nhân bản xoay độc lập). Đọc theo index vòng lặp,
+        // KHÔNG theo số trang gốc pIdx (nhiều vị trí có thể cùng pIdx). Fallback: nếu
+        // dữ liệu cũ là Record<pageNum,deg> thì rotations[pIdx] vẫn hoạt động do JS
+        // index bằng key số/chuỗi — nhưng bản mới luôn là mảng.
+        const rotAt = (i: number, pIdx: number): number => {
+            if (Array.isArray(rotations)) return rotations[i] || 0;
+            return (rotations as Record<number, number>)[pIdx] || 0;
+        };
+        for (let i = 0; i < order.length; i++) {
+            const pIdx = order[i];
             if (pIdx === -1) {
                 const firstPage = srcDoc.getPages()[0];
                 const dim = firstPage
@@ -44,7 +57,7 @@ export function useWorkingPdf(): () => Promise<File | null> {
                 newDoc.addPage([dim.w, dim.h]);
             } else {
                 const [copiedPage] = await newDoc.copyPages(srcDoc, [pIdx - 1]);
-                const rot = rotations[pIdx];
+                const rot = rotAt(i, pIdx);
                 if (rot) {
                     const currentRot = copiedPage.getRotation().angle;
                     copiedPage.setRotation(degrees(currentRot + rot));

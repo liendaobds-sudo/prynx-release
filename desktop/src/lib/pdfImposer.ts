@@ -79,11 +79,13 @@ export const imposePdf = async (
             }
 
             const p = srcPagesTemp[pOriginalIndex];
-            const originalPageNum = pOriginalIndex + 1;
-            
+
             let angle = p.getRotation()?.angle || 0;
-            if (settings.pageRotations && settings.pageRotations[originalPageNum]) {
-                angle += settings.pageRotations[originalPageNum];
+            // pageRotations là number[] THEO VỊ TRÍ (out[i] = góc trang ở vị trí i trong
+            // pageOrder) → tra theo i, KHÔNG theo số trang gốc. Nhờ vậy 2 bản nhân bản cùng
+            // số trang gốc nhưng khác vị trí nhận góc RIÊNG (per-instance rotation 2026-07-06).
+            if (settings.pageRotations && settings.pageRotations[i]) {
+                angle += settings.pageRotations[i];
             }
             
             const { x, y, width, height } = p.getCropBox() || p.getMediaBox();

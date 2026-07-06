@@ -41,7 +41,10 @@ export interface WorkspaceState {
 
     // ── Viewer ──
     viewerPageOrder: number[] | undefined;
-    viewerPageRotations: Record<number, number> | undefined;
+    // number[] THEO VỊ TRÍ: viewerPageRotations[i] = góc trang ở vị trí i trong pageOrder
+    // (KHÔNG phải keyed theo số trang gốc — đổi từ per-instance rotation 2026-07-06). Cho
+    // phép mỗi bản nhân bản xoay độc lập. Consumer bake/impose lặp theo vị trí nên dùng [i].
+    viewerPageRotations: number[] | undefined;
     highlightedIssue: any;
     bleedView: { show: boolean; mm: number };
 
@@ -132,7 +135,7 @@ export interface WorkspaceState {
     setShowCloseConfirm: (val: boolean) => void;
 
     setViewerPageOrder: (order: number[] | undefined) => void;
-    setViewerPageRotations: (rotations: Record<number, number> | undefined) => void;
+    setViewerPageRotations: (rotations: number[] | undefined) => void;
     setHighlightedIssue: (issue: any) => void;
     setBleedView: (updater: any) => void;
 

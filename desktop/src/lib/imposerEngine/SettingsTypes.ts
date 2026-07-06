@@ -27,7 +27,10 @@ export interface BaseSettings {
     mirrorAlign?: boolean;
     interleave?: 'normal' | 'all_fronts_first' | 'reverse_backs' | 'reverse_backs_180';
     pageOrder?: number[];
-    pageRotations?: Record<number, number>;
+    // number[] THEO VỊ TRÍ: pageRotations[i] = góc của trang ở vị trí i trong pageOrder
+    // (khớp per-instance rotation — nhân bản 1 trang xoay riêng từng bản). Vòng lặp impose
+    // đã theo vị trí nên lookup [i]. (Cũ: Record<pageNum,deg> — xem migrate ở loader.)
+    pageRotations?: number[];
     
     onConfirmScale?: (msg: string) => Promise<boolean>;
 }

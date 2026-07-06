@@ -133,7 +133,7 @@ export function summarizeParams(opId: RecipeOpId, params: Record<string, unknown
 export function buildRecipeStep(
     opId: RecipeOpId,
     params: Record<string, unknown>,
-    extras?: { viewerPageOrder?: number[]; viewerPageRotations?: Record<number, number> },
+    extras?: { viewerPageOrder?: number[]; viewerPageRotations?: number[] },
 ): RecipeStep {
     const meta = RECIPE_OP_META[opId];
     const summary = summarizeParams(opId, params);
@@ -144,6 +144,6 @@ export function buildRecipeStep(
         recordable: meta.recordable,
         needsExternalInput: meta.needsExternalInput,
         ...(extras?.viewerPageOrder ? { viewerPageOrder: [...extras.viewerPageOrder] } : {}),
-        ...(extras?.viewerPageRotations ? { viewerPageRotations: { ...extras.viewerPageRotations } } : {}),
+        ...(extras?.viewerPageRotations ? { viewerPageRotations: [...extras.viewerPageRotations] } : {}),
     };
 }

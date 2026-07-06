@@ -1,9 +1,13 @@
 import { useState, useRef, useEffect, Dispatch, SetStateAction } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { genPageId } from '../../hooks/viewer/usePdfLoader';
 
 interface UseThumbSidebarProps {
     pageOrder: number[];
     setPageOrder: Dispatch<SetStateAction<number[]>>;
+    pageInstanceIds: string[];
+    setPageInstanceIds: Dispatch<SetStateAction<string[]>>;
+    setPageRotations: Dispatch<SetStateAction<Record<string, number>>>;
     selectedIndices: Set<number>;
     setSelectedIndices: Dispatch<SetStateAction<Set<number>>>;
     lastSelectedIndex: number | null;
@@ -18,6 +22,7 @@ interface UseThumbSidebarProps {
 
 export function useThumbSidebar({
     pageOrder, setPageOrder,
+    pageInstanceIds, setPageInstanceIds, setPageRotations,
     selectedIndices, setSelectedIndices,
     lastSelectedIndex, setLastSelectedIndex,
     setActivePage, commitSnapshot,
@@ -203,17 +208,30 @@ export function useThumbSidebar({
     // có thể nuốt mất sự kiện click → phải tự xử lý chọn trong pointerup).
     const applyThumbSelection = (index: number, mods: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
         sidebarRef.current?.focus();
-        if (mods.shiftKey && lastSelectedIndex !== null) {
-            const start = Math.min(index, lastSelectedIndex);
-            const end = Math.max(index, lastSelectedIndex);
-            const newSel = new Set(selectedIndices);
-            for (let i = start; i <= end; i++) newSel.add(i);
-            setSelectedIndices(newSel);
+        // Đọc anchor từ ref (KHÔNG từ closure): applyThumbSelection chạy trong
+        // handleThumbClick — hàm này tạo mới mỗi render nhưng MemoThumbItem giữ bản CŨ
+        // nếu prop của item không đổi (anchor là state toàn cục, không map vào prop item)
+        // → closure giữ lastSelectedIndex lệch. Ref luôn có giá trị mới nhất.
+        const anchor = latestStateRef.current.lastSelectedIndex;
+        if (mods.shiftKey && anchor !== null) {
+            const start = Math.min(index, anchor);
+            const end = Math.max(index, anchor);
+            // Functional updater: KHÔNG đọc selectedIndices từ closure. MemoThumbItem có
+            // comparator KHÔNG so handleThumbClick → item không đổi isSelected giữ handler
+            // CŨ (đọc selectedIndices stale) → Ctrl/Shift-click bỏ chọn nhầm trang. Updater
+            // luôn nhận state mới nhất từ React nên miễn nhiễm handler stale.
+            setSelectedIndices(prev => {
+                const newSel = new Set(prev);
+                for (let i = start; i <= end; i++) newSel.add(i);
+                return newSel;
+            });
         } else if (mods.ctrlKey || mods.metaKey) {
-            const newSel = new Set(selectedIndices);
-            if (newSel.has(index)) newSel.delete(index);
-            else newSel.add(index);
-            setSelectedIndices(newSel);
+            setSelectedIndices(prev => {
+                const newSel = new Set(prev);
+                if (newSel.has(index)) newSel.delete(index);
+                else newSel.add(index);
+                return newSel;
+            });
             setLastSelectedIndex(index);
         } else {
             setSelectedIndices(new Set([index]));
@@ -283,8 +301,8 @@ export function useThumbSidebar({
     // ======= Pointer Events Drag and Drop =======
 
     // Track latest state to avoid stale closures during pointer events
-    const latestStateRef = useRef({ pageOrder, selectedIndices });
-    latestStateRef.current = { pageOrder, selectedIndices };
+    const latestStateRef = useRef({ pageOrder, selectedIndices, lastSelectedIndex, pageInstanceIds });
+    latestStateRef.current = { pageOrder, selectedIndices, lastSelectedIndex, pageInstanceIds };
 
     // We use a ref to track state during the pointer drag to avoid stale closures
     const dragContextRef = useRef<{ draggedIndex: number | null, hoverIndex: number | null, dropPosition: 'before' | 'after' }>({ draggedIndex: null, hoverIndex: null, dropPosition: 'before' });
@@ -583,9 +601,11 @@ export function useThumbSidebar({
                 return;
             }
 
+            const { pageInstanceIds: currentIds } = latestStateRef.current;
             const newOrder = [...currentOrder];
             const selArray = Array.from(currentSel).sort((a, b) => a - b);
             const selectedItems = selArray.map(idx => newOrder[idx]);
+            const selectedIds = selArray.map(idx => currentIds[idx]);
             commitSnapshot();
 
             // Determine insertion point based on dropPosition
@@ -594,9 +614,19 @@ export function useThumbSidebar({
             if (isCopy) {
                 // ── ALT+KÉO = NHÂN BẢN ──
                 // Giữ nguyên toàn bộ trang gốc, chèn bản sao của các trang đang chọn vào điểm thả.
+                // Bản sao: id MỚI (xoay độc lập) nhưng KẾ THỪA góc hiện tại của trang nguồn.
+                const dupIds = selectedIds.map(() => genPageId());
+                setPageRotations(prev => {
+                    const next = { ...prev };
+                    selectedIds.forEach((srcId, i) => { if (srcId && prev[srcId]) next[dupIds[i]] = prev[srcId]; });
+                    return next;
+                });
                 const copyOrder = [...currentOrder];
                 copyOrder.splice(insertAtOriginal, 0, ...selectedItems);
+                const copyIds = [...currentIds];
+                copyIds.splice(insertAtOriginal, 0, ...dupIds);
                 setPageOrder(copyOrder);
+                setPageInstanceIds(copyIds);
 
                 const newSelSet = new Set(Array.from({ length: selectedItems.length }, (_, i) => insertAtOriginal + i));
                 setSelectedIndices(newSelSet);
@@ -607,6 +637,7 @@ export function useThumbSidebar({
 
             // ── KÉO THƯỜNG = DI CHUYỂN ──
             const remainder = newOrder.filter((_, idx) => !currentSel.has(idx));
+            const remainderIds = currentIds.filter((_, idx) => !currentSel.has(idx));
 
             let adjustedDropIndex = insertAtOriginal;
             for (const idx of selArray) {
@@ -616,8 +647,10 @@ export function useThumbSidebar({
             }
 
             remainder.splice(adjustedDropIndex, 0, ...selectedItems);
+            remainderIds.splice(adjustedDropIndex, 0, ...selectedIds);
 
             setPageOrder(remainder);
+            setPageInstanceIds(remainderIds);
 
             const newSelStart = adjustedDropIndex;
             const newSelSet = new Set(Array.from({ length: selectedItems.length }, (_, i) => newSelStart + i));

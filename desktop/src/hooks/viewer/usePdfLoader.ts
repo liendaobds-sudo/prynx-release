@@ -9,6 +9,26 @@ export interface PageDim {
     widthPt?: number;
 }
 
+// ── Per-instance page id (per-instance rotation) ──
+// pageOrder[i] = số trang gốc (nhiều index có thể trùng khi nhân bản). pageInstanceIds[i]
+// = mã DUY NHẤT cho từng ô trong danh sách → rotation keyed theo id này thay vì số trang
+// → nhân bản 1 trang rồi xoay 1 bản KHÔNG làm bản kia xoay theo. Counter module-level:
+// chỉ cần duy nhất trong phiên (không cần deterministic theo nội dung).
+let _pageIdSeq = 0;
+export function genPageId(): string { return `p${++_pageIdSeq}`; }
+export function genPageIds(n: number): string[] {
+    return Array.from({ length: n }, () => genPageId());
+}
+
+// Flatten rotation (keyed theo instance-id, sống trong viewer) → number[] THEO VỊ TRÍ
+// (out[i] = góc của trang ở vị trí i trong pageOrder). Đây là dạng serialize ra store/
+// recovery/recipe/backend: khi đã cố định thứ tự mảng thì "góc tại vị trí i" là đủ để
+// biểu diễn per-instance, KHÔNG cần mang instance-id ra ngoài. Backend impose + bake đều
+// lặp theo vị trí nên nhận number[] này trực tiếp (audit per-instance rotation 2026-07-06).
+export function flattenRotations(ids: string[], map: Record<string, number>): number[] {
+    return ids.map(id => map[id] || 0);
+}
+
 export interface UsePdfLoaderResult {
     pdfRef: any;
     thumbPdfRef: any;
@@ -19,6 +39,8 @@ export interface UsePdfLoaderResult {
     numPages: number;
     pageOrder: number[];
     setPageOrder: React.Dispatch<React.SetStateAction<number[]>>;
+    pageInstanceIds: string[];
+    setPageInstanceIds: React.Dispatch<React.SetStateAction<string[]>>;
     selectedIndices: Set<number>;
     setSelectedIndices: React.Dispatch<React.SetStateAction<Set<number>>>;
     lastSelectedIndex: number | null;
@@ -46,10 +68,13 @@ export function usePdfLoader({
     const [plateLabels, setPlateLabels] = useState<Record<number, string>>({});
 
     const [pageOrder, setPageOrder] = useState<number[]>([]);
+    // Song song pageOrder: id duy nhất cho MỖI vị trí trang (kể cả bản nhân bản cùng
+    // số trang gốc) → rotation keyed theo id này để xoay độc lập từng bản.
+    const [pageInstanceIds, setPageInstanceIds] = useState<string[]>([]);
     const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set([0]));
     const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(0);
 
-    const [pageRotations, setPageRotations] = useState<Record<number, number>>({});
+    const [pageRotations, setPageRotations] = useState<Record<string, number>>({});
 
     // -- Undo/Redo stacks live here as they are tightly coupled with page state --
     const [pastStack, setPastStack] = useState<any[]>([]);
@@ -104,6 +129,7 @@ export function usePdfLoader({
             for (let i = 1; i <= count; i++) dims[i] = { w, h, widthPt: wPt };
             setAllPageDims(dims);
             setPageOrder(Array.from({ length: count }, (_, i) => i + 1));
+            setPageInstanceIds(genPageIds(count));
             if (!isSameUrl) {
                 setSelectedIndices(new Set([0]));
                 setLastSelectedIndex(0);
@@ -132,6 +158,7 @@ export function usePdfLoader({
                 setNumPages(1);
                 setAllPageDims({ 1: { w, h, widthPt: w } });
                 setPageOrder([1]);
+                setPageInstanceIds(genPageIds(1));
                 setSelectedIndices(new Set([0]));
                 setLastSelectedIndex(0);
                 setActivePage(1);
@@ -217,10 +244,14 @@ export function usePdfLoader({
                     setAllPageDims(dims);
 
                     if ((window as any).__prynx_cross_file_page_order) {
-                        setPageOrder((window as any).__prynx_cross_file_page_order);
+                        const cfOrder = (window as any).__prynx_cross_file_page_order as number[];
+                        setPageOrder(cfOrder);
+                        setPageInstanceIds(genPageIds(cfOrder.length));
                         setTimeout(() => { (window as any).__prynx_cross_file_page_order = null; }, 100);
                     } else {
+                        const keepOrder = isSameUrl && pageOrder.length === numPagesFromEngine;
                         setPageOrder(prev => (isSameUrl && prev.length === numPagesFromEngine) ? prev : Array.from({ length: numPagesFromEngine }, (_, i) => i + 1));
+                        setPageInstanceIds(prev => keepOrder ? prev : genPageIds(numPagesFromEngine));
                     }
                     
                     if (!isSameUrl) {
@@ -274,10 +305,14 @@ export function usePdfLoader({
                     setThumbPdfRef(doc);
                     setNumPages(doc.numPages);
                     if ((window as any).__prynx_cross_file_page_order) {
-                        setPageOrder((window as any).__prynx_cross_file_page_order);
+                        const cfOrder = (window as any).__prynx_cross_file_page_order as number[];
+                        setPageOrder(cfOrder);
+                        setPageInstanceIds(genPageIds(cfOrder.length));
                         setTimeout(() => { (window as any).__prynx_cross_file_page_order = null; }, 100);
                     } else {
+                        const keepOrder = isSameUrl && pageOrder.length === doc.numPages;
                         setPageOrder(prev => (isSameUrl && prev.length === doc.numPages) ? prev : Array.from({ length: doc.numPages }, (_, i) => i + 1));
+                        setPageInstanceIds(prev => keepOrder ? prev : genPageIds(doc.numPages));
                     }
 
                     if (!isSameUrl) {
@@ -382,6 +417,7 @@ export function usePdfLoader({
         pageWidthPt,
         plateLabels,
         pageOrder, setPageOrder,
+        pageInstanceIds, setPageInstanceIds,
         selectedIndices, setSelectedIndices,
         lastSelectedIndex, setLastSelectedIndex,
         pageRotations, setPageRotations,
