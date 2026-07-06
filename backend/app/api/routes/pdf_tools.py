@@ -476,6 +476,12 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     draw_cut_contour = form.get("draw_cut_contour", "true")
     bleed_color_type = form.get("bleed_color_type", "image")
     bleed_color_hex = form.get("bleed_color_hex", "#FFFFFF")
+    rectangle_mode_raw = form.get("rectangle_mode", "false")
+    do_rectangle_mode = rectangle_mode_raw.lower() in ("true", "1", "yes")
+    try:
+        edge_bite_mm = float(form.get("edge_bite_mm", 0.0))
+    except (ValueError, TypeError):
+        edge_bite_mm = 0.0
     
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"sticker_{job_id}.pdf")
@@ -516,7 +522,9 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             remove_white_bg=do_remove_bg,
             bleed_color_type=bleed_color_type,
             solid_bleed_color=solid_bleed_color,
-            draw_cut_contour=do_draw_cut_contour
+            draw_cut_contour=do_draw_cut_contour,
+            rectangle_mode=do_rectangle_mode,
+            edge_bite_mm=edge_bite_mm
         )
         if not success or not os.path.exists(output_path):
             # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)

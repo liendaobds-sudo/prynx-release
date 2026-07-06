@@ -48,12 +48,14 @@ def _downscale_factor(h: int, w: int, max_dim: int = 1000) -> int:
     return int(math.ceil(longest / max_dim)) if longest > max_dim else 1
 
 
-def _nearest_color_fill(sub_src, sub_img, max_dim: int = 1000):
+def _nearest_color_fill(sub_src, sub_img, max_dim: int = 4000):
     """Lấp màu nearest-neighbor từ vùng có màu (sub_src>0) ra toàn ROI
-    ('Kéo giãn mép ảnh'). Tự HẠ ĐỘ PHÂN GIẢI khi ROI lớn để tăng tốc EDT.
+    ('Kéo giãn mép ảnh'). Chạy FULL-RES để giữ NÉT — nhân bản pixel mép vuông
+    góc ra ngoài, không nội suy nên không mờ.
 
-    An toàn về thành phẩm: vùng bleed bị xén bỏ và artwork (vector) nằm TRÊN
-    (clip theo footprint) nên sai số mép do hạ mẫu không lộ ra bản in.
+    Chỉ hạ mẫu khi ROI CỰC lớn (> max_dim, vd sheet SRA3+) để chặn OOM; khi đó
+    dùng INTER_NEAREST ở CẢ hạ mẫu lẫn phóng lại (KHÔNG dùng INTER_AREA/LINEAR:
+    chúng trộn trung bình pixel trắng+màu ở ranh giới → loang/mờ như bản cũ).
     """
     from scipy.ndimage import distance_transform_edt
     sh, sw = sub_src.shape[:2]
@@ -61,38 +63,49 @@ def _nearest_color_fill(sub_src, sub_img, max_dim: int = 1000):
     if f > 1:
         small_src = cv2.resize(sub_src, (max(1, sw // f), max(1, sh // f)), interpolation=cv2.INTER_NEAREST)
         if np.count_nonzero(small_src) > 0:
-            small_img = cv2.resize(sub_img, (small_src.shape[1], small_src.shape[0]), interpolation=cv2.INTER_AREA)
+            small_img = cv2.resize(sub_img, (small_src.shape[1], small_src.shape[0]), interpolation=cv2.INTER_NEAREST)
             _, idx = distance_transform_edt(small_src == 0, return_indices=True)
             small_colors = small_img[idx[0], idx[1], :]
-            return cv2.resize(small_colors, (sw, sh), interpolation=cv2.INTER_LINEAR)
+            return cv2.resize(small_colors, (sw, sh), interpolation=cv2.INTER_NEAREST)
     _, idx = distance_transform_edt(sub_src == 0, return_indices=True)
     return sub_img[idx[0], idx[1], :]
 
 
-def _inpaint_color_fill(sub_img, sub_pmask, sub_csm, sub_bleed, max_dim: int = 900):
-    """Lấp màu bằng cv2.inpaint ('Làm mượt thông minh') trên ROI, có HẠ ĐỘ PHÂN
-    GIẢI khi lớn (inpaint là phép chậm nhất). Cùng lý do an toàn như trên."""
+def _inpaint_color_fill(sub_img, sub_csm, sub_bleed, max_dim: int = 4000):
+    """'Làm mượt thông minh' — seed nền từ color_source_mask (dải màu THẬT đã co
+    vào trong, bỏ qua mép trắng) bằng nearest, rồi cv2.inpaint (NS) làm mượt mối
+    nối màu trong vùng ring. Chạy FULL-RES cho ring hẹp (bleed 1-3mm = vài chục px)
+    để giữ nét; chỉ hạ mẫu khi ROI CỰC lớn (chặn OOM), khi đó resize NEAREST ở CẢ
+    hai chiều để không nội suy làm mờ.
+
+    Sửa 2 bug bản cũ: (1) nền cũ lấp bằng pixel mép TRANG (thường TRẮNG với file
+    không tràn lề) → inpaint hút trắng ngược vào ring = ra trắng/nhạt; nay seed từ
+    csm (màu sâu bên trong). (2) hạ mẫu về ≤900px + INTER_AREA/LINEAR phóng lại →
+    mờ; nay full-res + NEAREST.
+    """
     from scipy.ndimage import distance_transform_edt
     sh, sw = sub_img.shape[:2]
     f = _downscale_factor(sh, sw, max_dim)
     if f > 1:
         nw, nh = max(1, sw // f), max(1, sh // f)
-        s_img = cv2.resize(sub_img, (nw, nh), interpolation=cv2.INTER_AREA)
-        s_pmask = cv2.resize(sub_pmask, (nw, nh), interpolation=cv2.INTER_NEAREST)
+        s_img = cv2.resize(sub_img, (nw, nh), interpolation=cv2.INTER_NEAREST)
         s_csm = cv2.resize(sub_csm, (nw, nh), interpolation=cv2.INTER_NEAREST)
         s_bleed = cv2.resize(sub_bleed, (nw, nh), interpolation=cv2.INTER_NEAREST)
     else:
-        s_img, s_pmask, s_csm, s_bleed = sub_img, sub_pmask, sub_csm, sub_bleed
+        s_img, s_csm, s_bleed = sub_img, sub_csm, sub_bleed
 
-    bg_fill = (s_pmask == 0)
+    # Seed sạch: mọi pixel NGOÀI color_source_mask lấp bằng màu csm gần nhất (màu
+    # THẬT sâu bên trong, KHÔNG phải mép trắng). Đây là nền cho inpaint diffuse.
+    src = (s_csm > 0)
     s_filled = s_img.copy()
-    if bg_fill.any() and (~bg_fill).any():
-        _, fi = distance_transform_edt(bg_fill, return_indices=True)
-        s_filled[bg_fill] = s_img[fi[0][bg_fill], fi[1][bg_fill]]
+    if src.any() and (~src).any():
+        _, fi = distance_transform_edt(~src, return_indices=True)
+        s_filled = s_img[fi[0], fi[1]]
+    # Chỉ inpaint vùng ring (bleed NGOÀI csm) → NS diffuse màu từ biên csm ra, mượt.
     mask_for_inpaint = cv2.subtract(s_bleed, s_csm)
     out = cv2.inpaint(s_filled, mask_for_inpaint, 3, cv2.INPAINT_NS)
     if f > 1:
-        out = cv2.resize(out, (sw, sh), interpolation=cv2.INTER_LINEAR)
+        out = cv2.resize(out, (sw, sh), interpolation=cv2.INTER_NEAREST)
     return out
 
 
@@ -115,9 +128,11 @@ class StickerEngine:
         bleed_mm: float = 0.0,
         fill_holes: bool = True,
         remove_white_bg: bool = False,
-        bleed_color_type: str = "image", 
-        solid_bleed_color: tuple = (255, 255, 255), 
-        draw_cut_contour: bool = True
+        bleed_color_type: str = "image",
+        solid_bleed_color: tuple = (255, 255, 255),
+        draw_cut_contour: bool = True,
+        rectangle_mode: bool = False,
+        edge_bite_mm: float = 0.0
     ) -> tuple:
         debug_step = "Init"
         doc_in_pdfium = None
@@ -228,8 +243,15 @@ class StickerEngine:
                 from skimage import measure
                 contours = measure.find_contours(aa_mask_padded, 127.5)
                 
-                page_in_width = float(page_in_pike.mediabox[2] - page_in_pike.mediabox[0])
-                page_in_height = float(page_in_pike.mediabox[3] - page_in_pike.mediabox[1])
+                # Hình học phải theo CROPBOX, KHÔNG phải MediaBox: pdfium render và
+                # page.as_form_xobject() đều dùng CropBox (đã verify). Khi file có
+                # CropBox ≠ MediaBox (vd sau auto-trim chỉ set CropBox), lấy MediaBox
+                # sẽ lệch cả kích thước lẫn gốc toạ độ → bleed/đường cắt vẽ sai chỗ.
+                # pikepdf .cropbox tự fallback về MediaBox khi trang không có CropBox.
+                crop_x0 = float(page_in_pike.cropbox[0])
+                crop_y0 = float(page_in_pike.cropbox[1])
+                page_in_width = float(page_in_pike.cropbox[2]) - crop_x0
+                page_in_height = float(page_in_pike.cropbox[3]) - crop_y0
                 
                 if cut_mode == "none":
                     max_expansion_pts = bleed_pts
@@ -260,7 +282,25 @@ class StickerEngine:
                 total_offset = 0
                 bleed_outer_offset = 0
                 
-                if cut_mode != "none" and len(contours) > 0:
+                # ── RECTANGLE MODE: dùng page bbox làm shape, skip contour detection ──
+                if rectangle_mode:
+                    debug_step = f"Rectangle Mode Page {page_idx}"
+                    rect_poly = Polygon([
+                        (0, 0), (page_in_width, 0),
+                        (page_in_width, page_in_height), (0, page_in_height)
+                    ])
+                    dieline_poly = rect_poly
+                    cut_poly = rect_poly
+                    any_dieline_found = True
+                    if bleed_pts > 0:
+                        bleed_outer_offset = bleed_pts
+                        bleed_outer_poly = rect_poly.buffer(bleed_pts, join_style=2)  # miter
+                    else:
+                        bleed_outer_poly = rect_poly
+                    if self.debug:
+                        logger.warning(">>> RECTANGLE MODE: page %.1fx%.1f pt, bleed_pts=%.2f", page_in_width, page_in_height, bleed_pts)
+                
+                elif cut_mode != "none" and len(contours) > 0:
                     debug_step = f"Process Contours Page {page_idx}"
                     poly_scale = 1.0 / self.scale
                     
@@ -390,6 +430,11 @@ class StickerEngine:
                         
                         inset_px = int(0.15 * (self.dpi / 25.4))
                         if inset_px < 1: inset_px = 1
+                        # "Lẹm mép": hút màu sâu vào trong thêm edge_bite_mm để bỏ qua viền
+                        # trắng mảnh ở mép nguồn (file khách không tràn lề). Nearest/inpaint
+                        # sẽ kéo màu SÂU bên trong (đỏ) phủ ra cả viền trắng lẫn vùng bleed.
+                        edge_bite_px = max(0, int(edge_bite_mm * (self.dpi / 25.4)))
+                        inset_px += edge_bite_px
                         inset_kernel = cv2.getStructuringElement(kernel_type, (inset_px*2+1, inset_px*2+1))
                         color_source_mask = cv2.erode(padded_original_mask, inset_kernel)
                         
@@ -456,9 +501,25 @@ class StickerEngine:
                         foot_contours, _ = cv2.findContours(closed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                         sticker_footprint = np.zeros_like(padded_original_mask)
                         cv2.drawContours(sticker_footprint, foot_contours, -1, 255, cv2.FILLED)
-                        
-                        # bleed_ring = area between sticker footprint and cut line
-                        bleed_ring = cv2.subtract(bleed_mask, sticker_footprint)
+
+                        # "Lẹm mép" (doa nền kiểu Photoshop): co footprint vào trong edge_bite_px.
+                        # Artwork (layer trên) bị clip theo footprint → co vào để lộ dải bleed bên
+                        # dưới ở đúng viền trắng mảnh của file nguồn. bleed_ring = bleed_mask − footprint
+                        # nên footprint co lại thì ring TỰ lan vào trong phủ viền trắng đó. Kết hợp với
+                        # color_source_mask đã co thêm edge_bite (ở trên) → màu hút từ SÂU bên trong
+                        # (bỏ qua viền trắng) rồi kéo phủ ra. CẢNH BÁO: lẹm quá tay ăn vào nội dung
+                        # sát mép — mặc định nhỏ, cho khách chỉnh/tắt (0).
+                        if edge_bite_px > 0:
+                            bite_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (edge_bite_px*2+1, edge_bite_px*2+1))
+                            sticker_footprint = cv2.erode(sticker_footprint, bite_kernel)
+
+                        # bleed_ring = vùng giữa footprint và đường cắt. NỚI mép trong
+                        # VÀO TRONG vài px: SMask lùa xuống DƯỚI artwork (layer trên phủ
+                        # footprint) → bịt khe hở subpixel ở mối nối raster(SMask)↔clip-vector,
+                        # tránh hở nền tạo sợi mảnh. Phần nới nằm dưới artwork nên vô hình.
+                        _tuck_px = max(1, int(0.2 * (self.dpi / 25.4)))
+                        _fp_inner = cv2.erode(sticker_footprint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_tuck_px*2+1, _tuck_px*2+1)))
+                        bleed_ring = cv2.subtract(bleed_mask, _fp_inner)
                         
                         is_bleed_cmyk = False
                         if bleed_color_type == "image":
@@ -473,17 +534,17 @@ class StickerEngine:
                             else:
                                 bleed_colors = _nearest_color_fill(color_source_mask, padded_img)
                         elif bleed_color_type == "inpaint":
-                            # 'Làm mượt thông minh' — cv2.inpaint, chỉ chạy trên ROI + hạ mẫu khi lớn.
+                            # 'Làm mượt thông minh' — seed từ color_source_mask (màu thật), inpaint làm mượt.
                             roi = _bleed_roi_bbox(bleed_mask, margin=8)
                             bleed_colors = np.zeros_like(padded_img)
                             if roi is not None:
                                 y0, y1, x0, x1 = roi
                                 bleed_colors[y0:y1, x0:x1] = _inpaint_color_fill(
-                                    padded_img[y0:y1, x0:x1], padded_mask[y0:y1, x0:x1],
+                                    padded_img[y0:y1, x0:x1],
                                     color_source_mask[y0:y1, x0:x1], bleed_mask[y0:y1, x0:x1],
                                 )
                             else:
-                                bleed_colors = _inpaint_color_fill(padded_img, padded_mask, color_source_mask, bleed_mask)
+                                bleed_colors = _inpaint_color_fill(padded_img, color_source_mask, bleed_mask)
                         else:
                             if len(solid_bleed_color) == 4:
                                 is_bleed_cmyk = True
@@ -494,26 +555,22 @@ class StickerEngine:
                                 bg_canvas[:] = solid_bleed_color
                             bleed_colors = bg_canvas
                             
-                        if is_bleed_cmyk:
-                            bleed_result = np.zeros((padded_img.shape[0], padded_img.shape[1], 4), dtype=np.uint8)
-                        else:
-                            bleed_result = np.zeros_like(padded_img)
-                            
-                        bleed_result[bleed_ring > 0] = bleed_colors[bleed_ring > 0]
+                        # KHÔNG mask màu về canvas ĐEN nữa: trước đây bleed_result=zeros
+                        # rồi chỉ copy ring → vùng interior (ngoài ring) là ĐEN, tạo cạnh
+                        # màu↔đen ở biên trong ring. Khi PDF render nội suy ảnh+SMask ở cạnh
+                        # đó → pixel alpha-một-phần = màu TRỘN đen = SỢI XÁM mảnh (lộ cả khi
+                        # bleed trắng: 255↔0 = xám). bleed_colors đã có màu LIÊN TỤC toàn ROI
+                        # (nearest/inpaint/solid fill) → dùng trực tiếp, cạnh chỉ còn màu↔màu.
+                        bleed_rgb = bleed_colors
                         
-                        bleed_rgb = bleed_result # It's already RGB (or CMYK)
-                        
-                        from PIL import Image
-                        if is_bleed_cmyk:
-                            # Solid CMYK compresses extremely well with zlib and avoids Adobe JPEG inversion bugs
-                            bleed_stream_data = zlib.compress(bleed_rgb.tobytes())
-                            img_w, img_h = bleed_rgb.shape[1], bleed_rgb.shape[0]
-                        else:
-                            img_byte_arr = io.BytesIO()
-                            img_pil = Image.fromarray(bleed_rgb, mode='RGB')
-                            img_pil.save(img_byte_arr, format='JPEG', quality=90)
-                            bleed_stream_data = img_byte_arr.getvalue()
-                            img_w, img_h = img_pil.width, img_pil.height
+                        # LOSSLESS (zlib/FlateDecode) cho CẢ RGB lẫn CMYK. TRƯỚC đây RGB
+                        # lưu JPEG q90 → ringing (Gibbs) ở mọi ranh giới tương phản cao:
+                        # dải pixel bị kéo về trung tính = VIỀN XÁM nhạt ở biên hình↔bleed,
+                        # lộ cả khi bleed trắng (255↔0 qua JPEG thành xám). Ring hẹp (bleed
+                        # 1-3mm) + vùng ngoài ring = 0 nên zlib nén rất tốt, dung lượng không
+                        # đáng ngại. Nhánh CMYK vốn đã né JPEG (Adobe inversion) — nay RGB cũng vậy.
+                        bleed_stream_data = zlib.compress(bleed_rgb.tobytes())
+                        img_w, img_h = bleed_rgb.shape[1], bleed_rgb.shape[0]
                             
                         mask_bytes_data = zlib.compress(bleed_ring.tobytes())
                         
@@ -523,10 +580,10 @@ class StickerEngine:
                                 debug_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'debug_output')
                                 os.makedirs(debug_dir, exist_ok=True)
                                 cv2.imwrite(os.path.join(debug_dir, 'debug_bleed_ring.png'), bleed_ring)
-                                cv2.imwrite(os.path.join(debug_dir, 'debug_bleed_result.png'), cv2.cvtColor(bleed_result[:,:,:3], cv2.COLOR_RGB2BGR) if not is_bleed_cmyk else bleed_result)
+                                cv2.imwrite(os.path.join(debug_dir, 'debug_bleed_result.png'), cv2.cvtColor(bleed_rgb[:,:,:3], cv2.COLOR_RGB2BGR) if not is_bleed_cmyk else bleed_rgb)
                                 cv2.imwrite(os.path.join(debug_dir, 'debug_padded_mask.png'), padded_mask)
                                 cv2.imwrite(os.path.join(debug_dir, 'debug_sticker_footprint.png'), sticker_footprint)
-                                logger.warning(">>> BLEED DEBUG: bleed_ring nonzero=%d, bleed_result mean=%s, bleed_color_type=%s", np.count_nonzero(bleed_ring), np.mean(bleed_result[bleed_ring > 0], axis=0) if np.count_nonzero(bleed_ring) > 0 else 'N/A', bleed_color_type)
+                                logger.warning(">>> BLEED DEBUG: bleed_ring nonzero=%d, bleed_rgb mean=%s, bleed_color_type=%s", np.count_nonzero(bleed_ring), np.mean(bleed_rgb[bleed_ring > 0], axis=0) if np.count_nonzero(bleed_ring) > 0 else 'N/A', bleed_color_type)
                             except Exception as e:
                                 logger.warning(">>> BLEED DEBUG FAILED: %s", e)
 
@@ -553,14 +610,30 @@ class StickerEngine:
                     img_obj.Height = img_h
                     img_obj.ColorSpace = pikepdf.Name.DeviceCMYK if is_bleed_cmyk else pikepdf.Name.DeviceRGB
                     img_obj.BitsPerComponent = 8
-                    img_obj.Filter = pikepdf.Name.FlateDecode if is_bleed_cmyk else pikepdf.Name.DCTDecode
+                    # Cả 2 nhánh nay đều zlib (lossless) → FlateDecode. Trước RGB là DCTDecode (JPEG).
+                    img_obj.Filter = pikepdf.Name.FlateDecode
                     img_obj.SMask = mask_obj
                     
                     img_name = page_out.add_resource(img_obj, pikepdf.Name.XObject)
                     
                     shift_x = max_expansion_pts - (pad_b / self.scale)
                     shift_y = max_expansion_pts - (pad_b / self.scale)
-                    
+
+                    if self.debug:
+                        # So khớp 2 layer: bleed (raster, neo self.scale) vs artwork
+                        # (vector 1:1, neo crop_x0). artwork phải rộng ĐÚNG page_in_width;
+                        # bleed artwork-portion rộng img_native_px/self.scale. Lệch ⇒ pdfium
+                        # render khác box ta giả định (CropBox) hoặc self.scale sai.
+                        _art_px_w = img_w - 2 * pad_b
+                        _art_px_h = img_h - 2 * pad_b
+                        logger.warning(
+                            ">>> ALIGN p%d: page_in=%.3fx%.3f pt | render_px=%dx%d → /scale=%.3fx%.3f pt | scale=%.5f (base=%.5f) | crop0=(%.3f,%.3f) | img_w_pt=%.3f shift=(%.3f,%.3f) max_exp=%.3f pad_b=%d",
+                            page_idx, page_in_width, page_in_height,
+                            _art_px_w, _art_px_h, _art_px_w / self.scale, _art_px_h / self.scale,
+                            self.scale, base_scale, crop_x0, crop_y0,
+                            img_w_pt, shift_x, shift_y, max_expansion_pts, pad_b,
+                        )
+
                     page_content_stream.append("q")
                     page_content_stream.append(f"{img_w_pt:.4f} 0 0 {img_h_pt:.4f} {shift_x:.4f} {shift_y:.4f} cm")
                     page_content_stream.append(f"{str(img_name)} Do")
@@ -599,7 +672,13 @@ class StickerEngine:
                     if clip_ops:
                         page_content_stream.extend(clip_ops)
                         page_content_stream.append("W n")
-                page_content_stream.append(f"1 0 0 1 {max_expansion_pts:.4f} {max_expansion_pts:.4f} cm")
+                # Form XObject giữ toạ độ gốc của trang (BBox = CropBox, bắt đầu ở
+                # crop_x0/crop_y0), trong khi bleed + contour ở "local crop space"
+                # (gốc 0,0). Phải dịch thêm -crop_x0/-crop_y0 để artwork khớp bleed;
+                # nếu không artwork lệch đúng bằng gốc CropBox và bị footprint clip cắt.
+                art_shift_x = max_expansion_pts - crop_x0
+                art_shift_y = max_expansion_pts - crop_y0
+                page_content_stream.append(f"1 0 0 1 {art_shift_x:.4f} {art_shift_y:.4f} cm")
                 page_content_stream.append(f"{str(src_xobj_name)} Do")
                 page_content_stream.append("Q")
 
