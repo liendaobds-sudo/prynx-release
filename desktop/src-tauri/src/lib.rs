@@ -316,7 +316,11 @@ fn render_tile_jpeg(
     file_path: &str, page: i32, zoom: f32, rotation: i32,
     clip_x: Option<i32>, clip_y: Option<i32>, clip_w: Option<i32>, clip_h: Option<i32>
 ) -> Result<Vec<u8>, String> {
-    let cache_key = format!("{}_{}_{}_{}_{}_{}_{}_{}", file_path, page, zoom, rotation,
+    // RENDER_VER: đổi token này mỗi khi thay đổi cách render/encode (LCD text, JPEG
+    // quality...) → vô hiệu MỌI tile cache cũ (RAM + đĩa) render bằng cấu hình cũ.
+    // Nếu không, tile q92/không-LCD đã lưu vẫn được đọc lại, che mất thay đổi (2026-07-06).
+    const RENDER_VER: &str = "v3_lcd_q98_scale24";
+    let cache_key = format!("{}_{}_{}_{}_{}_{}_{}_{}_{}", RENDER_VER, file_path, page, zoom, rotation,
         clip_x.unwrap_or(0), clip_y.unwrap_or(0), clip_w.unwrap_or(0), clip_h.unwrap_or(0));
     
     {
@@ -426,7 +430,10 @@ fn render_tile_jpeg(
         if render_scale.is_nan() || render_scale.is_infinite() {
             render_scale = 1.0;
         }
-        render_scale = render_scale.clamp(0.01, 10.0); // Prevent OOM
+        // Trần scale nâng lên 34 (≈96/72×24) khớp trần zoom frontend mới → file nhỏ
+        // (danh thiếp) zoom sâu vẫn nét. An toàn OOM vì bitmap còn bị chặn cứng bởi
+        // max_dim=8000 (nhánh full-page) và w/h.clamp(4000) (nhánh clip) bên dưới.
+        render_scale = render_scale.clamp(0.01, 34.0);
 
         let render_config = if let (Some(x), Some(y), Some(w), Some(h)) = (clip_x, clip_y, clip_w, clip_h) {
             let safe_w = w.clamp(1, 4000) as i32;
@@ -436,6 +443,8 @@ fn render_tile_jpeg(
                 .set_fixed_size(safe_w, safe_h)
                 .translate(PdfPoints::new(-(x as f32) / render_scale), PdfPoints::new(-(y as f32) / render_scale)).unwrap_or_default()
                 .scale_page_by_factor(render_scale)
+                // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
+                .use_lcd_text_rendering(true)
         } else {
             // VECTOR #6 FIX: Prevent PDFium OOM on extremely tall/wide documents.
             // set_target_width scales height proportionally. If a document is 50x taller than wide,
@@ -456,6 +465,8 @@ fn render_tile_jpeg(
             PdfRenderConfig::new()
                 .set_clear_color(PdfColor::WHITE)
                 .set_target_width(safe_w)
+                // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
+                .use_lcd_text_rendering(true)
         };
         let bitmap = pdf_page.render_with_config(&render_config)
             .map_err(|e| format!("Failed to render page: {:?}", e))?;
@@ -465,10 +476,12 @@ fn render_tile_jpeg(
     
     let start_encode = std::time::Instant::now();
     let mut buffer = Vec::new();
-    // JPEG-92: nhanh + nhẹ cho mọi loại nội dung (kể cả trang đồ hoạ/ảnh nặng). PNG
+    // JPEG-98: nhanh + nhẹ cho mọi loại nội dung (kể cả trang đồ hoạ/ảnh nặng). PNG
     // lossless từng thử nhưng encode/transfer rất chậm ở bitmap lớn (zoom cao ~280ms)
-    // cho nội dung phức tạp → bỏ. 92 đã giảm tốt ringing ở cạnh chữ/nét mảnh.
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 92);
+    // cho nội dung phức tạp → bỏ. Nâng 92→98 (audit render 2026-07-06): gần hết ringing
+    // DCT ở cạnh chữ/nét mảnh (nét hơn rõ), JPEG encode vẫn nhanh, kích thước ~2x (không
+    // 4x như lossless). ≥90 nên image-crate giữ 4:4:4 (không subsample màu → biên sắc).
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 98);
     encoder.encode_image(&rgba_image).map_err(|e| format!("Encode error: {:?}", e))?;
     let _encode_ms = start_encode.elapsed().as_millis();
     let _ = render_ms;

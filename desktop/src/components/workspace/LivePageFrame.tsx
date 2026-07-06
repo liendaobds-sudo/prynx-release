@@ -124,6 +124,20 @@ export function clearTileUrlCache() {
     _tileUrlCache.clear();
 }
 
+// Dọn tile của RIÊNG một file (key = `${pdfUrl}_...`) → gọi khi ĐÓNG tab để giải
+// phóng bitmap của tab đó mà KHÔNG đụng tile các tab khác đang mở (cache là global,
+// dùng chung mọi tab — audit RAM 2026-07-06). Chỉ revoke blob thật.
+export function clearTileUrlCacheForFile(fileKeyPrefix: string) {
+    if (!fileKeyPrefix) return;
+    const prefix = `${fileKeyPrefix}_`;
+    for (const [key, url] of _tileUrlCache) {
+        if (key.startsWith(prefix)) {
+            if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+            _tileUrlCache.delete(key);
+        }
+    }
+}
+
 // ═══ Edit Objects Cache (chế độ Chỉnh sửa đối tượng) ═══
 // Cache danh sách EditCanvasObj theo khóa `${selectionFileId}:${pageIndex}` để
 // bật/tắt chế độ KHÔNG phải fetch lại /edit/objects (hết "load lâu khi tắt/bật").
@@ -709,8 +723,12 @@ export const LivePageFrame = (props: any) => {
         const w100 = actualWidth100 || 800;
         const ratio = (pageDim && pageDim.w) ? Math.max(1, pageDim.h / pageDim.w) : 1.414;
         // Cap bộ nhớ: cạnh dài bitmap ≤ 6000px (1 render). Native tự clamp ≤8000.
+        // Trần cứng 24 (trước là 7.5): file NHỎ (danh thiếp) zoom sâu bị 7.5 chặn sớm
+        // hơn ngân sách RAM thật (6000px) → mờ. Nay để capByBudget (6000px) khống chế
+        // → file nhỏ nét hơn ~2.3× mà KHÔNG tăng RAM (file lớn vẫn bị capByBudget chặn
+        // trước 24). Native render_scale clamp cũng nâng 10→34 cho khớp (audit render).
         const capByBudget = 6000 / (w100 * ratio);
-        return Math.max(dpr, Math.min(7.5, target, capByBudget));
+        return Math.max(dpr, Math.min(24, target, capByBudget));
     };
     const [renderZoom, setRenderZoom] = useState(() => computeRenderZoom(zoom));
 
