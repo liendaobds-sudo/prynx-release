@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import shutil
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,25 @@ logger = logging.getLogger(__name__)
 # tại routes/edit.py). Trước đây 12h < 24h → quét sweep có thể XÓA Working_File đang
 # trong phiên chỉnh sửa dài trước hạn (audit an toàn dữ liệu). Đặt 26h (24h + biên).
 FS_CLEANUP_MAX_AGE_HOURS = 26
+
+# ── Dọn OS temp theo whitelist prefix (audit RAM 2026-07-06) ──
+# Worker VDP/NUP ghi file trung gian vào tempfile.gettempdir() (OS temp) — cleanup ở
+# uploads/results/temp KHÔNG chạm tới. Đặc biệt vdp_prog_*.txt KHÔNG được worker tự
+# xóa; vdp_chunk_/vdp_canon_/mkstemp có tự xóa nhưng LEAK nếu process crash giữa chừng.
+# CHỈ xóa file khớp prefix RIÊNG của app (uuid/job_id hậu tố) — TUYỆT ĐỐI không đụng
+# file prefix "tmp*" mặc định của Python (không phân biệt được của app hay tiến trình khác).
+APP_TEMP_PREFIXES = (
+    "vdp_preview_",
+    "vdp_preview_tpl_",
+    "vdp_chunk_",
+    "vdp_canon_",
+    "vdp_prog_",
+    "nup_prog_",
+    "nup_state_",
+)
+# Ngưỡng tuổi riêng cho OS temp: đủ dài hơn job VDP/NUP dài nhất, đủ ngắn để không
+# tích lũy nhiều ngày. KHÔNG dùng chung 26h (temp là file đời ngắn).
+OS_TEMP_MAX_AGE_HOURS = 12
 
 
 async def cleanup_expired_files_loop():
@@ -125,11 +145,16 @@ def cleanup_orphan_files():
     for target_dir in dirs_to_clean:
         if not target_dir.is_dir():
             continue
-            
+
         deleted, freed = _cleanup_directory(target_dir, now, max_age_seconds)
         total_deleted += deleted
         total_freed_bytes += freed
-    
+
+    # OS temp: chỉ file khớp whitelist prefix của app + tuổi riêng (không đệ quy).
+    os_deleted, os_freed = _cleanup_os_temp_by_prefix(now, OS_TEMP_MAX_AGE_HOURS * 3600)
+    total_deleted += os_deleted
+    total_freed_bytes += os_freed
+
     if total_deleted > 0:
         freed_mb = round(total_freed_bytes / (1024 * 1024), 1)
         logger.info(
@@ -167,5 +192,46 @@ def _cleanup_directory(
                 item.rmdir()  # Only removes if empty
             except OSError:
                 pass  # Directory not empty, skip
-    
+
+    return deleted, freed
+
+
+def _cleanup_os_temp_by_prefix(now: float, max_age_seconds: float) -> tuple[int, int]:
+    """Dọn file trung gian của app ở OS temp (tempfile.gettempdir()) theo whitelist prefix.
+
+    AN TOÀN với tiến trình khác:
+    - CHỈ liệt kê file ở TẦNG GỐC của OS temp (KHÔNG rglob đệ quy → không đụng thư
+      mục con của tiến trình/ứng dụng khác).
+    - CHỈ xóa file có tên khớp một prefix trong APP_TEMP_PREFIXES (riêng của app).
+    - CHỈ xóa khi tuổi file > max_age_seconds.
+    Trả về (deleted_count, freed_bytes). Best-effort — bỏ qua lỗi khóa file.
+    """
+    deleted = 0
+    freed = 0
+    tmp_root = Path(tempfile.gettempdir())
+    if not tmp_root.is_dir():
+        return deleted, freed
+
+    try:
+        entries = list(tmp_root.iterdir())  # KHÔNG đệ quy — chỉ tầng gốc
+    except OSError as e:
+        logger.debug(f"Cannot list OS temp dir: {e}")
+        return deleted, freed
+
+    for item in entries:
+        try:
+            if not item.is_file():
+                continue
+            if not item.name.startswith(APP_TEMP_PREFIXES):
+                continue
+            if (now - item.stat().st_mtime) <= max_age_seconds:
+                continue
+            file_size = item.stat().st_size
+            item.unlink()
+            deleted += 1
+            freed += file_size
+        except OSError as e:
+            # File có thể đang bị process khác giữ (job đang chạy) — bỏ qua.
+            logger.debug(f"Cannot delete OS temp {item.name}: {e}")
+
     return deleted, freed

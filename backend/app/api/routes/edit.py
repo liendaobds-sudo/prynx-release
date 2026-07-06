@@ -34,6 +34,9 @@ import base64
 import dataclasses
 import logging
 import os
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
@@ -78,28 +81,52 @@ EDIT_OUTPUT_SUBDIR = "edit_output"
 # render theo scale = DPI/72 so với hệ point của PDF.
 PREVIEW_DPI: float = 150.0
 
-# ── Object list cache (simple in-memory, per (fid, page)) ────────────────────
+# ── Object list cache (in-memory, per (fid, page), TTL + LRU cap) ────────────
 # Giúp load edit tool nhanh hơn rất nhiều trên trang phức tạp.
 # Invalidate khi có edit thành công trên trang đó (hoặc khi fid mới từ commit).
-_object_list_cache: dict[tuple[str, int], dict] = {}
+#
+# Trước đây dict thuần KHÔNG cap/TTL → mỗi (fid,page) đã xem nằm mãi; mỗi commit tạo
+# fid mới → rò rỉ RAM chậm (audit RAM 2026-07-06). Nay: OrderedDict lưu (monotonic_ts,
+# payload) + TTL + cap LRU, style theo edit_session.py (monotonic + lock GIỮ NGẮN).
+# Cache chỉ là tối ưu tốc độ — miss thì rebuild từ pikepdf (đường đã có), không mất dữ liệu.
+_object_list_cache: "OrderedDict[tuple[str, int], tuple[float, dict]]" = OrderedDict()
+_OBJ_CACHE_LOCK = threading.Lock()
+OBJ_CACHE_TTL: float = 600.0  # 10 phút — hết hạn thì rebuild
+OBJ_CACHE_MAXSIZE: int = 64   # trần số entry; vượt → bỏ cũ nhất (LRU)
 
 
 def _get_cached_objects(fid: str, page: int):
-    return _object_list_cache.get((fid, page))
+    key = (fid, page)
+    with _OBJ_CACHE_LOCK:
+        entry = _object_list_cache.get(key)
+        if entry is None:
+            return None
+        ts, payload = entry
+        if (time.monotonic() - ts) > OBJ_CACHE_TTL:
+            _object_list_cache.pop(key, None)  # hết hạn → coi như miss
+            return None
+        _object_list_cache.move_to_end(key)  # LRU: đánh dấu vừa dùng
+        return payload
 
 
 def _set_cached_objects(fid: str, page: int, payload: dict):
-    _object_list_cache[(fid, page)] = payload
+    key = (fid, page)
+    with _OBJ_CACHE_LOCK:
+        _object_list_cache[key] = (time.monotonic(), payload)
+        _object_list_cache.move_to_end(key)
+        while len(_object_list_cache) > OBJ_CACHE_MAXSIZE:
+            _object_list_cache.popitem(last=False)  # bỏ entry cũ nhất
 
 
 def _invalidate_object_cache(fid: str, page: int | None = None):
-    if page is not None:
-        _object_list_cache.pop((fid, page), None)
-    else:
-        # clear all pages for this fid
-        keys = [k for k in _object_list_cache if k[0] == fid]
-        for k in keys:
-            _object_list_cache.pop(k, None)
+    with _OBJ_CACHE_LOCK:
+        if page is not None:
+            _object_list_cache.pop((fid, page), None)
+        else:
+            # clear all pages for this fid
+            keys = [k for k in _object_list_cache if k[0] == fid]
+            for k in keys:
+                _object_list_cache.pop(k, None)
 
 
 # ── Request schemas ──────────────────────────────────────────────────────────

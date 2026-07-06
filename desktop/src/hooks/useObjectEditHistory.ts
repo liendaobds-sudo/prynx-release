@@ -1,6 +1,7 @@
 import { useCallback, useContext } from 'react';
 import { WorkspaceContext, useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { authenticatedFetch, getApiUrl } from '../lib/api';
+import { stripBytesIfOnDisk } from '../lib/utils';
 
 /**
  * useObjectEditHistory — Undo/Redo cho chế độ "Chỉnh sửa đối tượng" (pdf-object-edit).
@@ -61,7 +62,11 @@ export function useObjectEditHistory() {
         // Cắt bớt đầu stack khi vượt trần; thao tác mới làm mất redo → các snapshot
         // bị loại (cũ quá / redo bị huỷ) sẽ KHÔNG bao giờ khôi phục lại được nữa →
         // dọn Working_File trung gian tương ứng (backend chỉ xoá file trong edit_output).
-        const all = [...st.objectEditPast, snap];
+        // Strip bytes khỏi File nếu có path đĩa (render/đọc lại qua path) → chặn phình RAM
+        // (audit 2026-07-06). File không path → giữ nguyên (fallback). applySnap dùng lại
+        // snap.pdfUrl; file có path đi kèm pdfUrl=convertFileSrc (asset, KHÔNG revoke) → sống.
+        const lightSnap: EditSnap = { ...snap, file: snap.file ? stripBytesIfOnDisk(snap.file) : null };
+        const all = [...st.objectEditPast, lightSnap];
         let dropped: EditSnap[] = [];
         let kept = all;
         if (all.length > MAX_EDIT_HISTORY) {
@@ -93,7 +98,7 @@ export function useObjectEditHistory() {
         const p = st.objectEditPast;
         if (p.length === 0) return false;
         const prev = p[p.length - 1];
-        const cur: EditSnap = { file: st.file, pdfUrl: st.pdfUrl, fid: st.selectionFileId };
+        const cur: EditSnap = { file: stripBytesIfOnDisk(st.file), pdfUrl: st.pdfUrl, fid: st.selectionFileId };
         st.setObjectEditFuture([cur, ...st.objectEditFuture]);
         st.setObjectEditPast(p.slice(0, -1));
         applySnap(prev);
@@ -106,7 +111,7 @@ export function useObjectEditHistory() {
         const fz = st.objectEditFuture;
         if (fz.length === 0) return false;
         const next = fz[0];
-        const cur: EditSnap = { file: st.file, pdfUrl: st.pdfUrl, fid: st.selectionFileId };
+        const cur: EditSnap = { file: stripBytesIfOnDisk(st.file), pdfUrl: st.pdfUrl, fid: st.selectionFileId };
         st.setObjectEditPast([...st.objectEditPast, cur]);
         st.setObjectEditFuture(fz.slice(1));
         applySnap(next);

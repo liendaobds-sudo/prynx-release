@@ -189,6 +189,26 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
   "tileGapX": 0,
   "tileGapY": 0,
   "toolProfiles": {},
+  "trimShiftSettings": {
+    "applyToStr": "all",
+    "bindingEnabled": false,
+    "bindingInward": true,
+    "bindingMm": 0,
+    "contentMode": "original",
+    "creepAxis": "x",
+    "creepEnabled": false,
+    "creepMm": 0,
+    "keepBleed": false,
+    "mirrorFill": false,
+    "sameAllEdges": false,
+    "shiftX": 0,
+    "shiftY": 0,
+    "trimBottom": 0,
+    "trimLeft": 0,
+    "trimRight": 0,
+    "trimTop": 0,
+    "unit": "mm",
+  },
 }
 `;
 

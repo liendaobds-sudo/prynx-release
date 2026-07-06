@@ -18,6 +18,26 @@ export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer
     return file.arrayBuffer();
 };
 
+/**
+ * Trả về một File RỖNG bytes chỉ mang tên + path nếu file có `.path` trên đĩa (Tauri) —
+ * dùng cho stack undo (history / objectEdit) để KHÔNG giữ nguyên bytes PDF trong RAM
+ * (audit RAM 2026-07-06: file 50MB × N bước undo = leak vài GB/tab).
+ *
+ * File rỗng + path vẫn render đúng qua pdfium (native) và đọc lại bytes qua
+ * `getFileArrayBuffer` (fetch từ đĩa qua convertFileSrc). Nếu KHÔNG có path (web
+ * fallback / blob) → GIỮ NGUYÊN file (fallback bytes) → hành vi y hệt hiện tại.
+ */
+export function stripBytesIfOnDisk<T extends File | null>(file: T): T {
+    if (!file || !(window as any).__TAURI_INTERNALS__ || !(file as any).path) return file;
+    const light = new File([], file.name, { type: file.type });
+    Object.defineProperty(light, 'path', { value: (file as any).path });
+    // Giữ cờ __editCommit nếu có → viewer không full-reload khi apply lại.
+    if ((file as any).__editCommit) {
+        Object.defineProperty(light, '__editCommit', { value: true, configurable: true });
+    }
+    return light as T;
+}
+
 export async function detectColorSpace(file: File): Promise<string | null> {
     if (file.type?.startsWith('image/') || file.name.match(/\.(jpg|jpeg|png|webp|gif|bmp)$/i)) {
         return 'RGB';

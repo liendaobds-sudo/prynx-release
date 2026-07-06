@@ -24,7 +24,7 @@ import { getApiUrl, uploadPDF, startVdpJobBackend, pollVdpJob, authenticatedFetc
 import { recipeRecorder } from '../lib/recipe/RecipeRecorder';
 import { isOutputFile, isImposedOutputFile } from '../lib/constants';
 import { writeSnapshot, deleteSnapshot } from '../lib/recovery';
-import { getFileArrayBuffer, detectColorSpace } from '../lib/utils';
+import { getFileArrayBuffer, detectColorSpace, stripBytesIfOnDisk } from '../lib/utils';
 import { saveVdpTemplate, loadVdpTemplate } from '../lib/vdpTemplate';
 import OutputPreviewTab, { type PlateOverlay } from './OutputPreviewTab';
 import RecipeRecordControl from './recipe/RecipeRecordControl';
@@ -41,12 +41,18 @@ import EditLayersPanel from './workspace/SelectionLayersPanel';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 
 import { WorkspaceContext, createWorkspaceStore, useWorkspaceStore } from '../stores/useWorkspaceStore';
+import { clearTileUrlCacheForFile } from './workspace/LivePageFrame';
 import { useShallow } from 'zustand/react/shallow';
 import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
 import { UpscalePreview } from './preprocess-tools/UpscaleTool';
 
 // Phase type is now defined in useWorkspaceStore
+
+// Giới hạn số bản Undo cho luồng commit chính (mỗi entry là 1 File PDF ĐẦY ĐỦ bytes
+// trong RAM). Không cap → file 50MB × N commit = leak vài GB/tab (audit RAM 2026-07-06).
+// Cắt entry CŨ NHẤT (đầu mảng) khi vượt ngưỡng; undo vẫn pop từ cuối như cũ.
+const MAX_HISTORY = 12;
 
 interface Props {
     tabId?: string;
@@ -184,6 +190,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Set initial report from props (once)
     useEffect(() => {
         if (initialReport && !reportMsg) setReportMsg(initialReport);
+    }, []);
+
+    // Tile cache là GLOBAL dùng chung mọi tab, key = `${pdfUrl}_...`. Gom mọi pdfUrl tab
+    // này từng dùng, khi ĐÓNG tab (unmount) dọn hết tile của chúng → giải phóng bitmap
+    // mà KHÔNG đụng tab khác (audit RAM 2026-07-06).
+    const usedPdfUrlsRef = useRef<Set<string>>(new Set());
+    useEffect(() => { if (pdfUrl) usedPdfUrlsRef.current.add(pdfUrl); }, [pdfUrl]);
+    useEffect(() => {
+        return () => {
+            for (const u of usedPdfUrlsRef.current) clearTileUrlCacheForFile(u);
+            usedPdfUrlsRef.current.clear();
+        };
     }, []);
 
     const handleVdpBoxCreate = useCallback((box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string, textContent?: string, name?: string }) => {
@@ -496,7 +514,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     const commitWorkingFile = useCallback(async (newBlob: Blob, newName: string, existingPath?: string) => {
         if (file) {
-            setHistory(prev => [...prev, file]);
+            // Cắt bớt entry cũ nhất khi vượt ngưỡng → chặn leak RAM (audit 2026-07-06).
+            setHistory(prev => {
+                // Strip bytes khi file có path đĩa → entry undo chỉ giữ tên+path (đọc lại
+                // qua getFileArrayBuffer khi cần), chặn leak RAM (audit 2026-07-06). File
+                // không path → giữ nguyên bytes (fallback). handleUndo đã xử lý cả 2 nhánh.
+                const next = [...prev, stripBytesIfOnDisk(file)];
+                return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
+            });
         }
         // Use newName to correctly reflect the current file's processing state
         const displayName = newName;
@@ -947,7 +972,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 const bakedBlob = await applyAcrobatEdits();
                 if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
             }
-            return new Uint8Array(await file!.arrayBuffer());
+            // getFileArrayBuffer đọc từ ĐĨA qua path khi file đã strip bytes (sau undo,
+            // #2 audit RAM) — file!.arrayBuffer() sẽ trả 0 byte trên file rỗng+path.
+            return new Uint8Array(await getFileArrayBuffer(file!));
         };
         return {
             file: file!,
@@ -1054,7 +1081,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const base = buildProcessContext();
         let currentBytes: Uint8Array;
         try { currentBytes = await base.getWorkingBytes(); }
-        catch { currentBytes = new Uint8Array(await file.arrayBuffer()); }
+        catch { currentBytes = new Uint8Array(await getFileArrayBuffer(file)); }
         let currentName = file.name;
 
         const { runRecipe } = await import('../lib/recipe/PlaybackRunner');
@@ -1346,7 +1373,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const bakedBlob = await applyAcrobatEdits();
             if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
         }
-        return new Uint8Array(await file!.arrayBuffer());
+        // getFileArrayBuffer đọc từ path (convertFileSrc) nếu file đã strip bytes sau undo,
+        // fallback file.arrayBuffer() khi có bytes — tránh trả 0 byte (audit RAM #2).
+        return new Uint8Array(await getFileArrayBuffer(file!));
     };
 
     /**
@@ -1808,6 +1837,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
                         {/* Main workspace is always AcrobatViewer */}
                                 <AcrobatViewer
+                                    isActive={isActive}
                                     onViewerDirtyChange={setViewerDirty}
                                     onExtractPages={handleExtractPages}
                                     onObjectDelete={handleDeleteObjects}
