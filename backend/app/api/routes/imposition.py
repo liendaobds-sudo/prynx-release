@@ -11,6 +11,7 @@ from app.schemas.imposition import ImpositionResponse
 import uuid
 
 from app.config import settings
+from app.utils.errors import raise_http
 
 logger = logging.getLogger(__name__)
 
@@ -118,9 +119,7 @@ async def unlock_pdf(file: UploadFile = File(...), license_info: dict = Depends(
         return Response(content=out_buffer.getvalue(), media_type="application/pdf")
         
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to unlock PDF: {e}")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Mở khoá PDF thất bại")
 
 @router.post("/execute-plan")
 async def execute_plan_imposition(
@@ -160,10 +159,9 @@ async def execute_plan_imposition(
             media_type="application/pdf"
         )
     except PlanExecutionError as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Thực thi kế hoạch bình thất bại")
     except Exception as e:
-        logger.error(f"Plan execution failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Thực thi kế hoạch bình thất bại")
 
 @router.post("/execute-plan-json")
 async def execute_plan_json(body: dict):
@@ -204,11 +202,9 @@ async def execute_plan_json(body: dict):
             media_type="application/pdf"
         )
     except PlanExecutionError as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Thực thi kế hoạch bình thất bại")
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Plan execution failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Thực thi kế hoạch bình thất bại")
 
 @router.post("/quick-color-space")
 async def quick_color_space(body: dict):
@@ -319,9 +315,7 @@ async def get_pdf_layers(body: dict):
         result = engine.get_layer_tree(pdf_path)
         return result
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception("Failed to extract OCG layers")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Trích xuất layer OCG thất bại")
 
 @router.post("/pdf-layers/preview")
 async def preview_pdf_layers(body: dict):
@@ -346,9 +340,57 @@ async def preview_pdf_layers(body: dict):
             "preview_b64": preview_b64,
         }
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception("Failed to render layer preview")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Render preview layer thất bại")
+
+@router.post("/pdf-text")
+async def get_pdf_text(body: dict):
+    """
+    Trích text CÓ TOẠ ĐỘ cho chế độ XEM THƯỜNG (quét chữ + copy như Acrobat).
+    Chỉ lấy text THẬT trong PDF (không OCR) — file scan/ảnh/chữ đã outline sẽ ra rỗng,
+    y hệt Acrobat khi chưa chạy OCR.
+
+    Expects: { "path": "...", "page": 1 }   (page 1-based)
+    Returns: {
+        "blocks": [ { "lines": [ { "bbox": {x,y,w,h}, "chars": [{c}] } ] } ],
+        "page_width_pt": float, "page_height_pt": float
+    }
+    bbox ở POINT, gốc TRÊN-TRÁI (pdfplumber `top`), khớp cách text layer đặt span.
+    Dòng gộp bằng pdfplumber extract_text_lines (theo y_tolerance chuẩn).
+    """
+    import pdfplumber
+
+    pdf_path = _validate_file_path(body.get("path"))
+    page = int(body.get("page", 1))
+
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            if page < 1 or page > len(pdf.pages):
+                return {"blocks": [], "page_width_pt": 0.0, "page_height_pt": 0.0}
+            pg = pdf.pages[page - 1]
+            # extract_text_lines gộp dòng CHUẨN theo y_tolerance của pdfplumber (dựa
+            # trên chars, không phình band như gộp thủ công) → không nuốt dòng kề.
+            # Mỗi line có: text, x0, x1, top, bottom (đơn vị point, gốc trên-trái).
+            text_lines = pg.extract_text_lines(strip=True)
+
+            out_lines = []
+            for ln in text_lines:
+                text = ln.get("text", "")
+                if not text:
+                    continue
+                x0 = float(ln.get("x0", 0)); top = float(ln.get("top", 0))
+                x1 = float(ln.get("x1", 0)); bottom = float(ln.get("bottom", 0))
+                out_lines.append({
+                    "bbox": {"x": x0, "y": top, "w": x1 - x0, "h": bottom - top},
+                    "chars": [{"c": ch} for ch in text],
+                })
+
+            return {
+                "blocks": [{"lines": out_lines}],
+                "page_width_pt": float(pg.width),
+                "page_height_pt": float(pg.height),
+            }
+    except Exception as e:
+        raise_http(e, "Trích xuất text PDF thất bại")
 
 @router.post("/pdf-meta")
 async def get_pdf_meta(body: dict):
@@ -436,9 +478,7 @@ async def get_pdf_meta(body: dict):
             "pages": pages,
         }
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to read PDF meta: {e}")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Đọc metadata PDF thất bại")
 
 # Cache kết quả nhận diện theo (path tuyệt đối, mtime, size) → đổi công cụ / mở lại
 # cùng file trả tức thì, không tính lại. Bounded để tránh phình bộ nhớ.

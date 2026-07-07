@@ -25,6 +25,8 @@ from app.core.preflight_engine import PreflightEngine, PreflightReport, Prefligh
 from app.core.separations import SeparationEngine
 from app.core.action_engine import ActionEngine, AVAILABLE_ACTIONS
 from app.utils.file_handler import save_upload_file
+from app.utils.subprocess_utils import run_hidden
+from app.utils.errors import raise_http
 from app.config import settings
 from app.core.license_guard import require_license
 from app.database import SessionLocal
@@ -249,7 +251,7 @@ async def inspect_uploaded_pdf(file: UploadFile = File(...)):
     try:
         stored_name, file_path, _ = await save_upload_file(file)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise HTTPException(status_code=400, detail=f"Không lưu được file tải lên: {e}")
 
     try:
         engine = PreflightEngine()
@@ -373,8 +375,7 @@ async def get_page_svg(file_id: str, page: int):
             headers={"Cache-Control": "public, max-age=3600"}
         )
     except Exception as e:
-        logger.exception("Lỗi render SVG")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi render SVG")
     finally:
         db.close()
 
@@ -411,8 +412,7 @@ async def get_page_svg_by_path(file_path: str, page: int):
             headers={"Cache-Control": "public, max-age=3600"}
         )
     except Exception as e:
-        logger.exception("Lỗi render SVG by path")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi render SVG by path")
 
 @router.get("/preflight/objects/{file_id}/{page}")
 async def get_page_objects(file_id: str, page: int):
@@ -489,8 +489,7 @@ async def get_page_objects(file_id: str, page: int):
         doc.close()
         return {"objects": objects}
     except Exception as e:
-        logger.exception("Lỗi khi extract objects")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi trích xuất object")
     finally:
         db.close()
 
@@ -567,8 +566,7 @@ async def delete_pdf_object(req: DeleteObjectRequest):
             "output_filename": output_name,
         }
     except Exception as e:
-        logger.exception("Lỗi khi xóa object")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi xóa object")
     finally:
         db.close()
 
@@ -664,8 +662,7 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
             "preview_b64": f"data:image/jpeg;base64,{b64}"
         }
     except Exception as e:
-        logger.exception("Lỗi khi tạo ảnh preview tắt mắt")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi tạo ảnh preview tắt mắt")
     finally:
         db.close()
 
@@ -679,8 +676,7 @@ async def get_ocg_layers(file_id: str):
         result = engine.get_layer_tree(pdf_path)
         return result
     except Exception as e:
-        logger.exception("Lỗi khi extract OCG layers")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi trích xuất OCG layers")
 
 
 class PreviewLayersRequest(BaseModel):
@@ -726,8 +722,7 @@ async def preview_layers_pdf(req: PreviewLayersRequest):
             "preview_b64": preview_b64,
         }
     except Exception as e:
-        logger.exception("Lỗi khi tạo ảnh preview layers")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi tạo ảnh preview layers")
 
 
 class RenameLayerRequest(BaseModel):
@@ -745,8 +740,7 @@ async def rename_layer(req: RenameLayerRequest):
         output = engine.rename_layer(pdf_path, req.layer_id, req.new_name)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        logger.exception("Lỗi khi rename layer")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi đổi tên layer")
 
 
 class ToggleLockRequest(BaseModel):
@@ -764,8 +758,7 @@ async def toggle_layer_lock(req: ToggleLockRequest):
         output = engine.toggle_lock(pdf_path, req.layer_id, req.locked)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        logger.exception("Lỗi khi toggle lock layer")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi khóa/mở khóa layer")
 
 
 class SetVisibilityRequest(BaseModel):
@@ -783,8 +776,7 @@ async def set_layer_visibility(req: SetVisibilityRequest):
         output = engine.set_visibility(pdf_path, req.layer_id, req.visible)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        logger.exception("Lỗi khi set visibility")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi đặt visibility layer")
 
 
 class DeleteLayerRequest(BaseModel):
@@ -801,8 +793,7 @@ async def delete_layer(req: DeleteLayerRequest):
         output = engine.delete_layer(pdf_path, req.layer_id)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        logger.exception("Lỗi khi xóa layer")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi xóa layer")
 
 
 class ReorderLayersRequest(BaseModel):
@@ -819,8 +810,7 @@ async def reorder_layers(req: ReorderLayersRequest):
         output = engine.reorder_layers(pdf_path, req.new_order)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        logger.exception("Lỗi khi reorder layers")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi sắp xếp lại layers")
 
 
 class FlattenLayersRequest(BaseModel):
@@ -836,8 +826,7 @@ async def flatten_layers(req: FlattenLayersRequest):
         output = engine.flatten_visible(pdf_path)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        logger.exception("Lỗi khi flatten layers")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi flatten layers")
 
 @router.get("/preflight/separations/{file_id}/{page}")
 async def get_separations(file_id: str, page: int, dpi: int = 150, use_gs: bool = False):
@@ -853,8 +842,7 @@ async def get_separations(file_id: str, page: int, dpi: int = 150, use_gs: bool 
         result = await engine.extract_separations(pdf_path, page, dpi, use_ghostscript=use_gs)
         return result
     except Exception as e:
-        logger.exception("Lỗi khi tạo Separations")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi tạo Separations")
 
 
 class SeparationsPathRequest(BaseModel):
@@ -877,8 +865,7 @@ async def get_separations_by_path(req: SeparationsPathRequest):
         result = await engine.extract_separations(req.file_path, req.page, req.dpi, use_ghostscript=req.use_gs)
         return result
     except Exception as e:
-        logger.exception("Lỗi khi tạo Separations (by path)")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi tạo Separations (by path)")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -894,7 +881,7 @@ async def get_page_boxes(file_id: str, page: int):
     try:
         return engine.get_boxes(file_path, page)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Không lấy được thông tin page boxes")
 
 
 class SetPageBoxesRequest(BaseModel):
@@ -914,7 +901,7 @@ async def set_page_boxes(req: SetPageBoxesRequest):
         output = engine.set_boxes(file_path, req.box_type, req.rect_mm, req.pages)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Không cập nhật được page boxes")
 
 
 class AutoTrimRequest(BaseModel):
@@ -933,7 +920,7 @@ async def auto_trim(req: AutoTrimRequest):
         output = engine.auto_trim(file_path, req.pages, req.margin_mm)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Không tự động xóa lề trắng được")
 
 
 class AddBleedRequest(BaseModel):
@@ -952,7 +939,7 @@ async def add_bleed(req: AddBleedRequest):
         output = engine.add_bleed_from_trim(file_path, req.bleed_mm, req.pages)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Không thêm được vùng bleed")
 
 
 def _safe_watermark_preflight(pdf_path: str, license_info: dict | None) -> None:
@@ -997,8 +984,7 @@ async def mirror_bleed(req: AddBleedRequest, license_info: dict = Depends(requir
         _safe_watermark_preflight(output, license_info)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        logger.error("mirror-bleed thất bại: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Lỗi khi tạo mirror-bleed")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1042,7 +1028,7 @@ async def list_inks(file_id: str):
     try:
         return {"inks": engine.list_inks(file_path)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Không liệt kê được kênh mực")
 
 
 class ConvertSpotRequest(BaseModel):
@@ -1060,7 +1046,7 @@ async def convert_spot(req: ConvertSpotRequest):
         output = await engine.convert_spot_to_cmyk(file_path, req.spot_name)
         return {"success": True, "output_filename": Path(output).name}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Chuyển Spot Color sang CMYK thất bại")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1094,7 +1080,7 @@ async def check_pdfx_compliance(file_id: str, standard: str):
     try:
         return engine.check_compliance(file_path, standard)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Kiểm tra compliance PDF/X thất bại")
 
 
 class ExportPdfxRequest(BaseModel):
@@ -1106,13 +1092,20 @@ class ExportPdfxRequest(BaseModel):
 async def export_pdfx(req: ExportPdfxRequest):
     """Xuất file chuẩn PDF/X."""
     file_path = _get_file_path(req.file_id)
-    from app.core.pdfx_export import PdfxExportEngine
+    from app.core.pdfx_export import PdfxExportEngine, GhostscriptNotFoundError
     engine = PdfxExportEngine()
     try:
         output = await engine.export_pdfx(file_path, req.standard)
         return {"success": True, "output_filename": Path(output).name}
+    except GhostscriptNotFoundError as e:
+        # Ghostscript thiếu → báo rõ để user cài / kiểm bản cài, không nuốt thành lỗi mơ hồ.
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        # Trả message THẬT (Ghostscript báo gì) thay vì chỉ tên exception — trước đây
+        # nuốt sạch nên không ai chẩn đoán được. Log full traceback ở server để debug.
+        import logging
+        logging.getLogger(__name__).exception("PDF/X export failed")
+        raise HTTPException(status_code=500, detail=f"Xuất PDF/X thất bại: {e}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1214,7 +1207,7 @@ async def convert_colors(req: ConvertColorsRequest):
 
                 gs_args.append(gs_input)
 
-                proc = await asyncio.to_thread(subprocess.run, gs_args, capture_output=True, timeout=300)
+                proc = await asyncio.to_thread(run_hidden, gs_args, capture_output=True, timeout=300)
                 if prepass_tmp:
                     try:
                         os.remove(prepass_tmp)
@@ -1319,7 +1312,7 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
                     str(pdf_path)
                 ]
                 import asyncio
-                await asyncio.to_thread(subprocess.run, cmd_normal, capture_output=True, timeout=30)
+                await asyncio.to_thread(run_hidden, cmd_normal, capture_output=True, timeout=30)
 
                 # Overprint simulation rendering
                 cmd_overprint = [
@@ -1331,7 +1324,7 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
                     f'-sOutputFile={tmp_overprint_name}',
                     str(pdf_path)
                 ]
-                await asyncio.to_thread(subprocess.run, cmd_overprint, capture_output=True, timeout=30)
+                await asyncio.to_thread(run_hidden, cmd_overprint, capture_output=True, timeout=30)
 
                 from PIL import Image
                 import numpy as np

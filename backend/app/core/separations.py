@@ -303,6 +303,7 @@ class SeparationEngine:
         """Run Ghostscript tiffsep to generate plate TIFFs, then convert to base64 PNGs."""
         import subprocess
         import shutil
+        from app.utils.subprocess_utils import run_hidden
 
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.output_dir / job_id
@@ -324,7 +325,7 @@ class SeparationEngine:
         ]
 
         def _run_sync():
-            return subprocess.run(
+            return run_hidden(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

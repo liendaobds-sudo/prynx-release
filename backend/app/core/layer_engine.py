@@ -1445,7 +1445,7 @@ class LayerEngine:
         gs_path = settings.GHOSTSCRIPT_PATH
 
         # Use Ghostscript to flatten — it handles OCG correctly
-        import subprocess
+        from app.utils.subprocess_utils import run_hidden
         gs_args = [
             gs_path, "-dBATCH", "-dNOPAUSE", "-dQUIET",
             "-sDEVICE=pdfwrite",
@@ -1456,7 +1456,7 @@ class LayerEngine:
         ]
 
         try:
-            proc = subprocess.run(gs_args, capture_output=True, timeout=120)
+            proc = run_hidden(gs_args, capture_output=True, timeout=120)
             if proc.returncode != 0:
                 # Fallback: render to raster via pypdfium2 + rebuild PDF
                 logger.warning(f"GS flatten failed ({proc.returncode}), using raster fallback")

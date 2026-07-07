@@ -18,6 +18,7 @@ from typing import List, Optional
 import json
 from app.core.license_guard import require_license
 from app.config import settings
+from app.utils.errors import raise_http
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ async def merge_pdfs_endpoint(
             media_type="application/pdf"
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Gộp PDF thất bại")
     finally:
         for p in file_paths:
             try: os.remove(p)
@@ -173,7 +174,7 @@ async def split_pdf_endpoint(
             headers={"Content-Disposition": f"attachment; filename=split_{job_id}.zip"}
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Tách PDF thất bại")
     finally:
         try: os.remove(source_path)
         except OSError: pass
@@ -204,7 +205,7 @@ async def resize_pages_endpoint(
             media_type="application/pdf"
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Đổi kích thước trang thất bại")
     finally:
         try: os.remove(source_path)
         except OSError: pass
@@ -260,7 +261,7 @@ async def trim_shift_endpoint(
             media_type="application/pdf"
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Trim/shift trang thất bại")
     finally:
         try: os.remove(source_path)
         except OSError: pass
@@ -296,7 +297,7 @@ async def shuffle_pages_endpoint(
             media_type="application/pdf"
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Sắp xếp lại trang thất bại")
     finally:
         try: os.remove(source_path)
         except OSError: pass
@@ -391,6 +392,7 @@ async def optimize_pdf_endpoint(
     import subprocess
     import asyncio
     from app.config import settings
+    from app.utils.subprocess_utils import run_hidden
 
     source_path = await save_upload(file)
     job_id = uuid.uuid4().hex[:8]
@@ -444,7 +446,7 @@ async def optimize_pdf_endpoint(
 
     try:
         def _run_gs():
-            return subprocess.run(
+            return run_hidden(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

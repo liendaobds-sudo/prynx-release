@@ -164,10 +164,11 @@ class InkManagerEngine:
         logger.info(f"Running GS convert-spot: {' '.join(cmd)}")
 
         import subprocess
+        from app.utils.subprocess_utils import run_hidden
         try:
             # Chạy subprocess trong thread để tránh lỗi asyncio event loop trên Windows uvicorn
             proc = await asyncio.to_thread(
-                subprocess.run,
+                run_hidden,
                 cmd,
                 capture_output=True,
                 timeout=300

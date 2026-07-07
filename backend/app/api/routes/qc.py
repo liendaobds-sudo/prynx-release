@@ -7,6 +7,7 @@ from app.utils.file_handler import save_upload_file
 from app.core.pdf_processor import PDFProcessor
 from app.core.ocr_engine import OCREngine
 from app.core.license_guard import require_license
+from app.utils.errors import raise_http
 import cv2
 
 logger = logging.getLogger(__name__)
@@ -48,8 +49,7 @@ async def check_text(request: TextQcRequest, license_info: dict = Depends(requir
             raise HTTPException(status_code=400, detail=f"Mô hình AI: {request.llm_mode} không hợp lệ.")
             
     except Exception as e:
-        logger.exception("AI Check failed")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Kiểm tra AI thất bại")
 
 class ExtractTextResponse(BaseModel):
     text: str
@@ -72,7 +72,7 @@ async def extract_text(file: UploadFile = File(...), license_info: dict = Depend
     try:
         stored_name, file_path, _ = await save_upload_file(file)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise HTTPException(status_code=400, detail=f"Lưu file thất bại: {e}")
 
     try:
         extracted_text = ""
@@ -133,6 +133,5 @@ async def extract_text(file: UploadFile = File(...), license_info: dict = Depend
         return ExtractTextResponse(text=extracted_text)
 
     except Exception as e:
-        logger.exception("Text extraction failed")
-        raise HTTPException(status_code=500, detail=f"Lỗi trích xuất ({type(e).__name__})")
+        raise_http(e, "Trích xuất văn bản thất bại")
 

@@ -483,7 +483,7 @@ async def _execute(blocking_fn, license_info: dict | None = None) -> EditRespons
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Thao tác edit thất bại")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+        raise HTTPException(status_code=500, detail=f"Thao tác chỉnh sửa thất bại: {exc}")
 
     return _build_output_response(output_path, op_result, license_info)
 
@@ -704,7 +704,7 @@ async def _execute_full_page_preview(pdf_path: str, page: int) -> PreviewRespons
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Tạo preview full-page thất bại")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+        raise HTTPException(status_code=500, detail=f"Tạo preview full-page thất bại: {exc}")
 
 
 async def _execute_preview(pdf_path: str, op: EditOp) -> PreviewResponse:
@@ -743,7 +743,7 @@ async def _execute_preview(pdf_path: str, op: EditOp) -> PreviewResponse:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Tạo preview thất bại")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+        raise HTTPException(status_code=500, detail=f"Tạo preview thất bại: {exc}")
 
 
 async def _execute_session(blocking_fn):
@@ -798,7 +798,7 @@ async def _execute_session(blocking_fn):
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Thao tác phiên thất bại")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+        raise HTTPException(status_code=500, detail=f"Thao tác phiên chỉnh sửa thất bại: {exc}")
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -835,7 +835,7 @@ async def list_page_objects(fid: str, page: int):
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Liệt kê object thất bại")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+        raise HTTPException(status_code=500, detail=f"Liệt kê object thất bại: {exc}")
 
     # 3. Lấy pageBox (CropBox) từ đĩa (nhẹ, chỉ cần metadata)
     page_box: list[float] | None = None
@@ -871,7 +871,7 @@ async def get_text_props(fid: str, page: int, index: int):
         props = geometry_reader.get_text_object_props(pdf_path, page, index)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Lấy text-props thất bại")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+        raise HTTPException(status_code=500, detail=f"Lấy thuộc tính text thất bại: {exc}")
     return props
 
 
@@ -901,7 +901,7 @@ async def set_edit_ocg_visibility(req: OcgVisibilityRequest, license_info: dict 
         raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("set ocg visibility failed")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(exc).__name__})")
+        raise HTTPException(status_code=500, detail=f"Đổi hiển thị layer thất bại: {exc}")
 
 
 @router.delete("/edit/working/{fid}")

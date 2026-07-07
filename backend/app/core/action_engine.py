@@ -572,10 +572,11 @@ class ActionEngine:
     async def _run_gs(self, cmd: list[str], action_name: str) -> bool:
         """Run a Ghostscript command asynchronously (Windows-compatible)."""
         import subprocess
+        from app.utils.subprocess_utils import run_hidden
         logger.info(f"GS [{action_name}]: {' '.join(cmd[:6])}...")
 
         def _run_sync():
-            return subprocess.run(
+            return run_hidden(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

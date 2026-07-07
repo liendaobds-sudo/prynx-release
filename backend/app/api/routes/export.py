@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.core.license_guard import require_license
+from app.utils.errors import raise_http
 
 logger = logging.getLogger(__name__)
 
@@ -171,5 +172,4 @@ async def export_images(req: ExportImagesRequest):
         # Tham số sai (dpi/format/pages...) — message có kiểm soát, an toàn trả ra.
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("Lỗi khi xuất ảnh")
-        raise HTTPException(status_code=500, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise_http(e, "Xuất ảnh thất bại")

@@ -13,8 +13,23 @@ from pathlib import Path
 import pikepdf
 
 from app.config import settings
+from app.utils.subprocess_utils import run_hidden
 
 logger = logging.getLogger(__name__)
+
+
+class GhostscriptNotFoundError(RuntimeError):
+    """Ghostscript không tồn tại ở đường dẫn đã cấu hình."""
+
+
+def _ensure_gs(gs_path: str) -> None:
+    """Kiểm Ghostscript tồn tại TRƯỚC khi gọi → báo lỗi tiếng Việt rõ ràng thay vì
+    FileNotFoundError khó hiểu (hoặc treo). Path resolve ở config._find_ghostscript()."""
+    if not gs_path or not os.path.isfile(gs_path):
+        raise GhostscriptNotFoundError(
+            f"Không tìm thấy Ghostscript tại '{gs_path}'. "
+            "Cần cài Ghostscript hoặc kiểm tra lại bản cài PrynX (thiếu binaries/gs)."
+        )
 
 
 class PdfxExportEngine:
@@ -237,6 +252,8 @@ class PdfxExportEngine:
         output_name = f"{Path(file_path).stem}_PDF-X_{standard}_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
 
+        _ensure_gs(self.gs_path)
+
         if standard == "x1a":
             return await self._export_x1a(file_path, output_path)
         else:
@@ -269,10 +286,9 @@ class PdfxExportEngine:
             cmd += [f"-sOutputFile={output_path}", input_path]
             logger.warning("PDF/X-1a: không tìm thấy ICC CMYK — xuất KHÔNG có OutputIntent")
 
-        import subprocess
         try:
             proc = await asyncio.to_thread(
-                subprocess.run,
+                run_hidden,
                 cmd,
                 capture_output=True,
                 timeout=300
@@ -314,10 +330,9 @@ class PdfxExportEngine:
             cmd += [f"-sOutputFile={output_path}", input_path]
             logger.warning("PDF/X-4: không tìm thấy ICC CMYK — xuất KHÔNG có OutputIntent")
 
-        import subprocess
         try:
             proc = await asyncio.to_thread(
-                subprocess.run,
+                run_hidden,
                 cmd,
                 capture_output=True,
                 timeout=300

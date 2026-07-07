@@ -38,7 +38,7 @@ async def upload_pdf(
     try:
         stored_name, file_path, file_size = await save_upload_file(file)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Lỗi hệ thống ({type(e).__name__})")
+        raise HTTPException(status_code=400, detail=f"Tải file lên thất bại: {e}")
 
     # Extract metadata
     try:
