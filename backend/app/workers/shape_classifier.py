@@ -426,8 +426,15 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
         n_par = len(par)
         if n_par == 2:
             g1_v, g2_v = par[0][0], par[1][0]
-            dot = abs(g1_v['dx']*g2_v['dx'] + g1_v['dy']*g2_v['dy'])
-            if dot < 1e-4:
+            # CHUẨN HOÁ vector cạnh trước khi so vuông góc: dx/dy là vector THÔ (độ
+            # lớn = chiều dài cạnh, hàng trăm pt). Tích thô = L1·L2·cos(góc), nên
+            # ngưỡng 1e-4 cũ đòi vuông góc TUYỆT ĐỐI — góc lệch nửa độ (làm tròn toạ
+            # độ / lấy mẫu bezier) đã cho dot≈vài trăm → chữ nhật thật rơi nhầm thành
+            # bình hành. Chia length → |cos(góc)|, dung sai 0.08 (~4.6°) khớp nhánh
+            # chữ nhật vát góc bên dưới (audit hình học 2026-07-07).
+            n1x, n1y = g1_v['dx'] / g1_v['length'], g1_v['dy'] / g1_v['length']
+            n2x, n2y = g2_v['dx'] / g2_v['length'], g2_v['dy'] / g2_v['length']
+            if abs(n1x*n2x + n1y*n2y) < 0.08:
                 # Perpendicular parallel pairs → rectangle
                 return ShapeType.RECTANGLE, {}
             else:
