@@ -12,7 +12,6 @@ Hàm `place_one_artwork` xử lý cho MỘT placement:
 - Trả về `trim_rect` để caller tự bookkeeping (block_cuts…).
 """
 
-import re
 import logging
 
 from app.workers import pdf_wrapper as pdf_lib
@@ -20,10 +19,24 @@ from app.workers import pdf_wrapper as pdf_lib
 logger = logging.getLogger(__name__)
 
 
-def strip_color_from_stream(page_or_xobj, target_color):
-    """Strip stroke operations matching target_color (or any SPOT color) from a content stream.
+def _die_channel_names_lower():
+    """Tên kênh bế chuẩn (lowercase) — tái dùng cấu hình detection để nhất quán."""
+    try:
+        from app.workers.die_detection import DetectionConfig
+        return frozenset(n.strip().lower() for n in DetectionConfig().die_channel_names)
+    except Exception:
+        return frozenset({"cutcontour", "dieline", "thru-cut", "kiss", "crease"})
 
-    Rút từ process_chunk (đổi tên bỏ underscore để export). Giữ nguyên hành vi.
+
+def strip_color_from_stream(page_or_xobj, target_color, die_names_lower=None):
+    """Strip CHỈ nét vẽ của ĐƯỜNG BẾ khỏi content stream (khi tách trang khuôn).
+
+    Nét bị xoá khi: (a) màu stroke KHỚP `target_color` (màu đường bế đã nhận diện),
+    HOẶC (b) tên kênh spot của nét KHỚP kênh bế chuẩn (CutContour/Dieline/...).
+
+    KHÔNG còn xoá "mọi nét spot" như bản cũ: nét spot trang trí của artwork (viền
+    Pantone, đường UV định tuyến bằng spot) có tên KHÁC kênh bế → được GIỮ. Đây là
+    fix mất-nét-thiết-kế khi bình die-cut (audit bảo toàn nội dung 2026-07-07).
     """
     import pikepdf
     try:
@@ -32,25 +45,48 @@ def strip_color_from_stream(page_or_xobj, target_color):
         logger.debug(f"[_strip_color] Parse stream error: {e}", flush=True)
         return False
 
+    if die_names_lower is None:
+        die_names_lower = _die_channel_names_lower()
+
+    # Resources để resolve tên CS operand (vd /CS0) → tên kênh spot thật.
+    try:
+        from app.workers.pdf_content_parser import _resolve_spot_name
+        _resources = page_or_xobj.get('/Resources')
+    except Exception:
+        _resolve_spot_name = None
+        _resources = None
+
+    def _spot_of(cs_token):
+        # Tên spot của colorspace đặt tên; None nếu là process/không resolve được.
+        if _resolve_spot_name is None or _resources is None or not cs_token:
+            return None
+        try:
+            return _resolve_spot_name(cs_token, _resources, None)
+        except Exception:
+            return None
+
     new_stream = []
-    current_stroke_color = None
-    stroke_color_stack = []
+    current_stroke_color = None   # tuple màu process, hoặc None
+    current_stroke_spot = None    # tên kênh spot (chuỗi) nếu CS là Separation/DeviceN
+    stack = []
     stripped = False
 
     for operands, operator in stream:
         op = str(operator)
 
         if op == 'q':
-            stroke_color_stack.append(current_stroke_color)
+            stack.append((current_stroke_color, current_stroke_spot))
         elif op == 'Q':
-            if stroke_color_stack:
-                current_stroke_color = stroke_color_stack.pop()
+            if stack:
+                current_stroke_color, current_stroke_spot = stack.pop()
         elif op == 'CS':
             if operands:
                 cs_name = str(operands[0])
                 if cs_name not in ('/DeviceRGB', '/DeviceCMYK', '/DeviceGray', '/Pattern'):
-                    current_stroke_color = 'SPOT'
+                    current_stroke_spot = _spot_of(cs_name)
+                    current_stroke_color = None
                 else:
+                    current_stroke_spot = None
                     current_stroke_color = None
         elif op in ('SCN', 'SC'):
             pass
@@ -59,12 +95,18 @@ def strip_color_from_stream(page_or_xobj, target_color):
                 current_stroke_color = tuple(round(float(x), 3) for x in operands)
             except Exception:
                 current_stroke_color = None
+            current_stroke_spot = None
 
         if op in ('S', 's', 'B', 'B*', 'b', 'b*'):
             match = False
-            if current_stroke_color == 'SPOT':
-                match = True
-            elif current_stroke_color and target_color and current_stroke_color != 'SPOT':
+            # (b) tên spot khớp kênh bế chuẩn → chắc chắn là đường bế.
+            if current_stroke_spot:
+                from app.workers.die_detection import _match_die_channel
+                if _match_die_channel(current_stroke_spot, die_names_lower):
+                    match = True
+            # (a) màu khớp màu đường bế đã nhận diện (cho file bế bằng màu thuần,
+            # không có kênh spot riêng — vd magenta quy ước VN).
+            if not match and current_stroke_color and target_color:
                 if len(current_stroke_color) == len(target_color):
                     match = True
                     for c1, c2 in zip(current_stroke_color, target_color):
@@ -98,17 +140,6 @@ def strip_color_from_stream(page_or_xobj, target_color):
             page_or_xobj.write(new_contents)
         return True
     return False
-
-
-# Regex strip die-cut (rút nguyên văn từ process_chunk)
-_PAT_A = re.compile(rb'q\s[^Q]*?/\w+\s+(?:CS|cs)\s[^Q]*?Q', re.DOTALL)
-_PAT_B = re.compile(
-    rb'/\w+\s+CS\s+[\d.]+\s+SCN\s*[\d.]*\s*w?\s*\n?\s*q\s[^Q]*?(?:S|s)\s*\n?\s*Q',
-    re.DOTALL,
-)
-# Giới hạn áp regex: stream lớn → regex lazy `[^Q]*?` có thể bùng nổ O(n²) gây TREO.
-# Với stream lớn, bỏ regex và chỉ dùng strip_color_from_stream (parser O(n), vẫn xử lý spot).
-_MAX_REGEX_STREAM = 800_000  # bytes
 
 
 def compute_block_bbox(placements):
@@ -256,13 +287,10 @@ def place_one_artwork(
                 contents = pike_page.get('/Contents')
                 if contents is not None:
                     try:
-                        raw = contents.read_bytes()
-                        if len(raw) <= _MAX_REGEX_STREAM:
-                            new_raw = _PAT_A.sub(b'', raw)
-                            new_raw = _PAT_B.sub(b'', new_raw)
-                            if len(new_raw) != len(raw):
-                                contents.write(new_raw)
-                                _stripped = True
+                        # CHỈ dùng parser chính xác (theo màu bế + tên kênh spot chuẩn).
+                        # ĐÃ BỎ regex _PAT_A/_PAT_B: chúng xoá mọi khối q..CS..Q nên cắt
+                        # nhầm cả họa tiết artwork vẽ trong colorspace đặt tên (ICCBased/
+                        # Separation) → mất nét thiết kế (audit bảo toàn nội dung 2026-07-07).
                         if strip_color_from_stream(pike_page, local_target_color):
                             _stripped = True
                     except Exception as e_c:
@@ -278,13 +306,7 @@ def place_one_artwork(
                                     xobj_resolved = xobj
                                     subtype = str(xobj_resolved.get('/Subtype', ''))
                                     if '/Form' in subtype:
-                                        xobj_raw = xobj_resolved.read_bytes()
-                                        if len(xobj_raw) <= _MAX_REGEX_STREAM:
-                                            xobj_new = _PAT_A.sub(b'', xobj_raw)
-                                            xobj_new = _PAT_B.sub(b'', xobj_new)
-                                            if len(xobj_new) != len(xobj_raw):
-                                                xobj_resolved.write(xobj_new)
-                                                _stripped = True
+                                        # Chỉ parser chính xác (đã bỏ regex quá rộng — xem trên).
                                         if strip_color_from_stream(xobj_resolved, local_target_color):
                                             _stripped = True
                                 except Exception:
@@ -302,26 +324,35 @@ def place_one_artwork(
         rel_tx1 = tx1 - sx0
         rel_ty1 = ty1 - sy0
 
+        # target_rect map CẢ trang nguồn lên (vis = page rect), die box căn vào trim_rect
+        # → nội dung NGOÀI đường bế (crop-mark, color-bar, slug ở lề MediaBox) vẽ tràn
+        # quanh tem, ĐÈ tem hàng xóm khi xếp lồng sát. Clip vùng vẽ về quanh tem + bleed:
+        # cell_out_clip (bleed mép ngoài block, nửa gap mép trong) hoặc bleed_rect (fallback).
+        # out_clip chỉ giới hạn vùng trên trang ĐÍCH, KHÔNG đổi scale/vị trí → hình học giữ
+        # nguyên (audit bảo toàn nội dung 2026-07-07). GIỚI HẠN: clip là bbox chữ nhật, tem
+        # hình lồng phức tạp vẫn có thể chồng nhẹ ở vùng bleed — nhưng marks/slug ở xa bị loại hẳn.
+        _die_clip = cell_out_clip if cell_out_clip is not None else bleed_rect
+
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_h - rel_ty1)
             shift_y = trim_rect.y0 - rel_tx0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         elif cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_w - rel_tx1)
             shift_y = trim_rect.y0 - (vis_h - rel_ty1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         elif cell.get('isRotated', False):
             shift_x = trim_rect.x0 - rel_ty0
             shift_y = trim_rect.y0 - (vis_w - rel_tx1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y)
         else:
             shift_x = trim_rect.x0 - rel_tx0
             shift_y = trim_rect.y0 - rel_ty0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y)
     else:
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=270, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)

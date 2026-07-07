@@ -56,6 +56,81 @@ from app.workers.imposition_finalize import finalize_placements
 from app.workers.nup_process_chunk import process_chunk
 
 
+def _canonicalize_rotation(source_path: str) -> tuple:
+    """Bake /Rotate ≠ 0 vào content stream để mọi bước hạ nguồn (die detection, trim,
+    layout, placement) thấy trang KHÔNG xoay. Trả (path, is_temp).
+
+    Vì sao: engine bình đọc kích thước trang qua page_rect = MediaBox CHƯA xoay
+    (không nhánh nào đọc page.rotation), nhưng show_pdf_page dùng as_form_xobject()
+    lại bake /Rotate vào /Matrix → trang có /Rotate=90 (MediaBox portrait, nhìn thực
+    tế landscape) bị dựng ô sai + tràn/méo. Bản vá canonicalize của VDP chỉ áp cho
+    VDP; luồng nup/CNC trước đây bỏ sót (audit bảo toàn nội dung 2026-07-07).
+
+    CHỈ đụng khi có trang /Rotate ≠ 0 → file không xoay giữ NGUYÊN byte (bảo toàn
+    hành vi hiện tại). Dùng MediaBox làm hệ quy chiếu (khớp cách nup đọc kích thước);
+    bake cả 4 box phụ qua cùng ma trận.
+    """
+    import pikepdf
+    try:
+        needs = False
+        _p = pikepdf.Pdf.open(source_path)
+        try:
+            for page in _p.pages:
+                if int(page.get("/Rotate", 0) or 0) % 360 != 0:
+                    needs = True
+                    break
+            if not needs:
+                _p.close()
+                return source_path, False
+            for page in _p.pages:
+                rotate = int(page.get("/Rotate", 0) or 0) % 360
+                if rotate == 0:
+                    continue
+                mb = [float(x) for x in page.MediaBox]
+                mx0, my0, mx1, my1 = mb
+                mw = mx1 - mx0
+                mh = my1 - my0
+                if rotate == 90:
+                    mtx = (0.0, -1.0, 1.0, 0.0, -my0, mx0 + mw)
+                    new_w, new_h = mh, mw
+                elif rotate == 180:
+                    mtx = (-1.0, 0.0, 0.0, -1.0, mx0 + mw, my0 + mh)
+                    new_w, new_h = mw, mh
+                else:  # 270
+                    mtx = (0.0, 1.0, -1.0, 0.0, my0 + mh, -mx0)
+                    new_w, new_h = mh, mw
+                ma, mb_, mc, md, me, mf = mtx
+                page.contents_coalesce()
+                stream = page.obj["/Contents"]
+                old = stream.read_bytes()
+                prefix = (
+                    f"q {ma:.6g} {mb_:.6g} {mc:.6g} {md:.6g} {me:.4f} {mf:.4f} cm\n"
+                ).encode("ascii")
+                stream.write(prefix + old + b"\nQ")
+                page.MediaBox = pikepdf.Array([0, 0, new_w, new_h])
+                page.CropBox = pikepdf.Array([0, 0, new_w, new_h])
+                page.Rotate = 0
+                for box in ("/TrimBox", "/ArtBox", "/BleedBox"):
+                    if box in page:
+                        b4 = [float(x) for x in page[box]]
+                        corners = [(b4[0], b4[1]), (b4[2], b4[1]), (b4[2], b4[3]), (b4[0], b4[3])]
+                        xs = [ma * px + mc * py + me for px, py in corners]
+                        ys = [mb_ * px + md * py + mf for px, py in corners]
+                        page[box] = pikepdf.Array([min(xs), min(ys), max(xs), max(ys)])
+            out = os.path.join(tempfile.gettempdir(), f"nup_canon_{uuid.uuid4().hex}.pdf")
+            _p.save(out)
+            _p.close()
+            return out, True
+        finally:
+            try:
+                _p.close()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[ROTATE-CANON] bỏ qua canonicalize /Rotate ({e}); dùng file gốc.")
+        return source_path, False
+
+
 def run_nup_engine(
 
     source_path: str,
@@ -75,6 +150,12 @@ def run_nup_engine(
     import math
 
     import pypdfium2 as pdfium
+
+    # ── Fix A (audit bảo toàn nội dung 2026-07-07): canonicalize /Rotate ≠ 0 MỘT LẦN,
+    # TRƯỚC cả route CNC, để cả hai nhánh (nup + CNC) nhận file đã chuẩn hoá — mọi bước
+    # hạ nguồn (die detection, trim, layout, placement) thấy trang KHÔNG xoay. File không
+    # xoay giữ nguyên byte. Temp nup_canon_* được dọn bởi cơ chế dọn OS temp prefix nup_.
+    source_path, _rot_is_temp = _canonicalize_rotation(source_path)
 
     # ── Định tuyến công cụ Bình Bế Rớt (CNC): renderer riêng, không đụng luồng repeat ──
     if settings.get('imposerMode') == 'cnc':

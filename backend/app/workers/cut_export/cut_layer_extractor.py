@@ -174,7 +174,7 @@ class _Walker:
         except Exception:
             return
 
-        gs_stack = []          # lưu (ctm) cho q/Q
+        gs_stack = []          # lưu (ctm, stroke_spot_cut, fill_spot_cut) cho q/Q
         cur_path = []          # list subpath; subpath = list điểm (device)
         cur_sub = None
         last_pt = (0.0, 0.0)   # user-space điểm hiện tại (cho bezier)
@@ -200,10 +200,15 @@ class _Walker:
                 m = tuple(float(o) for o in ops)
                 ctm = _mat_mul(m, ctm)
             elif op == "q":
-                gs_stack.append(ctm)
+                # Lưu CẢ colorspace-state (stroke/fill spot-cut) cùng ctm: PDF q/Q
+                # lưu/khôi phục toàn graphics-state gồm colorspace. Trước đây chỉ stack
+                # ctm → sau Q colorspace thật đã đổi lại nhưng cờ giữ giá trị trong q →
+                # path sau bị gắn sai lớp cắt (thu nhầm/bỏ sót nét) (Fix H, audit
+                # bảo toàn nội dung 2026-07-07).
+                gs_stack.append((ctm, stroke_spot_cut, fill_spot_cut))
             elif op == "Q":
                 if gs_stack:
-                    ctm = gs_stack.pop()
+                    ctm, stroke_spot_cut, fill_spot_cut = gs_stack.pop()
             elif op in ("BDC", "BMC"):
                 name = _resolve_oc_name(ops, resources) if op == "BDC" else None
                 if name:

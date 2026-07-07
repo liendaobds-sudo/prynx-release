@@ -95,6 +95,78 @@ def _make_drawing(items, stroke_color, fill_color, width, draw_type, closed,
     }
 
 
+def _scrub_strings_and_inline_images(text: str) -> str:
+    """Thay nội dung chuỗi literal ``(...)``, hex string ``<...>`` và ảnh inline
+    (``BI ... ID <binary> EI``) bằng khoảng trắng TRƯỚC khi tokenize.
+
+    Vì sao: tokenizer regex quét TOÀN BỘ stream, nên byte nằm trong chuỗi text
+    (toán tử Tj/TJ) hoặc dữ liệu nhị phân ảnh inline có thể trùng dạng "số số m/l/c"
+    → sinh lệnh vẽ "ma" → path rác, bbox tem lệch (audit bảo toàn nội dung 2026-07-07).
+    Giữ NGUYÊN ``<<`` ``>>`` (dict) vì chỉ chứa name/number, không phải toán tử vẽ.
+    Thay mỗi vùng bằng 1 space để không dính 2 toán tử kề nhau.
+    """
+    out = []
+    n = len(text)
+    i = 0
+    while i < n:
+        ch = text[i]
+        # Chuỗi literal (...): cân bằng ngoặc, tôn trọng escape \( \) \\
+        if ch == '(':
+            i += 1
+            depth = 1
+            while i < n and depth > 0:
+                c = text[i]
+                if c == '\\':
+                    i += 2
+                    continue
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                i += 1
+            out.append(' ')
+            continue
+        if ch == '<':
+            # Dict << >> : giữ nguyên (chỉ name/number bên trong).
+            if i + 1 < n and text[i + 1] == '<':
+                out.append('<<')
+                i += 2
+                continue
+            # Hex string <...>
+            j = text.find('>', i + 1)
+            if j == -1:
+                out.append(' ')
+                break
+            out.append(' ')
+            i = j + 1
+            continue
+        if ch == '>':
+            if i + 1 < n and text[i + 1] == '>':
+                out.append('>>')
+                i += 2
+                continue
+            out.append(' ')
+            i += 1
+            continue
+        # Ảnh inline: token BI (word-boundary) ... ID <binary> EI. Bỏ toàn khối.
+        if ch == 'B' and i + 1 < n and text[i + 1] == 'I' \
+                and (i == 0 or not text[i - 1].isalpha()) \
+                and (i + 2 >= n or not text[i + 2].isalpha()):
+            # Tìm 'ID' (word-boundary) rồi bỏ nhị phân tới 'EI' (đứng giữa whitespace).
+            m_id = re.search(r'(?<![A-Za-z])ID(?![A-Za-z])', text[i:])
+            if m_id is not None:
+                id_end = i + m_id.end()
+                m_ei = re.search(r'\sEI(?![A-Za-z])', text[id_end:])
+                if m_ei is not None:
+                    out.append(' ')
+                    i = id_end + m_ei.end()
+                    continue
+            # Không tìm được cấu trúc chuẩn → bỏ qua token BI như operator thường.
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
 def _mat_mul(m_new, m_cur):
     """Nhân ma trận PDF: m_new áp dụng trước m_cur (giống toán tử cm)."""
     a, b, c, d, e, f = m_new
@@ -126,6 +198,7 @@ def _parse_stream(raw_bytes: bytes, page_height: float, drawings: list,
 
     base_ctm = list(ctm0) if ctm0 else [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
     ctm_stack = [list(base_ctm)]
+    spot_stack = []          # lưu (stroke_spot, fill_spot) cho q/Q (Fix H)
     current_ctm = list(base_ctm)
 
     def transform(px, py):
@@ -139,6 +212,7 @@ def _parse_stream(raw_bytes: bytes, page_height: float, drawings: list,
     except Exception:
         return
 
+    text = _scrub_strings_and_inline_images(text)
     tokens = _TOKEN_RE.findall(text)
 
     num_stack = []
@@ -159,11 +233,18 @@ def _parse_stream(raw_bytes: bytes, page_height: float, drawings: list,
 
         if tok == 'q':
             ctm_stack.append(list(current_ctm))
+            # Lưu CẢ spot-state (stroke/fill) cùng ctm: PDF q/Q lưu/khôi phục toàn
+            # graphics-state gồm colorspace. Trước đây chỉ stack ctm → sau Q colorspace
+            # thật đã đổi lại nhưng stroke_spot/fill_spot giữ giá trị trong q → path sau
+            # gắn sai spot_name → phân loại nhầm die (Fix H, audit bảo toàn nội dung 2026-07-07).
+            spot_stack.append((stroke_spot, fill_spot))
             num_stack.clear()
         elif tok == 'Q':
             if len(ctm_stack) > 1:
                 ctm_stack.pop()
                 current_ctm = list(ctm_stack[-1])
+            if spot_stack:
+                stroke_spot, fill_spot = spot_stack.pop()
             num_stack.clear()
         elif tok == 'cm':
             if len(num_stack) >= 6:

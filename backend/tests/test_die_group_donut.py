@@ -41,8 +41,8 @@ def test_th_a_single_compound_path_kept_whole():
     # 1 drawing chứa cả 2 vòng (12 items). Nền fill riêng.
     bg = _path(5, 5, 220, 200, type='f', spot=None, fill=(0.0, 1.0, 1.0, 0.0), nitems=4)
     donut = _path(20, 20, 200, 190, type='s', spot=SPOT, color=(1, 1, 1), nitems=12)
-    anchor, _ = _select_from_paths([bg, donut], PAGE, CFG.die_channel_names,
-                                   CFG.die_colors, CFG.die_color_tol)
+    anchor, _, _ = _select_from_paths([bg, donut], PAGE, CFG.die_channel_names,
+                                      CFG.die_colors, CFG.die_color_tol)
     assert anchor is donut
     members = _collect_die_group([bg, donut], anchor, PAGE, CFG.die_colors, CFG.die_color_tol)
     merged = _merge_die_paths(members)
@@ -55,8 +55,8 @@ def test_th_b_two_separate_rings_are_merged():
     outer = _path(20, 20, 200, 190, type='s', spot=SPOT, color=(1, 1, 1), nitems=8)
     inner = _path(70, 70, 150, 140, type='s', spot=SPOT, color=(1, 1, 1), nitems=8)
     paths = [bg, outer, inner]
-    anchor, by_spot = _select_from_paths(paths, PAGE, CFG.die_channel_names,
-                                         CFG.die_colors, CFG.die_color_tol)
+    anchor, by_spot, _ = _select_from_paths(paths, PAGE, CFG.die_channel_names,
+                                            CFG.die_colors, CFG.die_color_tol)
     assert anchor is outer  # vòng ngoài điểm cao nhất (diện tích lớn hơn)
     assert by_spot is True
     members = _collect_die_group(paths, anchor, PAGE, CFG.die_colors, CFG.die_color_tol)
@@ -73,7 +73,7 @@ def test_no_die_signal_does_not_overgroup():
     s1 = _path(10, 10, 120, 110, type='s', spot=None, color=(0, 0, 0), nitems=6)
     s2 = _path(10, 10, 150, 120, type='s', spot=None, color=(0, 0, 0), nitems=6)
     paths = [s1, s2]
-    anchor, by_spot = _select_from_paths(paths, PAGE, (), (), 0.06)
+    anchor, by_spot, _ = _select_from_paths(paths, PAGE, (), (), 0.06)
     assert by_spot is False
     members = _collect_die_group(paths, anchor, PAGE, CFG.die_colors, CFG.die_color_tol)
     assert members == [anchor]
@@ -85,7 +85,7 @@ def test_magenta_no_spot_donut_merged_by_color():
     inner = _path(70, 70, 150, 140, type='s', spot=None, color=(0.0, 1.0, 0.0, 0.0), nitems=8)
     bg = _path(5, 5, 220, 200, type='f', spot=None, fill=(0.1, 0.2, 0.3), nitems=4)
     paths = [outer, inner, bg]
-    anchor, _ = _select_from_paths(paths, PAGE, CFG.die_channel_names, CFG.die_colors, CFG.die_color_tol)
+    anchor, _, _ = _select_from_paths(paths, PAGE, CFG.die_channel_names, CFG.die_colors, CFG.die_color_tol)
     members = _collect_die_group(paths, anchor, PAGE, CFG.die_colors, CFG.die_color_tol)
     assert outer in members and inner in members and bg not in members
     assert len(_merge_die_paths(members)['items']) == 16

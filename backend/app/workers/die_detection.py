@@ -441,14 +441,18 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
     Chấm điểm đa tín hiệu (P1): tên kênh khuôn > kênh spot bất kỳ > màu bế cấu hình
     > nét/hairline/khép kín > diện tích bao. Loại nền full-page. Điểm > 0 → chọn path
     điểm cao nhất. Toàn bộ điểm 0 → fallback (stroke lớn nhất → path lớn nhất).
-    Trả (path_dict, matched_by_spot) hoặc (None, False).
+    Trả (path_dict, matched_by_spot, is_fallback) hoặc (None, False, False).
+
+    is_fallback=True khi KHÔNG có tín hiệu bế nào (điểm 0) và phải đoán mò path lớn
+    nhất → caller hạ confidence để không báo "chắc chắn" cho hình đoán (Fix F, audit
+    bảo toàn nội dung 2026-07-07).
     """
     if not paths:
-        return None, False
+        return None, False, False
 
     valid = [p for p in paths if p["rect"].width > 5 and p["rect"].height > 5]
     if not valid:
-        return None, False
+        return None, False, False
 
     filtered = [
         p for p in valid
@@ -472,7 +476,7 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
             best = cand
 
     if best is not None and best[0] > 0:
-        return best[3], best[2]
+        return best[3], best[2], False
 
     # Fallback khi không có tín hiệu nào (điểm 0): nét → nếu không có thì path lớn nhất.
     stroke = [
@@ -481,8 +485,8 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
     ]
     target = stroke if stroke else valid
     if not target:
-        return None, False
-    return max(target, key=lambda p: p["rect"].width * p["rect"].height), False
+        return None, False, False
+    return max(target, key=lambda p: p["rect"].width * p["rect"].height), False, True
 
 
 def _die_group_key_spot(spot_name):
@@ -514,23 +518,56 @@ def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.
     if anchor_spot_key is None and not anchor_is_diecolor:
         return [anchor]  # không tín hiệu bế → giữ 1 path (an toàn)
 
-    members = []
-    for p in paths:
+    # Ứng viên: cùng layer bế với anchor (spot-key HOẶC màu bế), bỏ nền/nét quá nhỏ.
+    def _is_member_candidate(p):
+        if p is anchor:
+            return True
         r = p["rect"]
         if r.width <= 5 or r.height <= 5 or _is_background(p, page_rect):
-            if p is not anchor:
-                continue
-        if p is anchor:
-            members.append(p)
-            continue
+            return False
         if anchor_spot_key is not None:
-            if _die_group_key_spot(p.get("spot_name")) == anchor_spot_key:
-                members.append(p)
-        else:  # gộp theo màu bế
-            col = p.get("color") if p.get("color") is not None else p.get("fill")
-            if _color_matches_die(col, die_colors, die_color_tol):
-                members.append(p)
-    return members or [anchor]
+            return _die_group_key_spot(p.get("spot_name")) == anchor_spot_key
+        col = p.get("color") if p.get("color") is not None else p.get("fill")
+        return _color_matches_die(col, die_colors, die_color_tol)
+
+    candidates = [p for p in paths if _is_member_candidate(p)]
+
+    # Spot-key riêng = kênh bế dành riêng → mọi nét cùng key CHẮC là 1 khuôn (kể cả
+    # rời rạc). Gộp toàn bộ (giữ hành vi cũ, đúng cho chữ O/donut nhiều vòng).
+    if anchor_spot_key is not None:
+        return candidates or [anchor]
+
+    # Gộp theo MÀU bế (file không có spot riêng, vd magenta quy ước VN): chỉ so màu
+    # dễ NUỐT logo/chữ artwork cùng màu ở chỗ khác (audit bảo toàn nội dung 2026-07-07).
+    # Giới hạn theo KHÔNG GIAN: lan dần từ anchor, chỉ thu path có bbox chồng/kề (pad
+    # nhỏ) với nhóm hiện tại → viền ngoài + vòng trong + nét cắt lân cận được gộp; mảng
+    # magenta rời rạc ở góc khác bị loại.
+    def _rects_touch(a, b, pad):
+        return not (a.x1 + pad < b.x0 or b.x1 + pad < a.x0 or
+                    a.y1 + pad < b.y0 or b.y1 + pad < a.y0)
+
+    pad = 0.02 * max(page_rect.width, page_rect.height)  # ~2% khổ: đủ nối nét kề, không nối góc xa
+    group = [anchor]
+    group_rect = anchor["rect"]
+    Rect = type(group_rect)
+    remaining = [p for p in candidates if p is not anchor]
+    changed = True
+    while changed:
+        changed = False
+        still = []
+        for p in remaining:
+            if _rects_touch(group_rect, p["rect"], pad):
+                group.append(p)
+                r = p["rect"]
+                group_rect = Rect(
+                    min(group_rect.x0, r.x0), min(group_rect.y0, r.y0),
+                    max(group_rect.x1, r.x1), max(group_rect.y1, r.y1),
+                )
+                changed = True
+            else:
+                still.append(p)
+        remaining = still
+    return group
 
 
 def _merge_die_paths(members):
@@ -574,7 +611,7 @@ def select_die_path(page, die_channel_names=(), die_colors=None, die_color_tol=0
         paths = page.extract_vector_paths()
     except Exception:
         return None
-    anchor, _ = _select_from_paths(paths, page.rect, die_channel_names, die_colors, die_color_tol)
+    anchor, _, _ = _select_from_paths(paths, page.rect, die_channel_names, die_colors, die_color_tol)
     if anchor is None:
         return None
     members = _collect_die_group(paths, anchor, page.rect, die_colors, die_color_tol)
@@ -653,7 +690,7 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
     lên cơ chế cô lập lỗi theo trang ở detect_die_shapes (R4.2, R5.4).
     """
     paths = page.extract_vector_paths()
-    largest, matched_by_spot = _select_from_paths(
+    largest, matched_by_spot, is_fallback = _select_from_paths(
         paths, page.rect, die_channel_names, die_colors, die_color_tol
     )
     if largest is None:
@@ -721,7 +758,13 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
         trim=Trim(min(w, MAX_TRIM_PT), min(h, MAX_TRIM_PT)),
         poly=poly_coords,
         source="separation" if matched_by_spot else "vector",
-        confidence=1.0 if shape_type is not ShapeType.CUSTOM else 0.5,
+        # is_fallback = không có tín hiệu bế nào (điểm 0), phải đoán mò path lớn nhất
+        # (thường là khung ảnh/nền artwork) → KHÔNG báo "chắc chắn 1.0" dù classify ra
+        # hình chuẩn, để người dùng không tin nhầm (Fix F, audit bảo toàn nội dung 2026-07-07).
+        confidence=(
+            (0.5 if shape_type is not ShapeType.CUSTOM else 0.3) if is_fallback
+            else (1.0 if shape_type is not ShapeType.CUSTOM else 0.5)
+        ),
     )
 
 
