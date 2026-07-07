@@ -12,7 +12,7 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { LivePageFrame, clearTileUrlCache } from './workspace/LivePageFrame';
 import CropDialog from './workspace/CropDialog';
 import ExportImageModal from './workspace/ExportImageModal';
-import { uploadPDF } from '../lib/api';
+import { uploadPDF, getApiUrl } from '../lib/api';
 import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, ThumbSidebar, ViewerContextMenu, type Guide } from './acrobat';
 
@@ -73,7 +73,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     const {
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue,
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId,
-        isObjectEditMode,
+        isObjectEditMode, isCropMode,
         hiddenOcgLayerIds,
         separationPlates, vdpFields, selectedVdpFieldIds,
         setSelectedVdpFieldIds, setVdpFields, setIsSidebarOpen,
@@ -98,6 +98,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, selectionFileId: state.selectionFileId,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds,
         isObjectEditMode: state.isObjectEditMode,
+        isCropMode: state.isCropMode,
         separationPlates: state.separationPlates,
         vdpFields: state.vdpFields, selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         softProofImageUrl: state.softProofImageUrl, gamutWarningUrl: state.gamutWarningUrl, tacHeatmapUrl: state.tacHeatmapUrl, overprintPreviewUrl: state.overprintPreviewUrl,
@@ -241,6 +242,41 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
             setViewerPageDimMm(null);
         }
     }, [pageDim, setViewerPageDimMm]);
+
+    // ═══ Quét chữ (chế độ XEM THƯỜNG) ═══
+    // Nạp text CÓ TOẠ ĐỘ cho trang đang xem → dựng lớp <span> trong suốt (select-text)
+    // đè lên ảnh trang để bôi đen + copy như Acrobat. CHỈ ở chế độ xem thường: KHÔNG
+    // edit-object (chuột dùng chọn object), KHÔNG VDP, KHÔNG crop (chuột quét vùng).
+    // File native (mở từ đĩa) → backend /pdf-text (point, top-left, sạch); non-native
+    // → getTextBlocksForPage (pdf.js) sẵn có. Chỉ fetch 1 lần/trang (cache theo page).
+    const canScanText = !isObjectEditMode && !isVdpMode && !isCropMode;
+    useEffect(() => {
+        if (!canScanText || !file || !activePage) return;
+        if (nativeTextBlocks[activePage]) return; // đã có → khỏi fetch lại
+        let cancelled = false;
+        const nativePath = (file as any)?.path;
+        (async () => {
+            try {
+                if (nativePath) {
+                    const res = await fetch(`${getApiUrl()}/imposition/pdf-text`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: nativePath, page: activePage }),
+                    });
+                    if (!res.ok || cancelled) return;
+                    const data = await res.json();
+                    if (cancelled) return;
+                    setNativeTextBlocks(prev => ({ ...prev, [activePage]: data.blocks || [] }));
+                } else {
+                    const blocks = await getTextBlocksForPage(activePage, nativeTextBlocks);
+                    if (blocks && !cancelled) {
+                        setNativeTextBlocks(prev => ({ ...prev, [activePage]: blocks }));
+                    }
+                }
+            } catch { /* text không quét được (file scan/outline) → bỏ qua, không phải lỗi */ }
+        })();
+        return () => { cancelled = true; };
+    }, [canScanText, file, activePage, nativeTextBlocks, getTextBlocksForPage]);
 
     // ═══ Page Navigation ═══
     const navigatePage = useCallback((newPage: number) => {

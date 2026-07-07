@@ -475,6 +475,57 @@ const VdpAutoFitText = ({ field, scale, text }: any) => {
     );
 };
 
+// Một DÒNG text vô hình để QUÉT + COPY (như Acrobat). Đặt span đúng vị trí bbox
+// (point → px qua scale), fontSize theo CHIỀU CAO dòng, rồi NÉN NGANG (scaleX) cho
+// bề rộng render KHỚP bề rộng thật của dòng trên trang. KHÔNG overflow:hidden/width
+// cứng (bản cũ cắt mất chữ tràn + lệch). scaleX đo 1 lần qua offsetWidth (bỏ qua
+// transform nên không lặp vô hạn). transformOrigin top-left để neo đúng mép trái-trên.
+const SelectableTextLine = ({ line, scale, gapPt }: { line: any; scale: number; gapPt: number }) => {
+    const ref = useRef<HTMLSpanElement>(null);
+    const [scaleX, setScaleX] = useState(1);
+    const text = line.chars?.map((c: any) => c.c).join('') || '';
+    const targetW = (line.bbox.w || 0) * scale;
+    const h = (line.bbox.h || 0) * scale;
+    // KẸP chiều cao khung click ≤ khe tới dòng kế → span KHÔNG chồng mép Y với dòng
+    // dưới → kéo 1 dòng không chạm span dòng kề → hết nhảy selection. fontSize vẫn
+    // theo h (glyph khớp cỡ chữ gốc); chỉ khung click (height) bị kẹp + overflow ẩn.
+    const capH = Math.min(h, gapPt * scale);
+
+    useLayoutEffect(() => {
+        const el = ref.current;
+        if (!el || targetW <= 0) { setScaleX(1); return; }
+        const natural = el.offsetWidth; // bề rộng tự nhiên (chưa tính transform)
+        setScaleX(natural > 0 ? targetW / natural : 1);
+    }, [text, h, targetW]);
+
+    return (
+        <span
+            ref={ref}
+            style={{
+                position: 'absolute',
+                left: line.bbox.x * scale,
+                top: line.bbox.y * scale,
+                // fontSize = CHIỀU CAO dòng, lineHeight = 1 (KHÔNG px riêng): line-box
+                // đúng bằng fontSize nên KHÔNG có "half-leading" đẩy chữ xuống ~9% như
+                // bản cũ (fontSize 0.82h < lineHeight h). Đây là cách pdf.js đặt glyph.
+                fontSize: `${h}px`,
+                lineHeight: 1,
+                // Khung click kẹp ≤ khe dòng kế (capH), overflow ẩn phần thừa → span
+                // không lấn dòng dưới (fix nhảy dòng 2026-07-07). block để height ăn.
+                display: 'block',
+                height: capH,
+                overflow: 'hidden',
+                color: 'transparent',
+                whiteSpace: 'pre',
+                transform: `scaleX(${scaleX})`,
+                transformOrigin: 'left top',
+            }}
+        >
+            {text}
+        </span>
+    );
+};
+
 export const LivePageFrame = (props: any) => {
     //#region Props & State
     const { originalPageNum, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
@@ -1870,36 +1921,37 @@ export const LivePageFrame = (props: any) => {
                 />
             )}
 
-             {/* Invisible Text Layer for native mode */}
-            {getTileUrl && textBlocks && (
-                <div className="absolute inset-0 z-[2] select-text" style={{ pointerEvents: isVdpMode ? 'none' : 'auto' }}>
-                    {(Array.isArray(textBlocks) ? textBlocks : (textBlocks.blocks || [])).map((block: any, bi: number) => 
-                         block.lines?.map((line: any, li: number) => {
-                             const pageWidthPt = pageDim?.w || 595;
-                             const scale = displayWidth / pageWidthPt;
-                             return (
-                                 <span
-                                     key={`${bi}_${li}`}
-                                     style={{
-                                         position: 'absolute',
-                                         left: line.bbox.x * scale,
-                                         top: line.bbox.y * scale,
-                                         width: (line.bbox.w) * scale,
-                                         height: (line.bbox.h) * scale,
-                                         fontSize: `${(line.bbox.h) * scale * 0.85}px`,
-                                         lineHeight: '1',
-                                         color: 'transparent',
-                                         whiteSpace: 'pre',
-                                         overflow: 'hidden',
-                                     }}
-                                 >
-                                     {line.chars?.map((c: any) => c.c).join('') || ''}
-                                 </span>
-                             );
-                         })
-                     )}
-                 </div>
-             )}
+             {/* Lớp text vô hình để QUÉT + COPY chữ (như Acrobat). CHỈ bật ở chế độ XEM
+                 THƯỜNG: edit-object dùng chuột để chọn object, VDP/crop dùng để quét vùng —
+                 lớp select-text sẽ nuốt mất cú kéo đó. Nên loại cả 3 chế độ. */}
+            {getTileUrl && textBlocks && !isObjectEditMode && !isVdpMode && !isCropMode && (() => {
+                // bbox từ /pdf-text ở POINT, gốc trên-trái. pageDim.w là px@96
+                // (= point × 96/72) → pageWidthPt = pageDim.w × 72/96. scale =
+                // displayWidth / pageWidthPt (px màn trên mỗi POINT).
+                const pageWidthPt = pageDim?.w ? pageDim.w * 72 / 96 : 595;
+                const scale = displayWidth / pageWidthPt;
+                // GOM mọi dòng (mọi block) rồi SORT theo y. bbox.h của pdfplumber là cao
+                // chữ (ascent→descent) nhưng khoảng cách dòng (leading) thường NHỎ hơn →
+                // đáy span dòng trên lấn đỉnh span dòng dưới → kéo 1 dòng chạm span dòng
+                // kề → browser nhảy selection sang. Nên KẸP chiều cao mỗi span ≤ khe tới
+                // đỉnh dòng kế (capH) → span không chồng mép Y (fix nhảy dòng 2026-07-07).
+                const allLines = (Array.isArray(textBlocks) ? textBlocks : (textBlocks.blocks || []))
+                    .flatMap((block: any) => block.lines || [])
+                    .filter((ln: any) => ln?.bbox)
+                    .sort((a: any, b: any) => a.bbox.y - b.bbox.y);
+                return (
+                    <div className="absolute inset-0 z-[12] select-text cursor-text" style={{ pointerEvents: 'auto' }}>
+                        {allLines.map((line: any, i: number) => {
+                            const next = allLines[i + 1];
+                            // Khe tới dòng kế (point). Không có dòng kế → không kẹp.
+                            const gap = next ? (next.bbox.y - line.bbox.y) : Infinity;
+                            return (
+                                <SelectableTextLine key={i} line={line} scale={scale} gapPt={gap} />
+                            );
+                        })}
+                     </div>
+                );
+            })()}
              
              {/* Output Preview: Separation plate overlays rendered on the PDF page */}
              {separationPlates.length > 0 && (
