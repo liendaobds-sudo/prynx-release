@@ -49,15 +49,26 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const getSaved = (key: string, defaultVal: any) => {
         try { const v = localStorage.getItem(`ps_sticker_${key}`); return v !== null ? JSON.parse(v) : defaultVal; } catch { return defaultVal; }
     };
+    // Số từ localStorage PHẢI ép về number hợp lệ + clamp [min,max] ngay lúc khởi tạo.
+    // Build cũ (hoặc sửa tay) có thể lưu giá trị vượt giới hạn UI mới, hoặc "null"/"true"
+    // → nếu không sanitize, handleRun gửi thẳng giá trị sai/non-number xuống backend.
+    const getSavedNum = (key: string, defaultVal: number, min: number, max: number) => {
+        const raw = getSaved(key, defaultVal);
+        const n = typeof raw === 'number' && isFinite(raw) ? raw : defaultVal;
+        return Math.min(max, Math.max(min, n));
+    };
 
     // UI State for Sticker
     const [cutMode, setCutMode] = useState(() => getSaved('cutMode', 'original'));
-    const [offsetMm, setOffsetMm] = useState<number>(() => getSaved('offsetMm', 0.0));
+    const [offsetMm, setOffsetMm] = useState<number>(() => getSavedNum('offsetMm', 0.0, -10, 10));
     const [cornerStyle, setCornerStyle] = useState(() => getSaved('cornerStyle', 'round'));
     const [fillHoles, setFillHoles] = useState<boolean>(() => getSaved('fillHoles', true));
+    // "Tạo đường cắt cho trang đầu": file nhiều loại tem CÙNG khuôn → chỉ trang 1 mang
+    // đường cắt (khuôn master), trang 2+ chỉ bù xén. Bước đệm sang Bình tem bế/CNC đồng nhất.
+    const [cutFirstPageOnly, setCutFirstPageOnly] = useState<boolean>(() => getSaved('cutFirstPageOnly', false));
 
     // Shared State
-    const [bleedMm, setBleedMm] = useState<number>(() => getSaved('bleedMm', 0.0));
+    const [bleedMm, setBleedMm] = useState<number>(() => getSavedNum('bleedMm', 0.0, 0, 10));
     const [removeWhiteBg, setRemoveWhiteBg] = useState<boolean>(() => getSaved('removeWhiteBg', true));
     // Tab "Xén vuông góc" dùng cờ RIÊNG: "Xóa lề trắng thừa" (auto-trim) khác hẳn
     // ngữ nghĩa "Bỏ nền trắng" (lọc mask dò viền) của tab Bế tem. Không dùng chung.
@@ -66,7 +77,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const [bleedColorHex, setBleedColorHex] = useState(() => getSaved('bleedColorHex', '#FFFFFF'));
     // "Lẹm mép" (rectangle): hút màu sâu vào trong để doa viền trắng mảnh của file không tràn lề.
     // Con dao 2 lưỡi — lẹm quá ăn vào nội dung sát mép → default nhỏ, cho chỉnh/tắt (0).
-    const [edgeBiteMm, setEdgeBiteMm] = useState<number>(() => getSaved('edgeBiteMm', 0.4));
+    const [edgeBiteMm, setEdgeBiteMm] = useState<number>(() => getSavedNum('edgeBiteMm', 0.4, 0, 5));
 
     // Đổi kiểu màu nền: khi chọn "Đổ màu trơn" mà giá trị hiện tại chưa ở dạng CMYK
     // ("C,M,Y,K"), khởi tạo về "0,0,0,0" để khung CMYK và giá trị gửi backend khớp
@@ -90,7 +101,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         localStorage.setItem('ps_sticker_bleedColorType', JSON.stringify(bleedColorType));
         localStorage.setItem('ps_sticker_bleedColorHex', JSON.stringify(bleedColorHex));
         localStorage.setItem('ps_sticker_edgeBiteMm', JSON.stringify(edgeBiteMm));
-    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex, edgeBiteMm]);
+        localStorage.setItem('ps_sticker_cutFirstPageOnly', JSON.stringify(cutFirstPageOnly));
+    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -168,6 +180,9 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         formData.append('bleed_color_type', bleedColorType); // 'image', 'inpaint', 'solid'
         formData.append('bleed_color_hex', bleedColorHex);
         formData.append('edge_bite_mm', productType === 'rectangle' ? String(edgeBiteMm) : '0');
+        // "Tạo đường cắt cho trang đầu": chỉ tab Bế tem nhãn. Trang 1 mang khuôn
+        // CutContour, trang 2+ chỉ bù xén → bước đệm cho Bình tem bế/CNC đồng nhất.
+        formData.append('cut_first_page_only', productType === 'sticker' && cutFirstPageOnly ? 'true' : 'false');
         if (productType === 'rectangle') {
             formData.append('rectangle_mode', 'true');
         }
@@ -320,6 +335,19 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                     </div>
                                 </div>
                                 <p className="text-[10px] text-slate-400 mt-1 mb-4">Số âm (vd -0.5) ép đường cắt lún vào trong, tránh lộ viền trắng.</p>
+                                <button
+                                    onClick={() => setCutFirstPageOnly(!cutFirstPageOnly)}
+                                    aria-pressed={cutFirstPageOnly}
+                                    title="File nhiều loại tem DÙNG CHUNG 1 khuôn: chỉ trang đầu vẽ đường cắt (làm khuôn mẫu), các trang sau chỉ bù xén. Đưa sang Bình tem bế / CNC để bình nhiều loại cùng 1 khuôn."
+                                    className={`w-full h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-2 ${
+                                        cutFirstPageOnly
+                                            ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                            : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                                    }`}
+                                >
+                                    {cutFirstPageOnly ? '✅ Tạo đường cắt cho trang đầu' : 'Tạo đường cắt cho trang đầu'}
+                                </button>
+                                <p className="text-[10px] text-slate-400 mt-1 mb-4">Nhiều loại tem CHUNG khuôn: chỉ trang đầu có đường cắt (khuôn mẫu), trang sau chỉ bù xén → đưa sang Bình tem bế / CNC.</p>
                             </>
                         )}
                     </div>
@@ -334,6 +362,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 suffix="mm"
                                 step={0.5}
                                 min={0}
+                                max={10}
                                 className="w-[90px] shrink-0"
                             />
                             <div className="flex gap-1.5 flex-1">
@@ -419,6 +448,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 suffix="mm"
                                 step={0.5}
                                 min={0}
+                                max={10}
                                 className="w-[90px] shrink-0"
                             />
                             <div className="flex-1">
@@ -494,6 +524,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                     suffix="mm"
                                     step={0.1}
                                     min={0}
+                                    max={5}
                                     className="w-[90px] shrink-0"
                                 />
                                 <p className="flex-1 text-[10.5px] text-slate-500 dark:text-zinc-400 leading-snug pb-1">

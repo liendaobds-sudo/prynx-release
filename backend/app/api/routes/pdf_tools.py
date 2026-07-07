@@ -534,6 +534,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     bleed_color_hex = form.get("bleed_color_hex", "#FFFFFF")
     rectangle_mode_raw = form.get("rectangle_mode", "false")
     do_rectangle_mode = rectangle_mode_raw.lower() in ("true", "1", "yes")
+    cut_first_page_only_raw = form.get("cut_first_page_only", "false")
+    do_cut_first_page_only = cut_first_page_only_raw.lower() in ("true", "1", "yes")
     try:
         edge_bite_mm = float(form.get("edge_bite_mm", 0.0))
     except (ValueError, TypeError):
@@ -580,7 +582,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             solid_bleed_color=solid_bleed_color,
             draw_cut_contour=do_draw_cut_contour,
             rectangle_mode=do_rectangle_mode,
-            edge_bite_mm=edge_bite_mm
+            edge_bite_mm=edge_bite_mm,
+            cut_first_page_only=do_cut_first_page_only
         )
         if not success or not os.path.exists(output_path):
             # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
@@ -619,13 +622,20 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     except HTTPException:
         raise
     except Exception as e:
-        # Log đầy đủ (kèm [debug_step]) ở server để chẩn đoán; KHÔNG lộ chi tiết
-        # nội bộ ra client (tránh rò rỉ thông tin hệ thống).
+        # Log đầy đủ (kèm stacktrace) ở server để chẩn đoán.
         logger.error("sticker-dieline thất bại: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Lỗi tạo viền bế. Vui lòng thử lại hoặc kiểm tra lại file đầu vào."
+        # Engine ném RuntimeError("[{debug_step}] {msg}") — tag [debug_step] là NHÃN
+        # NỘI BỘ an toàn (vd "[Process Contours Page 1]"), msg là chuỗi lỗi của
+        # chính engine (loại + nội dung exception), KHÔNG phải stacktrace/đường dẫn
+        # hệ thống. Hiện cả tag lẫn msg ra client để chẩn đoán nhanh chết ở BƯỚC
+        # nào + LOẠI lỗi gì mà không cần đọc log server.
+        _msg = str(e).strip()
+        detail = (
+            f"Lỗi tạo viền bế: {_msg}. Vui lòng thử lại hoặc kiểm tra lại file đầu vào."
+            if _msg else
+            "Lỗi tạo viền bế. Vui lòng thử lại hoặc kiểm tra lại file đầu vào."
         )
+        raise HTTPException(status_code=500, detail=detail)
     finally:
         try: os.remove(source_path)
         except OSError: pass

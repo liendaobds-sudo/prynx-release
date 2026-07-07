@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 export const ToolSectionLabel = ({ children }: { children: React.ReactNode }) => (
     <label className="text-[13px] font-bold text-slate-800 dark:text-zinc-100 tracking-wide block mb-3 uppercase">{children}</label>
@@ -80,13 +80,42 @@ export const ToolNumberInput = ({ label, value, onChange, suffix, step = 1, min,
         if (typeof max === 'number' && r > max) r = max;
         return r;
     };
+    // Giữ chuỗi đang gõ trong state riêng để cho phép trạng thái nhập dở ("", "-", "1.")
+    // mà KHÔNG nhảy về 0 (parseFloat("")||0 cũ ép về 0 ngay → không gõ được số âm/xoá
+    // trắng). Chỉ propagate ra ngoài giá trị SỐ hợp lệ đã clamp. Khi `value` từ ngoài đổi
+    // (vd clamp lúc restore vượt max), đồng bộ lại text nếu khác giá trị đang gõ.
+    const [text, setText] = useState<string>(String(value));
+    useEffect(() => {
+        if (parseFloat(text) !== value) setText(String(value));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [value]);
+
+    const commit = (raw: string) => {
+        setText(raw);
+        const n = parseFloat(raw);
+        if (!isNaN(n)) onChange(clamp(n));
+    };
+    // Khi rời ô: nếu đang để trống/không hợp lệ → chốt về min (hoặc 0) để không kẹt rỗng.
+    const handleBlur = () => {
+        const n = parseFloat(text);
+        if (isNaN(n)) {
+            const fallback = typeof min === 'number' ? min : 0;
+            setText(String(fallback));
+            onChange(fallback);
+        } else {
+            const c = clamp(n);
+            setText(String(c));
+            if (c !== n) onChange(c);
+        }
+    };
     return (
     <div className={className}>
         <span className="text-[12.5px] font-semibold text-slate-600 dark:text-zinc-300 block mb-1">{label}</span>
         <div className="flex items-center gap-1.5">
             <input
-                type="number" step={step} min={min} max={max} value={value}
-                onChange={e => onChange(clamp(parseFloat(e.target.value) || 0))}
+                type="number" step={step} min={min} max={max} value={text}
+                onChange={e => commit(e.target.value)}
+                onBlur={handleBlur}
                 className="flex-1 min-w-0 h-9 px-2.5 text-[14px] font-semibold text-center bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/20 transition-all"
             />
             {suffix && <span className="text-[12.5px] font-semibold text-slate-500 dark:text-zinc-400 shrink-0">{suffix}</span>}

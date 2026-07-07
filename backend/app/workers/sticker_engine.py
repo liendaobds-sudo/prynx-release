@@ -132,7 +132,8 @@ class StickerEngine:
         solid_bleed_color: tuple = (255, 255, 255),
         draw_cut_contour: bool = True,
         rectangle_mode: bool = False,
-        edge_bite_mm: float = 0.0
+        edge_bite_mm: float = 0.0,
+        cut_first_page_only: bool = False
     ) -> tuple:
         debug_step = "Init"
         doc_in_pdfium = None
@@ -191,6 +192,11 @@ class StickerEngine:
                     if mp > MAX_MEGAPIXELS:
                         shrink = min(shrink, (MAX_MEGAPIXELS / mp) ** 0.5)
                 self.scale = base_scale * shrink
+                # px/mm THỰC TẾ của raster: self.scale là px/point (đã gồm shrink khi trang
+                # bị DPI-cap), nên px/mm = scale × 72/25.4. MỌI morphology bù xén PHẢI dùng
+                # số này, KHÔNG dùng self.dpi/25.4 (bỏ qua shrink → phóng đại 1/shrink lần khi
+                # trang lớn: hút màu quá sâu, đóng lỗ/lẹm mép quá tay, lệch bleed_mask).
+                px_per_mm = self.scale * 72.0 / 25.4
                 if shrink < 1.0 and self.debug:
                     logger.warning(">>> DPI CAP page %d: scale %.4f→%.4f (page %.0fx%.0f pt)", page_idx, base_scale, self.scale, pw_pt, ph_pt)
 
@@ -209,10 +215,26 @@ class StickerEngine:
                 else:
                     if remove_white_bg:
                         hsv = cv2.cvtColor(img[:,:,:3], cv2.COLOR_RGB2HSV)
-                        lower_white = np.array([0, 0, 200])
-                        upper_white = np.array([180, 30, 255])
+                        # Ngưỡng nới nhẹ (V>=185, S<=40) so với cũ (200/30) để bắt cả nền
+                        # kem/ngà/xám rất nhạt (trước lọt vì V<200 hoặc S>30 → vẫn dò ra khối nền).
+                        lower_white = np.array([0, 0, 185])
+                        upper_white = np.array([180, 40, 255])
                         white_mask = cv2.inRange(hsv, lower_white, upper_white)
-                        base_mask = cv2.bitwise_not(white_mask)
+                        # CHỈ bỏ vùng trắng NỐI với biên ảnh (nền thật) — dùng connected-components,
+                        # giữ lại các mảng trắng chạm mép. Chi tiết sáng/pastel/xám nhạt NẰM GIỮA
+                        # artwork (không chạm biên) được GIỮ → không đục lỗ nội dung như ngưỡng cứng
+                        # cũ (nới ngưỡng mà không lọc-theo-biên sẽ đục thủng artwork nhạt màu).
+                        num_lbl, labels = cv2.connectedComponents(white_mask)
+                        if num_lbl > 1:
+                            border_labels = set(labels[0, :]) | set(labels[-1, :]) | set(labels[:, 0]) | set(labels[:, -1])
+                            border_labels.discard(0)
+                            if border_labels:
+                                bg_white = np.isin(labels, list(border_labels)).astype(np.uint8) * 255
+                            else:
+                                bg_white = np.zeros_like(white_mask)
+                        else:
+                            bg_white = np.zeros_like(white_mask)
+                        base_mask = cv2.bitwise_not(bg_white)
                     else:
                         base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
                 
@@ -385,9 +407,22 @@ class StickerEngine:
                             elif bleed_outer_poly.geom_type == 'Polygon':
                                 bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
 
-                        # cut_poly = dieline_poly nhưng đã được nén (1.0 pt) để dọn dẹp điểm thừa mà vẫn giữ form cong chuẩn
+                        # cut_poly = dieline_poly nhưng đã được nén (1.0 pt) để dọn dẹp điểm thừa mà vẫn giữ form cong chuẩn.
+                        # simplify(preserve_topology=False) trên 1 Polygon CÓ THỂ trả MultiPolygon
+                        # (hình mảnh/eo hẹp bị đứt) → nếu nhồi thẳng vào MultiPolygon([...]) sẽ
+                        # crash "'MultiPolygon' object is not subscriptable" (constructor tưởng
+                        # phần tử là spec (shell, holes) rồi index nó). Gom PHẲNG mọi Polygon con.
                         if isinstance(dieline_poly, MultiPolygon):
-                            cut_poly = MultiPolygon([p.simplify(1.0, preserve_topology=False) for p in dieline_poly.geoms])
+                            _cut_parts = []
+                            for p in dieline_poly.geoms:
+                                _s = p.simplify(1.0, preserve_topology=False)
+                                if _s.is_empty:
+                                    continue
+                                if isinstance(_s, MultiPolygon):
+                                    _cut_parts.extend(g for g in _s.geoms if not g.is_empty)
+                                else:
+                                    _cut_parts.append(_s)
+                            cut_poly = MultiPolygon(_cut_parts) if _cut_parts else dieline_poly
                         else:
                             cut_poly = dieline_poly.simplify(1.0, preserve_topology=False)
 
@@ -396,7 +431,7 @@ class StickerEngine:
                 # ============================================================
                 if bleed_mm > 0.0:
                     debug_step = f"Generate Bleed Page {page_idx}"
-                    bleed_px = math.ceil(bleed_mm * (self.dpi / 25.4))
+                    bleed_px = math.ceil(bleed_mm * px_per_mm)
                     if bleed_px > 0:
                         kernel_type = cv2.MORPH_ELLIPSE if (corner_style == "round" and cut_mode != "none") else cv2.MORPH_RECT
                         
@@ -428,16 +463,29 @@ class StickerEngine:
                         else:
                             padded_img = np.pad(img_native, pad_width=((pad_b, pad_b), (pad_b, pad_b), (0, 0)), mode='constant', constant_values=255)
                         
-                        inset_px = int(0.15 * (self.dpi / 25.4))
+                        inset_px = int(0.15 * px_per_mm)
                         if inset_px < 1: inset_px = 1
                         # "Lẹm mép": hút màu sâu vào trong thêm edge_bite_mm để bỏ qua viền
                         # trắng mảnh ở mép nguồn (file khách không tràn lề). Nearest/inpaint
                         # sẽ kéo màu SÂU bên trong (đỏ) phủ ra cả viền trắng lẫn vùng bleed.
-                        edge_bite_px = max(0, int(edge_bite_mm * (self.dpi / 25.4)))
+                        edge_bite_px = max(0, int(edge_bite_mm * px_per_mm))
                         inset_px += edge_bite_px
                         inset_kernel = cv2.getStructuringElement(kernel_type, (inset_px*2+1, inset_px*2+1))
                         color_source_mask = cv2.erode(padded_original_mask, inset_kernel)
-                        
+                        # FALLBACK viền-trắng: chi tiết mảnh hơn 2×inset_px bị erode ăn SẠCH →
+                        # color_source_mask rỗng → nearest/inpaint không có nguồn màu, distance
+                        # transform trả pixel góc ROI = padding TRẮNG → vành bù xén ra trắng
+                        # (trái mục tiêu). Nếu rỗng: thử co nhẹ dần; vẫn rỗng thì dùng mask gốc
+                        # (chưa erode) — thà lấy màu gồm cả mép còn hơn ra trắng.
+                        if np.count_nonzero(color_source_mask) == 0:
+                            for _shrink_px in (max(1, inset_px // 2), 1):
+                                _k = cv2.getStructuringElement(kernel_type, (_shrink_px*2+1, _shrink_px*2+1))
+                                color_source_mask = cv2.erode(padded_original_mask, _k)
+                                if np.count_nonzero(color_source_mask) > 0:
+                                    break
+                            if np.count_nonzero(color_source_mask) == 0:
+                                color_source_mask = padded_original_mask.copy()
+
                         # Generate bleed_mask from bleed_outer_poly (extends BEYOND cut line)
                         if bleed_outer_poly is not None and not getattr(bleed_outer_poly, 'is_empty', True):
                             if self.debug:
@@ -495,7 +543,7 @@ class StickerEngine:
                         # Create "sticker footprint" - a SOLID mask covering the entire sticker
                         # including internal white gaps (between rainbow arcs, inside letters, etc.)
                         # This prevents bleed from appearing in internal white areas of the design.
-                        close_px = max(10, int(1.5 * (self.dpi / 25.4)))  # ~1.5mm closing radius
+                        close_px = max(10, int(1.5 * px_per_mm))  # ~1.5mm closing radius
                         close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_px*2+1, close_px*2+1))
                         closed_mask = cv2.morphologyEx(padded_original_mask, cv2.MORPH_CLOSE, close_kernel)
                         foot_contours, _ = cv2.findContours(closed_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -517,7 +565,7 @@ class StickerEngine:
                         # VÀO TRONG vài px: SMask lùa xuống DƯỚI artwork (layer trên phủ
                         # footprint) → bịt khe hở subpixel ở mối nối raster(SMask)↔clip-vector,
                         # tránh hở nền tạo sợi mảnh. Phần nới nằm dưới artwork nên vô hình.
-                        _tuck_px = max(1, int(0.2 * (self.dpi / 25.4)))
+                        _tuck_px = max(1, int(0.2 * px_per_mm))
                         _fp_inner = cv2.erode(sticker_footprint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_tuck_px*2+1, _tuck_px*2+1)))
                         bleed_ring = cv2.subtract(bleed_mask, _fp_inner)
                         
@@ -684,7 +732,11 @@ class StickerEngine:
 
 
 
-                if draw_cut_contour and cut_mode != "none" and cut_poly is not None and not getattr(cut_poly, 'is_empty', True):
+                # "Tạo đường cắt cho trang đầu": trang 2+ CHỈ bù xén, không vẽ đường
+                # cắt → file nhiều loại tem CÙNG khuôn, trang 1 mang khuôn master để
+                # tool Bình tem bế/CNC (chế độ đồng nhất) lấy làm dieline chung.
+                _cut_page_ok = (not cut_first_page_only) or (page_idx == 0)
+                if _cut_page_ok and draw_cut_contour and cut_mode != "none" and cut_poly is not None and not getattr(cut_poly, 'is_empty', True):
                     debug_step = "Draw Cut Contour"
                     
                     page_content_stream.append("q")
@@ -694,7 +746,16 @@ class StickerEngine:
                     page_content_stream.append("1.0 SCN")
                     page_content_stream.append("1.0 w")
 
-                    geoms = cut_poly.geoms if isinstance(cut_poly, MultiPolygon) else [cut_poly]
+                    # cut_poly có thể là Polygon, MultiPolygon, hoặc (khi buffer âm lớn teo
+                    # tách shape) GeometryCollection/LineString KHÔNG có .exterior. Gom chỉ
+                    # các thành viên là Polygon (có .exterior) → tránh AttributeError crash.
+                    if isinstance(cut_poly, MultiPolygon):
+                        raw_geoms = list(cut_poly.geoms)
+                    elif hasattr(cut_poly, 'geoms'):  # GeometryCollection
+                        raw_geoms = list(cut_poly.geoms)
+                    else:
+                        raw_geoms = [cut_poly]
+                    geoms = [g for g in raw_geoms if g.geom_type == 'Polygon' and not g.is_empty]
                     for p in geoms:
                         coords = list(p.exterior.coords)
                         if coords:
@@ -837,7 +898,17 @@ class StickerEngine:
             
         except Exception as e:
             logger.error(f"Sticker processing failed at {debug_step}: {e}", exc_info=True)
-            raise RuntimeError(f"[{debug_step}] {str(e)}")
+            # Lấy số dòng trong CHÍNH file này (không phải path hệ thống) để chẩn đoán
+            # nhanh dòng nào ném lỗi mà không cần đọc log server.
+            import traceback as _tb
+            _this = os.path.basename(__file__)
+            _line = None
+            for _fr in reversed(_tb.extract_tb(e.__traceback__)):
+                if os.path.basename(_fr.filename) == _this:
+                    _line = _fr.lineno
+                    break
+            _loc = f"@{_line}" if _line else ""
+            raise RuntimeError(f"[{debug_step}{_loc}] {str(e)}")
         finally:
             if doc_in_pdfium:
                 try: doc_in_pdfium.close()
