@@ -1,4 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { useAppSettingsStore } from '../../stores/appSettingsStore';
 
 interface ViewerSnapshot {
     order: number[];
@@ -80,6 +82,17 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     const spacePressTimeRef = useRef<number>(0);
     const guidesRef = useRef(guides);
     useEffect(() => { guidesRef.current = guides; }, [guides]);
+
+    // F7 rewire: hook chạy TRONG WorkspaceContext.Provider nên lấy setter/isCropMode
+    // qua selector (KHÔNG dùng useWorkspaceStore.getState() — store per-Provider, không
+    // có global getState). Handler F7 là listener singleton document-level đăng ký MỘT
+    // lần → đọc isCropMode qua ref để luôn thấy giá trị mới nhất, tránh stale closure.
+    const setIsObjectEditMode = useWorkspaceStore(s => s.setIsObjectEditMode);
+    const isCropMode = useWorkspaceStore(s => s.isCropMode);
+    const isCropModeRef = useRef(isCropMode);
+    useEffect(() => { isCropModeRef.current = isCropMode; }, [isCropMode]);
+    const setIsObjectEditModeRef = useRef(setIsObjectEditMode);
+    useEffect(() => { setIsObjectEditModeRef.current = setIsObjectEditMode; }, [setIsObjectEditMode]);
 
     // Helper: commit snapshot for undo
     const commitSnapshot = useCallback(() => {
@@ -169,31 +182,34 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [toggleRulers, guidesHistory, guides, selectedGuideId]);
 
-    // F7 Layer Panel — singleton: only first instance registers the handler
+    // F7 → bật/tắt Object Edit Mode (gộp F7 Layer Panel vào Edit PDF: một panel
+    // thống nhất). ĐĂNG KÝ PER-INSTANCE + guard tab active (giống handler chính bên
+    // dưới) thay vì singleton global cũ: vì giờ gọi setIsObjectEditMode của ĐÚNG
+    // Provider này, nếu singleton do tab nền đăng ký sẽ toggle nhầm store tab khác.
     useEffect(() => {
-        // Singleton guard: only first instance registers
-        if ((window as any).__prynxF7Registered) {
-            return;
-        }
-        (window as any).__prynxF7Registered = true;
-
         const handleF7 = (e: KeyboardEvent) => {
-            if (e.key === 'F7') {
-                if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-                e.preventDefault();
-                // Toggle via custom event with explicit target value
-                const currentlyOpen = !!(window as any).__prynxLayerPanelOpen;
-                const next = !currentlyOpen;
-                (window as any).__prynxLayerPanelOpen = next;
-                window.dispatchEvent(new CustomEvent('prynx-toggle-layer-panel', { detail: { open: next } }));
-            }
+            if (e.key !== 'F7') return;
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            // Chỉ tab đang hiện xử lý (tab nền dùng opacity-0, vẫn display:flex).
+            if (!containerRef.current || containerRef.current.offsetParent === null) return;
+            if (containerRef.current.closest('.opacity-0')) return;
+            // Đang Crop → bỏ qua F7 (tránh mở edit mode chồng lên crop).
+            if (isCropModeRef.current) return;
+            e.preventDefault();
+            setIsObjectEditModeRef.current(v => {
+                const next = !v;
+                // Panel Edit render TRONG khối {isSidebarOpen && ...} của ImpositionTab
+                // → nếu sidebar phải đang đóng, bật edit mode mà KHÔNG thấy panel. Khi
+                // BẬT → mở sidebar luôn để panel hiện ngay (LayerPanel cũ nổi độc lập
+                // nên không cần; nay gộp vào Edit PDF thì phải tự mở). useAppSettingsStore
+                // là store GLOBAL (create) nên gọi getState() hợp lệ ngoài React.
+                if (next) useAppSettingsStore.getState().setWorkspaceSidebarOpen(true);
+                return next;
+            });
         };
         document.addEventListener('keydown', handleF7, true);
-        return () => {
-            document.removeEventListener('keydown', handleF7, true);
-            (window as any).__prynxF7Registered = false;
-        };
-    }, []);
+        return () => document.removeEventListener('keydown', handleF7, true);
+    }, [containerRef, setIsObjectEditMode]);
 
     // Global keyboard commands (Undo/Redo, Delete, Extract, Spacebar)
     useEffect(() => {

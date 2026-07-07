@@ -19,6 +19,45 @@ import pypdfium2 as pdfium
 
 logger = logging.getLogger(__name__)
 
+# ─── Cache render preview theo (path, mtime, page, layer-ẩn, object-ẩn, dpi) ──
+# Qua lại giữa 2 trạng thái (ẩn A → hiện → ẩn lại) trả tức thì thay vì render lại.
+# Cache CẤP MODULE vì route tạo LayerEngine() mới mỗi request. mtime trong key → file
+# sửa ngoài (ghi đè) tự vô hiệu cache cũ. Cap nhỏ (LRU) vì mỗi ảnh ~vài trăm KB base64.
+from collections import OrderedDict
+import threading
+
+_PREVIEW_CACHE: "OrderedDict[tuple, str]" = OrderedDict()
+_PREVIEW_CACHE_LOCK = threading.Lock()
+_PREVIEW_CACHE_MAX = 48
+
+
+def _preview_cache_key(pdf_path, page, hidden_layer_ids, hidden_object_keys, dpi):
+    try:
+        mtime = os.path.getmtime(pdf_path)
+    except OSError:
+        mtime = 0.0
+    return (
+        os.path.abspath(pdf_path), round(mtime, 3), int(page), int(dpi),
+        tuple(sorted(int(x) for x in (hidden_layer_ids or []))),
+        tuple(sorted(str(x) for x in (hidden_object_keys or []))),
+    )
+
+
+def _preview_cache_get(key):
+    with _PREVIEW_CACHE_LOCK:
+        val = _PREVIEW_CACHE.get(key)
+        if val is not None:
+            _PREVIEW_CACHE.move_to_end(key)  # LRU: đánh dấu vừa dùng
+        return val
+
+
+def _preview_cache_put(key, val):
+    with _PREVIEW_CACHE_LOCK:
+        _PREVIEW_CACHE[key] = val
+        _PREVIEW_CACHE.move_to_end(key)
+        while len(_PREVIEW_CACHE) > _PREVIEW_CACHE_MAX:
+            _PREVIEW_CACHE.popitem(last=False)  # bỏ mục cũ nhất
+
 
 class LayerEngine:
     """Comprehensive OCG Layer Manager for PDF files (pikepdf + pypdfium2 only)."""
@@ -51,9 +90,14 @@ class LayerEngine:
         try:
             oc_props = doc.Root.get("/OCProperties")
             if not oc_props:
-                logger.info("[LAYER DEBUG] No /OCProperties found in PDF")
-                doc.close()
-                return {"layers": [], "total": 0}
+                # File KHÔNG có OCG (vd Illustrator xuất KHÔNG tick "Create Acrobat
+                # Layers", hoặc preset PDF/X vốn cấm OCG): TRƯỚC đây thoát sớm trả rỗng
+                # → panel trống. Nhưng _add_virtual_page_layers (dưới) dựng "layer ảo"
+                # từ object thật quét trên TỪNG TRANG — KHÔNG cần OCG. Gán dict rỗng để
+                # mọi nhánh parse OCG (.get() → default) chạy vô hại ra layers=[], rồi
+                # rơi xuống dựng layer ảo (fix F7 panel trống 2026-07-07).
+                logger.info("[LAYER DEBUG] No /OCProperties — bỏ qua parse OCG, dùng layer ảo")
+                oc_props = {}
 
             logger.info(f"[LAYER DEBUG] /OCProperties keys: {list(oc_props.keys())}")
 
@@ -840,6 +884,12 @@ class LayerEngine:
 
         hidden_object_keys: list of 'layerId-objectIndex' strings, e.g. ['4-2', '4-5']
         """
+        # Cache: qua lại giữa 2 trạng thái (ẩn A → hiện → ẩn lại) trả tức thì.
+        _ck = _preview_cache_key(pdf_path, page, hidden_layer_ids, hidden_object_keys, dpi)
+        _cached = _preview_cache_get(_ck)
+        if _cached is not None:
+            return _cached
+
         doc = pikepdf.Pdf.open(pdf_path)
 
         if page < 1 or page > len(doc.pages):
@@ -883,34 +933,34 @@ class LayerEngine:
         if hidden_object_keys:
             self._strip_hidden_objects(doc, page, hidden_object_keys)
 
-        # Save to temp file and render
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix='.pdf')
-        os.close(tmp_fd)
-        try:
-            doc.save(tmp_path)
-            doc.close()
+        # Render QUA BYTESIO (không ghi file tạm ra đĩa): mở-save-mở-lại qua đĩa là
+        # nút thắt lag chính khi toggle layer. pikepdf.save → buffer, pdfium mở thẳng
+        # từ bytes. pdfium giữ tham chiếu buffer nên KHÔNG đóng/giải phóng cho tới khi
+        # render xong (giữ biến pdf_buf sống trong suốt scope).
+        pdf_buf = io.BytesIO()
+        doc.save(pdf_buf)
+        doc.close()
+        pdf_buf.seek(0)
 
-            pdf_render = pdfium.PdfDocument(tmp_path)
+        pdf_render = pdfium.PdfDocument(pdf_buf)
+        try:
             if page < 1 or page > len(pdf_render):
-                pdf_render.close()
                 raise ValueError(f"Page {page} out of range")
 
             p = pdf_render[page - 1]
             scale = dpi / 72
             bitmap = p.render(scale=scale)
             img = bitmap.to_pil()
-            pdf_render.close()
 
             buf = io.BytesIO()
             img.save(buf, format='JPEG', quality=92)
             b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
-            return f"data:image/jpeg;base64,{b64}"
+            result = f"data:image/jpeg;base64,{b64}"
+            _preview_cache_put(_ck, result)
+            return result
         finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError as _e:
-                logger.debug("Không xoá được temp %s: %s", tmp_path, _e)
+            pdf_render.close()
 
     def _strip_hidden_objects(self, doc, page_num: int, hidden_object_keys: list[str]):
         """
@@ -1055,21 +1105,14 @@ class LayerEngine:
 
             text = content_bytes.decode('latin-1', errors='replace')
 
-            # Find all q...Q blocks and classify them as objects using the same
-            # logic as _add_virtual_page_layers parsing
-            # Strategy: find top-level q...Q blocks that contain Do or path ops
-            blocks = []  # list of (start, end, obj_index)
-            obj_idx = -1  # will be incremented to 0 for first object
-
-            # Parse by finding q/Q pairs at the top nesting level
-            depth = 0
-            block_start = -1
-            has_do = False
-            has_path = False
-            i = 0
+            # PHẢI đếm object CÙNG mô hình với _add_virtual_page_layers (nguồn dựng
+            # danh sách trong panel): mỗi `/Name Do` và mỗi paint-op (f/F/S/B/b/s) là
+            # 1 object, đếm TUYẾN TÍNH theo thứ tự xuất hiện → array-index 0-based khớp
+            # objKey `layerId-idx` mà frontend gửi. TRƯỚC đây hàm này đếm theo khối
+            # q...Q top-level → artwork Illustrator gói nhiều path trong 1 khối lớn nên
+            # chỉ có index 0, ẩn mọi object index>0 đều "no blocks matched" → tắt mắt
+            # không ẩn được gì (fix F7 ẩn object 2026-07-07).
             tokens = re.findall(r'/[A-Za-z0-9_.]+|[A-Za-z*\'\"]+|\([^)]*\)|<[^>]*>|[-+]?[0-9]*\.?[0-9]+', text)
-            
-            # Also track character positions for each token
             token_positions = []
             search_from = 0
             for t in tokens:
@@ -1077,40 +1120,40 @@ class LayerEngine:
                 token_positions.append(pos)
                 search_from = pos + len(t)
 
+            # Vô hiệu đúng TOÁN TỬ VẼ của object cần ẩn thay vì xóa cả khối q..Q:
+            # xóa khối sẽ phá transform/màu (cm, gs, rg…) mà các object KHÁC trong cùng
+            # khối phụ thuộc. paint-op → 'n' (end-path, KHÔNG tô/vẽ; cùng 1 ký tự nên
+            # không lệch vị trí); `/Name Do` → khoảng trắng cùng độ dài.
+            event_idx = 0
+            edits = []  # (start, end, replacement) — mọi thay thế GIỮ NGUYÊN độ dài
             for ti, token in enumerate(tokens):
-                if token == 'q':
-                    if depth == 0:
-                        block_start = token_positions[ti]
-                        has_do = False
-                        has_path = False
-                    depth += 1
-                elif token == 'Q':
-                    depth -= 1
-                    if depth == 0 and block_start >= 0:
-                        block_end = token_positions[ti] + 1
-                        if has_do or has_path:
-                            obj_idx += 1
-                            if obj_idx in hide_indices:
-                                blocks.append((block_start, block_end))
-                        block_start = -1
-                elif depth >= 1:
-                    if token == 'Do':
-                        has_do = True
-                    elif token in ('f', 'F', 'S', 'B', 'b', 's'):
-                        has_path = True
+                is_do = (token == 'Do' and ti > 0 and tokens[ti - 1].startswith('/'))
+                is_paint = token in ('f', 'F', 'S', 'B', 'b', 's')
+                if not (is_do or is_paint):
+                    continue
+                cur = event_idx
+                event_idx += 1
+                if cur not in hide_indices:
+                    continue
+                if is_paint:
+                    p = token_positions[ti]
+                    edits.append((p, p + len(token), 'n'))
+                else:  # is_do → vô hiệu cả '/Name' lẫn 'Do'
+                    p_do = token_positions[ti]
+                    edits.append((p_do, p_do + len(token), ' ' * len(token)))
+                    p_name = token_positions[ti - 1]
+                    edits.append((p_name, p_name + len(tokens[ti - 1]), ' ' * len(tokens[ti - 1])))
 
-            if not blocks:
-                logger.info(f"[LAYER DEBUG] _strip_virtual: page {pg_num}, no blocks matched for indices {hide_indices}")
+            if not edits:
+                logger.info(f"[LAYER DEBUG] _strip_virtual: page {pg_num}, no objects matched for indices {hide_indices}")
                 continue
 
-            # Remove blocks (reverse order)
-            new_text = text
-            for start, end in reversed(blocks):
-                new_text = new_text[:start] + new_text[end:]
-
-            new_bytes = new_text.encode('latin-1', errors='replace')
+            chars = list(text)
+            for start, end, repl in sorted(edits, key=lambda e: e[0], reverse=True):
+                chars[start:end] = repl
+            new_bytes = ''.join(chars).encode('latin-1', errors='replace')
             pg["/Contents"] = doc.make_stream(new_bytes)
-            logger.info(f"[LAYER DEBUG] _strip_virtual: page {pg_num}, stripped {len(blocks)} virtual objects")
+            logger.info(f"[LAYER DEBUG] _strip_virtual: page {pg_num}, vô hiệu {len(edits)} toán tử cho {len(hide_indices)} object")
 
     # ─── RENAME ──────────────────────────────────────────────────
 

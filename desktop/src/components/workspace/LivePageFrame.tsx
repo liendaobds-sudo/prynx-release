@@ -11,7 +11,7 @@ import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsS
 import { useShallow } from 'zustand/react/shallow';
 import type { ObjType, BBox, EditOp } from './editTypes';
 import { FontSelector } from '../preprocess-tools/FontSelector';
-import { Lock, Check, X, RotateCcw, Plus, Image as ImageIcon, AlertTriangle } from 'lucide-react';
+import { Lock, Check, X, RotateCcw, AlertTriangle } from 'lucide-react';
 import {
     pageWidthPtFromDim,
     editScale as calcEditScale,
@@ -496,9 +496,11 @@ export const LivePageFrame = (props: any) => {
         separationPlates, vdpFields, selectedVdpFieldIds,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
         pdfUrl, setSelectedVdpFieldIds, selectedObjectIds, setSelectedObjectIds,
-        isCropMode
+        isCropMode, editAddMode, setEditAddMode
     } = useWorkspaceStore(useShallow(state => ({
         isObjectEditMode: state.isObjectEditMode,
+        editAddMode: state.editAddMode,
+        setEditAddMode: state.setEditAddMode,
         setCurrentEditObjects: state.setCurrentEditObjects,
         pdfObjectsVersion: state.pdfObjectsVersion,
         selectionFileId: state.selectionFileId,
@@ -804,11 +806,10 @@ export const LivePageFrame = (props: any) => {
     }, []);
 
     // ─── Edit PDF Object — editor text inline + thêm object (task 10.3) ──────
-    // editAddMode: chế độ "đặt object mới" do toolbar bật ('text'/'image'); cú bấm
-    // kế tiếp lên trang sẽ đặt object tại điểm đó. editAddDraft: điểm bấm đã chốt
-    // theo hệ CANVAS top-left (point) — convert sang PDF bottom-left khi gửi /edit/add.
-    // editFileInputRef: input file ẩn để chọn ảnh khi thêm image.
-    const [editAddMode, setEditAddMode] = useState<'text' | 'image' | null>(null);
+    // editAddMode: chế độ "đặt object mới" (nay ở STORE dùng chung — nút điều khiển ở
+    // panel phải, cú bấm kế tiếp lên BẤT KỲ trang nào sẽ đặt object tại đó). editAddDraft:
+    // điểm bấm đã chốt theo hệ CANVAS top-left (point) — convert sang PDF bottom-left khi
+    // gửi /edit/add. editFileInputRef: input file ẩn để chọn ảnh khi thêm image.
     const [editAddDraft, setEditAddDraft] = useState<{ xPt: number; yPt: number } | null>(null);
     const editFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1301,8 +1302,26 @@ export const LivePageFrame = (props: any) => {
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, [isCropMode, cropSel, pageDim, displayWidth, displayHeight, originalPageNum]);
+    // Panel → canvas: khi selection đổi (vd click dòng trong panel Thành phần), cuộn
+    // overlay object đầu được chọn vào tầm nhìn. Chỉ frame CHỨA overlay đó mới cuộn
+    // (query data-obj-id trong containerRef; frame khác không có node → bỏ qua). Dùng
+    // lastScrolledId để chỉ cuộn khi id đầu ĐỔI, tránh cuộn lặp mỗi render. Khung viền
+    // outline đã có sẵn ở overlay (isSelected) nên không cần thêm. (gộp F7↔edit 2026-07-07)
+    const lastScrolledIdRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!isObjectEditMode) { lastScrolledIdRef.current = null; return; }
+        const firstId = selectedObjectIds[0];
+        if (firstId == null) { lastScrolledIdRef.current = null; return; }
+        if (lastScrolledIdRef.current === firstId) return;
+        const node = containerRef.current?.querySelector(`[data-obj-id="${firstId}"]`);
+        if (node) {
+            lastScrolledIdRef.current = firstId;
+            node.scrollIntoView({ block: 'center', inline: 'center' });
+        }
+    }, [selectedObjectIds, isObjectEditMode]);
+
     const renderWidth = actualWidth100 * renderZoom;
-    
+
     const isRotated = (rotation || 0) % 180 !== 0;
     const outerWidth = isRotated ? displayHeight : displayWidth;
     const outerHeight = isRotated ? displayWidth : displayHeight;
@@ -2043,6 +2062,7 @@ export const LivePageFrame = (props: any) => {
                              return (
                                  <div
                                      key={obj.id}
+                                     data-obj-id={obj.id}
                                      // HOVER thuần CSS (KHÔNG mutate .style → không bao giờ "kẹt style").
                                      // Màu theo loại object truyền qua biến CSS `--obj` (bộ ba RGB), rồi
                                      // class hover Tailwind arbitrary dựng viền + nền nhạt từ biến đó.
@@ -2228,26 +2248,15 @@ export const LivePageFrame = (props: any) => {
                  );
              })()}
 
-             {/* Edit PDF Object (task 10.3): toolbar thêm object + input file ẩn (chọn
-                 ảnh). Chỉ hiện ở chế độ edit-object (KHÔNG VDP). Bật editAddMode →
-                 cú bấm kế tiếp lên trang đặt object tại điểm đó (xử lý ở handleMouseUp). */}
-             {isObjectEditMode && !isVdpMode && (
-                 <div className="absolute top-1 left-1 z-[60] flex items-center gap-1 pointer-events-auto">
-                     <button
-                         type="button"
-                         onClick={(e) => { e.stopPropagation(); setEditAddMode(m => m === 'text' ? null : 'text'); }}
-                         className={`px-2 py-0.5 text-[11px] rounded shadow-sm border inline-flex items-center gap-1 ${editAddMode === 'text' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
-                     ><Plus className="w-3 h-3" /> Text</button>
-                     <button
-                         type="button"
-                         onClick={(e) => { e.stopPropagation(); setEditAddMode(m => m === 'image' ? null : 'image'); }}
-                         className={`px-2 py-0.5 text-[11px] rounded shadow-sm border inline-flex items-center gap-1 ${editAddMode === 'image' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
-                     ><ImageIcon className="w-3 h-3" /> Ảnh</button>
-                     {editAddMode && (
-                         <span className="px-1.5 py-0.5 text-[11px] rounded bg-black/70 text-white">
-                             Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : 'ảnh'}…
-                         </span>
-                     )}
+             {/* Edit PDF Object (task 10.3): dòng gợi ý khi đang ở chế độ đặt object.
+                 Hai nút +Text/Ảnh ĐÃ CHUYỂN sang panel phải (SelectionLayersPanel) để
+                 gọn canvas; đây chỉ còn nhắc "bấm lên trang để đặt". editAddMode nay ở
+                 store dùng chung → cú bấm kế tiếp lên BẤT KỲ trang nào đặt object tại đó. */}
+             {isObjectEditMode && !isVdpMode && editAddMode && (
+                 <div className="absolute top-1 left-1 z-[60] pointer-events-none">
+                     <span className="px-1.5 py-0.5 text-[11px] rounded bg-black/70 text-white">
+                         Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : 'ảnh'}…
+                     </span>
                  </div>
              )}
              {editNotice && createPortal(

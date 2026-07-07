@@ -79,12 +79,16 @@ export interface WorkspaceState {
     hiddenObjectIds: string[];
     lockedObjectIds: string[];
     selectionFileId: string;
+    // Chế độ "đặt object mới" (toolbar +Text/Ảnh). Nâng lên store để nút ở panel
+    // phải điều khiển được: cú bấm kế tiếp lên BẤT KỲ trang nào sẽ đặt object tại đó.
+    editAddMode: 'text' | 'image' | null;
 
     // ── OCG Layers ──
     pdfOcgLayers: any[];
     hiddenOcgLayerIds: number[];
     lockedOcgLayerIds: number[];
     expandedOcgLayerIds: number[];
+    hiddenObjectKeys: string[];
     isLayerPanelOpen: boolean;
     ocgPreviewUrl: string | null;
 
@@ -162,11 +166,13 @@ export interface WorkspaceState {
     setHiddenObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setLockedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setSelectionFileId: (id: string) => void;
+    setEditAddMode: (updater: ('text' | 'image' | null) | ((prev: 'text' | 'image' | null) => 'text' | 'image' | null)) => void;
 
     setPdfOcgLayers: (layers: any[]) => void;
     setHiddenOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
     setLockedOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
     setExpandedOcgLayerIds: (updater: number[] | ((prev: number[]) => number[])) => void;
+    setHiddenObjectKeys: (updater: string[] | ((prev: string[]) => string[])) => void;
     setIsLayerPanelOpen: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setOcgPreviewUrl: (url: string | null) => void;
 
@@ -246,11 +252,13 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     hiddenObjectIds: [],
     lockedObjectIds: [],
     selectionFileId: '',
+    editAddMode: null,
 
     pdfOcgLayers: [],
     hiddenOcgLayerIds: [],
     lockedOcgLayerIds: [],
     expandedOcgLayerIds: [],
+    hiddenObjectKeys: [],
     isLayerPanelOpen: false,
     ocgPreviewUrl: null,
 
@@ -359,6 +367,9 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
         lockedObjectIds: typeof updater === 'function' ? updater(state.lockedObjectIds) : updater,
     })),
     setSelectionFileId: (id) => set({ selectionFileId: id, selectedObjectIds: [], hiddenObjectIds: [], lockedObjectIds: [] }),
+    setEditAddMode: (updater) => set((state) => ({
+        editAddMode: typeof updater === 'function' ? updater(state.editAddMode) : updater,
+    })),
 
     setPdfOcgLayers: (layers) => set({ pdfOcgLayers: layers }),
     setHiddenOcgLayerIds: (updater) => set((state) => ({
@@ -369,6 +380,9 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     })),
     setExpandedOcgLayerIds: (updater) => set((state) => ({
         expandedOcgLayerIds: typeof updater === 'function' ? updater(state.expandedOcgLayerIds) : updater,
+    })),
+    setHiddenObjectKeys: (updater) => set((state) => ({
+        hiddenObjectKeys: typeof updater === 'function' ? updater(state.hiddenObjectKeys) : updater,
     })),
     setIsLayerPanelOpen: (updater) => set((state) => ({
         isLayerPanelOpen: typeof updater === 'function' ? updater(state.isLayerPanelOpen) : updater,

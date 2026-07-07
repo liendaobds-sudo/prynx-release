@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 
 // ── Kiểu dữ liệu menu ──────────────────────────────────────────────────────
 export interface MenuItem {
@@ -14,8 +14,8 @@ export interface MenuItem {
     separator?: boolean;
     /** Hiện dấu ✓ (cho item bật/tắt như Rulers, chế độ hiển thị). */
     checked?: boolean;
-    /** Emoji/ký tự icon nhỏ bên trái. */
-    icon?: string;
+    /** Icon nhỏ bên trái: emoji/ký tự (string) hoặc component icon (lucide…). */
+    icon?: ReactNode;
     /** Submenu xổ ngang ra khi rê chuột (VD: Mở gần đây). Bỏ trống → item thường. */
     submenu?: MenuItem[];
 }
@@ -83,15 +83,17 @@ export function MenuBar({ menus }: MenuBarProps) {
                         </button>
 
                         {isOpen && (() => {
-                            // Chỉ chừa ô ✓/icon bên trái khi menu này THỰC SỰ có mục dùng ✓ hoặc icon,
-                            // tránh khoảng trống thừa ở menu không có (VD: File).
-                            const reserveLeft = menu.items.some((it) => it.checked || it.icon);
+                            // Hai ô riêng như Acrobat: ô ✓ (mục bật/tắt) và ô ICON. Tách ra để
+                            // item toggle (Rulers/Dark) hiện được CẢ dấu ✓ LẪN icon cùng lúc,
+                            // không đá nhau. Chỉ chừa ô khi menu THỰC SỰ có dùng (tránh trống thừa).
+                            const reserveCheck = menu.items.some((it) => typeof it.checked === 'boolean');
+                            const reserveIcon = menu.items.some((it) => it.icon != null);
                             return (
                                 <div className="absolute top-full left-0 mt-0 min-w-[220px] bg-white dark:bg-[#2d3236] border border-black/10 dark:border-white/10 shadow-xl rounded-b-md py-1 z-[200] animate-in fade-in slide-in-from-top-1 duration-100">
                                     {menu.items.map((item, j) =>
                                         item.separator
                                             ? <div key={`sep-${j}`} className="my-1 h-px bg-black/10 dark:bg-white/10" />
-                                            : <MenuRow key={(item.label || '') + j} item={item} onRun={runItem} reserveLeft={reserveLeft} />
+                                            : <MenuRow key={(item.label || '') + j} item={item} onRun={runItem} reserveCheck={reserveCheck} reserveIcon={reserveIcon} />
                                     )}
                                 </div>
                             );
@@ -104,7 +106,7 @@ export function MenuBar({ menus }: MenuBarProps) {
 }
 
 // ── Một dòng trong menu: item thường, hoặc item có submenu xổ ngang ─────────
-function MenuRow({ item, onRun, reserveLeft }: { item: MenuItem; onRun: (it: MenuItem) => void; reserveLeft?: boolean }) {
+function MenuRow({ item, onRun, reserveCheck, reserveIcon }: { item: MenuItem; onRun: (it: MenuItem) => void; reserveCheck?: boolean; reserveIcon?: boolean }) {
     const [subOpen, setSubOpen] = useState(false);
     const hasSub = !!item.submenu && item.submenu.length > 0;
 
@@ -116,9 +118,14 @@ function MenuRow({ item, onRun, reserveLeft }: { item: MenuItem; onRun: (it: Men
 
     const content = (
         <>
-            {reserveLeft && (
-                <span className="w-4 shrink-0 text-center text-[12px]">
-                    {item.checked ? '✓' : item.icon || ''}
+            {reserveCheck && (
+                <span className="w-3.5 shrink-0 text-center text-[12px]">
+                    {item.checked ? '✓' : ''}
+                </span>
+            )}
+            {reserveIcon && (
+                <span className="w-4 shrink-0 flex items-center justify-center text-[12px] opacity-80">
+                    {item.icon}
                 </span>
             )}
             <span className="flex-1 truncate">{item.label}</span>

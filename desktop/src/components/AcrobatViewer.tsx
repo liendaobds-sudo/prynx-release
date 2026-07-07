@@ -15,7 +15,6 @@ import ExportImageModal from './workspace/ExportImageModal';
 import { uploadPDF } from '../lib/api';
 import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, ThumbSidebar, ViewerContextMenu, type Guide } from './acrobat';
-import LayerPanel from './acrobat/LayerPanel';
 
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
 import { useTileRenderer } from '../hooks/viewer/useTileRenderer';
@@ -26,6 +25,32 @@ import { useVdpHistory } from '../hooks/useVdpHistory';
 import type { UseEditSession } from '../hooks/useEditSession';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+
+// Overlay preview OCG: giữ ảnh ĐÃ LOAD cuối cùng, chỉ swap khi ảnh mới decode xong
+// (preload ngầm qua state theo onLoad) → hết nháy trắng giữa các lần toggle layer
+// (audit F7 perf 2026-07-07). Khi url về null (không ẩn gì) → ẩn overlay ngay.
+const OcgPreviewOverlay = ({ url }: { url: string }) => {
+    const [shownUrl, setShownUrl] = useState(url);
+    return (
+        <>
+            <img
+                src={shownUrl}
+                alt="Layer preview"
+                className="absolute inset-0 w-full h-full object-contain pointer-events-none z-30"
+                style={{ imageRendering: 'auto' }}
+            />
+            {url !== shownUrl && (
+                <img
+                    src={url}
+                    alt=""
+                    aria-hidden
+                    className="absolute w-px h-px opacity-0 pointer-events-none"
+                    onLoad={() => setShownUrl(url)}
+                />
+            )}
+        </>
+    );
+};
 
 interface Props {
     /** Tab đang hiển thị? — chỉ tab active mới xử lý lệnh menu (tránh mọi tab mounted cùng phản ứng). */
@@ -49,7 +74,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue,
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId,
         isObjectEditMode,
-        hiddenOcgLayerIds, isLayerPanelOpen, setIsLayerPanelOpen,
+        hiddenOcgLayerIds,
         separationPlates, vdpFields, selectedVdpFieldIds,
         setSelectedVdpFieldIds, setVdpFields, setIsSidebarOpen,
         setViewerPageOrder, setViewerPageRotations, setViewerDirty,
@@ -73,7 +98,6 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, selectionFileId: state.selectionFileId,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds,
         isObjectEditMode: state.isObjectEditMode,
-        isLayerPanelOpen: state.isLayerPanelOpen, setIsLayerPanelOpen: state.setIsLayerPanelOpen,
         separationPlates: state.separationPlates,
         vdpFields: state.vdpFields, selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         softProofImageUrl: state.softProofImageUrl, gamutWarningUrl: state.gamutWarningUrl, tacHeatmapUrl: state.tacHeatmapUrl, overprintPreviewUrl: state.overprintPreviewUrl,
@@ -302,16 +326,6 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         setIsZoomReadyLocal(false);
         if (internalScrollRef.current) internalScrollRef.current = null;
     }, [pdfUrl, file]);
-
-    // F7 Layer Panel — listen for explicit open/close value from singleton handler
-    useEffect(() => {
-        const handleToggleLayerPanel = (e: Event) => {
-            const open = (e as CustomEvent).detail?.open;
-            setIsLayerPanelOpen(open);
-        };
-        window.addEventListener('prynx-toggle-layer-panel', handleToggleLayerPanel);
-        return () => window.removeEventListener('prynx-toggle-layer-panel', handleToggleLayerPanel);
-    }, [setIsLayerPanelOpen]);
 
     // ── Menu bar (kiểu Acrobat) → lệnh thao tác trên viewer. Mọi tab đều mounted nên
     //    CHỈ tab active mới xử lý (tránh mọi tab cùng phản ứng). App-level (New/Open/Save…)
@@ -900,14 +914,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                         editSession={editSession}
                         isActivePage={originalPageNum === activePage}
                     />
-                    {showOcgOverlay && (
-                        <img
-                            src={ocgPreviewUrl}
-                            alt="Layer preview"
-                            className="absolute inset-0 w-full h-full object-contain pointer-events-none z-[30]"
-                            style={{ imageRendering: 'auto' }}
-                        />
-                    )}
+                    {showOcgOverlay && <OcgPreviewOverlay url={ocgPreviewUrl} />}
                 </div>
             </div>
         );
@@ -1091,8 +1098,6 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                     )}
                 </div>
                 {rightPanel}
-                {/* F7 Layer Panel */}
-                <LayerPanel />
             </div>
 
             {/* Modals */}

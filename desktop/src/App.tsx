@@ -24,6 +24,7 @@ import { supabase } from './lib/supabase';
 import { ToastViewport, toast } from './components/ui/Toast';
 import { ConfirmDialogHost } from './components/ui/confirmDialog';
 import { listSnapshots, clearAllSnapshots, deleteSnapshot, type RecoverySnapshot } from './lib/recovery';
+import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Columns2, Rows2, Ruler, Moon } from 'lucide-react';
 
 type AppTabType = 'home' | AppToolId;
 
@@ -808,20 +809,20 @@ function AppInner() {
     {
       label: 'View',
       items: [
-        { label: 'Phóng to', shortcut: 'Ctrl++', disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
-        { label: 'Thu nhỏ', shortcut: 'Ctrl+-', disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
-        { label: 'Về 100%', disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
+        { label: 'Phóng to', shortcut: 'Ctrl++', icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
+        { label: 'Thu nhỏ', shortcut: 'Ctrl+-', icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
+        { label: 'Về 100%', icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
         { separator: true },
-        { label: 'Vừa chiều ngang', disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },
-        { label: 'Vừa trọn trang', disabled: !isToolActive, onClick: () => viewerCmd('fit-page') },
+        { label: 'Vừa chiều ngang', icon: <MoveHorizontal className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },
+        { label: 'Vừa trọn trang', icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-page') },
         { separator: true },
-        { label: 'Xem một trang', disabled: !isToolActive, onClick: () => viewerCmd('layout-single-fit') },
-        { label: 'Cuộn trang dọc', disabled: !isToolActive, onClick: () => viewerCmd('layout-single-scroll') },
-        { label: 'Xem hai trang', disabled: !isToolActive, onClick: () => viewerCmd('layout-two-fit') },
-        { label: 'Cuộn hai trang', disabled: !isToolActive, onClick: () => viewerCmd('layout-two-scroll') },
+        { label: 'Xem một trang', icon: <FileText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-fit') },
+        { label: 'Cuộn trang dọc', icon: <ScrollText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-scroll') },
+        { label: 'Xem hai trang', icon: <Columns2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-fit') },
+        { label: 'Cuộn hai trang', icon: <Rows2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-scroll') },
         { separator: true },
-        { label: 'Thước đo (Rulers)', checked: showRulers, disabled: !isToolActive, onClick: () => viewerCmd('toggle-rulers') },
-        { label: 'Giao diện Tối', checked: theme === 'dark', onClick: toggleTheme },
+        { label: 'Thước đo (Rulers)', icon: <Ruler className="w-3.5 h-3.5" />, checked: showRulers, disabled: !isToolActive, onClick: () => viewerCmd('toggle-rulers') },
+        { label: 'Giao diện Tối', icon: <Moon className="w-3.5 h-3.5" />, checked: theme === 'dark', onClick: toggleTheme },
       ],
     },
     {

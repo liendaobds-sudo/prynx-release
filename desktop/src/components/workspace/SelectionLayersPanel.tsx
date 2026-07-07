@@ -1,9 +1,9 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Button } from '../Button';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { authenticatedFetch, getApiUrl } from '../../lib/api';
-import { Lock, LockOpen, Eye, EyeOff, Trash2, FolderOpen } from 'lucide-react';
+import { Lock, LockOpen, Eye, EyeOff, Trash2, FolderOpen, Plus, Image as ImageIcon } from 'lucide-react';
 
 // ═══════════════════════════════════════════════════════════
 //  Edit PDF Layers & Components Panel (unified)
@@ -47,6 +47,7 @@ export default function EditLayersPanel({
         selectionFileId, viewerNumPages,
         setPdfObjectsVersion,
         setViewerDirty,
+        editAddMode, setEditAddMode,
     } = useWorkspaceStore();
 
     const [searchTerm, setSearchTerm] = useState(''); // Search for components (thành phần)
@@ -59,6 +60,18 @@ export default function EditLayersPanel({
     const renameInputRef = useRef<HTMLInputElement>(null);
     const [isScanningAll, setIsScanningAll] = useState(false);
     const [scanProgress, setScanProgress] = useState(0);
+
+    // Canvas → panel: khi selection đổi (vd click object trên canvas), cuộn dòng
+    // tương ứng vào tầm nhìn. Chỉ ĐỌC selectedObjectIds + gọi scroll → không set lại
+    // → không có feedback loop. Object không thuộc trang active không có ref → bỏ qua
+    // (danh sách "Thành phần" chỉ chứa object trang đang xem). (gộp F7↔edit 2026-07-07)
+    const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+    useEffect(() => {
+        const firstId = selectedObjectIds[0];
+        if (firstId == null) return;
+        const el = itemRefs.current[firstId];
+        if (el) el.scrollIntoView({ block: 'nearest' });
+    }, [selectedObjectIds]);
 
     const handleScanAllPages = async () => {
         if (!viewerNumPages || isScanningAll) return;
@@ -482,6 +495,27 @@ export default function EditLayersPanel({
                     </div>
                 </>
 
+            {/* Thêm object mới: nút điều khiển editAddMode (STORE dùng chung). Bật →
+                cú bấm kế tiếp lên BẤT KỲ trang nào đặt object tại đó. Dời từ canvas
+                vào panel cho gọn màn hình (2026-07-07). */}
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button
+                            type="button"
+                            onClick={() => setEditAddMode(editAddMode === 'text' ? null : 'text')}
+                            className={`flex-1 px-2 py-1 text-[12px] rounded border inline-flex items-center justify-center gap-1 transition-colors ${editAddMode === 'text' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-300 dark:border-zinc-600 hover:bg-slate-50 dark:hover:bg-zinc-700'}`}
+                        ><Plus className="w-3.5 h-3.5" /> Text</button>
+                        <button
+                            type="button"
+                            onClick={() => setEditAddMode(editAddMode === 'image' ? null : 'image')}
+                            className={`flex-1 px-2 py-1 text-[12px] rounded border inline-flex items-center justify-center gap-1 transition-colors ${editAddMode === 'image' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-300 dark:border-zinc-600 hover:bg-slate-50 dark:hover:bg-zinc-700'}`}
+                        ><ImageIcon className="w-3.5 h-3.5" /> Ảnh</button>
+                    </div>
+                    {editAddMode && (
+                        <div className="shrink-0 text-[11px] text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded">
+                            Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : 'ảnh'}…
+                        </div>
+                    )}
+
             {/* Components (Thành phần) Section - using editObjects for accuracy */}
                     <div className="flex items-center justify-between shrink-0 bg-white dark:bg-zinc-800 p-2 rounded-md border border-slate-200 dark:border-zinc-700">
                         <span className="font-medium text-[13px] text-slate-700 dark:text-zinc-300">Đã chọn: <strong className="text-blue-600 dark:text-blue-400">{selectedObjectIds.length}</strong></span>
@@ -526,6 +560,7 @@ export default function EditLayersPanel({
                                 return (
                                     <div
                                         key={obj.id}
+                                        ref={el => { itemRefs.current[obj.id] = el; }}
                                         className={`flex items-center gap-1.5 p-2 text-xs cursor-pointer border-b border-slate-100 dark:border-zinc-700/50 hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${isHidden ? 'opacity-50' : ''} ${isLocked ? 'opacity-60' : ''}`}
                                     >
                                         <button
