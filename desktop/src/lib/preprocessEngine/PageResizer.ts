@@ -58,6 +58,13 @@ export async function resizePages(
         // Create new page with target dimensions
         const newPage = outputPdf.addPage([targetWPt, targetHPt]);
 
+        // Trang trắng (chèn thêm để đủ số trang) không có /Contents —
+        // embedPages sẽ ném "Can't embed page with missing Contents".
+        // Trang rỗng thì chẳng có gì để nhúng, cứ để trang khổ mới trống.
+        if (!srcPage.node.Contents()) {
+            continue;
+        }
+
         // Embed source page
         const [embedded] = await outputPdf.embedPages([srcPage]);
 

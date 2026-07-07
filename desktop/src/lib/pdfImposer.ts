@@ -88,7 +88,10 @@ export const imposePdf = async (
                 angle += settings.pageRotations[i];
             }
             
-            const { x, y, width, height } = p.getCropBox() || p.getMediaBox();
+            // MediaBox-first (KHỚP backend pikepdf ép Box=MediaBox): bình theo TRANG VẬT LÝ.
+            // CropBox-first sẽ cắt lề trắng khi trang có CropBox chặt hơn MediaBox (vd sau
+            // auto-trim hoặc PDF vẽ CropBox ôm nội dung) → mất nền trắng, chỉ bình phần có mực.
+            const { x, y, width, height } = p.getMediaBox() || p.getCropBox();
             const ep = await outputPdf.embedPage(p, { left: x, bottom: y, right: x + width, top: y + height });
             embeddedPages.push(ep);
 
@@ -188,7 +191,8 @@ export const imposePdf = async (
                         continue;
                     }
                     const p = srcPagesTemp[pOriginalIndex];
-                    const { x, y, width, height } = p.getCropBox() || p.getMediaBox();
+                    // MediaBox-first: giữ nguyên lề trắng (xem chú thích ở embed chính).
+                    const { x, y, width, height } = p.getMediaBox() || p.getCropBox();
                     const ep = await tempPdf.embedPage(p, { left: x, bottom: y, right: x + width, top: y + height });
                     tempEmbeddedPages.push(ep);
                 }
@@ -275,8 +279,6 @@ export const imposePdf = async (
                 setStatus(`Đang thêm ${coverIndices.length} trang bìa vào cuối file...`);
                 for (const idx of coverIndices) {
                     if (idx === -1) continue;
-                    const coverPage = srcPagesTemp[idx];
-                    const { width, height } = coverPage.getCropBox() || coverPage.getMediaBox();
                     const [copiedPage] = await outputPdf.copyPages(srcPdf, [idx]);
                     outputPdf.addPage(copiedPage);
                 }
@@ -535,7 +537,9 @@ export const imposePdfViaBackend = async (
         pageCount = srcPdf.getPageCount();
         const pages = srcPdf.getPages();
         for (const p of pages) {
-            const { width, height } = p.getCropBox() || p.getMediaBox() || p.getSize();
+            // MediaBox-first (xem chú thích ở nhánh embed chính): dùng khổ trang vật lý
+            // cho phép tính scale, tránh cắt lề trắng khi CropBox chặt hơn MediaBox.
+            const { width, height } = p.getMediaBox() || p.getCropBox() || p.getSize();
             const angle = p.getRotation()?.angle || 0;
             const vw = (angle % 180 !== 0) ? height : width;
             const vh = (angle % 180 !== 0) ? width : height;
@@ -552,8 +556,30 @@ export const imposePdfViaBackend = async (
     // ──── STEP 2: Chạy Planner modules (thuần toán, 0 byte PDF trong RAM) ────
     setStatus('Đang thiết lập sơ đồ trang...');
             const bMode = (settings as any).bindingMode || 'saddle';
-            const mapResult = generateBindingMap(pageCount, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
+    // pageOrder (thứ tự trang do người dùng sắp trong viewer, 1-based; -1 = trang trắng
+    // đã chèn) là NGUỒN SỰ THẬT — GIỐNG HỆT "Xem Bài In" (SheetViewer dùng pageOrder.length).
+    // Trước đây nhánh này dựng map từ pageCount THÔ của file gốc → generateBindingMap tự pad
+    // + tự nhét trang trắng ở CUỐI, BỎ QUA trang trắng người dùng chèn giữa sách → trang
+    // trắng rơi nhầm mặt (vd cùng mặt trang 1). Nay map theo pageOrder rồi remap srcIndex
+    // (index logic vào pageOrder) → index TRANG THẬT trong file gốc, hoặc null nếu là slot
+    // trắng. source_page/backend giữ nguyên; slot null được backend skip (fix trang trắng
+    // lệch mặt 2026-07-07).
+    const pageOrder: number[] | undefined = Array.isArray((settings as any).pageOrder)
+        ? (settings as any).pageOrder : undefined;
+    const effectiveCount = pageOrder ? pageOrder.length : pageCount;
+    const mapResult = generateBindingMap(effectiveCount, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
     const virtualMap = mapResult.sheets;
+    if (pageOrder) {
+        const remapSlot = (slot: { srcIndex: number | null }) => {
+            if (slot.srcIndex === null) return; // padding do map tự thêm → giữ trắng
+            const realPage = pageOrder[slot.srcIndex]; // 1-based trang gốc, hoặc -1 = trắng
+            slot.srcIndex = (realPage == null || realPage === -1) ? null : realPage - 1;
+        };
+        for (const sheet of virtualMap) {
+            remapSlot(sheet.front.left); remapSlot(sheet.front.right);
+            remapSlot(sheet.back.left); remapSlot(sheet.back.right);
+        }
+    }
     let report = mapResult.report;
 
     setStatus('Đang tính toán kích thước tự động...');
