@@ -333,7 +333,11 @@ def stamp_reports_on_pdf(input_pdf: str, output_pdf: str, reports_by_page: Dict[
                     report_str, pw, ph, position, offset_x_mm, offset_y_mm, font_size, centered
                 )
                 overlay = pikepdf.open(io_bytes(overlay_bytes))
-                page.add_overlay(overlay.pages[0])
+                # add_overlay(rect=None) đặt overlay khớp TRIMBOX của trang đích →
+                # khi TrimBox ≠ MediaBox (file in có bleed) overlay bị CO + DỜI, report
+                # lệch vị trí. Overlay được dựng theo MediaBox (pw×ph ở trên) nên PHẢI
+                # truyền rect=MediaBox để đặt đúng khung. TrimBox=MediaBox → scale=1 (vô hại).
+                page.add_overlay(overlay.pages[0], rect=pikepdf.Rectangle(float(mb[0]), float(mb[1]), float(mb[2]), float(mb[3])))
             except Exception as e:
                 _logger.warning("[REPORT] Vẽ report trang %d lỗi: %s", idx, e)
         pdf.save(output_pdf)

@@ -128,6 +128,9 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
     const [isExpanded, setIsExpanded] = useState(false);
     // CNC dùng chung profile die-cut với Bế tem (report, nesting; ẩn dấu xén/guillotine/căn lề).
     const stickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
+    // Nhóm report (Thông tin sản phẩm) mở cho CẢ cắt xén (nup): backend + handler đã sẵn
+    // sàng nhận reportDisplay cho guillotine, chỉ UI trước đây gate nhầm theo stickerLike.
+    const reportCapable = stickerLike || activeTool === 'nup';
     const [infoModal, setInfoModal] = useState<{ title: string, content: React.ReactNode } | null>(null);
     const [showClusterModal, setShowClusterModal] = useState(false);
     const [matInput, setMatInput] = useState<string | null>(null); // null = không thêm; '' = đang nhập
@@ -310,11 +313,11 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         )}
 
                         {/* === NHÓM ② THÔNG TIN SẢN PHẨM (REPORT) === */}
-                        {stickerLike && (
+                        {reportCapable && (
                         <CollapsibleGroup title="🏷️ Thông tin sản phẩm (Report)">
 
-                        {/* === REPORT & XUẤT TỜ DUY NHẤT (sticker_imposer + cnc) === */}
-                        {stickerLike && (
+                        {/* === REPORT & XUẤT TỜ DUY NHẤT (sticker_imposer + cnc + cắt xén) === */}
+                        {reportCapable && (
                             <div className="flex flex-col gap-3 pb-1">
                                 <div className="flex items-center justify-between">
                                     <label className="text-[10px] text-slate-400 italic">Bật & tuỳ chỉnh khối thông tin in lên tờ</label>
@@ -526,7 +529,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                 material: s.reportMaterial,
                                                 laminationType: s.reportLamination,
                                                 laminationSides: s.reportLaminationSides,
-                                                modeLabel: activeTool === 'cnc_imposer' ? 'Bình bế rớt (CNC)' : 'Bế tem',
+                                                modeLabel: activeTool === 'cnc_imposer' ? 'Bình bế rớt (CNC)' : activeTool === 'nup' ? 'Cắt xén' : 'Bế tem',
                                             });
                                             const posLabel = { top: 'mép trên', bottom: 'mép dưới', left: 'mép trái', right: 'mép phải' }[s.reportDisplay.position] || 'mép trên';
                                             return (
