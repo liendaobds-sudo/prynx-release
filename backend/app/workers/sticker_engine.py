@@ -356,15 +356,11 @@ class StickerEngine:
             any_dieline_found = False
             pages_no_dieline = []
 
-            import time as _time
             _n_pages = len(doc_in_pdfium)
             # Danh sách trang cần xử lý: subset (worker song song) hoặc toàn bộ.
             _page_list = list(_page_subset) if _page_subset is not None else list(range(_n_pages))
-            logger.warning("[STICKER-TIMING] start: %d/%d page(s), bleed_color_type=%s rectangle_mode=%s bleed_mm=%.2f",
-                           len(_page_list), _n_pages, bleed_color_type, rectangle_mode, bleed_mm)
 
             for page_idx in _page_list:
-                _t_page = _time.perf_counter()
                 debug_step = f"Rasterize Page {page_idx}"
                 page_in = doc_in_pdfium[page_idx]
                 page_in_pike = doc_in_pike.pages[page_idx]
@@ -787,8 +783,6 @@ class StickerEngine:
                         band_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (band_r*2+1, band_r*2+1))
                         band = cv2.dilate(bleed_ring, band_kernel)
 
-                        import time as _time
-                        _t_fill = _time.perf_counter()
                         is_bleed_cmyk = False
                         if bleed_color_type == "image":
                             # 'Kéo giãn mép ảnh' — nearest-color giới hạn theo band (tile + bỏ ô ruột).
@@ -827,10 +821,6 @@ class StickerEngine:
                                 bg_canvas = np.zeros_like(padded_img)
                                 bg_canvas[:] = solid_bleed_color
                             bleed_colors = bg_canvas
-
-                        logger.warning(">>> [TIMING] page=%d fill(%s) took %.3fs | img=%dx%d band_r=%d",
-                                       page_idx, bleed_color_type, _time.perf_counter() - _t_fill,
-                                       padded_img.shape[1], padded_img.shape[0], band_r)
 
                         # KHÔNG mask màu về canvas ĐEN nữa: trước đây bleed_result=zeros
                         # rồi chỉ copy ring → vùng interior (ngoài ring) là ĐEN, tạo cạnh
@@ -1088,7 +1078,6 @@ class StickerEngine:
                     pages_no_dieline.append(page_idx + 1)
                 
                 all_pages_meta.append(page_meta)
-                logger.warning("[STICKER-TIMING] page=%d TOTAL %.3fs", page_idx, _time.perf_counter() - _t_page)
 
             # CHẾ ĐỘ WORKER (song song): trả MẢNH THÔ (bytes + meta các trang của chunk
             # này + pages_no_dieline GLOBAL 1-based + cờ any_dieline) cho orchestrator gộp,
@@ -1101,9 +1090,7 @@ class StickerEngine:
                 return (_buf.getvalue(), all_pages_meta, pages_no_dieline, any_dieline_found)
 
             debug_step = "Save Output PDF"
-            _t_save = _time.perf_counter()
             doc_out.save(output_path)
-            logger.warning("[STICKER-TIMING] save %.3fs | ALL DONE", _time.perf_counter() - _t_save)
 
             # Watermark (stealth) được áp ở tầng route qua _safe_watermark(license_info),
             # nhất quán với các endpoint pdf-tools khác. Engine KHÔNG có thông tin license
@@ -1171,10 +1158,8 @@ class StickerEngine:
         copy_foreign), concat meta, tổng hợp any_dieline + pages_no_dieline rồi tái
         tạo final_meta/error/warning Y HỆT nhánh tuần tự.
         """
-        import time as _time
         import math as _math
         from concurrent.futures import ProcessPoolExecutor
-        _t_par = _time.perf_counter()
         cut_mode = kw["cut_mode"]
 
         _probe = pdfium.PdfDocument(input_path)
@@ -1195,9 +1180,6 @@ class StickerEngine:
         # cv2.setNumThreads + env BLAS theo số này (đọc từ args["threads_per_worker"]).
         _total_cores = os.cpu_count() or 2
         threads_per_worker = max(1, _total_cores // max(1, n_workers))
-
-        logger.warning("[STICKER-TIMING] parallel: %d page(s) -> %d chunk(s) x ~%d, workers=%d, threads/worker=%d",
-                       n_pages, len(chunks), chunk_size, n_workers, threads_per_worker)
 
         args_list = []
         for ci, page_indices in enumerate(chunks):
@@ -1248,9 +1230,6 @@ class StickerEngine:
             if final_doc is not None:
                 try: final_doc.close()
                 except Exception: pass
-
-        logger.warning("[STICKER-TIMING] parallel TOTAL %.3fs | merged %d page(s)",
-                       _time.perf_counter() - _t_par, len(all_pages_meta))
 
         # Tái tạo final_meta/error/warning Y HỆT nhánh tuần tự.
         final_meta = {}
