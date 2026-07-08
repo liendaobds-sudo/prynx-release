@@ -178,6 +178,7 @@ def process_chunk(args):
                     'rect': _m_path['rect'],
                     'color': _m_path.get('color', (0, 1, 1, 0)),
                     'width': _m_path.get('width', 0.5),
+                    'spot_name': _m_path.get('spot_name'),
                 }
         except Exception as _e_hm:
             logger.debug(f"[HOMOGENEOUS] seed master die failed: {_e_hm}", flush=True)

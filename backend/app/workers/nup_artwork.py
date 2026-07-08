@@ -28,15 +28,29 @@ def _die_channel_names_lower():
         return frozenset({"cutcontour", "dieline", "thru-cut", "kiss", "crease"})
 
 
-def strip_color_from_stream(page_or_xobj, target_color, die_names_lower=None):
+def _spot_key(spot_name):
+    """Chuẩn hoá tên spot → khoá so khớp (tập tên lowercase, tách '+' cho DeviceN)."""
+    if not spot_name:
+        return None
+    parts = frozenset(s.strip().lower() for s in str(spot_name).split("+") if s.strip())
+    return parts or None
+
+
+def strip_color_from_stream(page_or_xobj, target_color, die_names_lower=None, target_spot=None):
     """Strip CHỈ nét vẽ của ĐƯỜNG BẾ khỏi content stream (khi tách trang khuôn).
 
     Nét bị xoá khi: (a) màu stroke KHỚP `target_color` (màu đường bế đã nhận diện),
-    HOẶC (b) tên kênh spot của nét KHỚP kênh bế chuẩn (CutContour/Dieline/...).
+    HOẶC (b) tên kênh spot của nét KHỚP kênh bế chuẩn (CutContour/Dieline/...),
+    HOẶC (c) tên kênh spot KHỚP `target_spot` — spot bế THẬT đã nhận diện của CHÍNH
+    file này (kể cả tên lạ ngoài danh sách chuẩn).
 
-    KHÔNG còn xoá "mọi nét spot" như bản cũ: nét spot trang trí của artwork (viền
-    Pantone, đường UV định tuyến bằng spot) có tên KHÁC kênh bế → được GIỮ. Đây là
-    fix mất-nét-thiết-kế khi bình die-cut (audit bảo toàn nội dung 2026-07-07).
+    Vì sao cần (c): file tạo SẴN đường cắt có thể dùng spot tên riêng (theo RIP/xưởng)
+    KHÔNG nằm trong danh sách chuẩn → chỉ (b) sẽ trượt → khuôn còn sót trên trang in
+    dù đã tách trang khuôn (bug 2026-07-08). Detection đã biết spot bế thật → truyền
+    vào đây để strip đúng của từng file.
+
+    KHÔNG xoá "mọi nét spot" như bản rất cũ: nét spot trang trí của artwork (viền
+    Pantone, đường UV) có tên KHÁC spot bế → được GIỮ (bảo toàn nội dung 2026-07-07).
     """
     import pikepdf
     try:
@@ -47,6 +61,8 @@ def strip_color_from_stream(page_or_xobj, target_color, die_names_lower=None):
 
     if die_names_lower is None:
         die_names_lower = _die_channel_names_lower()
+
+    target_spot_key = _spot_key(target_spot)
 
     # Resources để resolve tên CS operand (vd /CS0) → tên kênh spot thật.
     try:
@@ -104,6 +120,11 @@ def strip_color_from_stream(page_or_xobj, target_color, die_names_lower=None):
                 from app.workers.die_detection import _match_die_channel
                 if _match_die_channel(current_stroke_spot, die_names_lower):
                     match = True
+                # (c) tên spot khớp spot bế THẬT đã nhận diện của file này (tên lạ
+                # ngoài danh sách chuẩn vẫn strip đúng — file tạo sẵn đường cắt).
+                if not match and target_spot_key:
+                    if _spot_key(current_stroke_spot) == target_spot_key:
+                        match = True
             # (a) màu khớp màu đường bế đã nhận diện (cho file bế bằng màu thuần,
             # không có kênh spot riêng — vd magenta quy ước VN).
             if not match and current_stroke_color and target_color:
@@ -271,6 +292,9 @@ def place_one_artwork(
                     'rect': largest_path['rect'],
                     'color': largest_path.get('color', (0, 0, 0)),
                     'width': largest_path.get('width', 0.5),
+                    # spot bế THẬT của file (tên có thể lạ, ngoài danh sách chuẩn) →
+                    # truyền vào strip để gỡ đúng đường bế khi tách trang khuôn.
+                    'spot_name': largest_path.get('spot_name'),
                 }
             else:
                 die_items_cache[cache_key] = None
@@ -283,6 +307,9 @@ def place_one_artwork(
                 pike_page.contents_coalesce()
                 _cached = die_items_cache.get(cache_key)
                 local_target_color = _cached.get('color') if _cached else None
+                # Spot bế THẬT của file này (tên có thể lạ, ngoài danh sách chuẩn) →
+                # truyền vào strip để xoá đúng đường bế kể cả file tạo sẵn đường cắt.
+                local_target_spot = _cached.get('spot_name') if _cached else None
                 _stripped = False
                 contents = pike_page.get('/Contents')
                 if contents is not None:
@@ -291,7 +318,7 @@ def place_one_artwork(
                         # ĐÃ BỎ regex _PAT_A/_PAT_B: chúng xoá mọi khối q..CS..Q nên cắt
                         # nhầm cả họa tiết artwork vẽ trong colorspace đặt tên (ICCBased/
                         # Separation) → mất nét thiết kế (audit bảo toàn nội dung 2026-07-07).
-                        if strip_color_from_stream(pike_page, local_target_color):
+                        if strip_color_from_stream(pike_page, local_target_color, target_spot=local_target_spot):
                             _stripped = True
                     except Exception as e_c:
                         logger.debug(f"[STRIP_DIECUT] page={src_page_idx} content strip error: {e_c}", flush=True)
@@ -307,7 +334,7 @@ def place_one_artwork(
                                     subtype = str(xobj_resolved.get('/Subtype', ''))
                                     if '/Form' in subtype:
                                         # Chỉ parser chính xác (đã bỏ regex quá rộng — xem trên).
-                                        if strip_color_from_stream(xobj_resolved, local_target_color):
+                                        if strip_color_from_stream(xobj_resolved, local_target_color, target_spot=local_target_spot):
                                             _stripped = True
                                 except Exception:
                                     pass
