@@ -93,7 +93,7 @@ function makePreflightRunner(endpoint: string): RecipeRunner {
             if (data.output_filename) {
                 const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
                 const blob = await dl.blob();
-                commitWorkingFile(blob, data.output_filename);
+                await commitWorkingFile(blob, data.output_filename);
             }
         } catch (e: any) {
             setError('Lỗi prepress: ' + (e?.message || e));
@@ -128,7 +128,7 @@ const runOptimizeStep: RecipeRunner = async (ctx, params) => {
             return;
         }
         const blob = await res.blob();
-        commitWorkingFile(blob, `optimized_${file.name}`);
+        await commitWorkingFile(blob, `optimized_${file.name}`);
     } catch (e: any) {
         setError('Lỗi nén PDF: ' + (e?.message || e));
     } finally {
@@ -230,7 +230,7 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
 
         const baseName = file.name.replace(/\.[^/.]+$/, '');
         const prefix = productType === 'rectangle' ? 'autobleed' : 'sticker';
-        commitWorkingFile(resultBlob, `${prefix}_${baseName}.pdf`);
+        await commitWorkingFile(resultBlob, `${prefix}_${baseName}.pdf`);
     } catch (e: any) {
         setError('Lỗi tạo đường cắt: ' + (e?.message || e));
     } finally {

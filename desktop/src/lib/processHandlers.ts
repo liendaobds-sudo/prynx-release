@@ -18,7 +18,9 @@ import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
 export interface ProcessContext {
     file: File;
     onSpawnTab?: (file: File, extra?: any) => void;
-    commitWorkingFile: (blob: Blob, name: string) => void;
+    // async: playback chuỗi bytes qua commit (currentBytes cập nhật SAU await
+    // blob.arrayBuffer()) → mọi call site PHẢI await, nếu không bước kế đọc bytes cũ.
+    commitWorkingFile: (blob: Blob, name: string) => void | Promise<void>;
     setError: (msg: string) => void;
     setIsProcessing: (v: boolean) => void;
     setProcessStatus: (msg: string) => void;
@@ -349,7 +351,7 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
             const blob = await backendShufflePages(workingFile, action, mapping);
             const newFileName = `Shuffled_${file.name}`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { commitWorkingFile(blob, newFileName); }
+            else { await commitWorkingFile(blob, newFileName); }
         } else {
             if (settings.presetId === 'special' && settings.specialAction === 'split_odd_even') {
                 const odds = Array.from({ length: totalPages }, (_, i) => i).filter(i => i % 2 === 0);
@@ -384,7 +386,7 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
             const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
             const newFileName = `Shuffled_${file.name}`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+            else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
     } catch (err: any) { setError('Lỗi xáo trộn trang: ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }
@@ -405,7 +407,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             const blob = await backendResizePages(workingFile, settings.targetW, settings.targetH, settings.scaleMode, settings.applyToStr || 'all');
             const newFileName = `Resized_${file.name}`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { commitWorkingFile(blob, newFileName); }
+            else { await commitWorkingFile(blob, newFileName); }
         } else {
             let applyToPages: 'all' | 'even' | 'odd' | number[] = 'all';
             if (settings.applyToStr === 'even' || settings.applyToStr === 'odd' || settings.applyToStr === 'all') {
@@ -418,7 +420,7 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
             const newFileName = `Resized_${file.name}`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+            else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
     } catch (err: any) { setError('Lỗi đổi khổ: ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }
@@ -480,7 +482,7 @@ export async function runSplit(ctx: ProcessContext, settings: any) {
             const blob = await backendSplitPdf(workingFile, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList });
             const newFileName = `Split_${file.name}`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: blob.type })); }
-            else { commitWorkingFile(blob, newFileName); }
+            else { await commitWorkingFile(blob, newFileName); }
             setReportMsg('Đã tách file thành công.');
         } else {
             const results = await splitPdf(inputBytes, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList }, file.name.replace('.pdf', ''));
@@ -526,7 +528,7 @@ export async function runMerge(ctx: ProcessContext, settings: any) {
             const blob = await backendMergePdfs(allFiles, 'merge_files');
             const newFileName = file ? `Merged_${file.name}` : 'Merged_Document.pdf';
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { commitWorkingFile(blob, newFileName); }
+            else { await commitWorkingFile(blob, newFileName); }
         } else if (settings.mode === 'interleave' && totalPageEstimate > 1000 && !hasImages) {
 
             const { backendMergePdfs } = await import('../lib/api');
@@ -534,14 +536,14 @@ export async function runMerge(ctx: ProcessContext, settings: any) {
             const blob = await backendMergePdfs(allFiles, 'interleave');
             const newFileName = 'Interleaved_Document.pdf';
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { commitWorkingFile(blob, newFileName); }
+            else { await commitWorkingFile(blob, newFileName); }
         } else {
             const inputBytes = workingBaseFile ? new Uint8Array(await workingBaseFile.arrayBuffer()) : null;
             const outputBytes = await mergePdf(inputBytes, settings);
             const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
             const newFileName = file ? `Merged_${file.name}` : `Merged_Document.pdf`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+            else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
     } catch (err: any) { setError('Lỗi ghép PDF: ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }

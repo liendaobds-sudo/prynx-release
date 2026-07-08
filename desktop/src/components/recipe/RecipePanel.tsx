@@ -32,6 +32,34 @@ function stepLabel(step: RecipeStep): string {
     return summary ? `${opBaseLabel(step.opId)} — ${summary}` : opBaseLabel(step.opId);
 }
 
+// Nhãn tiếng Việt cho các param key hay gặp (hiển thị thân thiện; key gốc vẫn giữ
+// ở tooltip + logic sửa/phát lại). Key thiếu trong map → hiện nguyên tên gốc.
+const PARAM_LABELS: Record<string, string> = {
+    // Tạo đường cắt / bù xén tem
+    productType: 'Loại sản phẩm', cutMode: 'Kiểu đường cắt', offsetMm: 'Dời mép (mm)',
+    cornerStyle: 'Kiểu góc', fillHoles: 'Lấp lỗ thủng', bleedMm: 'Bù xén (mm)',
+    removeWhiteBg: 'Bỏ nền trắng', trimWhiteEdge: 'Xén lề trắng',
+    bleedColorType: 'Kiểu màu bù xén', bleedColorHex: 'Màu bù xén', edgeBiteMm: 'Ăn mép (mm)',
+    // Bình bài
+    sheetWidth: 'Rộng tờ in (mm)', sheetHeight: 'Cao tờ in (mm)', cols: 'Số cột', rows: 'Số hàng',
+    bleed: 'Bù xén (mm)', gapX: 'Cách ngang (mm)', gapY: 'Cách dọc (mm)',
+    marginTop: 'Lề trên (mm)', marginBottom: 'Lề dưới (mm)', marginLeft: 'Lề trái (mm)', marginRight: 'Lề phải (mm)',
+    gridStrategy: 'Cách chia lưới', layoutType: 'Kiểu dàn trang', align: 'Căn chỉnh',
+    targetQuantity: 'Số lượng cần in', imposerMode: 'Chế độ bình',
+    // Prepress
+    standard: 'Chuẩn PDF/X', conversions: 'Các phép chuyển màu', preset: 'Thiết lập sẵn',
+    icc_profile: 'Hồ sơ màu ICC', rendering_intent: 'Ý đồ tái tạo màu', preserve_black: 'Giữ đen thuần',
+    image_dpi: 'DPI ảnh', strip_metadata: 'Xóa metadata', grayscale: 'Chuyển đen trắng',
+    spot_name: 'Tên màu spot',
+    // Co giãn / xáo trộn / tách / ghép
+    targetW: 'Rộng đích (mm)', targetH: 'Cao đích (mm)', scaleMode: 'Kiểu co giãn',
+    mode: 'Chế độ', specialAction: 'Thao tác đặc biệt', presetId: 'Mã thiết lập',
+};
+
+function paramLabel(name: string): string {
+    return PARAM_LABELS[name] || name;
+}
+
 // ── Ô sửa 1 tham số (suy kiểu theo giá trị). Object/Array → JSON textarea. ──
 function ParamField({ name, value, onChange }: { name: string; value: unknown; onChange: (v: unknown) => void }) {
     const [jsonText, setJsonText] = useState('');
@@ -41,14 +69,14 @@ function ParamField({ name, value, onChange }: { name: string; value: unknown; o
         return (
             <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-zinc-300">
                 <input type="checkbox" checked={value} onChange={e => onChange(e.target.checked)} />
-                <span className="font-mono">{name}</span>
+                <span title={name}>{paramLabel(name)}</span>
             </label>
         );
     }
     if (typeof value === 'number') {
         return (
             <label className="flex items-center gap-2 text-[11px]">
-                <span className="font-mono text-slate-500 dark:text-zinc-400 w-28 truncate" title={name}>{name}</span>
+                <span className="font-mono text-slate-500 dark:text-zinc-400 w-28 truncate" title={name}>{paramLabel(name)}</span>
                 <input type="number" value={value}
                     onChange={e => onChange(e.target.value === '' ? 0 : Number(e.target.value))}
                     className="flex-1 h-6 px-1.5 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100 text-right" />
@@ -58,7 +86,7 @@ function ParamField({ name, value, onChange }: { name: string; value: unknown; o
     if (typeof value === 'string') {
         return (
             <label className="flex items-center gap-2 text-[11px]">
-                <span className="font-mono text-slate-500 dark:text-zinc-400 w-28 truncate" title={name}>{name}</span>
+                <span className="font-mono text-slate-500 dark:text-zinc-400 w-28 truncate" title={name}>{paramLabel(name)}</span>
                 <input type="text" value={value} onChange={e => onChange(e.target.value)}
                     className="flex-1 h-6 px-1.5 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100" />
             </label>
@@ -68,7 +96,7 @@ function ParamField({ name, value, onChange }: { name: string; value: unknown; o
     const display = jsonText || JSON.stringify(value);
     return (
         <div className="flex items-start gap-2 text-[11px]">
-            <span className="font-mono text-slate-500 dark:text-zinc-400 w-28 truncate pt-1" title={name}>{name}</span>
+            <span className="font-mono text-slate-500 dark:text-zinc-400 w-28 truncate pt-1" title={name}>{paramLabel(name)}</span>
             <textarea
                 value={display}
                 onChange={e => { setJsonText(e.target.value); setJsonErr(false); }}

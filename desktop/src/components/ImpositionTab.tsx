@@ -1004,7 +1004,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     const processEngine = useCallback(async (settings: ProcessingSettings, spawnNewTab: boolean) => {
         if (!file) return;
-        
+
         // Inject custom confirmation callback
         settings.onConfirmScale = (msg: string) => {
             return new Promise<boolean>((resolve) => {
@@ -1012,10 +1012,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             });
         };
 
+        // Khi ĐANG GHI quy trình: ÉP commit vào working file (spawnNewTab=false) bất kể
+        // cờ UI. Mặc định spawnNewTab=true nên nếu không ép, bình tem/booklet mở tab mới
+        // → KHÔNG commit → KHÔNG được ghi vào recipe (bug: recipe chỉ có bước dieline).
+        const effectiveSpawn = recipeRecorder.isRecording ? false : spawnNewTab;
+
         // ─── Recipe record hook ───
         // Chỉ ghi khi commit vào working file (spawnNewTab=false). onConfirmScale
         // là hàm → bị JSON.stringify loại khi clone params (an toàn để phát lại).
-        if (!spawnNewTab) {
+        if (!effectiveSpawn) {
             const opId = settings.impositionMode === ImpositionMode.Booklet
                 ? 'booklet'
                 : (settings as any).imposerMode === 'cnc'
@@ -1038,7 +1043,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
 
         const { runProcessEngine } = await import('../lib/processHandlers');
-        await runProcessEngine(buildProcessContext(), settings, spawnNewTab);
+        await runProcessEngine(buildProcessContext(), settings, effectiveSpawn);
     }, [file, buildProcessContext]);
 
     const handleStartCatalogPlan = useCallback(async (planConfig: any, sheetSettings: any) => {
@@ -1047,43 +1052,51 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         await runCatalogPlan(buildProcessContext(), planConfig, sheetSettings);
     }, [file, buildProcessContext]);
 
+    // Khi ĐANG GHI: ép spawnNewTab=false để thao tác commit vào working file (chuỗi
+    // tuyến tính) VÀ được ghi vào recipe. Mặc định spawnNewTab=true → nếu không ép,
+    // thao tác mở tab mới, hook record bị bỏ qua (bug: recipe thiếu bước).
     const handleStartShuffle = async (settings: any) => {
         if (!file) return;
-        if (!settings.spawnNewTab) recipeRecorder.noteOperation('shuffle', settings);
+        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
+        if (!eff.spawnNewTab) recipeRecorder.noteOperation('shuffle', eff);
         const { runShuffle } = await import('../lib/processHandlers');
-        await runShuffle(buildProcessContext(), settings);
+        await runShuffle(buildProcessContext(), eff);
     };
 
     const handleStartResize = async (settings: any) => {
         if (!file) return;
-        if (!settings.spawnNewTab) recipeRecorder.noteOperation('resize', settings);
+        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
+        if (!eff.spawnNewTab) recipeRecorder.noteOperation('resize', eff);
         const { runResize } = await import('../lib/processHandlers');
-        await runResize(buildProcessContext(), settings);
+        await runResize(buildProcessContext(), eff);
     };
 
     const handleStartTrimShift = async (settings: any) => {
         if (!file) return;
-        if (!settings.spawnNewTab) recipeRecorder.noteOperation('trim_shift', settings);
+        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
+        if (!eff.spawnNewTab) recipeRecorder.noteOperation('trim_shift', eff);
         const { runTrimShift } = await import('../lib/processHandlers');
-        await runTrimShift(buildProcessContext(), settings);
+        await runTrimShift(buildProcessContext(), eff);
     };
 
     const handleStartSplit = useCallback(async (settings: any) => {
         if (!file) return;
-        if (!settings.spawnNewTab) recipeRecorder.noteOperation('split', settings);
+        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
+        if (!eff.spawnNewTab) recipeRecorder.noteOperation('split', eff);
         const { runSplit } = await import('../lib/processHandlers');
-        await runSplit(buildProcessContext(), settings);
+        await runSplit(buildProcessContext(), eff);
     }, [file, buildProcessContext]);
 
     const handleStartMerge = useCallback(async (settings: any) => {
         if (!file && settings.mode === 'insert_pages') return;
-        if (!settings.spawnNewTab) {
+        const eff = recipeRecorder.isRecording ? { ...settings, spawnNewTab: false } : settings;
+        if (!eff.spawnNewTab) {
             // KHÔNG lưu blob file ngoài vào recipe (Property 7) — chỉ lưu cấu hình ghép.
-            const { filesToMerge, oddFile, evenFile, ...mergeParams } = settings;
+            const { filesToMerge, oddFile, evenFile, ...mergeParams } = eff;
             recipeRecorder.noteOperation('merge', mergeParams);
         }
         const { runMerge } = await import('../lib/processHandlers');
-        await runMerge(buildProcessContext(), settings);
+        await runMerge(buildProcessContext(), eff);
     }, [file, buildProcessContext]);
 
     // ─── Recipe playback (Task 9) ───

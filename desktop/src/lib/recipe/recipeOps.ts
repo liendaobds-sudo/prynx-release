@@ -54,12 +54,13 @@ export const RECIPE_OP_META: Record<RecipeOpId, RecipeOpMeta> = {
     hairlines: { label: 'Sửa nét mảnh', recordable: true, needsExternalInput: null, group: 'prepress' },
     trapping: { label: 'Chồng tràn (Trapping)', recordable: true, needsExternalInput: null, group: 'prepress' },
     pdfx: { label: 'Xuất PDF/X', recordable: true, needsExternalInput: null, group: 'prepress' },
-    ocr: { label: 'OCR', recordable: true, needsExternalInput: null, group: 'prepress' },
+    // OCR multipart CHƯA nối hook ghi + chưa có runner → v1 không phát lại được.
+    ocr: { label: 'OCR', recordable: false, needsExternalInput: null, group: 'prepress' },
     optimize: { label: 'Nén / Tối ưu', recordable: true, needsExternalInput: null, group: 'prepress' },
     spot_cmyk: { label: 'Spot → CMYK', recordable: true, needsExternalInput: null, group: 'prepress' },
-    // ── Overlay (FE) ──
-    watermark: { label: 'Chèn nền & đóng dấu', recordable: true, needsExternalInput: null, group: 'overlay' },
-    stick_text_number: { label: 'Header & Footer', recordable: true, needsExternalInput: null, group: 'overlay' },
+    // ── Overlay (FE) — CHƯA nối hook ghi + chưa có runner → v1 không phát lại được. ──
+    watermark: { label: 'Chèn nền & đóng dấu', recordable: false, needsExternalInput: null, group: 'overlay' },
+    stick_text_number: { label: 'Header & Footer', recordable: false, needsExternalInput: null, group: 'overlay' },
     // ── AI (công cụ ảnh tương tác, KHÔNG nằm trong chuỗi PDF) — v1 không phát lại ──
     // bgremover/upscale chạy theo lô ẢNH với store + preview riêng (useBgRemoverStore),
     // không đi qua commitWorkingFile của working PDF → không ghép được vào recipe tuyến tính.

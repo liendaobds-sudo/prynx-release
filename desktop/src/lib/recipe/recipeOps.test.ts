@@ -26,14 +26,16 @@ describe('recipeOps — metadata hợp lệ & đầy đủ', () => {
 });
 
 describe('recipeOps — phân loại đúng (chặn lỗi merge/pageboxes-class)', () => {
-    it('thao tác file/position-dependent + AI ảnh tương tác → recordable=false', () => {
-        for (const opId of ['object_edit', 'crop', 'page_index_op', 'datamerge', 'numbering', 'cover_numbering', 'bgremover', 'upscale'] as const) {
+    it('thao tác file/position-dependent + AI ảnh + op chưa hook (ocr/overlay) → recordable=false', () => {
+        // ocr (multipart chưa nối), watermark/stick_text_number (overlay chưa hook +
+        // chưa có runner) → recordable=false để không hứa phát lại được (2026-07-08).
+        for (const opId of ['object_edit', 'crop', 'page_index_op', 'datamerge', 'numbering', 'cover_numbering', 'bgremover', 'upscale', 'ocr', 'watermark', 'stick_text_number'] as const) {
             expect(isRecordableOp(opId)).toBe(false);
         }
     });
 
     it('bình bài (kể cả tem/cnc, dò lại hình lúc phát) + tạo đường cắt + prepress → recordable=true', () => {
-        for (const opId of ['booklet', 'nup', 'sticker_imposer', 'cnc_imposer', 'sticker_dieline', 'convertcolors', 'hairlines', 'pdfx', 'optimize', 'watermark', 'stick_text_number'] as const) {
+        for (const opId of ['booklet', 'nup', 'sticker_imposer', 'cnc_imposer', 'sticker_dieline', 'convertcolors', 'hairlines', 'pdfx', 'optimize'] as const) {
             expect(isRecordableOp(opId)).toBe(true);
         }
     });
