@@ -28,6 +28,50 @@ const COMPARE = [
   { feat: 'PDF Version', x1a: '1.3', x4: '1.6' },
 ];
 
+// Giải thích chi tiết từng mục kiểm tra — click icon "?" để mở modal. Khớp theo
+// check.id trả từ backend (pdfx_export.check_compliance).
+// autoFix: xuất PDF/X (Ghostscript) có TỰ sửa mục này không. TrimBox = false vì
+// lệnh GS hiện tại không sinh TrimBox — phải đặt thủ công trước (Set Page Boxes).
+interface CheckHelp { what: string; why: string; fix: string; autoFix: boolean; }
+const CHECK_HELP: Record<string, CheckHelp> = {
+  FONTS_EMBEDDED: {
+    what: 'Kiểm tra mọi phông chữ trong file đã được nhúng (embed) vào PDF hay chưa.',
+    why: 'Nếu phông không nhúng, máy RIP của nhà in không có phông đó sẽ thay bằng phông khác — chữ bị nhảy phông, sai khoảng cách, thậm chí mất chữ. Chuẩn PDF/X bắt buộc nhúng toàn bộ phông.',
+    fix: 'Khi bấm "Xuất PDF/X", hệ thống tự nhúng toàn bộ phông (kể cả phông hệ thống) vào file.',
+    autoFix: true,
+  },
+  TRIMBOX_EXISTS: {
+    what: 'Kiểm tra mỗi trang đã khai báo TrimBox (khung thành phẩm — đường cắt cuối) hay chưa.',
+    why: 'TrimBox cho nhà in biết chính xác mép cắt thành phẩm nằm ở đâu, phân biệt với phần bleed (chờm) bị xén bỏ. Thiếu TrimBox, máy bình/cắt không biết cắt ở đâu.',
+    fix: 'Đặt TrimBox trước bằng công cụ "Set Page Boxes" trong Preflight. Xuất PDF/X không tự tạo TrimBox nếu file gốc chưa có.',
+    autoFix: false,
+  },
+  CMYK_ONLY: {
+    what: 'Kiểm tra file chỉ dùng hệ màu CMYK, không còn màu RGB.',
+    why: 'Máy in offset in bằng 4 mực CMYK. Màu RGB (từ ảnh chụp, màn hình) khi in ra sẽ lệch màu khó lường vì phải quy đổi tại máy RIP. PDF/X-1a bắt buộc CMYK để màu in đúng như duyệt.',
+    fix: 'Khi xuất PDF/X-1a, hệ thống tự chuyển toàn bộ RGB sang CMYK theo hồ sơ màu (ICC) đã cấu hình.',
+    autoFix: true,
+  },
+  NO_TRANSPARENCY: {
+    what: 'Kiểm tra file không còn hiệu ứng trong suốt (transparency) chưa được làm phẳng.',
+    why: 'Transparency (đổ bóng, mờ chồng lớp) có thể hiển thị khác nhau trên từng máy RIP cũ, gây sai lệch so với bản duyệt. PDF/X-1a yêu cầu làm phẳng (flatten) để kết quả in ổn định.',
+    fix: 'Khi xuất PDF/X-1a, hệ thống tự làm phẳng mọi vùng transparency thành ảnh/vector đặc.',
+    autoFix: true,
+  },
+  OUTPUT_INTENT: {
+    what: 'Kiểm tra file đã gắn Output Intent — hồ sơ màu ICC mô tả điều kiện in đích.',
+    why: 'Output Intent cho nhà in biết file được chuẩn màu theo tiêu chuẩn nào (vd Coated FOGRA39). Đây là "chứng minh thư màu" của file, bắt buộc trong mọi chuẩn PDF/X để tái tạo màu chính xác.',
+    fix: 'Khi xuất PDF/X, hệ thống tự gắn Output Intent (ưu tiên FOGRA39, hoặc CMYK mặc định) vào file.',
+    autoFix: true,
+  },
+  PDF_VERSION: {
+    what: 'Kiểm tra phiên bản PDF phù hợp với chuẩn đã chọn (X-1a cần 1.3, X-4 cần 1.6).',
+    why: 'Mỗi chuẩn PDF/X gắn với một phiên bản PDF nhất định để đảm bảo chỉ dùng những tính năng máy RIP hỗ trợ. Sai phiên bản có thể chứa tính năng chuẩn không cho phép.',
+    fix: 'Khi xuất PDF/X, Ghostscript tự hạ/nâng đúng phiên bản PDF theo chuẩn — nên mục này luôn được xử lý tự động.',
+    autoFix: true,
+  },
+};
+
 export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
   const [fileId, setFileId] = useState('');
   const [standard, setStandard] = useState<'x1a' | 'x4'>('x4');
@@ -37,8 +81,17 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState('');
   const [isStandardOpen, setIsStandardOpen] = useState(true);
+  const [helpFor, setHelpFor] = useState<CheckItem | null>(null);
 
   useEffect(() => { setFileId(''); setChecks([]); setCompliance(null); setStatus(''); }, [pdfFile]);
+
+  // Esc đóng modal giải thích (chỉ gắn listener khi modal đang mở).
+  useEffect(() => {
+    if (!helpFor) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setHelpFor(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [helpFor]);
 
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
@@ -170,22 +223,38 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
                 c.passed ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/10 text-emerald-800 dark:text-emerald-200'
                 : 'border-red-500 bg-red-50 dark:bg-red-900/10 text-red-800 dark:text-red-200'
               }`}>
-                <div className="flex items-center justify-between font-bold text-[11px]">
+                <div className="flex items-center justify-between font-bold text-[11px] gap-2">
                   <span>{c.passed ? '✅' : '❌'} {c.label}</span>
+                  {CHECK_HELP[c.id] && (
+                    <button
+                      onClick={() => setHelpFor(c)}
+                      title="Giải thích lỗi này"
+                      className="shrink-0 w-4 h-4 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] font-bold opacity-70 hover:opacity-100 transition-opacity">
+                      ?
+                    </button>
+                  )}
                 </div>
                 <span className="text-[10px] opacity-90 leading-snug">{c.detail}</span>
               </div>
             ))}
           </div>
 
-          {compliance && (
-            <div className={`text-center py-2 text-[12px] font-bold ${compliance.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
-              {compliance.passed
-                ? `✅ File đạt chuẩn ${compliance.standard_label}!`
-                : `⚠️ ${compliance.passed_checks}/${compliance.total_checks} đạt — Xuất PDF/X sẽ tự động sửa`
-              }
-            </div>
-          )}
+          {compliance && (() => {
+            // Mục chưa đạt mà Ghostscript KHÔNG tự sửa khi xuất (vd TrimBox) → phải
+            // xử lý thủ công trước. Không hứa "tự sửa" nếu còn mục như vậy.
+            const manualFixes = checks.filter(c => !c.passed && CHECK_HELP[c.id]?.autoFix === false);
+            const allAutoFixable = manualFixes.length === 0;
+            return (
+              <div className={`text-center py-2 text-[12px] font-bold ${compliance.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                {compliance.passed
+                  ? `✅ File đạt chuẩn ${compliance.standard_label}!`
+                  : allAutoFixable
+                    ? `⚠️ ${compliance.passed_checks}/${compliance.total_checks} đạt — Xuất PDF/X sẽ tự động sửa`
+                    : `⚠️ ${compliance.passed_checks}/${compliance.total_checks} đạt — Cần xử lý thủ công trước: ${manualFixes.map(c => c.label).join(', ')} (bấm ? để xem cách). Các mục còn lại sẽ tự sửa khi xuất.`
+                }
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -201,6 +270,37 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
         <div className={`p-3 rounded-lg border ${status.startsWith('✅') ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
           <h4 className={`text-[11px] font-bold ${status.startsWith('✅') ? 'text-emerald-600' : 'text-red-600'}`}>{status}</h4>
           {status.startsWith('✅') && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">✅ File đã được cập nhật trên Viewer.</p>}
+        </div>
+      )}
+
+      {/* ═══ MODAL GIẢI THÍCH MỤC KIỂM TRA ═══ */}
+      {helpFor && CHECK_HELP[helpFor.id] && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setHelpFor(null)}>
+          <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl max-w-md w-full max-h-[85vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3 p-4 border-b border-slate-100 dark:border-white/10">
+              <h3 className="text-[14px] font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                <span>{helpFor.passed ? '✅' : '❌'}</span> {helpFor.label}
+              </h3>
+              <button onClick={() => setHelpFor(null)}
+                className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-700 hover:text-slate-600 transition-colors">✕</button>
+            </div>
+            <div className="p-4 space-y-3 text-[12px] leading-relaxed text-slate-600 dark:text-zinc-300">
+              <div>
+                <h4 className="font-bold text-slate-700 dark:text-zinc-200 mb-1">Kiểm tra gì?</h4>
+                <p>{CHECK_HELP[helpFor.id].what}</p>
+              </div>
+              <div>
+                <h4 className="font-bold text-slate-700 dark:text-zinc-200 mb-1">Vì sao quan trọng?</h4>
+                <p>{CHECK_HELP[helpFor.id].why}</p>
+              </div>
+              <div className="rounded-lg bg-teal-50 dark:bg-teal-500/10 border border-teal-100 dark:border-teal-500/20 p-3">
+                <h4 className="font-bold text-teal-700 dark:text-teal-300 mb-1">Cách khắc phục</h4>
+                <p className="text-teal-800 dark:text-teal-200">{CHECK_HELP[helpFor.id].fix}</p>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
