@@ -189,6 +189,11 @@ if (-not $SkipNuitka) {
         --nofollow-import-to=test `
         --nofollow-import-to=pip `
         --nofollow-import-to=setuptools `
+        --nofollow-import-to=torch `
+        --nofollow-import-to=torchvision `
+        --nofollow-import-to=torchaudio `
+        --nofollow-import-to=basicsr `
+        --nofollow-import-to=realesrgan `
         --windows-console-mode=disable `
         --remove-output `
         --assume-yes-for-downloads `
@@ -238,7 +243,12 @@ if (Test-Path $GS_SRC) {
     Write-Host "  Copying Ghostscript..." -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $GS_DEST | Out-Null
     Copy-Item -Recurse -Force "$GS_SRC\*" $GS_DEST
-    Write-Host "  Ghostscript bundled." -ForegroundColor Green
+    # Loai doc/examples (~25MB) -- chi la tai lieu, runtime GS khong dung.
+    foreach ($sub in @("doc", "examples")) {
+        $p = Join-Path $GS_DEST $sub
+        if (Test-Path $p) { Remove-Item -Recurse -Force $p }
+    }
+    Write-Host "  Ghostscript bundled (doc/examples pruned)." -ForegroundColor Green
 } else {
     Write-Host "ERROR: Ghostscript not found at $GS_SRC." -ForegroundColor Red
     Write-Host "  Ghostscript is REQUIRED for CMYK separations / PDF-X export." -ForegroundColor Red
@@ -253,7 +263,12 @@ if (Test-Path $TESS_SRC) {
     Write-Host "  Copying Tesseract-OCR..." -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $TESS_DEST | Out-Null
     Copy-Item -Recurse -Force "$TESS_SRC\*" $TESS_DEST
-    Write-Host "  Tesseract bundled." -ForegroundColor Green
+    # Prune training/utility tools: app chi CHAY OCR (tesseract.exe), khong huan luyen.
+    # Xoa ~42MB exe training (lstmtraining, text2image, mftraining...) + uninstaller.
+    # GIU tesseract.exe + moi DLL (libtesseract, leptonica, icu) + tessdata/.
+    $tessKeepExe = "tesseract.exe"
+    Get-ChildItem -Path $TESS_DEST -Filter *.exe -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $tessKeepExe } | Remove-Item -Force -ErrorAction SilentlyContinue
+    Write-Host "  Tesseract bundled (pruned training tools)." -ForegroundColor Green
 } else {
     Write-Host "  WARNING: Local Tesseract not found at $TESS_SRC. It will not be bundled." -ForegroundColor Yellow
 }
