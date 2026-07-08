@@ -351,13 +351,17 @@ export function computeSpreadGrid(
     pressW: number, pressH: number,
     gapXPt: number, gapYPt: number,
     marginLeftPt: number, marginRightPt: number, marginTopPt: number, gripperPt: number,
+    marginBottomPt: number = 0,
 ): SpreadGridLayout {
+    // Lề dưới thực tế = giá trị LỚN NHẤT giữa gripperMargin và marginBottom.
+    // gripperMargin là vùng máy kẹp (bắt buộc trống), marginBottom là lề do user đặt.
+    const effectiveBottomPt = Math.max(gripperPt, marginBottomPt);
     const hasPress = pressW > 0 && pressH > 0;
     const sheetW = hasPress ? pressW : spreadW + marginLeftPt + marginRightPt;
-    const sheetH = hasPress ? pressH : spreadH + gripperPt + marginTopPt;
+    const sheetH = hasPress ? pressH : spreadH + effectiveBottomPt + marginTopPt;
 
     const usableW0 = sheetW - marginLeftPt - marginRightPt;
-    const usableH0 = sheetH - gripperPt - marginTopPt;
+    const usableH0 = sheetH - effectiveBottomPt - marginTopPt;
     const gridRatio = spreadW / spreadH;
     const sheetRatio = usableW0 / usableH0;
     let isRotated = false;
@@ -368,13 +372,13 @@ export function computeSpreadGrid(
     const frameH = isRotated ? sheetW : sheetH;
 
     const usableW = frameW - marginLeftPt - marginRightPt;
-    const usableH = frameH - gripperPt - marginTopPt;
+    const usableH = frameH - effectiveBottomPt - marginTopPt;
     const cols = Math.max(1, Math.floor((usableW + gapXPt) / (spreadW + gapXPt)));
     const rows = Math.max(1, Math.floor((usableH + gapYPt) / (spreadH + gapYPt)));
     const gridW = cols * spreadW + (cols - 1) * gapXPt;
     const gridH = rows * spreadH + (rows - 1) * gapYPt;
     const oX = marginLeftPt + (usableW - gridW) / 2;
-    const oY = gripperPt + (usableH - gridH) / 2;
+    const oY = effectiveBottomPt + (usableH - gridH) / 2;
     const cellPos = (c: number, r: number) => ({
         x: oX + c * (spreadW + gapXPt),
         y: oY + (rows - 1 - r) * (spreadH + gapYPt),
@@ -402,6 +406,7 @@ function buildPhase2(
     const marginLeftPt = ((settings as any).marginLeft || 0) * MM_TO_POINTS;
     const marginRightPt = ((settings as any).marginRight || 0) * MM_TO_POINTS;
     const marginTopPt = ((settings as any).marginTop || 0) * MM_TO_POINTS;
+    const marginBottomPt = ((settings as any).marginBottom || 0) * MM_TO_POINTS;
     const gripperPt = ((settings as any).gripperMargin || 0) * MM_TO_POINTS;
     const isEven = (settings as any).spreadDistribution === 'even';
 
@@ -468,13 +473,14 @@ function buildPhase2(
     };
 
     // usableW/H trong khung logic (fold_pattern dùng để căn giữa lưới even).
+    const effectiveBottomPt = Math.max(gripperPt, marginBottomPt);
     const usableW = frameW - marginLeftPt - marginRightPt;
-    const usableH = frameH - gripperPt - marginTopPt;
+    const usableH = frameH - effectiveBottomPt - marginTopPt;
 
     // Lưới đơn (step_repeat / cut_stack) — dùng CHUNG computeSpreadGrid với preview.
     const simpleGrid = computeSpreadGrid(
         spreadW, spreadH, pressW, pressH,
-        gapXPt, gapYPt, marginLeftPt, marginRightPt, marginTopPt, gripperPt,
+        gapXPt, gapYPt, marginLeftPt, marginRightPt, marginTopPt, gripperPt, marginBottomPt,
     );
     const simpleCols = simpleGrid.cols;
     const simpleRows = simpleGrid.rows;
