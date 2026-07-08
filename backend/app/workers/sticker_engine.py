@@ -6,6 +6,9 @@ import io
 import os
 import zlib
 import math
+import time
+import tempfile
+from concurrent.futures import ProcessPoolExecutor
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 import logging
@@ -109,6 +112,168 @@ def _inpaint_color_fill(sub_img, sub_csm, sub_bleed, max_dim: int = 4000):
     return out
 
 
+def _band_tiles(band, band_radius: int, tile: int = 1024):
+    """Sinh (crop_slice, core_slice) cho MỖI ô tile×tile GIAO với band.
+
+    Mỗi ô lõi (core) là khối tile×tile; crop = core NỚI halo `band_radius` mọi phía
+    (clamp trong biên). Chỉ trả ô mà band THỰC SỰ chạm (bỏ ô ruột → tăng tốc).
+    core_slice trả về Ở TOẠ ĐỘ TUYỆT ĐỐI (để ghi vào out); kèm offset của core
+    TRONG crop để driver ánh xạ index.
+
+    Trả: (crop_y0, crop_y1, crop_x0, crop_x1, core_y0, core_y1, core_x0, core_x1).
+    """
+    ys, xs = np.where(band > 0)
+    if ys.size == 0:
+        return
+    h, w = band.shape[:2]
+    by0, by1 = int(ys.min()), int(ys.max()) + 1
+    bx0, bx1 = int(xs.min()), int(xs.max()) + 1
+    for cy0 in range(by0, by1, tile):
+        cy1 = min(cy0 + tile, by1)
+        for cx0 in range(bx0, bx1, tile):
+            cx1 = min(cx0 + tile, bx1)
+            # Bỏ ô nếu band không chạm khối core này (ô ruột) → không tính.
+            if np.count_nonzero(band[cy0:cy1, cx0:cx1]) == 0:
+                continue
+            gy0 = max(0, cy0 - band_radius)
+            gy1 = min(h, cy1 + band_radius)
+            gx0 = max(0, cx0 - band_radius)
+            gx1 = min(w, cx1 + band_radius)
+            yield (gy0, gy1, gx0, gx1, cy0, cy1, cx0, cx1)
+
+
+def _banded_nearest_fill(csm, img, ring, band, band_radius: int, out, tile: int = 1024) -> bool:
+    """'Kéo giãn mép ảnh' giới hạn theo band (dải quanh ring) thay vì cả trang.
+
+    Với mỗi ô có band: crop nới halo `band_radius`, chạy distance_transform_edt trên
+    crop, GHI màu nearest chỉ vào vùng band[core]>0. Guard: nếu pixel band trong core
+    có khoảng cách tới nguồn ≥ band_radius → nguồn thật có thể NGOÀI halo → trả False
+    (caller fallback về _nearest_color_fill full-ROI, KHÔNG bao giờ tệ hơn).
+
+    CHỨNG MINH giống hệt: pixel hiển thị = ring>0 ⊂ band; band[core] luôn ⊂ band nên
+    được ghi. Guard đảm bảo crop chứa trọn nguồn gần nhất toàn cục → idx trùng bản full.
+    """
+    from scipy.ndimage import distance_transform_edt
+    for (gy0, gy1, gx0, gx1, cy0, cy1, cx0, cx1) in _band_tiles(band, band_radius, tile):
+        sub_src = csm[gy0:gy1, gx0:gx1]
+        # Không có nguồn màu trong crop → không thể nearest-fill đúng → fallback.
+        if np.count_nonzero(sub_src) == 0:
+            return False
+        dist, idx = distance_transform_edt(sub_src == 0, return_indices=True)
+        # Vùng band cần ghi trong toạ độ crop.
+        cyl, cyr = cy0 - gy0, cy1 - gy0
+        cxl, cxr = cx0 - gx0, cx1 - gx0
+        core_band = band[cy0:cy1, cx0:cx1] > 0
+        if not core_band.any():
+            continue
+        # Guard CHỈ trên RING (pixel HIỂN THỊ) — KHÔNG phải band. Band rộng thêm
+        # band_radius ngoài ring nên pixel band ngoài cùng luôn cách nguồn ≥ band_radius
+        # → guard-trên-band LUÔN trip (tối ưu vô dụng, vd tem tròn có lỗ). Chỉ ring cần
+        # khớp global (cách nguồn < band_radius). Pixel band ngoài-ring KHÔNG hiển thị
+        # (SMask=ring), chỉ lấp màu liên tục chống sợi xám → không cần khớp global.
+        core_ring = ring[cy0:cy1, cx0:cx1] > 0
+        core_dist = dist[cyl:cyr, cxl:cxr]
+        if core_ring.any() and float(core_dist[core_ring].max()) >= band_radius:
+            return False
+        sub_img = img[gy0:gy1, gx0:gx1]
+        filled = sub_img[idx[0], idx[1]]
+        core_out = out[cy0:cy1, cx0:cx1]
+        core_filled = filled[cyl:cyr, cxl:cxr]
+        core_out[core_band] = core_filled[core_band]
+    return True
+
+
+def _banded_inpaint_fill(img, csm, bleed, ring, band, band_radius: int, out, tile: int = 1024) -> bool:
+    """'Làm mượt thông minh' giới hạn theo band. Mỗi ô gọi lại _inpaint_color_fill
+    trên crop (nới halo band_radius), ghi kết quả chỉ vào band[core]>0.
+
+    KHÔNG bitwise-identical (NS là PDE) nhưng giống thị giác: mask inpaint =
+    bleed−csm nằm trong band_radius của ring; halo đủ xa (~45px ≫ radius 3) để nhiễu
+    biên không chạm pixel ring. Guard EDT (như nearest) → fallback full-ROI khi rủi ro.
+    """
+    from scipy.ndimage import distance_transform_edt
+    for (gy0, gy1, gx0, gx1, cy0, cy1, cx0, cx1) in _band_tiles(band, band_radius, tile):
+        sub_csm = csm[gy0:gy1, gx0:gx1]
+        if np.count_nonzero(sub_csm) == 0:
+            return False
+        core_band = band[cy0:cy1, cx0:cx1] > 0
+        if not core_band.any():
+            continue
+        # Guard CHỈ trên RING (pixel hiển thị), KHÔNG phải band — xem giải thích ở
+        # _banded_nearest_fill. Guard-trên-band luôn trip vì band rộng hơn ring band_radius.
+        core_ring = ring[cy0:cy1, cx0:cx1] > 0
+        dist = distance_transform_edt(sub_csm == 0)
+        cyl, cyr = cy0 - gy0, cy1 - gy0
+        cxl, cxr = cx0 - gx0, cx1 - gx0
+        if core_ring.any() and float(dist[cyl:cyr, cxl:cxr][core_ring].max()) >= band_radius:
+            return False
+        sub_img = img[gy0:gy1, gx0:gx1]
+        sub_bleed = bleed[gy0:gy1, gx0:gx1]
+        filled = _inpaint_color_fill(sub_img, sub_csm, sub_bleed)
+        core_out = out[cy0:cy1, cx0:cx1]
+        core_filled = filled[cyl:cyr, cxl:cxr]
+        core_out[core_band] = core_filled[core_band]
+    return True
+
+
+# ── Ngưỡng song song ─────────────────────────────────────────────────────
+# Overhead spawn trên Windows ~2-3s/worker (child re-import cv2/scipy/skimage/
+# pikepdf/pdfium). Với ~2s/trang, break-even ≈ 6 trang. File < ngưỡng chạy tuần
+# tự tại chỗ (không spawn) để không chậm hơn.
+_STICKER_PARALLEL_MIN_PAGES = 6
+
+
+def _n_pages_should_parallelize(n_pages: int) -> bool:
+    """True nếu nên fan-out song song (đủ nhiều trang để bù overhead spawn)."""
+    return n_pages >= _STICKER_PARALLEL_MIN_PAGES
+
+
+def _process_sticker_chunk(args: dict):
+    """Worker top-level (BẮT BUỘC picklable + importable cho Windows spawn).
+
+    Mỗi tiến trình con tạo StickerEngine RIÊNG (self.scale mutate per-trang nên
+    KHÔNG chia sẻ instance) và gọi lại process_pdf với _page_subset = dải trang
+    của chunk. process_pdf ở chế độ worker trả MẢNH THÔ:
+        (chunk_pdf_bytes, all_pages_meta, pages_no_dieline_global, any_dieline)
+    Trả kèm chunk_idx để orchestrator sắp đúng thứ tự (dù pool.map đã giữ thứ tự,
+    vẫn trả để phòng thủ + dễ log).
+    """
+    chunk_idx = args["chunk_idx"]
+    # OVERSUBSCRIPTION FIX: OpenCV/BLAS tự đa luồng (cv2.getNumThreads=số nhân). Chạy
+    # W worker mà mỗi worker vẫn dùng full nhân → W×nhân luồng chen nhau trên số nhân
+    # có hạn → thrashing (đo thực: 6 worker chỉ nhanh 2x thay vì ~6x). Ghim mỗi worker
+    # về ÍT luồng (orchestrator tính threads_per_worker ≈ nhân/W) để tổng luồng ≈ nhân.
+    _tpw = str(args.get("threads_per_worker", 1))
+    for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                 "NUMEXPR_NUM_THREADS", "OPENCV_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        os.environ[_var] = _tpw
+    try:
+        cv2.setNumThreads(int(_tpw))
+    except Exception:
+        pass
+    engine = StickerEngine(dpi=args["dpi"], debug=args["debug"])
+    result = engine.process_pdf(
+        input_path=args["input_path"],
+        output_path="",  # worker mode: KHÔNG ghi ra đĩa, trả bytes
+        cut_mode=args["cut_mode"],
+        offset_mm=args["offset_mm"],
+        corner_style=args["corner_style"],
+        cut_color=args["cut_color"],
+        bleed_mm=args["bleed_mm"],
+        fill_holes=args["fill_holes"],
+        remove_white_bg=args["remove_white_bg"],
+        bleed_color_type=args["bleed_color_type"],
+        solid_bleed_color=args["solid_bleed_color"],
+        draw_cut_contour=args["draw_cut_contour"],
+        rectangle_mode=args["rectangle_mode"],
+        edge_bite_mm=args["edge_bite_mm"],
+        cut_first_page_only=args["cut_first_page_only"],
+        _page_subset=args["page_indices"],
+    )
+    # result = (bytes, metas, pages_no_dieline, any_dieline)
+    return (chunk_idx, result)
+
+
 class StickerEngine:
     def __init__(self, dpi: int = 300, debug: bool = False):
         self.dpi = dpi
@@ -133,8 +298,14 @@ class StickerEngine:
         draw_cut_contour: bool = True,
         rectangle_mode: bool = False,
         edge_bite_mm: float = 0.0,
-        cut_first_page_only: bool = False
+        cut_first_page_only: bool = False,
+        _page_subset: list = None,
     ) -> tuple:
+        # _page_subset: khi != None, CHỈ xử lý các trang có index trong list (theo
+        # đúng thứ tự truyền vào) và lưu output ra output_path. Dùng cho worker song
+        # song — mỗi tiến trình con xử lý một dải trang liền kề rồi trả file chunk.
+        # output_path lúc đó là file chunk tạm. page_idx trong log/meta vẫn là index
+        # GLOBAL (index thật trong file gốc) để concat + cảnh báo trang đúng số.
         debug_step = "Init"
         doc_in_pdfium = None
         doc_in_pike = None
@@ -143,7 +314,25 @@ class StickerEngine:
             debug_step = "Open Original PDF"
             doc_in_pdfium = pdfium.PdfDocument(input_path)
             doc_in_pike = pikepdf.Pdf.open(input_path)
-            
+
+            # ── ORCHESTRATOR: song song hóa khi gọi top-level + file nhiều trang ──
+            # _page_subset None = gọi top-level (không phải worker). File >= ngưỡng →
+            # chia dải trang liền kề cho nhiều tiến trình con, mỗi con tự mở lại file
+            # + xử lý chunk + trả file PDF, rồi merge ở đây. Overhead spawn Windows
+            # ~2-3s/worker nên file nhỏ (< ngưỡng) chạy tuần tự tại chỗ (rơi xuống dưới).
+            if _page_subset is None and _n_pages_should_parallelize(len(doc_in_pdfium)):
+                doc_in_pdfium.close(); doc_in_pdfium = None
+                doc_in_pike.close(); doc_in_pike = None
+                return self._process_parallel(
+                    input_path=input_path, output_path=output_path,
+                    cut_mode=cut_mode, offset_mm=offset_mm, corner_style=corner_style,
+                    cut_color=cut_color, bleed_mm=bleed_mm, fill_holes=fill_holes,
+                    remove_white_bg=remove_white_bg, bleed_color_type=bleed_color_type,
+                    solid_bleed_color=solid_bleed_color, draw_cut_contour=draw_cut_contour,
+                    rectangle_mode=rectangle_mode, edge_bite_mm=edge_bite_mm,
+                    cut_first_page_only=cut_first_page_only,
+                )
+
             debug_step = "Create Output PDF"
             doc_out = pikepdf.Pdf.new()
             
@@ -166,8 +355,16 @@ class StickerEngine:
             all_pages_meta = []
             any_dieline_found = False
             pages_no_dieline = []
-            
-            for page_idx in range(len(doc_in_pdfium)):
+
+            import time as _time
+            _n_pages = len(doc_in_pdfium)
+            # Danh sách trang cần xử lý: subset (worker song song) hoặc toàn bộ.
+            _page_list = list(_page_subset) if _page_subset is not None else list(range(_n_pages))
+            logger.warning("[STICKER-TIMING] start: %d/%d page(s), bleed_color_type=%s rectangle_mode=%s bleed_mm=%.2f",
+                           len(_page_list), _n_pages, bleed_color_type, rectangle_mode, bleed_mm)
+
+            for page_idx in _page_list:
+                _t_page = _time.perf_counter()
                 debug_step = f"Rasterize Page {page_idx}"
                 page_in = doc_in_pdfium[page_idx]
                 page_in_pike = doc_in_pike.pages[page_idx]
@@ -210,60 +407,72 @@ class StickerEngine:
                     logger.warning(">>> PARAMS: cut_mode=%s offset_mm=%.2f bleed_mm=%.2f corner_style=%s remove_white_bg=%s bleed_color_type=%s fill_holes=%s", cut_mode, offset_mm, bleed_mm, corner_style, remove_white_bg, bleed_color_type, fill_holes)
                     logger.warning(">>> IMAGE: shape=%s has_alpha=%s", img.shape, has_alpha)
                 
-                if has_alpha:
-                    base_mask = img[:, :, 3].copy()
+                # RECTANGLE MODE: shape ĐÃ biết là cả page rect (nhánh dòng ~404 dựng
+                # dieline/cut/bleed_outer từ page bbox). Toàn bộ pipeline mask dưới đây
+                # (HSV/connectedComponents/fill_holes/GaussianBlur/skimage find_contours)
+                # là THỪA — chỉ cần mask full-page. `contours` không dùng ở nhánh rect.
+                # Bỏ qua giúp rectangle nhanh hẳn (audit tốc độ 2026-07-08).
+                # LƯU Ý: rect mode bỏ qua remove_white_bg/alpha — đúng ngữ nghĩa "shape
+                # là cả trang"; đừng dựa auto-trim trắng khi rectangle_mode=True.
+                if rectangle_mode:
+                    _full = np.full(img.shape[:2], 255, dtype=np.uint8)
+                    base_mask = raw_mask = mask = aa_mask = _full
+                    contours = []
                 else:
-                    if remove_white_bg:
-                        hsv = cv2.cvtColor(img[:,:,:3], cv2.COLOR_RGB2HSV)
-                        # Ngưỡng nới nhẹ (V>=185, S<=40) so với cũ (200/30) để bắt cả nền
-                        # kem/ngà/xám rất nhạt (trước lọt vì V<200 hoặc S>30 → vẫn dò ra khối nền).
-                        lower_white = np.array([0, 0, 185])
-                        upper_white = np.array([180, 40, 255])
-                        white_mask = cv2.inRange(hsv, lower_white, upper_white)
-                        # CHỈ bỏ vùng trắng NỐI với biên ảnh (nền thật) — dùng connected-components,
-                        # giữ lại các mảng trắng chạm mép. Chi tiết sáng/pastel/xám nhạt NẰM GIỮA
-                        # artwork (không chạm biên) được GIỮ → không đục lỗ nội dung như ngưỡng cứng
-                        # cũ (nới ngưỡng mà không lọc-theo-biên sẽ đục thủng artwork nhạt màu).
-                        num_lbl, labels = cv2.connectedComponents(white_mask)
-                        if num_lbl > 1:
-                            border_labels = set(labels[0, :]) | set(labels[-1, :]) | set(labels[:, 0]) | set(labels[:, -1])
-                            border_labels.discard(0)
-                            if border_labels:
-                                bg_white = np.isin(labels, list(border_labels)).astype(np.uint8) * 255
+                    if has_alpha:
+                        base_mask = img[:, :, 3].copy()
+                    else:
+                        if remove_white_bg:
+                            hsv = cv2.cvtColor(img[:,:,:3], cv2.COLOR_RGB2HSV)
+                            # Ngưỡng nới nhẹ (V>=185, S<=40) so với cũ (200/30) để bắt cả nền
+                            # kem/ngà/xám rất nhạt (trước lọt vì V<200 hoặc S>30 → vẫn dò ra khối nền).
+                            lower_white = np.array([0, 0, 185])
+                            upper_white = np.array([180, 40, 255])
+                            white_mask = cv2.inRange(hsv, lower_white, upper_white)
+                            # CHỈ bỏ vùng trắng NỐI với biên ảnh (nền thật) — dùng connected-components,
+                            # giữ lại các mảng trắng chạm mép. Chi tiết sáng/pastel/xám nhạt NẰM GIỮA
+                            # artwork (không chạm biên) được GIỮ → không đục lỗ nội dung như ngưỡng cứng
+                            # cũ (nới ngưỡng mà không lọc-theo-biên sẽ đục thủng artwork nhạt màu).
+                            num_lbl, labels = cv2.connectedComponents(white_mask)
+                            if num_lbl > 1:
+                                border_labels = set(labels[0, :]) | set(labels[-1, :]) | set(labels[:, 0]) | set(labels[:, -1])
+                                border_labels.discard(0)
+                                if border_labels:
+                                    bg_white = np.isin(labels, list(border_labels)).astype(np.uint8) * 255
+                                else:
+                                    bg_white = np.zeros_like(white_mask)
                             else:
                                 bg_white = np.zeros_like(white_mask)
+                            base_mask = cv2.bitwise_not(bg_white)
                         else:
-                            bg_white = np.zeros_like(white_mask)
-                        base_mask = cv2.bitwise_not(bg_white)
+                            base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
+
+                    if remove_white_bg:
+                        fringe_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                        base_mask = cv2.erode(base_mask, fringe_kernel)
+
+                    raw_mask = base_mask.copy()
+
+                    if fill_holes:
+                        contours_mask, _ = cv2.findContours(base_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        cv2.drawContours(base_mask, contours_mask, -1, 255, cv2.FILLED)
+
+                    _, mask = cv2.threshold(base_mask, 10, 255, cv2.THRESH_BINARY)
+
+                    blur_size = 7 if corner_style == "round" else 1
+                    if blur_size > 1:
+                        aa_mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
                     else:
-                        base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
-                
-                if remove_white_bg:
-                    fringe_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                    base_mask = cv2.erode(base_mask, fringe_kernel)
-                    
-                raw_mask = base_mask.copy()
-                    
-                if fill_holes:
-                    contours_mask, _ = cv2.findContours(base_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    cv2.drawContours(base_mask, contours_mask, -1, 255, cv2.FILLED)
+                        aa_mask = mask.copy()
+                        clean_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                        aa_mask = cv2.morphologyEx(aa_mask, cv2.MORPH_OPEN, clean_kernel)
+                        aa_mask = cv2.morphologyEx(aa_mask, cv2.MORPH_CLOSE, clean_kernel)
 
-                _, mask = cv2.threshold(base_mask, 10, 255, cv2.THRESH_BINARY)
+                    aa_mask_padded = np.pad(aa_mask, pad_width=1, mode='constant', constant_values=0)
 
-                blur_size = 7 if corner_style == "round" else 1
-                if blur_size > 1:
-                    aa_mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
-                else:
-                    aa_mask = mask.copy()
-                    clean_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                    aa_mask = cv2.morphologyEx(aa_mask, cv2.MORPH_OPEN, clean_kernel)
-                    aa_mask = cv2.morphologyEx(aa_mask, cv2.MORPH_CLOSE, clean_kernel)
-                
-                aa_mask_padded = np.pad(aa_mask, pad_width=1, mode='constant', constant_values=0)
-                
-                debug_step = f"Find Contours Page {page_idx}"
-                from skimage import measure
-                contours = measure.find_contours(aa_mask_padded, 127.5)
+                    debug_step = f"Find Contours Page {page_idx}"
+                    from skimage import measure
+                    contours = measure.find_contours(aa_mask_padded, 127.5)
                 
                 # Hình học phải theo CROPBOX, KHÔNG phải MediaBox: pdfium render và
                 # page.as_form_xobject() đều dùng CropBox (đã verify). Khi file có
@@ -569,30 +778,46 @@ class StickerEngine:
                         _fp_inner = cv2.erode(sticker_footprint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_tuck_px*2+1, _tuck_px*2+1)))
                         bleed_ring = cv2.subtract(bleed_mask, _fp_inner)
                         
+                        # Band = dải quanh ring, đủ rộng để chứa nguồn màu gần nhất của MỌI
+                        # pixel ring (bleed_px ngoài + inset_px trong + tuck + slack). Chỉ tính
+                        # fill trong band thay vì cả trang → nhanh 5-8x mà pixel HIỂN THỊ (ring)
+                        # giống hệt. edge_bite_px ĐÃ nằm trong inset_px (dòng ~570) → KHÔNG cộng lại.
+                        _SAFETY = 4
+                        band_r = int(bleed_px + inset_px + _tuck_px + 1 + _SAFETY)
+                        band_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (band_r*2+1, band_r*2+1))
+                        band = cv2.dilate(bleed_ring, band_kernel)
+
+                        import time as _time
+                        _t_fill = _time.perf_counter()
                         is_bleed_cmyk = False
                         if bleed_color_type == "image":
-                            # 'Kéo giãn mép ảnh' — nearest-color, chỉ chạy trên ROI + hạ mẫu khi lớn.
-                            roi = _bleed_roi_bbox(bleed_mask, margin=8)
+                            # 'Kéo giãn mép ảnh' — nearest-color giới hạn theo band (tile + bỏ ô ruột).
                             bleed_colors = np.zeros_like(padded_img)
-                            if roi is not None:
-                                y0, y1, x0, x1 = roi
-                                bleed_colors[y0:y1, x0:x1] = _nearest_color_fill(
-                                    color_source_mask[y0:y1, x0:x1], padded_img[y0:y1, x0:x1]
-                                )
-                            else:
-                                bleed_colors = _nearest_color_fill(color_source_mask, padded_img)
+                            if not _banded_nearest_fill(color_source_mask, padded_img, bleed_ring, band, band_r, out=bleed_colors):
+                                # Guard tripped (artwork mảnh / nguồn ngoài halo) → full-ROI (không tệ hơn).
+                                roi = _bleed_roi_bbox(bleed_mask, margin=8)
+                                bleed_colors = np.zeros_like(padded_img)
+                                if roi is not None:
+                                    y0, y1, x0, x1 = roi
+                                    bleed_colors[y0:y1, x0:x1] = _nearest_color_fill(
+                                        color_source_mask[y0:y1, x0:x1], padded_img[y0:y1, x0:x1]
+                                    )
+                                else:
+                                    bleed_colors = _nearest_color_fill(color_source_mask, padded_img)
                         elif bleed_color_type == "inpaint":
-                            # 'Làm mượt thông minh' — seed từ color_source_mask (màu thật), inpaint làm mượt.
-                            roi = _bleed_roi_bbox(bleed_mask, margin=8)
+                            # 'Làm mượt thông minh' — inpaint giới hạn theo band (tile + bỏ ô ruột).
                             bleed_colors = np.zeros_like(padded_img)
-                            if roi is not None:
-                                y0, y1, x0, x1 = roi
-                                bleed_colors[y0:y1, x0:x1] = _inpaint_color_fill(
-                                    padded_img[y0:y1, x0:x1],
-                                    color_source_mask[y0:y1, x0:x1], bleed_mask[y0:y1, x0:x1],
-                                )
-                            else:
-                                bleed_colors = _inpaint_color_fill(padded_img, color_source_mask, bleed_mask)
+                            if not _banded_inpaint_fill(padded_img, color_source_mask, bleed_mask, bleed_ring, band, band_r, out=bleed_colors):
+                                roi = _bleed_roi_bbox(bleed_mask, margin=8)
+                                bleed_colors = np.zeros_like(padded_img)
+                                if roi is not None:
+                                    y0, y1, x0, x1 = roi
+                                    bleed_colors[y0:y1, x0:x1] = _inpaint_color_fill(
+                                        padded_img[y0:y1, x0:x1],
+                                        color_source_mask[y0:y1, x0:x1], bleed_mask[y0:y1, x0:x1],
+                                    )
+                                else:
+                                    bleed_colors = _inpaint_color_fill(padded_img, color_source_mask, bleed_mask)
                         else:
                             if len(solid_bleed_color) == 4:
                                 is_bleed_cmyk = True
@@ -602,7 +827,11 @@ class StickerEngine:
                                 bg_canvas = np.zeros_like(padded_img)
                                 bg_canvas[:] = solid_bleed_color
                             bleed_colors = bg_canvas
-                            
+
+                        logger.warning(">>> [TIMING] page=%d fill(%s) took %.3fs | img=%dx%d band_r=%d",
+                                       page_idx, bleed_color_type, _time.perf_counter() - _t_fill,
+                                       padded_img.shape[1], padded_img.shape[0], band_r)
+
                         # KHÔNG mask màu về canvas ĐEN nữa: trước đây bleed_result=zeros
                         # rồi chỉ copy ring → vùng interior (ngoài ring) là ĐEN, tạo cạnh
                         # màu↔đen ở biên trong ring. Khi PDF render nội suy ảnh+SMask ở cạnh
@@ -859,9 +1088,22 @@ class StickerEngine:
                     pages_no_dieline.append(page_idx + 1)
                 
                 all_pages_meta.append(page_meta)
-                    
+                logger.warning("[STICKER-TIMING] page=%d TOTAL %.3fs", page_idx, _time.perf_counter() - _t_page)
+
+            # CHẾ ĐỘ WORKER (song song): trả MẢNH THÔ (bytes + meta các trang của chunk
+            # này + pages_no_dieline GLOBAL 1-based + cờ any_dieline) cho orchestrator gộp,
+            # KHÔNG finalize (không ghi output_path, không dựng final_meta/error/warning —
+            # để orchestrator tổng hợp từ mọi chunk). page_idx trong vòng là index GỐC nên
+            # pages_no_dieline đã là số trang GLOBAL, orchestrator không cần offset.
+            if _page_subset is not None:
+                _buf = io.BytesIO()
+                doc_out.save(_buf)
+                return (_buf.getvalue(), all_pages_meta, pages_no_dieline, any_dieline_found)
+
             debug_step = "Save Output PDF"
+            _t_save = _time.perf_counter()
             doc_out.save(output_path)
+            logger.warning("[STICKER-TIMING] save %.3fs | ALL DONE", _time.perf_counter() - _t_save)
 
             # Watermark (stealth) được áp ở tầng route qua _safe_watermark(license_info),
             # nhất quán với các endpoint pdf-tools khác. Engine KHÔNG có thông tin license
@@ -919,3 +1161,120 @@ class StickerEngine:
             if doc_out:
                 try: doc_out.close()
                 except Exception: pass
+
+    def _process_parallel(self, input_path, output_path, **kw) -> tuple:
+        """Fan-out xử lý trang ra nhiều tiến trình con rồi merge kết quả.
+
+        Chia N trang thành W dải liền kề (contiguous), mỗi worker tạo StickerEngine
+        riêng xử lý một dải (qua _page_subset) và trả file chunk (bytes) + meta. Gộp
+        các chunk theo THỨ TỰ (pikepdf pages.extend, tự kéo spot color /CutContour qua
+        copy_foreign), concat meta, tổng hợp any_dieline + pages_no_dieline rồi tái
+        tạo final_meta/error/warning Y HỆT nhánh tuần tự.
+        """
+        import time as _time
+        import math as _math
+        from concurrent.futures import ProcessPoolExecutor
+        _t_par = _time.perf_counter()
+        cut_mode = kw["cut_mode"]
+
+        _probe = pdfium.PdfDocument(input_path)
+        n_pages = len(_probe)
+        _probe.close()
+
+        available = max(1, (os.cpu_count() or 2) - 1)
+        cap = int(os.environ.get("STICKER_MAX_WORKERS", "8"))
+        n_workers = max(1, min(available, cap, n_pages))
+        chunk_size = max(1, _math.ceil(n_pages / n_workers))
+        chunks = [list(range(i, min(i + chunk_size, n_pages)))
+                  for i in range(0, n_pages, chunk_size)]
+
+        # CHỐNG OVERSUBSCRIPTION LUỒNG: cv2/numpy-BLAS TỰ đa luồng (mặc định = SỐ NHÂN,
+        # vd 16). Nếu mỗi worker vẫn dùng full luồng → n_workers × 16 luồng chen trên
+        # số nhân có hạn = thrashing, chỉ được ~2x thay vì ~n_workers×. Chia đều luồng
+        # cho các worker: mỗi worker ~ tổng_nhân / n_workers (tối thiểu 1). Worker set
+        # cv2.setNumThreads + env BLAS theo số này (đọc từ args["threads_per_worker"]).
+        _total_cores = os.cpu_count() or 2
+        threads_per_worker = max(1, _total_cores // max(1, n_workers))
+
+        logger.warning("[STICKER-TIMING] parallel: %d page(s) -> %d chunk(s) x ~%d, workers=%d, threads/worker=%d",
+                       n_pages, len(chunks), chunk_size, n_workers, threads_per_worker)
+
+        args_list = []
+        for ci, page_indices in enumerate(chunks):
+            args_list.append({
+                "chunk_idx": ci, "page_indices": page_indices,
+                "threads_per_worker": threads_per_worker,
+                "input_path": input_path, "dpi": self.dpi, "debug": self.debug,
+                "cut_mode": cut_mode, "offset_mm": kw["offset_mm"],
+                "corner_style": kw["corner_style"], "cut_color": kw["cut_color"],
+                "bleed_mm": kw["bleed_mm"], "fill_holes": kw["fill_holes"],
+                "remove_white_bg": kw["remove_white_bg"],
+                "bleed_color_type": kw["bleed_color_type"],
+                "solid_bleed_color": kw["solid_bleed_color"],
+                "draw_cut_contour": kw["draw_cut_contour"],
+                "rectangle_mode": kw["rectangle_mode"],
+                "edge_bite_mm": kw["edge_bite_mm"],
+                "cut_first_page_only": kw["cut_first_page_only"],
+            })
+
+        # 1 chunk → chạy tại chỗ (không spawn). Nhiều chunk → pool. pool.map giữ thứ tự.
+        if len(args_list) == 1:
+            results = [_process_sticker_chunk(args_list[0])]
+        else:
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                results = list(pool.map(_process_sticker_chunk, args_list))
+
+        # Sắp theo chunk_idx (phòng thủ) rồi gộp.
+        results.sort(key=lambda r: r[0])
+
+        all_pages_meta = []
+        pages_no_dieline = []
+        any_dieline_found = False
+        final_doc = None
+        try:
+            for _ci, (chunk_bytes, metas, no_dieline, any_die) in results:
+                all_pages_meta.extend(metas)
+                pages_no_dieline.extend(no_dieline)
+                any_dieline_found = any_dieline_found or any_die
+                src = pikepdf.Pdf.open(io.BytesIO(chunk_bytes))
+                if final_doc is None:
+                    final_doc = pikepdf.Pdf.new()
+                final_doc.pages.extend(src.pages)
+                # KHÔNG close src trước khi save: pikepdf giữ tham chiếu foreign object.
+
+            debug_step = "Save Merged Output"
+            final_doc.save(output_path)
+        finally:
+            if final_doc is not None:
+                try: final_doc.close()
+                except Exception: pass
+
+        logger.warning("[STICKER-TIMING] parallel TOTAL %.3fs | merged %d page(s)",
+                       _time.perf_counter() - _t_par, len(all_pages_meta))
+
+        # Tái tạo final_meta/error/warning Y HỆT nhánh tuần tự.
+        final_meta = {}
+        if len(all_pages_meta) > 0 and all_pages_meta[0]:
+            final_meta = all_pages_meta[0].copy()
+        final_meta["pages"] = all_pages_meta
+
+        if cut_mode != "none" and not any_dieline_found:
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            except OSError:
+                pass
+            return False, {
+                "error": (
+                    "Không dò được hình để tạo đường cắt. Hãy bật 'Bỏ nền trắng' "
+                    "nếu nền màu trắng, hoặc kiểm tra lại file (hình quá nhạt/trống)."
+                )
+            }
+        if pages_no_dieline:
+            pages_no_dieline.sort()
+            final_meta["warning"] = (
+                "Một số trang không dò được hình để tạo đường cắt: "
+                + ", ".join(str(p) for p in pages_no_dieline)
+            )
+
+        return True, final_meta

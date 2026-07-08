@@ -36,10 +36,23 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         const loadDoc = async () => {
             setIsLoading(true);
             try {
-                const doc = await pdfjs.getDocument(pdfUrl).promise;
-                if (!cancelled) {
-                    pdfRef.current = doc;
-                    initBookData(doc);
+                const isNative = !!((window as any).__TAURI_INTERNALS__ && pdfFile && (pdfFile as any).path);
+                if (isNative) {
+                    // pdfium (Rust) đọc số trang + khổ trang, KHÔNG qua pdf.js. File sau bù xén
+                    // (CMYK/spot CutContour/SMask) khiến pdf.js throw ngay ở getDocument →
+                    // trước đây flipbook sập ở "cửa" dù pdfium render được (bug 2026-07-08).
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    const meta = await invoke<any>('get_pdf_metadata', { filePath: (pdfFile as any).path });
+                    if (!cancelled) {
+                        pdfRef.current = null;
+                        initBookData(null, meta);
+                    }
+                } else {
+                    const doc = await pdfjs.getDocument(pdfUrl).promise;
+                    if (!cancelled) {
+                        pdfRef.current = doc;
+                        initBookData(doc, null);
+                    }
                 }
             } catch (err) {
                 console.error("Failed to load PDF for Flipbook", err);
@@ -62,7 +75,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isOpen, onClose]);
 
-    const initBookData = async (doc: any) => {
+    const initBookData = async (doc: any, meta: any) => {
         setIsLoading(true);
 
         const effectivePageCount = pageOrder.length;
@@ -106,9 +119,17 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         if (pageOrder.length > 0) {
             const firstValidIndex = pageOrder.find(idx => idx !== -1) || 1;
             try {
-                const page = await doc.getPage(firstValidIndex);
-                const viewport = page.getViewport({ scale: 1.0 });
-                setPageAspectRatio(viewport.width / viewport.height);
+                if (meta) {
+                    // Native (pdfium): lấy khổ trang từ allDims[trang] (widthPt/heightPt).
+                    const dim = meta.allDims?.[String(firstValidIndex)];
+                    const w = dim?.widthPt ?? meta.widthPt;
+                    const h = dim?.heightPt ?? meta.heightPt;
+                    if (w > 0 && h > 0) setPageAspectRatio(w / h);
+                } else {
+                    const page = await doc.getPage(firstValidIndex);
+                    const viewport = page.getViewport({ scale: 1.0 });
+                    setPageAspectRatio(viewport.width / viewport.height);
+                }
             } catch (e) {
                 console.warn('Failed to get page aspect ratio', e);
             }
@@ -180,13 +201,17 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
 
     // Lazy load when page changes
     useEffect(() => {
-        if (!isOpen || !pdfRef.current || bookData.pages.length === 0) return;
-        
+        // Native (Tauri + path): render qua tile.localhost, KHÔNG cần pdfRef (doc=null).
+        // Guard cũ `!pdfRef.current` chặn nhánh native → lật trang không load hình
+        // (chỉ 4 trang preload đầu hiện). Cho qua khi native.
+        const isNative = !!((window as any).__TAURI_INTERNALS__ && pdfFile && (pdfFile as any).path);
+        if (!isOpen || bookData.pages.length === 0 || (!isNative && !pdfRef.current)) return;
+
         // Delay rendering by 750ms so it doesn't block the 700ms CSS flip animation
         const timeout = setTimeout(() => {
             loadPageImages(pdfRef.current, bookData.pages as any, currentPageIndex, 6);
         }, 750);
-        
+
         return () => clearTimeout(timeout);
     }, [currentPageIndex, isOpen, bookData.pages.length, bindingMode, foliosize]);
 
