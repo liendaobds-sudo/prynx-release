@@ -570,6 +570,10 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             logger.warning("sticker-dieline: bleed_color_hex không hợp lệ (%r), dùng mặc định trắng.", bleed_color_hex)
             solid_bleed_color = (255, 255, 255)
                 
+        import time as _time
+        _t0 = _time.perf_counter()
+        logger.warning("[STICKER-TIMING] route START job=%s src=%s mode=%s bleed_color=%s rect=%s bleed_mm=%.2f",
+                       job_id, os.path.basename(source_path), cut_mode, bleed_color_type, do_rectangle_mode, bleed_mm)
         engine = StickerEngine(dpi=300)
         success, meta = engine.process_pdf(
             input_path=source_path,
@@ -587,6 +591,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             edge_bite_mm=edge_bite_mm,
             cut_first_page_only=do_cut_first_page_only
         )
+        logger.warning("[STICKER-TIMING] route engine DONE job=%s success=%s elapsed=%.2fs",
+                       job_id, success, _time.perf_counter() - _t0)
         if not success or not os.path.exists(output_path):
             # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
             biz_err = meta.get("error") if isinstance(meta, dict) else None

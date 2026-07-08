@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PrynX",
-  "version": "1.0.0-beta.7",
+  "version": "1.0.0-beta.8",
   "identifier": "com.prynx.app",
   "build": {
     "frontendDist": "../dist",
