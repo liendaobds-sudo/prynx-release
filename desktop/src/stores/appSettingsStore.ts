@@ -1,5 +1,104 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
+
+// ─── Persistent storage ───
+// localStorage trong WebView2 nằm trong cache của WebView → bị XÓA khi update/cài lại
+// (bug: công cụ yêu thích + thiết lập về mặc định sau khi cập nhật). Ghi ra file JSON
+// trong AppData qua lệnh Rust (write_file_atomic / read_dir_json) — giống preset/recipe
+// → bền qua mọi lần update. Fallback localStorage khi chạy dev (không có Tauri).
+const STORAGE_KEY = 'pryn-x-app-settings';
+const SETTINGS_FILE = 'app-settings.json';
+
+let tauriPath: typeof import('@tauri-apps/api/path') | null = null;
+let invokeFn: (<T>(cmd: string, args?: Record<string, unknown>) => Promise<T>) | null = null;
+
+async function initTauri() {
+  if (tauriPath && invokeFn) return;
+  try {
+    tauriPath = await import('@tauri-apps/api/path');
+    const core = await import('@tauri-apps/api/core');
+    invokeFn = core.invoke as typeof invokeFn;
+  } catch {
+    /* Tauri không khả dụng (dev mode) → dùng localStorage */
+  }
+}
+
+async function ensureSettingsDir(): Promise<{ dir: string; file: string } | null> {
+  await initTauri();
+  if (!tauriPath) return null;
+  try {
+    const appData = await tauriPath.appDataDir();
+    // PHẢI join (appDataDir không có trailing slash trên Windows) — xem note ở presetManager.
+    const dir = await tauriPath.join(appData, 'settings');
+    try {
+      const fs = await import('@tauri-apps/plugin-fs');
+      await fs.mkdir(dir, { recursive: true });
+    } catch {
+      /* thư mục đã tồn tại */
+    }
+    const file = await tauriPath.join(dir, SETTINGS_FILE);
+    return { dir, file };
+  } catch {
+    return null;
+  }
+}
+
+const tauriStorage: StateStorage = {
+  getItem: async (name) => {
+    const paths = await ensureSettingsDir();
+    if (paths && invokeFn) {
+      try {
+        // read_dir_json trả nội dung mọi .json trong dir; ta chỉ ghi 1 file duy nhất.
+        const contents = await invokeFn<string[]>('read_dir_json', { dir: paths.dir });
+        if (contents && contents.length > 0) return contents[0];
+      } catch {
+        /* fall through → thử migrate */
+      }
+      // Chưa có file trên đĩa → migrate dữ liệu cũ từ localStorage (lần update này).
+      try {
+        const legacy = localStorage.getItem(name);
+        if (legacy) {
+          await tauriStorage.setItem(name, legacy);
+          return legacy;
+        }
+      } catch {
+        /* bỏ qua */
+      }
+      return null;
+    }
+    try {
+      return localStorage.getItem(name);
+    } catch {
+      return null;
+    }
+  },
+  setItem: async (name, value) => {
+    const paths = await ensureSettingsDir();
+    if (paths && invokeFn) {
+      try {
+        await invokeFn('write_file_atomic', {
+          path: paths.file,
+          contents: new TextEncoder().encode(value),
+        });
+        return;
+      } catch {
+        /* fall through → localStorage */
+      }
+    }
+    try {
+      localStorage.setItem(name, value);
+    } catch {
+      /* bỏ qua */
+    }
+  },
+  removeItem: async (name) => {
+    try {
+      localStorage.removeItem(name);
+    } catch {
+      /* bỏ qua */
+    }
+  },
+};
 
 interface AppSettingsState {
   hiddenTools: string[];
@@ -75,7 +174,8 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       setRecentFilesViewMode: (mode) => set({ recentFilesViewMode: mode }),
     }),
     {
-      name: 'pryn-x-app-settings',
+      name: STORAGE_KEY,
+      storage: createJSONStorage(() => tauriStorage),
     }
   )
 );

@@ -40,7 +40,10 @@ async function getRecipesDir(): Promise<string | null> {
     if (!tauriPath || !tauriFs) return null;
     try {
         const appData = await tauriPath.appDataDir();
-        const dir = `${appData}recipes`;
+        // PHẢI dùng join: appDataDir() trên Windows KHÔNG có dấu phân cách cuối →
+        // `${appData}recipes` tạo thư mục SIBLING "com.prynx.apprecipes" nằm NGOÀI
+        // scope $APPDATA/** nên readDir bị chặn → panel trắng (bug 2026-07-08).
+        const dir = await tauriPath.join(appData, 'recipes');
         try { await tauriFs.mkdir(dir, { recursive: true }); } catch { /* exists */ }
         return dir;
     } catch {
@@ -77,19 +80,24 @@ export async function loadRecipes(): Promise<Recipe[]> {
     const dir = await getRecipesDir();
     if (dir && tauriFs) {
         try {
-            const entries = await tauriFs.readDir(dir);
+            // Đọc qua lệnh Rust read_dir_json (KHÔNG vướng scope plugin-fs — giống
+            // write_file_atomic ở đường ghi). Trước đây tauriFs.readDir bị chặn scope
+            // trên $APPDATA nên recipe đã ghi ra đĩa nhưng panel trắng (bug 2026-07-08).
+            const { invoke } = await import('@tauri-apps/api/core');
+            const contents = await invoke<string[]>('read_dir_json', { dir });
             const out: Recipe[] = [];
-            for (const entry of entries) {
-                if (entry.name?.endsWith('.json')) {
-                    try {
-                        const content = await tauriFs.readTextFile(`${dir}/${entry.name}`);
-                        const r = JSON.parse(content);
-                        if (isRecipe(r)) out.push(r);
-                    } catch { /* skip corrupted */ }
-                }
+            for (const content of contents) {
+                try {
+                    const r = JSON.parse(content);
+                    if (isRecipe(r)) out.push(r);
+                } catch { /* skip corrupted */ }
             }
             return sortByUpdated(out);
-        } catch { /* fallback */ }
+        } catch (e) {
+            // read_dir_json fail → ĐỪNG nuốt im lặng: trước đây bug này khiến recipe
+            // đã lưu ra đĩa nhưng panel trắng trơn.
+            console.warn('[recipe] Không đọc được thư mục recipe, fallback localStorage:', e);
+        }
     }
     return sortByUpdated(lsRead());
 }

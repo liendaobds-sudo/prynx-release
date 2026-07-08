@@ -92,7 +92,9 @@ async function getPresetsDir(): Promise<string | null> {
   if (!tauriPath || !tauriFs) return null;
   try {
     const appData = await tauriPath.appDataDir();
-    const presetsDir = `${appData}presets`;
+    // PHẢI join: appDataDir() trên Windows KHÔNG có trailing slash → `${appData}presets`
+    // tạo thư mục SIBLING "com.prynx.appresets" ngoài scope $APPDATA/** (bug 2026-07-08).
+    const presetsDir = await tauriPath.join(appData, 'presets');
     try {
       await tauriFs.mkdir(presetsDir, { recursive: true });
     } catch { /* already exists */ }
@@ -108,23 +110,21 @@ async function getPresetsDir(): Promise<string | null> {
 export async function loadPresets(): Promise<ImpositionPreset[]> {
   await initTauri();
   
-  // Try Tauri filesystem first
+  // Try Tauri filesystem first. Đọc qua lệnh Rust read_dir_json (giống write_file_atomic)
+  // → KHÔNG vướng scope plugin-fs. readDir của plugin-fs từng trả rỗng dù file có trên
+  // đĩa → preset đã lưu không hiện lại sau khởi động (bug 2026-07-08).
   const dir = await getPresetsDir();
   if (dir && tauriFs) {
     try {
-      const entries = await tauriFs.readDir(dir);
+      const { invoke } = await import('@tauri-apps/api/core');
+      const contents = await invoke<string[]>('read_dir_json', { dir });
       const presets: ImpositionPreset[] = [];
-      for (const entry of entries) {
-        if (entry.name?.endsWith('.json')) {
-          try {
-            const content = await tauriFs.readTextFile(`${dir}/${entry.name}`);
-            presets.push(JSON.parse(content));
-          } catch { /* skip corrupted files */ }
-        }
+      for (const content of contents) {
+        try { presets.push(JSON.parse(content)); } catch { /* skip corrupted files */ }
       }
       return presets.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    } catch {
-      // Fallback to localStorage
+    } catch (e) {
+      console.warn('[preset] Không đọc được thư mục preset, fallback localStorage:', e);
     }
   }
   

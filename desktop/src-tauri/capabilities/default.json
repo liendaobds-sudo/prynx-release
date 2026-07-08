@@ -55,6 +55,25 @@
       ]
     },
     {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$HOME/**" },
+        { "path": "$APPDATA/**" }
+      ],
+      "deny": [
+        { "path": "$HOME/.ssh/**" },
+        { "path": "$HOME/.aws/**" },
+        { "path": "$HOME/.gnupg/**" },
+        { "path": "$HOME/.config/**" },
+        { "path": "$HOME/.kube/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" }
+      ]
+    },
+    {
       "identifier": "fs:allow-write-file",
       "allow": [
         { "path": "$DOCUMENT/**" },

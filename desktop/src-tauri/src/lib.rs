@@ -669,6 +669,35 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn read_dir_json(dir: String) -> Result<Vec<String>, String> {
+    // Đọc nội dung MỌI file .json trong thư mục, trả Vec<String> (mỗi phần tử = nội
+    // dung 1 file). Lệnh Rust → KHÔNG vướng scope plugin-fs (giống write_file_atomic).
+    // Vì sao cần: readDir của plugin-fs bị chặn scope trên $APPDATA → recipe/preset đã
+    // ghi ra đĩa nhưng panel không liệt kê được (bug 2026-07-08). Ghi qua Rust, đọc cũng
+    // qua Rust → nhất quán, hết class lỗi scope.
+    let path = std::path::Path::new(&dir);
+    if !path.is_dir() {
+        return Ok(Vec::new()); // thư mục chưa tồn tại → coi như rỗng, không phải lỗi
+    }
+    let entries = std::fs::read_dir(path).map_err(|e| format!("Lỗi đọc thư mục: {}", e))?;
+    let mut out: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let is_json = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("json"))
+            .unwrap_or(false);
+        if is_json {
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                out.push(content);
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
 fn get_pending_system_files(state: tauri::State<SystemFilesState>) -> Vec<String> {
     let mut pending = state.0.lock().unwrap();
     let files = pending.clone();
@@ -806,19 +835,22 @@ fn verify_frontend_integrity(app: &tauri::App) -> Result<(), String> {
     // FAIL-CLOSED: nếu KHÔNG tìm thấy nơi chứa frontend (dist/ hoặc index.html) thì
     // KHÔNG cho qua — đây là dấu hiệu bị nghịch (đổi tên/di dời file để né check).
     // Bản cài hợp lệ LUÔN có dist ở resource_dir; thiếu = bất thường → chặn khởi động.
+    // Tauri v2 NHÚNG frontend vào trong binary (asset resolver), KHÔNG copy dist/ ra
+    // resource_dir trên đĩa. Nên bản cài production KHÔNG có dist/ lẫn index.html rời —
+    // trường hợp này là BÌNH THƯỜNG, phải SKIP (frontend đã được bảo vệ bởi tính toàn vẹn
+    // của chính binary + chữ ký updater). Trước đây siết fail-closed ở đây khiến app tự
+    // từ chối khởi động ("dist dir not found — refusing to start") trên MỌI bản cài
+    // (bug beta.8 2026-07-08). Chỉ verify khi dist/ THỰC SỰ có trên đĩa (dev/portable).
     let dist_dir = if resource_dir.join("dist").is_dir() {
         resource_dir.join("dist")
     } else if resource_dir.join("index.html").exists() {
         resource_dir.clone()
     } else {
-        log::error!(
-            "[INTEGRITY] Frontend dist dir not found under {} — refusing to start.",
+        log::warn!(
+            "[INTEGRITY] Frontend dist not on disk under {} (Tauri nhúng vào binary) — skipping directory hash check.",
             resource_dir.display()
         );
-        return Err(
-            "Security error: cannot locate frontend files to verify integrity. \
-             The application may have been tampered with.".to_string()
-        );
+        return Ok(());
     };
     
     // Hash ALL files in dist/ recursively, sorted by path for determinism
@@ -911,7 +943,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, read_dir_json, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
