@@ -226,6 +226,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         recipeRecorder.noteOperation('sticker_dieline', {
             productType, cutMode, offsetMm, cornerStyle, fillHoles,
             bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex, edgeBiteMm,
+            cutFirstPageOnly,
         });
 
         try {

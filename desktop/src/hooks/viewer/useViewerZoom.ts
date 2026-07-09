@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { reduceWheelNav, createWheelNavState } from './wheelPageNav';
 
 interface UseViewerZoomProps {
     containerRef: React.RefObject<HTMLDivElement | null>;
@@ -37,9 +38,9 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const zoomTargetRef = useRef<{ mouseX: number, mouseY: number, ratio: number } | null>(null);
     const isZoomingRef = useRef(false);
     const zoomTimeoutRef = useRef<any>(null);
-    const jumpCooldown = useRef(false);
     const pendingZoomRef = useRef<number | null>(null);
-    const wheelAccumulatorRef = useRef<number>(0);
+    // Trạng thái điều hướng trang bằng wheel (chuẩn hoá chuột + trackpad) — xem wheelPageNav.ts.
+    const wheelNavStateRef = useRef(createWheelNavState());
     const lastZoomMouseRef = useRef<{ mouseX: number, mouseY: number } | null>(null);
     const zoomRafRef = useRef<number | null>(null);
 
@@ -239,45 +240,39 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                 }
             } else if (pageDisplayMode.includes('_fit') && containerRef.current && containerRef.current.contains(e.target as Node)) {
                 const el = internalScrollRef.current;
-                if (el && !jumpCooldown.current && numPages > 0) {
+                if (el && numPages > 0) {
                     const isAtBottom = Math.abs(el.scrollHeight - el.scrollTop - el.clientHeight) < 10;
                     const isAtTop = el.scrollTop < 10;
 
-                    if ((e.deltaY > 0 && isAtBottom) || (e.deltaY < 0 && isAtTop)) {
-                        e.preventDefault();
-                        wheelAccumulatorRef.current += e.deltaY;
+                    // Chặn scroll-chaining/bounce của trình duyệt khi lăn vượt biên vùng cuộn.
+                    const atBoundary = (e.deltaY > 0 && isAtBottom) || (e.deltaY < 0 && isAtTop);
+                    if (atBoundary) e.preventDefault();
 
-                        if (Math.abs(wheelAccumulatorRef.current) > 80) {
-                            let didJump = false;
-                            if (wheelAccumulatorRef.current > 0) {
-                                const step = pageDisplayMode === 'two_fit' ? 2 : 1;
-                                const next = Math.min(numPages, activePage + step);
-                                if (next !== activePage) {
-                                    navigatePage(next);
-                                    didJump = true;
-                                }
-                            } else {
-                                const step = pageDisplayMode === 'two_fit' ? 2 : 1;
-                                let prev;
-                                if (pageDisplayMode === 'two_fit') {
-                                    const logicalRowStart = (activePage - 1) % 2 === 0 ? activePage - 1 : activePage - 2;
-                                    prev = Math.max(1, logicalRowStart + 1 - step);
-                                } else {
-                                    prev = Math.max(1, activePage - 1);
-                                }
-                                if (prev !== activePage) {
-                                    navigatePage(prev);
-                                    didJump = true;
-                                }
-                            }
-                            wheelAccumulatorRef.current = 0;
-                            if (didJump) {
-                                jumpCooldown.current = true;
-                                setTimeout(() => { jumpCooldown.current = false; }, 250);
-                            }
+                    // Quyết định chuyển trang bằng reducer thuần (chuẩn hoá chuột + trackpad).
+                    const { state, jump } = reduceWheelNav(wheelNavStateRef.current, {
+                        deltaY: e.deltaY,
+                        deltaMode: e.deltaMode,
+                        atTop: isAtTop,
+                        atBottom: isAtBottom,
+                        timestamp: e.timeStamp,
+                        viewportHeight: el.clientHeight,
+                    });
+                    wheelNavStateRef.current = state;
+
+                    if (jump > 0) {
+                        const step = pageDisplayMode === 'two_fit' ? 2 : 1;
+                        const next = Math.min(numPages, activePage + step);
+                        if (next !== activePage) navigatePage(next);
+                    } else if (jump < 0) {
+                        const step = pageDisplayMode === 'two_fit' ? 2 : 1;
+                        let prev;
+                        if (pageDisplayMode === 'two_fit') {
+                            const logicalRowStart = (activePage - 1) % 2 === 0 ? activePage - 1 : activePage - 2;
+                            prev = Math.max(1, logicalRowStart + 1 - step);
+                        } else {
+                            prev = Math.max(1, activePage - 1);
                         }
-                    } else {
-                        wheelAccumulatorRef.current = 0;
+                        if (prev !== activePage) navigatePage(prev);
                     }
                 }
             }

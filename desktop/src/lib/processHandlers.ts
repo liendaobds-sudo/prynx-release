@@ -397,18 +397,59 @@ export async function runResize(ctx: ProcessContext, settings: any) {
     setError(''); setIsProcessing(true); setProcessStatus('Đang đổi khổ trang...');
     try {
         const inputBytes = await getWorkingBytes();
-        const quickDoc = await PDFDocument.load(inputBytes);
-        const totalPages = quickDoc.getPageCount();
 
-        if (totalPages > 1000 || file.size > 300 * 1024 * 1024) {
+        // Thử soi bằng pdf-lib để lấy số trang + quyết định downsample. File do
+        // BACKEND sinh (bù xén/downsample qua pikepdf/QPDF, Ghostscript) có thể
+        // dùng object stream/xref nén mà pdf-lib (pako) KHÔNG giải nén được →
+        // ném "Invalid header in flate stream". Khi đó không dùng được đường
+        // frontend, phải đẩy sang backend (đọc bytes trực tiếp, không qua pdf-lib).
+        let totalPages = 0;
+        let sourceArea = 0;
+        let canUseFrontend = true;
+        try {
+            const quickDoc = await PDFDocument.load(inputBytes);
+            totalPages = quickDoc.getPageCount();
+            try {
+                const { width, height } = quickDoc.getPage(0).getSize();
+                sourceArea = width * height;
+            } catch { /* ignore */ }
+        } catch {
+            canUseFrontend = false;  // pdf-lib không parse được → chỉ còn backend
+        }
 
+        // ── Giảm dữ liệu theo khổ mới (giống PDF Optimizer) ──────────────────
+        // resize kiểu XObject giữ NGUYÊN độ phân giải ảnh gốc → A1→A5 mà file vẫn
+        // ~dung lượng gốc → tác vụ sau chậm. Khổ đích NHỎ HƠN khổ gốc → bật
+        // downsample (mặc định 300 DPI) qua backend (Ghostscript/pypdfium2).
+        const MM_TO_PT = 2.83465;
+        const targetArea = (settings.targetW * MM_TO_PT) * (settings.targetH * MM_TO_PT);
+        const isDownsizing = sourceArea > 0 && targetArea > 0 && targetArea < sourceArea * 0.9;
+        const targetDpi: number = typeof settings.targetDpi === 'number'
+            ? settings.targetDpi
+            : (isDownsizing ? 300 : 0);
+        const resizeMode: string = settings.resizeMode || 'auto';
+        const wantDownsample = targetDpi > 0;
+
+        const newFileName = `Resized_${file.name}`;
+        const emit = async (blob: Blob) => {
+            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+            else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+        };
+        const runBackend = async (): Promise<Blob> => {
             const { backendResizePages } = await import('../lib/api');
             const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
-            const blob = await backendResizePages(workingFile, settings.targetW, settings.targetH, settings.scaleMode, settings.applyToStr || 'all');
-            const newFileName = `Resized_${file.name}`;
-            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { await commitWorkingFile(blob, newFileName); }
-        } else {
+            return backendResizePages(workingFile, settings.targetW, settings.targetH, settings.scaleMode, settings.applyToStr || 'all', targetDpi, resizeMode);
+        };
+
+        // Backend bắt buộc khi: cần downsample, pdf-lib không parse được, hoặc file lớn.
+        if (wantDownsample || !canUseFrontend || totalPages > 1000 || file.size > 300 * 1024 * 1024) {
+            await emit(await runBackend());
+            return;
+        }
+
+        // Đường frontend pdf-lib (nhanh, không round-trip). Nếu ném lỗi (vd flate
+        // stream do file backend-sinh), TỰ fallback sang backend thay vì báo lỗi.
+        try {
             let applyToPages: 'all' | 'even' | 'odd' | number[] = 'all';
             if (settings.applyToStr === 'even' || settings.applyToStr === 'odd' || settings.applyToStr === 'all') {
                 applyToPages = settings.applyToStr;
@@ -417,10 +458,10 @@ export async function runResize(ctx: ProcessContext, settings: any) {
                 applyToPages = ranges.flatMap(([start, end]: [number, number]) => Array.from({ length: end - start + 1 }, (_, i) => start + i));
             }
             const outputBytes = await resizePages(inputBytes, { targetW: settings.targetW, targetH: settings.targetH, scaleMode: settings.scaleMode, applyTo: applyToPages });
-            const blob = new Blob([outputBytes as any], { type: 'application/pdf' });
-            const newFileName = `Resized_${file.name}`;
-            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+            await emit(new Blob([outputBytes as any], { type: 'application/pdf' }));
+        } catch (feErr) {
+            console.warn('[resize] pdf-lib thất bại, fallback backend:', feErr);
+            await emit(await runBackend());
         }
     } catch (err: any) { setError('Lỗi đổi khổ: ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }

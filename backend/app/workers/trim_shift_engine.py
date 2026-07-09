@@ -328,6 +328,9 @@ def trim_shift(
                 page.contents_add(pikepdf.Stream(pdf, clip), prepend=True)
                 page.contents_add(pikepdf.Stream(pdf, b"\nQ"), prepend=False)
 
-        pdf.save(output_path)
+        # Lưu tương thích pdf-lib (xref cổ điển) → frontend nạp lại được sau khi
+        # bù xén (tránh 'Invalid header in flate stream' ở bước resize kế tiếp).
+        from app.workers.pdf_tools_engine import save_pdf_compat
+        save_pdf_compat(pdf, output_path)
 
     return output_path

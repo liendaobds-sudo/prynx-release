@@ -65,8 +65,18 @@ export async function resizePages(
             continue;
         }
 
-        // Embed source page
-        const [embedded] = await outputPdf.embedPages([srcPage]);
+        // Embed source page.
+        // GIỮ BLEED: pdf-lib embedPages() mặc định lấy bounding box = CropBox →
+        // nội dung NGOÀI CropBox (vùng bleed/tràn lề) bị clip → thành trắng sau
+        // resize. Ép bounding box = MediaBox để nhúng TRỌN nội dung (khớp srcW/srcH
+        // lấy từ getSize() = MediaBox, nên scale/căn giữa vẫn đúng).
+        const mb: any = (srcPage as any).getMediaBox
+            ? (srcPage as any).getMediaBox()
+            : { x: 0, y: 0, width: srcW, height: srcH };
+        const [embedded] = await outputPdf.embedPages(
+            [srcPage],
+            [{ left: mb.x, bottom: mb.y, right: mb.x + mb.width, top: mb.y + mb.height }],
+        );
 
         // Calculate scale and position
         let scaleX = 1, scaleY = 1, offsetX = 0, offsetY = 0;

@@ -125,10 +125,53 @@ export default function GridSettingsSection(props: GridSettingsProps) {
   const currentShape = detectedShapesByPage[actualIndex] || "CUSTOM";
 
   const [showPageQuantities, setShowPageQuantities] = React.useState(false);
+  const [pasteText, setPasteText] = React.useState("");
+  const [pasteStatus, setPasteStatus] = React.useState<{ ok: boolean; msg: string } | null>(null);
   const [infoModal, setInfoModal] = React.useState<{
     title: string;
     content: React.ReactNode;
   } | null>(null);
+
+  // Dán cột số lượng từ Excel → điền theo THỨ TỰ trang. Người dùng bôi cột số
+  // lượng trong Excel (Ctrl+C) rồi dán vào đây. Số sản phẩm hiển thị theo chế độ
+  // duplex (2 mặt gộp còn ceil(n/2) sản phẩm, key = productIdx*2 — khớp bảng dưới).
+  const fillQuantitiesFromPaste = () => {
+    const twoSided = duplexFlow === "double" && activeTool !== "sticker_imposer";
+    const productCount = twoSided ? Math.ceil(sourceTotalPages / 2) : sourceTotalPages;
+    // Mỗi dòng = 1 số; strip dấu phẩy ngăn nghìn + khoảng trắng; bỏ dòng trống.
+    const qtys = pasteText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const n = parseInt(line.replace(/[,\s]/g, ""), 10);
+        return isNaN(n) ? null : Math.max(0, n);
+      });
+
+    if (qtys.length === 0) {
+      setPasteStatus({ ok: false, msg: "Chưa có dữ liệu — dán cột số lượng từ Excel vào ô trên." });
+      return;
+    }
+    if (qtys.some((q) => q === null)) {
+      setPasteStatus({ ok: false, msg: "Có dòng không phải số — kiểm tra lại cột đã dán (chỉ dán cột số lượng)." });
+      return;
+    }
+    if (qtys.length !== productCount) {
+      setPasteStatus({
+        ok: false,
+        msg: `Dán ${qtys.length} dòng nhưng có ${productCount} trang — kiểm tra lại rồi dán lại.`,
+      });
+      return;
+    }
+
+    const obj: Record<number, number> = {};
+    qtys.forEach((q, productIdx) => {
+      const idx = twoSided ? productIdx * 2 : productIdx;
+      obj[idx] = q as number;
+    });
+    setTargetQuantitiesByPage(obj);
+    setPasteStatus({ ok: true, msg: `Đã điền ${qtys.length} trang.` });
+  };
 
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -585,6 +628,40 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           {showPageQuantities && sourceTotalPages > 1 && (
             <div className="mt-1 animate-in slide-in-from-top-2 duration-200">
               <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-white/10 rounded-lg space-y-2 max-h-60 overflow-y-auto custom-scrollbar">
+                {/* Dán cột số lượng từ Excel → điền theo thứ tự trang (bỏ gõ tay từng ô) */}
+                <div className="pb-2 mb-1 border-b border-slate-200 dark:border-white/10 space-y-1.5">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase">
+                    Dán số lượng từ Excel
+                  </div>
+                  <textarea
+                    value={pasteText}
+                    onChange={(e) => setPasteText(e.target.value)}
+                    rows={3}
+                    placeholder={"Bôi cột số lượng trong Excel → Ctrl+C → dán vào đây\n(mỗi dòng 1 số, theo đúng thứ tự trang)"}
+                    className={`${inputCls} h-auto py-1.5 resize-y font-mono text-[11px] leading-snug`}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={fillQuantitiesFromPaste}
+                      className="px-3 h-7 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold transition-colors"
+                    >
+                      Điền số lượng
+                    </button>
+                    {pasteStatus && (
+                      <span
+                        className={`text-[10px] font-medium ${
+                          pasteStatus.ok
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : "text-red-600 dark:text-red-400"
+                        }`}
+                      >
+                        {pasteStatus.ok ? "✓ " : "⚠ "}
+                        {pasteStatus.msg}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
                 <div className="text-[10px] text-slate-500 mb-2 italic">
                   Để trống để dùng chung số lượng (
                   {targetQuantity === 0 ? "Mặc định" : targetQuantity})

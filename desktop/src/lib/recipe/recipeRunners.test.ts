@@ -157,7 +157,7 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         const commit = vi.fn();
         await RECIPE_RUNNERS.sticker_dieline!(
             makeCtx({ commitWorkingFile: commit, file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
-            { productType: 'sticker', cutMode: 'original', offsetMm: 0, cornerStyle: 'round', fillHoles: true, bleedMm: 2, removeWhiteBg: true, bleedColorType: 'image', bleedColorHex: '#FFFFFF' },
+            { productType: 'sticker', cutMode: 'original', offsetMm: 0, cornerStyle: 'round', fillHoles: true, bleedMm: 2, removeWhiteBg: true, bleedColorType: 'image', bleedColorHex: '#FFFFFF', cutFirstPageOnly: true },
             null,
         );
         const call = (authenticatedFetch as any).mock.calls[0];
@@ -166,6 +166,23 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         expect(fd.get('cut_mode')).toBe('original');
         expect(fd.get('bleed_mm')).toBe('2');
         expect(fd.get('file_id')).toBe('fid-123');
+        // Parity: "tạo đường cắt cho trang đầu" phải được phát lại (không bị đánh mất).
+        expect(fd.get('cut_first_page_only')).toBe('true');
         expect(commit).toHaveBeenCalledWith(blob, 'sticker_tem.pdf');
+    });
+
+    it('phát lại XÉN VUÔNG (rectangle) → gửi edge_bite_mm, KHÔNG bật cut_first_page_only', async () => {
+        const blob = new Blob([new Uint8Array([3])], { type: 'application/pdf' });
+        (authenticatedFetch as any).mockResolvedValueOnce({ ok: true, blob: async () => blob });
+        const commit = vi.fn();
+        await RECIPE_RUNNERS.sticker_dieline!(
+            makeCtx({ commitWorkingFile: commit, file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
+            { productType: 'rectangle', bleedMm: 3, bleedColorType: 'image', edgeBiteMm: 1.5, cutFirstPageOnly: true },
+            null,
+        );
+        const fd = (authenticatedFetch as any).mock.calls[0][1].body as FormData;
+        expect(fd.get('edge_bite_mm')).toBe('1.5');
+        // rectangle không dùng "trang đầu" dù params có cờ.
+        expect(fd.get('cut_first_page_only')).toBe('false');
     });
 });

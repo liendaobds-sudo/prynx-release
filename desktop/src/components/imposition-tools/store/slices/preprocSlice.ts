@@ -14,7 +14,7 @@ export interface PreprocSlice {
 export const createPreprocSlice: ImposerSlice<PreprocSlice> = (set) => ({
     shuffleSettings: { presetId: 'custom', rule: '', groupSize: 1, mode: 'normal' },
     setShuffleSettings: (v) => set({ shuffleSettings: v }),
-    resizeSettings: { sizePresetId: 'A4', targetW: 210, targetH: 297, scaleMode: 'fit', applyTo: 'all', applyToStr: 'all' },
+    resizeSettings: { sizePresetId: 'A4', targetW: 210, targetH: 297, scaleMode: 'fit', applyTo: 'all', applyToStr: 'all', resizeMode: 'auto' },
     setResizeSettings: (v) => set({ resizeSettings: v }),
     splitSettings: { mode: 'by_range', ranges: '', pagesPerFile: 1, pageListStr: '' },
     setSplitSettings: (v) => set({ splitSettings: v }),

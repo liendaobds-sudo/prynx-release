@@ -415,6 +415,323 @@ def _rotated_text_tm(tm: list[float], ctm: list[float], deg: float, cx: float, c
 
 
 
+def _enclosing_q_indices(instructions: list, index: int) -> tuple[int, int] | None:
+    """
+    Tìm cặp `q … Q` lồng khít nhất bao quanh instruction tại `index`.
+    Trả `(q_index, Q_index)` hoặc None.
+    """
+    depth = 0
+    q_index = -1
+    j = index - 1
+    while j >= 0:
+        op = str(instructions[j].operator)
+        if op == "Q":
+            depth += 1
+        elif op == "q":
+            if depth == 0:
+                q_index = j
+                break
+            depth -= 1
+        j -= 1
+    if q_index < 0:
+        return None
+
+    depth = 0
+    Q_index = -1
+    k = index + 1
+    n = len(instructions)
+    while k < n:
+        op = str(instructions[k].operator)
+        if op == "q":
+            depth += 1
+        elif op == "Q":
+            if depth == 0:
+                Q_index = k
+                break
+            depth -= 1
+        k += 1
+    if Q_index < 0:
+        return None
+    return q_index, Q_index
+
+
+def _expand_re_operands_for_delta(operands: list, dx: float, dy: float) -> list:
+    """
+    Mở rộng rectangle `x y w h re` thành UNION của rect cũ và rect đã dịch (dx, dy).
+
+    Giữ nguyên vùng clip cũ (các run text khác trong cụm vẫn hiện) VÀ phủ vị trí
+    mới của text vừa kéo — tránh "kéo text ra ngoài clip → mất chữ".
+    """
+    if len(operands) < 4:
+        return operands
+    vals = [_as_float(o) for o in operands[:4]]
+    if any(v is None for v in vals):
+        return operands
+    x, y, w, h = (float(v) for v in vals)  # type: ignore[arg-type]
+    # Chuẩn hóa w/h âm (hiếm) về origin + kích thước dương.
+    if w < 0:
+        x, w = x + w, -w
+    if h < 0:
+        y, h = y + h, -h
+    x0, y0, x1, y1 = x, y, x + w, y + h
+    nx0, ny0, nx1, ny1 = x0 + dx, y0 + dy, x1 + dx, y1 + dy
+    ux0, uy0 = min(x0, nx0), min(y0, ny0)
+    ux1, uy1 = max(x1, nx1), max(y1, ny1)
+    return [ux0, uy0, ux1 - ux0, uy1 - uy0, *operands[4:]]
+
+
+def _find_enclosing_q_open(instructions: list, index: int) -> int:
+    """Chỉ số của `q` bao khít nhất TRƯỚC `index` (bỏ qua cặp q…Q lồng đã đóng).
+
+    Trả -1 nếu `index` không nằm trong khối q…Q nào. Chỉ dò về sau (không cần
+    tìm `Q` đóng như `_enclosing_q_indices`) nên đúng kể cả khi `index` là chính
+    một `q` mở khối con.
+    """
+    depth = 0
+    j = index - 1
+    while j >= 0:
+        op = str(instructions[j].operator)
+        if op == "Q":
+            depth += 1
+        elif op == "q":
+            if depth == 0:
+                return j
+            depth -= 1
+        j -= 1
+    return -1
+
+
+def _shift_enclosing_clip_rects(
+    instructions: list,
+    span_start: int,
+    dx: float,
+    dy: float,
+) -> dict[int, object]:
+    """
+    Mở rộng clip rectangle của MỌI khối `q…Q` BAO NGOÀI dải bọc `[span_start, …)`.
+
+    Root cause "kéo text → mất" trên PDF InDesign/Illustrator: text nằm trong
+    clip LỒNG NHAU — `q re W n  q re W n BT…ET Q  Q`. `move_objects` bọc
+    `q/cm/Q` quanh khối TRONG nên clip trong dịch theo chữ (OK), NHƯNG clip
+    NGOÀI đứng TRƯỚC `cm`, giữ vị trí gốc → glyph đã dịch nằm ngoài clip ngoài
+    → PDFium cắt sạch → mất chữ (dù `Tm`/bbox báo đã dịch).
+
+    Đi ngược lên từng khối `q…Q` tổ tiên (nằm NGOÀI vùng được `cm` dịch) và mở
+    rộng các `re` clip-setup của nó thành union(cũ, cũ+(dx,dy)) — vừa giữ nội
+    dung khác trong clip, vừa để lọt glyph đã dịch. Chỉ đụng `re` ở ĐÚNG cấp
+    của khối (bỏ qua q…Q con đã đóng) và CHỈ phần TRƯỚC `span_start` (không đụng
+    clip bên trong vùng đã dịch — chúng dịch cùng chữ).
+
+    Trả map `{index: instruction_mới}` để thay `re`.
+    """
+    replacements: dict[int, object] = {}
+    if dx == 0.0 and dy == 0.0:
+        return replacements
+
+    cursor = span_start
+    while True:
+        q_index = _find_enclosing_q_open(instructions, cursor)
+        if q_index < 0:
+            break
+        # Quét q_index+1 → span_start ở ĐÚNG cấp khối này (depth 0). `re` đứng
+        # trước `W`/`W*` là clip-setup → mở rộng. Painting thật xoá pending.
+        pending_re: list[int] = []
+        depth = 0
+        i = q_index + 1
+        while i < span_start:
+            op = str(instructions[i].operator)
+            if depth == 0:
+                if op == "re":
+                    pending_re.append(i)
+                elif op in ("W", "W*"):
+                    for ri in pending_re:
+                        old = instructions[ri]
+                        new_ops = _expand_re_operands_for_delta(list(old.operands), dx, dy)
+                        replacements[ri] = pikepdf.ContentStreamInstruction(
+                            new_ops, pikepdf.Operator("re")
+                        )
+                    pending_re = []
+                elif op in ("f", "F", "f*", "S", "s", "B", "B*", "b", "b*"):
+                    pending_re = []  # fill/stroke: path không phải clip
+            if op == "q":
+                depth += 1
+            elif op == "Q":
+                depth -= 1
+            i += 1
+        cursor = q_index
+
+    return replacements
+
+
+def _find_bt_et_bounds(instructions: list, show_index: int) -> tuple[int, int] | None:
+    """
+    Tìm cụm `BT…ET` chứa instruction show-op tại `show_index`.
+    Trả `[bt_index, et_index+1)` (nửa-mở) hoặc None.
+    """
+    if show_index < 0 or show_index >= len(instructions):
+        return None
+    bt = -1
+    for j in range(show_index, -1, -1):
+        op = str(instructions[j].operator)
+        if op == "BT":
+            bt = j
+            break
+        if op == "ET" and j != show_index:
+            return None
+    if bt < 0:
+        return None
+    et = -1
+    for j in range(show_index, len(instructions)):
+        if str(instructions[j].operator) == "ET":
+            et = j
+            break
+    if et < 0:
+        return None
+    return bt, et + 1
+
+
+# Op được phép trong khối q…Q bao text khi ta expand span để gồm clip:
+# path/clip, màu, graphics-state đơn giản — KHÔNG painting khác, KHÔNG Do/text khác.
+_TEXT_CLIP_BLOCK_OK = {
+    "q", "Q", "cm", "gs",
+    "w", "J", "j", "M", "d", "ri", "i",
+    "g", "G", "rg", "RG", "k", "K", "cs", "CS", "scn", "SCN", "sc", "SC",
+    "m", "l", "c", "v", "y", "h", "re",
+    "W", "W*", "n",
+    "BT", "ET", "Tf", "Td", "TD", "Tm", "T*", "TL", "Tc", "Tw", "Tz", "Ts", "Tr",
+    "Tj", "TJ", "'", '"',
+}
+
+
+def _block_is_isolated_text_clip(
+    instructions: list, q_index: int, Q_index: int, text_start: int, text_end: int
+) -> bool:
+    """
+    True nếu khối `q…Q` CHỈ phục vụ đúng một cụm text `[text_start, text_end)`
+    (+ clip/màu/gs). An toàn để bọc translate cm NGOÀI cả khối → clip đi cùng text.
+    """
+    if not (q_index < text_start < text_end - 1 <= Q_index):
+        return False
+    # Không có BT…ET nào khác trong block.
+    for j in range(q_index + 1, Q_index):
+        op = str(instructions[j].operator)
+        if op == "BT" and j != text_start:
+            return False
+        if op == "Do" or op == "INLINE IMAGE":
+            return False
+        # Painting thật (tô/nét) ngoài vùng text → block còn vẽ khác, không expand.
+        if op in ("f", "F", "f*", "S", "s", "B", "B*", "b", "b*") and not (
+            text_start <= j < text_end
+        ):
+            return False
+        if op not in _TEXT_CLIP_BLOCK_OK and not (text_start <= j < text_end):
+            # Op lạ ngoài cụm text → không chắc an toàn.
+            if op not in ("BMC", "BDC", "EMC", "MP", "DP", "BX", "EX"):
+                return False
+    return True
+
+
+def _include_preceding_clip_ops(instructions: list, start: int) -> int:
+    """
+    Nếu ngay trước `start` (thường là BT) là chuỗi clip `… re … W/W* n`,
+    lùi start để BAO luôn clip — kể cả khi không có khối `q…Q` cô lập.
+    """
+    if start <= 0:
+        return start
+    i = start - 1
+    # Bỏ qua n sau W
+    if i >= 0 and str(instructions[i].operator) == "n":
+        i -= 1
+    if i < 0 or str(instructions[i].operator) not in ("W", "W*"):
+        return start
+    # Lùi qua path construction (re/m/l/c/…) và màu đơn giản đứng trước clip
+    i -= 1
+    path_ops = {"m", "l", "c", "v", "y", "h", "re"}
+    color_gs = {
+        "g", "G", "rg", "RG", "k", "K", "cs", "CS", "scn", "SCN", "sc", "SC",
+        "w", "J", "j", "M", "d", "gs", "cm",
+    }
+    while i >= 0:
+        op = str(instructions[i].operator)
+        if op in path_ops or op in color_gs:
+            i -= 1
+            continue
+        break
+    new_start = i + 1
+    # Chỉ nhận nếu thực sự có ít nhất một `re` trong đoạn clip vừa quét.
+    has_re = any(
+        str(instructions[j].operator) == "re" for j in range(new_start, start)
+    )
+    return new_start if has_re else start
+
+
+def _expand_text_span_for_move(
+    instructions: list, start: int, end: int
+) -> tuple[int, int]:
+    """
+    Mở rộng span text `[start, end)` (thường là BT…ET):
+      1) Lên cả khối `q…Q` bao ngoài nếu khối chỉ là clip + text.
+      2) Hoặc lùi bao clip `re W n` đứng ngay trước BT (không cần q).
+
+    Nhờ đó bọc `q/cm/Q` translate dịch CẢ clip lẫn chữ — không mất chữ.
+    """
+    if start < 0 or end > len(instructions) or start >= end:
+        return start, end
+    # Neo vào instruction giữa span (BT hoặc show-op) để tìm q bao ngoài.
+    mid = start
+    block = _enclosing_q_indices(instructions, mid)
+    if block is not None:
+        q_index, Q_index = block
+        if _block_is_isolated_text_clip(instructions, q_index, Q_index, start, end):
+            return q_index, Q_index + 1
+    # Không expand được cả q…Q → vẫn cố gắng gồm clip ngay trước BT.
+    start = _include_preceding_clip_ops(instructions, start)
+    return start, end
+
+
+def _resolve_text_move_span(pg, meta, pdf: pikepdf.Pdf, instructions: list) -> OpSpan:
+    """
+    Xác định dải operator để DI CHUYỂN text bằng bọc `q/cm/Q` (page-space).
+
+    Ưu tiên `map_object` (cả BT…ET); fallback `text_show_op_for_move` → BT…ET
+    chứa show-op. Sau đó expand để gồm clip group cô lập nếu có.
+    """
+    meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
+    span = map_object(pg, meta, pdf=pdf)
+    if span is not None and span.kind == "text":
+        start, end = _expand_text_span_for_move(instructions, span.start, span.end)
+        return OpSpan(
+            start=start,
+            end=end,
+            kind="text",
+            ctm=list(span.ctm),
+            bbox=list(span.bbox),
+            resource_name=None,
+        )
+
+    info = text_show_op_for_move(pg, meta, pdf=pdf)
+    if info is None:
+        raise ObjectMapError(
+            f"Không thể ánh xạ object '{meta_id}' sang dải text để di chuyển. "
+            f"HỦY thao tác để bảo toàn (Yêu cầu 4.7) — KHÔNG ghi."
+        )
+    bounds = _find_bt_et_bounds(instructions, info["target_index"])
+    if bounds is None:
+        raise ObjectMapError(
+            f"Không tìm thấy cụm BT…ET cho object '{meta_id}'. "
+            f"HỦY thao tác (Yêu cầu 4.7) — KHÔNG ghi."
+        )
+    start, end = _expand_text_span_for_move(instructions, bounds[0], bounds[1])
+    return OpSpan(
+        start=start,
+        end=end,
+        kind="text",
+        ctm=[1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        bbox=[0.0, 0.0, 0.0, 0.0],
+        resource_name=None,
+    )
+
+
 def move_objects(
     page,
     obj_metas,
@@ -426,37 +743,26 @@ def move_objects(
     """
     Di chuyển (tịnh tiến) đúng tập object mục tiêu bằng cách BỌC CÔ LẬP `q/cm/Q`.
 
-    Với mỗi object mục tiêu, chèn `q <translate(dx,dy) cm>` NGAY TRƯỚC dải
-    operator (`OpSpan`) và `Q` NGAY SAU — bao cô lập để KHÔNG ảnh hưởng
-    graphics-state (CTM/màu/clip) của các operator khác. Đây là đường GHI DUY
-    NHẤT qua pikepdf (`unparse_content_stream` + `make_stream`), nên các
-    `Color_Operators` của `Untouched_Object` không bị chạm (Yêu cầu 4.1, 4.2).
+    Với mỗi object mục tiêu (text / image / vector), chèn
+    `q <translate(dx,dy) cm>` NGAY TRƯỚC dải operator và `Q` NGAY SAU — bao cô
+    lập để KHÔNG ảnh hưởng graphics-state (CTM/màu/clip) của op khác.
+
+    TEXT: bọc cả cụm `BT…ET` (và khối `q…clip…Q` cô lập nếu có) — KHÔNG ghim
+    `Tm` từng show-op. Cách cũ (Tm) dễ làm chữ RA NGOÀI clip path → biến mất
+    trên PDF InDesign/Illustrator. `cm` đặt NGOÀI BT…ET (hợp lệ) và dịch cả
+    clip + text cùng lúc.
 
     Quy ước hệ tọa độ của `(dx, dy)` — xác định bởi `coord_space`:
       - `"pdf"`    (MẶC ĐỊNH): `(dx, dy)` đã ở hệ trang PDF (gốc dưới-trái,
                    trục y hướng LÊN). Áp thẳng vào `cm` translate.
       - `"canvas"`: `(dx, dy)` ở hệ canvas frontend (gốc trên-trái, trục y
-                   hướng XUỐNG). Vì move là một độ dịch (delta) thuần, chỉ cần
-                   ĐẢO DẤU dy để chuyển sang hệ PDF: `dy_pdf = -dy`; `dx` giữ
-                   nguyên. (Không cần chiều cao MediaBox cho một delta tịnh tiến;
-                   MediaBox chỉ cần khi quy đổi TỌA ĐỘ TUYỆT ĐỐI top-left↔bottom-left,
-                   tham khảo tiền lệ `remove_text_from_stream`.)
+                   hướng XUỐNG). `dy_pdf = -dy`; `dx` giữ nguyên.
 
     CÙNG một `(dx, dy)` được áp cho TẤT CẢ object trong `obj_metas` (Yêu cầu 5.5).
 
-    Args:
-        page:        trang pikepdf (`pikepdf.Page` hoặc object trang).
-        obj_metas:   danh sách `ObjMeta` (hoặc dict tương đương) cần di chuyển.
-        dx, dy:      độ dịch theo hệ `coord_space`.
-        pdf:         document pikepdf chứa trang.
-        coord_space: "pdf" (mặc định) hoặc "canvas".
-
-    Returns:
-        `MoveResult` mô tả thay đổi. Tập rỗng → `changed=False` (no-op).
-
     Raises:
-        ObjectMapError: nếu BẤT KỲ target nào không map được duy nhất sang một
-                        `OpSpan` (Yêu cầu 4.7) → HỦY toàn bộ, KHÔNG ghi.
+        ObjectMapError: nếu BẤT KỲ target nào không map được duy nhất → HỦY,
+                        KHÔNG ghi.
     """
     pg = _as_page(page)
 
@@ -483,26 +789,16 @@ def move_objects(
     except Exception as exc:  # noqa: BLE001 - coalesce lỗi vẫn parse trực tiếp được
         logger.warning("contents_coalesce thất bại, tiếp tục parse trực tiếp: %s", exc)
 
-    # ── Map target → edit; text di chuyển GRANULAR (chỉ 1 show-op, KHÔNG cả cụm
-    # BT…ET), image/vector dùng span + bọc q/cm/Q. None bất kỳ → HỦY (Yêu cầu 4.7).
-    nontext_spans: list[OpSpan] = []
-    text_moves: list[dict] = []
-    moved_spans: list[OpSpan] = []
+    instructions = parse_page_ops(pg)
+    n = len(instructions)
+
+    # ── Map MỌI target (text/image/vector) → span rồi bọc q/cm/Q thống nhất ─
+    wrap_spans: list[OpSpan] = []
     for meta in obj_metas:
         meta_type = meta.get("type") if isinstance(meta, dict) else getattr(meta, "type", None)
         meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
         if meta_type == "text":
-            info = text_show_op_for_move(pg, meta, pdf=pdf)
-            if info is None:
-                raise ObjectMapError(
-                    f"Không thể ánh xạ object '{meta_id}' sang một show-op text duy "
-                    f"nhất. HỦY thao tác để bảo toàn (Yêu cầu 4.7) — KHÔNG ghi."
-                )
-            text_moves.append(info)
-            ti = info["target_index"]
-            moved_spans.append(OpSpan(start=ti, end=ti + 1, kind="text",
-                                      ctm=[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], bbox=[0, 0, 0, 0],
-                                      resource_name=None))
+            span = _resolve_text_move_span(pg, meta, pdf, instructions)
         else:
             span = map_object(pg, meta, pdf=pdf)
             if span is None:
@@ -511,14 +807,20 @@ def move_objects(
                     f"(đa nghĩa/clip/Form XObject/inline image). HỦY thao tác để bảo "
                     f"toàn màu (Yêu cầu 4.7) — KHÔNG ghi kết quả."
                 )
-            nontext_spans.append(span)
-            moved_spans.append(span)
+        wrap_spans.append(span)
 
-    # ── Parse lại một lần để khớp index với span/show-op đã map ─────────────
-    instructions = parse_page_ops(pg)
-    n = len(instructions)
+    # Gộp span trùng (nhiều text object PDFium cùng 1 BT…ET / cùng clip group)
+    # để không bọc q/cm/Q lồng nhiều lần cùng vùng.
+    unique: list[OpSpan] = []
+    seen_ranges: set[tuple[int, int]] = set()
+    for span in wrap_spans:
+        key = (span.start, span.end)
+        if key in seen_ranges:
+            continue
+        seen_ranges.add(key)
+        unique.append(span)
 
-    # Gom các instruction chèn THÊM theo vị trí (prefix: trước instr[i]; suffix: sau).
+    # Gom chèn prefix/suffix theo vị trí.
     prefix: dict[int, list] = {}
     suffix: dict[int, list] = {}
 
@@ -528,31 +830,27 @@ def move_objects(
     def _add_suffix(i: int, instrs: list) -> None:
         suffix.setdefault(i, []).extend(instrs)
 
-    # image/vector: bọc q + cm(translate) TRƯỚC span, Q SAU instr cuối của span.
-    for span in nontext_spans:
+    # Clip LỒNG NHAU (InDesign/Illustrator): mở rộng clip của các khối q…Q BAO
+    # NGOÀI vùng bọc `cm` để glyph đã dịch không bị clip ngoài cắt mất (§bug
+    # "kéo text mất chữ"). Gom thay-thế `re` từ mọi span rồi áp một lần.
+    clip_replacements: dict[int, object] = {}
+    for span in unique:
         start = max(0, span.start)
         end = min(n, span.end)
+        if start >= end:
+            continue
         _add_prefix(start, [_q_instruction(), _cm_translate_instruction(pdf_dx, pdf_dy)])
         _add_suffix(end - 1, [_Q_instruction()])
+        clip_replacements.update(
+            _shift_enclosing_clip_rects(instructions, start, pdf_dx, pdf_dy)
+        )
 
-    # text: GHIM mọi show-op trong các cụm liên quan bằng Tm TUYỆT ĐỐI (giữ nguyên
-    # thứ tự op màu/state nên màu an toàn); chỉ run MỤC TIÊU cộng delta → các run
-    # khác trong cùng cụm KHÔNG xê dịch. (Không dùng cm vì cm bất hợp lệ trong BT…ET.)
-    target_indices: set[int] = {info["target_index"] for info in text_moves}
-    cluster_show: dict[int, tuple[list[float], list[float]]] = {}
-    for info in text_moves:
-        for so in info["cluster"]:
-            cluster_show[so["index"]] = (so["tm"], so["ctm"])
-    for idx, (tm_abs, ctm_abs) in cluster_show.items():
-        tm_use = _shifted_text_tm(tm_abs, ctm_abs, pdf_dx, pdf_dy) if idx in target_indices else tm_abs
-        _add_prefix(idx, [_Tm_instruction(tm_use)])
-
-    # ── Dựng instruction list mới (chèn prefix/suffix quanh từng instr) ─────
+    # ── Dựng instruction list mới ──────────────────────────────────────────
     new_instructions: list = []
     for i, instr in enumerate(instructions):
         if i in prefix:
             new_instructions.extend(prefix[i])
-        new_instructions.append(instr)
+        new_instructions.append(clip_replacements.get(i, instr))
         if i in suffix:
             new_instructions.extend(suffix[i])
 
@@ -562,13 +860,13 @@ def move_objects(
 
     return MoveResult(
         changed=True,
-        moved_spans=moved_spans,
+        moved_spans=wrap_spans,
         dx=pdf_dx,
         dy=pdf_dy,
-        wrapped_count=len(moved_spans),
+        wrapped_count=len(unique),
         message=(
-            f"Đã di chuyển {len(moved_spans)} object (dx={pdf_dx:.3f}, dy={pdf_dy:.3f}); "
-            f"text ghim Tm tuyệt đối theo run, image/vector bọc q/cm/Q."
+            f"Đã di chuyển {len(wrap_spans)} object (dx={pdf_dx:.3f}, dy={pdf_dy:.3f}); "
+            f"bọc q/cm/Q page-space (text gồm clip group nếu có)."
         ),
     )
 

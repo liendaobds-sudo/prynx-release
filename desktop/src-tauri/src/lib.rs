@@ -1164,6 +1164,34 @@ pub fn run() {
                         std::process::exit(1);
                     }
                 };
+                // ══════════════════════════════════════════════════════════════
+                // ZOMBIE FIX: Giành lại port 8321 TRƯỚC khi spawn sidecar mới.
+                // Nếu phiên trước app chết BẨN (OOM khi Optimize file lớn, End Task,
+                // crash) thì kill_sidecar() (chỉ chạy ở RunEvent::Exit) KHÔNG chạy →
+                // pdf-inspector-backend.exe sống sót thành ZOMBIE, tiếp tục giữ 8321
+                // với TOKEN CŨ. Sidecar mới bind 8321 thất bại → chết câm → frontend
+                // (token mới) chạm zombie (token cũ) → "invalid sidecar token".
+                //
+                // Kill theo TÊN (rất đặc trưng, không đụng hàng): single-instance đã
+                // chặn 2 app hợp lệ, và sidecar của instance NÀY chưa spawn (dòng ngay
+                // dưới) → mọi pdf-inspector-backend.exe đang tồn tại đều là zombie.
+                // /IM quét cả cây worker Nuitka trong 1 lệnh. Exit 128 (không có
+                // process) là BÌNH THƯỜNG → nuốt. creation_flags = CREATE_NO_WINDOW.
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/IM", "pdf-inspector-backend.exe", "/F"])
+                    .creation_flags(0x08000000)
+                    .output();
+                // Chờ port free: bind test là cách kiểm tin cậy nhất ("có ai đang
+                // LISTEN?"). Bind OK → drop ngay (nhả port) → spawn. Trần cứng 1s
+                // (20×50ms): vượt trần vẫn spawn (fail-open sang lưới an toàn ở
+                // main.py — Python sẽ log rõ + exit 48 nếu port thực sự kẹt).
+                for _ in 0..20 {
+                    match std::net::TcpListener::bind(("127.0.0.1", 8321u16)) {
+                        Ok(l) => { drop(l); break; }
+                        Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                    }
+                }
+
                 let spawn_result = sidecar
                     .args(["--port", "8321"])
                     .envs([
@@ -1180,7 +1208,7 @@ pub fn run() {
                         ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
                     ])
                     .spawn();
-                let (_rx, mut child) = match spawn_result {
+                let (mut rx, mut child) = match spawn_result {
                     Ok(v) => v,
                     Err(e) => {
                         log::error!("[SIDECAR] Spawn that bai: {}", e);
@@ -1192,7 +1220,33 @@ pub fn run() {
                         std::process::exit(1);
                     }
                 };
-                
+
+                // Forward stdout/stderr/kết-thúc của sidecar vào log Rust. Trước đây
+                // _rx bị VỨT → sidecar chết câm (vd bind 8321 thất bại) không để lại
+                // dấu vết → sự cố "invalid sidecar token" khó điều tra suốt thời gian
+                // dài. Nay log Terminated{code} → bắt được "exit 48 = port bận" tức
+                // thì. Đọc rx còn tránh đầy buffer pipe làm sidecar block. Fire-and-forget.
+                tauri::async_runtime::spawn(async move {
+                    use tauri_plugin_shell::process::CommandEvent;
+                    while let Some(event) = rx.recv().await {
+                        match event {
+                            CommandEvent::Stdout(bytes) => {
+                                log::info!("[SIDECAR-OUT] {}", String::from_utf8_lossy(&bytes).trim_end());
+                            }
+                            CommandEvent::Stderr(bytes) => {
+                                log::warn!("[SIDECAR-ERR] {}", String::from_utf8_lossy(&bytes).trim_end());
+                            }
+                            CommandEvent::Terminated(payload) => {
+                                log::error!("[SIDECAR] Terminated code={:?} signal={:?}", payload.code, payload.signal);
+                            }
+                            CommandEvent::Error(e) => {
+                                log::error!("[SIDECAR] Error: {}", e);
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+
                 // Lưu PID để KILL cả cây tiến trình khi thoát app (chống treo ngầm →
                 // update NSIS không ghi đè được file). set() 1 lần, bỏ qua nếu đã có.
                 let _ = SIDECAR_PID.set(child.pid());

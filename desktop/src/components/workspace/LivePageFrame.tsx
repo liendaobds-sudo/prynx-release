@@ -14,6 +14,7 @@ import { FontSelector } from '../preprocess-tools/FontSelector';
 import { Lock, Check, X, RotateCcw, AlertTriangle } from 'lucide-react';
 import {
     pageWidthPtFromDim,
+    pageHeightPtFromDim,
     editScale as calcEditScale,
     objectBboxNativeToCanvas,
     addBboxCanvasToNative,
@@ -842,6 +843,12 @@ export const LivePageFrame = (props: any) => {
     // → bỏ hiện tượng khung chọn "giật về chỗ cũ rồi nhảy tới chỗ mới".
     const editGhostHoldRef = useRef<boolean>(false);
     const editGhostHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Giữ targetIds đã chọn qua vòng commit (setSelectionFileId xóa selection) →
+    // sau khi /edit/objects refetch, re-select để khung bám chữ vừa kéo (tránh "mất chữ").
+    const pendingReselectIdsRef = useRef<string[] | null>(null);
+    // Ref cho listener window (tránh stale closure khi pointermove).
+    const editInteractionRef = useRef(editInteraction);
+    useEffect(() => { editInteractionRef.current = editInteraction; }, [editInteraction]);
 
     // Ẩn ghost + xóa transform tạm; dùng chung cho commit/refetch/timeout an toàn.
     const hideEditGhost = React.useCallback(() => {
@@ -931,10 +938,19 @@ export const LivePageFrame = (props: any) => {
         const cacheKey = `${selectionFileId}:${pageIndex}`;
 
         // Cache-hit → dùng ngay, KHÔNG fetch lại (bật/tắt chế độ không tải lại).
+        // Sau transform, cache bị clear (pdfUrl/fid đổi) nên thường miss; nếu hit
+        // vẫn tôn trọng pendingReselectIdsRef.
         const cached = _editObjectsCache.get(cacheKey);
         if (cached) {
             setEditObjects(cached);
-            setSelectedObjectIds(prev => (prev.length ? [] : prev));
+            const pending = pendingReselectIdsRef.current;
+            pendingReselectIdsRef.current = null;
+            if (pending && pending.length) {
+                const alive = pending.filter(id => cached.some(o => o.id === id));
+                setSelectedObjectIds(alive.length ? alive : []);
+            } else {
+                setSelectedObjectIds(prev => (prev.length ? [] : prev));
+            }
             editCropOriginRef.current = _editCropOriginCache.get(cacheKey) || [0, 0];
             hideEditGhost();
             return;
@@ -974,7 +990,16 @@ export const LivePageFrame = (props: any) => {
                 _editObjectsCache.set(cacheKey, objs); // Lưu cache cho lần bật/tắt sau.
                 _editCropOriginCache.set(cacheKey, [bx0, by0]);
                 setEditObjects(objs);
-                setSelectedObjectIds(prev => (prev.length ? [] : prev));
+                // Sau move/transform: re-select đúng id (cùng text-0…) để khung bám
+                // vị trí MỚI — nếu clear selection, chữ đã dịch dễ bị tưởng "mất".
+                const pending = pendingReselectIdsRef.current;
+                pendingReselectIdsRef.current = null;
+                if (pending && pending.length) {
+                    const alive = pending.filter(id => objs.some(o => o.id === id));
+                    setSelectedObjectIds(alive.length ? alive : []);
+                } else {
+                    setSelectedObjectIds(prev => (prev.length ? [] : prev));
+                }
                 hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
             } catch (err) {
                 if (!cancelled) {
@@ -1008,8 +1033,13 @@ export const LivePageFrame = (props: any) => {
     }, [isObjectEditMode, isActiveFrame, editObjects, setCurrentEditObjects]);
 
     // ─── Edit PDF Object: Ctrl+A chọn tất cả / Esc bỏ chọn / Delete xóa (task 10.1) ─
+    // CHỈ frame ĐANG XEM (isActiveFrame) mới xử lý phím: listener gắn trên `window` nên
+    // MỌI LivePageFrame còn mount (Virtuoso giữ nhiều frame sống) đều nghe. selectedObjectIds/
+    // selectionFileId là store DÙNG CHUNG nhưng originalPageNum RIÊNG mỗi frame → nếu không
+    // gate, bấm Delete khiến mọi frame gửi /edit/delete với cùng targetIds lên TRANG KHÁC
+    // (nơi id không tồn tại) → backend trả 404 + toast lỗi, dù frame active đã xóa thành công.
     useEffect(() => {
-        if (!isObjectEditMode || isVdpMode) return;
+        if (!isObjectEditMode || isVdpMode || !isActiveFrame) return;
         const onKey = (e: KeyboardEvent) => {
             // Bỏ qua khi đang gõ trong input/textarea (vd. editor text inline).
             const t = e.target as HTMLElement | null;
@@ -1040,7 +1070,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isObjectEditMode, isVdpMode, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds]);
+    }, [isObjectEditMode, isVdpMode, isActiveFrame, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds]);
 
     // ─── Edit PDF Object: reset transform tạm + preview khi đổi lựa chọn (10.2) ─
     // Khi tập chọn thay đổi (hoặc bỏ chọn), bỏ transform tạm và ảnh preview cũ để
@@ -1425,7 +1455,7 @@ export const LivePageFrame = (props: any) => {
             editGhostHideTimerRef.current = null;
         }
         // Reset transform tạm + ghost về identity rồi hiện ghost (cập nhật style trực
-        // tiếp trong handleMouseMove). KHÔNG setState để không re-render lúc bắt đầu kéo.
+        // tiếp qua window pointermove). KHÔNG setState mỗi frame.
         editLiveTransformRef.current = null;
         if (editGhostRef.current) {
             editGhostRef.current.style.transform = 'none';
@@ -1433,7 +1463,10 @@ export const LivePageFrame = (props: any) => {
             editGhostRef.current.style.display = 'block';
         }
         setEditInteraction({ type, handle, startX: coords.x, startY: coords.y, startBox });
-        try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* noop */ }
+        // KHÔNG releasePointerCapture — listener window vẫn nhận pointermove/up dù
+        // kéo ra ngoài khung (trước đây rời khung = hủy, dễ commit dở / ghost mất).
+        e.preventDefault();
+        e.stopPropagation();
     };
 
     // Khi MOUSE UP: dựng EditOp từ transform tạm rồi gửi /edit/transform (1 lần).
@@ -1460,7 +1493,27 @@ export const LivePageFrame = (props: any) => {
 
         if (lt.kind === 'move') {
             if (Math.abs(lt.dx) < 0.5 && Math.abs(lt.dy) < 0.5) { return; }
+            // Guard: scale hỏng / zoom 0 → delta Infinity → chữ bay khỏi trang ("mất").
+            if (!Number.isFinite(scale) || scale < 1e-6) {
+                console.warn('[edit] scale không hợp lệ, bỏ move', scale);
+                return;
+            }
             const delta = moveDeltaCanvasToPdf(lt.dx, lt.dy, scale);
+            if (!Number.isFinite(delta.dx) || !Number.isFinite(delta.dy)) {
+                console.warn('[edit] delta không hợp lệ, bỏ move', delta);
+                return;
+            }
+            // Chặn delta quá lớn (kéo nhầm / scale lệch) — tối đa 2× khổ trang.
+            const pageW = pageWidthPtFromDim(pageDim.w);
+            const pageH = pageHeightPtFromDim(pageDim.h);
+            const maxD = Math.max(pageW, pageH) * 2;
+            if (Math.abs(delta.dx) > maxD || Math.abs(delta.dy) > maxD) {
+                console.warn('[edit] delta quá lớn, bỏ move', delta, { pageW, pageH });
+                setEditNotice('Độ dịch quá lớn — thử kéo nhẹ hơn hoặc zoom vừa phải rồi kéo lại.');
+                setTimeout(() => setEditNotice(null), 5000);
+                hideEditGhost();
+                return;
+            }
             op = { page, kind: 'move', targetIds: selectedObjectIds, delta };
         } else if (lt.kind === 'resize') {
             if (Math.abs(lt.sx - 1) < 0.002 && Math.abs(lt.sy - 1) < 0.002) { return; }
@@ -1486,14 +1539,30 @@ export const LivePageFrame = (props: any) => {
             // Trang re-render từ Working_File mới (commitWorkingFile đổi pdfUrl → tile mới)
             // nên KHÔNG cần gọi /edit/preview (render PDFium toàn trang) — bỏ để giảm tải.
             if (tData?.success && tData.output_url && onEditCommit) {
+                // Giữ selection id qua vòng đổi fid/pdfUrl (setSelectionFileId clear selection).
+                pendingReselectIdsRef.current = [...selectedObjectIds];
+                // KHÔNG clearTileUrlCache() ở đây: mỗi commit ghi output_path MỚI → pdfUrl đổi →
+                // fileKey đổi → LiveTile tự re-mount và nạp tile từ Working_File mới (cache cũ key
+                // khác nên không bao giờ hit lại). clearTileUrlCache() revoke MỌI blob GLOBAL —
+                // gồm cả blob mà <img> đang hiển thị → trang trắng/mất chữ tới khi tile mới nạp
+                // xong. Delete (sendEditAndPreview) KHÔNG gọi nó và hoạt động đúng → bỏ để move
+                // khớp delete (proven-correct); backend đã chứng minh giữ nguyên chữ trên đĩa.
                 await onEditCommit(tData.output_url, tData.output_filename, tData.output_fid, tData.output_path);
+            } else {
+                console.warn('[edit] transform response thiếu success/output_url', tData);
+                setEditNotice('Di chuyển không trả về file mới — thử lại hoặc mở lại file.');
+                setTimeout(() => setEditNotice(null), 6000);
+                hideEditGhost();
             }
         } catch (err: any) {
             console.warn('[edit] transform thất bại:', err);
             // User-friendly for mapping ambiguity (409) — common for vectors inside clips / Form XObjects
             const msg = String(err?.message || err);
             if (msg.includes('409') || msg.includes('ánh xạ') || msg.includes('map')) {
-                setEditNotice('Vector quá phức tạp (clip/XObject) — không thể biến đổi an toàn (bảo toàn màu). Hãy dùng Delete hoặc tách group ở file nguồn.');
+                setEditNotice('Đối tượng quá phức tạp (clip/XObject) — không thể biến đổi an toàn. Thử Delete hoặc sửa ở file nguồn.');
+                setTimeout(() => setEditNotice(null), 7000);
+            } else {
+                setEditNotice(`Di chuyển thất bại: ${msg.slice(0, 120)}`);
                 setTimeout(() => setEditNotice(null), 7000);
             }
             hideEditGhost(); // Commit lỗi → bỏ ghost giữ (tránh kẹt ở vị trí thả).
@@ -1615,6 +1684,15 @@ export const LivePageFrame = (props: any) => {
 
     const handleMouseMove = (e: React.MouseEvent) => {
         if (!containerRef.current) return;
+
+        // ─── Edit PDF Object (task 10.2): KHI ĐANG KÉO object, listener WINDOW
+        // (`onMove` trong useEffect) đã lo TRỌN việc cập nhật ghost (move/resize/
+        // rotate) qua DOM ref — nó chỉ active đúng lúc editInteraction bật. Handler
+        // React này nếu chạy tiếp sẽ (1) gọi getBoundingClientRect() LẦN NỮA (ép
+        // layout thrash 2×/lần di chuột) và (2) bắn setHoveredPdfPosition vào store
+        // mỗi 50ms (crosshair vô nghĩa khi kéo) → giật. Return sớm để hết trùng lặp.
+        if (editInteraction) return;
+
         const rect = containerRef.current.getBoundingClientRect();
         const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
         const curX = coords.x;
@@ -1627,60 +1705,6 @@ export const LivePageFrame = (props: any) => {
                 dragRef.current.lastHoverTime = now;
                 setHoveredPdfPosition({ pageNum: originalPageNum, x: curX / rect.width, y: curY / rect.height });
             }
-        }
-
-        // ─── Edit PDF Object (task 10.2): cập nhật ghost transform theo THỜI GIAN
-        // THỰC qua DOM ref — KHÔNG setState (tránh re-render toàn bộ LivePageFrame →
-        // mượt). Lưu transform vào editLiveTransformRef để mouseup commit. KHÔNG gọi
-        // backend khi đang kéo (Yêu cầu 13.2).
-        if (editInteraction) {
-            const dxPx = curX - editInteraction.startX;
-            const dyPx = curY - editInteraction.startY;
-            const box = editInteraction.startBox;
-            const ghost = editGhostRef.current;
-            if (editInteraction.type === 'move') {
-                editLiveTransformRef.current = { kind: 'move', dx: dxPx, dy: dyPx };
-                if (ghost) {
-                    ghost.style.transformOrigin = 'center center';
-                    ghost.style.transform = `translate(${dxPx}px, ${dyPx}px)`;
-                    ghost.style.display = 'block';
-                }
-            } else if (editInteraction.type === 'resize') {
-                const handle = editInteraction.handle || 'se';
-                let newW = box.width, newH = box.height;
-                if (handle.includes('e')) newW = box.width + dxPx;
-                if (handle.includes('w')) newW = box.width - dxPx;
-                if (handle.includes('s')) newH = box.height + dyPx;
-                if (handle.includes('n')) newH = box.height - dyPx;
-                // Chặn lật/âm: giữ kích thước tối thiểu để sx/sy > 0 (Yêu cầu 6.5).
-                newW = Math.max(2, newW);
-                newH = Math.max(2, newH);
-                const sx = newW / box.width;
-                const sy = newH / box.height;
-                const anchor = EDIT_OPPOSITE_ANCHOR[handle];
-                editLiveTransformRef.current = { kind: 'resize', sx, sy, anchor };
-                if (ghost) {
-                    ghost.style.transformOrigin = EDIT_ANCHOR_ORIGIN[anchor];
-                    ghost.style.transform = `scale(${sx}, ${sy})`;
-                    ghost.style.display = 'block';
-                }
-            } else if (editInteraction.type === 'rotate') {
-                const cx = box.left + box.width / 2;
-                const cy = box.top + box.height / 2;
-                // Vector ban đầu (handle xoay) hướng thẳng LÊN: atan2(-1, 0) = -90°.
-                const initAng = Math.atan2(-1, 0);
-                const curAng = Math.atan2(curY - cy, curX - cx);
-                let deg = (curAng - initAng) * 180 / Math.PI;
-                // Giữ Shift → "bắt" góc về bội số 45° (0/45/90/135/180...) cho xoay chuẩn.
-                deg = snapRotation(deg, e.shiftKey);
-                editLiveTransformRef.current = { kind: 'rotate', rotateDeg: deg };
-                if (ghost) {
-                    ghost.style.transformOrigin = 'center center';
-                    ghost.style.transform = `rotate(${deg}deg)`;
-                    ghost.style.display = 'block';
-                }
-            }
-            return;
         }
 
         if (vdpInteraction) {
@@ -1701,22 +1725,9 @@ export const LivePageFrame = (props: any) => {
     };
 
     const handleMouseUp = (e: React.MouseEvent) => {
-        // ─── Edit PDF Object (task 10.2): kết thúc thao tác → gửi backend 1 lần ──
+        // Edit drag kết thúc ở window pointerup (useEffect) — không commit ở đây
+        // để tránh double-commit khi vừa pointerup vừa mouseup.
         if (editInteraction) {
-            setEditInteraction(null);
-            const lt = editLiveTransformRef.current;
-            // GIỮ ghost ở vị trí vừa thả (không ẩn ngay) → tránh "giật về chỗ cũ".
-            // Ghost sẽ ẩn khi overlay nạp vị trí mới (effect /edit/objects) hoặc
-            // timeout an toàn dưới đây (phòng commit lỗi/không refetch).
-            if (lt) {
-                editGhostHoldRef.current = true;
-                if (editGhostHideTimerRef.current) clearTimeout(editGhostHideTimerRef.current);
-                editGhostHideTimerRef.current = setTimeout(() => hideEditGhost(), 4000);
-            } else {
-                hideEditGhost();
-            }
-            editLiveTransformRef.current = null;
-            void commitEditTransform(lt);
             return;
         }
         if (vdpInteraction) {
@@ -1804,20 +1815,92 @@ export const LivePageFrame = (props: any) => {
         }
     };
 
+    // Edit drag: listener WINDOW (giống VDP) — kéo ra ngoài khung vẫn cập nhật ghost
+    // và pointerup vẫn commit. Trước đây chỉ onMouseMove/Up trên container + mouseleave
+    // HỦY → dễ mất thao tác / ghost biến mất giữa chừng.
+    useEffect(() => {
+        if (!editInteraction) return;
+        const applyMoveVisual = (curX: number, curY: number) => {
+            const inter = editInteractionRef.current;
+            if (!inter) return;
+            const dxPx = curX - inter.startX;
+            const dyPx = curY - inter.startY;
+            const box = inter.startBox;
+            const ghost = editGhostRef.current;
+            if (inter.type === 'move') {
+                editLiveTransformRef.current = { kind: 'move', dx: dxPx, dy: dyPx };
+                if (ghost) {
+                    ghost.style.transformOrigin = 'center center';
+                    ghost.style.transform = `translate(${dxPx}px, ${dyPx}px)`;
+                    ghost.style.display = 'block';
+                }
+            } else if (inter.type === 'resize') {
+                const handle = inter.handle || 'se';
+                let newW = box.width, newH = box.height;
+                if (handle.includes('e')) newW = box.width + dxPx;
+                if (handle.includes('w')) newW = box.width - dxPx;
+                if (handle.includes('s')) newH = box.height + dyPx;
+                if (handle.includes('n')) newH = box.height - dyPx;
+                newW = Math.max(2, newW);
+                newH = Math.max(2, newH);
+                const sx = newW / box.width;
+                const sy = newH / box.height;
+                const anchor = EDIT_OPPOSITE_ANCHOR[handle];
+                editLiveTransformRef.current = { kind: 'resize', sx, sy, anchor };
+                if (ghost) {
+                    ghost.style.transformOrigin = EDIT_ANCHOR_ORIGIN[anchor];
+                    ghost.style.transform = `scale(${sx}, ${sy})`;
+                    ghost.style.display = 'block';
+                }
+            } else if (inter.type === 'rotate') {
+                const cx = box.left + box.width / 2;
+                const cy = box.top + box.height / 2;
+                const initAng = Math.atan2(-1, 0);
+                const curAng = Math.atan2(curY - cy, curX - cx);
+                let deg = (curAng - initAng) * 180 / Math.PI;
+                // Shift snap không có e ở đây — giữ góc thô; Shift xử lý ở mousemove cũ nếu cần.
+                editLiveTransformRef.current = { kind: 'rotate', rotateDeg: deg };
+                if (ghost) {
+                    ghost.style.transformOrigin = 'center center';
+                    ghost.style.transform = `rotate(${deg}deg)`;
+                    ghost.style.display = 'block';
+                }
+            }
+        };
+        const onMove = (e: PointerEvent) => {
+            if (!containerRef.current) return;
+            const rect = containerRef.current.getBoundingClientRect();
+            const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
+            applyMoveVisual(coords.x, coords.y);
+        };
+        const onUp = () => {
+            const lt = editLiveTransformRef.current;
+            setEditInteraction(null);
+            if (lt) {
+                editGhostHoldRef.current = true;
+                if (editGhostHideTimerRef.current) clearTimeout(editGhostHideTimerRef.current);
+                editGhostHideTimerRef.current = setTimeout(() => hideEditGhost(), 4000);
+            } else {
+                hideEditGhost();
+            }
+            editLiveTransformRef.current = null;
+            void commitEditTransform(lt);
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onUp);
+        return () => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+            window.removeEventListener('pointercancel', onUp);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [editInteraction]);
+
     const handleMouseLeave = () => {
         dragRef.current.active = false;
-        // KHÔNG huỷ vdpInteraction khi rời khung: thao tác VDP do listener window quản
-        // lý (kết thúc bằng pointerup ở bất kỳ đâu) → kéo ra ngoài khung vẫn mượt.
-        // Edit PDF Object (10.2): rời khung khi đang kéo → HỦY thao tác (chưa gọi
-        // backend), bỏ transform tạm để overlay không kẹt trạng thái dở dang.
-        if (editInteraction) {
-            setEditInteraction(null);
-            editLiveTransformRef.current = null;
-            if (editGhostRef.current) {
-                editGhostRef.current.style.display = 'none';
-                editGhostRef.current.style.transform = 'none';
-            }
-        }
+        // KHÔNG huỷ editInteraction / vdpInteraction khi rời khung: listener window
+        // quản lý pointerup → kéo ra ngoài vẫn commit được (tránh "kéo chữ bị mất").
         if (marqueeRef.current) marqueeRef.current.style.display = 'none';
     };
     //#endregion

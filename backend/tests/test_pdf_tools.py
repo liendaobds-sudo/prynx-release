@@ -208,7 +208,8 @@ async def test_route_resize_does_not_crash(workdir):
     src = os.path.join(workdir, "s.pdf"); _make_pdf(src, 6, base_w=100)
     resp = await pdf_tools.resize_pages_endpoint(
         file=_uploadfile(src), target_w=210, target_h=297,
-        scale_mode="fit", apply_to="all", license_info=_DEV_LICENSE,
+        scale_mode="fit", apply_to="all", target_dpi=0, mode="auto",
+        license_info=_DEV_LICENSE,
     )
     # FileResponse với file kết quả tồn tại trên đĩa.
     assert os.path.exists(resp.path)

@@ -211,4 +211,39 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     args, _ = parser.parse_known_args()
 
+    # ── Lưới an toàn: port đã bị chiếm (zombie sidecar phiên trước) ──
+    # Tauri host (lib.rs) đã kill zombie theo tên + chờ port free TRƯỚC khi spawn
+    # con này. Đây là lớp phòng hờ khi kill đó thất bại (AV chặn taskkill / port
+    # chưa nhả kịp): thử bind vài lần cho zombie thêm thời gian nhả, nếu vẫn kẹt
+    # thì LOG RÕ + exit 48 (không crash câm như `uvicorn.run` trần trước đây —
+    # bind fail raise sâu trong event loop, _rx bị vứt nên không để lại dấu vết,
+    # khiến sự cố "invalid sidecar token" khó điều tra). exit 48 gợi EADDRINUSE.
+    import errno
+    import socket as _socket
+    import sys as _sys
+    import time as _time
+
+    _bind_ok = False
+    for _attempt in range(3):
+        _test = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        try:
+            _test.bind((args.host, args.port))
+            _bind_ok = True
+            break
+        except OSError as _e:
+            _in_use = getattr(_e, "winerror", None) == 10048 or _e.errno == errno.EADDRINUSE
+            if not _in_use:
+                raise  # lỗi OSError khác (vd host sai) → không nuốt
+            _time.sleep(0.5)
+        finally:
+            _test.close()
+
+    if not _bind_ok:
+        logger.critical(
+            "[STARTUP] Port %d already in use — likely a zombie sidecar from a "
+            "crashed session still holding the port. New sidecar cannot bind and "
+            "will exit (code 48).", args.port,
+        )
+        _sys.exit(48)
+
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

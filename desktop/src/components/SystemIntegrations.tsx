@@ -17,7 +17,6 @@ export default function SystemIntegrations() {
         if (validPaths.length === 0) return;
 
         const files: File[] = [];
-        const { stat } = await import('@tauri-apps/plugin-fs');
 
         for (const path of validPaths) {
             try {
@@ -25,11 +24,22 @@ export default function SystemIntegrations() {
                 const lower = name.toLowerCase();
                 const type = lower.endsWith('.pdf') ? 'application/pdf' : 
                             lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
-                
-                const fileStat = await stat(path);
+
+                // Lấy kích thước bằng lệnh Rust get_file_size (std::fs), KHÔNG dùng
+                // plugin-fs stat(): plugin-fs bị giới hạn scope ($DESKTOP/$HOME/$DOCUMENT
+                // /$DOWNLOAD/$APPDATA) nên NÉM LỖI với file trên Ổ MẠNG/NAS (đường dẫn
+                // UNC \\server\share\...) → file không mở được, phải copy ra Desktop.
+                // Lệnh Rust không vướng scope → mở trực tiếp file ổ mạng. Size không
+                // lấy được cũng không chặn mở (polyfill upload tự đọc bytes thật khi 0).
+                let size = 0;
+                try {
+                    size = await invoke<number>('get_file_size', { path });
+                } catch (e) {
+                    console.warn('get_file_size lỗi (vẫn mở, size=0):', path, e);
+                }
                 const fileObj = new File([], name, { type });
                 Object.defineProperty(fileObj, 'path', { value: path }); // CRITICAL: Skip HTTP upload polyfill by providing absolute path
-                Object.defineProperty(fileObj, 'size', { value: fileStat.size });
+                Object.defineProperty(fileObj, 'size', { value: size });
                 files.push(fileObj);
             } catch (err) {
                 console.error("Failed to read system file:", path, err);

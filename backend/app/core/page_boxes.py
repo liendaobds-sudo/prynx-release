@@ -50,6 +50,65 @@ def _get_page_box(page, box_name: str, fallback=None):
     return [0, 0, 595, 842]  # A4 default
 
 
+def _pixel_bbox_to_cropbox(x0, y0, x1, y1, pix_w, pix_h, cb, rotate, margin_pt):
+    """Ánh xạ bounding box nội dung (toạ độ PIXEL, gốc trên-trái, từ ảnh pdfium ĐÃ
+    áp /Rotate) → CropBox trong hệ toạ độ trang GỐC (chưa xoay).
+
+    Vì sao cần: pdfium render trang ĐÃ xoay theo /Rotate, nên pix_w/pix_h là chiều
+    SAU xoay (hoán đổi khi 90/270). Bản cũ lấy page_w/page_h (chưa xoay) chia thẳng
+    cho pix_w/pix_h → với trang /Rotate=90/270 thì tỉ lệ x↔y sai → box xén lệch hẳn.
+    Hàm này đảo ĐÚNG phép biến hình render theo từng góc quay (đã kiểm tay 4 góc).
+
+    cb = CropBox gốc [x0,y0,x1,y1] (chưa xoay). Trả CropBox mới [cx0,cy0,cx1,cy1].
+    """
+    cb0, cb1, cb2, cb3 = cb
+    W = cb2 - cb0   # bề rộng trang CHƯA xoay (pt)
+    H = cb3 - cb1   # bề cao trang CHƯA xoay (pt)
+    rot = rotate % 360
+
+    # Kích thước trang khi HIỂN THỊ (khớp orientation ảnh render).
+    if rot in (90, 270):
+        disp_w, disp_h = H, W
+    else:
+        disp_w, disp_h = W, H
+
+    sx = pix_w / disp_w if disp_w else 1.0
+    sy = pix_h / disp_h if disp_h else 1.0
+
+    # Khoảng nội dung theo toạ-độ-điểm HIỂN THỊ (gốc trên-trái, +y xuống).
+    X0 = x0 / sx
+    X1 = (x1 + 1) / sx
+    Y0 = y0 / sy
+    Y1 = (y1 + 1) / sy
+
+    # Đảo phép render theo góc quay → khoảng nội dung trong toạ độ trang GỐC
+    # (u dọc theo bề rộng, v dọc theo bề cao, gốc dưới-trái).
+    if rot == 90:
+        u_min, u_max = Y0, Y1
+        v_min, v_max = X0, X1
+    elif rot == 180:
+        u_min, u_max = W - X1, W - X0
+        v_min, v_max = Y0, Y1
+    elif rot == 270:
+        u_min, u_max = W - Y1, W - Y0
+        v_min, v_max = H - X1, H - X0
+    else:  # 0
+        u_min, u_max = X0, X1
+        v_min, v_max = H - Y1, H - Y0
+
+    cx0 = cb0 + u_min - margin_pt
+    cy0 = cb1 + v_min - margin_pt
+    cx1 = cb0 + u_max + margin_pt
+    cy1 = cb1 + v_max + margin_pt
+
+    # Kẹp trong CropBox gốc (không vượt vùng đang hiển thị).
+    cx0 = max(cb0, cx0)
+    cy0 = max(cb1, cy0)
+    cx1 = min(cb2, cx1)
+    cy1 = min(cb3, cy1)
+    return [cx0, cy0, cx1, cy1]
+
+
 class PageBoxesEngine:
 
     def __init__(self):
@@ -145,8 +204,19 @@ class PageBoxesEngine:
         """
         Phát hiện lề trắng và set CropBox tự động.
         margin_mm: lề bổ sung xung quanh nội dung (mm).
+
+        Bền với file thực tế (audit 2026-07-08):
+        - Render 200 DPI (không phải 72) → biên xén chính xác ~0.13mm/px thay vì
+          ~0.35mm/px, nét mảnh không bị mất khỏi mask.
+        - Lọc NOISE JPEG: nền trắng của ảnh JPEG có pixel nhiễu 245-249 rải tới sát
+          mép → ngưỡng cứng <250 cũ khiến bounding box nở ra cả trang (auto-trim
+          "không ăn"). Nay: ngưỡng nới + morphology-open bỏ đốm lẻ + bỏ thành phần
+          liên thông quá nhỏ (< diện tích tối thiểu) trước khi lấy bbox.
+        - Tôn trọng /Rotate: pdfium render ảnh ĐÃ xoay; ánh xạ pixel→CropBox qua
+          _pixel_bbox_to_cropbox (đảo đúng góc quay) thay vì giả định luôn R=0.
         """
         import pypdfium2 as pdfium
+        import cv2
 
         doc = pikepdf.Pdf.open(file_path)
         pdf_render = pdfium.PdfDocument(file_path)
@@ -154,56 +224,60 @@ class PageBoxesEngine:
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
         margin_pt = margin_mm * PT_PER_MM
 
+        # 200 DPI đủ nét cho tem nhỏ mà vẫn nhanh (dò lề, không phải xuất).
+        DETECT_SCALE = 200.0 / 72.0
+
         for pnum in target_pages:
             if 1 <= pnum <= len(doc.pages):
                 page = doc.pages[pnum - 1]
                 render_page = pdf_render[pnum - 1]
 
-                # Hệ quy chiếu phải là CROPBOX, không phải MediaBox: pdfium
-                # render đúng vùng CropBox. Nếu lấy MediaBox làm gốc/tỉ lệ khi
-                # CropBox ≠ MediaBox thì pixel→point sẽ lệch (từng ra nguyên khổ
-                # gốc thay vì vùng nội dung). .cropbox tự fallback về MediaBox.
+                # Hệ quy chiếu là CROPBOX (chưa xoay); pdfium render đúng vùng
+                # CropBox rồi áp /Rotate. .cropbox tự fallback về MediaBox.
                 cb = _get_page_box(page, "/CropBox", fallback=_get_page_box(page, "/MediaBox"))
-                page_w = cb[2] - cb[0]
-                page_h = cb[3] - cb[1]
+                rotate = int(page.get("/Rotate", 0) or 0) % 360
 
-                # Render at low DPI for fast detection
-                bitmap = render_page.render(scale=1.0)  # 72 DPI
+                bitmap = render_page.render(scale=DETECT_SCALE)
                 img = bitmap.to_pil()
                 arr = np.array(img)
                 pix_w, pix_h = img.size
 
-                # Detect non-white region
+                # Nội dung = pixel KHÔNG-trắng. Ngưỡng 248 (nới nhẹ) rồi lọc noise:
+                # nền JPEG lẫn đốm 245-249 lẻ tẻ; morphology-open (erode→dilate) xoá
+                # đốm ≤ 1px; connectedComponents bỏ mảng nhỏ hơn ngưỡng diện tích.
                 if arr.ndim == 3 and arr.shape[2] >= 3:
-                    mask = np.any(arr[:, :, :3] < 250, axis=2)
+                    mask = np.any(arr[:, :, :3] < 248, axis=2).astype(np.uint8)
                 else:
-                    mask = arr[:, :, 0] < 250
+                    mask = (arr[:, :, 0] < 248).astype(np.uint8)
+
+                # Bỏ đốm nhiễu 1px (open = erode rồi dilate, kernel 3x3).
+                _k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _k)
+
+                # Bỏ thành phần liên thông quá nhỏ (noise còn sót sau open). Ngưỡng
+                # ~ (0.3mm)^2 ở DPI hiện tại — nhỏ hơn coi là nhiễu, không phải nội dung.
+                _min_side_px = max(2, int(0.3 * PT_PER_MM * DETECT_SCALE))
+                _min_area = _min_side_px * _min_side_px
+                n_lbl, _lbl, _stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+                clean = np.zeros_like(mask)
+                for _i in range(1, n_lbl):  # 0 = nền
+                    if _stats[_i, cv2.CC_STAT_AREA] >= _min_area:
+                        clean[_lbl == _i] = 1
+                mask = clean
 
                 if not mask.any():
-                    continue  # All white page, skip
+                    continue  # Trang trắng (hoặc chỉ có noise) → bỏ qua, giữ nguyên box
 
                 rows = np.any(mask, axis=1)
                 cols = np.any(mask, axis=0)
                 y0, y1 = np.where(rows)[0][[0, -1]]
                 x0, x1 = np.where(cols)[0][[0, -1]]
 
-                # Convert pixel coords to points (gốc theo CropBox)
-                scale_x = page_w / pix_w
-                scale_y = page_h / pix_h
-
-                # pikepdf uses bottom-left origin (PDF standard)
-                crop_x0 = cb[0] + x0 * scale_x - margin_pt
-                crop_y0 = cb[1] + (pix_h - y1 - 1) * scale_y - margin_pt
-                crop_x1 = cb[0] + (x1 + 1) * scale_x + margin_pt
-                crop_y1 = cb[1] + (pix_h - y0) * scale_y + margin_pt
-
-                # Clamp trong CropBox (không vượt vùng đang hiển thị)
-                crop_x0 = max(cb[0], crop_x0)
-                crop_y0 = max(cb[1], crop_y0)
-                crop_x1 = min(cb[2], crop_x1)
-                crop_y1 = min(cb[3], crop_y1)
-
-                page[pikepdf.Name("/CropBox")] = pikepdf.Array([crop_x0, crop_y0, crop_x1, crop_y1])
+                new_cb = _pixel_bbox_to_cropbox(
+                    int(x0), int(y0), int(x1), int(y1),
+                    pix_w, pix_h, cb, rotate, margin_pt,
+                )
+                page[pikepdf.Name("/CropBox")] = pikepdf.Array(new_cb)
 
         pdf_render.close()
 

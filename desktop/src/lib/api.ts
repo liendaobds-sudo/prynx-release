@@ -169,10 +169,14 @@ export function installBackendFetchAuth(): void {
 export async function prepareFileForUpload(file: File | any): Promise<File | Blob> {
   // CRITICAL BUGFIX: Tauri SystemIntegrations creates fake File objects with 0 bytes of blob data (file.size is spoofed).
   // If the file is actually a fake blob but has a physical path, we MUST read it from disk before uploading.
-  if (file.path && file.size > 0) {
-      // Test if the actual blob content is empty despite the spoofed size
-      const testSlice = file.slice(0, 1);
-      if (testSlice.size === 0) {
+  if (file.path) {
+      // Đọc lại bytes từ đĩa khi blob RỖNG dù file có path. Hai trường hợp:
+      //  - Tauri fake File: file.size bị spoof (>0) nhưng slice ra 0 byte.
+      //  - File edit-commit: new File([], name) → file.size THẬT = 0 nhưng path có nội dung.
+      // Trước đây gate `file.size > 0` bỏ sót case edit-commit (size=0) → upload NGUYÊN
+      // File 0 byte → backend ghi file rỗng → PDFium "Data format error" khi mở lại.
+      const blobIsEmpty = file.size === 0 || file.slice(0, 1).size === 0;
+      if (blobIsEmpty) {
           // ⚡ PERF: lấy bytes qua ASSET PROTOCOL (convertFileSrc + fetch) — KÊNH RIÊNG,
           // KHÔNG dùng kênh invoke IPC. Trước đây readFile() (plugin-fs) đọc cả file qua
           // IPC → file lớn (vd 15MB) serialize làm NGHẼN kênh IPC → invoke('get_pdf_metadata')
@@ -498,14 +502,20 @@ export async function backendSplitPdf(file: File, mode: string, config: any): Pr
   return await res.blob();
 }
 
-export async function backendResizePages(file: File, targetW: number, targetH: number, scaleMode: string, applyTo: string): Promise<Blob> {
+export async function backendResizePages(
+  file: File, targetW: number, targetH: number, scaleMode: string, applyTo: string,
+  targetDpi: number = 0, mode: string = 'auto',
+): Promise<Blob> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('target_w', String(targetW));
   formData.append('target_h', String(targetH));
   formData.append('scale_mode', scaleMode);
   formData.append('apply_to', applyTo);
-  
+  // target_dpi > 0 bật giảm dữ liệu theo khổ mới (giống PDF Optimizer của Acrobat).
+  formData.append('target_dpi', String(targetDpi));
+  formData.append('mode', mode);
+
   const res = await authenticatedFetch(`${API_BASE}/api/pdf-tools/resize`, {
     method: 'POST',
     body: formData,

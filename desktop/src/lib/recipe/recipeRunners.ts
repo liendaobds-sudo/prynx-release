@@ -220,6 +220,10 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
             fd.append('draw_cut_contour', productType === 'rectangle' ? 'false' : ((p.cutMode && p.cutMode !== 'none') ? 'true' : 'false'));
             fd.append('bleed_color_type', p.bleedColorType || 'image');
             fd.append('bleed_color_hex', p.bleedColorHex || '#FFFFFF');
+            // Parity với đường tương tác (StickerTool.runOpenCVBleed): giữ "tạo đường
+            // cắt cho trang đầu" (chỉ tab tem) và edge-bite (chỉ tab xén vuông) khi phát lại.
+            fd.append('edge_bite_mm', productType === 'rectangle' ? String(p.edgeBiteMm ?? 0) : '0');
+            fd.append('cut_first_page_only', productType === 'sticker' && p.cutFirstPageOnly ? 'true' : 'false');
             const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, { method: 'POST', body: fd });
             if (!response.ok) {
                 const err = await response.json().catch(() => null);

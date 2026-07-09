@@ -707,6 +707,15 @@ function AppInner() {
         sysTimeoutRef.current = setTimeout(() => {
           const filesToProcess = [...accumulatedFiles.current];
           accumulatedFiles.current = [];
+          // Sắp theo SỐ dẫn đầu tên file (numeric): "10_" SAU "2_" (kiểu số, không
+          // phải chữ cái). Quy ước người dùng đặt tên "1_...","2_..." để định thứ tự
+          // trang → CombineTab gộp trang theo đúng thứ tự này → khớp cột số lượng
+          // Excel khi dán. File không có số đầu vẫn sắp ổn định theo tên.
+          if (filesToProcess.length > 1) {
+            filesToProcess.sort((a, b) =>
+              a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+            );
+          }
           if (filesToProcess.length > 0) {
             if (filesToProcess.length > 1) {
               if ((window as any).__isBgRemoverActive) {

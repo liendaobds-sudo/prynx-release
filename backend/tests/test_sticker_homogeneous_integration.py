@@ -156,6 +156,92 @@ def test_homogeneous_branch_routing_and_src_page_idx(monkeypatch):
         assert "abs_x" in pl and "abs_y" in pl and "original_cell_y" in pl
 
 
+def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
+    """Regression: chế độ đồng nhất PHẢI chạy khi nhập SỐ LƯỢNG khác nhau (không auto-fill).
+
+    Kịch bản user: 'tạo khuôn trang đầu' rồi bình tem bế với số lượng/trang khác nhau.
+    Trước đây cổng ``is_auto_fill`` chặn → mỗi trang xếp độc lập (tem đầu lệch tem sau).
+    Nay đồng nhất chạy bất kể số lượng; nội dung giãn round-robin theo số lượng.
+    """
+    n_pages = 4  # trang 0 = master, trang 1,2,3 = nội dung
+
+    _call = {"n": 0}
+
+    def _fake_find_die(_src_page):
+        idx = _call["n"]; _call["n"] += 1
+        if idx == 0:
+            return {"rect": pdf_lib.Rect(0.0, 0.0, 100.0, 80.0),
+                    "items": [], "color": (0, 1, 1, 0), "width": 0.5}
+        return None
+
+    monkeypatch.setattr(nup_engine, "_find_largest_die_path", _fake_find_die)
+    monkeypatch.setattr(nup_engine, "compute_sticker_layout_for_page", _canned_layout)
+
+    _dcall = {"n": 0}
+
+    def _fake_page_has_die(_pg):
+        idx = _dcall["n"]; _dcall["n"] += 1
+        return idx == 0
+
+    monkeypatch.setattr(sh, "page_has_die", _fake_page_has_die)
+
+    spy = {"build_hom": 0, "auto_fill": 0}
+    _orig_build = sh.build_homogeneous_layout
+
+    def _spy_build(*a, **k):
+        spy["build_hom"] += 1
+        return _orig_build(*a, **k)
+
+    monkeypatch.setattr(sh, "build_homogeneous_layout", _spy_build)
+
+    def _spy_auto_fill(*a, **k):
+        spy["auto_fill"] += 1
+        return {"placements": []}
+
+    monkeypatch.setattr(bin_packing, "solve_auto_fill_mixed", _spy_auto_fill)
+
+    captured = {}
+
+    def _capture_chunk(args):
+        captured["precalc"] = args[37]
+        captured["homogeneous_mode"] = args[-2]
+        captured["master_idx"] = args[-1]
+        raise _StopEngine()
+
+    monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "src.pdf")
+        out = os.path.join(td, "out.pdf")
+        _make_blank_pdf(src, n_pages)
+        settings = {
+            "isDieCutMode": True,
+            "sheetWidth": 320,
+            "sheetHeight": 450,
+            "targetQuantity": 0,
+            # SỐ LƯỢNG khác nhau theo trang → is_auto_fill = False (đây là mấu chốt test).
+            "targetQuantitiesByPage": {"1": 2, "2": 1, "3": 1},
+            "detectedShapesByPage": {"0": "CIRCLE_ELLIPSE"},
+            "gridStrategy": "optimal_auto",
+            "groupingStrategy": "maximize_area",
+            "pontType": "none",
+        }
+        with pytest.raises(_StopEngine):
+            nup_engine.run_nup_engine(src, out, settings, job_id="t-hom-qty")
+
+    # Đồng nhất VẪN chạy dù KHÔNG auto-fill (đây là fix chính).
+    assert spy["build_hom"] == 1, "đồng nhất phải chạy khi có số lượng"
+    assert spy["auto_fill"] == 0
+    assert captured.get("homogeneous_mode") is True
+    assert captured.get("master_idx") == 0
+
+    # Nội dung giãn theo số lượng, round-robin: page1×2, page2×1, page3×1 → [1,2,3,1].
+    sheet0 = captured["precalc"][0]
+    src_pages = [pl["src_page_idx"] for pl in sheet0]
+    assert sorted(src_pages) == [1, 1, 2, 3], f"số lượng theo trang sai: {src_pages}"
+    assert 0 not in src_pages  # master chỉ là khuôn
+
+
 # ─── Property 7: Fallback an toàn (≥2 khuôn / 0 khuôn → đường cũ) ─────────────
 
 def test_fallback_two_dies_uses_old_binpack(monkeypatch):

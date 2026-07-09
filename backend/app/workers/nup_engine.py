@@ -688,49 +688,51 @@ def run_nup_engine(
                 remaining_by_page = {p_idx: qty for p_idx, qty, _, _ in page_infos}
 
         # ── PHÁT HIỆN CHẾ ĐỘ ĐỒNG NHẤT (sticker-homogeneous-nup, Task 6) ──
-        # Chỉ bật ở chế độ "Dàn nhiều mẫu" (auto-fill). Dựng adapter/trang từ tín hiệu
-        # has_die (đáng tin) + hình nhận diện; rồi detect_homogeneous quyết định.
+        # Áp dụng cho MỌI chế độ die-cut, KỂ CẢ khi nhập số lượng (không chỉ auto-fill):
+        # "1 khuôn master (trang đầu) + N trang nội dung" PHẢI xếp đồng nhất bất kể có
+        # đặt số lượng hay không — việc dùng-chung-khuôn không liên quan tới số lượng.
+        # Dựng adapter/trang từ tín hiệu has_die (đáng tin) + hình nhận diện; rồi
+        # detect_homogeneous quyết định (trả None khi ≠ đúng-1-master → giữ đường cũ).
         homogeneous_plan = None
         homogeneous_master_idx = None
-        if is_auto_fill:
-            try:
-                from app.workers import sticker_homogeneous as _sh
-                from app.workers.shape_types import ShapeType as _ShapeType, coerce_shape_type as _coerce
-                _adapters = []
-                for _p in range(page_count):
-                    _hd = genuine_die_by_page.get(_p, False)
-                    if _hd:
-                        _s = (detected_shapes_by_page.get(str(_p))
-                              or detected_shapes_by_page.get(_p))
-                        try:
-                            _stype = _coerce(_s) if _s else _ShapeType.CUSTOM
-                        except Exception:
-                            _stype = _ShapeType.CUSTOM
-                    else:
+        try:
+            from app.workers import sticker_homogeneous as _sh
+            from app.workers.shape_types import ShapeType as _ShapeType, coerce_shape_type as _coerce
+            _adapters = []
+            for _p in range(page_count):
+                _hd = genuine_die_by_page.get(_p, False)
+                if _hd:
+                    _s = (detected_shapes_by_page.get(str(_p))
+                          or detected_shapes_by_page.get(_p))
+                    try:
+                        _stype = _coerce(_s) if _s else _ShapeType.CUSTOM
+                    except Exception:
                         _stype = _ShapeType.CUSTOM
-                    _tw, _th = trim_by_page.get(_p, (0.0, 0.0))
-                    _poly = ((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th)) if _hd else ()
-                    _props = (detected_shape_params_by_page.get(str(_p))
-                              or detected_shape_params_by_page.get(_p) or {})
-                    _adapters.append(_sh.make_shape_adapter(_stype, _poly, _tw, _th, _props, has_die=_hd))
-                homogeneous_plan = _sh.detect_homogeneous(_adapters)
-                if homogeneous_plan is not None:
-                    homogeneous_master_idx = homogeneous_plan.master_page_idx
-                    # Cần nesting master hợp lệ để xếp shape-aware; nếu không có → fallback.
-                    if not (full_layouts.get(homogeneous_master_idx)
-                            and full_layouts[homogeneous_master_idx].get('items')):
-                        logger.info("   [HOMOGENEOUS] Master nesting trống → fallback bin-pack trộn cũ")
-                        homogeneous_plan = None
-                        homogeneous_master_idx = None
-                    else:
-                        logger.info(
-                            f"   [HOMOGENEOUS] Bật chế độ đồng nhất: master=trang {homogeneous_master_idx}, "
-                            f"shape={homogeneous_plan.shape_type.name}, "
-                            f"{len(homogeneous_plan.content_pages)} trang nội dung")
-            except Exception as _e_hom:
-                logger.warning(f"   [HOMOGENEOUS] Phát hiện thất bại → giữ đường cũ: {_e_hom}")
-                homogeneous_plan = None
-                homogeneous_master_idx = None
+                else:
+                    _stype = _ShapeType.CUSTOM
+                _tw, _th = trim_by_page.get(_p, (0.0, 0.0))
+                _poly = ((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th)) if _hd else ()
+                _props = (detected_shape_params_by_page.get(str(_p))
+                          or detected_shape_params_by_page.get(_p) or {})
+                _adapters.append(_sh.make_shape_adapter(_stype, _poly, _tw, _th, _props, has_die=_hd))
+            homogeneous_plan = _sh.detect_homogeneous(_adapters)
+            if homogeneous_plan is not None:
+                homogeneous_master_idx = homogeneous_plan.master_page_idx
+                # Cần nesting master hợp lệ để xếp shape-aware; nếu không có → fallback.
+                if not (full_layouts.get(homogeneous_master_idx)
+                        and full_layouts[homogeneous_master_idx].get('items')):
+                    logger.info("   [HOMOGENEOUS] Master nesting trống → fallback bin-pack trộn cũ")
+                    homogeneous_plan = None
+                    homogeneous_master_idx = None
+                else:
+                    logger.info(
+                        f"   [HOMOGENEOUS] Bật chế độ đồng nhất: master=trang {homogeneous_master_idx}, "
+                        f"shape={homogeneous_plan.shape_type.name}, "
+                        f"{len(homogeneous_plan.content_pages)} trang nội dung")
+        except Exception as _e_hom:
+            logger.warning(f"   [HOMOGENEOUS] Phát hiện thất bại → giữ đường cũ: {_e_hom}")
+            homogeneous_plan = None
+            homogeneous_master_idx = None
 
         precalculated_placements = {}
         cluster_tile_cuts = {}  # sheet_idx -> tile_cut_lines for cluster_tile mode
@@ -909,8 +911,10 @@ def run_nup_engine(
                 p['abs_y'] = y_off + (total_content_h_s - cell['y'] - cell['height'])
                 p['original_cell_y'] = usable_h + margin_bottom + margin_top - p['abs_y'] - cell['height']
 
-        if homogeneous_plan is not None and is_auto_fill:
+        if homogeneous_plan is not None:
             # ══ CHẾ ĐỘ ĐỒNG NHẤT: 1 khuôn master + N trang nội dung (Task 6) ══
+            # Chạy cho cả auto-fill LẪN có-số-lượng: _quantities bên dưới đọc số lượng
+            # thật theo trang (None khi auto-fill → mỗi trang 1 lần).
             # Xếp shape-aware từ master (tái dùng nesting đã tính ở full_layouts → "1 lần"),
             # rải nội dung theo thứ tự (cuốn chiếu sang tờ), căn-giữa qua finalize_placements
             # (SSOT parity preview↔output), giải boong qua resolve_pont_collisions_on_placements.

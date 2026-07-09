@@ -10,10 +10,21 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export const getFileArrayBuffer = async (file: File | Blob): Promise<ArrayBuffer> => {
-    if ((window as any).__TAURI_INTERNALS__ && (file as any).path) {
-        const { convertFileSrc } = await import('@tauri-apps/api/core');
-        const resp = await fetch(convertFileSrc((file as any).path));
-        return resp.arrayBuffer();
+    const path = (file as any).path as string | undefined;
+    if ((window as any).__TAURI_INTERNALS__ && path) {
+        const { convertFileSrc, invoke } = await import('@tauri-apps/api/core');
+        try {
+            const resp = await fetch(convertFileSrc(path));
+            if (resp.ok) return await resp.arrayBuffer();
+            throw new Error('asset fetch status ' + resp.status);
+        } catch (e) {
+            // Fallback: đọc qua lệnh Rust read_system_file (std::fs) — chắc chắn đọc
+            // được file trên Ổ MẠNG/NAS (UNC \\server\share\...) kể cả khi asset
+            // protocol vướng edge-case với path mạng.
+            const raw: any = await invoke('read_system_file', { path });
+            const u8 = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+            return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+        }
     }
     return file.arrayBuffer();
 };

@@ -21,7 +21,14 @@ const COMMON_SIZES = [
 export interface PageResizerSettings extends ResizeOptions {
     sizePresetId: string;
     applyToStr: string;
+    // Giảm dữ liệu theo khổ mới (giống PDF Optimizer). undefined = tự động
+    // (downsample 300 DPI khi thu nhỏ khổ), 0 = tắt (giữ nguyên chất lượng),
+    // >0 = DPI cụ thể. resizeMode: 'auto' | 'vector' | 'raster'.
+    targetDpi?: number;
+    resizeMode?: string;
 }
+
+const DPI_PRESETS = [150, 300, 600];
 
 interface Props {
     settings: PageResizerSettings;
@@ -148,6 +155,97 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                         <div className="text-[10px] text-slate-400 mt-1.5 ml-1">Nhập số trang cách nhau bằng dấu phẩy hoặc gạch ngang.</div>
                     </div>
                 )}
+            </div>
+
+            <ToolDivider />
+
+            {/* 4. Giảm dung lượng theo khổ mới (giống PDF Optimizer của Acrobat) */}
+            <div className="flex flex-col gap-2">
+                <ToolSectionLabel>4. Giảm dung lượng theo khổ mới</ToolSectionLabel>
+                <ToolInfo desc="Đổi khổ thường chỉ thu nhỏ hình học nên ảnh độ phân giải gốc vẫn nằm trong file (VD A1→A5 mà file vẫn nặng). Bật giảm mẫu để hạ độ phân giải ảnh theo khổ mới, giúp file nhẹ và các bước sau (bù xén/bình cắt) nhanh hơn nhiều." />
+                {(() => {
+                    const dpiChoice: 'auto' | 'off' | 'custom' =
+                        settings.targetDpi === undefined ? 'auto'
+                            : settings.targetDpi === 0 ? 'off' : 'custom';
+                    const setChoice = (c: 'auto' | 'off' | 'custom') => {
+                        if (c === 'auto') onChange({ ...settings, targetDpi: undefined });
+                        else if (c === 'off') onChange({ ...settings, targetDpi: 0 });
+                        else onChange({ ...settings, targetDpi: settings.targetDpi && settings.targetDpi > 0 ? settings.targetDpi : 300 });
+                    };
+                    const mode = settings.resizeMode || 'auto';
+                    return (
+                        <>
+                            <div className="grid grid-cols-3 gap-2">
+                                <ToolCardOption
+                                    selected={dpiChoice === 'auto'}
+                                    onClick={() => setChoice('auto')}
+                                    label="Tự động"
+                                    desc="Giảm mẫu 300 DPI khi thu nhỏ khổ (khuyến nghị)."
+                                />
+                                <ToolCardOption
+                                    selected={dpiChoice === 'custom'}
+                                    onClick={() => setChoice('custom')}
+                                    label="Chọn DPI"
+                                    desc="Tự đặt độ phân giải đích cho ảnh."
+                                />
+                                <ToolCardOption
+                                    selected={dpiChoice === 'off'}
+                                    onClick={() => setChoice('off')}
+                                    label="Giữ nguyên"
+                                    desc="Không giảm mẫu (chất lượng tối đa, file lớn)."
+                                />
+                            </div>
+
+                            {dpiChoice === 'custom' && (
+                                <div className="mt-2 flex items-center gap-2">
+                                    {DPI_PRESETS.map(d => (
+                                        <ToolCardOption
+                                            key={d}
+                                            selected={settings.targetDpi === d}
+                                            onClick={() => onChange({ ...settings, targetDpi: d })}
+                                            label={`${d}`}
+                                            desc={d === 150 ? 'Xem màn hình' : d === 300 ? 'In offset' : 'In nét cao'}
+                                        />
+                                    ))}
+                                    <div className="w-28">
+                                        <ToolNumberInput
+                                            label="DPI"
+                                            value={settings.targetDpi ?? 300}
+                                            onChange={val => onChange({ ...settings, targetDpi: Math.max(1, Math.round(val)) })}
+                                            step={10}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+
+                            {dpiChoice !== 'off' && (
+                                <div className="mt-3">
+                                    <div className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1.5 ml-0.5">Chế độ xử lý</div>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <ToolCardOption
+                                            selected={mode === 'auto'}
+                                            onClick={() => onChange({ ...settings, resizeMode: 'auto' })}
+                                            label="Tự động"
+                                            desc="Tự chọn theo nội dung trang."
+                                        />
+                                        <ToolCardOption
+                                            selected={mode === 'vector'}
+                                            onClick={() => onChange({ ...settings, resizeMode: 'vector' })}
+                                            label="Ưu tiên chất lượng"
+                                            desc="Giữ chữ/vector & màu CMYK, chỉ giảm ảnh."
+                                        />
+                                        <ToolCardOption
+                                            selected={mode === 'raster'}
+                                            onClick={() => onChange({ ...settings, resizeMode: 'raster' })}
+                                            label="Nhanh nhất"
+                                            desc="Dựng lại theo ảnh (mất vector, ra RGB)."
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                        </>
+                    );
+                })()}
             </div>
 
         </div>

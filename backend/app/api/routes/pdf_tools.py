@@ -187,17 +187,28 @@ async def resize_pages_endpoint(
     target_h: float = Form(297),
     scale_mode: str = Form("fit"),
     apply_to: str = Form("all"),
+    target_dpi: int = Form(0),
+    mode: str = Form("auto"),
     license_info: dict = Depends(require_license),
 ):
-    """Resize PDF pages to a new format."""
-    from app.workers.pdf_tools_engine import resize_pages
-    
+    """Resize PDF pages to a new format.
+
+    target_dpi > 0 bật GIẢM DỮ LIỆU theo khổ mới (giống PDF Optimizer): file thu
+    nhỏ đúng theo khổ đích thay vì giữ nguyên độ phân giải gốc. mode:
+      - 'auto'    : tự chọn (raster khi thuần ảnh & an toàn, còn lại vector).
+      - 'vector'  : GS downsample ảnh, giữ vector/text/CMYK (an toàn in ấn).
+      - 'raster'  : render lại theo DPI (nhanh/nhỏ nhất, mất vector & CMYK).
+      - 'xobject' : chỉ đổi hình học (hành vi cũ, không giảm dung lượng).
+    target_dpi=0 → giữ hành vi cũ."""
+    from app.workers.pdf_tools_engine import resize_pages_smart
+
     source_path = await save_upload(file)
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"resized_{job_id}.pdf")
-    
+
     try:
-        resize_pages(source_path, output_path, target_w, target_h, scale_mode, apply_to)
+        resize_pages_smart(source_path, output_path, target_w, target_h,
+                           scale_mode, apply_to, target_dpi=target_dpi, mode=mode)
         _safe_watermark(output_path, license_info)
         return FileResponse(
             path=output_path,
