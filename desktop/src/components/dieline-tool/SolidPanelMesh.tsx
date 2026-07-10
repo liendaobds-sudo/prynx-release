@@ -122,6 +122,8 @@ export interface SolidPanelMeshProps {
     globalBBox: BBox;
     /** Texture ảnh nghệ thuật mặt ngoài (đã nạp ở lớp trên); `null` = chỉ finish. */
     texture?: THREE.Texture | null;
+    /** Texture ảnh nghệ thuật mặt trong (khi bật in mặt trong); `null` = giấy bồi. */
+    innerTexture?: THREE.Texture | null;
     /** Khoảng cách tách rời cơ sở (mm) cho 1 đơn vị hệ số; mặc định 40mm. */
     explodeSpacing?: number;
     /**
@@ -251,11 +253,21 @@ function effFoldAngleRad(
  *
  * _Requirements: 5.1, 5.3_
  */
+type ArtworkXform = {
+    scalePct: number;
+    offsetXPct: number;
+    offsetYPct: number;
+    rotationDeg?: number;
+    flipH?: boolean;
+    flipV?: boolean;
+};
+
 function applySolidPanelUV(
     geometry: THREE.ExtrudeGeometry,
     panel: Panel,
     mode: 'per-face' | 'aligned-to-dieline',
-    transform: { scalePct: number; offsetXPct: number; offsetYPct: number; rotationDeg?: number },
+    outerTransform: ArtworkXform,
+    innerTransform: ArtworkXform,
     globalBBox: BBox,
 ): void {
     const position = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
@@ -285,8 +297,9 @@ function applySolidPanelUV(
     // Panel giả lập: chỉ `outline` được `computePanelUV` sử dụng để ánh xạ.
     const pseudoPanel = { ...panel, outline: points } as Panel;
 
-    const outerUV = computePanelUV(pseudoPanel, mode, transform, globalBBox, 'outer');
-    const innerUV = computePanelUV(pseudoPanel, mode, transform, globalBBox, 'inner');
+    // Mặt ngoài / mặt trong dùng transform ĐỘC LẬP (Yêu cầu 5.4).
+    const outerUV = computePanelUV(pseudoPanel, mode, outerTransform, globalBBox, 'outer');
+    const innerUV = computePanelUV(pseudoPanel, mode, innerTransform, globalBBox, 'inner');
 
     const uv = new Float32Array(count * 2);
     for (let i = 0; i < count; i++) {
@@ -373,6 +386,7 @@ export default function SolidPanelMesh({
     thickness,
     globalBBox,
     texture = null,
+    innerTexture = null,
     explodeSpacing = DEFAULT_EXPLODE_SPACING_MM,
     coneWarp = null,
     conePaths = null,
@@ -388,6 +402,7 @@ export default function SolidPanelMesh({
     const explodedFactor = useMockupStore((s) => s.explodedFactor);
     const artworkMode = useMockupStore((s) => s.artwork.mode);
     const outerTransform = useMockupStore((s) => s.artwork.outer.transform);
+    const innerTransform = useMockupStore((s) => s.artwork.inner.transform);
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
     const outerUrl = useMockupStore((s) => s.artwork.outer.url);
     const setOuterArtworkTransform = useMockupStore((s) => s.setOuterArtworkTransform);
@@ -451,13 +466,20 @@ export default function SolidPanelMesh({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [panel, thickness, roundFolds, coneWarp, foldProgress, depthMap, maxD]);
 
-    // ── 2. UV theo ảnh nghệ thuật (Yêu cầu 5.1, 5.3) ──
+    // ── 2. UV theo ảnh nghệ thuật (Yêu cầu 5.1, 5.3, 5.4) ──
     // Áp lại khi geometry hoặc tham số ánh xạ đổi; mutate uv attribute tại chỗ.
     // Nón cụt đã có UV dựng sẵn trong builder → bỏ qua bước này.
     useEffect(() => {
         if (!geometry || coneWarp) return;
-        applySolidPanelUV(geometry as THREE.ExtrudeGeometry, panel, artworkMode, outerTransform, globalBBox);
-    }, [geometry, panel, artworkMode, outerTransform, globalBBox, coneWarp]);
+        applySolidPanelUV(
+            geometry as THREE.ExtrudeGeometry,
+            panel,
+            artworkMode,
+            outerTransform,
+            innerTransform,
+            globalBBox,
+        );
+    }, [geometry, panel, artworkMode, outerTransform, innerTransform, globalBBox, coneWarp]);
 
     // ── 3. Vật liệu: mặt ngoài (finish/ảnh) ≠ mặt trong (giấy bồi) ≠ tường cạnh.
     //    Thứ tự material khớp chỉ số nhóm: [MAT_OUTER, MAT_WALL, MAT_INNER]
@@ -493,13 +515,18 @@ export default function SolidPanelMesh({
             side: THREE.FrontSide,
         });
 
-        // Mặt trong: màu giấy bồi tương phản (không in ảnh) để phân biệt mặt.
+        // Mặt trong: ảnh in (khi bật) hoặc màu giấy bồi tương phản.
+        const hasInnerArt = !!innerTexture;
         const innerMaterial = new THREE.MeshStandardMaterial({
-            color: innerHex,
-            roughness: 0.95,
-            metalness: 0.0,
+            color: hasInnerArt ? '#ffffff' : innerHex,
+            map: innerTexture ?? null,
+            roughness: hasInnerArt ? finish.roughness : 0.95,
+            metalness: hasInnerArt ? finish.metalness : 0.0,
             side: THREE.FrontSide,
         });
+        if (innerTexture) {
+            innerTexture.colorSpace = THREE.SRGBColorSpace;
+        }
 
         // Chỉ số mảng = chỉ số material group: 0=ngoài, 1=tường, 2=trong.
         // Bì thư: các mặt gập áp phẳng đồng phẳng nhau → dùng polygonOffset theo
@@ -515,7 +542,7 @@ export default function SolidPanelMesh({
         }
         return [outerMaterial, wallMaterial, innerMaterial];
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [finishId, edgeColor, texture, panel.stackZ]);
+    }, [finishId, edgeColor, texture, innerTexture, panel.stackZ]);
 
     // Material riêng cho dải bo nếp gập: màu giấy mặt ngoài, 2 mặt (DoubleSide)
     // để hiện đúng dù chiều winding nào.

@@ -13928,7 +13928,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
   "panels": [
     {
       "foldAngle": 0,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Đáy",
       "name": "bottom",
       "parent": null,
@@ -13993,7 +13993,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": -90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Vách trước",
       "name": "front",
       "parent": "bottom",
@@ -14100,7 +14100,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Vách sau",
       "name": "back",
       "parent": "bottom",
@@ -14151,7 +14151,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Nắp chính",
       "name": "lid",
       "parent": "back",
@@ -14202,7 +14202,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": -90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Nắp phụ",
       "name": "secondary_lid",
       "parent": "lid",
@@ -14281,7 +14281,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Lưỡi gài",
       "name": "front_lock_tab",
       "parent": "secondary_lid",
@@ -14332,7 +14332,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": -90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Tai quạt phải",
       "name": "sec_tab_right",
       "parent": "secondary_lid",
@@ -14421,7 +14421,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Tai quạt trái",
       "name": "sec_tab_left",
       "parent": "secondary_lid",
@@ -14510,7 +14510,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Tai trước‑trái",
       "name": "dust_front_left",
       "parent": "front",
@@ -14617,7 +14617,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": -90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Tai trước‑phải",
       "name": "dust_front_right",
       "parent": "front",
@@ -14724,7 +14724,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Tai sau‑trái",
       "name": "dust_back_left",
       "parent": "back",
@@ -14817,7 +14817,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": -90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Tai sau‑phải",
       "name": "dust_back_right",
       "parent": "back",
@@ -14910,7 +14910,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Tai nắp‑trái",
       "name": "dust_lid_left",
       "parent": "lid",
@@ -15019,7 +15019,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": -90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Tai nắp‑phải",
       "name": "dust_lid_right",
       "parent": "lid",
@@ -15128,7 +15128,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Hông trái",
       "name": "side_left",
       "parent": "bottom",
@@ -15193,7 +15193,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Gờ hông trái",
       "name": "side_left_rim",
       "parent": "side_left",
@@ -15407,7 +15407,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": -90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Hông phải",
       "name": "side_right",
       "parent": "bottom",
@@ -15472,7 +15472,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Gờ hông phải",
       "name": "side_right_rim",
       "parent": "side_right",
@@ -23653,7 +23653,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Vách trước",
       "name": "front_wall",
       "parent": "bottom",
@@ -23732,7 +23732,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Dầm trước",
       "name": "front_beam",
       "parent": "front_wall",
@@ -23929,7 +23929,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Vách sau",
       "name": "back_wall",
       "parent": "bottom",
@@ -24008,7 +24008,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Dầm sau",
       "name": "back_beam",
       "parent": "back_wall",
@@ -24205,7 +24205,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Vách phải",
       "name": "right_wall",
       "parent": "bottom",
@@ -24284,7 +24284,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Dầm phải",
       "name": "right_beam",
       "parent": "right_wall",
@@ -24481,7 +24481,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Vách trái",
       "name": "left_wall",
       "parent": "bottom",
@@ -24560,7 +24560,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Dầm trái",
       "name": "left_beam",
       "parent": "left_wall",
@@ -26021,7 +26021,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": -1,
+      "foldDirection": 1,
       "label": "Mí dán keo (vỏ)",
       "name": "sleeve_glue",
       "parent": "sleeve_front",
@@ -26086,7 +26086,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Mặt trước (vỏ)",
       "name": "sleeve_front",
       "parent": null,
@@ -26151,7 +26151,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Hông 1 (vỏ)",
       "name": "sleeve_side1",
       "parent": "sleeve_front",
@@ -26216,7 +26216,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Mặt sau (vỏ)",
       "name": "sleeve_back",
       "parent": "sleeve_side1",
@@ -26281,7 +26281,7 @@ exports[`Property 9: Golden master cấu trúc generator (panels/allPaths vs bas
     },
     {
       "foldAngle": 90,
-      "foldDirection": 1,
+      "foldDirection": -1,
       "label": "Hông 2 (vỏ)",
       "name": "sleeve_side2",
       "parent": "sleeve_back",

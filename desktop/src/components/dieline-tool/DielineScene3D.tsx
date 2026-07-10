@@ -76,12 +76,19 @@ function BoxScene() {
     // Nguồn ảnh nghệ thuật hợp nhất: ưu tiên ảnh từ panel Mockup (có transform
     // chỉnh được + view canh chỉnh 2D), fallback ảnh tải nhanh ở ParamPanel.
     const outerArtworkUrl = useMockupStore((s) => s.artwork.outer.url);
+    const innerArtworkUrl = useMockupStore((s) => s.artwork.inner.url);
+    const innerArtworkEnabled = useMockupStore((s) => s.artwork.inner.enabled);
     const textureUrl = outerArtworkUrl ?? mockupTextureUrl;
+    const innerUrl = innerArtworkEnabled ? innerArtworkUrl : null;
 
-    // Load texture conditionally (placeholder khi chưa có ảnh).
+    // Load texture (placeholder khi chưa có ảnh — giữ hook ổn định).
     const texture = useLoader(
         THREE.TextureLoader,
         textureUrl || BLANK_TEXTURE,
+    ) as THREE.Texture;
+    const innerTexture = useLoader(
+        THREE.TextureLoader,
+        innerUrl || BLANK_TEXTURE,
     ) as THREE.Texture;
 
     // Setup texture color space and wrapping
@@ -93,6 +100,14 @@ function BoxScene() {
             texture.flipY = true;
         }
     }, [texture, textureUrl]);
+    useEffect(() => {
+        if (innerTexture && innerUrl) {
+            innerTexture.colorSpace = THREE.SRGBColorSpace;
+            innerTexture.generateMipmaps = true;
+            innerTexture.minFilter = THREE.LinearMipmapLinearFilter;
+            innerTexture.flipY = true;
+        }
+    }, [innerTexture, innerUrl]);
 
     // Compute depth map for auto-phasing (cần cho SolidPanelMesh / foldCompensation).
     const panels = dieline?.panels ?? [];
@@ -182,6 +197,7 @@ function BoxScene() {
                 thickness={thickness}
                 globalBBox={dieline.boundingBox}
                 texture={textureUrl ? texture : null}
+                innerTexture={innerUrl ? innerTexture : null}
                 coneWarp={isCupSleeve ? coneWarp : null}
                 conePaths={panel.name === 'body' && isCupSleeve ? dieline.allPaths : null}
                 conePatchOnly={isCupSleeve && panel.name !== 'body'}

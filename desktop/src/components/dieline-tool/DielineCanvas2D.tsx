@@ -19,9 +19,11 @@ const PATH_STYLES: Record<string, { stroke: string; dashArray: string; width: nu
     BLEED: { stroke: '#4488ff', dashArray: '1,1', width: 0.3, label: 'Tràn lề' },
 };
 
+/** Nút debug (tên mặt / đoạn cắt / chú thích điểm) chỉ hiện khi dev. */
+const IS_DEV = import.meta.env.DEV;
+
 export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.ReactNode } = {}) {
     const { dieline } = useBoxStore();
-    const isAdmin = true; // Desktop app: all features enabled
     const svgRef = useRef<SVGSVGElement>(null);
     const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
     const [isPanning, setIsPanning] = useState(false);
@@ -29,7 +31,8 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
     const [showDimensions, setShowDimensions] = useState(true);
     const [showPanelLabels, setShowPanelLabels] = useState(false);
     const [showSegmentLabels, setShowSegmentLabels] = useState(false);
-    const [showAnnotations, setShowAnnotations] = useState(true);
+    // Mặc định tắt; chỉ bật được trong DEV qua toolbar.
+    const [showAnnotations, setShowAnnotations] = useState(false);
 
     // ─── Ảnh in (mockup) — canh chỉnh trực tiếp trên khuôn phẳng ───
     const mockupTextureUrl = useBoxStore((s) => s.mockupTextureUrl);
@@ -258,15 +261,15 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                 <button onClick={() => setShowDimensions(!showDimensions)} className="dt-toolbar-btn" title="Hiển thị kích thước">
                     📏 {showDimensions ? 'Ẩn' : 'Hiện'} kích thước
                 </button>
-                {isAdmin && (
+                {IS_DEV && (
                     <>
-                        <button onClick={() => setShowPanelLabels(!showPanelLabels)} className="dt-toolbar-btn" title="Hiển thị tên các mặt">
+                        <button onClick={() => setShowPanelLabels(!showPanelLabels)} className="dt-toolbar-btn" title="[DEV] Hiển thị tên các mặt">
                             {showPanelLabels ? '👁️' : '🚫'} Tên mặt
                         </button>
-                        <button onClick={() => setShowSegmentLabels(!showSegmentLabels)} className="dt-toolbar-btn" title="Hiển thị tên từng đoạn cắt">
+                        <button onClick={() => setShowSegmentLabels(!showSegmentLabels)} className="dt-toolbar-btn" title="[DEV] Hiển thị tên từng đoạn cắt">
                             {showSegmentLabels ? '👁️' : '🚫'} Đoạn cắt
                         </button>
-                        <button onClick={() => setShowAnnotations(!showAnnotations)} className="dt-toolbar-btn" title="Hiển thị chú thích điểm ảnh">
+                        <button onClick={() => setShowAnnotations(!showAnnotations)} className="dt-toolbar-btn" title="[DEV] Hiển thị chú thích điểm">
                             {showAnnotations ? '👁️' : '🚫'} Chú thích điểm
                         </button>
                     </>
@@ -392,14 +395,10 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                     {/* Dimension Annotations */}
                     {showDimensions && <DimensionAnnotations dieline={dieline} scale={transform.scale} showDetail={showDimensions} />}
 
-                    {/* Panel Labels — hiện tên panel khi bật chi tiết */}
-                    {showPanelLabels && <PanelLabels panels={dieline.panels} scale={transform.scale} />}
-
-                    {/* Annotations — hiện chú thích góc/điểm */}
-                    {showAnnotations && <PanelAnnotations panels={dieline.panels} scale={transform.scale} />}
-
-                    {/* Segment Labels — đánh tên từng đoạn khi bật chi tiết */}
-                    {showSegmentLabels && <SegmentLabels dieline={dieline} scale={transform.scale} />}
+                    {/* Panel / segment / annotations — chỉ DEV */}
+                    {IS_DEV && showPanelLabels && <PanelLabels panels={dieline.panels} scale={transform.scale} />}
+                    {IS_DEV && showAnnotations && <PanelAnnotations panels={dieline.panels} scale={transform.scale} />}
+                    {IS_DEV && showSegmentLabels && <SegmentLabels dieline={dieline} scale={transform.scale} />}
                 </g>
 
                 {/* Gizmo biến đổi ảnh (px màn hình, núm cố định kích thước) */}

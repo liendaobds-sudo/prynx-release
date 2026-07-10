@@ -948,6 +948,17 @@ export function generatePizzaBox(params: BoxParams): DielineModel {
     // ============================================================
     const bb = computeBoundingBox(allPaths);
 
+    // ── Print-side outward (mockup 3D) ─────────────────────────────
+    // Quy ước render: ảnh in gán local +Z. Hộp pizza (root = bottom) gập
+    // volume về phía +Z với foldDirection gốc → mặt in quay VÀO lòng.
+    // Đảo foldDirection mọi panel (trừ cuộn hông *_roll — đã gập đúng
+    // chiều gài slot) để +Z ra ngoài sau gập, khớp RTE/SLB/Gable.
+    for (const p of panels) {
+        if (p.name.endsWith('_roll')) continue;
+        const d = p.foldDirection || 1;
+        p.foldDirection = (d * -1) as 1 | -1;
+    }
+
     return {
         name: 'Pizza Box',
         standardCode: 'FEFCO-0426',

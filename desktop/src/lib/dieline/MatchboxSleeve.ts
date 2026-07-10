@@ -129,7 +129,9 @@ export function generateMatchboxSleeve(
             // đè lên mí. Vì vậy mí gập SỚM (cùng lúc dựng vách đầu), trước khi
             // side2 đóng. net −90° để lật lên đúng mặt phẳng hông.
             foldAngle: 90,
-            foldDirection: isGlue ? -1 : 1,
+            // Print-outward: đảo chiều so với layout gốc để mặt in (+Z) ra
+            // ngoài ống vỏ sau gập (khớp tray walls đã chuẩn hóa).
+            foldDirection: isGlue ? 1 : -1,
             ...(isGlue ? { foldPhase: [0.2, 0.4] as [number, number] } : {}),
         });
     }
