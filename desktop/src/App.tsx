@@ -433,7 +433,10 @@ function AppInner() {
       return;
     }
 
-    const title = getTabTitle(appId);
+    // payload.title: tab Combine theo nhóm kích thước, recovery, v.v.
+    const title = (payload && typeof payload.title === 'string' && payload.title.trim())
+      ? payload.title.trim()
+      : getTabTitle(appId);
 
     // Add random suffix to allow extremely fast consecutive spawns
     const newId = appId + '-' + Date.now() + '-' + Math.random().toString(36).substring(2, 5);
@@ -1021,6 +1024,18 @@ function AppInner() {
                       onDirtyChange={(isDirty: boolean) => updateTabDirty(tab.id, isDirty)}
                       initialFiles={tab.payload?.files}
                       onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', { file, ...extraPayload })}
+                      onSpawnCombineTabs={(results: { file: File; title: string }[]) => {
+                        // Mỗi nhóm kích thước → 1 tab Combine riêng (file đã ghép).
+                        // Stagger timestamp nhẹ để id tab không trùng trong cùng ms.
+                        results.forEach((r, i) => {
+                          setTimeout(() => {
+                            handleOpenApp('combine_pdf' as AppToolId, {
+                              files: [r.file],
+                              title: r.title,
+                            });
+                          }, i * 30);
+                        });
+                      }}
                     />
                   </Suspense>
                 );

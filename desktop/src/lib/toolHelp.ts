@@ -84,6 +84,7 @@ export const TOOL_HELP: Record<string, ToolHelp> = {
         'Nối tiếp nhiều file thành một bộ.',
         'Trộn xen kẽ trang lẻ/chẵn (vd ghép 2 lần scan một mặt).',
         'Chèn trang trắng hoặc trang từ file khác.',
+        'Tick «Chia nhóm theo kích thước» khi folder lẫn nhiều cỡ tem: ghép từng cỡ → mỗi cỡ 1 tab Combine.',
       ]},
     ],
   },

@@ -9,6 +9,7 @@ import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { toast } from './ui/Toast';
+import { sizeKeyLabel, groupBySizeKey } from '../lib/combineGroupBySize';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -26,6 +27,9 @@ export type CombineNode = {
   
   // For 'collapsed_group'
   pages?: CombineNode[];
+
+  /** Khóa kích thước hiển thị (vd "50x70") — có khi bật chia nhóm theo size. */
+  sizeKey?: string;
 };
 
 interface Props {
@@ -34,7 +38,13 @@ interface Props {
   onTitleChange?: (title: string) => void;
   onDirtyChange?: (isDirty: boolean) => void;
   initialFiles?: File[];
+  /** Kết quả ghép 1 file → mở tab imposition (hành vi cũ). */
   onSpawnTab?: (file: File, extraPayload?: any) => void;
+  /**
+   * Kết quả ghép theo nhóm kích thước → mỗi file mở 1 tab Combine riêng
+   * (title + files trong extra).
+   */
+  onSpawnCombineTabs?: (results: { file: File; title: string }[]) => void;
 }
 
 class PdfErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, retryCount: number}> {
@@ -102,7 +112,7 @@ const ImageThumbnail = React.memo(({ file, rotation }: { file: File; rotation?: 
   );
 });
 
-export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props) {
+export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTabs, onTitleChange, isActive }: Props) {
   const [nodes, setNodes] = useState<CombineNode[]>([]);
   const [pageCounts, setPageCounts] = useState<Record<string, number>>({});
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
@@ -111,6 +121,11 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [scaleMode, setScaleMode] = useState<'keep' | 'fit_a4' | 'fit_first'>('keep');
+  /** Chia nhóm theo kích thước trang (như viewer hiển thị) — tick là sắp view ngay. */
+  const [groupByPageSize, setGroupByPageSize] = useState(false);
+  const [isGrouping, setIsGrouping] = useState(false);
+  /** Chống re-group lặp khi chính setNodes từ regroup. */
+  const skipNextRegroupRef = useRef(false);
 
   const handleAddBlankPage = () => {
     setNodes(prev => {
@@ -241,6 +256,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
         rotation: 0
       }));
       setNodes(prev => [...prev, ...newNodes]);
+      // groupByPageSize bật → useEffect sẽ đo + sắp lại view
     }
   };
 
@@ -524,6 +540,195 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
     }
   };
 
+  /** Load PDF/ảnh vào cache (dùng chung combine 1 nhóm / nhiều nhóm). */
+  const loadSrcDoc = async (
+    file: File,
+    loadedDocs: Map<File, PDFDocument>,
+  ): Promise<PDFDocument> => {
+    let srcDoc = loadedDocs.get(file);
+    if (srcDoc) return srcDoc;
+    const bytes = await getFileArrayBuffer(file);
+    if (file.name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) {
+      srcDoc = await PDFDocument.create();
+      const normBytes = await normalizeImageToPngBytes(bytes);
+      const img = await srcDoc.embedPng(normBytes);
+      const page = srcDoc.addPage([img.width, img.height]);
+      page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+    } else {
+      srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    }
+    loadedDocs.set(file, srcDoc);
+    return srcDoc;
+  };
+
+  /**
+   * Ghép 1 dãy node phẳng → bytes PDF.
+   * Trả thêm firstPageSize (pt) để scaleMode fit_first.
+   */
+  const combineFlatNodes = async (
+    flatNodes: CombineNode[],
+    loadedDocs: Map<File, PDFDocument>,
+    statusPrefix = '',
+  ): Promise<Uint8Array> => {
+    const finalDoc = await PDFDocument.create();
+    let firstPageSize: [number, number] | null = null;
+    const A4_SIZE: [number, number] = [595.28, 841.89];
+
+    for (let i = 0; i < flatNodes.length; i++) {
+      const p = flatNodes[i];
+
+      if (p.type === 'blank') {
+        const size = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
+        finalDoc.addPage(size);
+        if (!firstPageSize) firstPageSize = size as [number, number];
+        continue;
+      }
+
+      if (!p.file) continue;
+      const srcDoc = await loadSrcDoc(p.file, loadedDocs);
+      const pageIndices = p.pageIndex !== undefined ? [p.pageIndex] : srcDoc.getPageIndices();
+      const copiedPages = await finalDoc.copyPages(srcDoc, pageIndices);
+
+      for (let j = 0; j < copiedPages.length; j++) {
+        const page = copiedPages[j];
+        if (p.rotation) {
+          page.setRotation(degrees(page.getRotation().angle + p.rotation));
+        }
+
+        if (!firstPageSize) {
+          const angle = page.getRotation().angle % 360;
+          if (angle === 90 || angle === 270) {
+            firstPageSize = [page.getHeight(), page.getWidth()];
+          } else {
+            firstPageSize = [page.getWidth(), page.getHeight()];
+          }
+        }
+
+        finalDoc.addPage(page);
+      }
+    }
+
+    let finalBytes = await finalDoc.save();
+
+    if (scaleMode !== 'keep') {
+      setStatusMsg(`${statusPrefix}Đang đồng bộ khổ giấy...`);
+      const targetSize = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
+      const targetW = targetSize[0] / 2.83465;
+      const targetH = targetSize[1] / 2.83465;
+      const { resizePages } = await import('../lib/preprocessEngine/PageResizer');
+      finalBytes = await resizePages(finalBytes, { targetW, targetH, scaleMode: 'fit', applyTo: 'all' });
+    }
+    return finalBytes;
+  };
+
+  /** Đo sizeKey (mm) của 1 node — cùng quy ước kích thước hiển thị viewer. */
+  const measureNodeSizeKey = async (
+    node: CombineNode,
+    loadedDocs: Map<File, PDFDocument>,
+    prevKey: string | null,
+  ): Promise<string> => {
+    const { pageSizeKeyMm } = await import('../lib/combineGroupBySize');
+    if (node.type === 'blank') {
+      if (prevKey) return prevKey;
+      return pageSizeKeyMm(595.28, 841.89, 0);
+    }
+    // collapsed_group: đo trang đầu của group (hoặc file)
+    if (node.type === 'collapsed_group' && node.pages && node.pages.length > 0) {
+      return measureNodeSizeKey(node.pages[0], loadedDocs, prevKey);
+    }
+    if (!node.file) return prevKey || pageSizeKeyMm(595.28, 841.89, 0);
+    const srcDoc = await loadSrcDoc(node.file, loadedDocs);
+    const idx = node.pageIndex !== undefined ? node.pageIndex : 0;
+    const page = srcDoc.getPage(Math.min(idx, Math.max(0, srcDoc.getPageCount() - 1)));
+    const baseAngle = page.getRotation().angle || 0;
+    const angle = (baseAngle + (node.rotation || 0)) % 360;
+    return pageSizeKeyMm(page.getWidth(), page.getHeight(), angle);
+  };
+
+  /**
+   * Đo + gán sizeKey + sắp nodes theo nhóm kích thước (giữ thứ tự trong cùng size).
+   * Gọi ngay khi tick "Chia nhóm" hoặc khi thêm file lúc đang bật chia nhóm.
+   */
+  const regroupNodesBySize = useCallback(async (source: CombineNode[]): Promise<CombineNode[]> => {
+    if (source.length === 0) return source;
+    const loadedDocs = new Map<File, PDFDocument>();
+    const measured: CombineNode[] = [];
+    let prevKey: string | null = null;
+    for (const n of source) {
+      const sizeKey = await measureNodeSizeKey(n, loadedDocs, prevKey);
+      prevKey = sizeKey;
+      measured.push({ ...n, sizeKey });
+    }
+    // Sắp theo sizeKey; cùng key giữ thứ tự tương đối (stable)
+    const indexed = measured.map((n, i) => ({ n, i }));
+    indexed.sort((a, b) => {
+      const c = (a.n.sizeKey || '').localeCompare(b.n.sizeKey || '', undefined, { numeric: true });
+      return c !== 0 ? c : a.i - b.i;
+    });
+    return indexed.map(x => x.n);
+  }, []);
+
+  /** Chạy đo + sắp nhóm; force=true khi user tick lại (bỏ qua cache sizeKey). */
+  const runRegroup = useCallback(async (source: CombineNode[], opts?: { toast?: boolean }) => {
+    if (source.length === 0) return;
+    setIsGrouping(true);
+    setStatusMsg('Đang chia nhóm theo kích thước...');
+    try {
+      const next = await regroupNodesBySize(source);
+      // Chặn useEffect re-entry sau setNodes
+      skipNextRegroupRef.current = true;
+      setNodes(next);
+      setSelectedIndices(new Set());
+      const nGroups = new Set(next.map(n => n.sizeKey).filter(Boolean)).size;
+      if (opts?.toast && nGroups > 0) {
+        toast.success(`Đã chia ${nGroups} nhóm trên view — bấm Combine để ghép từng nhóm`);
+      }
+    } catch (e: any) {
+      toast.error('Không đo được kích thước: ' + (e?.message || e));
+    } finally {
+      setIsGrouping(false);
+      setStatusMsg('');
+    }
+  }, [regroupNodesBySize]);
+
+  // Thêm file khi đang bật chia nhóm → sắp lại (không dùng cho tick ON — tick gọi runRegroup trực tiếp)
+  useEffect(() => {
+    if (!groupByPageSize) return;
+    if (nodes.length === 0) return;
+    if (skipNextRegroupRef.current) {
+      skipNextRegroupRef.current = false;
+      return;
+    }
+    // Chỉ re-group khi có node CHƯA có sizeKey (file mới thêm)
+    const needsMeasure = nodes.some(n => !n.sizeKey);
+    if (!needsMeasure) return;
+
+    let cancelled = false;
+    (async () => {
+      await runRegroup(nodes, { toast: false });
+      if (cancelled) return;
+    })();
+    return () => { cancelled = true; };
+  }, [groupByPageSize, nodes, runRegroup]);
+
+  const handleToggleGroupBySize = (checked: boolean) => {
+    if (!checked) {
+      // Tắt: gỡ sizeKey. skipNext=false để lần tick sau không bị nuốt.
+      skipNextRegroupRef.current = false;
+      setGroupByPageSize(false);
+      setNodes(prev => prev.map(n => {
+        const { sizeKey: _sk, ...rest } = n as CombineNode & { sizeKey?: string };
+        return { ...rest } as CombineNode;
+      }));
+      return;
+    }
+    // Bật / tick lại: LUÔN đo + sắp (không dựa useEffect — tránh skipNext kẹt).
+    // skipNext=true chặn useEffect do setGroupByPageSize(true) chạy song song.
+    skipNextRegroupRef.current = true;
+    setGroupByPageSize(true);
+    void runRegroup(nodes, { toast: true });
+  };
+
   const handleCombine = async () => {
     if (nodes.length === 0) return;
 
@@ -531,75 +736,83 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
     setStatusMsg('Đang xử lý tài liệu...');
 
     try {
-      const finalDoc = await PDFDocument.create();
       const loadedDocs = new Map<File, PDFDocument>();
-      
       const flatNodes = nodes.flatMap(n => n.type === 'collapsed_group' && n.pages ? n.pages : [n]);
-      
-      let firstPageSize: [number, number] | null = null;
-      const A4_SIZE: [number, number] = [595.28, 841.89];
 
-      for (let i = 0; i < flatNodes.length; i++) {
-        const p = flatNodes[i];
-        
-        if (p.type === 'blank') {
-          const size = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
-          finalDoc.addPage(size);
-          if (!firstPageSize) firstPageSize = size as [number, number];
-          continue;
-        }
-
-        let srcDoc = loadedDocs.get(p.file!);
-        if (!srcDoc) {
-          const bytes = await getFileArrayBuffer(p.file!);
-          if (p.file!.name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) {
-            srcDoc = await PDFDocument.create();
-            const normBytes = await normalizeImageToPngBytes(bytes);
-            const img = await srcDoc.embedPng(normBytes);
-            const page = srcDoc.addPage([img.width, img.height]);
-            page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
-          } else {
-            srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
-          }
-          loadedDocs.set(p.file!, srcDoc);
-        }
-
-        const pageIndices = p.pageIndex !== undefined ? [p.pageIndex] : srcDoc.getPageIndices();
-        const copiedPages = await finalDoc.copyPages(srcDoc, pageIndices);
-
-        for (let j = 0; j < copiedPages.length; j++) {
-          const page = copiedPages[j];
-          if (p.rotation) {
-            page.setRotation(degrees(page.getRotation().angle + p.rotation));
-          }
-
-          if (!firstPageSize) {
-            const angle = page.getRotation().angle % 360;
-            if (angle === 90 || angle === 270) {
-              firstPageSize = [page.getHeight(), page.getWidth()];
-            } else {
-              firstPageSize = [page.getWidth(), page.getHeight()];
-            }
-          }
-
-          finalDoc.addPage(page);
-        }
+      // ── Không chia nhóm: 1 file → tab imposition (hành vi cũ) ──
+      if (!groupByPageSize) {
+        const finalBytes = await combineFlatNodes(flatNodes, loadedDocs);
+        const finalBlob = new Blob([finalBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+        const finalFile = new File([finalBlob], 'Combined.pdf', { type: 'application/pdf' });
+        if (onSpawnTab) onSpawnTab(finalFile);
+        return;
       }
 
-      let finalBytes = await finalDoc.save();
+      // ── Đã chia nhóm trên view → ghép từng nhóm, tab hiện tại = nhóm 1, còn lại tab mới ──
+      // (sizeKeyLabel / groupBySizeKey import tĩnh ở đầu file — không dùng require)
 
-      if (scaleMode !== 'keep') {
-        setStatusMsg('Đang đồng bộ khổ giấy...');
-        const targetSize = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
-        const targetW = targetSize[0] / 2.83465;
-        const targetH = targetSize[1] / 2.83465;
-        const { resizePages } = await import('../lib/preprocessEngine/PageResizer');
-        finalBytes = await resizePages(finalBytes, { targetW, targetH, scaleMode: 'fit', applyTo: 'all' });
+      // Ưu tiên sizeKey đã gán trên view; thiếu thì đo lại
+      type SizedNode = CombineNode & { sizeKey: string };
+      const sized: SizedNode[] = [];
+      let prevKey: string | null = null;
+      for (const n of flatNodes) {
+        let sizeKey = n.sizeKey;
+        if (!sizeKey) {
+          sizeKey = await measureNodeSizeKey(n, loadedDocs, prevKey);
+        }
+        prevKey = sizeKey;
+        sized.push({ ...n, sizeKey });
       }
 
-      const finalBlob = new Blob([finalBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-      const finalFile = new File([finalBlob], 'Combined.pdf', { type: 'application/pdf' });
-      if (onSpawnTab) onSpawnTab(finalFile);
+      const groups = groupBySizeKey(sized);
+      if (groups.size === 0) throw new Error('Không có trang hợp lệ để ghép.');
+
+      const results: { file: File; title: string; sizeKey: string }[] = [];
+      let gi = 0;
+      for (const [key, groupNodes] of groups) {
+        gi++;
+        const label = sizeKeyLabel(key);
+        setStatusMsg(`Đang ghép ${label} (${gi}/${groups.size})...`);
+        const bytes = await combineFlatNodes(groupNodes, loadedDocs, `[${label}] `);
+        const safeName = key.replace(/[^\d.x×]/gi, '_');
+        const file = new File(
+          [bytes.buffer as ArrayBuffer],
+          `Combined_${safeName}mm.pdf`,
+          { type: 'application/pdf' },
+        );
+        results.push({
+          file,
+          title: `Ghép ${label} (${groupNodes.length} trang)`,
+          sizeKey: key,
+        });
+      }
+
+      // Tab hiện tại ← nhóm đầu (kết quả ngay, không thêm bước)
+      const [first, ...rest] = results;
+      const previewUrl = URL.createObjectURL(first.file);
+      skipNextRegroupRef.current = true;
+      setGroupByPageSize(false);
+      setNodes([{
+        id: `combined-${Date.now()}`,
+        type: 'single',
+        file: first.file,
+        previewUrl,
+        rotation: 0,
+      }]);
+      setSelectedIndices(new Set());
+      onTitleChange?.(first.title);
+
+      if (rest.length > 0 && onSpawnCombineTabs) {
+        onSpawnCombineTabs(rest.map(r => ({ file: r.file, title: r.title })));
+      } else if (rest.length > 0 && onSpawnTab) {
+        for (const r of rest) onSpawnTab(r.file);
+      }
+
+      toast.success(
+        results.length === 1
+          ? `Đã ghép ${sizeKeyLabel(first.sizeKey)}`
+          : `Đã ghép ${results.length} nhóm → tab này + ${rest.length} tab Combine`,
+      );
 
     } catch (e: any) {
       toast.error("Lỗi khi ghép file: " + (e?.message || e));
@@ -613,9 +826,32 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
   const renderItems = () => {
     const elements: React.ReactNode[] = [];
     
+    let lastSizeKey: string | null = null;
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
       let isGroupLeader = false;
+
+      // Banner nhóm kích thước (khi đang chia nhóm trên view)
+      if (groupByPageSize && node.sizeKey && node.sizeKey !== lastSizeKey) {
+        lastSizeKey = node.sizeKey;
+        const count = nodes.filter(n => n.sizeKey === node.sizeKey).length;
+        elements.push(
+          <div
+            key={`size-hdr-${node.sizeKey}`}
+            className="w-full basis-full flex items-center gap-3 mt-2 mb-1 first:mt-0"
+          >
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-500/15 border border-blue-200 dark:border-blue-500/30">
+              <span className="text-xs font-bold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+                {sizeKeyLabel(node.sizeKey)}
+              </span>
+              <span className="text-[11px] text-blue-600/80 dark:text-blue-300/70 font-medium">
+                {count} mục
+              </span>
+            </div>
+            <div className="flex-1 h-px bg-blue-200/60 dark:bg-blue-500/20" />
+          </div>
+        );
+      }
 
       let label = node.type === 'blank' ? 'Trang Trắng' : (node.file?.name || '');
       if (node.type === 'single' && node.groupId) {
@@ -844,16 +1080,32 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
             </select>
           </div>
 
-          {isProcessing && (
+          <label
+            className="flex items-center gap-2 cursor-pointer select-none px-2 py-1 rounded-md hover:bg-slate-50 dark:hover:bg-zinc-800/80"
+            title="Đo kích thước trang như vùng view (MediaBox + xoay). Mỗi cỡ ghép thành 1 file và mở 1 tab Combine riêng."
+          >
+            <input
+              type="checkbox"
+              checked={groupByPageSize}
+              onChange={(e) => handleToggleGroupBySize(e.target.checked)}
+              disabled={isGrouping || isProcessing}
+              className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span className="text-sm font-medium text-slate-700 dark:text-zinc-200 whitespace-nowrap">
+              Chia nhóm theo kích thước
+            </span>
+          </label>
+
+          {(isProcessing || isGrouping) && (
             <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
               <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
-              {statusMsg || 'Đang xử lý...'}
+              {statusMsg || (isGrouping ? 'Đang chia nhóm...' : 'Đang xử lý...')}
             </div>
           )}
           
           <button 
             onClick={handleInterleave}
-            disabled={nodes.length < 2 || isProcessing}
+            disabled={nodes.length < 2 || isProcessing || isGrouping}
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md transition-colors font-bold disabled:opacity-50 disabled:cursor-not-allowed shadow-sm flex items-center gap-2"
             title="Trộn xen kẽ từng trang của tất cả các file trong danh sách"
           >
@@ -863,10 +1115,13 @@ export default function CombineTab({ initialFiles, onSpawnTab, isActive }: Props
 
           <button 
             onClick={handleCombine}
-            disabled={nodes.length === 0 || isProcessing}
+            disabled={nodes.length === 0 || isProcessing || isGrouping}
             className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors font-bold disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+            title={groupByPageSize
+              ? 'Ghép từng nhóm: tab này = nhóm 1, các nhóm khác mở tab Combine mới'
+              : 'Ghép tất cả thành 1 file'}
           >
-            Combine
+            {groupByPageSize ? 'Combine theo nhóm' : 'Combine'}
           </button>
         </div>
       </div>
