@@ -245,10 +245,24 @@ def place_one_artwork(
     )
 
     # ── Chế độ ĐỒNG NHẤT: registration (căn-tâm + co-khít) — short-circuit ──
+    # PHẢI đọc cờ xoay của ô: nesting có thể xoay tem để lồng khít khuôn (tem ngang
+    # vào ô dọc → isRotated). show_pdf_page khi rotate%180≠0 tự HOÁN scale_x/scale_y
+    # theo clip (dòng 342-350 pdf_ops) rồi keep_proportion lấy min → VỪA xoay VỪA
+    # co-khít căn tâm đúng. Trước đây nhánh này bỏ qua rotate + chỉ keep_proportion
+    # → tem ngang bị CO theo bề rộng ô dọc thay vì xoay (regression bình tem chung khuôn).
     if homogeneous_clip is not None:
         reg_rect = homogeneous_rect if homogeneous_rect is not None else trim_rect
+        if cell.get('isRotated', False) and cell.get('isRotated180', False):
+            _reg_rotate = 270
+        elif cell.get('isRotated180', False):
+            _reg_rotate = 180
+        elif cell.get('isRotated', False):
+            _reg_rotate = 90
+        else:
+            _reg_rotate = 0
         out_page.show_pdf_page(
             reg_rect, src_doc, src_page_idx,
+            rotate=_reg_rotate,
             clip=homogeneous_clip, keep_proportion=True,
             mirror_x=mirror_x, mirror_y=mirror_y,
         )

@@ -343,3 +343,87 @@ def test_fallback_no_die_uses_old_binpack(monkeypatch):
 
     assert spy["build_hom"] == 0
     assert spy["auto_fill"] == 1
+
+
+# ─── Regression: nhánh ĐỒNG NHẤT phải XOAY tem (không co theo bề rộng ô) ──────
+
+
+class _FakeOutPage:
+    """out_page giả: ghi lại mọi lần show_pdf_page (để kiểm tham số rotate)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def show_pdf_page(self, rect, src_doc, page_idx, rotate=0, clip=None,
+                      keep_proportion=False, out_clip=None, mirror_x=False, mirror_y=False):
+        self.calls.append({
+            "rect": rect, "page_idx": page_idx, "rotate": rotate,
+            "clip": clip, "keep_proportion": keep_proportion,
+        })
+
+
+class _FakeSrcDoc:
+    """src_doc giả: chỉ cần index được (nhánh đồng nhất không dùng src_page)."""
+
+    def __getitem__(self, _idx):
+        return object()
+
+
+def _place_homogeneous(is_rotated: bool, is_rotated_180: bool = False):
+    """Gọi place_one_artwork ở nhánh đồng nhất với cờ xoay cho trước → trả call ghi được."""
+    from app.workers.nup_artwork import place_one_artwork
+
+    out_page = _FakeOutPage()
+    # Ô DỌC (rộng 80, cao 100) — tem nguồn NGANG cần xoay 90° để lồng khít.
+    p = {
+        "cell": {"width": 80.0, "height": 100.0,
+                 "isRotated": is_rotated, "isRotated180": is_rotated_180,
+                 "blockId": 0},
+        "cluster_idx": 0,
+        "src_page_idx": 1,
+        "abs_x": 10.0,
+        "original_cell_y": 20.0,
+    }
+    hom_clip = pdf_lib.Rect(0.0, 0.0, 100.0, 80.0)  # bbox artwork NGANG (rộng>cao)
+    place_one_artwork(
+        out_page, _FakeSrcDoc(), p,
+        bleed_pt=0.0, is_die_cut=True, cut_type="one_dao",
+        separate_cut_page=False, local_stripped_pages=set(),
+        job_id="t", diecut_geom_cache={}, die_items_cache={},
+        max_geom_cache=8, block_bbox={}, clip_off_x=0.0, clip_off_y=0.0,
+        find_largest_die_path=lambda _p: None,
+        homogeneous_clip=hom_clip,
+    )
+    return out_page.calls
+
+
+def test_homogeneous_rotated_cell_passes_rotate90():
+    """Ô xoay (tem ngang → ô dọc) PHẢI truyền rotate=90, KHÔNG chỉ co-khít.
+
+    Regression: nhánh đồng nhất trước đây short-circuit với keep_proportion=True mà
+    bỏ qua cờ xoay → tem ngang bị CO theo bề rộng ô dọc thay vì xoay 90° (tem sai
+    kích thước). Test này FAIL trước sửa (rotate=0), PASS sau sửa (rotate=90).
+    """
+    calls = _place_homogeneous(is_rotated=True)
+    assert len(calls) == 1
+    assert calls[0]["rotate"] == 90, (
+        f"ô xoay phải truyền rotate=90, nhận {calls[0]['rotate']} "
+        "(tem bị co theo bề rộng thay vì xoay — bug bình tem chung khuôn)"
+    )
+    # Vẫn giữ co-khít + clip để căn tâm vào khuôn.
+    assert calls[0]["keep_proportion"] is True
+    assert calls[0]["clip"] is not None
+
+
+def test_homogeneous_unrotated_cell_no_rotate():
+    """Ô KHÔNG xoay → rotate=0 (giữ hành vi co-khít căn tâm cũ)."""
+    calls = _place_homogeneous(is_rotated=False)
+    assert len(calls) == 1
+    assert calls[0]["rotate"] == 0
+
+
+def test_homogeneous_rotated180_cell_passes_rotate180():
+    """Ô lật 180 → rotate=180."""
+    calls = _place_homogeneous(is_rotated=False, is_rotated_180=True)
+    assert len(calls) == 1
+    assert calls[0]["rotate"] == 180
