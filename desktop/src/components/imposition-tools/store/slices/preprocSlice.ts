@@ -1,5 +1,17 @@
 import type { ImposerSlice } from '../sliceType';
 
+/** Mặc định co giãn trang — dùng khi init + merge persist. */
+export const DEFAULT_RESIZE_SETTINGS = {
+    sizePresetId: 'A4',
+    targetW: 210,
+    targetH: 297,
+    scaleMode: 'fit' as const,
+    applyTo: 'all' as const,
+    applyToStr: 'all',
+    resizeMode: 'auto',
+    // targetDpi: undefined = tự động giảm mẫu khi thu nhỏ
+};
+
 export interface PreprocSlice {
     shuffleSettings: any;
     setShuffleSettings: (v: any) => void;
@@ -11,10 +23,13 @@ export interface PreprocSlice {
     setTrimShiftSettings: (v: any) => void;
 }
 
+/** Lưu thiết lập preprocess qua localStorage (lần chạy sau nhớ lại). */
+export const PREPROC_PERSIST_KEYS = ['resizeSettings'] as const;
+
 export const createPreprocSlice: ImposerSlice<PreprocSlice> = (set) => ({
     shuffleSettings: { presetId: 'custom', rule: '', groupSize: 1, mode: 'normal' },
     setShuffleSettings: (v) => set({ shuffleSettings: v }),
-    resizeSettings: { sizePresetId: 'A4', targetW: 210, targetH: 297, scaleMode: 'fit', applyTo: 'all', applyToStr: 'all', resizeMode: 'auto' },
+    resizeSettings: { ...DEFAULT_RESIZE_SETTINGS },
     setResizeSettings: (v) => set({ resizeSettings: v }),
     splitSettings: { mode: 'by_range', ranges: '', pagesPerFile: 1, pageListStr: '' },
     setSplitSettings: (v) => set({ splitSettings: v }),

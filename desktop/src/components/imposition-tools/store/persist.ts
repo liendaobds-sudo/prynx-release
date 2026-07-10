@@ -13,6 +13,7 @@ import { CATALOG_PERSIST_KEYS } from './slices/catalogSlice';
 import { REPORT_PERSIST_KEYS } from './slices/reportSlice';
 import { CNC_PERSIST_KEYS } from './slices/cncSlice';
 import { WORKSPACE_PERSIST_KEYS } from './slices/workspaceSlice';
+import { PREPROC_PERSIST_KEYS, DEFAULT_RESIZE_SETTINGS } from './slices/preprocSlice';
 
 /** Tập field được lưu vào localStorage — ghép từ khai báo của từng slice. */
 export const PARTIALIZE_KEYS: readonly string[] = [
@@ -25,9 +26,10 @@ export const PARTIALIZE_KEYS: readonly string[] = [
     ...CATALOG_PERSIST_KEYS,
     ...REPORT_PERSIST_KEYS,
     ...CNC_PERSIST_KEYS,
+    ...PREPROC_PERSIST_KEYS,
 ];
 
-// Migrate v1→v7 — GIỮ NGUYÊN verbatim từ store monolith (hành vi không đổi).
+// Migrate v1→v8 — GIỮ NGUYÊN verbatim từ store monolith (hành vi không đổi).
 function migrate(persistedState: any, version: number): any {
     if (version < 2) {
         // v1 → v2: add pontConfig to persisted state
@@ -74,12 +76,22 @@ function migrate(persistedState: any, version: number): any {
         rd.fieldOrder = fo;
         persistedState = { ...persistedState, reportDisplay: rd };
     }
+    if (version < 8) {
+        // v7 → v8: nhớ thiết lập Co giãn trang (resize) giữa các lần chạy
+        persistedState = {
+            ...persistedState,
+            resizeSettings: {
+                ...DEFAULT_RESIZE_SETTINGS,
+                ...(persistedState.resizeSettings || {}),
+            },
+        };
+    }
     return persistedState;
 }
 
 export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<ImposerSettingsState>> = {
     name: 'ps_imposer_settings',
-    version: 7,
+    version: 8,
     migrate,
     partialize: (state) => {
         const out: Record<string, any> = {};

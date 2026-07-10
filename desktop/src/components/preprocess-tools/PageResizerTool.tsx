@@ -1,21 +1,21 @@
-import { useState } from 'react';
-import { ScaleMode, ResizeOptions } from '../../lib/preprocessEngine/PageResizer';
+import { ResizeOptions } from '../../lib/preprocessEngine/PageResizer';
 import { 
     ToolSectionLabel, ToolDivider, ToolCardOption, 
-    ToolCheckboxOption, ToolNumberInput, ToolInfo 
+    ToolCheckboxOption, ToolNumberInput,
 } from './ToolUI';
 
 const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500";
+const selectCls = "w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm font-medium focus:outline-none focus:border-indigo-500";
 
 const COMMON_SIZES = [
-    { id: 'A4', name: 'A4', desc: '210 x 297 mm', w: 210, h: 297 },
-    { id: 'A3', name: 'A3', desc: '297 x 420 mm', w: 297, h: 420 },
-    { id: 'A5', name: 'A5', desc: '148 x 210 mm', w: 148, h: 210 },
-    { id: 'SRA3', name: 'SRA3', desc: '320 x 450 mm', w: 320, h: 450 },
-    { id: 'B2', name: 'B2', desc: '500 x 707 mm', w: 500, h: 707 },
-    { id: 'B3', name: 'B3', desc: '353 x 500 mm', w: 353, h: 500 },
-    { id: 'Letter', name: 'Letter', desc: '216 x 279 mm', w: 216, h: 279 },
-    { id: 'custom', name: 'Tùy chỉnh', desc: 'Nhập W x H', w: 0, h: 0 },
+    { id: 'A4', name: 'A4', desc: '210 × 297 mm', w: 210, h: 297 },
+    { id: 'A3', name: 'A3', desc: '297 × 420 mm', w: 297, h: 420 },
+    { id: 'A5', name: 'A5', desc: '148 × 210 mm', w: 148, h: 210 },
+    { id: 'SRA3', name: 'SRA3', desc: '320 × 450 mm', w: 320, h: 450 },
+    { id: 'B2', name: 'B2', desc: '500 × 707 mm', w: 500, h: 707 },
+    { id: 'B3', name: 'B3', desc: '353 × 500 mm', w: 353, h: 500 },
+    { id: 'Letter', name: 'Letter', desc: '216 × 279 mm', w: 216, h: 279 },
+    { id: 'custom', name: 'Tùy chỉnh', desc: 'Nhập W × H', w: 0, h: 0 },
 ];
 
 export interface PageResizerSettings extends ResizeOptions {
@@ -70,20 +70,20 @@ export default function PageResizerTool({ settings, onChange }: Props) {
             
             <div className="flex flex-col gap-2">
                 <ToolSectionLabel>1. Kích thước trang đích</ToolSectionLabel>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                <select
+                    value={settings.sizePresetId || 'A4'}
+                    onChange={(e) => handlePresetChange(e.target.value)}
+                    className={selectCls}
+                >
                     {COMMON_SIZES.map(p => (
-                        <ToolCardOption 
-                            key={p.id}
-                            selected={settings.sizePresetId === p.id}
-                            onClick={() => handlePresetChange(p.id)}
-                            label={p.name}
-                            desc={p.desc}
-                        />
+                        <option key={p.id} value={p.id}>
+                            {p.id === 'custom' ? p.name : `${p.name} — ${p.desc}`}
+                        </option>
                     ))}
-                </div>
+                </select>
                 
                 {settings.sizePresetId === 'custom' && (
-                    <div className="grid grid-cols-2 gap-3 mt-3 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
+                    <div className="grid grid-cols-2 gap-3 mt-1 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
                         <ToolNumberInput 
                             label="Chiều ngang"
                             value={settings.targetW}
@@ -159,10 +159,9 @@ export default function PageResizerTool({ settings, onChange }: Props) {
 
             <ToolDivider />
 
-            {/* 4. Giảm dung lượng theo khổ mới (giống PDF Optimizer của Acrobat) */}
+            {/* 4. Giảm dung lượng theo khổ mới */}
             <div className="flex flex-col gap-2">
                 <ToolSectionLabel>4. Giảm dung lượng theo khổ mới</ToolSectionLabel>
-                <ToolInfo desc="Đổi khổ thường chỉ thu nhỏ hình học nên ảnh độ phân giải gốc vẫn nằm trong file (VD A1→A5 mà file vẫn nặng). Bật giảm mẫu để hạ độ phân giải ảnh theo khổ mới, giúp file nhẹ và các bước sau (bù xén/bình cắt) nhanh hơn nhiều." />
                 {(() => {
                     const dpiChoice: 'auto' | 'off' | 'custom' =
                         settings.targetDpi === undefined ? 'auto'
