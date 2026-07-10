@@ -944,9 +944,21 @@ def process_chunk(args):
             cut_shape_main.commit()
 
         # ═══ SEPARATE CUT PAGE ═══
-        # After rendering the artwork page, generate a second page with only die-cut paths
-        if separate_cut_page and is_die_cut and placements:
+        # After rendering the artwork page, generate a second page with only die-cut paths.
+        # Non-homogeneous: 1 trang khuôn / tờ (GIỮ NGUYÊN).
+        # Homogeneous (chung 1 khuôn master): mọi tờ dùng CÙNG khuôn + CÙNG vị trí ô →
+        # các trang khuôn giống hệt nhau. Tờ ĐẦU (sheet 0) luôn ĐẦY ĐỦ ô (nội dung rải
+        # round-robin lấp tờ đầu trước); tờ cuối có thể thiếu ô. → CHỈ sinh trang khuôn
+        # cho tờ 0, gắn marker /PSHomogCut để nup_engine chuyển xuống CUỐI file sau ghép
+        # (kết quả: đúng 1 trang khuôn duy nhất, đầy đủ mọi ô, ở cuối file).
+        _emit_cut = separate_cut_page and is_die_cut and placements
+        if _emit_cut and homogeneous_mode and sheet_idx != 0:
+            _emit_cut = False
+        if _emit_cut:
             out_page_cut = out_doc.new_page(width=sheet_w, height=sheet_h)
+            if homogeneous_mode:
+                # Marker để nup_engine nhận diện + dời xuống cuối file (xoá marker sau đó).
+                out_page_cut._page.obj['/PSHomogCut'] = True
 
             # --- Create parent group OCG: cut_page_N ---
             cut_num_label = f'_{sheet_idx + 1}' if global_total_sheets > 1 else ''

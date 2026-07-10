@@ -1783,6 +1783,35 @@ def run_nup_engine(
         final_doc.close()
 
     # ══════════════════════════════════════════════════════════════
+    # HOMOGENEOUS: dồn 1 trang khuôn duy nhất xuống CUỐI file
+    # ══════════════════════════════════════════════════════════════
+    # Chế độ dùng chung 1 khuôn + tách trang khuôn riêng: process_chunk chỉ sinh trang
+    # khuôn cho TỜ 0 (đầy đủ mọi ô) và gắn marker /PSHomogCut. Ở đây tìm trang có marker,
+    # chuyển xuống CUỐI file rồi xoá marker. Kết quả: ...artwork1, artwork2, ..., khuôn.
+    # Xử lý trên output_path (mọi nhánh assembly, kể cả 1-chunk ghi thẳng bytes).
+    if is_die_cut and homogeneous_master_idx is not None and settings.get('separateCutPage', False):
+        try:
+            import pikepdf
+            with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as _pdf:
+                _cut_idx = None
+                for _i, _pg in enumerate(_pdf.pages):
+                    if _pg.obj.get('/PSHomogCut'):
+                        _cut_idx = _i
+                        break
+                if _cut_idx is not None:
+                    _cut_pg = _pdf.pages[_cut_idx]
+                    try:
+                        del _cut_pg.obj['/PSHomogCut']  # dọn marker (không để lẫn vào file cuối)
+                    except Exception:
+                        pass
+                    if _cut_idx != len(_pdf.pages) - 1:  # chưa ở cuối → dời xuống cuối
+                        _pdf.pages.remove(_cut_pg)
+                        _pdf.pages.append(_cut_pg)
+                        _pdf.save(output_path)
+        except Exception as _e_move:
+            logger.warning(f"[HOMOGENEOUS] dời trang khuôn xuống cuối thất bại ({_e_move}); giữ nguyên vị trí.")
+
+    # ══════════════════════════════════════════════════════════════
     # SECURITY: Stealth watermark — hashed license trace in XMP + invisible text
     # ══════════════════════════════════════════════════════════════
     _wm_license = settings.get('_license_key', '') or settings.get('watermarkKey', '')

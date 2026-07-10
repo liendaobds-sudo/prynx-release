@@ -117,3 +117,60 @@ def test_homogeneous_end_to_end_real_render(tmp_path, monkeypatch):
     assert max(span_x, span_y) >= 0.25, (
         f"nội dung co cụm bất thường (span_x={span_x:.2f}, span_y={span_y:.2f}) "
         f"— 3 ô phải trải theo phương dàn")
+
+
+def _page_count(path: str) -> int:
+    import pikepdf
+    with pikepdf.Pdf.open(path) as pdf:
+        return len(pdf.pages)
+
+
+def test_homogeneous_separate_cut_single_page_at_end(tmp_path):
+    """homogeneous + separate_cut_page → CHỈ 1 trang khuôn duy nhất ở CUỐI file.
+
+    Trước đây mỗi tờ sinh 1 trang khuôn (xen kẽ artwork1,cut1,artwork2,cut2…) →
+    tổng = 2×N. Nay chỉ 1 trang khuôn ở cuối → tổng = N+1. Trang cuối là khuôn
+    (có nét bế magenta, KHÔNG có nội dung đen); các trang trước là artwork (có đen).
+    """
+    src = str(tmp_path / "src.pdf")
+    _make_homogeneous_pdf(src)
+
+    base_settings = {
+        "isDieCutMode": True,
+        "sheetWidth": 200, "sheetHeight": 200,
+        "targetQuantity": 0, "targetQuantitiesByPage": {},
+        "detectedShapesByPage": {"0": "RECTANGLE"},
+        "gridStrategy": "optimal_auto", "groupingStrategy": "maximize_area",
+        "pontType": "none", "bleed": 0,
+    }
+
+    # (A) KHÔNG tách khuôn → N trang artwork (khuôn vẽ ngay trên trang in).
+    out_no = str(tmp_path / "out_nocut.pdf")
+    nup_engine.run_nup_engine(src, out_no, {**base_settings, "separateCutPage": False}, job_id="t-nocut")
+    n_artwork = _page_count(out_no)
+    assert n_artwork >= 1
+
+    # (B) CÓ tách khuôn → đúng N+1 trang (KHÔNG phải 2N).
+    out_cut = str(tmp_path / "out_cut.pdf")
+    nup_engine.run_nup_engine(src, out_cut, {**base_settings, "separateCutPage": True}, job_id="t-cut")
+    n_with_cut = _page_count(out_cut)
+    assert n_with_cut == n_artwork + 1, (
+        f"homogeneous+tách khuôn phải = {n_artwork}+1 trang (1 khuôn duy nhất), "
+        f"nhận {n_with_cut} (2×N = mỗi tờ 1 khuôn = bug cũ)")
+
+    # (C) TRANG CUỐI = khuôn: có nét bế (mực bất kỳ, không trắng), KHÔNG có nội dung đen.
+    # dpi cao hơn để nét bế mảnh (1pt) không bị khử răng cưa mất hẳn. Kiểm "có mực"
+    # (non-white) thay vì màu cụ thể: màu bế có thể là magenta gốc HOẶC đỏ fallback
+    # (màu vô hình → engine đổi sang đỏ CMYK để nhìn thấy) — cả hai đều là nét bế hợp lệ.
+    last = _raster(out_cut, n_with_cut - 1, dpi=200)
+    R = last[:, :, 0].astype(int); G = last[:, :, 1].astype(int); Bc = last[:, :, 2].astype(int)
+    black_last = int(((R < 100) & (G < 100) & (Bc < 100)).sum())
+    ink_last = int(((R < 230) | (G < 230) | (Bc < 230)).sum())  # bất kỳ pixel không trắng
+    assert black_last == 0, "trang khuôn cuối KHÔNG được chứa nội dung đen (chỉ nét bế)"
+    assert ink_last > 0, "trang khuôn cuối phải có nét bế (mực) được vẽ"
+
+    # (D) TRANG ĐẦU = artwork: có nội dung đen.
+    first = _raster(out_cut, 0, dpi=72)
+    R0 = first[:, :, 0].astype(int); G0 = first[:, :, 1].astype(int); B0 = first[:, :, 2].astype(int)
+    black_first = int(((R0 < 100) & (G0 < 100) & (B0 < 100)).sum())
+    assert black_first > 0, "trang đầu phải là artwork (có nội dung đen)"
