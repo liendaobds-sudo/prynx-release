@@ -6,6 +6,7 @@ import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory } from '../lib/toolR
 import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
+import { useEditSession } from '../hooks/useEditSession';
 import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
 import { Button } from './Button';
@@ -840,6 +841,25 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
     }, [file, pdfUrl, setHistory, setFile, setOriginalFileName, setPdfUrl, setFileSizeStr,
         setIsSaved, onTitleChange, setSelectionFileId, setError, selectionFileId, editHistory]);
+
+    // Edit-session in-memory: áp op trong RAM backend + render vùng clip → dán overlay
+    // tại chỗ (KHÔNG reload file mỗi op). Debounce-commit ngầm ~1.5s → onCommit đổi
+    // pdfUrl sang tile thật MỘT lần (nền). Session lỗi/410 → BÁO LỖI, không fallback.
+    const editSession = useEditSession({
+        onCommit: (result) => {
+            if (result?.success && result.output_url) {
+                void handleEditCommit(
+                    result.output_url,
+                    result.output_filename || '',
+                    result.output_fid,
+                    result.output_path,
+                );
+            }
+        },
+        onSessionFailed: () => {
+            setError('Không mở được phiên chỉnh sửa (backend không phản hồi hoặc phiên hết hạn) — hãy mở lại file để chỉnh sửa.');
+        },
+    });
 
     // ----------------------------
 
@@ -1887,6 +1907,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onObjectDelete={handleDeleteObjects}
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
                                     onEditCommit={handleEditCommit}
+                                    editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}
                                     toolbarExtra={file ? (
                                         <div className="flex items-center gap-2">

@@ -228,6 +228,17 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         file, pdfRef, pdfUrl, zoom, activePage,
     });
 
+    // ═══ Edit-session lifecycle ═══
+    // Mở phiên in-memory khi VÀO edit mode + có selectionFileId; đóng khi thoát mode
+    // hoặc đổi fid (commit ngầm sinh fid mới → mở phiên trên fid mới). AcrobatViewer là
+    // single-instance nên đặt lifecycle ở đây (LivePageFrame bị virtualized nhiều frame).
+    useEffect(() => {
+        if (!editSession) return;
+        if (!isObjectEditMode || !selectionFileId) return;
+        void editSession.openSession(selectionFileId);
+        return () => { void editSession.closeSession(); };
+    }, [isObjectEditMode, selectionFileId, editSession]);
+
     // ═══ Derived Values ═══
     const actualWidth100 = pageWidthPt * (96 / 72);
 

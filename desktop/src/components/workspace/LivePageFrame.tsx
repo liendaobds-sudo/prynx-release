@@ -10,6 +10,7 @@ import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
 import type { ObjType, BBox, EditOp } from './editTypes';
+import type { SessionOpOutcome } from '../../hooks/useEditSession';
 import { FontSelector } from '../preprocess-tools/FontSelector';
 import { Lock, Check, X, RotateCcw, AlertTriangle } from 'lucide-react';
 import {
@@ -17,6 +18,7 @@ import {
     pageHeightPtFromDim,
     editScale as calcEditScale,
     objectBboxNativeToCanvas,
+    clipRectPdfToCanvas,
     addBboxCanvasToNative,
     moveDeltaCanvasToPdf,
     snapRotation,
@@ -532,7 +534,8 @@ export const LivePageFrame = (props: any) => {
     const { originalPageNum, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
         onObjectDelete,
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
-        setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage, isImage
+        setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage, isImage,
+        editSession
     } = props;
     // Trang ĐANG xem (active) trong danh sách ảo (Virtuoso). Chỉ frame active mới
     // đẩy editObjects của mình lên store `currentEditObjects` → panel "Thành phần"
@@ -819,6 +822,22 @@ export const LivePageFrame = (props: any) => {
     const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
+    // Overlay xem-trước từ edit-session (/edit/session/op): áp op trong RAM backend →
+    // render VÙNG CLIP (hoặc toàn trang nếu full) → dán ĐÈ lên tile TẠI CHỖ, KHÔNG
+    // reload file. `rect` = [left,top,right,bottom] px canvas (đã quy đổi từ clipRect
+    // point qua clipRectPdfToCanvas); `full=true` → phủ cả trang (inset-0).
+    //
+    // MẢNG (không phải 1 overlay): mỗi op chỉ vẽ lại VÙNG của nó. Nhiều op liên tiếp
+    // TRƯỚC khi commit ngầm (~1.5s) phải CHỒNG lên nhau — nếu chỉ giữ 1 overlay, op
+    // sau xóa "bản vá" op trước → nội dung cũ ở vùng trước hiện lại. `full=true` dọn
+    // sạch mảng (đã phủ cả trang). Dọn toàn bộ khi pdfUrl đổi (tile thật đã bake).
+    type SessionOverlay = { url: string; rect: [number, number, number, number] | null; full: boolean };
+    const [sessionPreviews, setSessionPreviews] = useState<SessionOverlay[]>([]);
+    // Tăng sau mỗi applyOp để ép effect nạp lại /edit/objects (session-aware → trả
+    // trạng thái Live_Document sau op) mà KHÔNG cần đổi selectionFileId → khung chọn
+    // bám vị trí MỚI + danh sách object cập nhật cho add/delete, không chờ commit.
+    const [editObjectsVersion, setEditObjectsVersion] = useState(0);
+
     // ─── Edit PDF Object — Hit-test + overlay (task 10.1) ────────────────────
     // Nguồn dữ liệu object lấy từ GET /edit/objects (Geometry_Reader, PDFium read-only).
     // Tách biệt khỏi globalPdfObjectCache (luồng /preflight) vì khác hệ tọa độ + khác
@@ -1019,7 +1038,7 @@ export const LivePageFrame = (props: any) => {
             }
         })();
         return () => { cancelled = true; };
-    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h]);
+    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h, editObjectsVersion]);
 
     // ─── Edit PDF Object: đồng bộ object của TRANG ACTIVE lên panel (fix tắt mắt) ─
     // Panel "Thành phần" đọc store `currentEditObjects`. Vì danh sách trang là ảo
@@ -1057,7 +1076,7 @@ export const LivePageFrame = (props: any) => {
                     targetIds: [...selectedObjectIds],
                 };
                 const idsToClear = [...selectedObjectIds];
-                void sendEditAndPreview(op, `${getApiUrl()}/edit/delete`).then(() => {
+                void sendEditAndPreview(op).then(() => {
                     // Bỏ chọn sau khi đã commit (object cũ không còn trên trang mới).
                     setSelectedObjectIds(prev => prev.filter(id => !idsToClear.includes(id)));
                 });
@@ -1089,6 +1108,9 @@ export const LivePageFrame = (props: any) => {
         // Working_File mới (commit) hoặc file mới → object cũ không còn đúng → xóa cache
         // /edit/objects để lần bật chế độ kế tiếp fetch lại dữ liệu khớp trang mới.
         clearEditObjectsCache();
+        // Tile thật (Working_File mới) đã vào sau commit ngầm → bỏ overlay session cũ
+        // (nội dung overlay ĐÃ bake vào tile mới; giữ lại sẽ chồng đôi khi op kế tiếp).
+        setSessionPreviews(prev => (prev.length ? [] : prev));
         // Bỏ selection cũ (trỏ object của file/trang trước) để không highlight chéo.
         setSelectedObjectIds(prev => (prev.length ? [] : prev));
     }, [pdfUrl]);
@@ -1469,12 +1491,59 @@ export const LivePageFrame = (props: any) => {
         e.stopPropagation();
     };
 
-    // Khi MOUSE UP: dựng EditOp từ transform tạm rồi gửi /edit/transform (1 lần).
+    // ─── Edit PDF Object: áp op qua EDIT-SESSION in-memory (đường DUY NHẤT) ────
+    // Thay cho đường legacy (POST /edit/transform|text|add|delete → ghi file mới →
+    // reload cả file). Session áp op trong RAM backend + render VÙNG CLIP → dán overlay
+    // ĐÈ lên tile TẠI CHỖ (KHÔNG đổi pdfUrl, KHÔNG reload). Debounce-commit của hook tự
+    // ghi đĩa ngầm ~1.5s → onCommit đổi pdfUrl sang tile thật MỘT lần (nền).
+    //
+    // Trả true nếu áp thành công. Session lỗi/410 → hook đã markFailed + báo lỗi (không
+    // fallback). Lỗi op (409/422...) → ném để caller hiển thị thông báo phù hợp.
+    const applyOpViaSession = async (op: EditOp): Promise<SessionOpOutcome | null> => {
+        if (!editSession) {
+            setEditNotice('Phiên chỉnh sửa chưa sẵn sàng — hãy mở lại file để chỉnh sửa.');
+            setTimeout(() => setEditNotice(null), 6000);
+            return null;
+        }
+        if (!pageDim?.w) return null;
+        // Scale render clip: px THIẾT BỊ / point (css px/point × dpr) → ảnh clip đủ nét.
+        const cssScale = calcEditScale(displayWidth, pageWidthPtFromDim(pageDim.w));
+        const dpr = window.devicePixelRatio || 1;
+        setEditBusy(true);
+        try {
+            const outcome = await editSession.applyOp(op, Math.max(0.5, cssScale * dpr));
+            // null = phiên hỏng/410 (hook đã markFailed → onSessionFailed báo lỗi).
+            if (!outcome || !outcome.success) return null;
+
+            // Dán overlay preview: full → phủ cả trang; ngược lại định vị theo clipRect
+            // (point, Page_Box-relative, gốc dưới-trái) → px canvas qua clipRectPdfToCanvas.
+            const pageHeightPt = pageHeightPtFromDim(pageDim.h);
+            const [bx0, by0] = editCropOriginRef.current;
+            let rect: [number, number, number, number] | null = null;
+            if (!outcome.full && outcome.clipRect) {
+                const r = clipRectPdfToCanvas(outcome.clipRect as BBox, pageHeightPt, bx0, by0, cssScale);
+                rect = [r[0], r[1], r[2], r[3]];
+            }
+            // Chồng overlay (không thay thế): op sau render TỪ live-bytes đã gồm op trước,
+            // nên nếu vùng trùng thì overlay mới (trên cùng) đúng; vùng khác giữ cả hai.
+            setSessionPreviews(prev => [...prev, { url: outcome.preview, rect, full: outcome.full }]);
+
+            // Refetch /edit/objects (session-aware → đọc Live_Document) để khung chọn bám
+            // vị trí MỚI + danh sách cập nhật (add/delete). Cache clear để chắc chắn miss.
+            clearEditObjectsCache();
+            setEditObjectsVersion(v => v + 1);
+            return outcome;
+        } finally {
+            setEditBusy(false);
+        }
+    };
+
+    // Khi MOUSE UP: dựng EditOp từ transform tạm rồi áp qua edit-session (1 lần).
     // Đây là ĐIỂM DUY NHẤT gọi backend (KHÔNG gọi khi đang kéo — Yêu cầu 13.2).
     //
     // CHUYỂN TRỤC tọa độ (canvas top-left, y xuống ↔ PDF bottom-left, y lên):
-    //  - move : /edit/transform → move_objects mặc định coord_space='pdf', nên FE
-    //           phải gửi delta ở hệ PDF: dx giữ nguyên, dy_pdf = -dy_canvas.
+    //  - move : move_objects mặc định coord_space='pdf', nên FE gửi delta ở hệ PDF:
+    //           dx giữ nguyên, dy_pdf = -dy_canvas.
     //  - resize: anchor = góc đối diện handle kéo; nhãn nw/ne/sw/se theo VỊ TRÍ NHÌN
     //           THẤY trùng ngữ nghĩa _anchor_point backend ('n'=mép trên) nên gửi thẳng.
     //  - rotate: rotateDeg backend dương = NGƯỢC chiều kim đồng hồ (hệ PDF y lên);
@@ -1523,80 +1592,44 @@ export const LivePageFrame = (props: any) => {
             op = { page, kind: 'rotate', targetIds: selectedObjectIds, rotateDeg: rotationScreenToPdf(lt.rotateDeg) };
         }
 
-        setEditBusy(true);
+        // Giữ selection id qua vòng refetch objects (khung chọn bám vị trí MỚI).
+        pendingReselectIdsRef.current = [...selectedObjectIds];
         try {
-            const headers = { 'Content-Type': 'application/json' };
-            const tRes = await authenticatedFetch(`${getApiUrl()}/edit/transform`, {
-                method: 'POST', headers, body: JSON.stringify({ fid: selectionFileId, op }),
-            });
-            if (!tRes.ok) {
-                const detail = await tRes.text().catch(() => '');
-                throw new Error(`/edit/transform HTTP ${tRes.status} ${detail}`);
-            }
-            // EditResponse{output_url, output_filename}: Working_File MỚI (pikepdf, color-safe).
-            const tData = await tRes.json().catch(() => null);
-            // task 11.1: đẩy Working_File mới vào history → Undo/Redo (Yêu cầu 11.1–11.3).
-            // Trang re-render từ Working_File mới (commitWorkingFile đổi pdfUrl → tile mới)
-            // nên KHÔNG cần gọi /edit/preview (render PDFium toàn trang) — bỏ để giảm tải.
-            if (tData?.success && tData.output_url && onEditCommit) {
-                // Giữ selection id qua vòng đổi fid/pdfUrl (setSelectionFileId clear selection).
-                pendingReselectIdsRef.current = [...selectedObjectIds];
-                // KHÔNG clearTileUrlCache() ở đây: mỗi commit ghi output_path MỚI → pdfUrl đổi →
-                // fileKey đổi → LiveTile tự re-mount và nạp tile từ Working_File mới (cache cũ key
-                // khác nên không bao giờ hit lại). clearTileUrlCache() revoke MỌI blob GLOBAL —
-                // gồm cả blob mà <img> đang hiển thị → trang trắng/mất chữ tới khi tile mới nạp
-                // xong. Delete (sendEditAndPreview) KHÔNG gọi nó và hoạt động đúng → bỏ để move
-                // khớp delete (proven-correct); backend đã chứng minh giữ nguyên chữ trên đĩa.
-                await onEditCommit(tData.output_url, tData.output_filename, tData.output_fid, tData.output_path);
-            } else {
-                console.warn('[edit] transform response thiếu success/output_url', tData);
-                setEditNotice('Di chuyển không trả về file mới — thử lại hoặc mở lại file.');
-                setTimeout(() => setEditNotice(null), 6000);
+            const outcome = await applyOpViaSession(op);
+            if (!outcome) {
+                // null = phiên hỏng (hook đã báo lỗi) → bỏ ghost, không kẹt ở chỗ thả.
                 hideEditGhost();
+                return;
             }
+            // Overlay clip đã dán tại chỗ; ghost dashed bỏ đi (overlay là hình thật mới).
+            hideEditGhost();
         } catch (err: any) {
-            console.warn('[edit] transform thất bại:', err);
-            // User-friendly for mapping ambiguity (409) — common for vectors inside clips / Form XObjects
+            console.warn('[edit] transform (session) thất bại:', err);
             const msg = String(err?.message || err);
             if (msg.includes('409') || msg.includes('ánh xạ') || msg.includes('map')) {
                 setEditNotice('Đối tượng quá phức tạp (clip/XObject) — không thể biến đổi an toàn. Thử Delete hoặc sửa ở file nguồn.');
-                setTimeout(() => setEditNotice(null), 7000);
             } else {
                 setEditNotice(`Di chuyển thất bại: ${msg.slice(0, 120)}`);
-                setTimeout(() => setEditNotice(null), 7000);
             }
+            setTimeout(() => setEditNotice(null), 7000);
             hideEditGhost(); // Commit lỗi → bỏ ghost giữ (tránh kẹt ở vị trí thả).
-        } finally {
-            setEditBusy(false);
         }
     };
 
-    // ─── Edit PDF Object (task 10.3): gửi EditOp ──────────────────────────────
-    // Helper dùng chung cho editText/add: POST tới `endpoint` rồi onEditCommit.
-    // KHÔNG gọi /edit/preview (render PDFium toàn trang) — trang sẽ re-render từ
-    // Working_File mới (pdfUrl đổi → tile mới) nên preview là THỪA. TÁI DÙNG đúng
-    // cơ chế authenticatedFetch/getApiUrl của commitEditTransform.
-    const sendEditAndPreview = async (op: EditOp, endpoint: string) => {
+    // ─── Edit PDF Object (task 10.3): gửi EditOp qua EDIT-SESSION ─────────────
+    // Helper dùng chung cho editText/add/delete: áp op qua `applyOpViaSession`
+    // (in-memory, render clip → overlay tại chỗ, KHÔNG reload file). Giữ cảnh báo
+    // font-fallback (đọc từ `outcome.opResult.detail`) + map lỗi 409/422 sang thông
+    // báo thân thiện. `endpoint` không còn dùng (session lo mọi kind) — giữ signature
+    // để tối thiểu thay đổi caller.
+    const sendEditAndPreview = async (op: EditOp) => {
         if (!selectionFileId) return;
-        setEditBusy(true);
         try {
-            const headers = { 'Content-Type': 'application/json' };
-            const tRes = await authenticatedFetch(endpoint, {
-                method: 'POST', headers, body: JSON.stringify({ fid: selectionFileId, op }),
-            });
-            if (!tRes.ok) {
-                const detail = await tRes.text().catch(() => '');
-                throw new Error(`${endpoint} HTTP ${tRes.status} ${detail}`);
-            }
-            // EditResponse{output_url, output_filename}: Working_File MỚI (pikepdf, color-safe).
-            const tData = await tRes.json().catch(() => null);
-            // task 11.1: đẩy Working_File mới vào history → Undo/Redo (Yêu cầu 11.1–11.3).
-            if (tData?.success && tData.output_url && onEditCommit) {
-                await onEditCommit(tData.output_url, tData.output_filename, tData.output_fid, tData.output_path);
-            }
+            const outcome = await applyOpViaSession(op);
+            if (!outcome) return; // phiên hỏng/410 — onSessionFailed đã báo lỗi.
             // Cảnh báo khi KHÔNG giữ được font gốc và người dùng CHƯA chọn font →
-            // đã âm thầm dùng font dự phòng (DejaVuSans). Nhắc người dùng chọn font.
-            const r = tData?.result;
+            // đã âm thầm dùng font dự phòng (DejaVuSans). detail = serialize op_result.
+            const r: any = (outcome as any).opResult?.detail;
             const usedFallback = Array.isArray(r) ? r.some((x: any) => x?.used_fallback) : !!r?.used_fallback;
             if (usedFallback && !editFontPath) {
                 setEditNotice('Không giữ được font gốc → đã dùng font dự phòng (DejaVuSans). Mở lại để chọn font ở thanh "FONT" nếu muốn đúng kiểu chữ.');
@@ -1618,8 +1651,6 @@ export const LivePageFrame = (props: any) => {
             }
             setEditNotice(friendly);
             setTimeout(() => setEditNotice(null), 7000);
-        } finally {
-            setEditBusy(false);
         }
     };
 
@@ -1633,7 +1664,7 @@ export const LivePageFrame = (props: any) => {
             // font = đường dẫn file font người dùng chọn (nếu có) → backend nhúng font đó.
             text: { content, font: editFontPath },
         };
-        await sendEditAndPreview(op, `${getApiUrl()}/edit/text`);
+        await sendEditAndPreview(op);
     };
 
     // Thêm cụm text MỚI tại điểm bấm. CONVERT TỌA ĐỘ: draft.{xPt,yPt} ở hệ canvas
@@ -1649,7 +1680,7 @@ export const LivePageFrame = (props: any) => {
             page: originalPageNum - 1, kind: 'add',
             targetIds: [], text: { content, sizePt: EDIT_ADD_TEXT_SIZE_PT, bbox, font: editFontPath },
         };
-        await sendEditAndPreview(op, `${getApiUrl()}/edit/add`);
+        await sendEditAndPreview(op);
     };
 
     // Thêm ảnh MỚI tại điểm bấm (dataUrl base64). CONVERT TỌA ĐỘ giống add-text:
@@ -1664,7 +1695,7 @@ export const LivePageFrame = (props: any) => {
             page: originalPageNum - 1, kind: 'add',
             targetIds: [], image: { dataRef: dataUrl, bbox },
         };
-        await sendEditAndPreview(op, `${getApiUrl()}/edit/add`);
+        await sendEditAndPreview(op);
     };
 
     const handleMouseDown = (e: React.MouseEvent) => {
@@ -2100,7 +2131,23 @@ export const LivePageFrame = (props: any) => {
                      style={{ width: '100%', height: '100%', objectFit: 'fill' }}
                  />
              )}
-             
+
+             {/* Edit-session preview: dán ĐÈ ảnh vùng clip (hoặc cả trang nếu full) lên
+                 tile TẠI CHỖ sau mỗi op — trước khi tile thật (pdfUrl mới) vào. full →
+                 phủ cả trang (inset-0); ngược lại định vị theo rect px (clipRectPdfToCanvas).
+                 z-[16] < overlay object (z-30) để khung chọn vẫn nổi trên preview. */}
+             {sessionPreviews.map((sp, i) => (
+                 <img
+                     key={i}
+                     src={sp.url}
+                     alt=""
+                     className="absolute z-[16] pointer-events-none"
+                     style={sp.full || !sp.rect
+                         ? { top: 0, left: 0, width: '100%', height: '100%', objectFit: 'fill' }
+                         : { left: sp.rect[0], top: sp.rect[1], width: sp.rect[2] - sp.rect[0], height: sp.rect[3] - sp.rect[1], objectFit: 'fill' }}
+                 />
+             ))}
+
              {(isPreviewLoading || editBusy) && (
                  <div className="absolute top-1.5 left-1.5 z-50 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded-sm backdrop-blur-md flex items-center gap-1.5">
                      <div className="w-2.5 h-2.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
