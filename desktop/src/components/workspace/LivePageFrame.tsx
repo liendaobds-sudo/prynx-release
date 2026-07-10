@@ -822,17 +822,11 @@ export const LivePageFrame = (props: any) => {
     const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
-    // Overlay xem-trước từ edit-session (/edit/session/op): áp op trong RAM backend →
-    // render VÙNG CLIP (hoặc toàn trang nếu full) → dán ĐÈ lên tile TẠI CHỖ, KHÔNG
-    // reload file. `rect` = [left,top,right,bottom] px canvas (đã quy đổi từ clipRect
-    // point qua clipRectPdfToCanvas); `full=true` → phủ cả trang (inset-0).
-    //
-    // MẢNG (không phải 1 overlay): mỗi op chỉ vẽ lại VÙNG của nó. Nhiều op liên tiếp
-    // TRƯỚC khi commit ngầm (~1.5s) phải CHỒNG lên nhau — nếu chỉ giữ 1 overlay, op
-    // sau xóa "bản vá" op trước → nội dung cũ ở vùng trước hiện lại. `full=true` dọn
-    // sạch mảng (đã phủ cả trang). Dọn toàn bộ khi pdfUrl đổi (tile thật đã bake).
-    type SessionOverlay = { url: string; rect: [number, number, number, number] | null; full: boolean };
-    const [sessionPreviews, setSessionPreviews] = useState<SessionOverlay[]>([]);
+    // Overlay xem-trước lấy TỪ HOOK `editSession.previews` (hook SỞ HỮU — nguồn sự
+    // thật để hotkey undo/redo ở AcrobatViewer và overlay ở đây cùng thấy). Mỗi lớp
+    // giữ clipRect ở POINT (Page_Box-relative, gốc dưới-trái); LivePageFrame quy đổi
+    // sang px THEO ZOOM HIỆN TẠI lúc render (nên zoom xong overlay vẫn đúng vị trí) +
+    // LỌC theo trang. Xem block render bên dưới.
     // Tăng sau mỗi applyOp để ép effect nạp lại /edit/objects (session-aware → trả
     // trạng thái Live_Document sau op) mà KHÔNG cần đổi selectionFileId → khung chọn
     // bám vị trí MỚI + danh sách object cập nhật cho add/delete, không chờ commit.
@@ -1108,9 +1102,9 @@ export const LivePageFrame = (props: any) => {
         // Working_File mới (commit) hoặc file mới → object cũ không còn đúng → xóa cache
         // /edit/objects để lần bật chế độ kế tiếp fetch lại dữ liệu khớp trang mới.
         clearEditObjectsCache();
-        // Tile thật (Working_File mới) đã vào sau commit ngầm → bỏ overlay session cũ
-        // (nội dung overlay ĐÃ bake vào tile mới; giữ lại sẽ chồng đôi khi op kế tiếp).
-        setSessionPreviews(prev => (prev.length ? [] : prev));
+        // Tile thật (Working_File mới) đã vào sau commit → bỏ overlay session (nội dung
+        // overlay ĐÃ bake vào tile mới; giữ lại sẽ chồng đôi). Hook sở hữu previews.
+        editSession?.clearPreviews?.();
         // Bỏ selection cũ (trỏ object của file/trang trước) để không highlight chéo.
         setSelectedObjectIds(prev => (prev.length ? [] : prev));
     }, [pdfUrl]);
@@ -1515,18 +1509,9 @@ export const LivePageFrame = (props: any) => {
             // null = phiên hỏng/410 (hook đã markFailed → onSessionFailed báo lỗi).
             if (!outcome || !outcome.success) return null;
 
-            // Dán overlay preview: full → phủ cả trang; ngược lại định vị theo clipRect
-            // (point, Page_Box-relative, gốc dưới-trái) → px canvas qua clipRectPdfToCanvas.
-            const pageHeightPt = pageHeightPtFromDim(pageDim.h);
-            const [bx0, by0] = editCropOriginRef.current;
-            let rect: [number, number, number, number] | null = null;
-            if (!outcome.full && outcome.clipRect) {
-                const r = clipRectPdfToCanvas(outcome.clipRect as BBox, pageHeightPt, bx0, by0, cssScale);
-                rect = [r[0], r[1], r[2], r[3]];
-            }
-            // Chồng overlay (không thay thế): op sau render TỪ live-bytes đã gồm op trước,
-            // nên nếu vùng trùng thì overlay mới (trên cùng) đúng; vùng khác giữ cả hai.
-            setSessionPreviews(prev => [...prev, { url: outcome.preview, rect, full: outcome.full }]);
+            // KHÔNG lưu overlay ở đây: hook SỞ HỮU `previews` (dạng point) — overlay được
+            // render từ `editSession.previews`, quy đổi sang px LÚC RENDER theo zoom hiện
+            // tại + lọc theo trang (đúng cả khi zoom/cuộn giữa các op). Xem block overlay.
 
             // Refetch /edit/objects (session-aware → đọc Live_Document) để khung chọn bám
             // vị trí MỚI + danh sách cập nhật (add/delete). Cache clear để chắc chắn miss.
@@ -2134,19 +2119,29 @@ export const LivePageFrame = (props: any) => {
 
              {/* Edit-session preview: dán ĐÈ ảnh vùng clip (hoặc cả trang nếu full) lên
                  tile TẠI CHỖ sau mỗi op — trước khi tile thật (pdfUrl mới) vào. full →
-                 phủ cả trang (inset-0); ngược lại định vị theo rect px (clipRectPdfToCanvas).
+                 phủ cả trang (inset-0); ngược lại định vị theo clipRect (POINT) quy đổi
+                 sang px THEO ZOOM HIỆN TẠI (clipRectPdfToCanvas) → overlay tự đúng khi zoom.
+                 Nguồn = editSession.previews (hook sở hữu); LỌC theo trang (op.page 0-based
+                 == originalPageNum-1) để frame ảo khác không vẽ nhầm overlay trang này.
                  z-[16] < overlay object (z-30) để khung chọn vẫn nổi trên preview. */}
-             {sessionPreviews.map((sp, i) => (
-                 <img
-                     key={i}
-                     src={sp.url}
-                     alt=""
-                     className="absolute z-[16] pointer-events-none"
-                     style={sp.full || !sp.rect
-                         ? { top: 0, left: 0, width: '100%', height: '100%', objectFit: 'fill' }
-                         : { left: sp.rect[0], top: sp.rect[1], width: sp.rect[2] - sp.rect[0], height: sp.rect[3] - sp.rect[1], objectFit: 'fill' }}
-                 />
-             ))}
+             {isObjectEditMode && pageDim && (editSession?.previews || [])
+                 .filter((sp: any) => sp.page === originalPageNum - 1)
+                 .map((sp: any, i: number) => {
+                     if (sp.full || !sp.clipRect) {
+                         return (
+                             <img key={i} src={sp.url} alt="" className="absolute z-[16] pointer-events-none"
+                                 style={{ top: 0, left: 0, width: '100%', height: '100%', objectFit: 'fill' }} />
+                         );
+                     }
+                     const cssScale = calcEditScale(displayWidth, pageWidthPtFromDim(pageDim.w));
+                     const pageHeightPt = pageHeightPtFromDim(pageDim.h);
+                     const [bx0, by0] = editCropOriginRef.current;
+                     const r = clipRectPdfToCanvas(sp.clipRect as BBox, pageHeightPt, bx0, by0, cssScale);
+                     return (
+                         <img key={i} src={sp.url} alt="" className="absolute z-[16] pointer-events-none"
+                             style={{ left: r[0], top: r[1], width: r[2] - r[0], height: r[3] - r[1], objectFit: 'fill' }} />
+                     );
+                 })}
 
              {(isPreviewLoading || editBusy) && (
                  <div className="absolute top-1.5 left-1.5 z-50 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded-sm backdrop-blur-md flex items-center gap-1.5">

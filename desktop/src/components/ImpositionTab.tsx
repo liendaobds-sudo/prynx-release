@@ -1452,21 +1452,40 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     };
 
     const handleSaveFile = useCallback(async (isSaveAs: boolean = false) => {
-        let targetBlob: Blob | null = file;
-        let targetName = file ? file.name : 'Document.pdf';
+        // Edit-session COMMIT-ON-SAVE: nếu đang sửa object và có thay đổi chưa ghi
+        // (commit-on-exit chưa chạy vì vẫn ở edit mode), commit NGAY để `file`/pdfUrl
+        // trỏ Working_File mới ĐÃ bake mọi op. onCommit → handleEditCommit set state
+        // (bất đồng bộ), nhưng ta await commit xong nên lần lưu này thấy file mới ở
+        // vòng render kế; để chắc chắn dùng luôn kết quả, đợi 1 tick sau setState.
+        if (editSession.dirty) {
+            try {
+                await editSession.commit();
+                // Nhường 1 microtask cho React flush setFile/setPdfUrl từ onCommit.
+                await new Promise<void>(r => setTimeout(r, 0));
+            } catch {
+                setError('Không lưu được thay đổi chỉnh sửa vào file — thử lại.');
+                return;
+            }
+        }
+        // Sau commit, `file` (biến closure) đã STALE — onCommit set store bất đồng bộ.
+        // Đọc file MỚI NHẤT từ store để mọi quyết định lưu (path/tên/bytes) trỏ đúng
+        // Working_File đã bake op. Non-edit: getState().file === file (không đổi).
+        const curFile: File | null = (store?.getState().file as File | null) || file;
+        let targetBlob: Blob | null = curFile;
+        let targetName = curFile ? curFile.name : 'Document.pdf';
         let didBake = false;  // có bake edits/VDP vào blob mới hay không
 
         if (!targetBlob) return;
 
         // File kết quả đã sinh sẵn (VDP/batch...) đã bake đủ — KHÔNG áp lại edits/VDP còn
         // sót trong store (tránh bị thêm tiền tố "Edited_"/"VDP_" sai khi chạy nhiều file).
-        const isGeneratedResult = !!(file as any)?.isGenerated;
+        const isGeneratedResult = !!(curFile as any)?.isGenerated;
         // path chỉ là file tạm backend (<uuid>.pdf) do polyfill gán để render → KHÔNG
         // được coi là đích lưu thật. Bắt buộc hỏi vị trí lưu (tránh ghi đè temp + đổi
         // tên tab thành chuỗi uuid). Phòng thủ 2 lớp: cờ isTempUploadPath HOẶC path nằm
         // trong thư mục phù du của backend (uploads/results/temp | <uuid>.pdf).
-        const isTempUploadPath = !!(file as any)?.isTempUploadPath
-            || isEphemeralBackendPath((file as any)?.path);
+        const isTempUploadPath = !!(curFile as any)?.isTempUploadPath
+            || isEphemeralBackendPath((curFile as any)?.path);
 
         // Chỉ bake khi có sửa đổi THẬT SỰ (xoay khác 0, hoặc thứ tự trang khác gốc /
         // có xoá/chèn). Nếu chỉ "lưu lại" không sửa gì → bỏ qua bake (lưu tức thì).
@@ -1536,8 +1555,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 let path: string | null = null;
                 // File kết quả sinh sẵn (VDP/batch) nằm ở thư mục tạm + blob in-memory chỉ
                 // là placeholder → KHÔNG ghi đè vào temp, luôn hỏi vị trí lưu.
-                if (!isSaveAs && (file as any).path && !isGeneratedResult && !isTempUploadPath) {
-                    path = (file as any).path; // Overwrite original
+                if (!isSaveAs && (curFile as any)?.path && !isGeneratedResult && !isTempUploadPath) {
+                    path = (curFile as any).path; // Overwrite original
                 } else {
                     path = await save({
                         filters: [{ name: 'PDF', extensions: ['pdf'] }],
@@ -1549,7 +1568,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 if (path) {
                     // Lưu đè đúng file nguồn mà không có gì để bake → đã là chính nó,
                     // bỏ qua (đặt TRƯỚC khi đọc bytes để không đọc thừa file lớn qua IPC).
-                    if (path === (file as any).path && !didBake) {
+                    if (path === (curFile as any)?.path && !didBake) {
                         const fileName = path.split(/[\\/]/).pop() || targetName;
                         setIsSaved(true);
                         onTitleChange?.(fileName);
@@ -1560,9 +1579,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     // rỗng) → đọc bytes thật từ đĩa qua lệnh Rust (không vướng fs scope).
                     // Ngược lại dùng blob đã bake (edits/VDP nhúng).
                     let writeData: Uint8Array;
-                    if (!didBake && (file as any).path) {
+                    if (!didBake && (curFile as any)?.path) {
                         const { invoke } = await import('@tauri-apps/api/core');
-                        const resp: any = await invoke('read_system_file', { path: (file as any).path });
+                        const resp: any = await invoke('read_system_file', { path: (curFile as any).path });
                         writeData = resp instanceof Uint8Array ? resp : new Uint8Array(resp);
                     } else {
                         writeData = new Uint8Array(await targetBlob.arrayBuffer());
@@ -1623,7 +1642,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         } catch (e: any) {
             setError('Không thể lưu file: ' + e);
         }
-    }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange]);
+    }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange, editSession, store, isObjectEditMode]);
 
     useEffect(() => {
         const handleTriggerSave = (e: any) => {
@@ -2008,9 +2027,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             </button>
                                                         )}
 
-                                                        {(isObjectEditMode ? editHistory.canUndo : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (
+                                                        {(isObjectEditMode ? editSession.canUndo : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (
                                                             <button
-                                                                onClick={() => { if (isObjectEditMode) editHistory.undo(); else handleUndo(); }}
+                                                                onClick={() => { if (isObjectEditMode) void editSession.undo(); else handleUndo(); }}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
                                                                 title="Hoàn tác thao tác trước (Ctrl+Z)"
                                                                 aria-label="Hoàn tác thao tác trước"

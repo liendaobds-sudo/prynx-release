@@ -55,6 +55,17 @@ export interface SessionOpOutcome {
     canRedo: boolean;
 }
 
+/** Một lớp overlay xem-trước tích lũy trong phiên (mỗi op/undo/redo đẩy thêm 1 lớp).
+ *  clipRect ở POINT (Page_Box-relative, gốc dưới-trái) — FE quy đổi sang px theo zoom
+ *  hiện tại + lọc theo `page`. Lớp sau vẽ ĐÈ lớp trước ở vùng trùng → luôn phản ánh
+ *  trạng thái mới nhất. `full=true` → phủ cả trang. */
+export interface SessionPreview {
+    url: string;
+    clipRect: BBox | null;
+    full: boolean;
+    page: number;
+}
+
 /** Kết quả Commit — khớp `EditResponse` của Legacy (để FE đổi pdfUrl qua onEditCommit). */
 export interface SessionCommitResult {
     success: boolean;
@@ -82,14 +93,19 @@ export interface UseEditSession {
     canRedo: boolean;
     /** Có thay đổi chưa Commit ra đĩa? */
     dirty: boolean;
+    /** Các lớp overlay xem-trước tích lũy (op/undo/redo). FE render + quy đổi theo zoom.
+     *  Hook SỞ HỮU state này (nguồn sự thật) — LivePageFrame chỉ đọc để render. */
+    previews: SessionPreview[];
     /** Mở phiên từ `fid`. Trả số trang nếu thành công, null nếu thất bại. */
     openSession: (fid: string) => Promise<number | null>;
     /** Áp 1 Edit_Op in-memory + render clip. `scale` = px/point. */
     applyOp: (op: EditOp, scale?: number) => Promise<SessionOpOutcome | null>;
     undo: (scale?: number) => Promise<SessionOpOutcome | null>;
     redo: (scale?: number) => Promise<SessionOpOutcome | null>;
-    /** Commit Live_Document ra Working_File mới (ghi đĩa). */
+    /** Commit Live_Document ra Working_File mới (ghi đĩa). Gọi KHI THOÁT edit mode. */
     commit: () => Promise<SessionCommitResult | null>;
+    /** Xóa mọi lớp preview (gọi khi tile thật đã vào sau commit). */
+    clearPreviews: () => void;
     /** Đóng phiên, giải phóng RAM backend. */
     closeSession: () => Promise<void>;
 }
@@ -103,20 +119,19 @@ class SessionGoneError extends Error {
 }
 
 export function useEditSession(options: UseEditSessionOptions = {}): UseEditSession {
-    const debounceMs = options.debounceCommitMs ?? DEFAULT_DEBOUNCE_COMMIT_MS;
-
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [sessionFailed, setSessionFailed] = useState(false);
     const [canUndo, setCanUndo] = useState(false);
     const [canRedo, setCanRedo] = useState(false);
     const [dirty, setDirty] = useState(false);
+    // Các lớp overlay xem-trước tích lũy trong phiên (op/undo/redo). Hook sở hữu để
+    // hotkey (AcrobatViewer) và overlay (LivePageFrame — bị virtualized) cùng thấy.
+    const [previews, setPreviews] = useState<SessionPreview[]>([]);
 
-    // Refs giữ giá trị "mới nhất" tránh stale-closure trong timer/async.
+    // Refs giữ giá trị "mới nhất" tránh stale-closure trong async.
     const sessionIdRef = useRef<string | null>(null);
     const dirtyRef = useRef(false);
-    const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const committingRef = useRef(false);     // có commit đang chạy?
-    const pendingCommitRef = useRef(false);  // có op mới trong lúc đang commit? (gộp — Yêu cầu 5.6)
+    const committingRef = useRef(false);     // có commit đang chạy? (chặn commit chồng)
     const optsRef = useRef(options);
     optsRef.current = options;
 
@@ -130,21 +145,14 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
         setDirty(v);
     }, []);
 
-    const clearCommitTimer = useCallback(() => {
-        if (commitTimerRef.current) {
-            clearTimeout(commitTimerRef.current);
-            commitTimerRef.current = null;
-        }
-    }, []);
-
-    /** Đánh dấu phiên hỏng → FE fallback Legacy (Yêu cầu 9.5, 11.1). */
+    /** Đánh dấu phiên hỏng → FE báo lỗi (không fallback — người dùng đã chọn). */
     const markFailed = useCallback(() => {
-        clearCommitTimer();
         setSession(null);
         setDirtyFlag(false);
         setSessionFailed(true);
+        setPreviews([]);
         try { optsRef.current.onSessionFailed?.(); } catch { /* nuốt lỗi callback */ }
-    }, [clearCommitTimer, setSession, setDirtyFlag]);
+    }, [setSession, setDirtyFlag]);
 
     /**
      * Gọi API phiên. Ném `SessionGoneError` khi 410 (FE fallback); ném Error thường
@@ -171,16 +179,17 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
     }), []);
 
     // ── Commit (ghi đĩa) ──────────────────────────────────────────────────────
-    // Gộp các yêu cầu commit dồn lại trong cửa sổ debounce thành 1 lần ghi phản
-    // ánh trạng thái mới nhất (Yêu cầu 5.6). `auto`=true khi do debounce kích hoạt.
-    const doCommit = useCallback(async (auto: boolean): Promise<SessionCommitResult | null> => {
+    // COMMIT-ON-EXIT: chỉ gọi khi THOÁT edit mode / Lưu (KHÔNG debounce giữa lúc sửa).
+    // Lý do: mỗi commit sinh fid mới → nếu commit giữa phiên thì phải reopen session
+    // (reset op_log → mất undo) + swap tile (reload → lag). Nên session sống suốt phiên
+    // sửa; commit gộp TẤT CẢ op thành MỘT Working_File khi kết thúc. Trả kết quả cho
+    // caller (ImpositionTab) đổi pdfUrl sang tile thật — reload DUY NHẤT, ở điểm tự nhiên.
+    const doCommit = useCallback(async (): Promise<SessionCommitResult | null> => {
         const sid = sessionIdRef.current;
         if (!sid) return null;
-        // Đang có commit chạy → đánh dấu cần commit lại sau (gộp), không chạy song song.
-        if (committingRef.current) {
-            pendingCommitRef.current = true;
-            return null;
-        }
+        // Chặn commit chồng: nếu đang commit thì bỏ qua lần gọi này (commit-on-exit
+        // chỉ gọi 1 lần, guard này chỉ phòng double-invoke hiếm).
+        if (committingRef.current) return null;
         committingRef.current = true;
         try {
             const data = await request('/commit', jsonPost({ session_id: sid }));
@@ -193,9 +202,9 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
                 output_path: data?.output_path,
                 output_filename: data?.output_filename,
             };
-            if (auto) {
-                try { optsRef.current.onCommit?.(result); } catch { /* nuốt lỗi callback */ }
-            }
+            // Báo caller (ImpositionTab.onCommit → handleEditCommit) đổi pdfUrl sang
+            // tile thật. Đây là RELOAD DUY NHẤT của cả phiên sửa — tại điểm thoát/Lưu.
+            try { optsRef.current.onCommit?.(result); } catch { /* nuốt lỗi callback */ }
             return result;
         } catch (e) {
             if (e instanceof SessionGoneError) { markFailed(); return null; }
@@ -204,28 +213,12 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             throw e;
         } finally {
             committingRef.current = false;
-            // Có op mới chen vào lúc đang commit → commit lại cho mốc mới nhất.
-            if (pendingCommitRef.current) {
-                pendingCommitRef.current = false;
-                void doCommit(true).catch(() => { /* best-effort auto-commit */ });
-            }
         }
     }, [request, jsonPost, setDirtyFlag, markFailed]);
-
-    /** Hẹn debounce-commit ~debounceMs sau op cuối (Yêu cầu 5.3, 5.6). */
-    const scheduleCommit = useCallback(() => {
-        clearCommitTimer();
-        commitTimerRef.current = setTimeout(() => {
-            commitTimerRef.current = null;
-            if (!sessionIdRef.current || !dirtyRef.current) return;
-            void doCommit(true).catch(() => { /* best-effort: lần lưu thủ công sẽ thử lại */ });
-        }, debounceMs);
-    }, [clearCommitTimer, doCommit, debounceMs]);
 
     // ── Mở phiên ──────────────────────────────────────────────────────────────
     const openSession = useCallback(async (fid: string): Promise<number | null> => {
         if (!fid) return null;
-        clearCommitTimer();
         try {
             const data = await request('/open', jsonPost({ fid }));
             const sid: string = data?.session_id;
@@ -235,13 +228,14 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             setCanUndo(false);
             setCanRedo(false);
             setDirtyFlag(false);
+            setPreviews([]); // phiên mới → không còn overlay của phiên trước.
             return typeof data?.page_count === 'number' ? data.page_count : 0;
         } catch (e) {
             // Mở thất bại (kể cả 410/404) → tín hiệu fallback Legacy (Yêu cầu 11.1).
             markFailed();
             return null;
         }
-    }, [request, jsonPost, clearCommitTimer, setSession, setDirtyFlag, markFailed]);
+    }, [request, jsonPost, setSession, setDirtyFlag, markFailed]);
 
     // ── Áp Edit_Op / Undo / Redo ───────────────────────────────────────────────
     const runOp = useCallback(async (
@@ -264,9 +258,17 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             };
             setCanUndo(outcome.canUndo);
             setCanRedo(outcome.canRedo);
-            // Thao tác thành công → trạng thái thay đổi, hẹn commit bền (Yêu cầu 5.1, 5.3).
             setDirtyFlag(true);
-            scheduleCommit();
+            // Đẩy lớp overlay: op áp trong RAM → render vùng clip. KHÔNG auto-commit ở
+            // đây (trước kia debounce-commit sinh fid mới GIỮA lúc sửa → reopen session
+            // reset op_log + swap tile reload → chính cái lag ta gỡ). Commit CHỈ khi
+            // THOÁT edit mode / Lưu (commit-on-exit). Session sống suốt phiên sửa.
+            if (outcome.preview) {
+                setPreviews(prev => [...prev, {
+                    url: outcome.preview, clipRect: outcome.clipRect,
+                    full: outcome.full, page: outcome.page,
+                }]);
+            }
             return outcome;
         } catch (e) {
             if (e instanceof SessionGoneError) { markFailed(); return null; }
@@ -274,7 +276,7 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             // ném lại để caller hiển thị lỗi mà KHÔNG fallback.
             throw e;
         }
-    }, [request, jsonPost, setDirtyFlag, scheduleCommit, markFailed]);
+    }, [request, jsonPost, setDirtyFlag, markFailed]);
 
     const applyOp = useCallback((op: EditOp, scale: number = DEFAULT_RENDER_SCALE) =>
         runOp('/op', { op, render_scale: scale, clip_pad_pt: DEFAULT_CLIP_PAD_PT }),
@@ -288,31 +290,30 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
         runOp('/redo', { render_scale: scale, clip_pad_pt: DEFAULT_CLIP_PAD_PT }),
         [runOp]);
 
-    // ── Commit thủ công (người dùng Lưu — Yêu cầu 5.2) ─────────────────────────
+    // ── Commit thủ công (người dùng Lưu / thoát edit mode — commit-on-exit) ─────
     const commit = useCallback(async (): Promise<SessionCommitResult | null> => {
-        clearCommitTimer();
         if (!sessionIdRef.current) return null;
-        return doCommit(false);
-    }, [clearCommitTimer, doCommit]);
+        return doCommit();
+    }, [doCommit]);
+
+    /** Xóa mọi overlay xem-trước (gọi sau khi tile thật đã vào — pdfUrl đổi). */
+    const clearPreviews = useCallback(() => setPreviews([]), []);
 
     // ── Đóng phiên ─────────────────────────────────────────────────────────────
     const closeSession = useCallback(async (): Promise<void> => {
-        clearCommitTimer();
         const sid = sessionIdRef.current;
         setSession(null);
         setCanUndo(false);
         setCanRedo(false);
         setDirtyFlag(false);
+        setPreviews([]);
         if (!sid) return;
         try {
             await authenticatedFetch(`${getApiUrl()}/edit/session/${sid}`, { method: 'DELETE' });
         } catch {
             // Đóng best-effort: TTL backend sẽ tự dọn nếu DELETE thất bại (Yêu cầu 9.2).
         }
-    }, [clearCommitTimer, setSession, setDirtyFlag]);
-
-    // Dọn timer khi unmount để tránh commit "mồ côi".
-    useEffect(() => () => clearCommitTimer(), [clearCommitTimer]);
+    }, [setSession, setDirtyFlag]);
 
     return {
         sessionId,
@@ -320,11 +321,13 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
         canUndo,
         canRedo,
         dirty,
+        previews,
         openSession,
         applyOp,
         undo,
         redo,
         commit,
+        clearPreviews,
         closeSession,
     };
 }

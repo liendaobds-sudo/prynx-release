@@ -107,8 +107,7 @@ describe('useEditSession', () => {
             return okJson({ success: true });
         });
 
-        // debounce lớn để timer auto-commit KHÔNG chen vào trong lúc test op.
-        const { result } = renderHook(() => useEditSession({ debounceCommitMs: 1_000_000 }));
+        const { result } = renderHook(() => useEditSession());
 
         await act(async () => {
             await result.current.openSession('fid-1');
@@ -164,7 +163,7 @@ describe('useEditSession', () => {
             return okJson({});
         });
 
-        const { result } = renderHook(() => useEditSession({ debounceCommitMs: 1_000_000 }));
+        const { result } = renderHook(() => useEditSession());
 
         await act(async () => {
             await result.current.openSession('fid-2');
@@ -217,40 +216,36 @@ describe('useEditSession', () => {
         expect(onSessionFailed).toHaveBeenCalledTimes(1);
     });
 
-    it('debounce-commit: auto-commit kích hoạt sau op cuối, gọi onCommit và xóa dirty (Yêu cầu 5.3)', async () => {
-        vi.useFakeTimers();
-        try {
-            const onCommit = vi.fn();
-            routeByPath((path) => {
-                if (path === '/open') return okJson({ session_id: 'sess-4', page_count: 1 });
-                if (path === '/op') {
-                    return okJson({
-                        success: true, preview: '', clipRect: null, full: true,
-                        page: 0, opResult: {}, canUndo: true, canRedo: false,
-                    });
-                }
-                if (path === '/commit') return okJson({ success: true, output_fid: 'fid-auto' });
-                return okJson({});
-            });
+    it('previews: mỗi op đẩy 1 lớp overlay; commit KHÔNG tự chạy giữa lúc sửa (commit-on-exit)', async () => {
+        routeByPath((path) => {
+            if (path === '/open') return okJson({ session_id: 'sess-4', page_count: 1 });
+            if (path === '/op') {
+                return okJson({
+                    success: true, preview: 'data:image/png;base64,BBBB',
+                    clipRect: [1, 2, 3, 4], full: false,
+                    page: 0, opResult: {}, canUndo: true, canRedo: false,
+                });
+            }
+            if (path === '/commit') return okJson({ success: true, output_fid: 'fid-out' });
+            return okJson({});
+        });
 
-            const { result } = renderHook(() => useEditSession({ debounceCommitMs: 1500, onCommit }));
+        const { result } = renderHook(() => useEditSession());
 
-            await act(async () => {
-                await result.current.openSession('fid-4');
-                await result.current.applyOp(MOVE_OP);
-            });
-            expect(result.current.dirty).toBe(true);
+        await act(async () => {
+            await result.current.openSession('fid-4');
+            await result.current.applyOp(MOVE_OP);
+            await result.current.applyOp(MOVE_OP);
+        });
 
-            // Đẩy thời gian qua ngưỡng debounce → timer auto-commit chạy (flush cả microtask).
-            await act(async () => {
-                await vi.advanceTimersByTimeAsync(1600);
-            });
+        // Hai op → hai lớp preview; KHÔNG commit tự động (không có call /commit nào).
+        expect(result.current.previews).toHaveLength(2);
+        expect(result.current.previews[0]).toMatchObject({ url: 'data:image/png;base64,BBBB', page: 0, full: false });
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/commit'))).toBe(false);
+        expect(result.current.dirty).toBe(true);
 
-            expect(onCommit).toHaveBeenCalledTimes(1);
-            expect(onCommit).toHaveBeenCalledWith(expect.objectContaining({ success: true, output_fid: 'fid-auto' }));
-            expect(result.current.dirty).toBe(false);
-        } finally {
-            vi.useRealTimers();
-        }
+        // clearPreviews xóa hết (gọi sau khi tile thật vào).
+        act(() => { result.current.clearPreviews(); });
+        expect(result.current.previews).toHaveLength(0);
     });
 });

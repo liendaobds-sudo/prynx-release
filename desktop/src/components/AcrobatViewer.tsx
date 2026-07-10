@@ -228,16 +228,29 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         file, pdfRef, pdfUrl, zoom, activePage,
     });
 
-    // ═══ Edit-session lifecycle ═══
-    // Mở phiên in-memory khi VÀO edit mode + có selectionFileId; đóng khi thoát mode
-    // hoặc đổi fid (commit ngầm sinh fid mới → mở phiên trên fid mới). AcrobatViewer là
-    // single-instance nên đặt lifecycle ở đây (LivePageFrame bị virtualized nhiều frame).
+    // ═══ Edit-session lifecycle (COMMIT-ON-EXIT) ═══
+    // Mở phiên in-memory khi VÀO edit mode + có selectionFileId. Phiên SỐNG SUỐT phiên
+    // sửa (mọi op áp trong RAM → overlay clip tại chỗ, KHÔNG ghi file/không reload).
+    // Khi THOÁT edit mode (hoặc đổi fid / unmount): nếu dirty → COMMIT MỘT LẦN (gộp mọi
+    // op thành 1 Working_File) → onCommit đổi pdfUrl sang tile thật (reload DUY NHẤT),
+    // rồi ĐÓNG phiên. AcrobatViewer là single-instance nên đặt ở đây (LivePageFrame ảo).
+    //
+    // `editSession` là object literal MỚI mỗi render → KHÔNG đưa vào deps (sẽ reopen
+    // liên tục, reset op_log, phá undo). Giữ qua ref; key effect theo primitive ổn định.
+    const editSessionRef = useRef(editSession);
+    editSessionRef.current = editSession;
     useEffect(() => {
-        if (!editSession) return;
-        if (!isObjectEditMode || !selectionFileId) return;
-        void editSession.openSession(selectionFileId);
-        return () => { void editSession.closeSession(); };
-    }, [isObjectEditMode, selectionFileId, editSession]);
+        const es = editSessionRef.current;
+        if (!es || !isObjectEditMode || !selectionFileId) return;
+        void es.openSession(selectionFileId);
+        return () => {
+            // Thoát/đổi fid: commit gộp nếu có thay đổi (onCommit swap pdfUrl), rồi đóng.
+            void (async () => {
+                try { if (es.dirty) await es.commit(); } catch { /* giữ phiên nếu commit lỗi */ }
+                await es.closeSession();
+            })();
+        };
+    }, [isObjectEditMode, selectionFileId]);
 
     // ═══ Derived Values ═══
     const actualWidth100 = pageWidthPt * (96 / 72);
@@ -333,10 +346,24 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         guides, setGuides, guidesHistory, setGuidesHistory, selectedGuideId, setSelectedGuideId, toggleRulers,
         navigatePage,
         mainVirtuosoRef, internalScrollRef,
-        // Ctrl+Z trong chế độ chỉnh sửa đối tượng → undo/redo edit-object (không phải trang).
+        // Ctrl+Z/Y trong chế độ chỉnh sửa đối tượng → undo/redo qua EDIT-SESSION
+        // (in-memory, per-op, render vùng clip → overlay tại chỗ, KHÔNG reload). Session
+        // sở hữu op_log nên undo/redo chính xác từng op. `scale` = px thiết bị/point
+        // (css px/point × dpr) để ảnh clip khôi phục đủ nét. editHistory cũ (snapshot
+        // pdfUrl) KHÔNG còn dùng cho edit-object — session là đường DUY NHẤT.
         isObjectEditMode,
-        onEditUndo: objectEdit.undo,
-        onEditRedo: objectEdit.redo,
+        onEditUndo: () => {
+            if (!editSession) return;
+            const cssScale = pageDim?.w ? (actualWidth100 * zoom) / (pageDim.w * 72 / 96) : 2;
+            const dpr = window.devicePixelRatio || 1;
+            void editSession.undo(Math.max(0.5, cssScale * dpr));
+        },
+        onEditRedo: () => {
+            if (!editSession) return;
+            const cssScale = pageDim?.w ? (actualWidth100 * zoom) / (pageDim.w * 72 / 96) : 2;
+            const dpr = window.devicePixelRatio || 1;
+            void editSession.redo(Math.max(0.5, cssScale * dpr));
+        },
     });
 
     // ═══ Hook: Zoom & Gestures ═══
