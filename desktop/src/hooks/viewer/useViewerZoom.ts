@@ -1,6 +1,14 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { reduceWheelNav, createWheelNavState } from './wheelPageNav';
 
+// Padding hàng trang (AcrobatViewer): L/R 24+24, T/B 32+32, gap 12 giữa 2 trang.
+// SAFETY: scrollbar-gutter both-edges + subpixel — zoom sát 100% khung → tràn 1–2px
+// → CSS `safe center` rơi về start → dính góc trên-trái.
+const FIT_PAD_X_SINGLE = 48; // 24+24
+const FIT_PAD_Y = 64;        // 32+32
+const FIT_GAP = 12;
+const FIT_SAFETY = 12;
+
 interface UseViewerZoomProps {
     containerRef: React.RefObject<HTMLDivElement | null>;
     sidebarRef: React.RefObject<HTMLDivElement | null>;
@@ -45,71 +53,87 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const zoomRafRef = useRef<number | null>(null);
 
     // ═══ Fit Mode Helpers ═══
-    const applyFitWidth = useCallback(() => {
+    const getScrollViewport = useCallback(() => {
+        const scrollEl = internalScrollRef.current;
+        if (scrollEl && scrollEl.clientWidth > 50 && scrollEl.clientHeight > 50) {
+            return { w: scrollEl.clientWidth, h: scrollEl.clientHeight };
+        }
+        // Fallback: containerRef / mainWidth (trước khi scroller mount)
+        const cw = mainWidth > 50 ? mainWidth : (containerRef.current?.clientWidth || 0);
+        const ch = mainHeight > 50 ? mainHeight : (containerRef.current?.clientHeight || 0);
+        return { w: cw, h: ch };
+    }, [internalScrollRef, containerRef, mainWidth, mainHeight]);
+
+    /** Zoom vừa chiều ngang: (viewport − padding − safety) / (pageWidth × số cột). */
+    const calcFitWidthZoom = useCallback(() => {
+        if (actualWidth100 <= 0) return 1;
         const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
-        const padX = 48 + 12 * (numPagesWide - 1) + 4;
-        const fitW = internalScrollRef.current ? internalScrollRef.current.clientWidth : mainWidth;
-        const safeContainerWidth = Math.max(100, fitW - padX);
-        const fitZoom = safeContainerWidth / (actualWidth100 * numPagesWide);
-        setZoom(fitZoom);
+        const padX = FIT_PAD_X_SINGLE + FIT_GAP * (numPagesWide - 1) + FIT_SAFETY;
+        const { w } = getScrollViewport();
+        const available = Math.max(50, w - padX);
+        return available / (actualWidth100 * numPagesWide);
+    }, [actualWidth100, pageDisplayMode, getScrollViewport]);
+
+    /** Zoom vừa trọn trang: min(fitW, fitH) theo tỉ lệ trang thật. */
+    const calcFitPageZoom = useCallback(() => {
+        if (actualWidth100 <= 0) return 1;
+        const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
+        const padX = FIT_PAD_X_SINGLE + FIT_GAP * (numPagesWide - 1) + FIT_SAFETY;
+        const padY = FIT_PAD_Y + FIT_SAFETY;
+        const { w, h } = getScrollViewport();
+        const availW = Math.max(50, w - padX);
+        const availH = Math.max(50, h - padY);
+        // Chiều cao trang @ zoom=1 (cùng hệ actualWidth100)
+        const ratio = (pageDim && pageDim.w > 0 && pageDim.h > 0)
+            ? (pageDim.h / pageDim.w)
+            : 1.414;
+        const pageH100 = actualWidth100 * ratio;
+        const zoomW = availW / (actualWidth100 * numPagesWide);
+        const zoomH = availH / pageH100;
+        return Math.min(zoomW, zoomH);
+    }, [actualWidth100, pageDim, pageDisplayMode, getScrollViewport]);
+
+    const applyFitWidth = useCallback(() => {
+        setZoom(calcFitWidthZoom());
         setFitMode('width');
-    }, [mainWidth, internalScrollRef, actualWidth100, setZoom, setFitMode, pageDisplayMode]);
+    }, [calcFitWidthZoom, setZoom, setFitMode]);
 
     const applyFitPage = useCallback(() => {
-        const scrollEl = internalScrollRef.current;
-        if (pageDim && (scrollEl || containerRef.current)) {
-            const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
-            const padX = 48 + 12 * (numPagesWide - 1) + 4;
-            const ch = scrollEl ? scrollEl.clientHeight : (mainHeight || containerRef.current!.clientHeight);
-            const cw = scrollEl ? scrollEl.clientWidth : mainWidth;
-            const containerHeight = Math.max(100, ch - 64);
-            const containerWidth = Math.max(100, cw - padX);
-            const ratio = pageDim.w / pageDim.h;
-            const targetWidthByHeight = containerHeight * ratio;
-            let fitZoom = targetWidthByHeight / actualWidth100;
-            if (targetWidthByHeight * numPagesWide > containerWidth) {
-                fitZoom = containerWidth / (actualWidth100 * numPagesWide);
-            }
-            setZoom(fitZoom);
-        }
+        setZoom(calcFitPageZoom());
         setFitMode('page');
-    }, [pageDim, containerRef, internalScrollRef, mainHeight, mainWidth, actualWidth100, setZoom, setFitMode, pageDisplayMode]);
+    }, [calcFitPageZoom, setZoom, setFitMode]);
 
     // ═══ Auto-zoom on fitMode / container resize ═══
-    // Chrome layout: hàng có padding ngang 48px (24+24) + khe 12px giữa mỗi cặp trang.
-    // Phải trừ đúng các giá trị này (và dùng clientWidth THẬT của vùng cuộn — đã trừ
-    // scrollbar-gutter) thì "vừa trang/vừa ngang" 2 trang mới khít, không tràn → căn giữa đúng.
     useEffect(() => {
-        const scrollEl = internalScrollRef.current;
-        const numPagesWide = pageDisplayMode.includes('two') ? 2 : 1;
-        const padX = 48 + 12 * (numPagesWide - 1) + 4; // padding hàng + khe + 4px an toàn
-        if (fitMode === 'width' && actualWidth100 > 0 && mainWidth > 50) {
-            const fitW = scrollEl ? scrollEl.clientWidth : mainWidth;
-            const safeContainerWidth = Math.max(100, fitW - padX);
-            const calcZoom = safeContainerWidth / (actualWidth100 * numPagesWide);
-            setZoom(calcZoom);
+        if (fitMode === 'width' && actualWidth100 > 0 && (mainWidth > 50 || internalScrollRef.current)) {
+            setZoom(calcFitWidthZoom());
             setIsZoomReady(true);
-        } else if ((fitMode === 'page' || fitMode === 'smart') && pageDim && actualWidth100 > 0) {
-            if (mainWidth < 50 || mainHeight < 50) return;
-            const ch = scrollEl ? scrollEl.clientHeight : mainHeight;
-            const cw = scrollEl ? scrollEl.clientWidth : mainWidth;
-            const containerHeight = Math.max(100, ch - 64); // padding dọc 32+32
-            const containerWidth = Math.max(100, cw - padX);
-            const ratio = pageDim.w / pageDim.h;
-            const targetWidthByHeight = containerHeight * ratio;
-            let calcZoom = targetWidthByHeight / actualWidth100;
-            if (targetWidthByHeight * numPagesWide > containerWidth) {
-                calcZoom = containerWidth / (actualWidth100 * numPagesWide);
-            }
-            if (fitMode === 'smart') {
-                calcZoom = Math.min(1, calcZoom);
-            }
-            setZoom(calcZoom);
+        } else if ((fitMode === 'page' || fitMode === 'smart') && actualWidth100 > 0) {
+            if (mainWidth < 50 && mainHeight < 50 && !internalScrollRef.current) return;
+            let z = calcFitPageZoom();
+            if (fitMode === 'smart') z = Math.min(1, z);
+            setZoom(z);
             setIsZoomReady(true);
         } else if (actualWidth100 > 0 && fitMode === 'custom') {
             setIsZoomReady(true);
         }
-    }, [mainWidth, mainHeight, fitMode, actualWidth100, pageDim, pageDisplayMode]);
+    }, [mainWidth, mainHeight, fitMode, actualWidth100, pageDim, pageDisplayMode, calcFitWidthZoom, calcFitPageZoom]);
+
+    // Sau fit: nếu vẫn tràn nhẹ → căn giữa (tránh dính góc trên-trái do `safe center`).
+    // Nếu vừa khít → scroll 0 (không cần pan).
+    useLayoutEffect(() => {
+        if (fitMode !== 'width' && fitMode !== 'page' && fitMode !== 'smart') return;
+        const el = internalScrollRef.current;
+        if (!el) return;
+        // Đợi layout áp dụng width trang sau setZoom
+        const id = requestAnimationFrame(() => {
+            const maxL = el.scrollWidth - el.clientWidth;
+            const maxT = el.scrollHeight - el.clientHeight;
+            el.scrollLeft = maxL > 1 ? maxL / 2 : 0;
+            el.scrollTop = maxT > 1 ? maxT / 2 : 0;
+        });
+        return () => cancelAnimationFrame(id);
+    }, [zoom, fitMode, internalScrollRef]);
 
     // ═══ Fallback measurement when numPages changes ═══
     useEffect(() => {
