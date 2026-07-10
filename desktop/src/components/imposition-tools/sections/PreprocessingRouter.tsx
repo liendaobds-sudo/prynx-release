@@ -79,7 +79,7 @@ export default function PreprocessingRouter({
     onIssueSelect, onOpenOutputPreview, onFileFixed,
 }: PreprocessingRouterProps) {
     const s = useImposerSettingsStore(useShallow(state => ({
-        spawnNewTab: state.spawnNewTab, setSpawnNewTab: state.setSpawnNewTab,
+        spawnNewTabByTool: state.spawnNewTabByTool, setSpawnNewTab: state.setSpawnNewTab,
         shuffleSettings: state.shuffleSettings, setShuffleSettings: state.setShuffleSettings,
         resizeSettings: state.resizeSettings, setResizeSettings: state.setResizeSettings,
         trimShiftSettings: state.trimShiftSettings, setTrimShiftSettings: state.setTrimShiftSettings,
@@ -111,10 +111,10 @@ export default function PreprocessingRouter({
                 <div>
                     <ShuffleTool settings={s.shuffleSettings} onChange={s.setShuffleSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTab} onChange={s.setSpawnNewTab} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                     </div>
                     <button 
-                        onClick={() => onStartShuffle && onStartShuffle({ ...s.shuffleSettings, spawnNewTab: s.spawnNewTab })} 
+                        onClick={() => onStartShuffle && onStartShuffle({ ...s.shuffleSettings, spawnNewTab: !!s.spawnNewTabByTool[activeTool] })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
@@ -127,10 +127,10 @@ export default function PreprocessingRouter({
                 <div>
                     <PageResizerTool settings={s.resizeSettings} onChange={s.setResizeSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTab} onChange={s.setSpawnNewTab} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                     </div>
                     <button 
-                        onClick={() => onStartResize && onStartResize({ ...s.resizeSettings, spawnNewTab: s.spawnNewTab })} 
+                        onClick={() => onStartResize && onStartResize({ ...s.resizeSettings, spawnNewTab: !!s.spawnNewTabByTool[activeTool] })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
@@ -143,10 +143,10 @@ export default function PreprocessingRouter({
                 <div>
                     <TrimShiftTool settings={s.trimShiftSettings} onChange={s.setTrimShiftSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTab} onChange={s.setSpawnNewTab} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                     </div>
                     <button
-                        onClick={() => onStartTrimShift && onStartTrimShift({ ...s.trimShiftSettings, spawnNewTab: s.spawnNewTab })}
+                        onClick={() => onStartTrimShift && onStartTrimShift({ ...s.trimShiftSettings, spawnNewTab: !!s.spawnNewTabByTool[activeTool] })}
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
@@ -159,10 +159,10 @@ export default function PreprocessingRouter({
                 <div>
                     <SplitTool settings={s.splitSettings} onChange={s.setSplitSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTab} onChange={s.setSpawnNewTab} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                     </div>
                     <button 
-                        onClick={() => onStartSplit && onStartSplit({ ...s.splitSettings, spawnNewTab: s.spawnNewTab })} 
+                        onClick={() => onStartSplit && onStartSplit({ ...s.splitSettings, spawnNewTab: !!s.spawnNewTabByTool[activeTool] })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold transition-colors disabled:opacity-50"
                     >

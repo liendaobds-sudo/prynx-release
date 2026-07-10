@@ -24,7 +24,6 @@ export default function OutputSettingsSection({ activeTool }: { activeTool: stri
         pontConfig: state.pontConfig, setPontConfig: state.setPontConfig,
         bleed: state.bleed, setBleed: state.setBleed,
         showBleedView: state.showBleedView, setShowBleedView: state.setShowBleedView,
-        spawnNewTab: state.spawnNewTab, setSpawnNewTab: state.setSpawnNewTab,
         clusterMode: state.clusterMode, setClusterMode: state.setClusterMode,
         clusterCount: state.clusterCount, setClusterCount: state.setClusterCount,
         clusterGap: state.clusterGap, setClusterGap: state.setClusterGap,

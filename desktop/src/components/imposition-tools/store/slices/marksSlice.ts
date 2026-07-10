@@ -18,8 +18,11 @@ export interface MarksSlice {
     setBleed: (v: number) => void;
     showBleedView: boolean;
     setShowBleedView: (v: boolean) => void;
-    spawnNewTab: boolean;
-    setSpawnNewTab: (v: boolean) => void;
+    // "Mở kết quả sang Tab mới" — RIÊNG theo từng công cụ (key = activeTool, hoặc
+    // 'merge' cho Ghép file). Trước đây là 1 biến bool DÙNG CHUNG → tick ở công cụ này
+    // rò sang công cụ khác. Map theo tool để mỗi công cụ nhớ lựa chọn độc lập.
+    spawnNewTabByTool: Record<string, boolean>;
+    setSpawnNewTab: (tool: string, v: boolean) => void;
     marksConfig: CropMarksConfig;
     setMarksConfig: (v: CropMarksConfig) => void;
     pontConfig: PontConfig;
@@ -32,7 +35,7 @@ export interface MarksSlice {
 
 export const MARKS_PERSIST_KEYS = [
     'markType', 'cutType', 'fillBlockGap', 'pontType', 'pontConfig',
-    'bleed', 'spawnNewTab', 'separateCutPage', 'pontsOnCutFile',
+    'bleed', 'spawnNewTabByTool', 'separateCutPage', 'pontsOnCutFile',
 ] as const;
 
 export const createMarksSlice: ImposerSlice<MarksSlice> = (set) => ({
@@ -48,8 +51,10 @@ export const createMarksSlice: ImposerSlice<MarksSlice> = (set) => ({
     setBleed: (v) => set({ bleed: v }),
     showBleedView: false,
     setShowBleedView: (v) => set({ showBleedView: v }),
-    spawnNewTab: true,
-    setSpawnNewTab: (v) => set({ spawnNewTab: v }),
+    spawnNewTabByTool: {},
+    setSpawnNewTab: (tool, v) => set((state) => ({
+        spawnNewTabByTool: { ...state.spawnNewTabByTool, [tool]: v },
+    })),
     marksConfig: loadFromLocalStorage<CropMarksConfig>('ps_custom_marks_config', DEFAULT_MARKS_CONFIG),
     setMarksConfig: (v) => {
         localStorage.setItem('ps_custom_marks_config', JSON.stringify(v));

@@ -107,7 +107,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         clusterBorder: state.clusterBorder, setClusterBorder: state.setClusterBorder,
         // Output toggles
         separateCutPage: state.separateCutPage, setSeparateCutPage: state.setSeparateCutPage,
-        spawnNewTab: state.spawnNewTab, setSpawnNewTab: state.setSpawnNewTab,
+        spawnNewTabByTool: state.spawnNewTabByTool, setSpawnNewTab: state.setSpawnNewTab,
         
         // Fine-Tuning (Bleed / Creep)
         signatureMode: state.signatureMode,
@@ -959,7 +959,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             {activeTool === 'sticker_imposer' && (
                                 <Checkbox checked={s.separateCutPage} onChange={s.setSeparateCutPage} label="Tách trang khuôn bế riêng" />
                             )}
-                            <Checkbox checked={s.spawnNewTab} onChange={s.setSpawnNewTab} label="Mở kết quả sang Tab mới" />
+                            <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                         </div>
                     </div>
                 </div>

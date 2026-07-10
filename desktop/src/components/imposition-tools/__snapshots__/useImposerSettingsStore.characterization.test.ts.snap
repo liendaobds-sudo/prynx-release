@@ -141,6 +141,7 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
   "resizeSettings": {
     "applyTo": "all",
     "applyToStr": "all",
+    "resizeMode": "auto",
     "scaleMode": "fit",
     "sizePresetId": "A4",
     "targetH": 297,
@@ -175,7 +176,7 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
   "signatureMode": "saddle",
   "sourcePageDim": null,
   "sourcePageDims": [],
-  "spawnNewTab": true,
+  "spawnNewTabByTool": {},
   "splitSettings": {
     "mode": "by_range",
     "pageListStr": "",
@@ -277,7 +278,7 @@ exports[`useImposerSettingsStore — characterization (golden) > tập partializ
   "separateCover",
   "separateCutPage",
   "signatureMode",
-  "spawnNewTab",
+  "spawnNewTabByTool",
   "spreadDistribution",
   "taskMode",
   "tileGapX",
