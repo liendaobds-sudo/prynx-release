@@ -250,7 +250,69 @@ def place_one_artwork(
     # theo clip (dòng 342-350 pdf_ops) rồi keep_proportion lấy min → VỪA xoay VỪA
     # co-khít căn tâm đúng. Trước đây nhánh này bỏ qua rotate + chỉ keep_proportion
     # → tem ngang bị CO theo bề rộng ô dọc thay vì xoay (regression bình tem chung khuôn).
+    #
+    # QUAN TRỌNG — strip đường bế TRƯỚC place: trang master (loại đầu) có CẢ artwork
+    # + nét khuôn. Nhánh này trước đây return sớm → không strip → khuôn sót trên tờ in
+    # loại 1 (các loại khác không có nét bế nên sạch). Khuôn được vẽ lại từ master
+    # overlay / trang khuôn riêng — không được dính trong artwork.
     if homogeneous_clip is not None:
+        if is_die_cut and src_page_idx not in local_stripped_pages:
+            local_stripped_pages.add(src_page_idx)
+            try:
+                _ck = f"{job_id}_{src_page_idx}"
+                _cached = die_items_cache.get(_ck)
+                if _cached is None and find_largest_die_path is not None:
+                    try:
+                        _lp = find_largest_die_path(src_page)
+                        if _lp:
+                            _cached = {
+                                'color': _lp.get('color', (0, 1, 1, 0)),
+                                'spot_name': _lp.get('spot_name'),
+                            }
+                            die_items_cache[_ck] = {
+                                'items': _lp.get('items', []),
+                                'rect': _lp['rect'],
+                                'color': _cached['color'],
+                                'width': _lp.get('width', 0.5),
+                                'spot_name': _cached.get('spot_name'),
+                            }
+                    except Exception:
+                        _cached = None
+                _tcol = _cached.get('color') if _cached else None
+                _tspot = _cached.get('spot_name') if _cached else None
+                pike_page = src_doc._pdf.pages[src_page_idx]
+                pike_page.contents_coalesce()
+                contents = pike_page.get('/Contents')
+                if contents is not None:
+                    try:
+                        strip_color_from_stream(pike_page, _tcol, target_spot=_tspot)
+                    except Exception as e_c:
+                        logger.debug(
+                            f"[STRIP_DIECUT/HOM] page={src_page_idx} content strip error: {e_c}",
+                            flush=True,
+                        )
+                try:
+                    resources = pike_page.get('/Resources')
+                    if resources:
+                        xobjects = resources.get('/XObject')
+                        if xobjects:
+                            for _name, xobj in xobjects.items():
+                                try:
+                                    subtype = str(xobj.get('/Subtype', ''))
+                                    if '/Form' in subtype:
+                                        strip_color_from_stream(
+                                            xobj, _tcol, target_spot=_tspot)
+                                except Exception:
+                                    pass
+                except Exception as e_xo:
+                    logger.debug(
+                        f"[STRIP_DIECUT/HOM] page={src_page_idx} XObject scan error: {e_xo}",
+                        flush=True,
+                    )
+            except Exception as e:
+                logger.debug(
+                    f"[STRIP_DIECUT/HOM] page={src_page_idx} FAILED: {e}", flush=True)
+
         reg_rect = homogeneous_rect if homogeneous_rect is not None else trim_rect
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             _reg_rotate = 270

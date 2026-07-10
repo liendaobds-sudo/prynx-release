@@ -56,7 +56,7 @@ class _FakePage:
 @settings(max_examples=200)
 @given(flags=st.lists(st.booleans(), min_size=0, max_size=8))
 def test_p1_detect_homogeneous(flags):
-    """Bật KHI VÀ CHỈ KHI đúng 1 trang có khuôn + ≥1 trang content."""
+    """Bật KHI VÀ CHỈ KHI đúng 1 trang có khuôn + ≥2 trang tổng (master cũng là nội dung)."""
     shapes = [_FakeShape(has_die=f) for f in flags]
     plan = sh.detect_homogeneous(shapes)
 
@@ -66,10 +66,10 @@ def test_p1_detect_homogeneous(flags):
     if should_enable:
         assert plan is not None
         assert plan.master_page_idx == die_idx[0]
-        expected_content = tuple(i for i in range(len(flags)) if i != die_idx[0])
+        # Mọi trang đều là nội dung — master = tem loại đầu (có artwork + khuôn).
+        expected_content = tuple(range(len(flags)))
         assert plan.content_pages == expected_content
-        # master không nằm trong content
-        assert plan.master_page_idx not in plan.content_pages
+        assert plan.master_page_idx in plan.content_pages
     else:
         # 0 khuôn, ≥2 khuôn, hoặc chỉ 1 trang → None
         assert plan is None
@@ -381,11 +381,11 @@ def _adapter(has_die, shape=ShapeType.CIRCLE_ELLIPSE, w=50.0, h=40.0):
 
 
 def test_discriminate_homogeneous_basic():
-    """1 khuôn + N nội dung → ĐỒNG NHẤT (master = trang khuôn)."""
+    """1 khuôn + N nội dung → ĐỒNG NHẤT (master = trang khuôn = loại đầu)."""
     shapes = [_adapter(True), _adapter(False), _adapter(False)]
     plan = sh.detect_homogeneous(shapes)
     assert plan is not None and plan.master_page_idx == 0
-    assert plan.content_pages == (1, 2)
+    assert plan.content_pages == (0, 1, 2)  # gồm master
 
 
 def test_discriminate_mixed_two_dies_not_homogeneous():
@@ -435,7 +435,7 @@ def test_discriminate_content_artwork_not_mistaken_as_die():
     shapes = [_adapter(True), content_with_shape, _adapter(False)]
     plan = sh.detect_homogeneous(shapes)
     assert plan is not None and plan.master_page_idx == 0
-    assert plan.content_pages == (1, 2)  # cả 2 trang sau là nội dung
+    assert plan.content_pages == (0, 1, 2)  # master + 2 trang sau
 
 
 def test_discriminate_zero_die_not_homogeneous():

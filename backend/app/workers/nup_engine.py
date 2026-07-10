@@ -928,15 +928,32 @@ def run_nup_engine(
             def _reuse_master_layout(*_a, **_k):
                 return _master_fl
 
-            # Số lượng/trang (auto-fill → None = mỗi trang 1 lần). Vẫn đọc thủ công để an toàn.
-            _quantities = None
-            if any((int(v or 0) > 0) for v in target_quantities_by_page.values()):
-                _quantities = [
-                    int(target_quantities_by_page.get(str(_cp))
-                        or target_quantities_by_page.get(_cp) or 0)
-                    for _cp in homogeneous_plan.content_pages
-                ]
+            # ── Resolve SL mỗi trang nội dung (KHÔNG dùng trang khuôn master) ──
+            # Trước: chỉ đọc targetQuantitiesByPage, bỏ targetQuantity global → SL = 0
+            # → auto-fill 1 con/loại (sai). Và dùng `or 0` nuốt giá trị 0 hợp lệ.
+            # UI: ô trống → fallback global; ô 0 → bỏ loại đó.
+            def _qty_for_content_page(_p_idx):
+                _tq = target_quantities_by_page or {}
+                _raw = _tq.get(str(_p_idx), _tq.get(_p_idx, None))
+                if _raw is not None:
+                    try:
+                        return max(0, int(_raw))
+                    except (TypeError, ValueError):
+                        return 0
+                try:
+                    return max(0, int(target_quantity or 0))
+                except (TypeError, ValueError):
+                    return 0
 
+            _content_pages = list(homogeneous_plan.content_pages)
+            _content_qtys = [_qty_for_content_page(_cp) for _cp in _content_pages]
+            # Có SL > 1 → mỗi loại lấp ĐẦY tờ riêng (S&R + cùng khuôn) — khớp UI
+            # "Số tờ = ceil(SL/Tem/tờ)" và quy trình in (1 tờ mẫu × N bản).
+            # Tất cả ≤ 1 (số dán 1→N / auto-fill) → rải tuần tự 1 con/trang (round-robin).
+            _use_per_type = any(q > 1 for q in _content_qtys)
+            _export_unique_h = bool(settings.get('exportUniqueSheets', True))
+
+            # Nesting master 1 lần (items + C ô/tờ). quantities=None để chỉ lấy layout.
             _hom_layout = _sh.build_homogeneous_layout(
                 master_page=None,
                 plan=homogeneous_plan,
@@ -945,8 +962,10 @@ def run_nup_engine(
                 gap_x=gap_x,
                 gap_y=gap_y,
                 bleed_pt=bleed_pt,
-                secondary_gap=None,  # nesting đã tái dùng → secondary_gap không dùng lại
-                quantities=_quantities,
+                secondary_gap=None,
+                quantities=None if _use_per_type else (
+                    _content_qtys if any(q > 0 for q in _content_qtys) else None
+                ),
                 layout_fn=_reuse_master_layout,
             )
 
@@ -978,28 +997,132 @@ def run_nup_engine(
             _items = list(_hom_layout.items)
             _C = _hom_layout.cells_per_sheet
             total_items_placed = 0
-            for _t in range(_hom_layout.num_sheets):
-                # Căn-giữa khối ô (SSOT). src_page_idx tạm = master; gán lại theo nội dung sau.
+
+            def _sheet_placements_for_type(_src_idx):
+                """1 tờ đầy C ô cùng 1 loại nội dung (cùng khuôn master)."""
                 _pls = finalize_placements(
                     _items, usable_w, usable_h,
                     margin_left, margin_bottom, margin_top, _master_idx,
                 )
-                # Gán src_page_idx nội dung cho từng ô của tờ _t; ô không có nội dung → bỏ.
-                _by_cell = {cc.cell_index: cc.src_page_idx
-                            for cc in _hom_layout.cell_contents if cc.sheet_index == _t}
-                _sheet_pls = []
-                for _ci, _pl in enumerate(_pls):
-                    if _ci in _by_cell:
-                        _pl['src_page_idx'] = _by_cell[_ci]
-                        _sheet_pls.append(_pl)
-                # Boong: dùng CHUNG hàm với preview (parity). Idempotent với Phase 2 ở chunk.
-                _sheet_pls = resolve_pont_collisions_on_placements(
-                    _sheet_pls, _req_like, base_poly=_master_base_poly)
-                precalculated_placements[_t] = _sheet_pls
-                total_items_placed += len(_sheet_pls)
+                for _pl in _pls:
+                    _pl['src_page_idx'] = _src_idx
+                return resolve_pont_collisions_on_placements(
+                    _pls, _req_like, base_poly=_master_base_poly)
 
-            logger.info(f"   [HOMOGENEOUS] DONE: {total_items_placed} ô / {_hom_layout.num_sheets} tờ "
-                        f"(C={_C} ô/tờ)")
+            if _use_per_type and _C > 0:
+                # ══ MỖI LOẠI 1 (hoặc N) TỜ ĐẦY — khớp UI + export unique ══
+                # Trước: round-robin trộn mọi loại × SL → hàng trăm trang "tùm lum"
+                # (vd 10 loại × ~100 tem / 8 ô = ~120 tờ trộn). Nay: mỗi loại 1 tờ
+                # mẫu lấp đầy + report "in ceil(SL/C) tờ"; 1 trang khuôn ở cuối.
+                from app.workers import nup_report as _nr_h
+                _rcfg_h = settings.get('reportDisplay') or {}
+                _report_on_h = bool(_rcfg_h.get('enabled'))
+                _paper_h = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                _trim_mm_w = (homogeneous_plan.trim_w or 0) * (1.0 / MM_TO_PTS)
+                _trim_mm_h = (homogeneous_plan.trim_h or 0) * (1.0 / MM_TO_PTS)
+                _sheet_i = 0
+                for _cp, _qty in zip(_content_pages, _content_qtys):
+                    if _qty <= 0:
+                        continue
+                    _sn = max(1, math.ceil(_qty / _C))
+                    _rep_n = 1 if _export_unique_h else _sn
+                    _type_report = None
+                    if _report_on_h:
+                        _label_h = (_rcfg_h.get('labelNameText')
+                                    or f"Trang {_cp + 1}")
+                        _data_h = _nr_h.compute_report_data(
+                            label_name=_label_h,
+                            width_mm=_trim_mm_w, height_mm=_trim_mm_h,
+                            paper_size=_paper_h,
+                            items_per_sheet=_C, requested_qty=_qty,
+                            material=settings.get('reportMaterial', '') or '',
+                            lamination_type=settings.get('reportLamination', 0) or 0,
+                            lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                            mode_label='Bế tem (cùng khuôn)',
+                            order_code=settings.get('reportOrderCode', '') or '',
+                            identifier=str(_cp + 1),
+                            sheet_count_override=_sn,
+                        )
+                        _type_report = _nr_h.build_report_string(_rcfg_h, _data_h)
+                        _report_rows.append({
+                            'label': _label_h,
+                            'items_per_sheet': _C,
+                            'requested_qty': _qty,
+                            'sheet_count': _sn,
+                        })
+                    for _ in range(_rep_n):
+                        _pls = _sheet_placements_for_type(_cp)
+                        precalculated_placements[_sheet_i] = _pls
+                        total_items_placed += len(_pls)
+                        if _type_report:
+                            _reports_by_sheet[_sheet_i] = _type_report
+                        _sheet_i += 1
+                logger.info(
+                    f"   [HOMOGENEOUS] PER-TYPE: {_sheet_i} tờ xuất / "
+                    f"{sum(max(1, math.ceil(q / _C)) for q in _content_qtys if q > 0)} tờ cần in "
+                    f"(C={_C}, exportUnique={_export_unique_h}, types="
+                    f"{sum(1 for q in _content_qtys if q > 0)})"
+                )
+            else:
+                # ══ Auto-fill / số dán 1→N: rải tuần tự 1 con/trang, cuốn chiếu ══
+                for _t in range(_hom_layout.num_sheets):
+                    _pls = finalize_placements(
+                        _items, usable_w, usable_h,
+                        margin_left, margin_bottom, margin_top, _master_idx,
+                    )
+                    _by_cell = {cc.cell_index: cc.src_page_idx
+                                for cc in _hom_layout.cell_contents if cc.sheet_index == _t}
+                    _sheet_pls = []
+                    for _ci, _pl in enumerate(_pls):
+                        if _ci in _by_cell:
+                            _pl['src_page_idx'] = _by_cell[_ci]
+                            _sheet_pls.append(_pl)
+                    _sheet_pls = resolve_pont_collisions_on_placements(
+                        _sheet_pls, _req_like, base_poly=_master_base_poly)
+                    precalculated_placements[_t] = _sheet_pls
+                    total_items_placed += len(_sheet_pls)
+
+                logger.info(
+                    f"   [HOMOGENEOUS] SEQ: {total_items_placed} ô / "
+                    f"{_hom_layout.num_sheets} tờ (C={_C} ô/tờ)"
+                )
+
+                # Report tóm tắt (mỗi tờ 1 dòng — nội dung trộn số dán)
+                try:
+                    from app.workers import nup_report as _nr_h
+                    _rcfg_h = settings.get('reportDisplay') or {}
+                    if _rcfg_h.get('enabled') and precalculated_placements:
+                        _paper_h = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                        _label_h = _rcfg_h.get('labelNameText') or ""
+                        _n_sheets_h = int(_hom_layout.num_sheets or 0)
+                        _trim_mm_w = (homogeneous_plan.trim_w or 0) * (1.0 / MM_TO_PTS)
+                        _trim_mm_h = (homogeneous_plan.trim_h or 0) * (1.0 / MM_TO_PTS)
+                        for _ts, _pls_h in precalculated_placements.items():
+                            _ips = len(_pls_h)
+                            _data_h = _nr_h.compute_report_data(
+                                label_name=_label_h,
+                                width_mm=_trim_mm_w, height_mm=_trim_mm_h,
+                                paper_size=_paper_h,
+                                items_per_sheet=_ips, requested_qty=0,
+                                material=settings.get('reportMaterial', '') or '',
+                                lamination_type=settings.get('reportLamination', 0) or 0,
+                                lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                                mode_label='Bế tem (cùng khuôn)',
+                                order_code=settings.get('reportOrderCode', '') or '',
+                                identifier=f"Tờ {_ts + 1}/{max(1, _n_sheets_h)}",
+                                sheet_count_override=max(1, _n_sheets_h),
+                            )
+                            _reports_by_sheet[_ts] = _nr_h.build_report_string(
+                                _rcfg_h, _data_h)
+                        if _n_sheets_h > 0:
+                            _report_rows.append({
+                                'label': _label_h or 'Cùng khuôn',
+                                'items_per_sheet': _C,
+                                'requested_qty': total_items_placed,
+                                'sheet_count': _n_sheets_h,
+                            })
+                except Exception as _e_rh:
+                    logger.warning(f"[REPORT] homogeneous seq dựng report lỗi: {_e_rh}")
 
         elif layout_type == 'repeat':
             logger.debug(f"   [ZONE] STICKER IMPOSER -> processing pages independently without mixing")
@@ -1160,6 +1283,34 @@ def run_nup_engine(
             logger.info(f"   [ZONE] AUTO-FILL 1 MẪU (nesting, parity preview): "
                         f"{total_items_placed} con/tờ")
 
+            # Report 1 tờ (auto-fill: số tờ cần in = 1)
+            try:
+                from app.workers import nup_report as _nr_af
+                _rcfg_af = settings.get('reportDisplay') or {}
+                if _rcfg_af.get('enabled') and total_items_placed > 0:
+                    _paper_af = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                    _label_af = _rcfg_af.get('labelNameText') or f"Trang {p_idx + 1}"
+                    _data_af = _nr_af.compute_report_data(
+                        label_name=_label_af,
+                        width_mm=_tw * (1.0 / MM_TO_PTS), height_mm=_th * (1.0 / MM_TO_PTS),
+                        paper_size=_paper_af,
+                        items_per_sheet=total_items_placed, requested_qty=0,
+                        material=settings.get('reportMaterial', '') or '',
+                        lamination_type=settings.get('reportLamination', 0) or 0,
+                        lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                        mode_label='Bế tem',
+                        order_code=settings.get('reportOrderCode', '') or '',
+                        identifier=str(p_idx + 1),
+                        sheet_count_override=1,
+                    )
+                    _reports_by_sheet[0] = _nr_af.build_report_string(_rcfg_af, _data_af)
+                    _report_rows.append({
+                        'label': _label_af, 'items_per_sheet': total_items_placed,
+                        'requested_qty': 0, 'sheet_count': 1,
+                    })
+            except Exception as _e_af:
+                logger.warning(f"[REPORT] auto-fill 1 mẫu dựng report lỗi: {_e_af}")
+
         elif is_auto_fill:
             # ── AUTO-FILL: Pack all types onto 1 sheet using MaxRects bin-packing ──
             from app.workers.sticker_imposer_pkg.bin_packing import solve_auto_fill_mixed
@@ -1288,6 +1439,34 @@ def run_nup_engine(
 
             total_items_placed = placed_on_sheet
 
+            # Report 1 tờ (auto-fill trộn / cluster-tile: số tờ cần in = 1)
+            try:
+                from app.workers import nup_report as _nr_am
+                _rcfg_am = settings.get('reportDisplay') or {}
+                if _rcfg_am.get('enabled') and placed_on_sheet > 0:
+                    _paper_am = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                    _label_am = _rcfg_am.get('labelNameText') or ""
+                    _data_am = _nr_am.compute_report_data(
+                        label_name=_label_am,
+                        paper_size=_paper_am,
+                        items_per_sheet=placed_on_sheet, requested_qty=0,
+                        material=settings.get('reportMaterial', '') or '',
+                        lamination_type=settings.get('reportLamination', 0) or 0,
+                        lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                        mode_label='Bế tem',
+                        order_code=settings.get('reportOrderCode', '') or '',
+                        identifier=f"{len(page_infos)} mẫu",
+                        sheet_count_override=1,
+                    )
+                    _reports_by_sheet[0] = _nr_am.build_report_string(_rcfg_am, _data_am)
+                    _report_rows.append({
+                        'label': _label_am or f"{len(page_infos)} mẫu",
+                        'items_per_sheet': placed_on_sheet,
+                        'requested_qty': 0, 'sheet_count': 1,
+                    })
+            except Exception as _e_am:
+                logger.warning(f"[REPORT] auto-fill trộn dựng report lỗi: {_e_am}")
+
         else:
 
             # ── MULTI-SHEET with quantities: MaxRects bin-packing per sheet ──
@@ -1309,7 +1488,17 @@ def run_nup_engine(
             one_sheet_placements = bp_result['placements']
             sheets_needed = bp_result.get('sheets_needed', 1)
 
-            for sheet_idx in range(sheets_needed):
+            # ── Xuất tờ duy nhất + report (spec: binh-tem-be-report) ──
+            # Trước đây luôn nhân bản sheets_needed trang giống hệt → file phình to
+            # và "Lưu file in" tách mỗi trang thành 1 file (quá nhiều file).
+            # exportUniqueSheets=True (mặc định sticker/CNC): chỉ 1 tờ + lệnh in N tờ.
+            from app.workers import nup_report as _nr_ms
+            _rcfg_ms = settings.get('reportDisplay') or {}
+            _report_enabled_ms = bool(_rcfg_ms.get('enabled'))
+            _export_unique_ms = bool(settings.get('exportUniqueSheets', True))
+            repeat_count = 1 if _export_unique_ms else max(1, int(sheets_needed or 1))
+
+            for sheet_idx in range(repeat_count):
                 precalculated_placements[sheet_idx] = []
                 for p in one_sheet_placements:
                     rx = p['x']
@@ -1335,8 +1524,55 @@ def run_nup_engine(
 
                 _finalize_sheet_centering(sheet_idx)
 
-            total_items_placed = len(one_sheet_placements) * sheets_needed
-            logger.debug(f"   [ZONE] BIN-PACK OFFSET DONE: {len(one_sheet_placements)} items/sheet × {sheets_needed} sheets = {total_items_placed} total")
+            items_per_sheet_ms = len(one_sheet_placements)
+            total_items_placed = items_per_sheet_ms * max(1, int(sheets_needed or 1))
+            logger.debug(
+                f"   [ZONE] BIN-PACK OFFSET DONE: {items_per_sheet_ms} items/sheet × "
+                f"{sheets_needed} tờ cần in → xuất {repeat_count} trang "
+                f"(exportUnique={_export_unique_ms})"
+            )
+
+            if _report_enabled_ms and items_per_sheet_ms > 0:
+                try:
+                    _paper_ms = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                    _label_ms = _rcfg_ms.get('labelNameText') or ""
+                    # SL yêu cầu = tổng qty các loại còn lại; sheet_count = sheets_needed engine.
+                    _req_qty_ms = 0
+                    for _p_idx, _q, _tw, _th in page_infos:
+                        try:
+                            _req_qty_ms += max(0, int(_q or 0))
+                        except (TypeError, ValueError):
+                            pass
+                    # Kích thước: 1 loại → trim loại đó; nhiều loại → bỏ dimensions (0).
+                    _wmm = _hmm = 0.0
+                    if len(page_infos) == 1:
+                        _wmm = page_infos[0][2] * (1.0 / MM_TO_PTS)
+                        _hmm = page_infos[0][3] * (1.0 / MM_TO_PTS)
+                    _data_ms = _nr_ms.compute_report_data(
+                        label_name=_label_ms,
+                        width_mm=_wmm, height_mm=_hmm,
+                        paper_size=_paper_ms,
+                        items_per_sheet=items_per_sheet_ms,
+                        requested_qty=_req_qty_ms,
+                        material=settings.get('reportMaterial', '') or '',
+                        lamination_type=settings.get('reportLamination', 0) or 0,
+                        lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                        mode_label='Bế tem',
+                        order_code=settings.get('reportOrderCode', '') or '',
+                        identifier='1' if len(page_infos) == 1 else f"{len(page_infos)} mẫu",
+                        sheet_count_override=max(1, int(sheets_needed or 1)),
+                    )
+                    _rep_str_ms = _nr_ms.build_report_string(_rcfg_ms, _data_ms)
+                    for _si in range(repeat_count):
+                        _reports_by_sheet[_si] = _rep_str_ms
+                    _report_rows.append({
+                        'label': _label_ms or ('Trang 1' if len(page_infos) == 1 else f"{len(page_infos)} mẫu"),
+                        'items_per_sheet': items_per_sheet_ms,
+                        'requested_qty': _req_qty_ms,
+                        'sheet_count': max(1, int(sheets_needed or 1)),
+                    })
+                except Exception as _e_ms:
+                    logger.warning(f"[REPORT] multi-sheet dựng report lỗi: {_e_ms}")
 
         layout = {
 
@@ -1842,10 +2078,11 @@ def run_nup_engine(
 
         except OSError: pass
 
-    # ── Report cho Cắt Xén (guillotine) — không die-cut, không qua nhánh sticker repeat ──
+    # ── Report fallback (cắt xén HOẶC die-cut nếu nhánh chính quên dựng) ──
     # Cắt xén: 1 trang/tờ (không có trang khuôn) → key report = chỉ số trang output.
-    # Sticker die-cut đã tự dựng _reports_by_sheet ở nhánh repeat nên chỉ dựng khi còn rỗng.
-    if not _reports_by_sheet and not is_die_cut:
+    # Die-cut: các nhánh homogeneous/repeat/auto-fill/multi-sheet đã dựng sẵn; chỉ
+    # fallback khi _reports_by_sheet còn rỗng nhưng user bật reportDisplay.
+    if not _reports_by_sheet:
         try:
             _gcfg = settings.get('reportDisplay') or {}
             if _gcfg.get('enabled') and total_sheets:
@@ -1853,21 +2090,28 @@ def run_nup_engine(
                 _g_paper = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
                 _g_label = _gcfg.get('labelNameText') or ""
                 _g_cap = int(capacity or 0)
-                for _gs in range(int(total_sheets)):
+                _g_mode = 'Bế tem' if is_die_cut else 'Cắt xén'
+                # Die-cut: total_sheets = số tờ logic; capacity có thể = 1 (zone path).
+                # Ưu tiên đếm từ precalculated_placements nếu có.
+                _g_n = int(total_sheets)
+                if is_die_cut and precalculated_placements:
+                    _g_n = max(precalculated_placements.keys()) + 1 if precalculated_placements else _g_n
+                    _g_cap = max((len(v) for v in precalculated_placements.values()), default=_g_cap)
+                for _gs in range(max(1, _g_n)):
                     _gd = _nrg.compute_report_data(
                         label_name=_g_label, paper_size=_g_paper,
                         items_per_sheet=_g_cap, requested_qty=0,
                         material=settings.get('reportMaterial', '') or '',
                         lamination_type=settings.get('reportLamination', 0) or 0,
                         lamination_sides=settings.get('reportLaminationSides', 1) or 1,
-                        mode_label='Cắt xén',
+                        mode_label=_g_mode,
                         order_code=settings.get('reportOrderCode', '') or '',
-                        identifier=f"Tờ {_gs + 1}/{int(total_sheets)}",
-                        sheet_count_override=int(total_sheets),
+                        identifier=f"Tờ {_gs + 1}/{max(1, _g_n)}",
+                        sheet_count_override=max(1, _g_n),
                     )
                     _reports_by_sheet[_gs] = _nrg.build_report_string(_gcfg, _gd)
         except Exception as _ge:
-            logger.warning(f"[REPORT] cắt xén dựng report lỗi: {_ge}")
+            logger.warning(f"[REPORT] fallback dựng report lỗi: {_ge}")
 
     # ── Stamp report lên từng tờ + bảng tổng hợp (spec: binh-tem-be-report) ──
     if _reports_by_sheet:
@@ -1875,12 +2119,15 @@ def run_nup_engine(
         try:
             from app.workers import nup_report as _nr
             _rd = settings.get('reportDisplay') or {}
-            # Report CHỈ vẽ trên trang IN. Khi tách trang khuôn (separateCutPage), mỗi tờ
-            # logic đẻ 2 trang output [in, khuôn] → trang in của tờ s nằm ở index s*2.
-            # Remap key tờ-logic → chỉ số trang IN thật để report không dính trang khuôn
-            # và không bị mất ở các tờ sau.
+            # Report CHỈ vẽ trên trang IN.
+            #  - Non-homogeneous + tách khuôn: xen kẽ [in, khuôn, in, khuôn…] → in ở s*2.
+            #  - Homogeneous + tách khuôn: chỉ 1 trang khuôn ở CUỐI → artwork liền 0..N-1,
+            #    không xen kẽ → stamp đúng index tờ logic (s), KHÔNG *2 (bug cũ: report
+            #    rơi vào trang khuôn / trượt mất tờ sau).
+            #  - Không tách khuôn: 1 trang/tờ → key = s.
             _sep_cut = bool(settings.get('separateCutPage')) and is_die_cut
-            if _sep_cut:
+            _homog_cut = _sep_cut and (homogeneous_master_idx is not None)
+            if _sep_cut and not _homog_cut:
                 _reports_to_stamp = {s_idx * 2: txt for s_idx, txt in _reports_by_sheet.items()}
             else:
                 _reports_to_stamp = _reports_by_sheet

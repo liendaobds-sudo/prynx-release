@@ -1309,41 +1309,38 @@ async def preview_layout(req: PreviewLayoutRequest):
                 _total_q = sum(_qty_for_page(pi) for pi, _, _ in page_dims)
 
                 # ══ NHÁNH ĐỒNG NHẤT (sticker-homogeneous-nup, Task 7) ══
-                # Auto-fill (KHỚP gating output: _total_q == 0). Dựng adapter/trang theo
-                # CHỈ SỐ TRANG GỐC (pi) rồi detect_homogeneous; nếu bật → xếp shape-aware
-                # từ master + finalize_placements + resolve_pont_collisions_on_placements
-                # (CÙNG hàm với output → parity ≤ 0.1mm). Lấy TỜ 0 để preview.
+                # KHỚP output: bật cả khi có SL (không chỉ auto-fill). SL > 1 → mỗi loại
+                # lấp đầy tờ (preview tờ 0 = loại nội dung đầu); SL ≤ 1 → rải tuần tự.
                 homogeneous_plan = None
-                if _total_q == 0:
-                    try:
-                        from app.workers import sticker_homogeneous as _sh
-                        from app.workers.shape_types import (
-                            ShapeType as _ShapeType, coerce_shape_type as _coerce,
-                        )
-                        _det_shapes = getattr(req, 'detected_shapes_by_page', None) or {}
-                        _det_params = getattr(req, 'detected_shape_params_by_page', None) or {}
-                        _adapters = []
-                        for _p in range(doc.page_count):
-                            _hd = _genuine_die_by_page.get(_p, False)
-                            if _hd:
-                                _s = (_det_shapes.get(str(_p)) or _det_shapes.get(_p))
-                                try:
-                                    _stype = _coerce(_s) if _s else _ShapeType.CUSTOM
-                                except Exception:
-                                    _stype = _ShapeType.CUSTOM
-                            else:
+                try:
+                    from app.workers import sticker_homogeneous as _sh
+                    from app.workers.shape_types import (
+                        ShapeType as _ShapeType, coerce_shape_type as _coerce,
+                    )
+                    _det_shapes = getattr(req, 'detected_shapes_by_page', None) or {}
+                    _det_params = getattr(req, 'detected_shape_params_by_page', None) or {}
+                    _adapters = []
+                    for _p in range(doc.page_count):
+                        _hd = _genuine_die_by_page.get(_p, False)
+                        if _hd:
+                            _s = (_det_shapes.get(str(_p)) or _det_shapes.get(_p))
+                            try:
+                                _stype = _coerce(_s) if _s else _ShapeType.CUSTOM
+                            except Exception:
                                 _stype = _ShapeType.CUSTOM
-                            _tw, _th = _trim_by_page.get(_p, (0.0, 0.0))
-                            _poly = (((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th))
-                                     if _hd else ())
-                            _props = (_det_params.get(str(_p)) or _det_params.get(_p) or {})
-                            _adapters.append(_sh.make_shape_adapter(_stype, _poly, _tw, _th, _props, has_die=_hd))
-                        homogeneous_plan = _sh.detect_homogeneous(_adapters)
-                    except Exception as _e_hom:
-                        import logging
-                        logging.getLogger(__name__).warning(
-                            f"[HOMOGENEOUS PREVIEW] Phát hiện thất bại → giữ đường cũ: {_e_hom}")
-                        homogeneous_plan = None
+                        else:
+                            _stype = _ShapeType.CUSTOM
+                        _tw, _th = _trim_by_page.get(_p, (0.0, 0.0))
+                        _poly = (((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th))
+                                 if _hd else ())
+                        _props = (_det_params.get(str(_p)) or _det_params.get(_p) or {})
+                        _adapters.append(_sh.make_shape_adapter(_stype, _poly, _tw, _th, _props, has_die=_hd))
+                    homogeneous_plan = _sh.detect_homogeneous(_adapters)
+                except Exception as _e_hom:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"[HOMOGENEOUS PREVIEW] Phát hiện thất bại → giữ đường cũ: {_e_hom}")
+                    homogeneous_plan = None
 
                 if homogeneous_plan is not None:
                     from app.workers.nup_sticker import compute_sticker_layout_for_page as _csl
@@ -1363,6 +1360,10 @@ async def preview_layout(req: PreviewLayoutRequest):
                         homogeneous_plan = None
 
                 if homogeneous_plan is not None:
+                    _content_qtys_pv = [
+                        _qty_for_page(_cp) for _cp in homogeneous_plan.content_pages
+                    ]
+                    _use_per_type_pv = any(q > 1 for q in _content_qtys_pv)
                     _hom_layout = _sh.build_homogeneous_layout(
                         master_page=None,
                         plan=homogeneous_plan,
@@ -1372,7 +1373,9 @@ async def preview_layout(req: PreviewLayoutRequest):
                         gap_y=req.gap_y,
                         bleed_pt=bleed_pt,
                         secondary_gap=None,
-                        quantities=None,  # auto-fill: mỗi trang 1 lần
+                        quantities=None if _use_per_type_pv else (
+                            _content_qtys_pv if any(q > 0 for q in _content_qtys_pv) else None
+                        ),
                         layout_fn=(lambda *_a, **_k: _master_layout),
                     )
 
@@ -1399,13 +1402,24 @@ async def preview_layout(req: PreviewLayoutRequest):
                     _pls = finalize_placements(
                         _items, req.usable_w, req.usable_h, _ml, _mb, _mt, _master_idx,
                     )
-                    _by_cell = {cc.cell_index: cc.src_page_idx
-                                for cc in _hom_layout.cell_contents if cc.sheet_index == 0}
-                    _sheet_pls = []
-                    for _ci, _pl in enumerate(_pls):
-                        if _ci in _by_cell:
-                            _pl['src_page_idx'] = _by_cell[_ci]
-                            _sheet_pls.append(_pl)
+                    if _use_per_type_pv:
+                        # Tờ mẫu loại đầu tiên có SL > 0 (khớp output per-type).
+                        _first_src = next(
+                            (_cp for _cp, _q in zip(homogeneous_plan.content_pages, _content_qtys_pv)
+                             if _q > 0),
+                            homogeneous_plan.content_pages[0],
+                        )
+                        for _pl in _pls:
+                            _pl['src_page_idx'] = _first_src
+                        _sheet_pls = _pls
+                    else:
+                        _by_cell = {cc.cell_index: cc.src_page_idx
+                                    for cc in _hom_layout.cell_contents if cc.sheet_index == 0}
+                        _sheet_pls = []
+                        for _ci, _pl in enumerate(_pls):
+                            if _ci in _by_cell:
+                                _pl['src_page_idx'] = _by_cell[_ci]
+                                _sheet_pls.append(_pl)
                     # Boong: CÙNG hàm với output (parity). req đã có pont_config/sheet_w/h/margins.
                     _sheet_pls = resolve_pont_collisions_on_placements(
                         _sheet_pls, req, base_poly=_master_base_poly)
@@ -1432,8 +1446,11 @@ async def preview_layout(req: PreviewLayoutRequest):
                         ov_w = max(ov_w, _ax + _w)
                         ov_h = max(ov_h, _ay + _h)
 
-                    logger.info("[HOMOGENEOUS PREVIEW] master=trang %d, shape=%s, %d ô (tờ 0)",
-                                _master_idx, homogeneous_plan.shape_type.name, len(cells))
+                    logger.info(
+                        "[HOMOGENEOUS PREVIEW] master=trang %d, shape=%s, %d ô (tờ 0, perType=%s)",
+                        _master_idx, homogeneous_plan.shape_type.name, len(cells),
+                        _use_per_type_pv,
+                    )
                     return {
                         "success": True,
                         "cells": cells,

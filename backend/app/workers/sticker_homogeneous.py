@@ -201,8 +201,11 @@ def detect_homogeneous(shapes: Sequence[Any]) -> Optional[HomogeneousPlan]:
     """Quyết định bật chế độ đồng nhất (R1) và trích hình học master (R2).
 
     Bật KHI VÀ CHỈ KHI **đúng một** trang có khuôn (master) và **mọi trang còn lại
-    không có khuôn**; đồng thời phải có ít nhất 1 trang nội dung. Ngược lại → None
-    (≥2 khuôn, 0 khuôn, hoặc chỉ có 1 trang).
+    không có khuôn**; đồng thời ≥2 trang (master + ≥1 trang khác). Ngược lại → None.
+
+    **content_pages GỒM CẢ master**: trang khuôn đồng thời là tem loại đầu (artwork
+    + đường bế). Trước đây loại master khỏi content → 20 loại chỉ ra 19 tờ in
+    (mất loại 1). Master vẫn là nguồn hình học khuôn (master_page_idx).
     """
     if not shapes:
         return None
@@ -212,9 +215,10 @@ def detect_homogeneous(shapes: Sequence[Any]) -> Optional[HomogeneousPlan]:
         return None  # ≥2 khuôn hoặc 0 khuôn → không đồng nhất (R1.3, R1.4)
 
     master_i = die_idx[0]
-    content = tuple(i for i in range(n) if i != master_i)
-    if not content:
-        return None  # cần ≥1 trang nội dung
+    # Mọi trang đều là nội dung in (thứ tự trang nguồn). Master = loại đầu.
+    if n < 2:
+        return None  # 1 trang → để đường bình 1 mẫu thường, không cần homogeneous
+    content = tuple(range(n))
 
     m = shapes[master_i]
     poly = tuple((float(x), float(y)) for (x, y) in (getattr(m, "poly", ()) or ()))
