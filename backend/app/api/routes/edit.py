@@ -578,15 +578,18 @@ def _render_clip_blocking(
     """
     import pypdfium2 as pdfium
 
+    # Trần cạnh dài bitmap (px) — chặn OOM + tránh render/encode khổng lồ. Đường tile
+    # có cap tương tự; đường session TRƯỚC ĐÂY thiếu → scale cao render CẢ trang thành
+    # bitmap ~14000×20000px (~12s/op). Cap này áp cho CẢ nhánh clip lẫn full-page.
+    _MAX_EDGE_PX = 4000
+
     render_doc = pdfium.PdfDocument(pdf_bytes)
     try:
         n_pages = len(render_doc)
         if page < 0 or page >= n_pages:
             raise IndexError(f"Trang {page} ngoài phạm vi (0..{n_pages - 1}).")
         render_page = render_doc[page]
-        bitmap = render_page.render(scale=scale)
-        img = bitmap.to_pil()
-        full_w, full_h = img.size
+        page_w_pt, page_h_pt = render_page.get_size()
 
         if clip_rect is not None:
             x0, y0, x1, y1 = clip_rect
@@ -595,19 +598,34 @@ def _render_clip_blocking(
                 x0, x1 = x1, x0
             if y1 < y0:
                 y0, y1 = y1, y0
-            # PDF point (gốc DƯỚI-TRÁI) → pixel (gốc TRÊN-TRÁI): nhân scale, lật y.
-            left = int(round(x0 * scale))
-            right = int(round(x1 * scale))
-            top = int(round(full_h - y1 * scale))
-            bottom = int(round(full_h - y0 * scale))
-            # Kẹp trong khung ảnh toàn trang.
-            left = max(0, min(left, full_w))
-            right = max(0, min(right, full_w))
-            top = max(0, min(top, full_h))
-            bottom = max(0, min(bottom, full_h))
-            # Chỉ crop khi vùng hợp lệ (diện tích > 0); nếu không, giữ toàn trang.
-            if right > left and bottom > top:
-                img = img.crop((left, top, right, bottom))
+            # Kẹp vùng trong khổ trang (point) trước khi render.
+            x0 = max(0.0, min(x0, page_w_pt))
+            x1 = max(0.0, min(x1, page_w_pt))
+            y0 = max(0.0, min(y0, page_h_pt))
+            y1 = max(0.0, min(y1, page_h_pt))
+            region_w_pt = x1 - x0
+            region_h_pt = y1 - y0
+            # Vùng suy biến → fallback render toàn trang (an toàn, hiếm).
+            if region_w_pt <= 0 or region_h_pt <= 0:
+                clip_rect = None
+
+        if clip_rect is not None:
+            # Cap scale theo cạnh dài VÙNG CLIP (không phải cả trang).
+            longest_pt = max(region_w_pt, region_h_pt)
+            eff_scale = min(scale, _MAX_EDGE_PX / longest_pt) if longest_pt > 0 else scale
+            # Render CHỈ vùng clip: `crop=(left, bottom, right, top)` theo point tính từ
+            # mép trang (đã kiểm thực nghiệm khớp full-render + PIL-crop, diff ~0.0002).
+            # clip_rect là Page_Box-relative, gốc DƯỚI-TRÁI → left=x0, bottom=y0,
+            # right=page_w-x1, top=page_h-y1. Vùng NGOÀI clip KHÔNG bị rasterize.
+            crop = (x0, y0, page_w_pt - x1, page_h_pt - y1)
+            bitmap = render_page.render(scale=eff_scale, crop=crop)
+            img = bitmap.to_pil()
+        else:
+            # Toàn trang (delete / vùng không xác định): cap scale theo cạnh dài TRANG.
+            longest_pt = max(page_w_pt, page_h_pt)
+            eff_scale = min(scale, _MAX_EDGE_PX / longest_pt) if longest_pt > 0 else scale
+            bitmap = render_page.render(scale=eff_scale)
+            img = bitmap.to_pil()
 
         width, height = img.size
         out = BytesIO()
