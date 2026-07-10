@@ -38,7 +38,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         const raw = localStorage.getItem(PERSIST_KEY);
         expect(raw).toBeTruthy();
         const parsed = JSON.parse(raw as string);
-        expect(parsed.version).toBe(7);
+        expect(parsed.version).toBe(8);
         const keys = Object.keys(parsed.state).sort();
         expect(keys).toMatchSnapshot();
     });
@@ -63,6 +63,32 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         expect(rd.fieldOrder).toContain('gangCount');
         // gangCount chèn ngay sau identifier
         expect(rd.fieldOrder.indexOf('gangCount')).toBe(rd.fieldOrder.indexOf('identifier') + 1);
+    });
+
+    it('migration v7 → v8: persist resizeSettings (nhớ thiết lập co giãn trang)', () => {
+        localStorage.clear();
+        const v7 = {
+            state: {
+                resizeSettings: {
+                    sizePresetId: 'A3',
+                    targetW: 297,
+                    targetH: 420,
+                    scaleMode: 'fill',
+                    applyTo: 'all',
+                    applyToStr: 'all',
+                    resizeMode: 'vector',
+                    targetDpi: 150,
+                },
+            },
+            version: 7,
+        };
+        localStorage.setItem(PERSIST_KEY, JSON.stringify(v7));
+        const store = createImposerSettingsStore();
+        const rs = store.getState().resizeSettings as any;
+        expect(rs.sizePresetId).toBe('A3');
+        expect(rs.scaleMode).toBe('fill');
+        expect(rs.targetDpi).toBe(150);
+        expect(rs.resizeMode).toBe('vector');
     });
 
     it('switchToolProfile lưu/khôi phục field thuật toán theo công cụ', () => {

@@ -555,7 +555,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 if (s.catalogMasterSigOverride !== 'auto') targetMasterSig = parseInt(s.catalogMasterSigOverride, 10);
                 onStartCatalogPlan(
                     { totalPages: sourceTotalPages || 0, bindingMode: s.signatureMode === 'thread' ? 'perfect' : 'saddle', hasSeparateCover: s.catalogHasCover, masterSig: targetMasterSig, remainderPlacement: s.catalogRemainderPlacement },
-                    { sheetWidth: sheetW, sheetHeight: sheetH, bleed: s.bleed, markType: s.markType, markOffset: s.marksConfig?.distance, markLength: s.marksConfig?.length, markThickness: s.marksConfig?.thickness, markStyle: s.marksConfig?.style === 2 ? 'japanese' : 'default', gripperMargin: s.gripperMargin, marginTop: s.marginTop, marginLeft: s.marginLeft, marginRight: s.marginRight, paperThickness: s.paperThickness, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, spawnNewTab: s.spawnNewTab } as any
+                    { sheetWidth: sheetW, sheetHeight: sheetH, bleed: s.bleed, markType: s.markType, markOffset: s.marksConfig?.distance, markLength: s.marksConfig?.length, markThickness: s.marksConfig?.thickness, markStyle: s.marksConfig?.style === 2 ? 'japanese' : 'default', gripperMargin: s.gripperMargin, marginTop: s.marginTop, marginLeft: s.marginLeft, marginRight: s.marginRight, paperThickness: s.paperThickness, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true } as any
                 );
                 return;
             }
@@ -574,7 +574,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 bleed: s.bleed, paperThickness: s.paperThickness, markType: s.markType,
                 markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness,
                 markStyle: s.marksConfig.style === 2 ? 'japanese' : 'default',
-                spawnNewTab: !!s.spawnNewTabByTool[activeTool],
+                spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true,
                 interleave: s.paperClassification === 'in_nhanh' ? 'normal' : s.interleave,
                 scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : (s.scaleMode === 'cut_stack' ? 'cut_stack' : s.scaleMode),
                 foldPattern: (s.paperClassification === 'offset' && s.foldPattern) ? s.foldPattern : (s.scaleMode === 'chain_nup' && s.foldPattern) ? s.foldPattern : undefined,
@@ -647,7 +647,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 isDieCutMode: activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer',
                 shapeType: detectedShapeType, shapeParams: detectedShapeParams,
                 targetQuantity: s.targetQuantity, targetQuantitiesByPage: s.targetQuantitiesByPage,
-                detectedShapesByPage, detectedShapeParamsByPage, spawnNewTab: !!s.spawnNewTabByTool[activeTool],
+                // UI hiển thị ?? true khi chưa tick; PHẢI dùng cùng fallback lúc chạy
+                // (trước đây !!undefined = false → checkbox tick nhưng vẫn đè tab hiện tại).
+                detectedShapesByPage, detectedShapeParamsByPage, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true,
                 // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — luôn bật cho sticker & CNC
                 exportUniqueSheets: activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer',
                 reportDisplay: s.reportDisplay,
@@ -821,7 +823,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     <div className="mt-4 mb-2">
                         <Checkbox checked={s.spawnNewTabByTool['merge'] ?? true} onChange={(v) => s.setSpawnNewTab('merge', v)} label="Mở kết quả sang Tab mới" />
                     </div>
-                    <button onClick={() => onStartMerge && onStartMerge({ ...mergeSettings, spawnNewTab: !!s.spawnNewTabByTool['merge'] })} disabled={isProcessing}
+                    <button onClick={() => onStartMerge && onStartMerge({ ...mergeSettings, spawnNewTab: s.spawnNewTabByTool['merge'] ?? true })} disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50">
                         {isProcessing ? 'Đang áp dụng...' : 'Thực Thi Ghép File'}
                     </button>

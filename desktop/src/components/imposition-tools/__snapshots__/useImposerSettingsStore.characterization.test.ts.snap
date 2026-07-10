@@ -271,6 +271,7 @@ exports[`useImposerSettingsStore — characterization (golden) > tập partializ
   "reportLamination",
   "reportLaminationSides",
   "reportMaterial",
+  "resizeSettings",
   "rows",
   "saveByReport",
   "savePrint",

@@ -114,7 +114,7 @@ export default function PreprocessingRouter({
                         <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                     </div>
                     <button 
-                        onClick={() => onStartShuffle && onStartShuffle({ ...s.shuffleSettings, spawnNewTab: !!s.spawnNewTabByTool[activeTool] })} 
+                        onClick={() => onStartShuffle && onStartShuffle({ ...s.shuffleSettings, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
@@ -130,7 +130,7 @@ export default function PreprocessingRouter({
                         <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                     </div>
                     <button 
-                        onClick={() => onStartResize && onStartResize({ ...s.resizeSettings, spawnNewTab: !!s.spawnNewTabByTool[activeTool] })} 
+                        onClick={() => onStartResize && onStartResize({ ...s.resizeSettings, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
@@ -146,7 +146,7 @@ export default function PreprocessingRouter({
                         <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                     </div>
                     <button
-                        onClick={() => onStartTrimShift && onStartTrimShift({ ...s.trimShiftSettings, spawnNewTab: !!s.spawnNewTabByTool[activeTool] })}
+                        onClick={() => onStartTrimShift && onStartTrimShift({ ...s.trimShiftSettings, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true })}
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
@@ -162,7 +162,7 @@ export default function PreprocessingRouter({
                         <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
                     </div>
                     <button 
-                        onClick={() => onStartSplit && onStartSplit({ ...s.splitSettings, spawnNewTab: !!s.spawnNewTabByTool[activeTool] })} 
+                        onClick={() => onStartSplit && onStartSplit({ ...s.splitSettings, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold transition-colors disabled:opacity-50"
                     >
