@@ -439,7 +439,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
     };
 
+    // Cờ "phiên edit-object còn thay đổi chưa ghi ra đĩa" — đồng bộ từ editSession.dirty
+    // (khai báo phía dưới) qua effect. isDirty phải tính CẢ nó: với commit-on-exit, thao
+    // tác edit chỉ nằm trong RAM session; nếu bỏ qua thì đóng tab/app KHÔNG cảnh báo →
+    // mất thay đổi âm thầm. Khai báo state ở ĐÂY (trước isDirty) để tránh TDZ.
+    const [editSessionDirty, setEditSessionDirty] = useState(false);
+
     const isDirty = useMemo(() => {
+        if (editSessionDirty) return true; // edit-object chưa commit → LUÔN dirty (kể cả isSaved)
         if (isSaved) return false;
         if (history.length > 0) return true;
         if (viewerDirty) return true;
@@ -452,7 +459,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0)) return true;
         if (vdpFields && vdpFields.length > 0) return true;
         return false;
-    }, [isSaved, history.length, file, viewerPageRotations, vdpFields, viewerDirty]);
+    }, [isSaved, history.length, file, viewerPageRotations, vdpFields, viewerDirty, editSessionDirty]);
 
     useEffect(() => {
         onDirtyChange?.(isDirty);
@@ -860,6 +867,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setError('Không mở được phiên chỉnh sửa (backend không phản hồi hoặc phiên hết hạn) — hãy mở lại file để chỉnh sửa.');
         },
     });
+
+    // Đồng bộ `editSession.dirty` (op edit-object chưa commit ra đĩa — commit-on-exit)
+    // vào cờ `editSessionDirty` để `isDirty` (khai báo TRƯỚC editSession, không đọc trực
+    // tiếp được) tính vào cảnh báo đóng tab/cửa sổ + snapshot recovery. Không có bước này,
+    // sửa object rồi tắt sẽ MẤT thay đổi mà KHÔNG hỏi (thay đổi chỉ nằm trong RAM phiên).
+    useEffect(() => {
+        setEditSessionDirty(editSession.dirty);
+    }, [editSession.dirty]);
 
     // ----------------------------
 
