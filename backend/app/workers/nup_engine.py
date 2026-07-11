@@ -199,6 +199,33 @@ def run_nup_engine(
 
         raise ValueError("Source PDF has no pages")
 
+    # ── Guard Bình 2 mặt (guillotine N-Up) ──
+    #  - Số trang CHẴN (mỗi SP = cặp trước/sau).
+    #  - cut_stacks / ratio_stack: process_chunk vẫn mirror tờ lẻ nếu duplex=double
+    #    trong khi precalc không dựng F/B → phá collate / tờ mẫu. Chặn rõ ràng.
+    if (
+        settings.get('duplexFlow') == 'double'
+        and not settings.get('isDieCutMode', False)
+    ):
+        _lt_guard = settings.get('layoutType', 'sequential') or 'sequential'
+        _bad_lt = _lt_guard in ('cut_stacks', 'ratio_stack')
+        _odd = page_count % 2 != 0
+        if _bad_lt or _odd:
+            try:
+                src_doc.close()
+            except Exception:
+                pass
+            if _bad_lt:
+                _ten = 'Xếp chồng' if _lt_guard == 'cut_stacks' else 'Chia tỷ lệ + xếp chồng'
+                raise ValueError(
+                    f"Chế độ «{_ten}» chưa hỗ trợ Bình 2 mặt. "
+                    "Chọn 1 Mặt, hoặc dùng Xếp lần lượt / Bình trang (S&R)."
+                )
+            raise ValueError(
+                f"Bình 2 mặt bắt buộc số trang CHẴN. File hiện có {page_count} trang (lẻ). "
+                "Hãy thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt."
+            )
+
     first_page = src_doc[0]
 
     geom_rect = None
@@ -381,6 +408,7 @@ def run_nup_engine(
     # Report state (spec: binh-tem-be-report) — luôn tồn tại để khối finalize đọc được.
     _reports_by_sheet = {}
     _report_rows = []
+    _ratio_stack_warnings = []  # cảnh báo ratio_stack (unplaced…) → message hoàn tất
 
     target_quantity = settings.get('targetQuantity', 0)
 
@@ -1692,48 +1720,188 @@ def run_nup_engine(
 
         total_sheets = len(sheet_mapping)
 
+    elif layout_type == 'ratio_stack' and capacity > 0 and page_count > 0 and layout.get('cells'):
+
+        # ── N-Up "Chia tỷ lệ + xếp chồng" (ratio_stack): mỗi mẫu chiếm số ô theo TỶ
+        #    LỆ số lượng; MỌI tờ giống HỆT nhau (cùng vị trí ô = cùng mẫu xuyên cả
+        #    chồng) → dao xén guillotine chém cả chồng ra mỗi xấp MỘT loại sạch.
+        #    Khác round-robin của 'sequential' (mỗi tờ khác nhau → xén ra lẫn lộn).
+        from app.workers.nup_layout_solver import compute_ratio_stack_alloc
+        _align_rs = settings.get('align', 'center')
+        _cells_rs = layout['cells']
+        # SL mỗi mẫu (theo page-index).
+        _qtys = []
+        for _p in range(page_count):
+            _q = target_quantities_by_page.get(str(_p), target_quantities_by_page.get(_p, target_quantity))
+            try:
+                _q = int(_q)
+            except (TypeError, ValueError):
+                _q = 0
+            _qtys.append(max(0, _q))
+
+        _alloc = compute_ratio_stack_alloc(capacity, _qtys)
+        _cpp = _alloc['cellsPerPage']
+        n_sheets = max(1, int(_alloc['nSheets']))
+        if _alloc.get('unplaced'):
+            logger.warning("[RATIO_STACK] Mẫu không đủ chỗ trên tờ (nên tách bài in): idx=%s", _alloc['unplaced'])
+
+        # Gán ô → mẫu: mẫu 0 chiếm _cpp[0] ô ĐẦU, mẫu 1 kế tiếp... (ô cùng mẫu liền
+        # nhau → dễ xén). Vị trí ô CỐ ĐỊNH giữa mọi tờ.
+        _slot_to_page = []
+        for _mi, _cnt in enumerate(_cpp):
+            _slot_to_page.extend([_mi] * int(_cnt))
+        _n_used = min(len(_slot_to_page), len(_cells_rs))
+
+        _sc = _cells_rs[:_n_used]
+        _bw = max((c['x'] + c['width'] for c in _sc), default=0.0)
+        _bh = max((c['y'] + c['height'] for c in _sc), default=0.0)
+        if 'left' in _align_rs:
+            _bx = margin_left
+        elif 'right' in _align_rs:
+            _bx = sheet_w - margin_right - _bw
+        else:
+            _bx = margin_left + (sheet_usable_w - _bw) / 2
+        if 'top' in _align_rs:
+            _byb = sheet_h - margin_top - _bh
+        elif 'bottom' in _align_rs:
+            _byb = margin_bottom
+        else:
+            _byb = margin_bottom + (sheet_usable_h - _bh) / 2
+
+        # Template 1 tờ — MỌI tờ dùng CHUNG (giống hệt nhau → xén chồng ra 1 loại).
+        _template = []
+        for _j in range(_n_used):
+            _c = _sc[_j]
+            _ax = _bx + _c['x']
+            _ayb = _byb + (_bh - _c['y'] - _c['height'])
+            _template.append({
+                'cluster_idx': 0,
+                'cell': dict(_c),
+                'src_page_idx': _slot_to_page[_j],
+                'abs_x': _ax,
+                'abs_y': _ayb,
+                'width': _c['width'],
+                'height': _c['height'],
+                'original_cell_y': sheet_h - _ayb - _c['height'],
+            })
+        # XUẤT 1 TỜ DUY NHẤT — mọi tờ GIỐNG HỆT nhau nên nhân bản n_sheets tờ là
+        # lãng phí thuần (n_sheets× thời gian render + dung lượng file, chồng in ra
+        # y đúc). Máy in chạy n_sheets lượt từ 1 tờ mẫu → chỉ cần 1 tờ + report
+        # "in n_sheets tờ" (giống cơ chế export-unique của bế tem cùng khuôn).
+        precalculated_placements = {0: _template}
+        total_sheets = 1
+
+        # Luôn ghi 1 dòng lệnh in (sheet_count=n_sheets) → message hoàn tất hiện
+        # "in N tờ" dù reportDisplay tắt. Stamp lên PDF chỉ khi report bật.
+        # KHÔNG thêm mỗi mẫu 1 dòng (bảng tổng hợp cộng sheet_count → nhân sai).
+        _n_types_rs = sum(1 for q in _qtys if q > 0)
+        _label_rs = (settings.get('reportDisplay') or {}).get('labelNameText') or f"Bình tỷ lệ ({_n_types_rs} mẫu)"
+        _req_qty_rs = sum(max(0, q) for q in _qtys)
+        _report_rows.append({
+            'label': _label_rs,
+            'items_per_sheet': _n_used,
+            'requested_qty': _req_qty_rs,
+            'sheet_count': n_sheets,
+        })
+        if _alloc.get('unplaced'):
+            _up_pages = ", ".join(str(i + 1) for i in _alloc['unplaced'])
+            _ratio_stack_warnings.append(
+                f"⚠ Không đủ chỗ trên tờ cho trang {_up_pages} — nên tách sang bài in khác."
+            )
+
+        _rcfg_rs = settings.get('reportDisplay') or {}
+        if _rcfg_rs.get('enabled'):
+            try:
+                from app.workers import nup_report as _nr_rs
+                _paper_rs = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                _PT_MM_rs = 1.0 / MM_TO_PTS
+                _data_rs = _nr_rs.compute_report_data(
+                    label_name=_label_rs,
+                    width_mm=trim_w * _PT_MM_rs, height_mm=trim_h * _PT_MM_rs,
+                    paper_size=_paper_rs,
+                    items_per_sheet=_n_used, requested_qty=_req_qty_rs,
+                    material=settings.get('reportMaterial', '') or '',
+                    lamination_type=settings.get('reportLamination', 0) or 0,
+                    lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                    mode_label='Cắt xén (chia tỷ lệ)',
+                    order_code=settings.get('reportOrderCode', '') or '',
+                    identifier=f"{_n_types_rs} mẫu",
+                    sheet_count_override=n_sheets,
+                )
+                _reports_by_sheet[0] = _nr_rs.build_report_string(_rcfg_rs, _data_rs)
+            except Exception as _e_rs:
+                logger.warning(f"[RATIO_STACK] dựng report lỗi: {_e_rs}")
+
     else:
 
-        # ── N-Up "Dàn nhiều mẫu" (sequential): ghép theo SỐ LƯỢNG THỰC, lấp theo layout
-        #    tối ưu/lưới, TRÀN sang tờ sau khi vượt sức chứa; tờ cuối (lẻ) CĂN GIỮA.
-        #    SL mỗi loại = K → tổng = K × số mẫu. SL trống → lấp đầy đúng 1 tờ.
-        #    Dùng precalc (dựng sẵn vị trí) để kiểm soát cyclic + cap + căn giữa từng tờ.
+        # ── sequential / cut_stacks / fallback ──
         _align_np = settings.get('align', 'center')
-        _cells_np = layout['cells']
-        if layout_type == 'sequential' and capacity > 0 and page_count > 0 and _cells_np:
-            if any((int(v or 0) > 0) for v in target_quantities_by_page.values()):
-                total_needed = 0
-                for _p in range(page_count):
-                    _q = target_quantities_by_page.get(str(_p), target_quantities_by_page.get(_p, target_quantity))
-                    try:
-                        _q = int(_q)
-                    except (TypeError, ValueError):
-                        _q = 0
-                    total_needed += max(0, _q)
-            elif target_quantity > 0:
-                total_needed = target_quantity * page_count
-            else:
-                total_needed = capacity  # SL trống → lấp đầy 1 tờ
-            total_needed = max(1, int(total_needed))
-            n_sheets = -(-total_needed // capacity)  # ceil
+        _cells_np = layout.get('cells') or []
 
-            # Căn lề:
-            #  - ĐÚNG 1 tờ (ít con): căn giữa theo bbox ô THỰC SỰ lấp (đẹp).
-            #  - NHIỀU tờ: MỌI tờ dùng bbox FULL layout (vị trí ô giống nhau giữa các tờ)
-            #    → chồng giấy in ra xén THẲNG HÀNG; tờ cuối thiếu ô vẫn giữ đúng vị trí.
+        def _qty_for_page(_p):
+            _q = target_quantities_by_page.get(str(_p), target_quantities_by_page.get(_p, target_quantity))
+            try:
+                return max(0, int(_q))
+            except (TypeError, ValueError):
+                return 0
+
+        if layout_type == 'sequential' and capacity > 0 and page_count > 0 and _cells_np:
+            # ── Xếp LẦN LƯỢT ──
+            # 1 mặt: trang 0×q0, 1×q1… (không xen). Trống = lấp 1 tờ wrap.
+            # 2 mặt: mỗi SP = cặp (2k | 2k+1) trước/sau. Cùng ô trên tờ chẵn=trước,
+            #    tờ lẻ=sau (cùng toạ độ); process_chunk lật gương tờ lẻ.
+            #    SL UI key theo trang chẵn (SP): qty[0] cho SP0, qty[2] cho SP1…
+            _duplex_seq = (
+                settings.get('duplexFlow', 'single') == 'double'
+                and page_count >= 2
+                and page_count % 2 == 0  # chẵn — đã chặn ở đầu; phòng thủ kép
+            )
+            _n_prod = page_count // 2 if _duplex_seq else page_count
+            if _duplex_seq and _n_prod < 1:
+                _duplex_seq = False
+                _n_prod = page_count
+
+            def _qty_for_product(_pi):
+                """SL của SP: 2 mặt → key trang chẵn 2*_pi; 1 mặt → key trang _pi."""
+                if _duplex_seq:
+                    return _qty_for_page(_pi * 2)
+                return _qty_for_page(_pi)
+
+            _seq = []  # danh sách chỉ số SP (1 mặt = chỉ số trang)
+            _any_qty = any(_qty_for_product(p) > 0 for p in range(_n_prod))
+            if _any_qty:
+                for _p in range(_n_prod):
+                    _seq.extend([_p] * _qty_for_product(_p))
+            elif target_quantity > 0:
+                for _p in range(_n_prod):
+                    _seq.extend([_p] * int(target_quantity))
+            else:
+                # Trống = lấp đầy 1 tờ, GOM THEO LOẠI (A-A-A B-B-B C-C-C), KHÔNG xen
+                # kẽ A-B-C-A-B-C. Chia đều capacity cho các loại thành khối liền nhau
+                # (phần dư dồn cho các loại đầu) → xén chồng ra mỗi loại một xấp.
+                if _n_prod > 0:
+                    _base = capacity // _n_prod
+                    _rem = capacity % _n_prod
+                    _seq = []
+                    for _p in range(_n_prod):
+                        _seq.extend([_p] * (_base + (1 if _p < _rem else 0)))
+                else:
+                    _seq = [0] * capacity
+            if not _seq:
+                _seq = [0]
+            total_needed = len(_seq)
+            n_front_sheets = -(-total_needed // capacity)  # ceil
+
             _full_bw = max((c['x'] + c['width'] for c in _cells_np), default=0.0)
             _full_bh = max((c['y'] + c['height'] for c in _cells_np), default=0.0)
 
-            precalculated_placements = {}
-            for _s in range(n_sheets):
-                _n_this = min(capacity, total_needed - _s * capacity)
+            def _sheet_base(_n_this, _n_front_total):
                 _sc = _cells_np[:_n_this]
-                if n_sheets == 1:
+                if _n_front_total == 1:
                     _bw = max((c['x'] + c['width'] for c in _sc), default=0.0)
                     _bh = max((c['y'] + c['height'] for c in _sc), default=0.0)
                 else:
                     _bw, _bh = _full_bw, _full_bh
-                # Base theo align (mặc định giữa).
                 if 'left' in _align_np:
                     _bx = margin_left
                 elif 'right' in _align_np:
@@ -1746,15 +1914,97 @@ def run_nup_engine(
                     _byb = margin_bottom
                 else:
                     _byb = margin_bottom + (sheet_usable_h - _bh) / 2
+                return _sc, _bw, _bh, _bx, _byb
+
+            def _make_pls(_sc, _bw, _bh, _bx, _byb, _page_for_j):
                 _pls = []
                 for _j, _c in enumerate(_sc):
-                    _g = _s * capacity + _j
                     _ax = _bx + _c['x']
                     _ayb = _byb + (_bh - _c['y'] - _c['height'])
                     _pls.append({
                         'cluster_idx': 0,
                         'cell': dict(_c),
-                        'src_page_idx': _g % page_count,
+                        'src_page_idx': _page_for_j(_j),
+                        'abs_x': _ax,
+                        'abs_y': _ayb,
+                        'width': _c['width'],
+                        'height': _c['height'],
+                        'original_cell_y': sheet_h - _ayb - _c['height'],
+                    })
+                return _pls
+
+            precalculated_placements = {}
+            if _duplex_seq:
+                # Tờ 2s = mặt trước (trang 2*sp), tờ 2s+1 = mặt sau (trang 2*sp+1).
+                # Cùng hình học ô → process_chunk mirror tờ lẻ canh đúng trước/sau.
+                for _s in range(n_front_sheets):
+                    _n_this = min(capacity, total_needed - _s * capacity)
+                    _sc, _bw, _bh, _bx, _byb = _sheet_base(_n_this, n_front_sheets)
+                    _prods = [_seq[_s * capacity + _j] for _j in range(_n_this)]
+
+                    def _front_page(_j, _prods=_prods):
+                        return int(_prods[_j]) * 2
+
+                    def _back_page(_j, _prods=_prods):
+                        _bp = int(_prods[_j]) * 2 + 1
+                        # Trang lẻ thiếu (file lẻ) → tái dùng mặt trước (tránh crash).
+                        return _bp if _bp < page_count else int(_prods[_j]) * 2
+
+                    precalculated_placements[_s * 2] = _make_pls(
+                        _sc, _bw, _bh, _bx, _byb, _front_page)
+                    precalculated_placements[_s * 2 + 1] = _make_pls(
+                        _sc, _bw, _bh, _bx, _byb, _back_page)
+                total_sheets = n_front_sheets * 2
+                logger.info(
+                    "[SEQUENTIAL DUPLEX] products=%s page_count=%s front_sheets=%s total_sheets=%s",
+                    _n_prod, page_count, n_front_sheets, total_sheets,
+                )
+            else:
+                for _s in range(n_front_sheets):
+                    _n_this = min(capacity, total_needed - _s * capacity)
+                    _sc, _bw, _bh, _bx, _byb = _sheet_base(_n_this, n_front_sheets)
+
+                    def _page_1side(_j, _s=_s, _n_this=_n_this):
+                        return _seq[_s * capacity + _j]
+
+                    precalculated_placements[_s] = _make_pls(
+                        _sc, _bw, _bh, _bx, _byb, _page_1side)
+                total_sheets = n_front_sheets
+
+        elif layout_type == 'cut_stacks' and capacity > 0 and page_count > 0 and _cells_np:
+            # ── Xếp CHỒNG (cut-stack / collation):
+            #    Ô k trên mọi tờ tạo 1 cọc; xén rời cọc rồi úp đúng thứ tự trang.
+            #    sheet s, cell j → page = j * n_sheets + s  (n_sheets = ceil(n/cap)).
+            #    KHÔNG dùng round-robin sequential; KHÔNG nhầm với target_quantity/capacity.
+            n_sheets = max(1, math.ceil(page_count / capacity))
+            _full_bw = max((c['x'] + c['width'] for c in _cells_np), default=0.0)
+            _full_bh = max((c['y'] + c['height'] for c in _cells_np), default=0.0)
+            if 'left' in _align_np:
+                _bx = margin_left
+            elif 'right' in _align_np:
+                _bx = sheet_w - margin_right - _full_bw
+            else:
+                _bx = margin_left + (sheet_usable_w - _full_bw) / 2
+            if 'top' in _align_np:
+                _byb = sheet_h - margin_top - _full_bh
+            elif 'bottom' in _align_np:
+                _byb = margin_bottom
+            else:
+                _byb = margin_bottom + (sheet_usable_h - _full_bh) / 2
+
+            precalculated_placements = {}
+            for _s in range(n_sheets):
+                _pls = []
+                for _j, _c in enumerate(_cells_np[:capacity]):
+                    _src = _j * n_sheets + _s
+                    if _src >= page_count:
+                        continue  # ô trống (trang không đủ)
+                    _ax = _bx + _c['x']
+                    _ayb = _byb + (_full_bh - _c['y'] - _c['height'])
+                    _pls.append({
+                        'cluster_idx': 0,
+                        'cell': dict(_c),
+                        'src_page_idx': _src,
                         'abs_x': _ax,
                         'abs_y': _ayb,
                         'width': _c['width'],
@@ -1763,6 +2013,11 @@ def run_nup_engine(
                     })
                 precalculated_placements[_s] = _pls
             total_sheets = n_sheets
+            logger.info(
+                "[CUT_STACKS] page_count=%s capacity=%s n_sheets=%s (collation stacks)",
+                page_count, capacity, n_sheets,
+            )
+
         elif target_quantity > 0:
             total_sheets = math.ceil(target_quantity / total_capacity)
         else:
@@ -1771,11 +2026,15 @@ def run_nup_engine(
     chunk_layout_type = layout_type
 
     # --- Duplex Interleaving for Multi-Sheet Jobs ---
-    # Đan mặt trước/sau theo TỪNG CẶP trang (0&1, 2&3, ...), MỖI CẶP dùng SỐ TỜ
-    # RIÊNG của nó — KHÔNG chia đều, vì các sản phẩm có số lượng khác nhau
-    # (vd loại 1 = 100 tờ, loại 2 = 50 tờ). Mỗi cặp đóng góp số tờ chẵn nên tờ
-    # chỉ-số-lẻ luôn là mặt sau → bước lật gương (sheet_idx%2==1) vẫn khớp.
-    if settings.get('duplexFlow', 'single') == 'double' and page_count >= 2 and page_count % 2 == 0:
+    # Đan mặt trước/sau theo TỪNG CẶP trang (0&1, 2&3, ...). Dành cho repeat / die-cut
+    # (mỗi tờ 1 mẫu). sequential 2 mặt đã dựng sẵn F/B trong precalc → BỎ QUA.
+    # cut_stacks / ratio_stack: không đan (sẽ phá collate / tờ mẫu).
+    if (
+        settings.get('duplexFlow', 'single') == 'double'
+        and page_count >= 2
+        and page_count % 2 == 0
+        and layout_type not in ('sequential', 'cut_stacks', 'ratio_stack')
+    ):
         # Chế độ 'repeat': sheet_mapping là list page-idx, nhóm theo trang rồi đan từng cặp.
         if sheet_mapping and len(sheet_mapping) == total_sheets:
             from collections import Counter as _Counter
@@ -2160,6 +2419,12 @@ def run_nup_engine(
                 f"  • {r['label']}: {r['requested_qty']} tem — SL/tờ {r['items_per_sheet']} → in {r['sheet_count']} tờ"
             )
         report_lines.append(f"  ⇒ Tổng số tờ cần in: {_total_sheets}")
+        if layout_type == 'ratio_stack' and _total_sheets > 1:
+            report_lines.append(
+                f"  (File chỉ 1 tờ mẫu — máy in chạy {_total_sheets} bản giống hệt.)"
+            )
+    for _w in _ratio_stack_warnings:
+        report_lines.append(_w)
 
 
     if is_die_cut and 'strategyUsed' in layout:

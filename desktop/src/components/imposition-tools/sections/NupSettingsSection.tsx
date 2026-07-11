@@ -27,25 +27,33 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                         <label className="text-[11px] font-bold text-slate-600 tracking-wide block -mb-0.5">CÁCH THỨC RÁP THÀNH PHẨM</label>
                         <RichSelect
                             value={s.layoutType}
-                            onChange={(v) => s.setLayoutType(v as any)}
+                            onChange={(v) => {
+                                s.setLayoutType(v as any);
+                                if ((v === 'cut_stacks' || v === 'ratio_stack') && s.duplexFlow === 'double') {
+                                    s.setDuplexFlow('normal');
+                                }
+                            }}
                             options={[
-                                { value: 'sequential', title: 'Xếp lần lượt', desc: 'Xếp lần lượt 1, 2, 3, 4... lên mặt giấy.' },
-                                { value: 'cut_stacks', title: 'Xếp chồng', desc: 'Chế độ chia cọc. Sau khi máy xén chém xong, úp các cọc giấy lên nhau là tự động dồn đúng thứ tự.' }
+                                { value: 'sequential', title: 'Xếp lần lượt', desc: '1 mặt: trang 1,2,3… liên tiếp theo SL. 2 mặt: mỗi SP = cặp trang trước/sau cùng ô; tờ lẻ lật gương canh mặt sau (số trang chẵn).' },
+                                { value: 'cut_stacks', title: 'Xếp chồng', desc: 'Cut-stack collation (1 mặt). Xén cọc rồi úp đúng thứ tự trang. Không dùng với 2 mặt.' },
+                                { value: 'ratio_stack', title: 'Chia tỷ lệ + xếp chồng', desc: 'Nhiều mẫu cùng cỡ, SL khác nhau; mọi tờ giống hệt (1 mặt / 1 tờ mẫu). Không dùng với 2 mặt.' }
                             ]}
                         />
                     </div>
                 )}
                 {/* Duplex */}
                 {activeTool !== 'sticker_imposer' && (
-                    <div className="flex items-center gap-3">
-                        <label className="text-[11px] font-bold text-slate-600 tracking-wide shrink-0 w-[65px]">SỐ MẶT</label>
-                        <select
-                            value={s.duplexFlow} onChange={(e) => s.setDuplexFlow(e.target.value as 'normal' | 'double')}
-                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
-                        >
-                            <option value="normal">1 Mặt</option>
-                            <option value="double">2 Mặt</option>
-                        </select>
+                    <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-3">
+                            <label className="text-[11px] font-bold text-slate-600 tracking-wide shrink-0 w-[65px]">SỐ MẶT</label>
+                            <select
+                                value={s.duplexFlow} onChange={(e) => s.setDuplexFlow(e.target.value as 'normal' | 'double')}
+                                className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                            >
+                                <option value="normal">1 Mặt</option>
+                                <option value="double">2 Mặt</option>
+                            </select>
+                        </div>
                     </div>
                 )}
             </div>

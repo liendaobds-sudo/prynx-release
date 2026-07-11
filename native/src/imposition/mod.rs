@@ -3,3 +3,4 @@ pub mod assembler;
 pub mod sticker_layouts;
 pub mod shape_solvers;
 pub mod orchestrator;
+pub mod ratio_stack_solver;

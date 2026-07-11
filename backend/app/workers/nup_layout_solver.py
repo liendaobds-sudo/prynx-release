@@ -29,10 +29,15 @@ try:
         from pdfcompare_native import solve_manual as _rust_solve_manual
     except ImportError:
         _rust_solve_manual = None
+    try:
+        from pdfcompare_native import solve_ratio_stack as _rust_solve_ratio_stack
+    except ImportError:
+        _rust_solve_ratio_stack = None
     _RUST_AVAILABLE = True
 except ImportError:
     _RUST_AVAILABLE = False
     _rust_solve_manual = None
+    _rust_solve_ratio_stack = None
 
 # Dùng Rust trừ khi bị ép sang Python (để test parity).
 _USE_RUST = _RUST_AVAILABLE and not _FORCE_PY
@@ -285,3 +290,18 @@ def solve_manual(item_w, item_h, gap_x, gap_y, cols, rows):
         return _rust_solve_manual(item_w, item_h, gap_x, gap_y, int(cols), int(rows))
     _allow_python_path()
     return _py_solve_manual(item_w, item_h, gap_x, gap_y, cols, rows)
+
+
+def compute_ratio_stack_alloc(capacity: int, qtys: List[int]) -> Dict[str, Any]:
+    """Phân bổ `capacity` ô của 1 tờ cho các mẫu theo TỶ LỆ số lượng (N-Up cắt xén,
+    Phase 1 cùng cỡ). Trả {cellsPerPage: list[int], nSheets: int, unplaced: list[int]}.
+
+    Rust là BẮT BUỘC (fail-fast) — nhất quán chính sách solver imposition. Không có
+    fallback Python vì đây là tính năng mới, không cần parity ngược.
+    """
+    if _rust_solve_ratio_stack is None:
+        raise RuntimeError(
+            "pdfcompare_native.solve_ratio_stack không khả dụng — build lại module Rust "
+            "(cd native && cargo build --release, copy .dll → .pyd trong venv)."
+        )
+    return _rust_solve_ratio_stack(int(capacity), [int(q) for q in qtys])

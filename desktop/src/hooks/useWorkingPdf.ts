@@ -8,8 +8,12 @@
  *
  * Dùng chung qua hook này thay vì truyền prop qua nhiều tầng. Nếu không có sửa
  * đổi nào, trả lại file gốc (bảo toàn .path để backend nạp nhanh qua native path).
+ *
+ * Identity order = [1,2,...,N] với N = số trang FILE GỐC (disk), KHÔNG phải
+ * viewerNumPages sau xóa. Xóa đuôi 10→4 còn [1,2,3,4] vẫn phải bake (bug preview
+ * ratio_stack/N-Up vẫn thấy 10 loại).
  */
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import { getFileArrayBuffer } from '../lib/utils';
@@ -19,10 +23,35 @@ export function useWorkingPdf(): () => Promise<File | null> {
     const viewerPageOrder = useWorkspaceStore(state => state.viewerPageOrder);
     const viewerPageRotations = useWorkspaceStore(state => state.viewerPageRotations);
 
+    const sourcePageCountCacheRef = useRef<{ key: string; count: number } | null>(null);
+    useEffect(() => {
+        sourcePageCountCacheRef.current = null;
+    }, [file]);
+
     return useCallback(async (): Promise<File | null> => {
         if (!file) return null;
 
-        const hasOrderEdits = !!(viewerPageOrder && viewerPageOrder.length > 0);
+        const resolveSourcePageCount = async (f: File): Promise<number> => {
+            const key = `${(f as any).path || f.name}|${f.size}|${(f as any).lastModified || 0}`;
+            if (sourcePageCountCacheRef.current?.key === key) {
+                return sourcePageCountCacheRef.current.count;
+            }
+            const ab = await getFileArrayBuffer(f);
+            const doc = await PDFDocument.load(ab, { ignoreEncryption: true });
+            const count = doc.getPageCount();
+            sourcePageCountCacheRef.current = { key, count };
+            return count;
+        };
+
+        let hasOrderEdits = false;
+        if (viewerPageOrder && viewerPageOrder.length > 0) {
+            const srcCount = await resolveSourcePageCount(file);
+            const isIdentity =
+                viewerPageOrder.length === srcCount
+                && viewerPageOrder.every((p: number, i: number) => p === i + 1);
+            hasOrderEdits = !isIdentity;
+        }
+
         // viewerPageRotations là number[] THEO VỊ TRÍ (luôn đầy độ dài, kể cả toàn 0 khi
         // chưa xoay gì) → KHÔNG dùng .length/keys để đoán "có sửa" (sẽ bật oan → bake thừa).
         // Kiểm CÓ GÓC KHÁC 0. Dữ liệu cũ Record<pageNum,deg> thì Object.values cũng chạy.

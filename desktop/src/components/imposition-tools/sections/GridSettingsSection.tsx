@@ -243,12 +243,22 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 <select
                   value={s.layoutType}
                   onChange={(e) => {
-                    s.setLayoutType(e.target.value as any);
+                    const v = e.target.value as typeof s.layoutType;
+                    s.setLayoutType(v);
+                    // cut_stacks / ratio_stack không hỗ trợ 2 mặt → tự về 1 mặt (tránh
+                    // user bấm Bình rồi mới lỗi, hoặc process_chunk mirror phá collate).
+                    if (
+                      (v === "cut_stacks" || v === "ratio_stack") &&
+                      duplexFlow === "double"
+                    ) {
+                      setDuplexFlow("normal");
+                    }
                   }}
                   className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                 >
                   <option value="sequential">Xếp lần lượt</option>
                   <option value="cut_stacks">Xếp chồng (Úp xấp đúng thứ tự)</option>
+                  <option value="ratio_stack">Chia tỷ lệ + xếp chồng (nhiều mẫu, SL riêng)</option>
                 </select>
                 <div
                   className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
@@ -262,7 +272,13 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                               Xếp lần lượt
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
-                              Dàn trang thứ tự 1, 2, 3, 4 liên tiếp nhau trên tờ in.
+                              <strong>1 mặt:</strong> trang 1, 2, 3… liên tiếp theo SL (hết loại này mới sang loại kia).
+                              Trống = lấp đầy 1 tờ.
+                            </p>
+                            <p className="text-slate-600 dark:text-zinc-300">
+                              <strong>2 mặt:</strong> mỗi sản phẩm = cặp trang (1–2, 3–4…).
+                              Cùng một ô: mặt trước tờ chẵn, mặt sau tờ lẻ (lật gương).
+                              File nên có số trang <strong>chẵn</strong>.
                             </p>
                           </div>
                           <div className="space-y-1">
@@ -270,10 +286,20 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                               Xếp chồng (Úp xấp đúng thứ tự)
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
-                              In xong tất cả tờ → cắt rời → úp các xấp lên nhau là tự đúng thứ tự trang 1, 2, 3... (collation). Dùng để in sách, ruột sổ bằng máy in nhanh.
+                              Bố trí cut-stack: cùng một vị trí ô trên mọi tờ tạo một cọc.
+                              Xén rời cọc rồi úp chồng → đúng thứ tự trang 1, 2, 3… (collation sách/sổ).
                             </p>
                             <p className="text-amber-600 dark:text-amber-400 text-[12px]">
                               Khác với <strong>“Chia cọc xén”</strong> ở Thiết lập mở rộng: cái đó chia tờ thành nhiều cọc + chừa rãnh dao để máy xén chém ít nhát, KHÔNG liên quan thứ tự trang.
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <h4 className="font-bold text-slate-800 dark:text-white">
+                              Chia tỷ lệ + xếp chồng
+                            </h4>
+                            <p className="text-slate-600 dark:text-zinc-300">
+                              Nhiều mẫu cùng cỡ, số lượng khác nhau: mỗi mẫu chiếm số ô theo tỷ lệ số lượng.
+                              Mọi tờ giống hệt nhau → xén cả chồng ra mỗi loại một xấp sạch. File xuất 1 tờ mẫu; in đúng số tờ hiển thị.
                             </p>
                           </div>
                         </div>
@@ -536,20 +562,37 @@ export default function GridSettingsSection(props: GridSettingsProps) {
 
           {/* Duplex Flow — ẩn cho Bế tem (1 mặt) & CNC (CNC dùng checkbox "In 2 mặt" riêng) */}
           {activeTool !== "sticker_imposer" && activeTool !== "cnc_imposer" && (
-            <div className="flex items-center gap-3">
-              <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-                SỐ MẶT
-              </label>
-              <div className="flex flex-1 items-center gap-3 min-w-0">
-                <select
-                  value={duplexFlow}
-                  onChange={(e) => setDuplexFlow(e.target.value)}
-                  className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
-                >
-                  <option value="normal">1 Mặt</option>
-                  <option value="double">2 Mặt</option>
-                </select>
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-3">
+                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
+                  SỐ MẶT
+                </label>
+                <div className="flex flex-1 items-center gap-3 min-w-0">
+                  <select
+                    value={duplexFlow}
+                    onChange={(e) => setDuplexFlow(e.target.value)}
+                    className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                  >
+                    <option value="normal">1 Mặt</option>
+                    <option value="double">2 Mặt</option>
+                  </select>
+                </div>
               </div>
+              {duplexFlow === "double" && sourceTotalPages > 0 && sourceTotalPages % 2 !== 0 && (
+                <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
+                  ⚠️ Bình 2 mặt bắt buộc số trang <strong>chẵn</strong>. File hiện{" "}
+                  {sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.
+                </div>
+              )}
+              {duplexFlow === "double" &&
+                taskMode === "nup" &&
+                (s.layoutType === "cut_stacks" || s.layoutType === "ratio_stack") && (
+                <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
+                  ⚠️ «{s.layoutType === "cut_stacks" ? "Xếp chồng" : "Chia tỷ lệ + xếp chồng"}»{" "}
+                  chưa hỗ trợ 2 mặt — chọn <strong>1 Mặt</strong>, hoặc đổi sang{" "}
+                  <strong>Xếp lần lượt</strong>.
+                </div>
+              )}
             </div>
           )}
 

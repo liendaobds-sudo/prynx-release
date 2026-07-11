@@ -5,6 +5,10 @@ import type { NupSettings } from "../types";
 export interface GridPreviewProps {
   taskMode: string;
   isDieCut?: boolean;
+  /** Cách thức ráp N-Up: sequential | cut_stacks | ratio_stack | repeat */
+  layoutType?: NupSettings["layoutType"] | string;
+  /** 1 mặt / 2 mặt — sequential 2 mặt ghép cặp trang trước/sau */
+  duplexFlow?: string;
   gridStrategy: NupSettings["gridStrategy"];
   splitGap?: number;
   columns: number;
@@ -45,7 +49,6 @@ export interface GridPreviewProps {
   clusterTileH?: number;
   tileGapX?: number;
   tileGapY?: number;
-  duplexFlow?: string;
   // ── Bình Bế Rớt (CNC) ghép nhiều mẫu ──
   imposerMode?: string;
   cncTwoSided?: boolean;
@@ -73,6 +76,8 @@ interface BackendLayoutCell {
   isRotated: boolean;
   isRotated180: boolean;
   blockId: number;
+  /** ratio_stack / mixed: chỉ số trang nguồn gán cho ô này */
+  pageIdx?: number;
 }
 
 interface BackendLayoutResult {
@@ -89,6 +94,84 @@ interface BackendLayoutResult {
   absPlacement?: boolean;
   // Đường bế THẬT của tem (phân số 0..1, Y-up) — dùng vẽ búa/tạ đúng outline (Bug A).
   diePolygon?: number[][] | null;
+  /** ratio_stack / CNC: số tờ logic cần in (PDF có thể chỉ 1 trang mẫu). */
+  sheetsNeeded?: number;
+  /** ratio_stack: chỉ số mẫu có SL>0 nhưng không đủ chỗ trên tờ. */
+  ratioUnplaced?: number[];
+}
+
+// =====================================================================
+// ratio_stack client fallback — largest-remainder (khớp imposition_core)
+// Dùng khi backend vẫn trả nhiều pageIdx hơn số trang viewer (file gốc
+// chưa bake / total_pages bị bỏ qua).
+// =====================================================================
+function ratioStackCellsPerPage(capacity: number, qtys: number[]): number[] {
+  const n = qtys.length;
+  const cells = new Array(n).fill(0);
+  if (capacity <= 0 || n <= 0) return cells;
+  const totalQ = qtys.reduce((a, q) => a + Math.max(0, q), 0);
+  if (totalQ === 0) {
+    const base = Math.floor(capacity / n);
+    const rem = capacity % n;
+    for (let i = 0; i < n; i++) cells[i] = base + (i < rem ? 1 : 0);
+    return cells;
+  }
+  const remainders: { frac: number; i: number; q: number }[] = [];
+  let assigned = 0;
+  for (let i = 0; i < n; i++) {
+    const q = Math.max(0, qtys[i]);
+    if (q === 0) continue;
+    const ideal = (capacity * q) / totalQ;
+    const fl = Math.floor(ideal);
+    cells[i] = fl;
+    assigned += fl;
+    remainders.push({ frac: ideal - fl, i, q });
+  }
+  let leftover = Math.max(0, capacity - assigned);
+  remainders.sort((a, b) => b.frac - a.frac || b.q - a.q);
+  let ri = 0;
+  while (leftover > 0 && remainders.length > 0) {
+    cells[remainders[ri % remainders.length].i] += 1;
+    leftover -= 1;
+    ri += 1;
+  }
+  // Min 1 ô cho mẫu SL>0 (mượn từ donor lớn nhất).
+  for (;;) {
+    const need = cells.findIndex((_, i) => qtys[i] > 0 && cells[i] === 0);
+    if (need < 0) break;
+    let donor = -1;
+    let donorCells = 1;
+    for (let j = 0; j < n; j++) {
+      if (cells[j] > donorCells) {
+        donorCells = cells[j];
+        donor = j;
+      }
+    }
+    if (donor < 0 || cells[donor] <= 1) break;
+    cells[donor] -= 1;
+    cells[need] += 1;
+  }
+  return cells;
+}
+
+function reassignRatioStackPageIdx<T extends { pageIdx?: number }>(
+  cells: T[],
+  nTypes: number,
+  qtysByPage: Record<number, number> | undefined,
+  globalQty: number,
+): T[] {
+  if (nTypes <= 0 || cells.length === 0) return cells;
+  const qtys = Array.from({ length: nTypes }, (_, i) => {
+    const v = qtysByPage?.[i];
+    if (v !== undefined && v !== null) return Math.max(0, Number(v) || 0);
+    return Math.max(0, Number(globalQty) || 0);
+  });
+  const cpp = ratioStackCellsPerPage(cells.length, qtys);
+  const slot: number[] = [];
+  cpp.forEach((cnt, mi) => {
+    for (let k = 0; k < cnt; k++) slot.push(mi);
+  });
+  return cells.map((c, j) => ({ ...c, pageIdx: slot[j] ?? 0 }));
 }
 
 // =====================================================================
@@ -618,6 +701,8 @@ export default function GridPreview(props: GridPreviewProps) {
   const {
     taskMode,
     isDieCut,
+    layoutType,
+    duplexFlow = "normal",
     gridStrategy,
     splitGap = 0,
     columns,
@@ -657,7 +742,6 @@ export default function GridPreview(props: GridPreviewProps) {
     clusterTileH,
     tileGapX,
     tileGapY,
-    duplexFlow,
     imposerMode,
     cncTwoSided,
     cncFlipEdge,
@@ -685,41 +769,102 @@ export default function GridPreview(props: GridPreviewProps) {
   }, [onMixedPlacedByPage]);
 
   const previewPathCacheRef = useRef<{ key: string; path?: string; fileId?: string } | null>(null);
+  /** Max order length đã thấy — giảm length = đã xóa trang → ưu tiên bake. */
+  const maxOrderLenSeenRef = useRef(0);
 
   const resolvePreviewSource = async (): Promise<{ path?: string; file_id?: string }> => {
     const cacheKey = previewSourceKey ?? "default";
+    // Đổi pageOrder (xóa/sắp trang) → bỏ cache path/fileId cũ.
+    if (previewPathCacheRef.current && previewPathCacheRef.current.key !== cacheKey) {
+      previewPathCacheRef.current = null;
+    } else if (previewPathCacheRef.current?.key === cacheKey) {
+      if (previewPathCacheRef.current.path) return { path: previewPathCacheRef.current.path };
+      if (previewPathCacheRef.current.fileId) return { file_id: previewPathCacheRef.current.fileId };
+    }
+
+    // Có xóa/sắp trang? → cố bake; nếu bake/ghi temp lỗi vẫn fallback path
+    // (đúng số loại nhờ total_pages + reassign client).
+    let mustBake = false;
+    try {
+      const parsed = JSON.parse(cacheKey);
+      const order: number[] | undefined = parsed?.o;
+      if (Array.isArray(order) && order.length > 0) {
+        if (order.length > maxOrderLenSeenRef.current) {
+          maxOrderLenSeenRef.current = order.length;
+        }
+        if (!order.every((p, i) => p === i + 1)) mustBake = true;
+        if (maxOrderLenSeenRef.current > 0 && order.length < maxOrderLenSeenRef.current) {
+          mustBake = true;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    if (
+      typeof sourceTotalPages === "number" &&
+      sourceTotalPages > 0 &&
+      maxOrderLenSeenRef.current > sourceTotalPages
+    ) {
+      mustBake = true;
+    }
+
     if (getWorkingFile) {
       try {
         const wf = await getWorkingFile();
         const nativePath = (wf as any)?.path as string | undefined;
-        if (nativePath) {
+
+        // Chưa sửa trang + có path đĩa → dùng luôn (nhanh).
+        if (nativePath && !mustBake) {
+          previewPathCacheRef.current = { key: cacheKey, path: nativePath };
           return { path: nativePath };
         }
-        if (previewPathCacheRef.current?.key === cacheKey && previewPathCacheRef.current.path) {
-          return { path: previewPathCacheRef.current.path };
+
+        // Ưu tiên materialize bytes (file bake không có .path, hoặc cần bản đã xóa trang).
+        let bytes: Uint8Array | null = null;
+        try {
+          const ab = await wf.arrayBuffer();
+          if (ab && ab.byteLength > 64) bytes = new Uint8Array(ab);
+        } catch (e) {
+          console.warn("[GridPreview] arrayBuffer failed:", e);
         }
-        const bytes = new Uint8Array(await wf.arrayBuffer());
-        if ((window as any).__TAURI_INTERNALS__) {
-          const { tempDir, join } = await import("@tauri-apps/api/path");
-          const { writeFile } = await import("@tauri-apps/plugin-fs");
-          const tDir = await tempDir();
-          const tempPath = await join(tDir, `prynx_preview_${Date.now()}.pdf`);
-          await writeFile(tempPath, bytes);
-          previewPathCacheRef.current = { key: cacheKey, path: tempPath };
-          return { path: tempPath };
+
+        if (bytes) {
+          if ((window as any).__TAURI_INTERNALS__) {
+            try {
+              const { tempDir, join } = await import("@tauri-apps/api/path");
+              const { writeFile } = await import("@tauri-apps/plugin-fs");
+              const tDir = await tempDir();
+              const tempPath = await join(tDir, `prynx_preview_${Date.now()}.pdf`);
+              await writeFile(tempPath, bytes);
+              previewPathCacheRef.current = { key: cacheKey, path: tempPath };
+              return { path: tempPath };
+            } catch (e) {
+              console.warn("[GridPreview] write temp failed:", e);
+            }
+          } else {
+            try {
+              const up = await uploadPDF(new File([bytes], "preview.pdf", { type: "application/pdf" }));
+              if (up?.id) {
+                previewPathCacheRef.current = { key: cacheKey, fileId: up.id };
+                return { file_id: up.id };
+              }
+            } catch (e) {
+              console.warn("[GridPreview] upload preview failed:", e);
+            }
+          }
         }
-        if (previewPathCacheRef.current?.key === cacheKey && previewPathCacheRef.current.fileId) {
-          return { file_id: previewPathCacheRef.current.fileId };
-        }
-        const up = await uploadPDF(wf);
-        if (up?.id) {
-          previewPathCacheRef.current = { key: cacheKey, fileId: up.id };
-          return { file_id: up.id };
+
+        // Fallback: path gốc (có thể còn 10 trang) — total_pages + client reassign lo số loại.
+        if (nativePath) {
+          previewPathCacheRef.current = { key: cacheKey, path: nativePath };
+          return { path: nativePath };
         }
       } catch (e) {
-        console.warn("resolvePreviewSource failed, fallback fileId/path:", e);
+        console.warn("[GridPreview] resolvePreviewSource getWorkingFile failed:", e);
       }
     }
+
+    // Fallback cuối: prop từ dashboard.
     if (filePath) return { path: filePath };
     if (fileId) return { file_id: fileId };
     return {};
@@ -749,6 +894,9 @@ export default function GridPreview(props: GridPreviewProps) {
   const MM_TO_PT = 2.83465;
   const PT_TO_MM = 1 / MM_TO_PT;
 
+  // Generation id — chặn response cũ (10 trang) ghi đè response mới (4 trang).
+  const previewGenRef = useRef(0);
+
   useEffect(() => {
     // Clear any pending debounce
     if (debounceRef.current) {
@@ -761,7 +909,21 @@ export default function GridPreview(props: GridPreviewProps) {
       return;
     }
 
+    // Xóa ngay preview cũ khi đổi số trang / order — tránh vẫn vẽ 10 loại trong lúc debounce.
+    setLayoutResult(null);
     setIsLoading(true);
+    const gen = ++previewGenRef.current;
+
+    // Số trang viewer (SSOT cho ratio_stack) — luôn gửi, không để backend đoán từ file gốc.
+    const viewerPageCount = (() => {
+      try {
+        const p = JSON.parse(previewSourceKey ?? "{}");
+        if (Array.isArray(p?.o) && p.o.length > 0) return p.o.length;
+      } catch { /* ignore */ }
+      return typeof sourceTotalPages === "number" && sourceTotalPages > 0
+        ? sourceTotalPages
+        : 0;
+    })();
 
     debounceRef.current = setTimeout(async () => {
       // Abort previous in-flight request
@@ -793,7 +955,17 @@ export default function GridPreview(props: GridPreviewProps) {
           margin_left: marginLeft * MM_TO_PT,
           margin_bottom: marginBottom * MM_TO_PT,
           margin_top: marginTop * MM_TO_PT,
-          ...(previewSrc.path ? { path: previewSrc.path } : (previewSrc.file_id ? { file_id: previewSrc.file_id } : {})),
+          margin_right: marginRight * MM_TO_PT,
+          align: align || "center",
+          ...(previewSrc.path
+            ? { path: previewSrc.path }
+            : previewSrc.file_id
+              ? { file_id: previewSrc.file_id }
+              : filePath
+                ? { path: filePath }
+                : fileId
+                  ? { file_id: fileId }
+                  : {}),
           page_idx: pageIdx,
           bleed: bleed * MM_TO_PT, // bleed in points to match nup_engine
           cut_type: cutType || "default",
@@ -808,9 +980,23 @@ export default function GridPreview(props: GridPreviewProps) {
           tile_gap_y: tileGapY ? tileGapY * MM_TO_PT : undefined,
           task_mode: taskMode,
           is_die_cut: isDieCut,
+          // N-Up cách thức ráp — backend nhánh ratio_stack / sequential cần field này.
+          layout_type: layoutType || undefined,
+          duplex_flow: duplexFlow || "normal",
+          // BẮT BUỘC: số trang viewer sau xóa thumbnail (vd 4) — không tin doc.page_count.
+          total_pages: viewerPageCount > 0 ? viewerPageCount : 0,
           split_gap: splitGap * MM_TO_PT,
           target_quantity: Number(targetQuantity) || 0,
-          target_quantities_by_page: targetQuantitiesByPage || {},
+          // Chỉ gửi SL cho các trang còn lại (0..viewerPageCount-1), bỏ key trang đã xóa.
+          target_quantities_by_page: Object.fromEntries(
+            Object.entries(targetQuantitiesByPage || {})
+              .filter(([k]) => {
+                if (viewerPageCount <= 0) return true;
+                const idx = Number(k);
+                return !Number.isNaN(idx) && idx >= 0 && idx < viewerPageCount;
+              })
+              .map(([k, v]) => [String(k), Number(v) || 0]),
+          ),
           // Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup): backend tự bật khi đúng 1 trang
           // có khuôn + còn lại không. Gửi hình/nội-suy nhận diện theo trang để detect.
           detected_shapes_by_page: shapesByPage || {},
@@ -837,20 +1023,22 @@ export default function GridPreview(props: GridPreviewProps) {
             "Response:",
             errText,
           );
-          setLayoutResult(null);
-          setIsLoading(false);
-          if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
+          if (gen === previewGenRef.current) {
+            setLayoutResult(null);
+            setIsLoading(false);
+            if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
+          }
           return;
         }
 
         const data: BackendLayoutResult = await res.json();
 
-        // Only apply if this request wasn't aborted
-        if (!controller.signal.aborted) {
+        // Only apply if this request wasn't aborted AND still latest generation
+        if (!controller.signal.aborted && gen === previewGenRef.current) {
           if (data.success) {
             // Convert response from points → mm for SVG rendering
             // Frontend does NOT modify rotation flags — backend is single source of truth
-            const cells = data.cells.map((cell) => ({
+            let cells = data.cells.map((cell) => ({
               ...cell,
               x: cell.x * PT_TO_MM,
               y: cell.y * PT_TO_MM,
@@ -867,6 +1055,29 @@ export default function GridPreview(props: GridPreviewProps) {
                 : undefined,
             }));
 
+            // Failsafe ratio_stack: backend vẫn trả > viewerPageCount loại
+            // (file 10 trang + total_pages bị bỏ) → gán lại pageIdx theo viewer.
+            if (
+              layoutType === "ratio_stack" &&
+              viewerPageCount > 0 &&
+              (data.isMixedPreview || cells.some((c) => c.pageIdx != null))
+            ) {
+              const uniq = new Set(
+                cells.map((c) => (c as any).pageIdx).filter((p) => typeof p === "number"),
+              );
+              if (uniq.size > viewerPageCount) {
+                console.warn(
+                  `[GridPreview] ratio_stack backend ${uniq.size} loại > viewer ${viewerPageCount} — gán lại client`,
+                );
+                cells = reassignRatioStackPageIdx(
+                  cells,
+                  viewerPageCount,
+                  targetQuantitiesByPage,
+                  Number(targetQuantity) || 0,
+                );
+              }
+            }
+
             const convertedResult: BackendLayoutResult = {
               ...data,
               overallWidth: data.overallWidth * PT_TO_MM,
@@ -878,11 +1089,32 @@ export default function GridPreview(props: GridPreviewProps) {
               onCapacityChangeRef.current(convertedResult.totalItems);
             if (onMixedPlacedByPageRef.current) {
               const pbp = (data as any).placedByPage;
-              if (pbp && typeof pbp === "object") {
+              if (
+                layoutType === "ratio_stack" &&
+                viewerPageCount > 0 &&
+                cells.some((c) => c.pageIdx != null)
+              ) {
+                // Đếm từ cells đã (có thể) gán lại.
+                const m: Record<number, number> = {};
+                for (const cell of cells) {
+                  const pi = (cell as any).pageIdx;
+                  if (typeof pi === "number" && pi < viewerPageCount) {
+                    m[pi] = (m[pi] || 0) + 1;
+                  }
+                }
+                onMixedPlacedByPageRef.current(m);
+              } else if (pbp && typeof pbp === "object") {
                 const m: Record<number, number> = {};
                 Object.keys(pbp).forEach((k) => {
                   m[Number(k)] = pbp[k];
                 });
+                onMixedPlacedByPageRef.current(m);
+              } else if (data.isMixedPreview && Array.isArray(data.cells)) {
+                const m: Record<number, number> = {};
+                for (const cell of data.cells) {
+                  const pi = (cell as any).pageIdx;
+                  if (typeof pi === "number") m[pi] = (m[pi] || 0) + 1;
+                }
                 onMixedPlacedByPageRef.current(m);
               } else {
                 onMixedPlacedByPageRef.current({});
@@ -895,7 +1127,7 @@ export default function GridPreview(props: GridPreviewProps) {
           setIsLoading(false);
         }
       } catch (err: any) {
-        if (err.name !== "AbortError") {
+        if (err.name !== "AbortError" && gen === previewGenRef.current) {
           console.error("Preview layout fetch error:", err);
           setLayoutResult(null);
           setIsLoading(false);
@@ -925,10 +1157,17 @@ export default function GridPreview(props: GridPreviewProps) {
     pontConfig,
     pontType,
     taskMode,
+    layoutType,
+    duplexFlow,
+    isDieCut,
+    sourceTotalPages,
     sheetWidth,
     sheetHeight,
     marginLeft,
     marginBottom,
+    marginRight,
+    marginTop,
+    align,
     fileId,
     filePath,
     pageIdx,
@@ -959,16 +1198,37 @@ export default function GridPreview(props: GridPreviewProps) {
 
   // ── N-Up "Dàn nhiều mẫu": tổng con cần = SL mỗi loại × số mẫu (SL trống → lấp đầy 1 tờ).
   //    "Cần in" theo tổng con; căn giữa CHỈ khi đúng 1 tờ (nhiều tờ giữ vị trí full layout).
+  //    ratio_stack: backend trả sheetsNeeded (mọi mẫu chung 1 số tờ) — ưu tiên dùng.
   const _cap = layoutResult?.totalItems ?? 0;
-  const _isNupFill = !isDieCut && taskMode === "nup" && _cap > 0;
+  const _isRatioStack = layoutType === "ratio_stack";
+  const _isNupFill = !isDieCut && taskMode === "nup" && _cap > 0 && !_isRatioStack;
   const _qtyPerType = Number(targetQuantity) || 0;
   const _nupTotal = _isNupFill
-    ? (_qtyPerType > 0 ? _qtyPerType * Math.max(1, sourceTotalPages || 1) : _cap)
+    ? (() => {
+        // Ưu tiên tổng SL từng trang nếu có; không thì qty global × số mẫu.
+        const byPage = targetQuantitiesByPage || {};
+        const pageKeys = Object.keys(byPage);
+        if (pageKeys.length > 0) {
+          let sum = 0;
+          let any = false;
+          for (const k of pageKeys) {
+            const v = Number((byPage as any)[k]);
+            if (v > 0) {
+              sum += v;
+              any = true;
+            }
+          }
+          if (any) return sum;
+        }
+        return _qtyPerType > 0 ? _qtyPerType * Math.max(1, sourceTotalPages || 1) : _cap;
+      })()
     : null;
 
   let totalSheets = 1;
   if (layoutResult && layoutResult.totalItems > 0) {
-    if (_nupTotal != null) {
+    if (_isRatioStack && layoutResult.sheetsNeeded != null && layoutResult.sheetsNeeded > 0) {
+      totalSheets = layoutResult.sheetsNeeded;
+    } else if (_nupTotal != null) {
       totalSheets = Math.max(1, Math.ceil(_nupTotal / layoutResult.totalItems));
     } else {
       const qty = Number(targetQuantity) || 0;
@@ -1150,7 +1410,7 @@ export default function GridPreview(props: GridPreviewProps) {
       {layoutResult ? (
         <div className="flex flex-col items-center gap-2 w-full">
           {/* Stats */}
-          <div className="flex items-center gap-4 text-[13px] font-medium">
+          <div className="flex items-center gap-4 text-[13px] font-medium flex-wrap justify-center">
             <div className="text-slate-600 dark:text-zinc-400">
               Sức chứa:{" "}
               <span className="font-bold text-slate-800 dark:text-zinc-200">
@@ -1160,7 +1420,9 @@ export default function GridPreview(props: GridPreviewProps) {
               </span>{" "}
               tem/tờ
             </div>
-            {Number(targetQuantity) > 0 && (
+            {(Number(targetQuantity) > 0 ||
+              _isRatioStack ||
+              Object.values(targetQuantitiesByPage || {}).some((v) => Number(v) > 0)) && (
               <>
                 <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700"></div>
                 <div className="text-slate-600 dark:text-zinc-400">
@@ -1169,10 +1431,24 @@ export default function GridPreview(props: GridPreviewProps) {
                     {totalSheets}
                   </span>{" "}
                   tờ
+                  {_isRatioStack && (
+                    <span className="text-[11px] text-slate-400 ml-1">
+                      (1 tờ mẫu × {totalSheets} bản)
+                    </span>
+                  )}
                 </div>
               </>
             )}
           </div>
+          {_isRatioStack &&
+            Array.isArray(layoutResult.ratioUnplaced) &&
+            layoutResult.ratioUnplaced.length > 0 && (
+              <div className="text-[12px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded px-2 py-1 w-full text-center">
+                Không đủ chỗ trên tờ cho trang{" "}
+                {layoutResult.ratioUnplaced.map((i) => i + 1).join(", ")} — nên
+                tách sang bài in khác.
+              </div>
+            )}
 
           {/* SVG Wireframe */}
           {layoutResult.cells.length > 0 && (

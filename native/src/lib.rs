@@ -57,6 +57,9 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Orchestrator
     m.add_function(wrap_pyfunction!(imposition::orchestrator::generate_layout_candidates, m)?)?;
 
+    // N-Up cắt xén chia tỷ lệ (ratio_stack) — Phase 1
+    m.add_function(wrap_pyfunction!(imposition::ratio_stack_solver::solve_ratio_stack, m)?)?;
+
     // Image Compare
     image_compare::register_module(m)?;
     nfp_solver::register_module(m)?;

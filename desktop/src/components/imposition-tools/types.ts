@@ -106,7 +106,7 @@ export interface BookletSettings {
 }
 
 export interface NupSettings {
-    layoutType: 'repeat' | 'sequential' | 'cut_stacks';
+    layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack';
     formsize: string;
     customSheetWidth: number;
     customSheetHeight: number;

@@ -2,8 +2,8 @@ import type { ImposerSlice } from '../sliceType';
 import type { NupSettings } from '../../types';
 
 export interface NupSlice {
-    layoutType: 'repeat' | 'sequential' | 'cut_stacks';
-    setLayoutType: (v: 'repeat' | 'sequential' | 'cut_stacks') => void;
+    layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack';
+    setLayoutType: (v: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack') => void;
     columns: number;
     setColumns: (v: number) => void;
     rows: number;

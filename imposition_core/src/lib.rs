@@ -25,6 +25,7 @@ pub mod sticker;
 pub mod shape;
 pub mod orchestrator;
 pub mod nfp;
+pub mod ratio_stack;
 
 pub use model::*;
 

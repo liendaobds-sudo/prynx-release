@@ -588,6 +588,27 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 blankPlacement: s.blankPlacement,
             });
         } else {
+            // 2 mặt N-Up cắt xén — chặn sớm các case không hợp lệ (tránh user bấm Bình rồi lỗi backend).
+            if (
+                s.duplexFlow === 'double'
+                && activeTool !== 'sticker_imposer'
+                && activeTool !== 'cnc_imposer'
+            ) {
+                const _lt = s.taskMode === 'step_repeat' ? 'repeat' : s.layoutType;
+                if (_lt === 'cut_stacks' || _lt === 'ratio_stack') {
+                    toast.error(
+                        `Chế độ «${_lt === 'cut_stacks' ? 'Xếp chồng' : 'Chia tỷ lệ + xếp chồng'}» chưa hỗ trợ 2 mặt. Chọn 1 Mặt, hoặc dùng Xếp lần lượt / Bình trang.`,
+                    );
+                    return;
+                }
+                if (sourceTotalPages > 0 && sourceTotalPages % 2 !== 0) {
+                    toast.error(
+                        `Bình 2 mặt bắt buộc số trang chẵn. File hiện ${sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.`,
+                    );
+                    return;
+                }
+            }
+
             let finalFormsize = s.formsize;
             if (s.formsize.startsWith('custom_') || s.formsize === 'custom') finalFormsize = 'custom';
             
@@ -974,8 +995,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 return (
                             <GridPreview
                                 taskMode={s.taskMode} gridStrategy={s.gridStrategy} columns={s.columns} rows={s.rows}
-                                duplexFlow={activeTool === 'sticker_imposer' ? 'single' : s.duplexFlow}
                                 isDieCut={stickerLike}
+                                layoutType={s.taskMode === 'step_repeat' ? 'repeat' : s.layoutType}
+                                duplexFlow={activeTool === 'sticker_imposer' ? 'normal' : s.duplexFlow}
                                 splitGap={splitGap}
                                 gapX={s.gapX} gapY={s.gapY}
                                 groupingStrategy={s.groupingStrategy}
@@ -991,7 +1013,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 itemW={(() => { const dim = detectedDimensionsByPage[safePageIdx]; const w = dim?.w ?? s.sourcePageDim?.w; return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 : 90; })()}
                                 itemH={(() => { const dim = detectedDimensionsByPage[safePageIdx]; const h = dim?.h ?? s.sourcePageDim?.h; return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 : 55; })()}
                                 targetQuantity={s.targetQuantity}
-                                targetQuantitiesByPage={stickerLike ? s.targetQuantitiesByPage : undefined}
+                                // N-Up cắt xén (ratio_stack/sequential) cũng cần SL từng trang cho preview ≡ output.
+                                targetQuantitiesByPage={s.targetQuantitiesByPage}
                                 sourceTotalPages={sourceTotalPages}
                                 imposerMode={activeTool === 'cnc_imposer' ? 'cnc' : undefined}
                                 cncTwoSided={activeTool === 'cnc_imposer' && s.duplexFlow === 'double'}

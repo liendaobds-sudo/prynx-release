@@ -1411,6 +1411,47 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         forceReset();
     };
 
+    // Số trang file GỐC (disk) — khác viewerNumPages sau khi xóa trang.
+    // Cache theo identity file; xóa đuôi 10→4 còn order [1,2,3,4] vẫn phải bake.
+    const sourcePageCountCacheRef = useRef<{ key: string; count: number } | null>(null);
+    // Max độ dài order đã thấy trên file hiện tại — xóa trang (kể cả đuôi) luôn < max.
+    const maxViewerOrderLenRef = useRef(0);
+    useEffect(() => {
+        sourcePageCountCacheRef.current = null;
+        maxViewerOrderLenRef.current = 0;
+    }, [file]);
+    useEffect(() => {
+        const len = viewerPageOrder?.length ?? 0;
+        if (len > maxViewerOrderLenRef.current) maxViewerOrderLenRef.current = len;
+    }, [viewerPageOrder]);
+
+    const resolveSourcePageCount = async (f: File): Promise<number> => {
+        const key = `${(f as any).path || f.name}|${f.size}|${(f as any).lastModified || 0}`;
+        if (sourcePageCountCacheRef.current?.key === key) {
+            return sourcePageCountCacheRef.current.count;
+        }
+        const ab = await getFileArrayBuffer(f);
+        const doc = await PDFDocument.load(ab, { ignoreEncryption: true });
+        const count = doc.getPageCount();
+        sourcePageCountCacheRef.current = { key, count };
+        return count;
+    };
+
+    /** order === [1..N] với N = số trang FILE GỐC (không phải viewerNumPages sau xóa). */
+    const isViewerOrderIdentityForSource = async (
+        f: File,
+        order: number[] | null | undefined,
+    ): Promise<boolean> => {
+        if (!order || order.length === 0) return true;
+        // Đã từng thấy nhiều trang hơn → đã xóa (kể cả xóa đuôi còn [1..k]).
+        if (maxViewerOrderLenRef.current > 0 && order.length < maxViewerOrderLenRef.current) {
+            return false;
+        }
+        const srcCount = await resolveSourcePageCount(f);
+        if (order.length !== srcCount) return false;
+        return order.every((p, i) => p === i + 1);
+    };
+
     const applyAcrobatEdits = async () => {
         if (!file || !viewerPageOrder) return null;
         const rotations = viewerPageRotations || {};
@@ -1447,9 +1488,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     /** Lấy bytes PDF đã áp dụng visual edits (xóa trang, xoay, sắp xếp lại) */
     const getWorkingBytes = async (): Promise<Uint8Array> => {
-        if (viewerPageOrder) {
+        if (viewerPageOrder && file && !(await isViewerOrderIdentityForSource(file, viewerPageOrder))) {
             const bakedBlob = await applyAcrobatEdits();
             if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
+        } else if (viewerPageOrder && file) {
+            // Identity order nhưng có thể còn xoay — bake nếu có góc ≠ 0.
+            const hasRot = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
+            if (hasRot) {
+                const bakedBlob = await applyAcrobatEdits();
+                if (bakedBlob) return new Uint8Array(await bakedBlob.arrayBuffer());
+            }
         }
         // getFileArrayBuffer đọc từ path (convertFileSrc) nếu file đã strip bytes sau undo,
         // fallback file.arrayBuffer() khi có bytes — tránh trả 0 byte (audit RAM #2).
@@ -1464,22 +1512,34 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
      * (bảo toàn .path để backend nạp nhanh qua native path).
      */
     const getWorkingFile = async (): Promise<File> => {
-        // viewerPageOrder LUÔN có độ dài > 0 khi mở file (thứ tự gốc [1..n]) → dùng
-        // .length > 0 sẽ bật cờ sửa oan MỖI LẦN gọi → bake lại file 15MB (~2.7s) dù
-        // KHÔNG hề sắp lại trang (đo 2026-07-11: đây là nút thắt preview chậm). Chỉ
-        // coi là "có sắp lại" khi thứ tự KHÁC identity [1,2,3,...] — cùng logic
-        // _hasReorder của handleSaveFile bên dưới.
-        const _isIdentityOrder = !!viewerPageOrder && !!viewerNumPages
-            && viewerPageOrder.length === viewerNumPages
-            && viewerPageOrder.every((p: number, i: number) => p === i + 1);
-        const hasOrderEdits = !!viewerPageOrder && !_isIdentityOrder;
+        // BUG cũ: so identity với viewerNumPages (luôn = order.length sau xóa) →
+        // xóa đuôi 10→4 còn [1,2,3,4] bị coi "không sửa" → preview vẫn mở file 10 trang.
+        // Đúng: identity chỉ khi order === [1..N] với N = số trang FILE GỐC trên disk.
+        // viewerDirty: undo-stack sau xóa/sắp trang — failsafe khi đếm page gốc lỗi.
+        let hasOrderEdits = !!viewerDirty;
+        if (!hasOrderEdits && viewerPageOrder && file) {
+            try {
+                hasOrderEdits = !(await isViewerOrderIdentityForSource(file, viewerPageOrder));
+            } catch (e) {
+                // Không đọc được page count gốc → bake an toàn (tránh trả file 10 trang).
+                console.warn('[getWorkingFile] source page count failed, force bake:', e);
+                hasOrderEdits = true;
+            }
+        }
         // viewerPageRotations giờ là number[] THEO VỊ TRÍ, flattenRotations luôn tạo mảng
         // đầy đủ độ dài KỂ CẢ khi mọi góc = 0 → phải kiểm "có góc ≠ 0", không phải "có key"
         // (nếu dùng .length sẽ bật cờ sửa oan → bake file thừa).
         const hasRotEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
         if ((hasOrderEdits || hasRotEdits) && file) {
-            const baked = await applyAcrobatEdits();
-            if (baked) return new File([baked], file.name, { type: 'application/pdf' });
+            try {
+                const baked = await applyAcrobatEdits();
+                if (baked) {
+                    // KHÔNG gắn .path gốc — resolvePreviewSource ghi temp từ bytes bake.
+                    return new File([baked], file.name, { type: 'application/pdf' });
+                }
+            } catch (e) {
+                console.warn('[getWorkingFile] bake failed, return original file:', e);
+            }
         }
         return file!;
     };
@@ -1521,12 +1581,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             || isEphemeralBackendPath((curFile as any)?.path);
 
         // Chỉ bake khi có sửa đổi THẬT SỰ (xoay khác 0, hoặc thứ tự trang khác gốc /
-        // có xoá/chèn). Nếu chỉ "lưu lại" không sửa gì → bỏ qua bake (lưu tức thì).
+        // có xoá/chèn). So với FILE GỐC page count — không dùng viewerNumPages (sau xóa
+        // luôn = order.length → xóa đuôi bị bỏ sót). Nếu chỉ "lưu lại" không sửa → bỏ bake.
         const _hasRot = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
-        const _isIdentityOrder = !!viewerPageOrder && !!viewerNumPages
-            && viewerPageOrder.length === viewerNumPages
-            && viewerPageOrder.every((p: number, i: number) => p === i + 1);
-        const _hasReorder = !!viewerPageOrder && !_isIdentityOrder;
+        const _hasReorder = !!viewerPageOrder && curFile
+            ? !(await isViewerOrderIdentityForSource(curFile, viewerPageOrder))
+            : false;
 
         // Nếu có visual edits (xoay/sắp trang) → bake vào blob để lưu.
         // KHÔNG commitWorkingFile (tránh đổi tên "Edited_" + race set isSaved=false).
