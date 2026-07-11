@@ -4,6 +4,7 @@ import { RichSelect, SectionLabel, Divider, inputCls } from "../SharedUI";
 import { useImposerSettingsStore } from "../useImposerSettingsStore";
 import { useShallow } from "zustand/react/shallow";
 import { useAppSettingsStore } from "../../../stores/appSettingsStore";
+import { parsePastedQuantities } from "../../../lib/parsePastedQuantities";
 
 export interface GridSettingsProps {
   taskMode: string;
@@ -138,39 +139,20 @@ export default function GridSettingsSection(props: GridSettingsProps) {
   const fillQuantitiesFromPaste = () => {
     const twoSided = duplexFlow === "double" && activeTool !== "sticker_imposer";
     const productCount = twoSided ? Math.ceil(sourceTotalPages / 2) : sourceTotalPages;
-    // Mỗi dòng = 1 số; strip dấu phẩy ngăn nghìn + khoảng trắng; bỏ dòng trống.
-    const qtys = pasteText
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map((line) => {
-        const n = parseInt(line.replace(/[,\s]/g, ""), 10);
-        return isNaN(n) ? null : Math.max(0, n);
-      });
 
-    if (qtys.length === 0) {
-      setPasteStatus({ ok: false, msg: "Chưa có dữ liệu — dán cột số lượng từ Excel vào ô trên." });
-      return;
-    }
-    if (qtys.some((q) => q === null)) {
-      setPasteStatus({ ok: false, msg: "Có dòng không phải số — kiểm tra lại cột đã dán (chỉ dán cột số lượng)." });
-      return;
-    }
-    if (qtys.length !== productCount) {
-      setPasteStatus({
-        ok: false,
-        msg: `Dán ${qtys.length} dòng nhưng có ${productCount} trang — kiểm tra lại rồi dán lại.`,
-      });
+    const parsed = parsePastedQuantities(pasteText, productCount);
+    if (!parsed.ok) {
+      setPasteStatus({ ok: false, msg: parsed.error });
       return;
     }
 
     const obj: Record<number, number> = {};
-    qtys.forEach((q, productIdx) => {
+    parsed.quantities.forEach((q, productIdx) => {
       const idx = twoSided ? productIdx * 2 : productIdx;
-      obj[idx] = q as number;
+      obj[idx] = q;
     });
     setTargetQuantitiesByPage(obj);
-    setPasteStatus({ ok: true, msg: `Đã điền ${qtys.length} trang.` });
+    setPasteStatus({ ok: true, msg: `Đã điền ${parsed.quantities.length} trang.` });
   };
 
   React.useEffect(() => {
