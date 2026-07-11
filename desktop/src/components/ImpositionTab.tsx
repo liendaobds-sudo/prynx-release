@@ -329,6 +329,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
     }, [initialFile, initialBatchOutput]);
 
+    // Áp lockedMode của công cụ vào taskMode, NHƯNG giữ nguyên khi người dùng đang ở
+    // sub-mode cùng nhóm. 'nup' và 'step_repeat' (Dàn nhiều mẫu / Bình trang S&R) là
+    // 2 chế độ con cùng nhóm công cụ N-Up: nếu đang ở 1 trong 2 thì KHÔNG ép về 'nup'
+    // (nếu ép sẽ xoá lựa chọn 'step_repeat' người dùng đã lưu mỗi lần mở lại tab/app).
+    // Cùng guard đã có ở ImposerDashboard menu — gom về đây để mọi đường ghi dùng chung.
+    const applyLockedMode = (mode: string | undefined | null) => {
+        if (!mode) return;
+        const cur = imposerStoreRef.current!.getState().taskMode;
+        if (mode === 'nup' && (cur === 'nup' || cur === 'step_repeat')) return;
+        imposerStoreRef.current!.getState().setTaskMode(mode as any);
+    };
+
     // Handle initial tool feature from Home screen
     useEffect(() => {
         if (initialFeature) {
@@ -337,9 +349,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 setPhase('workspace');
             }
             setActiveDashboardTool(initialFeature);
-            if (lockedMode) {
-                imposerStoreRef.current!.getState().setTaskMode(lockedMode);
-            }
+            applyLockedMode(lockedMode);
             if (!file) {
                 const names: Record<string, string> = {
                     'bgremover': 'Tách Nền AI',
@@ -1454,7 +1464,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
      * (bảo toàn .path để backend nạp nhanh qua native path).
      */
     const getWorkingFile = async (): Promise<File> => {
-        const hasOrderEdits = !!(viewerPageOrder && viewerPageOrder.length > 0);
+        // viewerPageOrder LUÔN có độ dài > 0 khi mở file (thứ tự gốc [1..n]) → dùng
+        // .length > 0 sẽ bật cờ sửa oan MỖI LẦN gọi → bake lại file 15MB (~2.7s) dù
+        // KHÔNG hề sắp lại trang (đo 2026-07-11: đây là nút thắt preview chậm). Chỉ
+        // coi là "có sắp lại" khi thứ tự KHÁC identity [1,2,3,...] — cùng logic
+        // _hasReorder của handleSaveFile bên dưới.
+        const _isIdentityOrder = !!viewerPageOrder && !!viewerNumPages
+            && viewerPageOrder.length === viewerNumPages
+            && viewerPageOrder.every((p: number, i: number) => p === i + 1);
+        const hasOrderEdits = !!viewerPageOrder && !_isIdentityOrder;
         // viewerPageRotations giờ là number[] THEO VỊ TRÍ, flattenRotations luôn tạo mảng
         // đầy đủ độ dài KỂ CẢ khi mọi góc = 0 → phải kiểm "có góc ≠ 0", không phải "có key"
         // (nếu dùng .length sẽ bật cờ sửa oan → bake file thừa).
@@ -2268,7 +2286,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         } else {
                                                                                             setActiveDashboardTool(featureId);
                                                                                             if (tool.defaultPayload?.lockedMode) {
-                                                                                                imposerStoreRef.current!.getState().setTaskMode(tool.defaultPayload.lockedMode);
+                                                                                                applyLockedMode(tool.defaultPayload.lockedMode);
                                                                                             }
                                                                                             if (sidebarWidth < 280) setSidebarWidth(390);
                                                                                             setIsSidebarOpen(true);
@@ -2321,7 +2339,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         } else {
                                                                                             setActiveDashboardTool(featureId);
                                                                                             if (tool.defaultPayload?.lockedMode) {
-                                                                                                imposerStoreRef.current!.getState().setTaskMode(tool.defaultPayload.lockedMode);
+                                                                                                applyLockedMode(tool.defaultPayload.lockedMode);
                                                                                             }
                                                                                             if (sidebarWidth < 280) setSidebarWidth(390);
                                                                                             setIsSidebarOpen(true);
