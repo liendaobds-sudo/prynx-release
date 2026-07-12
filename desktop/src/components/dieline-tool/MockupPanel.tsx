@@ -32,6 +32,7 @@ import {
 } from '../../store/useMockupStore';
 import CollapsibleSection from './CollapsibleSection';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 /** Bốn preset camera hợp lệ (Yêu cầu 7.1). */
 const CAMERA_PRESETS: { id: CameraPreset; label: string }[] = [
@@ -93,7 +94,7 @@ export default function MockupPanel() {
                     title={t('dieline.mockup:kieu_gia_cong_be_mat_pbr_kraft_can_mo')}
                 >
                     {finishes.map((f) => (
-                        <option key={f.id} value={f.id}>{f.label}</option>
+                        <option key={f.id} value={f.id}>{tv(f.label)}</option>
                     ))}
                 </select>
 
@@ -106,7 +107,7 @@ export default function MockupPanel() {
                             onClick={() => setEdgeColor(c.id)}
                             title={t('dieline.mockup:mau_mep_giay_lo_o_tuong_canh')}
                         >
-                            {c.label}
+                            {tv(c.label)}
                         </button>
                     ))}
                 </div>
@@ -122,7 +123,7 @@ export default function MockupPanel() {
                     title={t('dieline.mockup:moi_truong_chieu_sang_ibl_hdri')}
                 >
                     {HDRI_PRESETS.map((p) => (
-                        <option key={p.id} value={p.id}>{p.label}</option>
+                        <option key={p.id} value={p.id}>{tv(p.label)}</option>
                     ))}
                 </select>
 
@@ -133,7 +134,7 @@ export default function MockupPanel() {
                     onChange={(e) => setBackgroundPreset(e.target.value)}
                 >
                     {BACKGROUND_PRESETS.map((p) => (
-                        <option key={p.id} value={p.id}>{p.label}</option>
+                        <option key={p.id} value={p.id}>{tv(p.label)}</option>
                     ))}
                 </select>
 
@@ -145,7 +146,7 @@ export default function MockupPanel() {
                             className={`dt-glue-side-btn ${cameraPreset === c.id ? 'active' : ''}`}
                             onClick={() => setCameraPreset(c.id)}
                         >
-                            {c.label}
+                            {tv(c.label)}
                         </button>
                     ))}
                 </div>

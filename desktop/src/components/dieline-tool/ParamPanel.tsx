@@ -8,6 +8,7 @@ import { useBoxStore } from '../../store/useBoxStore';
 import { BoxParams } from '../../lib/dieline/types';
 import MockupArtworkPanel from './MockupArtworkPanel';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 
 /** Only numeric params for sliders */
@@ -167,7 +168,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             { key: 'G' as const, label: t('dieline.param:mi_dan_g'), min: 0, max: 30, step: 1 },
                         ].map((cfg) => (
                             <div key={cfg.key} className="dt-param-cell">
-                                <label className="dt-param-cell-label">{cfg.label}</label>
+                                <label className="dt-param-cell-label">{tv(cfg.label)}</label>
                                 <input
                                     type="number"
                                     defaultValue={params[cfg.key] as number}
@@ -325,7 +326,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 const displayVal = isAuto ? (cfg.key === 'envFH' ? autoFH : autoSF) : rawVal;
                                 return (
                                     <div key={cfg.key} className="dt-param-cell">
-                                        <label className="dt-param-cell-label">{cfg.label}</label>
+                                        <label className="dt-param-cell-label">{tv(cfg.label)}</label>
                                         <input
                                             type="number"
                                             defaultValue={displayVal}
@@ -426,7 +427,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                     { key: 'envWindowY' as const, label: t('dieline.param:cach_duoi_y'), min: 5, max: 300 },
                                 ].map((cfg) => (
                                     <div key={cfg.key} className="dt-param-cell">
-                                        <label className="dt-param-cell-label">{cfg.label}</label>
+                                        <label className="dt-param-cell-label">{tv(cfg.label)}</label>
                                         <input
                                             type="number"
                                             defaultValue={params[cfg.key] as number}
@@ -475,7 +476,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             { key: 'sleeveGlue' as const, label: t('dieline.param:mi_dan_vo'), min: 5, max: 30, step: 1 },
                         ].map((cfg) => (
                             <div key={cfg.key} className="dt-param-cell">
-                                <label className="dt-param-cell-label">{cfg.label}</label>
+                                <label className="dt-param-cell-label">{tv(cfg.label)}</label>
                                 <input
                                     type="number"
                                     defaultValue={params[cfg.key] as number}
@@ -514,7 +515,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     <div className="dt-param-grid">
                         {MAIN_PARAMS.map((cfg) => (
                             <div key={cfg.key} className="dt-param-cell">
-                                <label className="dt-param-cell-label">{cfg.label}</label>
+                                <label className="dt-param-cell-label">{tv(cfg.label)}</label>
                                 <input
                                     type="number"
                                     defaultValue={params[cfg.key] as number}
@@ -565,7 +566,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         <div className="dt-param-grid" style={{ marginTop: '0.5rem' }}>
                             {designNums.map((gp) => (
                                 <div key={gp.key} className="dt-param-cell">
-                                    <label className="dt-param-cell-label">{gp.label}</label>
+                                    <label className="dt-param-cell-label">{tv(gp.label)}</label>
                                     <input
                                         type="number"
                                         defaultValue={params[gp.key] === 0 ? gp.defVal : params[gp.key] as number}
@@ -657,7 +658,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 : ADVANCED_PARAMS
                         ).map((cfg) => (
                             <div key={cfg.key} className="dt-param-cell">
-                                <label className="dt-param-cell-label">{cfg.label}</label>
+                                <label className="dt-param-cell-label">{tv(cfg.label)}</label>
                                 <input
                                     type="number"
                                     defaultValue={params[cfg.key] as number}
@@ -772,7 +773,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 ];
                                 return lockParams.map((lp) => (
                                     <div key={lp.key} className="dt-param-cell">
-                                        <label className="dt-param-cell-label">{lp.label}</label>
+                                        <label className="dt-param-cell-label">{tv(lp.label)}</label>
                                         <input
                                             type="number"
                                             defaultValue={params[lp.key] as number}
@@ -812,7 +813,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 ];
                                 return gableParams.map((gp) => (
                                     <div key={gp.key} className="dt-param-cell">
-                                        <label className="dt-param-cell-label">{gp.label}</label>
+                                        <label className="dt-param-cell-label">{tv(gp.label)}</label>
                                         <input
                                             type="number"
                                             defaultValue={params[gp.key] === 0 ? gp.defVal : params[gp.key] as number}

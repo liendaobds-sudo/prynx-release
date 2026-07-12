@@ -32,6 +32,7 @@ import {
     type PlacementMode,
 } from '../../lib/mockup3d';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 /** Định dạng ảnh chấp nhận cho mọi input tải ảnh (GĐ-4). */
 const ACCEPT_IMAGE = 'image/png, image/jpeg, image/webp';
@@ -424,14 +425,14 @@ export default function MockupArtworkPanel() {
                             key={m.id}
                             className={`dt-glue-side-btn ${artwork.mode === m.id ? 'active' : ''}`}
                             onClick={() => setArtworkMode(m.id)}
-                            title={m.hint}
+                            title={tv(m.hint)}
                         >
-                            {m.label}
+                            {tv(m.label)}
                         </button>
                     ))}
                 </div>
                 <p className="dt-param-desc">
-                    {placementModes.find((m) => m.id === artwork.mode)?.hint}
+                    {tv(placementModes.find((m) => m.id === artwork.mode)?.hint)}
                 </p>
             </CollapsibleSection>
 
