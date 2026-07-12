@@ -15,6 +15,7 @@ export const MM_TO_POINTS = 2.83465;
 
 import { ImpositionMode } from './imposerEngine/SettingsTypes';
 import type { ProcessingSettings, BaseSettings, GuillotineSettings, DieCutSettings, OffsetSettings } from './imposerEngine/SettingsTypes';
+import { tv } from '../i18n';
 export type { ProcessingSettings, BaseSettings, GuillotineSettings, DieCutSettings, OffsetSettings };
 export { ImpositionMode };
 
@@ -320,7 +321,7 @@ export const imposePdf = async (
             return await response.arrayBuffer();
         } catch (e: any) {
             if (e.name === 'AbortError') {
-                throw new Error('Hệ thống giải mã không phản hồi sau 30 giây (Vui lòng thử lại sau).');
+                throw new Error(tv('Hệ thống giải mã không phản hồi sau 30 giây (Vui lòng thử lại sau).'));
             }
             throw new Error(`Xử lý tập tin thất bại: ${e.message}`);
         }
@@ -550,7 +551,7 @@ export const imposePdfViaBackend = async (
     }
 
     if (pageCount === 0) {
-        throw new Error('File PDF không có trang nào.');
+        throw new Error(tv('File PDF không có trang nào.'));
     }
 
     // ──── STEP 2: Chạy Planner modules (thuần toán, 0 byte PDF trong RAM) ────

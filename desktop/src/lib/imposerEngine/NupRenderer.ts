@@ -3,6 +3,7 @@ import { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, rectangle, clip
 import { MM_TO_POINTS, ProcessingSettings } from '../pdfImposer';
 import { solveOptimalNupLayout } from './NupGridSolver';
 import { drawMarksNup } from './MarksRenderer';
+import { tv } from '../../i18n';
 
 
 export const renderNup = async (
@@ -103,7 +104,7 @@ export const renderNup = async (
     );
 
     if (layout.cells.length < 1) {
-        throw new Error(`Khổ giấy hoặc Cụm chia quá nhỏ. Số lượng tính toán <= 0. Vui lòng kiểm tra lại kích thước giấy, lề, hoặc Khoảng cách Cụm.`);
+        throw new Error(tv(`Khổ giấy hoặc Cụm chia quá nhỏ. Số lượng tính toán <= 0. Vui lòng kiểm tra lại kích thước giấy, lề, hoặc Khoảng cách Cụm.`));
     }
 
     const { overallWidth: activeGridW_Full, overallHeight: activeGridH_Full, blocks } = layout;

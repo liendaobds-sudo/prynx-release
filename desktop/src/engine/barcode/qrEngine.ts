@@ -5,6 +5,7 @@ import QRCodeStyling, {
   type CornerDotType,
   type GradientType,
 } from 'qr-code-styling';
+import { tv } from '../../i18n';
 
 // ─── Re-exports for backward compat ─────────────────────
 export type { DotType, CornerSquareType, CornerDotType, GradientType };
@@ -364,7 +365,7 @@ export async function getQRBlob(
 
   // qr-code-styling getRawData returns Blob | Buffer
   const raw = await qr.getRawData(format);
-  if (!raw) throw new Error('Không thể tạo QR code');
+  if (!raw) throw new Error(tv('Không thể tạo QR code'));
 
   if (raw instanceof Blob) return raw;
   // Node Buffer fallback

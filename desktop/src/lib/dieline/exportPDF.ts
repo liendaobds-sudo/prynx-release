@@ -19,6 +19,7 @@ import {
     OpenContourWarning,
     ContourValidationResult,
 } from './contourValidator';
+import { tv } from '../../i18n';
 
 /**
  * Kết quả quyết định của cổng xuất (Export_Gate) — Requirement 3.2, 3.6.
@@ -311,7 +312,7 @@ export async function downloadPDF(
         return;
     }
 
-    const toastId = toast.loading('Đang tạo PDF...');
+    const toastId = toast.loading(tv('Đang tạo PDF...'));
 
     try {
         const { boundingBox } = model;
@@ -351,7 +352,7 @@ export async function downloadPDF(
 
         const name = filename || `${model.standardCode}_${model.params.L}x${model.params.W}x${model.params.D}.pdf`;
         doc.save(name);
-        toast.success('Đã xuất file PDF', { id: toastId });
+        toast.success(tv('Đã xuất file PDF'), { id: toastId });
     } catch (err) {
         console.error('PDF Export Error:', err);
         toast.error('Lỗi khi tạo PDF: ' + (err instanceof Error ? err.message : 'Unknown error'), { id: toastId });

@@ -35,6 +35,7 @@ const getArg = (name) => {
 };
 const DRY = argv.includes('--dry');
 const WRITE = argv.includes('--write');
+const TV_SINKS = argv.includes('--tv-sinks'); // chỉ bọc tv() cho new Error/throw/toast.*
 const nsFilter = getArg('--ns');
 const fileFilter = getArg('--file');
 
@@ -102,18 +103,46 @@ function findComponentBody(node) {
 }
 
 function alreadyT(node) {
-  // node nằm trong lời gọi t(...) rồi?
+  // node nằm trong lời gọi t(...) HOẶC tv(...) rồi?
   let cur = node.parent;
   while (cur) {
     if (
       ts.isCallExpression(cur) &&
       ts.isIdentifier(cur.expression) &&
-      cur.expression.text === 't'
+      (cur.expression.text === 't' || cur.expression.text === 'tv')
     )
       return true;
     cur = cur.parent;
   }
   return false;
+}
+
+// ─── tv-sinks mode ──────────────────────────────────────────────────────────
+// Chỉ bọc tv(...) khi literal là ĐỐI SỐ TRỰC TIẾP của sink 100% user-facing:
+//   new Error('…')  |  throw new Error('…')  |  toast.error/success/info/warning('…')
+// KHÔNG đụng: label trong object-const (đóng băng lúc load — phải tv() ở render site),
+// giá trị so sánh/return làm logic. tv() chạy được ở function scope vì KHÔNG phải hook.
+function isDisplaySink(node) {
+  const p = node.parent;
+  if (!p || !ts.isCallExpression(p)) return false;
+  // literal phải là 1 trong các argument trực tiếp
+  if (!p.arguments.some((a) => a === node)) return false;
+  const ex = p.expression;
+  // new Error('…') — NewExpression cũng có .arguments; xử lý riêng bên dưới
+  if (ts.isIdentifier(ex) && ex.text === 'Error') return true;
+  if (ts.isPropertyAccessExpression(ex)) {
+    const obj = ex.expression;
+    const m = ex.name.text;
+    if (ts.isIdentifier(obj) && obj.text === 'toast' &&
+        /^(error|success|info|warning|loading)$/.test(m)) return true;
+  }
+  return false;
+}
+function isNewErrorArg(node) {
+  const p = node.parent;
+  if (!p || !ts.isNewExpression(p)) return false;
+  if (!p.arguments || !p.arguments.some((a) => a === node)) return false;
+  return ts.isIdentifier(p.expression) && p.expression.text === 'Error';
 }
 
 // Vị trí mà đổi ngôn ngữ sẽ PHÁ LOGIC (tsc KHÔNG bắt được vì cả 2 vế đều string):
@@ -165,6 +194,7 @@ function processFile(rel) {
   const edits = []; // {start, end, text}
   const bodiesToInject = new Set(); // Block nodes
   const skipped = []; // chuỗi khớp nhưng không đặt được hook
+  let usedTv = false; // tv-sinks: đã bọc tv(...) ít nhất 1 lần?
 
   function visit(node) {
     // String literal
@@ -172,6 +202,19 @@ function processFile(rel) {
       const val = node.text;
       if (byVi.has(val) && !alreadyT(node)) {
         const keyRef = byVi.get(val);
+        // ── tv-sinks mode: CHỈ bọc tv(...) khi literal là arg của sink user-facing.
+        //    Dùng nguyên text literal gốc → tv('…') (KHÔNG re-escape chuỗi VN).
+        if (TV_SINKS) {
+          if (isDisplaySink(node) || isNewErrorArg(node)) {
+            edits.push({
+              start: node.getStart(sf),
+              end: node.getEnd(),
+              text: `tv(${node.getText(sf)})`,
+            });
+            usedTv = true;
+          }
+          return;
+        }
         if (isUnsafeContext(node)) {
           skipped.push({ vi: val, reason: 'unsafe-context' });
           return;
@@ -218,21 +261,35 @@ function processFile(rel) {
 
   if (edits.length === 0) return { rel, changed: false, skipped };
 
-  // Chèn hook vào mỗi component body (nếu chưa có)
-  for (const body of bodiesToInject) {
-    const bodyText = body.getText(sf);
-    if (/\buseTranslation\s*\(/.test(bodyText) || /const\s*\{\s*t\s*[},]/.test(bodyText)) continue;
-    const insertPos = body.getStart(sf) + 1; // ngay sau '{'
-    edits.push({ start: insertPos, end: insertPos, text: `\n  const { t } = useTranslation();` });
-  }
+  if (TV_SINKS) {
+    // Chèn import tv nếu chưa có — đường dẫn tương đối từ file tới src/i18n.
+    if (usedTv && !/from ['"][^'"]*\/i18n['"]/.test(src) && !/\btv\b.*from/.test(src)) {
+      const absDir = path.dirname(path.join(ROOT, rel));
+      let relImp = path.relative(absDir, path.join(ROOT, 'desktop', 'src', 'i18n')).replace(/\\/g, '/');
+      if (!relImp.startsWith('.')) relImp = './' + relImp;
+      const imports = sf.statements.filter((s) => ts.isImportDeclaration(s));
+      const anchor = imports.length ? imports[imports.length - 1] : null;
+      const pos = anchor ? anchor.getEnd() : 0;
+      const stmt = `\nimport { tv } from '${relImp}';`;
+      edits.push({ start: pos, end: pos, text: anchor ? stmt : stmt.trimStart() + '\n' });
+    }
+  } else {
+    // Chèn hook vào mỗi component body (nếu chưa có)
+    for (const body of bodiesToInject) {
+      const bodyText = body.getText(sf);
+      if (/\buseTranslation\s*\(/.test(bodyText) || /const\s*\{\s*t\s*[},]/.test(bodyText)) continue;
+      const insertPos = body.getStart(sf) + 1; // ngay sau '{'
+      edits.push({ start: insertPos, end: insertPos, text: `\n  const { t } = useTranslation();` });
+    }
 
-  // Chèn import nếu chưa có
-  if (!/from ['"]react-i18next['"]/.test(src)) {
-    const imports = sf.statements.filter((s) => ts.isImportDeclaration(s));
-    const anchor = imports.length ? imports[imports.length - 1] : null;
-    const pos = anchor ? anchor.getEnd() : 0;
-    const stmt = `\nimport { useTranslation } from 'react-i18next';`;
-    edits.push({ start: pos, end: pos, text: anchor ? stmt : stmt.trimStart() + '\n' });
+    // Chèn import nếu chưa có
+    if (!/from ['"]react-i18next['"]/.test(src)) {
+      const imports = sf.statements.filter((s) => ts.isImportDeclaration(s));
+      const anchor = imports.length ? imports[imports.length - 1] : null;
+      const pos = anchor ? anchor.getEnd() : 0;
+      const stmt = `\nimport { useTranslation } from 'react-i18next';`;
+      edits.push({ start: pos, end: pos, text: anchor ? stmt : stmt.trimStart() + '\n' });
+    }
   }
 
   // Apply từ CUỐI về ĐẦU

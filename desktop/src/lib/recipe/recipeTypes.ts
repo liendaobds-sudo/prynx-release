@@ -1,3 +1,4 @@
+import { tv } from '../../i18n';
 /**
  * recipeTypes — Mô hình dữ liệu cho tính năng Recipe (Ghi & Phát lại quy trình).
  *
@@ -152,7 +153,7 @@ export function deserializeRecipe(json: string): Recipe {
         throw new Error('Recipe JSON không hợp lệ: ' + ((e as Error)?.message || e));
     }
     if (!isRecipe(parsed)) {
-        throw new Error('Dữ liệu không đúng cấu trúc Recipe.');
+        throw new Error(tv('Dữ liệu không đúng cấu trúc Recipe.'));
     }
     return parsed;
 }

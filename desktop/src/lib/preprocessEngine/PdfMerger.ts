@@ -1,6 +1,7 @@
 import { PDFDocument } from 'pdf-lib';
 import { MergeSettings } from '../../components/preprocess-tools/MergeTool';
 import { normalizeImageToPngBytes } from '../imageNormalizer';
+import { tv } from '../../i18n';
 
 export async function mergePdf(
     mainPdfBytes: Uint8Array | null,
@@ -10,7 +11,7 @@ export async function mergePdf(
 
     if (settings.mode === 'merge_files') {
         if (!mainPdfBytes && (!settings.filesToMerge || settings.filesToMerge.length === 0)) {
-            throw new Error("Vui lòng chọn ít nhất 1 file để ghép.");
+            throw new Error(tv("Vui lòng chọn ít nhất 1 file để ghép."));
         }
 
         if (mainPdfBytes) {
@@ -42,7 +43,7 @@ export async function mergePdf(
         }
     } else if (settings.mode === 'interleave') {
         if (!settings.oddFile || !settings.evenFile) {
-            throw new Error("Vui lòng chọn đủ 2 file nguồn.");
+            throw new Error(tv("Vui lòng chọn đủ 2 file nguồn."));
         }
         const oddBytes = await settings.oddFile.arrayBuffer();
         const evenBytes = await settings.evenFile.arrayBuffer();
@@ -74,10 +75,10 @@ export async function mergePdf(
         }
     } else if (settings.mode === 'insert_pages') {
         if (!mainPdfBytes) {
-            throw new Error("Không tìm thấy file PDF chính đang mở.");
+            throw new Error(tv("Không tìm thấy file PDF chính đang mở."));
         }
         if (!settings.insertFile) {
-            throw new Error("Vui lòng chọn file chứa trang cần chèn.");
+            throw new Error(tv("Vui lòng chọn file chứa trang cần chèn."));
         }
 
         const mainPdf = await PDFDocument.load(mainPdfBytes);
@@ -109,7 +110,7 @@ export async function mergePdf(
         }
 
         if (insertIndices.length === 0) {
-            throw new Error("Dải trang chèn không hợp lệ hoặc file rỗng.");
+            throw new Error(tv("Dải trang chèn không hợp lệ hoặc file rỗng."));
         }
 
         const copiedMain = await newPdf.copyPages(mainPdf, mainPdf.getPageIndices());

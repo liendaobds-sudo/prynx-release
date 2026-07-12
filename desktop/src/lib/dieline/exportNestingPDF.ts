@@ -12,6 +12,7 @@ import { NestingResult, NestingConfig } from './nestingTypes';
 import { jsPDF } from 'jspdf';
 import 'svg2pdf.js';
 import { toast } from 'sonner';
+import { tv } from '../../i18n';
 
 /** Tolerance cho so sánh điểm (0.01mm) */
 function ptEq(a: Point2D, b: Point2D): boolean {
@@ -233,7 +234,7 @@ export async function downloadNestingPDF(
     config: NestingConfig,
     filename?: string,
 ): Promise<void> {
-    const toastId = toast.loading('Đang tạo PDF xếp khuôn...');
+    const toastId = toast.loading(tv('Đang tạo PDF xếp khuôn...'));
 
     try {
         const { actualSheet } = result;

@@ -7,6 +7,7 @@ import { ImageBatchPreview } from './imageBatch/ImageBatchPreview';
 import { toast } from '../ui/Toast';
 import { RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 interface Props {
@@ -38,7 +39,7 @@ async function processBatch(tabId: string) {
             } else if (item.path && item.path !== 'browser-file') {
                 formData.append('file_path', item.path);
             } else {
-                throw new Error('Không tìm thấy file gốc');
+                throw new Error(tv('Không tìm thấy file gốc'));
             }
             formData.append('engine', options.aiEngine || 'general');
             formData.append('edge_shift', options.edgeShift.toString());
@@ -69,7 +70,7 @@ async function processBatch(tabId: string) {
 
 async function handleSave(tabId: string) {
     const { saved, ok } = await saveBatch(tabId, useBgRemoverStore, 'nobg');
-    if (!ok) toast.error('Lỗi khi lưu file.');
+    if (!ok) toast.error(tv('Lỗi khi lưu file.'));
     else if (saved > 0) toast.success(`✅ Đã lưu thành công ${saved} ảnh!`);
 }
 

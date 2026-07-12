@@ -13,6 +13,7 @@ import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd } fr
 import { resizePages } from '../lib/preprocessEngine/PageResizer';
 import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
 import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
+import { tv } from '../i18n';
 
 // ─── Shared context type for all handlers ───
 export interface ProcessContext {
@@ -370,7 +371,7 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
                     onSpawnTab(new File([new Blob([outputBytesEven as any], { type: 'application/pdf' })], `TrangChan_${file.name}`, { type: 'application/pdf' }));
                     ctx.setReportMsg('');
                 } else {
-                    throw new Error("Môi trường hiện tại không hỗ trợ mở nhiều Tab.");
+                    throw new Error(tv("Môi trường hiện tại không hỗ trợ mở nhiều Tab."));
                 }
                 return;
             }
@@ -381,7 +382,7 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
                 else mapping = shuffleEvenOdd(totalPages, settings.specialAction);
             } else {
                 const rules = parseRule(settings.rule);
-                if (rules.length === 0) throw new Error("Quy tắc trống hoặc không hợp lệ.");
+                if (rules.length === 0) throw new Error(tv("Quy tắc trống hoặc không hợp lệ."));
                 mapping = applyRule(rules, totalPages, Math.max(1, settings.groupSize), settings.mode);
             }
             const outputBytes = await executeShuffle(srcPdf, mapping);
@@ -529,7 +530,7 @@ export async function runSplit(ctx: ProcessContext, settings: any) {
             setReportMsg('Đã tách file thành công.');
         } else {
             const results = await splitPdf(inputBytes, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList }, file.name.replace('.pdf', ''));
-            if (results.length === 0) throw new Error("Thao tác tách không tạo ra file nào.");
+            if (results.length === 0) throw new Error(tv("Thao tác tách không tạo ra file nào."));
             if (settings.spawnNewTab && onSpawnTab) {
                 for (const r of results) { onSpawnTab(new File([new Blob([r.bytes as any])], r.filename, { type: 'application/pdf' })); }
                 setReportMsg(`Đã tạo ${results.length} tab mới.`);

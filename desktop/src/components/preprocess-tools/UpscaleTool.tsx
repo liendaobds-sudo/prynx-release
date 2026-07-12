@@ -7,6 +7,7 @@ import { ImageBatchPreview } from './imageBatch/ImageBatchPreview';
 import { toast } from '../ui/Toast';
 import { RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 interface Props {
@@ -24,7 +25,7 @@ async function downscaleBlob(sourceBlob: Blob, factor: number): Promise<Blob> {
     const url = URL.createObjectURL(sourceBlob);
     try {
         img.src = url;
-        await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('Lỗi đọc ảnh kết quả')); });
+        await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error(tv('Lỗi đọc ảnh kết quả'))); });
         const targetW = Math.round(img.width * (factor / 4));
         const targetH = Math.round(img.height * (factor / 4));
         const canvas = document.createElement('canvas');
@@ -64,7 +65,7 @@ async function processBatch(tabId: string) {
             } else if (item.path && item.path !== 'browser-file') {
                 formData.append('file_path', item.path);
             } else {
-                throw new Error('Không tìm thấy file gốc');
+                throw new Error(tv('Không tìm thấy file gốc'));
             }
             formData.append('engine', 'general');
             // authenticatedFetch: router /pdf-tools yêu cầu X-PrynX-Token + chữ ký HMAC
@@ -93,7 +94,7 @@ async function processBatch(tabId: string) {
 
 async function handleSave(tabId: string) {
     const { saved, ok } = await saveBatch(tabId, useUpscaleStore, 'upscaled');
-    if (!ok) toast.error('Lỗi khi lưu file.');
+    if (!ok) toast.error(tv('Lỗi khi lưu file.'));
     else if (saved > 0) toast.success(`✅ Đã lưu thành công ${saved} ảnh!`);
 }
 

@@ -1,3 +1,4 @@
+import { tv } from '../i18n';
 /**
  * API client for the PDF Inspection backend (Python sidecar).
  * 
@@ -308,19 +309,19 @@ export async function createCompareJob(data: {
 
 export async function getJobStatus(jobId: string) {
   const res = await authenticatedFetch(`${API_BASE}/api/jobs/${jobId}`);
-  if (!res.ok) throw new Error('Không thể lấy trạng thái job');
+  if (!res.ok) throw new Error(tv('Không thể lấy trạng thái job'));
   return res.json();
 }
 
 export async function getJobResults(jobId: string) {
   const res = await authenticatedFetch(`${API_BASE}/api/jobs/${jobId}/results`);
-  if (!res.ok) throw new Error('Không thể lấy kết quả');
+  if (!res.ok) throw new Error(tv('Không thể lấy kết quả'));
   return res.json();
 }
 
 export async function getGpuStatus() {
   const res = await authenticatedFetch(`${API_BASE}/api/system/gpu-status`);
-  if (!res.ok) throw new Error('Không thể lấy trạng thái hệ thống');
+  if (!res.ok) throw new Error(tv('Không thể lấy trạng thái hệ thống'));
   return res.json();
 }
 
@@ -328,7 +329,7 @@ export async function installGpuPlugin() {
   const res = await authenticatedFetch(`${API_BASE}/api/system/install-gpu-plugin`, {
     method: 'POST',
   });
-  if (!res.ok) throw new Error('Lỗi khi tải Extension GPU');
+  if (!res.ok) throw new Error(tv('Lỗi khi tải Extension GPU'));
   return res.json();
 }
 
@@ -342,25 +343,25 @@ export function getResultImageUrl(path: string) {
 
 export async function getAiStatus() {
   const res = await authenticatedFetch(`${API_BASE}/api/system/ai/status`);
-  if (!res.ok) throw new Error('Không thể lấy trạng thái hệ thống');
+  if (!res.ok) throw new Error(tv('Không thể lấy trạng thái hệ thống'));
   return res.json();
 }
 
 export async function installLocalAi() {
   const res = await authenticatedFetch(`${API_BASE}/api/system/ai/install`, { method: 'POST' });
-  if (!res.ok) throw new Error('Lỗi khi cài đặt AI Local');
+  if (!res.ok) throw new Error(tv('Lỗi khi cài đặt AI Local'));
   return res.json();
 }
 
 export async function pullAiModel() {
   const res = await authenticatedFetch(`${API_BASE}/api/system/ai/pull`, { method: 'POST' });
-  if (!res.ok) throw new Error('Lỗi tải dữ liệu AI');
+  if (!res.ok) throw new Error(tv('Lỗi tải dữ liệu AI'));
   return res.json();
 }
 
 export async function getPullProgress() {
   const res = await authenticatedFetch(`${API_BASE}/api/system/ai/pull-progress`);
-  if (!res.ok) throw new Error('Lỗi lấy tiến trình tải');
+  if (!res.ok) throw new Error(tv('Lỗi lấy tiến trình tải'));
   return res.json();
 }
 
@@ -392,13 +393,13 @@ export async function startVdpJobBackend(pdfFile: File, vdpFields: any[], csvDat
 
 export async function getVdpJobStatus(jobId: string) {
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/status/${jobId}`);
-  if (!res.ok) throw new Error('Không thể lấy trạng thái tiến trình VDP');
+  if (!res.ok) throw new Error(tv('Không thể lấy trạng thái tiến trình VDP'));
   return res.json();
 }
 
 export async function downloadVdpJob(jobId: string): Promise<Blob> {
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/download/${jobId}`);
-  if (!res.ok) throw new Error('Lỗi tải file VDP kết quả');
+  if (!res.ok) throw new Error(tv('Lỗi tải file VDP kết quả'));
   return await res.blob();
 }
 
@@ -444,13 +445,13 @@ export async function startNupJobBackend(sourcePath: string, settings: any): Pro
 
 export async function getNupJobStatus(jobId: string) {
   const res = await authenticatedFetch(`${API_BASE}/api/imposition/nup-status/${jobId}`);
-  if (!res.ok) throw new Error('Không thể lấy trạng thái tiến trình N-Up');
+  if (!res.ok) throw new Error(tv('Không thể lấy trạng thái tiến trình N-Up'));
   return res.json();
 }
 
 export async function downloadNupJob(jobId: string): Promise<Blob> {
   const res = await authenticatedFetch(`${API_BASE}/api/imposition/nup-download/${jobId}`);
-  if (!res.ok) throw new Error('Lỗi tải file N-Up kết quả');
+  if (!res.ok) throw new Error(tv('Lỗi tải file N-Up kết quả'));
   return await res.blob();
 }
 
@@ -466,7 +467,7 @@ export async function uploadFileForNup(pdfFile: File): Promise<string> {
     method: 'POST',
     body: formData,
   });
-  if (!res.ok) throw new Error('Lỗi upload file lên backend');
+  if (!res.ok) throw new Error(tv('Lỗi upload file lên backend'));
   const data = await res.json();
   return data.path;
 }
@@ -554,7 +555,7 @@ export async function backendTrimShift(file: File, applyTo: string, config: any)
 
 export async function getSystemFonts(): Promise<{name: string, path: string}[]> {
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/fonts`);
-  if (!res.ok) throw new Error('Không thể lấy danh sách font');
+  if (!res.ok) throw new Error(tv('Không thể lấy danh sách font'));
   const data = await res.json();
   return data.fonts;
 }

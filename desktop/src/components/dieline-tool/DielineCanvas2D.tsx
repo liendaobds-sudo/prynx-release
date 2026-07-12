@@ -10,6 +10,7 @@ import { DielineModel, PathSegment, Panel } from '../../lib/dieline/types';
 import { buildChains, chainToSvgD, computeEnvelopeDims, deriveLegendTags } from '../../lib/dieline/sharedGeometry';
 import { tracePerimeter } from '../../lib/dieline/tracePerimeter';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 // Desktop: no auth/settings needed — all features available
 
 // Màu sắc và style cho từng loại nét
@@ -288,7 +289,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                         return (
                             <span key={tag} className="dt-legend-item">
                                 <span className="dt-legend-line" style={{ backgroundColor: style.stroke }} />
-                                {style.label}
+                                {tv(style.label)}
                             </span>
                         );
                     })}
@@ -467,7 +468,7 @@ function PreviewThumbnail({ boxType }: { boxType: string }) {
         <div className="dt-preview-thumbnail">
             <div className="dt-preview-placeholder">
                 <span className="dt-preview-placeholder-icon">📦</span>
-                <span className="dt-preview-placeholder-text">{info.label}</span>
+                <span className="dt-preview-placeholder-text">{tv(info.label)}</span>
             </div>
         </div>
     );
@@ -541,7 +542,7 @@ function PanelLabels({ panels, scale }: { panels: Panel[]; scale: number }) {
                         transform={`translate(${cx}, ${cy}) scale(1, -1) translate(${-cx}, ${-cy})`}
                         style={{ pointerEvents: 'none', userSelect: 'none' }}
                     >
-                        {panel.label}
+                        {tv(panel.label)}
                     </text>
                 );
             })}
@@ -745,7 +746,7 @@ function SegmentLabels({ dieline, scale }: { dieline: DielineModel; scale: numbe
                             transform={`translate(${lx},${ly}) scale(1,-1) translate(${-lx},${-ly})`}
                             onPointerDown={e => onDown(i, e)}
                             style={{ cursor: 'grab', userSelect: 'none' }}>
-                            {p.label}
+                            {tv(p.label)}
                         </text>
                     </g>
                 );
