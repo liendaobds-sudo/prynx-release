@@ -26,6 +26,7 @@ import { ConfirmDialogHost } from './components/ui/confirmDialog';
 import { listSnapshots, clearAllSnapshots, deleteSnapshot, type RecoverySnapshot } from './lib/recovery';
 import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Columns2, Rows2, Ruler, Moon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { tv } from './i18n';
 
 type AppTabType = 'home' | AppToolId;
 
@@ -847,9 +848,9 @@ function AppInner() {
         const tools = getToolsByCategory(cat.id).filter((t) => t.isEnabled && !hiddenTools.includes(getToolUniqueKey(t)));
         if (tools.length === 0) return [];
         return [{
-          label: cat.title,
+          label: tv(cat.title),
           submenu: tools.map((t) => ({
-            label: t.title,
+            label: tv(t.title),
             icon: t.icon,
             onClick: () => handleOpenApp(t.id, t.defaultPayload),
           })),

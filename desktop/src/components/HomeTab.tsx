@@ -5,6 +5,7 @@ import { useRecentFiles } from '../lib/useRecentFiles';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 import RecentFilesGrid from './RecentFiles/RecentFilesGrid';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../i18n';
 
 interface Props {
   onOpenApp: (appId: AppToolId, payload?: any) => void;
@@ -45,7 +46,7 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
         onClick={() => onOpenApp(tool.id, tool.defaultPayload)}
         style={{ padding: '12px 0' }}
         className={`w-full border ${isFavorite ? 'bg-amber-50/80 border-amber-200 dark:bg-amber-900/20 dark:border-amber-800/50' : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-white/10'} hover:shadow-sm rounded-lg flex items-center justify-center group`}
-        title={tool.title}
+        title={tv(tool.title)}
       >
         <div className="text-[26px] flex justify-center group-hover:scale-110 transition-transform origin-center drop-shadow-sm">{tool.icon}</div>
       </button>
@@ -57,10 +58,10 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
       <button
         onClick={() => onOpenApp(tool.id, tool.defaultPayload)}
         className={`w-full h-9 rounded-lg flex items-center transition-colors shrink-0 outline-none justify-start px-2 ${isFavorite ? 'bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-100' : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300'} border border-transparent`}
-        title={tool.title}
+        title={tv(tool.title)}
       >
         <span className="text-[18px] shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-        <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>
+        <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>
       </button>
     );
   }
@@ -74,11 +75,11 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenApp(tool.id, tool.defaultPayload); } }}
         style={{ padding: '4px 6px' }}
         className={`flex items-center gap-2.5 text-left w-full ${isFavorite ? 'bg-gradient-to-r from-amber-50/80 to-white dark:from-amber-900/20 dark:to-zinc-900 border border-amber-200 dark:border-amber-800/50 shadow-sm' : 'bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10'} ${tool.hoverColor} hover:shadow-sm rounded-lg transition-all group cursor-pointer`}
-        title={tool.longDescription || tool.title}
+        title={tv(tool.longDescription) || tv(tool.title)}
       >
         <div className="text-[22px] w-8 flex justify-center group-hover:scale-110 transition-transform origin-center drop-shadow-sm">{tool.icon}</div>
         <div className="flex-1 min-w-0">
-          <div className="font-bold text-[13.5px] text-slate-800 dark:text-white leading-tight truncate">{tool.title}</div>
+          <div className="font-bold text-[13.5px] text-slate-800 dark:text-white leading-tight truncate">{tv(tool.title)}</div>
         </div>
         <button
           type="button"
@@ -101,8 +102,8 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
         <>
           <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
           <div className="absolute right-2 top-full mt-1 z-50 w-64 max-w-[88vw] p-3 rounded-lg bg-white dark:bg-zinc-800 border border-slate-200 dark:border-white/10 shadow-xl">
-            <div className="font-bold text-[13px] text-slate-800 dark:text-white mb-1">{tool.title}</div>
-            <div className="text-[12px] text-slate-600 dark:text-zinc-300 leading-snug">{tool.longDescription}</div>
+            <div className="font-bold text-[13px] text-slate-800 dark:text-white mb-1">{tv(tool.title)}</div>
+            <div className="text-[12px] text-slate-600 dark:text-zinc-300 leading-snug">{tv(tool.longDescription)}</div>
           </div>
         </>
       )}
@@ -114,19 +115,19 @@ function DisabledItem({ tool, isMiniMode, isCompactMode }: { tool: ToolDefinitio
   const { t } = useTranslation();
   if (isCompactMode) {
     return (
-      <div className="w-full h-9 rounded-lg flex items-center shrink-0 justify-start px-2 opacity-50 cursor-not-allowed grayscale" title={`${tool.title} (Sắp ra)`}>
+      <div className="w-full h-9 rounded-lg flex items-center shrink-0 justify-start px-2 opacity-50 cursor-not-allowed grayscale" title={`${tv(tool.title)} (Sắp ra)`}>
         <span className="text-[18px] shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-        <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>
+        <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>
       </div>
     );
   }
   return (
-    <div style={{ padding: isMiniMode ? '12px 0' : '4px 6px' }} className={`flex items-center ${isMiniMode ? 'justify-center' : 'gap-2.5 text-left'} w-full bg-slate-50 dark:bg-zinc-900/50 border border-slate-200 dark:border-white/5 rounded-lg opacity-50 cursor-not-allowed grayscale`} title={isMiniMode ? `${tool.title} (Sắp ra)` : undefined}>
+    <div style={{ padding: isMiniMode ? '12px 0' : '4px 6px' }} className={`flex items-center ${isMiniMode ? 'justify-center' : 'gap-2.5 text-left'} w-full bg-slate-50 dark:bg-zinc-900/50 border border-slate-200 dark:border-white/5 rounded-lg opacity-50 cursor-not-allowed grayscale`} title={isMiniMode ? `${tv(tool.title)} (Sắp ra)` : undefined}>
       <div className={`${isMiniMode ? 'text-[26px]' : 'text-[22px] w-8'} flex justify-center`}>{tool.icon}</div>
       {!isMiniMode && (
         <>
           <div className="flex-1">
-            <div className="font-bold text-[14px] text-slate-500 dark:text-zinc-400 leading-tight">{tool.title}</div>
+            <div className="font-bold text-[14px] text-slate-500 dark:text-zinc-400 leading-tight">{tv(tool.title)}</div>
           </div>
           <div className="text-[11px] text-slate-400 dark:text-zinc-600 font-medium whitespace-nowrap">{t('tabs.home:sap_ra')}</div>
         </>
@@ -372,7 +373,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                             <React.Fragment key={cat.id}>
                                 <SectionHeader
                                     id={cat.id}
-                                    title={cat.title}
+                                    title={tv(cat.title)}
                                     isCollapsed={isCollapsed}
                                     isMiniMode={isMiniMode}
                                     isCompactMode={isCompactMode}

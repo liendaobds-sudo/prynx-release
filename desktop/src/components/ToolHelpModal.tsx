@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { ToolHelp } from '../lib/toolHelp';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../i18n';
 
 interface Props {
   help: ToolHelp;
@@ -38,8 +39,8 @@ export default function ToolHelpModal({ help, icon, onClose }: Props) {
         <div className="flex items-start gap-3 p-4 border-b border-slate-100 dark:border-white/10 sticky top-0 bg-white dark:bg-zinc-900 rounded-t-2xl">
           {icon && <div className="text-[28px] leading-none shrink-0">{icon}</div>}
           <div className="flex-1 min-w-0">
-            <h2 className="text-[15px] font-bold text-slate-900 dark:text-white leading-tight">{help.title}</h2>
-            <p className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5 leading-snug">{help.tagline}</p>
+            <h2 className="text-[15px] font-bold text-slate-900 dark:text-white leading-tight">{tv(help.title)}</h2>
+            <p className="text-[12px] text-slate-500 dark:text-zinc-400 mt-0.5 leading-snug">{tv(help.tagline)}</p>
           </div>
           <button
             type="button"
@@ -55,12 +56,12 @@ export default function ToolHelpModal({ help, icon, onClose }: Props) {
         <div className="p-4 space-y-4">
           {help.sections.map((sec, i) => (
             <div key={i}>
-              <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1.5">{sec.heading}</h3>
+              <h3 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 mb-1.5">{tv(sec.heading)}</h3>
               <ul className="space-y-1.5">
                 {sec.items.map((it, j) => (
                   <li key={j} className="flex gap-2 text-[12.5px] text-slate-700 dark:text-zinc-200 leading-snug">
                     <span className="text-indigo-400 shrink-0 mt-0.5">•</span>
-                    <span>{it}</span>
+                    <span>{tv(it)}</span>
                   </li>
                 ))}
               </ul>

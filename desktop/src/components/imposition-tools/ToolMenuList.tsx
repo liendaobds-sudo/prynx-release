@@ -3,6 +3,7 @@ import { ToolItem } from './SharedUI';
 import { TOOL_CATEGORIES, getToolsByCategory, toolMatchesQuery } from '../../lib/toolRegistry';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface ToolMenuListProps {
     setActiveTool: (tool: string) => void;
@@ -70,8 +71,8 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                             <ToolItem
                                 key={`fav-${keyOf(tool)}`}
                                 icon={tool.icon}
-                                label={tool.title}
-                                info={tool.longDescription}
+                                label={tv(tool.title)}
+                                info={tv(tool.longDescription)}
                                 helpKey={keyOf(tool)}
                                 isFavorite
                                 onToggleFavorite={() => toggleFavoriteTool(keyOf(tool))}
@@ -97,13 +98,13 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
 
                 return (
                     <React.Fragment key={category.id}>
-                        <SectionToggle sectionKey={category.id} label={category.title} collapsed={isCollapsed} onToggle={toggleSection} />
+                        <SectionToggle sectionKey={category.id} label={tv(category.title)} collapsed={isCollapsed} onToggle={toggleSection} />
                         {!isCollapsed && toolsInCategory.map(tool => (
                             <ToolItem
                                 key={keyOf(tool)}
                                 icon={tool.icon}
-                                label={tool.title}
-                                info={tool.longDescription}
+                                label={tv(tool.title)}
+                                info={tv(tool.longDescription)}
                                 helpKey={keyOf(tool)}
                                 isFavorite={favoriteTools.includes(keyOf(tool))}
                                 onToggleFavorite={() => toggleFavoriteTool(keyOf(tool))}
