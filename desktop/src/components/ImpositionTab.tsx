@@ -48,6 +48,7 @@ import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
 import { UpscalePreview } from './preprocess-tools/UpscaleTool';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../i18n';
 
 // Phase type is now defined in useWorkspaceStore
 
@@ -2358,10 +2359,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
                                                                                         ${isActive ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shadow-sm border border-amber-300 dark:border-amber-700/50' : 'bg-amber-50/50 dark:bg-amber-900/20 text-slate-700 dark:text-zinc-300 border border-amber-200/50 dark:border-amber-700/30 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 hover:text-amber-900 dark:hover:text-amber-100'}`
                                                                                     }
-                                                                                    title={tool.title}
+                                                                                    title={tv(tool.title)}
                                                                                 >
                                                                                     <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-                                                                                    {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>}
+                                                                                    {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>}
                                                                                 </button>
                                                                             );
                                                                         })}
@@ -2382,11 +2383,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 <div key={cat.id} className="w-full flex flex-col items-center mb-1">
                                                                     {showMiniLabels ? (
                                                                         <div className="w-full px-2 mt-2 mb-1.5 flex items-center gap-2">
-                                                                            <span className="text-[10px] font-bold text-indigo-800 dark:text-indigo-400 uppercase tracking-widest">{cat.title}</span>
+                                                                            <span className="text-[10px] font-bold text-indigo-800 dark:text-indigo-400 uppercase tracking-widest">{tv(cat.title)}</span>
                                                                             <div className="flex-1 h-px bg-indigo-800 dark:bg-indigo-400 opacity-40" />
                                                                         </div>
                                                                     ) : (
-                                                                        <div className="w-6 h-[2px] bg-indigo-800 dark:bg-indigo-400 opacity-40 my-2 rounded-full" title={cat.title} />
+                                                                        <div className="w-6 h-[2px] bg-indigo-800 dark:bg-indigo-400 opacity-40 my-2 rounded-full" title={tv(cat.title)} />
                                                                     )}
                                                                     <div className="flex flex-col items-center gap-1.5 w-full">
                                                                         {catTools.map(tool => {
@@ -2411,10 +2412,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         ${showMiniLabels ? 'justify-start px-2' : 'justify-center'}
                                                                                         ${isActive ? 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 shadow-sm border border-indigo-300 dark:border-indigo-700/50' : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-300 border border-transparent'}`
                                                                                     }
-                                                                                    title={tool.title}
+                                                                                    title={tv(tool.title)}
                                                                                 >
                                                                                     <span className="text-lg shrink-0 flex items-center justify-center w-6">{tool.icon}</span>
-                                                                                    {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tool.title}</span>}
+                                                                                    {showMiniLabels && <span className="ml-2.5 text-[13px] font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{tv(tool.title)}</span>}
                                                                                 </button>
                                                                             );
                                                                         })}

@@ -10,6 +10,7 @@ import { Button } from './Button';
 import CutterMachinesPanel from './imposition-tools/cut-export/CutterMachinesPanel';
 import { Star, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../i18n';
 
 type SettingsTab = 'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter';
 
@@ -87,7 +88,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                     return (
                       <div key={category.id} className="mb-6">
                         <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-3">
-                          {category.title}
+                          {tv(category.title)}
                         </div>
                         <div className="flex flex-col gap-1">
                           {tools.map(tool => {
@@ -99,7 +100,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                                 <div className="text-[20px] w-8 flex justify-center opacity-80">{tool.icon}</div>
                                 <div className="flex-1 min-w-0 ml-2">
                                   <div className={`text-[14px] font-medium ${isHidden ? 'text-slate-400' : 'text-slate-800 dark:text-zinc-200'}`}>
-                                    {tool.title}
+                                    {tv(tool.title)}
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-3 ml-3">
