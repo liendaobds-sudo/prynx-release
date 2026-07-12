@@ -754,7 +754,10 @@
     "xen_4_goc_ngoai_die_cut_bounds_2": "Trim outer 4 corners (Die-cut bounds)",
     "xen_thanh_pham_guillotine": "Trim finished products (Guillotine)",
     "xoa_chat_lieu_tuy_chinh_dang_chon": "Delete the selected custom material",
-    "xuat_luu_file": "💾 Export & Save file"
+    "xuat_luu_file": "💾 Export & Save file",
+    "chia_coc_xen_title": "Guillotine batching",
+    "tu_dong_tach_to_in_thanh_cac_coc_rieng": "Automatically split the sheet into separate stacks, leaving knife gutters between stacks so the guillotine can cut safely without touching the design.",
+    "so_coc_label": "Number of stacks"
   },
   "imposition.api": {
     "khong_tai_duoc_danh_sach_may_be_res": "Could not load cutter list (${res.status})",
@@ -1009,7 +1012,10 @@
     "xep_chong": "Stacking",
     "xep_chong_up_xap_dung_thu_tu": "Stacking (collate in correct order)",
     "xep_lan_luot": "Sequential layout",
-    "xep_toi_uu": "Optimal layout"
+    "xep_toi_uu": "Optimal layout",
+    "xep_chong_chua_ho_tro_2_mat_chon": "⚠️ \"Stacking\" does not support double-sided yet — choose",
+    "hoac_doi_sang": ", or switch to",
+    "chia_ty_le": "Ratio split"
   },
   "imposition.imposerDashboard": {
     "binh_2_mat_bat_buoc_so_trang_chan_file": "Double-sided imposition requires an even page count. The file currently has ${sourceTotalPages} pages (odd) — add/remove 1 page in the thumbnails, or select 1 Side.",
@@ -1236,7 +1242,8 @@
     "vd_in_offset_sra3_ghim_2_day": "e.g. Offset SRA3, 2-staple saddle stitch",
     "xem_chi_tiet_thiet_lap": "View setting details",
     "xoa": "Delete",
-    "xuat_file_json": "Export JSON file"
+    "xuat_file_json": "Export JSON file",
+    "bam_luu_thiet_lap_hien_tai_de_tao_moi": "Click \"Save current settings\" to create a new one"
   },
   "imposition.productFirst": {
     "1_cuon_to": "1 book / sheet",
@@ -2241,7 +2248,8 @@
     "thu_muc_dich": "Target folder",
     "thu_muc_goc": "(root folder)",
     "vui_long_chon_thu_muc_dich": "Please choose a target folder.",
-    "xem_truoc": "Preview"
+    "xem_truoc": "Preview",
+    "de_tach_file_be_rieng_bat_tach_trang": "To split the die file separately, enable \"Separate die pages\" in imposition settings before running."
   },
   "misc.selectionLayers": {
     "2x_click_doi_ten": "2× Click = Rename",
@@ -2896,7 +2904,10 @@
     "xoa_rule": "Delete rule",
     "xoa_truong_nay": "Delete this field",
     "xoay_do": "Rotate (degrees)",
-    "xuat_bao_cao_loi_csv": "Export error report (CSV)"
+    "xuat_bao_cao_loi_csv": "Export error report (CSV)",
+    "bo_chon_neu_file_khong_co_dong_tieu_de": "Uncheck if the file has no header row — columns will be auto-named \"Column 1\", \"Column 2\"…",
+    "ten_cot_trong_nhu_du_lieu_file_co_the": "Column names look like data? The file may NOT have a header row — uncheck \"First row is column header\" above.",
+    "b4_bam_chen": "4. Click \"Insert\""
   },
   "preprocess.fontSelector": {
     "go_de_tim_font": "Type to search fonts...",
@@ -3397,7 +3408,8 @@
     "tong_trang_total": "🔢 Total pages [total]",
     "tu": "From:",
     "tu_hoan_doi_le_trai_phai_o_trang_chan": "Auto-swap Left/Right margins on even pages so the inner margin always sits at the spine.",
-    "tuy_chon": "Options..."
+    "tuy_chon": "Options...",
+    "meo_go_trang_page_total": "Tip: type \"Page [page]/[total]\" to get \"Page 1/20\". Roman/letter styles ignore \"Number length\"."
   },
   "preprocess.sticker": {
     "1_duong_cat_dieline": "1. Cut line (Dieline)",
@@ -3467,7 +3479,9 @@
     "xep_tem_be_to_ong": "Die-cut sticker / honeycomb nesting",
     "xoa_le_trang_bu_xen": "Remove white margin & Bleed",
     "xoa_le_trang_thua": "✅ Remove excess white margin",
-    "xoa_le_trang_thua_2": "Remove excess white margin"
+    "xoa_le_trang_thua_2": "Remove excess white margin",
+    "ra_vung_bu_xen_vd_chu_n_m": "into the bleed area (e.g. \"n\" → \"m\"). If the trim shifts inward, the mirrored part may show, causing",
+    "keo_gian_mep_anh_quoted": "\"Stretch image edge\""
   },
   "preprocess.trapPresets": {
     "ap_dung_overprint_den": "🚀 Apply black overprint",
@@ -3793,6 +3807,7 @@
     "file_goc": "Original file:",
     "giam_chat_luong_render_de_xem_truoc_pdf": "Lower render quality for ultra-smooth previewing of thousand-page PDFs.",
     "hien_thanh_menu_ngang_kieu_acrobat_cho": "Show the Acrobat-style horizontal menu bar for mouse-driven users. Turn off for a cleaner, minimal UI.",
+    "thanh_menu_file_edit_view": "Menu bar (File / Edit / View…)",
     "khong_gian_lam_viec": "📏 Workspace",
     "khong_gian_lam_viec_2": "Workspace",
     "luu_de_file_save_as": "Save As",
@@ -3848,7 +3863,24 @@
     "tab_keo_bam_con_tro_d_draggedel_style": "",
     "then_userecentfiles_userecentfiles": "",
     "thu_nho": "Minimize",
-    "thu_nho_cua_so": "Minimize window"
+    "thu_nho_cua_so": "Minimize window",
+    "cong_cu_khong_tim_thay": "Tool not found",
+    "khoi_phuc_phien_chua_luu": "🛟 Restore unsaved session?",
+    "phat_hien": "Detected",
+    "tai_lieu_chua_luu_tu_lan_chay_truoc": "unsaved document(s)\n              from the last run (possibly due to a sudden shutdown / power loss). Restore your in-progress edits?",
+    "bo_qua": "Skip",
+    "khoi_phuc": "Restore",
+    "thoat_ung_dung": "Quit application?",
+    "van_thoat": "Quit anyway",
+    "neu_thoat_ban_se_mat_toan_bo_thanh_qua": "If you quit, you will lose all unsaved work. Are you sure you want to quit?",
+    "co": "There are",
+    "tai_lieu_chua_luu": "unsaved document(s)",
+    "chua_ro_ten": "Unknown name",
+    "canh_bao_chua_luu": "Unsaved changes warning",
+    "file_chua_duoc_luu_vao_may_neu_dong": "has not been saved to disk. If you close, you will lose this file’s work.",
+    "ban_co_chac_chan_muon_dong_tab_nay": "Are you sure you want to close this tab?",
+    "van_dong": "Close anyway",
+    "file_label": "File"
   },
   "tabs.aiQc": {
     "bao_cao_cua_ai_proofreader_se_hien_thi": "The AI Proofreader report will appear here.",
@@ -3911,7 +3943,8 @@
     "trang_trang_2": "Blank page",
     "tron_dan_xen": "Interleave merge",
     "tron_xen_ke_tung_trang_cua_tat_ca_cac": "Interleave each page of all files in the list",
-    "xo_ra_expand_pages": "Expand pages"
+    "xo_ra_expand_pages": "Expand pages",
+    "bam_add_files_de_them_pdf_hoac_anh": "Click \"Add Files...\" to add PDFs or images to the merge list."
   },
   "tabs.compare": {
     "300_dpi_chinh_xac": "300 DPI — Accurate",

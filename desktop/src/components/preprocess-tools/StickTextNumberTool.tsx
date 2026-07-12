@@ -313,7 +313,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                         <select value={numberStyle} onChange={e => setNumberStyle(e.target.value as NumberStyle)} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm outline-none">
                             {NUMBER_STYLES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                         </select>
-                        <span className="text-[10px] text-slate-400 leading-snug mt-0.5">Mẹo: gõ "Trang [page]/[total]" để ra "Trang 1/20". Kiểu La Mã/chữ cái bỏ qua "Độ dài số".</span>
+                        <span className="text-[10px] text-slate-400 leading-snug mt-0.5">{t('preprocess.stickTextNumber:meo_go_trang_page_total')}</span>
                     </div>
                 </div>
 

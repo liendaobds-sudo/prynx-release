@@ -990,7 +990,7 @@ function AppInner() {
             {tab.type === 'home' && <HomeTab onOpenApp={handleOpenApp} isActive={tab.id === activeTabId} />}
             {tab.type !== 'home' && (() => {
               const toolDef = TOOL_REGISTRY.find(t => t.id === tab.type && t.isEnabled);
-              if (!toolDef) return <div className="flex items-center justify-center h-full text-slate-400">Công cụ không tìm thấy</div>;
+              if (!toolDef) return <div className="flex items-center justify-center h-full text-slate-400">{t('shell:cong_cu_khong_tim_thay')}</div>;
               const ToolComponent = toolDef.component;
               // Các tab dùng ImpositionTab (bình bài + N-Up/Tem bế/CNC khoá-mode) đều
               // cần ĐỦ props: tabId + onDirtyChange (theo dõi CHƯA LƯU → cảnh báo khi
@@ -1061,7 +1061,7 @@ function AppInner() {
 
       <ConfirmCloseModal
         isOpen={tabToConfirmClose !== null}
-        fileName={tabs.find(t => t.id === tabToConfirmClose)?.title || 'Chưa rõ tên'}
+        fileName={tabs.find(t => t.id === tabToConfirmClose)?.title || tv('Chưa rõ tên')}
         onConfirm={() => {
           if (tabToConfirmClose) commitCloseTab(tabToConfirmClose);
         }}
@@ -1071,18 +1071,18 @@ function AppInner() {
       <ConfirmCloseModal
         isOpen={showAppCloseConfirm}
         fileName=""
-        title="Thoát ứng dụng?"
-        confirmText="Vẫn thoát"
+        title={tv('Thoát ứng dụng?')}
+        confirmText={tv('Vẫn thoát')}
         body={(() => {
           const dirty = tabs.filter(t => t.isDirty);
           return (<>
-            Có <span className="text-rose-500 font-bold px-1">{dirty.length}</span>
-            tài liệu CHƯA LƯU{dirty.length ? ': ' : ''}
+            {t('shell:co')} <span className="text-rose-500 font-bold px-1">{dirty.length}</span>
+            {' '}{t('shell:tai_lieu_chua_luu')}{dirty.length ? ': ' : ''}
             <span className="text-rose-500 font-bold break-all">
               {dirty.map(t => t.title).join(', ')}
             </span>.
             <br /><br />
-            Nếu thoát, bạn sẽ mất toàn bộ thành quả chưa lưu. Bạn có chắc chắn muốn thoát?
+            {tv('Nếu thoát, bạn sẽ mất toàn bộ thành quả chưa lưu. Bạn có chắc chắn muốn thoát?')}
           </>);
         })()}
         onConfirm={() => {
@@ -1100,10 +1100,9 @@ function AppInner() {
       {recoverySnaps && recoverySnaps.length > 0 && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-md w-full mx-4 border border-amber-500/40">
-            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">🛟 Khôi phục phiên chưa lưu?</h3>
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{t('shell:khoi_phuc_phien_chua_luu')}</h3>
             <p className="text-sm text-slate-600 dark:text-zinc-300 mb-3 font-medium">
-              Phát hiện <span className="text-amber-600 font-bold">{recoverySnaps.length}</span> tài liệu
-              chưa lưu từ lần chạy trước (có thể do tắt đột ngột / mất điện). Khôi phục lại các thao tác đang sửa?
+              {t('shell:phat_hien')} <span className="text-amber-600 font-bold">{recoverySnaps.length}</span> {t('shell:tai_lieu_chua_luu_tu_lan_chay_truoc')}
             </p>
             <ul className="text-[12px] text-slate-600 dark:text-zinc-300 mb-5 max-h-40 overflow-auto list-disc pl-5 space-y-0.5">
               {recoverySnaps.map((s) => (
@@ -1118,13 +1117,13 @@ function AppInner() {
                 onClick={() => { void dismissRecovery(); }}
                 className="px-5 py-2.5 min-w-[100px] text-[14px] font-semibold rounded bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 transition-colors"
               >
-                Bỏ qua
+                {t('shell:bo_qua')}
               </button>
               <button
                 onClick={() => { void restoreSnapshots(recoverySnaps); }}
                 className="px-5 py-2.5 min-w-[100px] text-[14px] font-bold rounded bg-amber-500 hover:bg-amber-600 text-white transition-colors shadow-sm"
               >
-                Khôi phục
+                {t('shell:khoi_phuc')}
               </button>
             </div>
           </div>
@@ -1168,12 +1167,12 @@ function ConfirmCloseModal({ isOpen, fileName, onConfirm, onCancel, title, body,
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-sm w-full mx-4 border border-rose-500/30">
-        <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{title || 'Cảnh báo chưa lưu'}</h3>
+        <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{title || tv('Cảnh báo chưa lưu')}</h3>
         <p className="text-sm text-slate-600 dark:text-zinc-300 mb-6 font-medium">
           {body || (<>
-          File <span className="text-rose-500 font-bold px-1 break-all">{fileName}</span> chưa được lưu vào máy. Nếu đóng, bạn sẽ mất thành quả file này.
+          {tv('File')} <span className="text-rose-500 font-bold px-1 break-all">{fileName}</span> {tv('chưa được lưu vào máy. Nếu đóng, bạn sẽ mất thành quả file này.')}
           <br /><br />
-          Bạn có chắc chắn muốn đóng tab này không?
+          {tv('Bạn có chắc chắn muốn đóng tab này không?')}
           </>)}
         </p>
         <div className="flex justify-end gap-3">
@@ -1181,13 +1180,13 @@ function ConfirmCloseModal({ isOpen, fileName, onConfirm, onCancel, title, body,
             onClick={onCancel}
             className="px-6 py-2.5 min-w-[100px] text-[15px] font-semibold rounded bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 transition-colors focus:outline-none"
           >
-            Hủy bỏ
+            {tv('Hủy bỏ')}
           </button>
           <button
             onClick={onConfirm}
             className="px-6 py-2.5 min-w-[100px] text-[15px] font-bold rounded bg-rose-500 hover:bg-rose-600 text-white transition-colors shadow-sm focus:outline-none"
           >
-            {confirmText || 'Vẫn Đóng'}
+            {confirmText || tv('Vẫn Đóng')}
           </button>
         </div>
       </div>

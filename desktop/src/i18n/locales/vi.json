@@ -754,7 +754,10 @@
     "xen_4_goc_ngoai_die_cut_bounds_2": "Xén 4 Góc ngoài (Die-cut bounds)",
     "xen_thanh_pham_guillotine": "Xén thành phẩm (Guillotine)",
     "xoa_chat_lieu_tuy_chinh_dang_chon": "Xóa chất liệu tùy chỉnh đang chọn",
-    "xuat_luu_file": "💾 Xuất & Lưu file"
+    "xuat_luu_file": "💾 Xuất & Lưu file",
+    "chia_coc_xen_title": "Chia cọc xén",
+    "tu_dong_tach_to_in_thanh_cac_coc_rieng": "Tự động tách tờ in thành các cọc riêng biệt, chừa sẵn rãnh dao giữa các cọc để máy xén chém an toàn mà không phạm vào thiết kế.",
+    "so_coc_label": "Số cọc"
   },
   "imposition.api": {
     "khong_tai_duoc_danh_sach_may_be_res": "Không tải được danh sách máy bế (${res.status})",
@@ -1009,7 +1012,10 @@
     "xep_chong": "Xếp chồng",
     "xep_chong_up_xap_dung_thu_tu": "Xếp chồng (Úp xấp đúng thứ tự)",
     "xep_lan_luot": "Xếp lần lượt",
-    "xep_toi_uu": "Xếp tối ưu"
+    "xep_toi_uu": "Xếp tối ưu",
+    "xep_chong_chua_ho_tro_2_mat_chon": "⚠️ «Xếp chồng» chưa hỗ trợ 2 mặt — chọn",
+    "hoac_doi_sang": ", hoặc đổi sang",
+    "chia_ty_le": "Chia tỷ lệ"
   },
   "imposition.imposerDashboard": {
     "binh_2_mat_bat_buoc_so_trang_chan_file": "Bình 2 mặt bắt buộc số trang chẵn. File hiện ${sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.",
@@ -1236,7 +1242,8 @@
     "vd_in_offset_sra3_ghim_2_day": "VD: In offset SRA3, ghim 2 dây",
     "xem_chi_tiet_thiet_lap": "Xem chi tiết thiết lập",
     "xoa": "Xóa",
-    "xuat_file_json": "Xuất file JSON"
+    "xuat_file_json": "Xuất file JSON",
+    "bam_luu_thiet_lap_hien_tai_de_tao_moi": "Bấm \"Lưu thiết lập hiện tại\" để tạo mới"
   },
   "imposition.productFirst": {
     "1_cuon_to": "1 cuốn / tờ",
@@ -2241,7 +2248,8 @@
     "thu_muc_dich": "Thư mục đích",
     "thu_muc_goc": "(thư mục gốc)",
     "vui_long_chon_thu_muc_dich": "Vui lòng chọn thư mục đích.",
-    "xem_truoc": "Xem trước"
+    "xem_truoc": "Xem trước",
+    "de_tach_file_be_rieng_bat_tach_trang": "Để tách file bế riêng, bật \"Tách trang khuôn bế\" ở thiết lập bình bài trước khi chạy."
   },
   "misc.selectionLayers": {
     "2x_click_doi_ten": "2x Click = Đổi tên",
@@ -2896,7 +2904,10 @@
     "xoa_rule": "Xóa rule",
     "xoa_truong_nay": "Xóa trường này",
     "xoay_do": "Xoay (độ)",
-    "xuat_bao_cao_loi_csv": "Xuất báo cáo lỗi (CSV)"
+    "xuat_bao_cao_loi_csv": "Xuất báo cáo lỗi (CSV)",
+    "bo_chon_neu_file_khong_co_dong_tieu_de": "Bỏ chọn nếu file không có dòng tiêu đề — cột sẽ tự đặt tên \"Cột 1\", \"Cột 2\"…",
+    "ten_cot_trong_nhu_du_lieu_file_co_the": "Tên cột trông như dữ liệu? File có thể KHÔNG có dòng tiêu đề — hãy bỏ chọn \"Hàng đầu là tiêu đề cột\" ở trên.",
+    "b4_bam_chen": "4. Bấm \"Chèn\""
   },
   "preprocess.fontSelector": {
     "go_de_tim_font": "Gõ để tìm Font...",
@@ -3397,7 +3408,8 @@
     "tong_trang_total": "🔢 Tổng trang [total]",
     "tu": "Từ:",
     "tu_hoan_doi_le_trai_phai_o_trang_chan": "Tự hoán đổi lề Trái/Phải ở trang chẵn để lề trong luôn nằm phía gáy.",
-    "tuy_chon": "Tùy chọn..."
+    "tuy_chon": "Tùy chọn...",
+    "meo_go_trang_page_total": "Mẹo: gõ \"Trang [page]/[total]\" để ra \"Trang 1/20\". Kiểu La Mã/chữ cái bỏ qua \"Độ dài số\"."
   },
   "preprocess.sticker": {
     "1_duong_cat_dieline": "1. Đường cắt (Dieline)",
@@ -3467,7 +3479,9 @@
     "xep_tem_be_to_ong": "Xếp tem bế, tổ ong",
     "xoa_le_trang_bu_xen": "Xóa Lề Trắng & Bù Xén",
     "xoa_le_trang_thua": "✅ Xóa lề trắng thừa",
-    "xoa_le_trang_thua_2": "Xóa lề trắng thừa"
+    "xoa_le_trang_thua_2": "Xóa lề trắng thừa",
+    "ra_vung_bu_xen_vd_chu_n_m": "ra vùng bù xén (vd chữ \"n\" → \"m\"). Nếu xén lệch vào trim, phần soi gương có thể lộ ra gây",
+    "keo_gian_mep_anh_quoted": "\"Kéo giãn mép ảnh\""
   },
   "preprocess.trapPresets": {
     "ap_dung_overprint_den": "🚀 Áp dụng Overprint đen",
@@ -3793,6 +3807,7 @@
     "file_goc": "File gốc:",
     "giam_chat_luong_render_de_xem_truoc_pdf": "Giảm chất lượng render để xem trước PDF hàng ngàn trang siêu mượt mà.",
     "hien_thanh_menu_ngang_kieu_acrobat_cho": "Hiện thanh menu ngang kiểu Acrobat cho khách quen thao tác bằng chuột. Tắt đi để giao diện gọn tối giản.",
+    "thanh_menu_file_edit_view": "Thanh menu (File / Edit / View…)",
     "khong_gian_lam_viec": "📏 Không gian làm việc",
     "khong_gian_lam_viec_2": "Không gian làm việc",
     "luu_de_file_save_as": "Lưu đè file (Save As)",
@@ -3848,7 +3863,24 @@
     "tab_keo_bam_con_tro_d_draggedel_style": ";\n    }\n    // Tab kéo bám con trỏ\n    d.draggedEl.style.transform = `translateX(${dx}px)`;\n\n    // Chỉ số đích = số tab (khác tab kéo) có tâm nằm trước tâm tab kéo hiện tại\n    const draggedCenter = d.els[d.d].center + dx;\n    let t = 0;\n    for (let i = 0; i < d.els.length; i++) {\n      if (i === d.d) continue;\n      if (draggedCenter > d.els[i].center) t++;\n    }\n    d.targetIndex = t;\n\n    // Dịch các tab nhường chỗ (move d → t kiểu mảng)\n    for (let i = 0; i < d.els.length; i++) {\n      if (i === d.d) continue;\n      let shift = 0;\n      if (d.d < t && i > d.d && i <= t) shift = -d.unit;\n      else if (d.d > t && i >= t && i < d.d) shift = d.unit;\n      d.els[i].el.style.transform = `translateX(${shift}px)`;\n    }\n  }, []);\n\n  const onTabPointerUp = useCallback(() => {\n    window.removeEventListener(",
     "then_userecentfiles_userecentfiles": ").then(({ useRecentFiles }) => {\n        useRecentFiles.getState().addFile({\n          path: (payload.file as any).path,\n          name: payload.file.name,\n          size: payload.file.size || 0\n        });\n      });\n    }\n\n    setTabs(prev => [...prev, { id: newId, type: appId, title, isClosable: true, payload, isDirty: !!isSpawnedDirty }]);\n    setActiveTabId(newId);\n  }, [tabs]);\n\n  const tabsRef = useRef(tabs);\n  const activeTabIdRef = useRef(activeTabId);\n  const forceCloseRef = useRef(false);  // true sau khi user xác nhận thoát app → cho phép đóng\n\n  // Khôi phục các phiên chưa lưu từ snapshot (mở lại tab + áp thao tác sửa lên file gốc).\n  const restoreSnapshots = useCallback(async (snaps: RecoverySnapshot[]) => {\n    setRecoverySnaps(null);\n    try {\n      const { stat } = await import(",
     "thu_nho": "Thu nhỏ",
-    "thu_nho_cua_so": "Thu nhỏ cửa sổ"
+    "thu_nho_cua_so": "Thu nhỏ cửa sổ",
+    "cong_cu_khong_tim_thay": "Công cụ không tìm thấy",
+    "khoi_phuc_phien_chua_luu": "🛟 Khôi phục phiên chưa lưu?",
+    "phat_hien": "Phát hiện",
+    "tai_lieu_chua_luu_tu_lan_chay_truoc": "tài liệu\n              chưa lưu từ lần chạy trước (có thể do tắt đột ngột / mất điện). Khôi phục lại các thao tác đang sửa?",
+    "bo_qua": "Bỏ qua",
+    "khoi_phuc": "Khôi phục",
+    "thoat_ung_dung": "Thoát ứng dụng?",
+    "van_thoat": "Vẫn thoát",
+    "neu_thoat_ban_se_mat_toan_bo_thanh_qua": "Nếu thoát, bạn sẽ mất toàn bộ thành quả chưa lưu. Bạn có chắc chắn muốn thoát?",
+    "co": "Có",
+    "tai_lieu_chua_luu": "tài liệu CHƯA LƯU",
+    "chua_ro_ten": "Chưa rõ tên",
+    "canh_bao_chua_luu": "Cảnh báo chưa lưu",
+    "file_chua_duoc_luu_vao_may_neu_dong": "chưa được lưu vào máy. Nếu đóng, bạn sẽ mất thành quả file này.",
+    "ban_co_chac_chan_muon_dong_tab_nay": "Bạn có chắc chắn muốn đóng tab này không?",
+    "van_dong": "Vẫn Đóng",
+    "file_label": "File"
   },
   "tabs.aiQc": {
     "bao_cao_cua_ai_proofreader_se_hien_thi": "Báo cáo của AI Proofreader sẽ hiển thị tại đây.",
@@ -3911,7 +3943,8 @@
     "trang_trang_2": "Trang trắng",
     "tron_dan_xen": "Trộn đan xen",
     "tron_xen_ke_tung_trang_cua_tat_ca_cac": "Trộn xen kẽ từng trang của tất cả các file trong danh sách",
-    "xo_ra_expand_pages": "Xổ ra (Expand pages)"
+    "xo_ra_expand_pages": "Xổ ra (Expand pages)",
+    "bam_add_files_de_them_pdf_hoac_anh": "Bấm \"Add Files...\" để thêm PDF hoặc Ảnh vào danh sách ghép."
   },
   "tabs.compare": {
     "300_dpi_chinh_xac": "300 DPI — Chính xác",

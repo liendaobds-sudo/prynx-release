@@ -880,14 +880,14 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         {((s.taskMode === 'nup' && s.layoutType === 'ratio_stack') || s.taskMode === 'step_repeat') && s.markType === 'guillotine' && !stickerLike && (
                             <div className="relative z-[10]">
                                 <div className="flex items-center justify-between mb-2">
-                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">CHIA CỌC XÉN</label>
+                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:chia_coc_xen_title')}</label>
                                     <div
                                         className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                         onClick={() => setInfoModal({
-                                            title: "Chia cọc xén",
+                                            title: t('imposition.advancedSettings:chia_coc_xen_title'),
                                             content: (
                                                 <div className="space-y-4">
-                                                    <p className="text-slate-600 dark:text-zinc-300">Tự động tách tờ in thành các cọc riêng biệt, chừa sẵn rãnh dao giữa các cọc để máy xén chém an toàn mà không phạm vào thiết kế.</p>
+                                                    <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:tu_dong_tach_to_in_thanh_cac_coc_rieng')}</p>
                                                     <div className="space-y-1">
                                                         <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:chia_theo_hang_cot')}</h4>
                                                         <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:cat_toan_bo_luoi_giay_thanh_2_3_hoac')}</p>
@@ -910,7 +910,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     </select>
                                     {s.clusterMode !== 'none' && (
                                         <div className="flex items-center gap-2">
-                                            <input type="number" min="2" value={s.clusterCount} onChange={e => s.setClusterCount(Math.max(2, parseInt(e.target.value) || 2))} className="w-14 h-8 px-2 font-medium border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 text-center" title="Số cọc" />
+                                            <input type="number" min="2" value={s.clusterCount} onChange={e => s.setClusterCount(Math.max(2, parseInt(e.target.value) || 2))} className="w-14 h-8 px-2 font-medium border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 text-center" title={t('imposition.advancedSettings:so_coc_label')} />
                                             <button onClick={() => setShowClusterModal(true)} className="w-8 h-8 flex items-center justify-center border border-slate-300 dark:border-white/20 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors text-slate-500 hover:text-indigo-600" title={t('imposition.advancedSettings:cai_dat_nang_cao')}>
                                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                                             </button>

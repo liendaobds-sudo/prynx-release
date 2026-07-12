@@ -212,7 +212,7 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
               <div className="text-center py-12 text-slate-400">
                 <div className="text-4xl mb-3">📋</div>
                 <div className="text-sm font-semibold text-slate-500">{t('imposition.presetSelector:chua_co_preset_nao')}</div>
-                <div className="text-[12px] mt-1.5">Bấm "Lưu thiết lập hiện tại" để tạo mới</div>
+                <div className="text-[12px] mt-1.5">{t('imposition.presetSelector:bam_luu_thiet_lap_hien_tai_de_tao_moi')}</div>
               </div>
             ) : (
               <div className="space-y-2 pb-1">

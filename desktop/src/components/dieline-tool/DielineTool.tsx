@@ -16,6 +16,7 @@ import { downloadNestingPDF } from '../../lib/dieline/exportNestingPDF';
 import { BoxParams } from '../../lib/dieline/types';
 import '../../styles/dieline-tool.css';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 // Lazy load 3D scene (heavy Three.js bundle)
 const DielineScene3D = lazy(() => import('./DielineScene3D'));
@@ -30,13 +31,13 @@ class Scene3DErrorBoundary extends Component<{ children: ReactNode }, { hasError
             return (
                 <div className="dt-scene-loading" style={{ flexDirection: 'column', gap: '0.5rem' }}>
                     <span style={{ fontSize: '2rem' }}>⚠️</span>
-                    <p>Lỗi hiển thị 3D</p>
+                    <p>{tv('Lỗi hiển thị 3D')}</p>
                     <p style={{ fontSize: '0.75rem', opacity: 0.6 }}>{this.state.error?.message}</p>
                     <button
                         className="dt-toolbar-btn"
                         onClick={() => this.setState({ hasError: false, error: undefined })}
                     >
-                        Thử lại
+                        {tv('Thử lại')}
                     </button>
                 </div>
             );

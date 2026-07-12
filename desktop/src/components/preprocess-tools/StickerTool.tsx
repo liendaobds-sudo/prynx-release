@@ -485,7 +485,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 <div className="flex items-start gap-2 mb-2 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40">
                                     <span className="text-amber-500 text-sm leading-none mt-0.5">⚠️</span>
                                     <p className="text-[10.5px] text-amber-700 dark:text-amber-300 leading-snug">
-                                        {t('preprocess.sticker:lat_guong')} <strong>{t('preprocess.sticker:soi_nguoc_noi_dung_sat_mep')}</strong> ra vùng bù xén (vd chữ "n" → "m"). Nếu xén lệch vào trim, phần soi gương có thể lộ ra gây <strong>{t('preprocess.sticker:sai_noi_dung')}</strong>{t('preprocess.sticker:chi_nen_dung_cho_nen_truu_tuong_hoa_van')} <strong>"Kéo giãn mép ảnh"</strong>.
+                                        {t('preprocess.sticker:lat_guong')} <strong>{t('preprocess.sticker:soi_nguoc_noi_dung_sat_mep')}</strong> {t('preprocess.sticker:ra_vung_bu_xen_vd_chu_n_m')} <strong>{t('preprocess.sticker:sai_noi_dung')}</strong>{t('preprocess.sticker:chi_nen_dung_cho_nen_truu_tuong_hoa_van')} <strong>{t('preprocess.sticker:keo_gian_mep_anh_quoted')}</strong>.
                                     </p>
                                 </div>
                             )}

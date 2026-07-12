@@ -1138,7 +1138,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
           <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400">
             <div className="text-6xl mb-4 opacity-50">📄</div>
             <p className="text-lg font-medium">{t('tabs.combine:chua_co_file_nao_duoc_chon')}</p>
-            <p className="text-sm mt-2 opacity-80">Bấm "Add Files..." để thêm PDF hoặc Ảnh vào danh sách ghép.</p>
+            <p className="text-sm mt-2 opacity-80">{t('tabs.combine:bam_add_files_de_them_pdf_hoac_anh')}</p>
           </div>
         ) : (
           <div 

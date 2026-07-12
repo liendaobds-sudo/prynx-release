@@ -1356,7 +1356,7 @@ export default function DataMergeTool({
             />
             <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">{t('preprocess.dataMerge:hang_dau_la_tieu_de_cot')}</span>
         </label>
-        <p className="text-[10px] text-slate-400 leading-snug -mt-1">Bỏ chọn nếu file không có dòng tiêu đề — cột sẽ tự đặt tên "Cột 1", "Cột 2"…</p>
+        <p className="text-[10px] text-slate-400 leading-snug -mt-1">{t('preprocess.dataMerge:bo_chon_neu_file_khong_co_dong_tieu_de')}</p>
         </>
         ) : dataMode === 'xlsx' ? (
         <>
@@ -1466,7 +1466,7 @@ export default function DataMergeTool({
                     ))}
                 </div>
                 {csvHasHeader && csvHeaders.some(h => h.length > 25) && (
-                    <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-snug">Tên cột trông như dữ liệu? File có thể KHÔNG có dòng tiêu đề — hãy bỏ chọn "Hàng đầu là tiêu đề cột" ở trên.</p>
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-snug">{t('preprocess.dataMerge:ten_cot_trong_nhu_du_lieu_file_co_the')}</p>
                 )}
             </div>
         )}
@@ -1777,7 +1777,7 @@ export default function DataMergeTool({
                                                                 <b>{t('preprocess.dataMerge:3_dinh_dang')}</b>{t('preprocess.dataMerge:bien_doi_gia_tri_truoc_khi_in')}
                                                                 <div className="text-slate-500 dark:text-zinc-400 mt-0.5">{t('preprocess.dataMerge:viet_hoa_so')} <code>1,234</code> {t('preprocess.dataMerge:ngay')} <code>dd/mm/yyyy</code> {t('preprocess.dataMerge:dem_0')} <code>000123</code>.</div>
                                                             </div>
-                                                            <div><b>4. Bấm "Chèn"</b>{t('preprocess.dataMerge:ghep_thanh_token_vd')} <code>{'{cao}'}</code>, <code>{'{cao[2|-]}'}</code>, <code>{'{cao|upper}'}</code>{t('preprocess.dataMerge:va_them_vao_o_noi_dung')}</div>
+                                                            <div><b>{t('preprocess.dataMerge:b4_bam_chen')}</b>{t('preprocess.dataMerge:ghep_thanh_token_vd')} <code>{'{cao}'}</code>, <code>{'{cao[2|-]}'}</code>, <code>{'{cao|upper}'}</code>{t('preprocess.dataMerge:va_them_vao_o_noi_dung')}</div>
                                                         </div>
                                                         <div className="text-[11px] text-slate-500 dark:text-zinc-400">
                                                             {t('preprocess.dataMerge:meo_ban_co_the_chen_nhieu_cot_vao_mot')} <code>{t('preprocess.dataMerge:ma_sku_ten')}</code>{t('preprocess.dataMerge:khong_can_cong_cu_nay_thi_go_tay')} <code>{t('preprocess.dataMerge:ten_cot_3')}</code> {t('preprocess.dataMerge:cung_duoc')}

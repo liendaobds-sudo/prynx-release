@@ -596,8 +596,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 taskMode === "nup" &&
                 s.layoutType === "cut_stacks" && (
                 <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
-                  ⚠️ «Xếp chồng» chưa hỗ trợ 2 mặt — chọn <strong>{t('imposition.gridSettings:1_mat_2')}</strong>, hoặc đổi sang{" "}
-                  <strong>{t('imposition.gridSettings:xep_lan_luot')}</strong> / <strong>Chia tỷ lệ</strong>.
+                  {t('imposition.gridSettings:xep_chong_chua_ho_tro_2_mat_chon')} <strong>{t('imposition.gridSettings:1_mat_2')}</strong>{t('imposition.gridSettings:hoac_doi_sang')}{" "}
+                  <strong>{t('imposition.gridSettings:xep_lan_luot')}</strong> / <strong>{t('imposition.gridSettings:chia_ty_le')}</strong>.
                 </div>
               )}
             </div>

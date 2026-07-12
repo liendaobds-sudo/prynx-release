@@ -229,7 +229,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200">Thanh menu (File / Edit / View…)</h4>
+                        <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200">{t('settings:thanh_menu_file_edit_view')}</h4>
                         <p className="text-[12px] text-slate-500 dark:text-zinc-400 mt-1 leading-snug">
                           {t('settings:hien_thanh_menu_ngang_kieu_acrobat_cho')}
                         </p>

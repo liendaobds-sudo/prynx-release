@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useThumbSidebar } from './useThumbSidebar';
 import { thumbCacheRef } from '../workspace/ViewerHelpers';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface ThumbSidebarProps {
     // Page state
@@ -135,7 +136,7 @@ const MemoThumbItem = React.memo((props: any) => {
         >
             {showCopyBadge && (
                 <div className="absolute top-1 right-1 z-20 flex items-center gap-0.5 bg-green-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full shadow pointer-events-none">
-                    <span className="text-[11px] leading-none">＋</span> Sao chép
+                    <span className="text-[11px] leading-none">＋</span> {tv('Sao chép')}
                 </div>
             )}
             {/* SLOT ngoài = footprint SAU xoay (đã hoán rộng↔cao khi 90/270). Outline chọn bao
@@ -150,7 +151,7 @@ const MemoThumbItem = React.memo((props: any) => {
                         width: imgW, height: imgH, position: 'absolute', left: '50%', top: '50%',
                         transform: `translate(-50%, -50%) rotate(${normRot}deg)`, transformOrigin: 'center center',
                     }} className="bg-white border-2 border-dashed border-slate-300 flex items-center justify-center">
-                        <span className="text-slate-300 text-xs font-semibold -rotate-45 block">TRANG TRỐNG</span>
+                        <span className="text-slate-300 text-xs font-semibold -rotate-45 block">{tv('TRANG TRỐNG')}</span>
                     </div>
                 ) : (
                     <>

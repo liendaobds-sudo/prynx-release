@@ -111,7 +111,7 @@ export const Accordion = ({ title, initialOpen = false, children }: { title: str
 export const DisabledItem = ({ label }: { label: string }) => (
     <div className="text-[11px] text-slate-400 dark:text-zinc-500 py-1 pl-1 flex items-center gap-2">
         <span className="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-zinc-600 shrink-0" />
-        {label} <span className="text-[9px] opacity-60">(sắp ra mắt)</span>
+        {label} <span className="text-[9px] opacity-60">{tv('(sắp ra mắt)')}</span>
     </div>
 );
 

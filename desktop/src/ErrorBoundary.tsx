@@ -1,4 +1,5 @@
 import React from 'react';
+import { tv } from './i18n';
 
 interface Props {
   children: React.ReactNode;
@@ -31,7 +32,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
       const isDev = import.meta.env.DEV;
       return (
         <div style={{ padding: '2rem', background: '#330000', color: '#ffaaaa', height: '100vh', overflow: 'auto', fontFamily: 'monospace' }}>
-          <h1>Đã xảy ra lỗi</h1>
+          <h1>{tv('Đã xảy ra lỗi')}</h1>
           {isDev ? (
             <>
               <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.error?.message}</pre>
@@ -39,7 +40,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             </>
           ) : (
             <p style={{ marginTop: '1rem' }}>
-              Ứng dụng gặp sự cố ngoài ý muốn. Vui lòng tải lại để tiếp tục.
+              {tv('Ứng dụng gặp sự cố ngoài ý muốn. Vui lòng tải lại để tiếp tục.')}
             </p>
           )}
           <button
@@ -47,7 +48,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             onClick={() => window.location.reload()}
             style={{ marginTop: '1.5rem', padding: '0.5rem 1rem', cursor: 'pointer' }}
           >
-            Tải lại
+            {tv('Tải lại')}
           </button>
         </div>
       );

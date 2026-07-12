@@ -2,6 +2,7 @@ import React, { useRef, useState, useCallback, forwardRef, useEffect } from 'rea
 import HTMLFlipBook from 'react-pageflip';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { BookData, BookPage } from './types';
+import { tv } from '../../i18n';
 
 const FlipBookComponent = HTMLFlipBook as any;
 
@@ -23,7 +24,7 @@ const Page = forwardRef<HTMLDivElement, { page: BookPage; number: number }>(
                 <div className="relative w-full h-full overflow-hidden">
                     {isEmpty ? (
                         <div className="w-full h-full bg-slate-50 flex items-center justify-center">
-                            <span className="text-slate-300 text-sm font-medium">Trang trống</span>
+                            <span className="text-slate-300 text-sm font-medium">{tv('Trang trống')}</span>
                         </div>
                     ) : (
                         <>
@@ -60,7 +61,7 @@ const CoverPage = forwardRef<HTMLDivElement, { page: BookPage; isFront?: boolean
                 <div className="relative w-full h-full overflow-hidden bg-white shadow-2xl">
                     {isEmpty ? (
                         <div className="w-full h-full bg-slate-50 flex items-center justify-center">
-                            <span className="text-slate-300 text-sm font-medium">Trang trống</span>
+                            <span className="text-slate-300 text-sm font-medium">{tv('Trang trống')}</span>
                         </div>
                     ) : (
                         <>

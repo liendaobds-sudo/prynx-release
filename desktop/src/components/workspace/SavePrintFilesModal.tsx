@@ -173,7 +173,7 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                         </div>
                         {cncMode && <p className="text-[11px] text-slate-400 mt-1">CNC: mỗi đơn vị tách {cncTwoSided ? t('misc.savePrintFiles:mat_truoc_mat_sau_khuon') : t('misc.savePrintFiles:mat_truoc_khuon')} ra file riêng.</p>}
                         {!cncMode && separateCut && <p className="text-[11px] text-slate-400 mt-1">{t('misc.savePrintFiles:file_in_file_be_se_tach_rieng_in_trang')}</p>}
-                        {!cncMode && !separateCut && <p className="text-[11px] text-amber-500 mt-1">Để tách file bế riêng, bật "Tách trang khuôn bế" ở thiết lập bình bài trước khi chạy.</p>}
+                        {!cncMode && !separateCut && <p className="text-[11px] text-amber-500 mt-1">{t('misc.savePrintFiles:de_tach_file_be_rieng_bat_tach_trang')}</p>}
                     </div>
 
                     {/* Preview */}

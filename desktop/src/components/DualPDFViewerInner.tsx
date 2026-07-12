@@ -6,6 +6,7 @@ import 'react-pdf/dist/esm/Page/TextLayer.css';
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../i18n';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -191,7 +192,7 @@ class DualViewerErrorBoundary extends React.Component<{children: React.ReactNode
   constructor(props: any) { super(props); this.state = { hasError: false }; }
   static getDerivedStateFromError() { return { hasError: true }; }
   render() {
-    if (this.state.hasError) return <div className="flex-1 w-full h-full bg-slate-100 dark:bg-zinc-900 flex items-center justify-center text-red-500 font-medium">Lỗi hiển thị PDF (react-pdf). Vui lòng tải lại ứng dụng.</div>;
+    if (this.state.hasError) return <div className="flex-1 w-full h-full bg-slate-100 dark:bg-zinc-900 flex items-center justify-center text-red-500 font-medium">{tv('Lỗi hiển thị PDF (react-pdf). Vui lòng tải lại ứng dụng.')}</div>;
     return this.props.children;
   }
 }
