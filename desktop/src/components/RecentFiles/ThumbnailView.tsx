@@ -13,9 +13,11 @@ interface Props {
 const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
   const [src, setSrc] = useState<string | { data: Uint8Array }>('');
   const [fileExists, setFileExists] = useState<boolean | null>(null);
+  const [imgError, setImgError] = useState(false);
 
   useEffect(() => {
     setFileExists(null);
+    setImgError(false);
   }, [path]);
 
   const isPdf = name.toLowerCase().endsWith('.pdf');
@@ -67,13 +69,23 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
 
   // Tauri: cả PDF (tile://) lẫn ảnh (asset) đều là <img> — nhẹ, không nạp full file.
   if (isTauri) {
+    // Tile render lỗi/timeout → hiện placeholder (icon + đuôi file) thay vì ô trắng trơn.
+    if (imgError) {
+      const ext = (name.split('.').pop() || '').toUpperCase();
+      return (
+        <div className="w-full h-full bg-slate-100 dark:bg-zinc-800 flex flex-col items-center justify-center gap-1">
+          <span className="text-2xl opacity-40">📄</span>
+          {ext && <span className="text-[10px] font-semibold text-slate-400">{ext}</span>}
+        </div>
+      );
+    }
     return (
       <img
         src={typeof src === 'string' ? src : undefined}
         alt={name}
         loading="lazy"
         className={`w-full h-full ${isPdf ? 'object-contain bg-white' : 'object-cover'}`}
-        onError={(e) => { (e.currentTarget as HTMLImageElement).style.opacity = '0'; }}
+        onError={() => setImgError(true)}
       />
     );
   }
