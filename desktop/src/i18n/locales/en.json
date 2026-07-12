@@ -377,7 +377,7 @@
     "xoay_them_90": "Rotate +90°"
   },
   "dieline.mockupCanvas": {
-    "dang_kiem_tra_ho_tro_do_hoa": ""
+    "dang_kiem_tra_ho_tro_do_hoa": "Checking graphics support…"
   },
   "dieline.nesting": {
     "bo_cuc": "Layout:",
@@ -420,7 +420,7 @@
     "xep_toi_uu": "✨ Optimal nesting"
   },
   "dieline.nestingCanvas": {
-    "nhap_thong_so_de_xem_xep_khuon": ""
+    "nhap_thong_so_de_xem_xep_khuon": "Enter parameters to preview nesting"
   },
   "dieline.param": {
     "11_19_cm_nap_2_5cm_ngang": "11×19 cm — 2.5cm flap (Landscape)",
@@ -555,11 +555,11 @@
     "xuat_mo_hinh_glb_that_bai": "GLB model export failed:"
   },
   "dieline.webGLFallback": {
-    "hay_thu_bat_tang_toc_phan_cung_cap_nhat": "",
-    "trinh_duyet_cua_ban_khong_ho_tro_webgl": ""
+    "hay_thu_bat_tang_toc_phan_cung_cap_nhat": "Try enabling hardware acceleration, updating your browser, or use the\n                \"2D Drawing\" tab to keep working.",
+    "trinh_duyet_cua_ban_khong_ho_tro_webgl": "Your browser does not support WebGL, so the 3D preview cannot be displayed."
   },
   "hooks.useEditSession": {
-    "open_thieu_session_id": ""
+    "open_thieu_session_id": "open: missing session_id"
   },
   "imposition.advancedSettings": {
     "1_dh_001_tem_sau_rieng_21_to_pdf": "1 - DH-001 - Durian sticker - 21 sheets.pdf",
@@ -1314,7 +1314,7 @@
     "xuat_anh_that_bai": "Image export failed"
   },
   "lib.arbitraries": {
-    "arbboxparams_boxtype_khong_ho_tro": ""
+    "arbboxparams_boxtype_khong_ho_tro": "arbBoxParams: unsupported boxType: ${_exhaustive}"
   },
   "lib.catalogPlanner": {
     "concentric_rings_vong_loi_kem_1": "",
@@ -1370,7 +1370,7 @@
     "max_export_px_px_o_chieu_rong_hoac": "${MAX_EXPORT_PX} px in width or height."
   },
   "lib.foldCompensation": {
-    "panel_panel_name_thieu_pivotedge_parent": ""
+    "panel_panel_name_thieu_pivotedge_parent": "Panel ${panel.name} missing pivotEdge/parent/depth"
   },
   "lib.foldPatterns": {
     "bu_8_trang_tu_tro_lat_ngang_work_and": "8-page self-turning signature (Work and Turn).",
@@ -1415,8 +1415,8 @@
     "y_lo_quai_mep_tren_trai": "Y — Handle hole: top-left edge"
   },
   "lib.instructionSerializer": {
-    "to_depth_1_mat_a": "",
-    "to_depth_1_mat_b": ""
+    "to_depth_1_mat_a": "Sheet ${depth + 1} - Side A",
+    "to_depth_1_mat_b": "Sheet ${depth + 1} - Side B"
   },
   "lib.maskValidation": {
     "be_mat_ap_dung_surface_width_surface": "applied surface (${surface.width}×${surface.height}).",
@@ -1586,7 +1586,7 @@
     "vach_truoc": "Front wall"
   },
   "lib.presetManager": {
-    "preset_khong_doc_duoc_thu_muc_preset": ""
+    "preset_khong_doc_duoc_thu_muc_preset": "[preset] Could not read preset folder, falling back to localStorage:"
   },
   "lib.printFileNaming": {
     "g_lam_sach_ky_tu_khong_hop_le_cho_ten": "",
@@ -1641,7 +1641,7 @@
     "xoay_kho_de_fit": "(rotate sheet to fit)"
   },
   "lib.renderer": {
-    "dang_render_mat_isfront_truoc_sau_to": ""
+    "dang_render_mat_isfront_truoc_sau_to": "Rendering ${isFront ? \"front\" : \"back\"} side of sheet ${sheetIndex + 1} (${currentRenderIndex}/${surfaces.length})..."
   },
   "lib.reportPreview": {
     "data_gangcount_mau": "${data.gangCount} designs",
@@ -1884,8 +1884,8 @@
     "nen_zip_meta_percent_tofixed_0": "Compressing ZIP ${meta.percent.toFixed(0)}%"
   },
   "misc.confirmDialog": {
-    "huy_bo": "",
-    "xac_nhan": ""
+    "huy_bo": "Cancel",
+    "xac_nhan": "Confirm"
   },
   "misc.cropDialog": {
     "ap_dung": "Apply",
@@ -1927,7 +1927,7 @@
     "y_het": "Identical"
   },
   "misc.dualPDFViewer": {
-    "dang_tai_pdf_viewer": ""
+    "dang_tai_pdf_viewer": "Loading PDF viewer..."
   },
   "misc.dualPDFViewerInner": {
     "dang_tai_pdf": "Loading PDF...",
@@ -1966,8 +1966,8 @@
     "xuat_anh": "Export images"
   },
   "misc.flipBook": {
-    "trang_bia": "",
-    "trang_trong": ""
+    "trang_bia": "Cover page",
+    "trang_trong": "Blank page"
   },
   "misc.flipbookDialog": {
     "dang_nap_du_lieu": "Loading data...",
@@ -2054,7 +2054,7 @@
     "xac_thuc": "Verify"
   },
   "misc.menuBar": {
-    "trong": ""
+    "trong": "Blank"
   },
   "misc.newDocument": {
     "danh_thiep_90_54": "Business card (90 × 54)",
@@ -2330,8 +2330,8 @@
     "nloi": "\\nError:"
   },
   "misc.themeToggle": {
-    "chuyen_sang_giao_dien_sang": "",
-    "chuyen_sang_giao_dien_toi": ""
+    "chuyen_sang_giao_dien_sang": "Switch to Light theme",
+    "chuyen_sang_giao_dien_toi": "Switch to Dark theme"
   },
   "misc.thumbSidebar": {
     "mo_rong_thumbnails": "Expand (Thumbnails)",
@@ -2347,11 +2347,11 @@
     "xoay_trai_rotate_ccw": "Rotate left (Rotate CCW)"
   },
   "misc.toast": {
-    "dong": "",
-    "dong_thong_bao": ""
+    "dong": "Close",
+    "dong_thong_bao": "Dismiss notification"
   },
   "misc.toolHelp": {
-    "dong_esc": ""
+    "dong_esc": "Close (Esc)"
   },
   "misc.trialExpiryBanner": {
     "con_remainingdays_ngay": "${remainingDays} days left",
@@ -2377,7 +2377,7 @@
     "phien_hoat_dong_qua_lau_khong_ket_noi": "Session has run too long without connecting. Please connect to the internet to verify the license."
   },
   "misc.useBoxStore": {
-    "vo_best_sleeverot_best_sleevecols_best": ""
+    "vo_best_sleeverot_best_sleevecols_best": "Sleeve ${best.sleeveRot}° ${best.sleeveCols}×${best.sleeveRows}"
   },
   "misc.viewerContextMenu": {
     "chen_trang_trang_insert": "Insert blank page (Insert)",
@@ -2387,8 +2387,8 @@
     "xoa_trang_nhanh": "Quick delete page"
   },
   "misc.viewerHelpers": {
-    "dang_tai": "",
-    "loi_preview_vdp": ""
+    "dang_tai": "Loading...",
+    "loi_preview_vdp": "VDP preview error:"
   },
   "preflight.preflight": {
     "anh": "Images",
@@ -2899,8 +2899,8 @@
     "xuat_bao_cao_loi_csv": "Export error report (CSV)"
   },
   "preprocess.fontSelector": {
-    "go_de_tim_font": "",
-    "khong_tim_thay_font": ""
+    "go_de_tim_font": "Type to search fonts...",
+    "khong_tim_thay_font": "No font found"
   },
   "preprocess.hairlines": {
     "cau_hinh_net_manh": "✏️ HAIRLINE SETTINGS",
@@ -2919,12 +2919,12 @@
     "vui_long_mo_file_pdf_truoc": "Please open a PDF file first"
   },
   "preprocess.helpers": {
-    "chon_anh_co_the_chon_nhieu": "",
-    "chon_thu_muc_luu_anh": ""
+    "chon_anh_co_the_chon_nhieu": "Select images (multiple allowed)",
+    "chon_thu_muc_luu_anh": "Choose image save folder"
   },
   "preprocess.imageBatchPreview": {
-    "anh_goc": "",
-    "ket_qua": ""
+    "anh_goc": "Original image",
+    "ket_qua": "Result"
   },
   "preprocess.inkManager": {
     "chua_co_du_lieu_muc": "No ink data yet",
@@ -3751,7 +3751,7 @@
     "vui_long_nhap_ten_quy_trinh": "Please enter a recipe name."
   },
   "recipe.recipeRecorder": {
-    "recipe_commit_khi_dang_ghi_nhung_khong": ""
+    "recipe_commit_khi_dang_ghi_nhung_khong": "[recipe] commit while recording but NO operation was published (noteOperation) — skipping. This tool may be missing its record hook."
   },
   "recipe.recipeRunners": {
     "buoc_prepress_that_bai": "Prepress step failed",
@@ -3769,11 +3769,11 @@
     "nen_pdf_that_bai_res_status": "PDF compression failed (${res.status})"
   },
   "recipe.recipeStore": {
-    "recipe_khong_doc_duoc_thu_muc_recipe": ""
+    "recipe_khong_doc_duoc_thu_muc_recipe": "[recipe] Could not read recipe folder, falling back to localStorage:"
   },
   "recipe.recipeTypes": {
-    "du_lieu_khong_dung_cau_truc_recipe": "",
-    "recipe_json_khong_hop_le": ""
+    "du_lieu_khong_dung_cau_truc_recipe": "Data does not match the Recipe structure.",
+    "recipe_json_khong_hop_le": "Invalid Recipe JSON:"
   },
   "settings": {
     "bang_tra_cuu_nhanh_cac_phim_tat_lam": "Quick reference for PrynX keyboard shortcuts. Custom key remapping is coming in a future update.",
