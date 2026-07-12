@@ -199,15 +199,67 @@ def test_duplex_cut_stacks_bi_chan(monkeypatch):
         _run_capture(monkeypatch, 4, settings)
 
 
-def test_duplex_ratio_stack_bi_chan(monkeypatch):
-    """ratio_stack + 2 mặt → chặn."""
+def test_ratio_stack_duplex_cap_truoc_sau(monkeypatch):
+    """ratio_stack 2 mặt: mỗi ĐƠN VỊ = cặp trang (2u trước | 2u+1 sau). Chia tỷ lệ
+    theo đơn vị (SL trang chẵn), xuất 2 tờ CÙNG hình học ô: tờ 0 = mặt trước, tờ 1 = sau.
+
+    4 trang → 2 đơn vị. SL: unit0(P0)=10, unit1(P2)=4 → capacity=8 chia 10:4 → cells=[6,2].
+    Tờ 0 (trước): unit0×6 → P0, unit1×2 → P2  ⇒ [0,0,0,0,0,0,2,2]
+    Tờ 1 (sau):   unit0×6 → P1, unit1×2 → P3  ⇒ [1,1,1,1,1,1,3,3]
+    """
     settings = _base_settings(
         layoutType="ratio_stack",
         duplexFlow="double",
-        targetQuantitiesByPage={"0": 10, "1": 10},
+        targetQuantitiesByPage={"0": 10, "2": 4},
     )
-    with pytest.raises(ValueError, match="2 mặt"):
-        _run_capture(monkeypatch, 4, settings)
+    precalc = _run_capture(monkeypatch, 4, settings)
+    assert precalc is not None
+    assert sorted(precalc.keys()) == [0, 1], f"cần đúng 2 tờ F/B, keys={list(precalc.keys())}"
+    front = [p["src_page_idx"] for p in precalc[0]]
+    back = [p["src_page_idx"] for p in precalc[1]]
+    assert front == [0, 0, 0, 0, 0, 0, 2, 2], f"mặt trước sai: {front}"
+    assert back == [1, 1, 1, 1, 1, 1, 3, 3], f"mặt sau sai: {back}"
+    # Cùng hình học ô (abs) giữa F/B — mirror do process_chunk, precalc giữ toạ độ giống.
+    for a, b in zip(precalc[0], precalc[1]):
+        assert abs(a["abs_x"] - b["abs_x"]) < 1e-6
+        assert abs(a["abs_y"] - b["abs_y"]) < 1e-6
+
+
+def test_ratio_stack_duplex_o_cung_don_vi_lien_nhau(monkeypatch):
+    """ratio_stack 2 mặt: ô cùng đơn vị nằm LIỀN nhau (không round-robin) trên cả 2 mặt.
+
+    6 trang → 3 đơn vị. SL trống → chia đều capacity 8 cho 3 đơn vị.
+    """
+    settings = _base_settings(
+        layoutType="ratio_stack",
+        duplexFlow="double",
+        targetQuantitiesByPage={},
+    )
+    precalc = _run_capture(monkeypatch, 6, settings)
+    assert sorted(precalc.keys()) == [0, 1]
+    front = [p["src_page_idx"] for p in precalc[0]]
+    back = [p["src_page_idx"] for p in precalc[1]]
+    # Mặt trước chỉ chứa trang chẵn (0,2,4); mặt sau chỉ trang lẻ (1,3,5).
+    assert set(front).issubset({0, 2, 4}), f"mặt trước phải toàn trang chẵn: {front}"
+    assert set(back).issubset({1, 3, 5}), f"mặt sau phải toàn trang lẻ: {back}"
+    # Ô cùng đơn vị liền nhau: đếm số lần đổi đơn vị ≤ số đơn vị - 1.
+    front_units = [p // 2 for p in front]
+    switches = sum(1 for a, b in zip(front_units, front_units[1:]) if a != b)
+    assert switches <= 2, f"ô cùng đơn vị phải liền nhau (switches={switches}, {front_units})"
+    # Mặt sau = mặt trước + 1 (cặp trang), cùng vị trí ô.
+    for f, b in zip(front, back):
+        assert b == f + 1, f"ô mặt sau phải là trang kế mặt trước: F={f} B={b}"
+
+
+def test_ratio_stack_duplex_le_bi_chan(monkeypatch):
+    """ratio_stack 2 mặt + số trang LẺ → vẫn chặn (cần cặp trang trước/sau)."""
+    settings = _base_settings(
+        layoutType="ratio_stack",
+        duplexFlow="double",
+        targetQuantitiesByPage={},
+    )
+    with pytest.raises(ValueError, match="CHẴN"):
+        _run_capture(monkeypatch, 5, settings)
 
 
 def test_sequential_duplex_cap_truoc_sau(monkeypatch):
@@ -265,3 +317,194 @@ def test_cut_stacks_collation(monkeypatch):
     p1 = [p["src_page_idx"] for p in precalc[1]]
     assert p0 == [0, 2, 4, 6, 8, 10, 12, 14], f"tờ 0 cut_stacks sai: {p0}"
     assert p1 == [1, 3, 5, 7, 9, 11, 13, 15], f"tờ 1 cut_stacks sai: {p1}"
+
+
+# ═══════════════ CHIA CỌC THEO LOẠI (cluster_type) ═══════════════
+# Kích hoạt khi layoutType='ratio_stack' + clusterMode∈{row,column} (dàn nhiều loại +
+# chia cọc → LUÔN mỗi cọc 1 loại; bỏ nút clusterDistribution thừa).
+#
+# MÔ HÌNH: giải lưới ĐẦY ĐỦ tờ (_canned_layout_8 = 4 cột × 2 hàng), rồi chia CỘT (mode
+# 'column') / HÀNG (mode 'row') cho mỗi loại theo TỶ LỆ SL — bề rộng cọc ∝ SL. Mỗi dải =
+# 1 band (cluster_idx). MỌI loại nằm CÙNG 1 tờ mẫu (không nhân bản kiểu tờ).
+
+def _cluster_settings(**over):
+    s = _base_settings(
+        layoutType="ratio_stack",
+        clusterMode="column",
+        clusterGap=0,
+    )
+    s.update(over)
+    return s
+
+
+def test_cluster_type_moi_coc_1_loai(monkeypatch):
+    """2 loại SL đều, mode column, lưới 4 cột → chia 2:2. Band 0 = loại 0, band 1 = loại 1.
+
+    Lưới đầy đủ 8 ô (4 cột × 2 hàng). Mọi loại cùng 1 tờ → tổng vẫn 8 ô (KHÔNG nhân đôi).
+    """
+    settings = _cluster_settings(targetQuantitiesByPage={"0": 100, "1": 100})
+    precalc = _run_capture(monkeypatch, 2, settings)
+
+    assert precalc is not None and 0 in precalc, "cần tờ mẫu 0"
+    sheet0 = precalc[0]
+    assert len(sheet0) == 8, f"lưới đầy đủ 8 ô (mọi loại cùng 1 tờ), được {len(sheet0)}"
+
+    # Mỗi band (cluster_idx) chỉ chứa 1 loại.
+    by_cluster = {}
+    for p in sheet0:
+        by_cluster.setdefault(p["cluster_idx"], set()).add(p["src_page_idx"])
+    assert by_cluster[0] == {0}, f"band 0 phải thuần loại 0, được {by_cluster.get(0)}"
+    assert by_cluster[1] == {1}, f"band 1 phải thuần loại 1, được {by_cluster.get(1)}"
+    # SL đều → mỗi loại 2 cột × 2 hàng = 4 ô.
+    counts = {}
+    for p in sheet0:
+        counts[p["src_page_idx"]] = counts.get(p["src_page_idx"], 0) + 1
+    assert counts == {0: 4, 1: 4}, f"SL đều → 4 ô/loại, được {counts}"
+
+
+def test_cluster_type_be_rong_theo_ty_le(monkeypatch):
+    """Bề rộng cọc (số cột) tỷ lệ SL. A(300)/B(100) tỷ lệ 3:1, 4 cột → A 3 cột, B 1 cột.
+
+    A: 3 cột × 2 hàng = 6 ô; B: 1 cột × 2 hàng = 2 ô.
+    """
+    settings = _cluster_settings(targetQuantitiesByPage={"0": 300, "1": 100})
+    precalc = _run_capture(monkeypatch, 2, settings)
+    sheet0 = precalc[0]
+
+    counts = {}
+    for p in sheet0:
+        counts[p["src_page_idx"]] = counts.get(p["src_page_idx"], 0) + 1
+    assert counts.get(0) == 6, f"loại 0 (SL cao) phải 6 ô (3 cột), được {counts}"
+    assert counts.get(1) == 2, f"loại 1 phải 2 ô (1 cột), được {counts}"
+
+
+def test_cluster_type_moi_loai_1_band(monkeypatch):
+    """Mỗi loại nằm gọn trong 1 band riêng (cluster_idx) — không xé lẻ qua ranh cọc."""
+    settings = _cluster_settings(targetQuantitiesByPage={"0": 300, "1": 100})
+    precalc = _run_capture(monkeypatch, 2, settings)
+    sheet0 = precalc[0]
+
+    # Mỗi band chỉ 1 loại; mỗi loại chỉ 1 band.
+    band_of_type = {}
+    type_of_band = {}
+    for p in sheet0:
+        t, b = p["src_page_idx"], p["cluster_idx"]
+        band_of_type.setdefault(t, set()).add(b)
+        type_of_band.setdefault(b, set()).add(t)
+    for t, bands in band_of_type.items():
+        assert len(bands) == 1, f"loại {t} bị xé qua nhiều band: {bands}"
+    for b, types in type_of_band.items():
+        assert len(types) == 1, f"band {b} chứa nhiều loại: {types}"
+
+
+def test_cluster_type_gutter_offset(monkeypatch):
+    """Rãnh dao (cluster_gap) → band phải tách nhau. Band phải nằm bên phải band trái + gap."""
+    _gap_mm = 10.0
+    settings = _cluster_settings(
+        clusterGap=_gap_mm,
+        targetQuantitiesByPage={"0": 100, "1": 100},
+    )
+    precalc = _run_capture(monkeypatch, 2, settings)
+    sheet0 = precalc[0]
+
+    # abs_x nhỏ nhất của mỗi band.
+    minx = {}
+    for p in sheet0:
+        ci = p["cluster_idx"]
+        minx[ci] = min(minx.get(ci, 1e9), p["abs_x"])
+    assert minx[1] > minx[0], f"band 1 phải bên phải band 0: minx={minx}"
+
+
+def test_cluster_type_row_mode(monkeypatch):
+    """Mode 'row' chia HÀNG theo tỷ lệ. Lưới 2 hàng, 2 loại đều → mỗi loại 1 hàng (band)."""
+    settings = _cluster_settings(
+        clusterMode="row",
+        targetQuantitiesByPage={"0": 100, "1": 100},
+    )
+    precalc = _run_capture(monkeypatch, 2, settings)
+    sheet0 = precalc[0]
+
+    by_cluster = {}
+    for p in sheet0:
+        by_cluster.setdefault(p["cluster_idx"], set()).add(p["src_page_idx"])
+    # 2 hàng chia 2 loại → mỗi hàng 1 loại (band 0, band 1).
+    assert by_cluster.get(0) == {0}, f"band 0 (hàng) phải loại 0, được {by_cluster.get(0)}"
+    assert by_cluster.get(1) == {1}, f"band 1 (hàng) phải loại 1, được {by_cluster.get(1)}"
+
+
+def test_cluster_type_duplex_2_to(monkeypatch):
+    """2 mặt: 2 tờ front/back. Cọc giữ loại; mặt trước=2u, mặt sau=2u+1."""
+    settings = _cluster_settings(
+        duplexFlow="double",
+        targetQuantitiesByPage={"0": 100, "2": 100},
+    )
+    # 4 trang → 2 đơn vị (cặp 0/1, 2/3). 2 loại → 2 band → 2 tờ F/B.
+    precalc = _run_capture(monkeypatch, 4, settings)
+    assert sorted(precalc.keys()) == [0, 1], f"2 mặt = 2 tờ, được {list(precalc.keys())}"
+
+    front, back = precalc[0], precalc[1]
+    fc = {}
+    bc = {}
+    for p in front:
+        fc.setdefault(p["cluster_idx"], set()).add(p["src_page_idx"])
+    for p in back:
+        bc.setdefault(p["cluster_idx"], set()).add(p["src_page_idx"])
+    # Mặt trước: band 0 = đơn vị 0 (trang 0), band 1 = đơn vị 1 (trang 2).
+    assert fc[0] == {0} and fc[1] == {2}, f"mặt trước sai: {fc}"
+    # Mặt sau: trang lẻ tương ứng (0→1, 2→3).
+    assert bc[0] == {1} and bc[1] == {3}, f"mặt sau sai: {bc}"
+    # Cùng hình học ô giữa F/B (mirror do process_chunk).
+    for a, b in zip(front, back):
+        assert abs(a["abs_x"] - b["abs_x"]) < 1e-6
+        assert abs(a["abs_y"] - b["abs_y"]) < 1e-6
+
+
+# ═══════════════ HELPER compute_cluster_type_alloc (parity preview≡output) ═══════════════
+# Engine (nup_engine) VÀ preview (routes/imposition.py) đều gọi CÙNG helper này với cùng
+# tham số → test helper tất định = chốt chặn parity logic (bài học "preview ≠ output").
+# Chữ ký MỚI: compute_cluster_type_alloc(total_lines, lines_cross, qtys) → {linesPerType, nSheets, unplaced}.
+
+def test_cluster_type_alloc_be_rong_theo_ty_le():
+    """A(1000)/B(200) tỷ lệ 5:1, 6 dòng (cột) → A 5 dòng, B 1 dòng."""
+    from app.workers.nup_layout_solver import compute_cluster_type_alloc
+    r = compute_cluster_type_alloc(total_lines=6, lines_cross=2, qtys=[1000, 200])
+    lpt = r['linesPerType']
+    assert lpt[0] == 5, f"loại 0 phải 5 dòng: {lpt}"
+    assert lpt[1] == 1, f"loại 1 phải 1 dòng: {lpt}"
+
+
+def test_cluster_type_alloc_min_1_dong():
+    """Loại SL rất thấp vẫn được ≥1 dòng (min 1 dòng/loại có SL>0)."""
+    from app.workers.nup_layout_solver import compute_cluster_type_alloc
+    r = compute_cluster_type_alloc(total_lines=4, lines_cross=2, qtys=[1000, 5])
+    lpt = r['linesPerType']
+    assert lpt[1] >= 1, f"loại SL thấp vẫn phải ≥1 dòng: {lpt}"
+
+
+def test_cluster_type_alloc_so_to_theo_loai_thieu_nhat():
+    """Số tờ = max theo loại. 2 dòng, cross=2, A(80)/B(40): A 1 dòng×2=2ô→40 tờ; B 1 dòng→20 tờ → 40."""
+    from app.workers.nup_layout_solver import compute_cluster_type_alloc
+    r = compute_cluster_type_alloc(total_lines=2, lines_cross=2, qtys=[80, 40])
+    assert r['nSheets'] == 40, f"số tờ = max(40,20)=40: {r}"
+
+
+def test_cluster_type_alloc_loai_sl_zero_khong_dong():
+    """Loại SL=0 không được cấp dòng."""
+    from app.workers.nup_layout_solver import compute_cluster_type_alloc
+    r = compute_cluster_type_alloc(total_lines=4, lines_cross=2, qtys=[100, 0, 100])
+    lpt = r['linesPerType']
+    assert lpt[1] == 0, f"loại SL=0 không nhận dòng: {lpt}"
+
+
+def test_cluster_type_alloc_sl_trong_chia_deu():
+    """SL trống (mọi loại=0) → CHIA ĐỀU dòng, lấp đầy 1 tờ (KHÔNG trả rỗng → preview trắng).
+
+    Bug thật: helper cũ lọc active=SL>0 → SL trống ra [0,0,0] → cells rỗng → 'Chưa có
+    dữ liệu bố cục'. Khớp hành vi ratio_stack 'Trống = tự động lấp đầy 1 tờ'.
+    """
+    from app.workers.nup_layout_solver import compute_cluster_type_alloc
+    # 3 loại, 3 dòng, SL trống → mỗi loại 1 dòng (chia đều), 1 tờ mẫu.
+    r = compute_cluster_type_alloc(total_lines=3, lines_cross=2, qtys=[0, 0, 0])
+    assert r['linesPerType'] == [1, 1, 1], f"SL trống phải chia đều: {r['linesPerType']}"
+    assert r['nSheets'] == 1, f"SL trống → 1 tờ mẫu: {r['nSheets']}"
+    assert sum(r['linesPerType']) > 0, "KHÔNG được trả toàn 0 (gây preview trắng)"

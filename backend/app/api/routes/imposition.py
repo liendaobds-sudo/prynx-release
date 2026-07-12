@@ -887,6 +887,12 @@ class PreviewLayoutRequest(BaseModel):
     # Chế độ 1 Dao (LETA): KC cụm phụ (mm) — preview phải khớp nup_engine secondary_gap.
     cut_type: Optional[str] = "default"
     fill_block_gap: Optional[float] = 0
+    # ── Chia cọc xén (guillotine batching) — preview khớp nup_engine cluster_type ──
+    # cluster_distribution='type' + cluster_mode∈{row,column}: mỗi cọc 1 loại theo tỷ lệ SL.
+    cluster_mode: Optional[str] = "none"
+    cluster_count: Optional[int] = 2
+    cluster_gap: Optional[float] = 0
+    cluster_distribution: Optional[str] = "default"
 
 def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_hint: str = None):
     """Polygon va chạm boong — KHỚP nup_process_chunk (dùng kích thước Ô solver, không item_w FE)."""
@@ -1544,6 +1550,161 @@ async def preview_layout(req: PreviewLayoutRequest):
                     "diePolygonsByPage": {str(pi): poly for pi, poly in _die_poly_by_page.items() if poly},
                 }
             
+            # ── CLUSTER-TYPE PREVIEW: chia tỷ lệ + CHIA CỌC theo LOẠI (mỗi loại 1 cọc) ──
+            # Khớp nhánh precalc cluster_type trong nup_engine: KHÔNG chia usable đều —
+            # giải lưới ĐẦY ĐỦ tờ rồi phân CỘT (mode column) / HÀNG (mode row) cho mỗi loại
+            # theo TỶ LỆ SL (bề rộng cọc ∝ SL), chèn gutter giữa các dải, mỗi dải 1 band.
+            # Dàn nhiều loại (ratio_stack) + CHIA CỌC → LUÔN mỗi cọc 1 loại.
+            _cmode_mp = (getattr(req, 'cluster_mode', None) or 'none')
+            if (not getattr(req, 'is_die_cut', False)
+                    and _lt == 'ratio_stack'
+                    and _cmode_mp in ('row', 'column')
+                    and doc.page_count > 1
+                    and _tm in ('nup', 'step_repeat', 'booklet')):
+                from app.workers.nup_layout_solver import (
+                    solve_optimal_layout as _sol_ct, solve_manual as _sm_ct,
+                    compute_cluster_type_alloc as _cta,
+                )
+                import math as _math_ct
+                # cluster_gap từ preview payload đã là POINT (frontend nhân MM_TO_PT như
+                # gap_x/margins). KHÔNG nhân lại. (Engine nhận mm nên tự nhân — khác đường.)
+                _cgap_ct = float(getattr(req, 'cluster_gap', 0) or 0)
+                _bleed_ct = req.bleed or 0
+                _trim_w_ct = max(req.item_w - 2 * _bleed_ct, 1.0)
+                _trim_h_ct = max(req.item_h - 2 * _bleed_ct, 1.0)
+                # Lưới ĐẦY ĐỦ tờ (KHÔNG chia usable — khớp guard _is_cluster_type_early).
+                if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
+                    _lay_ct = _sm_ct(_trim_w_ct, _trim_h_ct, req.gap_x, req.gap_y, req.cols, req.rows)
+                else:
+                    _lay_ct = _sol_ct(
+                        usable_w=req.usable_w, usable_h=req.usable_h,
+                        orig_w=_trim_w_ct, orig_h=_trim_h_ct,
+                        gap_x=req.gap_x, gap_y=req.gap_y,
+                        strategy=req.strategy, secondary_gap=getattr(req, 'split_gap', None),
+                    )
+                _cells_ct = _lay_ct.get('cells', [])
+                _cap_ct = len(_cells_ct)
+                _tp_ct = int(getattr(req, 'total_pages', 0) or 0)
+                _dn_ct = int(doc.page_count or 0)
+                _nsrc_ct = (_tp_ct if not (_dn_ct > 0 and _dn_ct < _tp_ct) else _dn_ct) if _tp_ct > 0 else _dn_ct
+                _nsrc_ct = max(1, int(_nsrc_ct))
+                _tqbp_ct = getattr(req, 'target_quantities_by_page', None) or {}
+                _gq_ct = getattr(req, 'target_quantity', 0) or 0
+
+                def _qty_ct(_pi):
+                    _q = _tqbp_ct.get(str(_pi), _tqbp_ct.get(_pi, _gq_ct))
+                    try:
+                        return max(0, int(_q))
+                    except (TypeError, ValueError):
+                        return 0
+
+                _dup_ct = ((getattr(req, 'duplex_flow', None) or 'normal') == 'double'
+                           and _nsrc_ct >= 2 and _nsrc_ct % 2 == 0)
+                _nu_ct = (_nsrc_ct // 2) if _dup_ct else _nsrc_ct
+                _qtys_ct = [_qty_ct((_u * 2) if _dup_ct else _u) for _u in range(_nu_ct)]
+
+                if _cap_ct > 0 and _qtys_ct:
+                    # Kích thước lưới: số cột × hàng. 'column' chia CỘT, 'row' chia HÀNG.
+                    _cols_ct = max((c['c'] for c in _cells_ct), default=0) + 1
+                    _rows_ct = max((c['r'] for c in _cells_ct), default=0) + 1
+                    if _cmode_mp == 'column':
+                        _total_lines_ct, _lines_cross_ct = _cols_ct, _rows_ct
+                    else:
+                        _total_lines_ct, _lines_cross_ct = _rows_ct, _cols_ct
+                    _alloc_ct = _cta(_total_lines_ct, _lines_cross_ct, _qtys_ct)
+                    _lines_of_ct = _alloc_ct['linesPerType']
+
+                    # Gán DÒNG → loại + band (giống engine).
+                    _line_type_ct = {}
+                    _line_band_ct = {}
+                    _band_c = 0
+                    _cur_line_c = 0
+                    for _t, _nl in enumerate(_lines_of_ct):
+                        if int(_nl) <= 0:
+                            continue
+                        for _ in range(int(_nl)):
+                            _line_type_ct[_cur_line_c] = _t
+                            _line_band_ct[_cur_line_c] = _band_c
+                            _cur_line_c += 1
+                        _band_c += 1
+                    _num_bands_ct = max(1, _band_c)
+
+                    _bw1_ct = max((c['x'] + c['width'] for c in _cells_ct), default=0.0)
+                    _bh1_ct = max((c['y'] + c['height'] for c in _cells_ct), default=0.0)
+                    if _cmode_mp == 'column':
+                        _supw_ct = _bw1_ct + max(0, _num_bands_ct - 1) * _cgap_ct
+                        _suph_ct = _bh1_ct
+                    else:
+                        _supw_ct = _bw1_ct
+                        _suph_ct = _bh1_ct + max(0, _num_bands_ct - 1) * _cgap_ct
+                    _al_ct = (getattr(req, 'align', None) or 'center')
+                    if not isinstance(_al_ct, str):
+                        _al_ct = 'center'
+                    _ml_ct = getattr(req, 'margin_left', 0) or 0
+                    _mb_ct = getattr(req, 'margin_bottom', 0) or 0
+                    _mr_ct = getattr(req, 'margin_right', 0) or 0
+                    _mt_ct = getattr(req, 'margin_top', 0) or 0
+                    _shw_ct = getattr(req, 'sheet_w', 0) or 0
+                    _shh_ct = getattr(req, 'sheet_h', 0) or 0
+                    if 'left' in _al_ct:
+                        _sbx_ct = _ml_ct
+                    elif 'right' in _al_ct and _shw_ct > 0:
+                        _sbx_ct = _shw_ct - _mr_ct - _supw_ct
+                    else:
+                        _sbx_ct = _ml_ct + (req.usable_w - _supw_ct) / 2
+                    if 'top' in _al_ct and _shh_ct > 0:
+                        _sby_ct = _shh_ct - _mt_ct - _suph_ct
+                    elif 'bottom' in _al_ct:
+                        _sby_ct = _mb_ct
+                    else:
+                        _sby_ct = _mb_ct + (req.usable_h - _suph_ct) / 2
+
+                    _items_ct = []
+                    _ow_ct = _oh_ct = 0.0
+                    _pbp_ct = {}
+                    for _c in _cells_ct:
+                        _line = _c['c'] if _cmode_mp == 'column' else _c['r']
+                        _t = _line_type_ct.get(_line)
+                        if _t is None:
+                            continue
+                        _b = _line_band_ct[_line]
+                        if _cmode_mp == 'column':
+                            _ax = _sbx_ct + _c['x'] + _b * _cgap_ct
+                            _ay = _sby_ct + (_bh1_ct - _c['y'] - _c['height'])
+                        else:
+                            _ax = _sbx_ct + _c['x']
+                            _ay = _sby_ct + (_suph_ct - (_c['y'] + _b * _cgap_ct) - _c['height'])
+                        _pi_ct = (_t * 2) if _dup_ct else _t  # tờ 0 = mặt trước
+                        _items_ct.append({
+                            'x': _c['x'], 'y': _c['y'],
+                            'absX': _ax, 'absY': _ay,
+                            'width': _c['width'], 'height': _c['height'],
+                            'isRotated': bool(_c.get('isRotated', False)),
+                            'isRotated180': False,
+                            'pageIdx': _pi_ct,
+                        })
+                        _pbp_ct[str(_pi_ct)] = _pbp_ct.get(str(_pi_ct), 0) + 1
+                        _ow_ct = max(_ow_ct, _ax + _c['width'])
+                        _oh_ct = max(_oh_ct, _ay + _c['height'])
+                    # 2 mặt = 1 tờ giấy chạy CẢ 2 mặt trong 1 lượt → số tờ vật lý = nSheets,
+                    # KHÔNG nhân đôi (khớp engine report sheet_count=n_sheets, không *2).
+                    _sn_ct = max(1, int(_alloc_ct['nSheets']))
+                    doc.close()
+                    return {
+                        "success": True,
+                        "cells": _items_ct,
+                        "overallWidth": _ow_ct,
+                        "overallHeight": _oh_ct,
+                        "totalItems": len(_items_ct),
+                        "strategyUsed": 'cluster_type_duplex' if _dup_ct else 'cluster_type',
+                        "isMixedPreview": True,
+                        "absPlacement": True,
+                        "sheetsNeeded": max(1, int(_sn_ct)),
+                        "ratioUnplaced": _alloc_ct.get('unplaced', []),
+                        "placedByPage": _pbp_ct,
+                        "clusterTypeMode": True,
+                    }
+
             # ── MULTI-PAGE N-Up guillotine PREVIEW: sequential | cut_stacks | ratio_stack ──
             # Trước đây chỉ ratio_stack có preview mixed → sequential/cut_stacks rơi single-page
             # (mọi ô cùng 1 trang) → user thấy "sai sai". Tờ 0 + pageIdx từng ô.
@@ -1591,14 +1752,31 @@ async def preview_layout(req: PreviewLayoutRequest):
                 _strategy_label = _lt or 'sequential'
 
                 if _lt == 'ratio_stack' and _mp_cap > 0:
-                    _qtys_mp = [_qty_mp(i) for i in range(_n_src)]
+                    # 2 mặt: đơn vị = cặp trang (2u trước | 2u+1 sau); chia tỷ lệ theo
+                    # ĐƠN VỊ (SL trang chẵn). Preview tờ 0 = mặt TRƯỚC (trang chẵn 2u) —
+                    # khớp nup_engine (xuất 2 tờ front/back, mặt sau lật gương). 1 mặt:
+                    # đơn vị = trang, slot → trang trực tiếp.
+                    _duplex_rs_mp = (
+                        (getattr(req, 'duplex_flow', None) or 'normal') == 'double'
+                        and _n_src >= 2
+                        and _n_src % 2 == 0
+                    )
+                    _n_units_mp = (_n_src // 2) if _duplex_rs_mp else _n_src
+                    _qtys_mp = [
+                        _qty_mp((_u * 2) if _duplex_rs_mp else _u)
+                        for _u in range(_n_units_mp)
+                    ]
                     _alloc_mp = compute_ratio_stack_alloc(_mp_cap, _qtys_mp)
                     _cpp_mp = _alloc_mp['cellsPerPage']
-                    for _mi, _cnt in enumerate(_cpp_mp):
-                        _slot_page.extend([_mi] * int(_cnt))
+                    for _ui, _cnt in enumerate(_cpp_mp):
+                        _pg_mp = (_ui * 2) if _duplex_rs_mp else _ui
+                        _slot_page.extend([_pg_mp] * int(_cnt))
+                    # 2 mặt = 1 tờ giấy vật lý chạy duplex (mặt trước + sau cùng 1 tờ),
+                    # KHÔNG nhân đôi số tờ. Khớp engine report (sheet_count=n_sheets) —
+                    # total_sheets=2 bên engine chỉ là 2 TRANG PDF mẫu, không phải 2 tờ in.
                     _sheets_needed = max(1, int(_alloc_mp.get('nSheets') or 1))
                     _unplaced_mp = _alloc_mp.get('unplaced', [])
-                    _strategy_label = 'ratio_stack'
+                    _strategy_label = 'ratio_stack_duplex' if _duplex_rs_mp else 'ratio_stack'
                 elif _lt == 'cut_stacks' and _mp_cap > 0:
                     # Tờ 0: cell j → page j * n_sheets (cọc đầu mỗi stack)
                     _n_sheets_cs = max(1, _math_mp.ceil(_n_src / _mp_cap))
@@ -1656,7 +1834,10 @@ async def preview_layout(req: PreviewLayoutRequest):
                     _chunk = _seq_mp[:_mp_cap]
                     if _duplex_mp:
                         _slot_page = [int(sp) * 2 for sp in _chunk]
-                        _sheets_needed = _n_front_mp * 2
+                        # 2 mặt = 1 tờ giấy chạy CẢ 2 mặt → số tờ vật lý = _n_front_mp,
+                        # KHÔNG nhân đôi (khớp ratio_stack). _n_front*2 bên engine chỉ là
+                        # số TRANG PDF (mỗi mặt 1 trang), không phải số tờ giấy in.
+                        _sheets_needed = _n_front_mp
                         _strategy_label = 'sequential_duplex'
                     else:
                         _slot_page = list(_chunk)

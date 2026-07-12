@@ -29,14 +29,14 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                             value={s.layoutType}
                             onChange={(v) => {
                                 s.setLayoutType(v as any);
-                                if ((v === 'cut_stacks' || v === 'ratio_stack') && s.duplexFlow === 'double') {
+                                if (v === 'cut_stacks' && s.duplexFlow === 'double') {
                                     s.setDuplexFlow('normal');
                                 }
                             }}
                             options={[
                                 { value: 'sequential', title: 'Xếp lần lượt', desc: '1 mặt: trang 1,2,3… liên tiếp theo SL. 2 mặt: mỗi SP = cặp trang trước/sau cùng ô; tờ lẻ lật gương canh mặt sau (số trang chẵn).' },
-                                { value: 'cut_stacks', title: 'Xếp chồng', desc: 'Cut-stack collation (1 mặt). Xén cọc rồi úp đúng thứ tự trang. Không dùng với 2 mặt.' },
-                                { value: 'ratio_stack', title: 'Chia tỷ lệ + xếp chồng', desc: 'Nhiều mẫu cùng cỡ, SL khác nhau; mọi tờ giống hệt (1 mặt / 1 tờ mẫu). Không dùng với 2 mặt.' }
+                                { value: 'cut_stacks', title: 'Xếp chồng', desc: 'Xén cọc rồi úp đúng thứ tự trang (1 mặt). Không dùng với 2 mặt.' },
+                                { value: 'ratio_stack', title: 'Chia tỷ lệ + xếp chồng', desc: 'Nhiều mẫu cùng cỡ, SL khác nhau; mọi tờ giống hệt. 1 mặt: 1 tờ mẫu. 2 mặt: mỗi mẫu = cặp trang trước/sau (SL theo trang lẻ 1,3,5…), số trang chẵn.' }
                             ]}
                         />
                     </div>
@@ -47,7 +47,16 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                         <div className="flex items-center gap-3">
                             <label className="text-[11px] font-bold text-slate-600 tracking-wide shrink-0 w-[65px]">SỐ MẶT</label>
                             <select
-                                value={s.duplexFlow} onChange={(e) => s.setDuplexFlow(e.target.value as 'normal' | 'double')}
+                                value={s.duplexFlow}
+                                onChange={(e) => {
+                                    const v = e.target.value as 'normal' | 'double';
+                                    s.setDuplexFlow(v);
+                                    // Guard đối xứng: chọn 2 Mặt khi đang «Xếp chồng» (cut_stacks
+                                    // không hỗ trợ 2 mặt) → tự đổi cách ráp về «Xếp lần lượt».
+                                    if (v === 'double' && s.layoutType === 'cut_stacks') {
+                                        s.setLayoutType('sequential');
+                                    }
+                                }}
                                 className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                             >
                                 <option value="normal">1 Mặt</option>

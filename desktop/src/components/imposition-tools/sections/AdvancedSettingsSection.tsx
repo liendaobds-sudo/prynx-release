@@ -870,18 +870,22 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             </div>
                         )}
 
-                        {/* 4. Guillotine Batching */}
-                        {(s.taskMode === 'nup' || s.taskMode === 'step_repeat' || s.taskMode === 'sticker_imposer') && s.markType === 'guillotine' && !stickerLike && (
+                        {/* 4. Chia cọc xén — CHỈ hiện khi tính năng THỰC SỰ áp dụng:
+                            - Dàn nhiều loại (ratio_stack): mỗi cọc 1 loại, bề rộng theo tỷ lệ SL.
+                            - Bình trang (step_repeat): chia cọc nhân bản cùng loại.
+                            Ẩn với Xếp lần lượt / Xếp chồng (chia cọc chưa chạy đúng) → tránh
+                            tổ hợp vô nghĩa "chọn cột/hàng mà không thấy gì". */}
+                        {((s.taskMode === 'nup' && s.layoutType === 'ratio_stack') || s.taskMode === 'step_repeat') && s.markType === 'guillotine' && !stickerLike && (
                             <div className="relative z-[10]">
                                 <div className="flex items-center justify-between mb-2">
-                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">CHIA CỌC XÉN (GUILLOTINE BATCHING)</label>
+                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">CHIA CỌC XÉN</label>
                                     <div
                                         className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                         onClick={() => setInfoModal({
-                                            title: "Chia cọc xén (Guillotine Batching)",
+                                            title: "Chia cọc xén",
                                             content: (
                                                 <div className="space-y-4">
-                                                    <p className="text-slate-600 dark:text-zinc-300">Tính năng nâng cao dành cho thợ vận hành máy xén. Giúp tự động tách toàn bộ lưới dàn trang thành các "cọc" (batch) riêng biệt, chừa sẵn rãnh dao (gutter) giữa các cọc để máy xén đưa dao chém một cách an toàn mà không phạm vào thiết kế.</p>
+                                                    <p className="text-slate-600 dark:text-zinc-300">Tự động tách tờ in thành các cọc riêng biệt, chừa sẵn rãnh dao giữa các cọc để máy xén chém an toàn mà không phạm vào thiết kế.</p>
                                                     <div className="space-y-1">
                                                         <h4 className="font-bold text-slate-800 dark:text-white">Chia theo Hàng / Cột</h4>
                                                         <p className="text-slate-600 dark:text-zinc-300">Cắt toàn bộ lưới giấy thành 2, 3, hoặc nhiều cọc theo chiều dọc hoặc ngang, giảm thiểu số lần chém mồi của máy cắt.</p>
@@ -904,13 +908,21 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     </select>
                                     {s.clusterMode !== 'none' && (
                                         <div className="flex items-center gap-2">
-                                            <input type="number" min="2" value={s.clusterCount} onChange={e => s.setClusterCount(Math.max(2, parseInt(e.target.value) || 2))} className="w-14 h-8 px-2 font-medium border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 text-center" title="Số Cọc (Batches)" />
+                                            <input type="number" min="2" value={s.clusterCount} onChange={e => s.setClusterCount(Math.max(2, parseInt(e.target.value) || 2))} className="w-14 h-8 px-2 font-medium border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 text-center" title="Số cọc" />
                                             <button onClick={() => setShowClusterModal(true)} className="w-8 h-8 flex items-center justify-center border border-slate-300 dark:border-white/20 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors text-slate-500 hover:text-indigo-600" title="Cài đặt nâng cao">
                                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                                             </button>
                                         </div>
                                     )}
                                 </div>
+                                {/* Dàn nhiều loại (ratio_stack) + chia cọc → mỗi loại 1 cọc riêng,
+                                    BỀ RỘNG cọc theo tỷ lệ SL. Không có kiểu "chia cọc mà trộn loại"
+                                    nên không có nút phân bổ; chỉ hiện dòng nhắc cho rõ. */}
+                                {s.clusterMode !== 'none' && s.layoutType === 'ratio_stack' && (
+                                    <div className="mt-1.5 text-[11px] text-slate-500 dark:text-zinc-400 leading-snug">
+                                        Mỗi loại nằm 1 cọc riêng, cọc rộng hẹp theo số lượng, có bộ dấu xén riêng.
+                                    </div>
+                                )}
                             </div>
                         )}
 
@@ -999,18 +1011,6 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             </button>
                         </div>
                         <div className="p-5 flex flex-col gap-4">
-                            <div>
-                                <label className="text-xs font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wide block mb-1.5">KIỂU PHÂN BỔ CỌC (PATTERN)</label>
-                                <RichSelect
-                                    value={s.clusterDistribution}
-                                    onChange={(v) => s.setClusterDistribution(v as any)}
-                                    options={[
-                                        { value: 'default', title: 'Mặc định (Chia đều)', desc: 'Trải đều các trang lên lưới rập cắt, rồi nhân bản lưới đó sang các cọc.' },
-                                        { value: 'type', title: 'Thuần chủng (Theo loại)', desc: 'Tất cả vị trí trong 1 cọc chỉ chứa duy nhất 1 trang hoặc 1 loại file.' }
-                                    ]}
-                                />
-                            </div>
-                            <Divider />
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="text-xs font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wide block mb-1.5">KHOẢNG CÁCH TỪ</label>
@@ -1022,9 +1022,6 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                 <div className="hidden">
                                     {/* Khoảng cách hở moved to PaperSettingsUI */}
                                 </div>
-                            </div>
-                            <div className="mt-2 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-lg border border-slate-200 dark:border-white/10">
-                                <Checkbox checked={s.clusterBorder} onChange={s.setClusterBorder} label="Vẽ đường viền giới hạn quanh mỗi cọc (Cluster Border)" />
                             </div>
                         </div>
                         <div className="px-5 py-4 bg-slate-50 dark:bg-zinc-800/50 border-t border-slate-200 dark:border-white/10 flex justify-end">

@@ -103,6 +103,8 @@ export async function runProcessEngine(
                 clusterMode: (settings as any).clusterMode || 'none',
                 clusterCount: (settings as any).clusterCount || 2,
                 clusterGap: (settings as any).clusterGap || 0,
+                // 'type' = mỗi cọc 1 loại (chia cọc theo tỷ lệ SL); 'default' = ratio_stack trộn ô.
+                clusterDistribution: (settings as any).clusterDistribution || 'default',
                 clusterTileW: isDieCut ? (settings as any).clusterTileW || 148 : undefined,
                 clusterTileH: isDieCut ? (settings as any).clusterTileH || 210 : undefined,
                 clusterCols: (settings as any).clusterCols || 2,

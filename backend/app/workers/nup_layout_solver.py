@@ -305,3 +305,56 @@ def compute_ratio_stack_alloc(capacity: int, qtys: List[int]) -> Dict[str, Any]:
             "(cd native && cargo build --release, copy .dll → .pyd trong venv)."
         )
     return _rust_solve_ratio_stack(int(capacity), [int(q) for q in qtys])
+
+
+def compute_cluster_type_alloc(
+    total_lines: int, lines_cross: int, qtys: List[int]
+) -> Dict[str, Any]:
+    """Chia CỌC theo LOẠI (guillotine batching) cho N-Up "chia tỷ lệ + xếp chồng".
+
+    Mỗi loại = 1 CỌC (dải cột dọc ở mode 'column', dải hàng ngang ở mode 'row') có rãnh
+    dao + dấu xén riêng → xén cả chồng ra mỗi cọc một loại, khỏi phân loại lại. BỀ RỘNG
+    cọc (số dòng lưới) TỶ LỆ với SL: loại SL cao chiếm nhiều dòng hơn → số tờ cân bằng,
+    không dư thừa. Mọi loại nằm trên CÙNG 1 tờ mẫu (không nhân bản kiểu tờ).
+
+    "dòng" (line) = CỘT ở mode 'column' (chia dọc), = HÀNG ở mode 'row' (chia ngang).
+    Phân total_lines cho các loại theo tỷ lệ SL (largest-remainder, min 1 dòng/loại có
+    SL>0) — tái dùng compute_ratio_stack_alloc ở mức DÒNG.
+
+    Args:
+      total_lines: tổng số dòng lưới đầy đủ (cols ở mode column / rows ở mode row).
+      lines_cross: số ô theo chiều vuông góc (rows ở mode column / cols ở mode row) —
+        để tính số ô mỗi loại = linesPerType × lines_cross → số tờ.
+      qtys: SL mỗi loại (index = loại; ≤0 = không in).
+
+    Trả:
+      {
+        'linesPerType': [số dòng mỗi loại]*n_types,  # 0 = loại không được cấp dòng
+        'nSheets': int,                              # số tờ in (max theo loại thiếu nhất)
+        'unplaced': [type có SL>0 nhưng không đủ dòng],
+      }
+    """
+    total_lines = max(0, int(total_lines))
+    lines_cross = max(0, int(lines_cross))
+    qtys = [max(0, int(q)) for q in qtys]
+    active = [t for t, q in enumerate(qtys) if q > 0]
+
+    if total_lines == 0 or lines_cross == 0 or not qtys:
+        return {'linesPerType': [0] * len(qtys), 'nSheets': 1, 'unplaced': list(active)}
+
+    # SL trống (mọi loại = 0) → CHIA ĐỀU dòng cho mọi loại (lấp đầy 1 tờ mẫu), khớp
+    # hành vi ratio_stack "Trống = tự động lấp đầy 1 tờ". compute_ratio_stack_alloc tự
+    # xử lý cả 2 ca: có SL → theo tỷ lệ (min 1 dòng/loại SL>0); trống → chia đều.
+    alloc = compute_ratio_stack_alloc(total_lines, qtys)
+    lines_of = list(alloc['cellsPerPage'])  # index = loại, giá trị = số dòng
+    unplaced = list(alloc.get('unplaced', []))
+
+    # Số tờ = max theo loại có SL>0: ceil(qty / (số_dòng_loại × lines_cross)). SL trống
+    # → không loại nào áp đặt → 1 tờ mẫu.
+    n_sheets = 1
+    for t in active:
+        cells_t = int(lines_of[t]) * lines_cross
+        if cells_t > 0:
+            n_sheets = max(n_sheets, math.ceil(qtys[t] / cells_t))
+
+    return {'linesPerType': lines_of, 'nSheets': n_sheets, 'unplaced': unplaced}

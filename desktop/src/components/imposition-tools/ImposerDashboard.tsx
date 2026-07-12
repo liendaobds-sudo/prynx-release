@@ -595,9 +595,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 && activeTool !== 'cnc_imposer'
             ) {
                 const _lt = s.taskMode === 'step_repeat' ? 'repeat' : s.layoutType;
-                if (_lt === 'cut_stacks' || _lt === 'ratio_stack') {
+                if (_lt === 'cut_stacks') {
                     toast.error(
-                        `Chế độ «${_lt === 'cut_stacks' ? 'Xếp chồng' : 'Chia tỷ lệ + xếp chồng'}» chưa hỗ trợ 2 mặt. Chọn 1 Mặt, hoặc dùng Xếp lần lượt / Bình trang.`,
+                        `Chế độ «Xếp chồng» chưa hỗ trợ 2 mặt. Chọn 1 Mặt, hoặc dùng Xếp lần lượt / Chia tỷ lệ / Bình trang.`,
                     );
                     return;
                 }
@@ -650,11 +650,22 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 } catch { /* ignore */ }
             }
 
+            // Chia cọc CHỈ áp dụng cho N-Up guillotine ở tổ hợp: dàn nhiều loại
+            // (ratio_stack) hoặc bình trang (step_repeat). Với sequential/cut_stacks,
+            // clusterMode='column/row' rò vào payload sẽ khiến engine (nup_engine ~L388)
+            // CHIA usable + xuất cọc thật, trong khi preview không chia → preview≠output.
+            // Gate về 'none' cho tổ hợp không áp dụng. Die-cut/CNC (stickerLike) đi nhánh
+            // riêng (cluster_tile) → giữ nguyên, không đụng.
+            const _clusterAppliesNup = stickerLike
+                || (s.taskMode === 'nup' && s.layoutType === 'ratio_stack')
+                || s.taskMode === 'step_repeat';
+            const effClusterMode = _clusterAppliesNup ? s.clusterMode : 'none';
+
             onStartNup({
                 layoutType: s.taskMode === 'step_repeat' ? 'repeat' : s.layoutType,
                 formsize: finalFormsize, customSheetWidth: effSheetW, customSheetHeight: effSheetH,
                 bleed: s.bleed, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy, groupingStrategy: s.groupingStrategy,
-                clusterMode: s.clusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap,
+                clusterMode: effClusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap,
                 clusterGapMode: s.clusterGapMode, clusterDistribution: s.clusterDistribution, clusterBorder: s.clusterBorder,
                 splitGap: splitGap,
                 gapX: s.gapX, gapY: s.gapY, marginTop: s.marginTop, marginBottom: effMarginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight,
@@ -992,6 +1003,13 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                     }
                                 }
 
+                                // Chia cọc chỉ áp dụng N-Up ratio_stack / step_repeat (hoặc
+                                // die-cut/CNC nhánh riêng). Gate 'none' cho tổ hợp khác để
+                                // preview KHỚP payload execute (cùng logic effClusterMode).
+                                const _clusterAppliesPv = stickerLike
+                                    || (s.taskMode === 'nup' && s.layoutType === 'ratio_stack')
+                                    || s.taskMode === 'step_repeat';
+                                const _effClusterModePv = _clusterAppliesPv ? s.clusterMode : 'none';
                                 return (
                             <GridPreview
                                 taskMode={s.taskMode} gridStrategy={s.gridStrategy} columns={s.columns} rows={s.rows}
@@ -1005,6 +1023,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 clusterCols={s.clusterCols} clusterRows={s.clusterRows}
                                 clusterTileW={s.clusterTileW} clusterTileH={s.clusterTileH}
                                 tileGapX={s.tileGapX} tileGapY={s.tileGapY}
+                                clusterMode={_effClusterModePv} clusterCount={s.clusterCount}
+                                clusterGap={s.clusterGap} clusterDistribution={s.clusterDistribution}
                                 sheetWidth={s.formsize === 'custom' || s.formsize.startsWith('custom_') ? s.customSheetWidth : (PREDEFINED_SIZES[s.formsize]?.w || 320)}
                                 sheetHeight={s.formsize === 'custom' || s.formsize.startsWith('custom_') ? s.customSheetHeight : (PREDEFINED_SIZES[s.formsize]?.h || 450)}
                                 marginTop={effMarginTop} marginBottom={effMarginBottom} marginLeft={effMarginLeft} marginRight={effMarginRight}

@@ -245,12 +245,9 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   onChange={(e) => {
                     const v = e.target.value as typeof s.layoutType;
                     s.setLayoutType(v);
-                    // cut_stacks / ratio_stack không hỗ trợ 2 mặt → tự về 1 mặt (tránh
-                    // user bấm Bình rồi mới lỗi, hoặc process_chunk mirror phá collate).
-                    if (
-                      (v === "cut_stacks" || v === "ratio_stack") &&
-                      duplexFlow === "double"
-                    ) {
+                    // cut_stacks không hỗ trợ 2 mặt → tự về 1 mặt (mirror tờ lẻ phá
+                    // collate). ratio_stack GIỜ hỗ trợ 2 mặt (cặp trang trước/sau).
+                    if (v === "cut_stacks" && duplexFlow === "double") {
                       setDuplexFlow("normal");
                     }
                   }}
@@ -570,7 +567,16 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 <div className="flex flex-1 items-center gap-3 min-w-0">
                   <select
                     value={duplexFlow}
-                    onChange={(e) => setDuplexFlow(e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setDuplexFlow(v);
+                      // Guard đối xứng: chọn 2 Mặt khi đang «Xếp chồng» (cut_stacks không
+                      // hỗ trợ 2 mặt — mirror tờ lẻ phá thứ tự úp xấp) → tự đổi cách ráp về
+                      // «Xếp lần lượt» (mode gần nhất có 2 mặt), tránh preview≠output.
+                      if (v === "double" && taskMode === "nup" && s.layoutType === "cut_stacks") {
+                        s.setLayoutType("sequential");
+                      }
+                    }}
                     className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                   >
                     <option value="normal">1 Mặt</option>
@@ -586,11 +592,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
               )}
               {duplexFlow === "double" &&
                 taskMode === "nup" &&
-                (s.layoutType === "cut_stacks" || s.layoutType === "ratio_stack") && (
+                s.layoutType === "cut_stacks" && (
                 <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
-                  ⚠️ «{s.layoutType === "cut_stacks" ? "Xếp chồng" : "Chia tỷ lệ + xếp chồng"}»{" "}
-                  chưa hỗ trợ 2 mặt — chọn <strong>1 Mặt</strong>, hoặc đổi sang{" "}
-                  <strong>Xếp lần lượt</strong>.
+                  ⚠️ «Xếp chồng» chưa hỗ trợ 2 mặt — chọn <strong>1 Mặt</strong>, hoặc đổi sang{" "}
+                  <strong>Xếp lần lượt</strong> / <strong>Chia tỷ lệ</strong>.
                 </div>
               )}
             </div>

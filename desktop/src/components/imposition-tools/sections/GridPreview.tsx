@@ -49,6 +49,11 @@ export interface GridPreviewProps {
   clusterTileH?: number;
   tileGapX?: number;
   tileGapY?: number;
+  // ── Chia cọc theo loại (ratio_stack + clusterDistribution='type') ──
+  clusterMode?: string;
+  clusterCount?: number;
+  clusterGap?: number;
+  clusterDistribution?: string;
   // ── Bình Bế Rớt (CNC) ghép nhiều mẫu ──
   imposerMode?: string;
   cncTwoSided?: boolean;
@@ -742,6 +747,10 @@ export default function GridPreview(props: GridPreviewProps) {
     clusterTileH,
     tileGapX,
     tileGapY,
+    clusterMode,
+    clusterCount,
+    clusterGap,
+    clusterDistribution,
     imposerMode,
     cncTwoSided,
     cncFlipEdge,
@@ -767,6 +776,15 @@ export default function GridPreview(props: GridPreviewProps) {
   useEffect(() => {
     onMixedPlacedByPageRef.current = onMixedPlacedByPage;
   }, [onMixedPlacedByPage]);
+
+  // getWorkingFile được tạo mới mỗi lần parent render (không useCallback ở
+  // ImpositionTab) → nếu để trong dep array của effect fetch preview thì MỌI
+  // re-render của parent (vd kéo resize sidebar → sidebarWidth đổi) sẽ fetch lại
+  // bố cục oan. Giữ trong ref, đọc .current trong effect, KHÔNG cho vào deps.
+  const getWorkingFileRef = useRef(getWorkingFile);
+  useEffect(() => {
+    getWorkingFileRef.current = getWorkingFile;
+  }, [getWorkingFile]);
 
   const previewPathCacheRef = useRef<{ key: string; path?: string; fileId?: string } | null>(null);
   /** Max order length đã thấy — giảm length = đã xóa trang → ưu tiên bake. */
@@ -808,9 +826,9 @@ export default function GridPreview(props: GridPreviewProps) {
       mustBake = true;
     }
 
-    if (getWorkingFile) {
+    if (getWorkingFileRef.current) {
       try {
-        const wf = await getWorkingFile();
+        const wf = await getWorkingFileRef.current();
         const nativePath = (wf as any)?.path as string | undefined;
 
         // Chưa sửa trang + có path đĩa → dùng luôn (nhanh).
@@ -983,6 +1001,12 @@ export default function GridPreview(props: GridPreviewProps) {
           // N-Up cách thức ráp — backend nhánh ratio_stack / sequential cần field này.
           layout_type: layoutType || undefined,
           duplex_flow: duplexFlow || "normal",
+          // Chia cọc theo loại (ratio_stack + clusterDistribution='type'): gửi để preview
+          // dựng đa cọc KHỚP nup_engine. cluster_gap → points (backend không nhân lại).
+          cluster_mode: clusterMode || "none",
+          cluster_count: clusterCount || 2,
+          cluster_gap: (clusterGap || 0) * MM_TO_PT,
+          cluster_distribution: clusterDistribution || "default",
           // BẮT BUỘC: số trang viewer sau xóa thumbnail (vd 4) — không tin doc.page_count.
           total_pages: viewerPageCount > 0 ? viewerPageCount : 0,
           split_gap: splitGap * MM_TO_PT,
@@ -1180,6 +1204,10 @@ export default function GridPreview(props: GridPreviewProps) {
     clusterTileH,
     tileGapX,
     tileGapY,
+    clusterMode,
+    clusterCount,
+    clusterGap,
+    clusterDistribution,
     targetQuantity,
     targetQuantitiesByPage,
     shapesByPage,
@@ -1189,7 +1217,8 @@ export default function GridPreview(props: GridPreviewProps) {
     cncFlipEdge,
     cutType,
     fillBlockGap,
-    getWorkingFile,
+    // getWorkingFile: đọc qua getWorkingFileRef (không đưa vào dep) — parent tạo mới
+    // reference mỗi render (kéo resize panel → re-render) khiến fetch lại bố cục OAN.
     previewSourceKey,
   ]);
 
@@ -1380,6 +1409,21 @@ export default function GridPreview(props: GridPreviewProps) {
       ? `translate(${cx}, ${cy}) scale(1, -1) translate(-${cx}, -${cy})`
       : `translate(${cx}, ${cy}) scale(-1, 1) translate(-${cx}, -${cy})`;
 
+  // Nhãn ô: 2 mặt (ratio_stack HOẶC sequential) → đánh cặp "1a/1b" theo SỐ LOẠI
+  // (a=mặt trước, b=mặt sau). Mỗi loại = cặp trang trước/sau; blockId là trang chẵn 2u
+  // (0-based) nên loại = floor(blockId/2)+1. Không đổi → hiện số trang thô gây hiểu lầm
+  // (loại 7 hiện "13" thay vì "7a"). Các mode 1 mặt giữ số trang thô.
+  const _isPairDuplex =
+    duplexFlow === "double" &&
+    (_isRatioStack || layoutType === "sequential");
+  const cellLabel = (blockId: number, isBack: boolean): string | number => {
+    if (_isPairDuplex)
+      return `${Math.floor(blockId / 2) + 1}${isBack ? "b" : "a"}`;
+    if (isBack && _isCncPreview && (layoutResult as any)?.cncTwoSided)
+      return blockId + 2;
+    return blockId + 1;
+  };
+
   // Mặt sau dùng CHÍNH ô mặt trước — phản chiếu do backGroupTransform đảm nhiệm.
   const cncBackCells = svgCells;
 
@@ -1440,6 +1484,35 @@ export default function GridPreview(props: GridPreviewProps) {
               </>
             )}
           </div>
+          {/* Chú thích động: người dùng học bằng mắt — 1 câu tiếng người mô tả preview.
+              _isClusterType = dàn nhiều loại (ratio_stack) + đã chọn chia cọc → mỗi cọc
+              1 loại riêng, bề rộng theo SL. */}
+          {(() => {
+            const _isClusterType =
+              _isRatioStack && clusterMode && clusterMode !== "none";
+            const _nTypes = new Set(
+              (layoutResult.cells || [])
+                .map((c) => (c as any).pageIdx)
+                .filter((p) => typeof p === "number"),
+            ).size;
+            if (_isClusterType && _nTypes > 0) {
+              const _dir = clusterMode === "row" ? "hàng ngang" : "cột dọc";
+              return (
+                <div className="text-[12px] text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded px-2 py-1 w-full text-center">
+                  {_nTypes} loại · mỗi loại 1 cọc riêng ({_dir}, bề rộng theo số
+                  lượng) · in {totalSheets} tờ
+                </div>
+              );
+            }
+            if (_isRatioStack && _nTypes > 0) {
+              return (
+                <div className="text-[12px] text-slate-500 dark:text-zinc-400 text-center w-full">
+                  {_nTypes} loại trộn theo tỷ lệ số lượng · in {totalSheets} tờ
+                </div>
+              );
+            }
+            return null;
+          })()}
           {_isRatioStack &&
             Array.isArray(layoutResult.ratioUnplaced) &&
             layoutResult.ratioUnplaced.length > 0 && (
@@ -1716,7 +1789,7 @@ export default function GridPreview(props: GridPreviewProps) {
                             fill={color.text}
                             opacity={0.85}
                           >
-                            {c.blockId + 1}
+                            {cellLabel(c.blockId, false)}
                           </text>
                         )}
                       </g>
@@ -1978,10 +2051,7 @@ export default function GridPreview(props: GridPreviewProps) {
                                 opacity={0.85}
                                 transform={backTextUnflip(cx, cy)}
                               >
-                                {_isCncPreview &&
-                                (layoutResult as any)?.cncTwoSided
-                                  ? c.blockId + 2
-                                  : c.blockId + 1}
+                                {cellLabel(c.blockId, true)}
                               </text>
                             )}
                           </g>

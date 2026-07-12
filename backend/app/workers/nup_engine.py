@@ -201,14 +201,16 @@ def run_nup_engine(
 
     # ── Guard Bình 2 mặt (guillotine N-Up) ──
     #  - Số trang CHẴN (mỗi SP = cặp trước/sau).
-    #  - cut_stacks / ratio_stack: process_chunk vẫn mirror tờ lẻ nếu duplex=double
-    #    trong khi precalc không dựng F/B → phá collate / tờ mẫu. Chặn rõ ràng.
+    #  - cut_stacks: process_chunk vẫn mirror tờ lẻ nếu duplex=double trong khi precalc
+    #    không dựng F/B → phá collate. Chặn rõ ràng.
+    #  - ratio_stack: CÓ hỗ trợ 2 mặt (tự dựng 2 tờ front/back cùng template, process_chunk
+    #    lật gương tờ lẻ) → chỉ đòi số trang chẵn (mỗi mẫu = cặp trang trước/sau).
     if (
         settings.get('duplexFlow') == 'double'
         and not settings.get('isDieCutMode', False)
     ):
         _lt_guard = settings.get('layoutType', 'sequential') or 'sequential'
-        _bad_lt = _lt_guard in ('cut_stacks', 'ratio_stack')
+        _bad_lt = _lt_guard == 'cut_stacks'
         _odd = page_count % 2 != 0
         if _bad_lt or _odd:
             try:
@@ -216,9 +218,8 @@ def run_nup_engine(
             except Exception:
                 pass
             if _bad_lt:
-                _ten = 'Xếp chồng' if _lt_guard == 'cut_stacks' else 'Chia tỷ lệ + xếp chồng'
                 raise ValueError(
-                    f"Chế độ «{_ten}» chưa hỗ trợ Bình 2 mặt. "
+                    "Chế độ «Xếp chồng» chưa hỗ trợ Bình 2 mặt. "
                     "Chọn 1 Mặt, hoặc dùng Xếp lần lượt / Bình trang (S&R)."
                 )
             raise ValueError(
@@ -376,7 +377,15 @@ def run_nup_engine(
     # secondary_gap nhưng args tuple vẫn dùng → tránh UnboundLocalError.
     secondary_gap = None
 
-    if cluster_mode == 'column' and cluster_count >= 2:
+    # Cluster-type (ratio_stack + chia cọc theo LOẠI): KHÔNG chia usable đều theo
+    # cluster_count. Bề RỘNG mỗi cọc TỶ LỆ với SL → nhánh precalc cluster_type tự giải
+    # lưới ĐẦY ĐỦ tờ rồi phân cột/hàng theo tỷ lệ. Ở đây giữ nguyên usable + cx/cy=1.
+    _lt_early = settings.get('layoutType', 'sequential')
+    _is_cluster_type_early = (_lt_early == 'ratio_stack' and cluster_mode in ('row', 'column'))
+
+    if _is_cluster_type_early:
+        pass  # không chia đều; nhánh cluster_type tự phân dải theo tỷ lệ
+    elif cluster_mode == 'column' and cluster_count >= 2:
 
         usable_w = (usable_w - cluster_gap * (cluster_count - 1)) / cluster_count
 
@@ -1720,6 +1729,156 @@ def run_nup_engine(
 
         total_sheets = len(sheet_mapping)
 
+    elif (layout_type == 'ratio_stack' and cluster_mode in ('row', 'column')
+          and capacity > 0 and page_count > 0 and layout.get('cells')):
+
+        # ── N-Up "Chia tỷ lệ + CHIA CỌC theo LOẠI" (guillotine batching) ──
+        #    Mỗi LOẠI = 1 CỌC (dải cột dọc ở mode 'column' / dải hàng ngang ở mode 'row')
+        #    có rãnh dao + dấu xén riêng → xén cả chồng ra mỗi cọc một loại. BỀ RỘNG cọc
+        #    (số cột/hàng lưới) TỶ LỆ với SL: loại SL cao chiếm nhiều dòng hơn → số tờ cân
+        #    bằng, không dư thừa. MỌI loại nằm CÙNG 1 tờ mẫu (giống hệt xuyên chồng).
+        #
+        #    KHÁC mô hình cũ: usable KHÔNG bị chia đều (guard _is_cluster_type_early) →
+        #    `layout` là lưới ĐẦY ĐỦ tờ. Ta phân CỘT (mode column) / HÀNG (mode row) cho
+        #    từng loại theo tỷ lệ, chèn gutter giữa các dải, mỗi dải 1 cluster_idx (Rust
+        #    compute_mark_coords nhóm theo cluster_idx → dấu xén riêng mỗi cọc tự động).
+        from app.workers.nup_layout_solver import compute_cluster_type_alloc
+        _align_ct = settings.get('align', 'center')
+        _cells_ct = layout['cells']
+
+        # 2 mặt: ĐƠN VỊ = cặp trang (2u trước | 2u+1 sau). Chia cọc theo ĐƠN VỊ (SL trang
+        # chẵn); xuất 2 tờ front/back → process_chunk lật gương tờ lẻ.
+        _duplex_ct = (
+            settings.get('duplexFlow', 'single') == 'double'
+            and page_count >= 2
+            and page_count % 2 == 0
+        )
+        _n_units_ct = (page_count // 2) if _duplex_ct else page_count
+        _qtys_ct = []
+        for _u in range(_n_units_ct):
+            _pg_key = (_u * 2) if _duplex_ct else _u
+            _q = target_quantities_by_page.get(str(_pg_key), target_quantities_by_page.get(_pg_key, target_quantity))
+            try:
+                _q = int(_q)
+            except (TypeError, ValueError):
+                _q = 0
+            _qtys_ct.append(max(0, _q))
+
+        # Kích thước lưới đầy đủ: số cột × số hàng.
+        _cols_ct = max((c['c'] for c in _cells_ct), default=0) + 1
+        _rows_ct = max((c['r'] for c in _cells_ct), default=0) + 1
+        # 'column' → chia CỘT theo tỷ lệ (lines_cross = số hàng); 'row' → chia HÀNG.
+        if cluster_mode == 'column':
+            _total_lines_ct, _lines_cross_ct = _cols_ct, _rows_ct
+        else:
+            _total_lines_ct, _lines_cross_ct = _rows_ct, _cols_ct
+
+        _alloc_ct = compute_cluster_type_alloc(_total_lines_ct, _lines_cross_ct, _qtys_ct)
+        _lines_of_ct = _alloc_ct['linesPerType']  # index=loại, giá trị=số dòng cấp cho loại
+        n_sheets = max(1, int(_alloc_ct['nSheets']))
+        if _alloc_ct.get('unplaced'):
+            logger.warning("[CLUSTER_TYPE] Loại không đủ dòng lưới (nên tách bài in): idx=%s", _alloc_ct['unplaced'])
+
+        # Gán từng DÒNG (cột/hàng) → loại + band (cluster_idx). Loại 0 chiếm dải đầu.
+        _line_type_ct = {}
+        _line_band_ct = {}
+        _band_ct = 0
+        _cur_line_ct = 0
+        for _t, _nl in enumerate(_lines_of_ct):
+            if int(_nl) <= 0:
+                continue
+            for _ in range(int(_nl)):
+                _line_type_ct[_cur_line_ct] = _t
+                _line_band_ct[_cur_line_ct] = _band_ct
+                _cur_line_ct += 1
+            _band_ct += 1
+        _num_bands_ct = max(1, _band_ct)
+
+        # Bbox lưới đầy đủ + super-grid (thêm gutter giữa các dải theo hướng chia).
+        _bw_full_ct = max((c['x'] + c['width'] for c in _cells_ct), default=0.0)
+        _bh_full_ct = max((c['y'] + c['height'] for c in _cells_ct), default=0.0)
+        if cluster_mode == 'column':
+            _super_w_ct = _bw_full_ct + max(0, _num_bands_ct - 1) * cluster_gap
+            _super_h_ct = _bh_full_ct
+        else:
+            _super_w_ct = _bw_full_ct
+            _super_h_ct = _bh_full_ct + max(0, _num_bands_ct - 1) * cluster_gap
+        if 'left' in _align_ct:
+            _sbx_ct = margin_left
+        elif 'right' in _align_ct:
+            _sbx_ct = sheet_w - margin_right - _super_w_ct
+        else:
+            _sbx_ct = margin_left + (sheet_usable_w - _super_w_ct) / 2
+        if 'top' in _align_ct:
+            _sby_ct = sheet_h - margin_top - _super_h_ct
+        elif 'bottom' in _align_ct:
+            _sby_ct = margin_bottom
+        else:
+            _sby_ct = margin_bottom + (sheet_usable_h - _super_h_ct) / 2
+
+        def _back_of_ct(_u):
+            _bp = _u * 2 + 1
+            return _bp if _bp < page_count else _u * 2
+
+        # Dựng 1 tờ: mỗi ô → loại theo dòng (cột/hàng) của nó; dời band*gutter theo hướng
+        # chia. cluster_idx = band → Rust vẽ dấu xén riêng mỗi dải.
+        def _build_cluster_tpl(_page_of_unit):
+            _tpl = []
+            for _c in _cells_ct:
+                _line = _c['c'] if cluster_mode == 'column' else _c['r']
+                _t = _line_type_ct.get(_line)
+                if _t is None:
+                    continue  # dòng không được cấp (không xảy ra — mọi dòng đã gán)
+                _b = _line_band_ct[_line]
+                if cluster_mode == 'column':
+                    _ax = _sbx_ct + _c['x'] + _b * cluster_gap
+                    _ayb = _sby_ct + (_bh_full_ct - _c['y'] - _c['height'])
+                else:
+                    _ax = _sbx_ct + _c['x']
+                    _ayb = _sby_ct + (_super_h_ct - (_c['y'] + _b * cluster_gap) - _c['height'])
+                _tpl.append({
+                    'cluster_idx': _b,
+                    'cell': dict(_c),
+                    'src_page_idx': _page_of_unit(_t),
+                    'abs_x': _ax,
+                    'abs_y': _ayb,
+                    'width': _c['width'],
+                    'height': _c['height'],
+                    'original_cell_y': sheet_h - _ayb - _c['height'],
+                })
+            return _tpl
+
+        if _duplex_ct:
+            precalculated_placements = {
+                0: _build_cluster_tpl(lambda _u: _u * 2),
+                1: _build_cluster_tpl(_back_of_ct),
+            }
+            total_sheets = 2
+        else:
+            precalculated_placements = {0: _build_cluster_tpl(lambda _u: _u)}
+            total_sheets = 1
+
+        # Report: 1 dòng (mọi loại cùng 1 tờ mẫu). ô/tờ = tổng ô lưới; sheet_count=n_sheets.
+        _active_ct = [t for t in range(len(_qtys_ct)) if _qtys_ct[t] > 0]
+        _n_types_ct = len(_active_ct)
+        _req_qty_ct = sum(_qtys_ct[t] for t in _active_ct)
+        _items_per_sheet_ct = len(precalculated_placements.get(0, []))
+        _lbl_ct = (settings.get('reportDisplay') or {}).get('labelNameText') or (
+            f"Chia cọc theo loại ({_n_types_ct} cọc{' · 2 mặt' if _duplex_ct else ''})"
+        )
+        _report_rows.append({
+            'label': _lbl_ct,
+            'items_per_sheet': _items_per_sheet_ct,
+            'requested_qty': _req_qty_ct,
+            'sheet_count': n_sheets,
+        })
+
+        if _alloc_ct.get('unplaced'):
+            _up_ct = ", ".join(str(i + 1) for i in _alloc_ct['unplaced'])
+            _ratio_stack_warnings.append(
+                f"⚠ Không đủ dòng lưới cho loại (trang) {_up_ct} — nên tách sang bài in khác."
+            )
+
     elif layout_type == 'ratio_stack' and capacity > 0 and page_count > 0 and layout.get('cells'):
 
         # ── N-Up "Chia tỷ lệ + xếp chồng" (ratio_stack): mỗi mẫu chiếm số ô theo TỶ
@@ -1729,10 +1888,23 @@ def run_nup_engine(
         from app.workers.nup_layout_solver import compute_ratio_stack_alloc
         _align_rs = settings.get('align', 'center')
         _cells_rs = layout['cells']
-        # SL mỗi mẫu (theo page-index).
+
+        # 2 mặt: mỗi ĐƠN VỊ = cặp trang (2u mặt TRƯỚC | 2u+1 mặt SAU). Chia tỷ lệ theo
+        # ĐƠN VỊ (SL đọc ở trang chẵn), rồi xuất 2 tờ CÙNG hình học ô: tờ 0 = mặt trước,
+        # tờ 1 = mặt sau → process_chunk lật gương tờ lẻ canh đúng mặt sau. Máy in chạy
+        # n_sheets lượt duplex từ 1 CẶP tờ mẫu (giống 1 mặt: 1 tờ mẫu, chỉ khác 2 mặt).
+        _duplex_rs = (
+            settings.get('duplexFlow', 'single') == 'double'
+            and page_count >= 2
+            and page_count % 2 == 0  # chẵn — đã chặn ở đầu; phòng thủ kép
+        )
+        _n_units_rs = (page_count // 2) if _duplex_rs else page_count
+
+        # SL mỗi ĐƠN VỊ (2 mặt: key trang chẵn 2u; 1 mặt: key trang u).
         _qtys = []
-        for _p in range(page_count):
-            _q = target_quantities_by_page.get(str(_p), target_quantities_by_page.get(_p, target_quantity))
+        for _u in range(_n_units_rs):
+            _pg_key = (_u * 2) if _duplex_rs else _u
+            _q = target_quantities_by_page.get(str(_pg_key), target_quantities_by_page.get(_pg_key, target_quantity))
             try:
                 _q = int(_q)
             except (TypeError, ValueError):
@@ -1745,12 +1917,12 @@ def run_nup_engine(
         if _alloc.get('unplaced'):
             logger.warning("[RATIO_STACK] Mẫu không đủ chỗ trên tờ (nên tách bài in): idx=%s", _alloc['unplaced'])
 
-        # Gán ô → mẫu: mẫu 0 chiếm _cpp[0] ô ĐẦU, mẫu 1 kế tiếp... (ô cùng mẫu liền
-        # nhau → dễ xén). Vị trí ô CỐ ĐỊNH giữa mọi tờ.
-        _slot_to_page = []
-        for _mi, _cnt in enumerate(_cpp):
-            _slot_to_page.extend([_mi] * int(_cnt))
-        _n_used = min(len(_slot_to_page), len(_cells_rs))
+        # Gán ô → đơn vị: đơn vị 0 chiếm _cpp[0] ô ĐẦU, đơn vị 1 kế tiếp... (ô cùng đơn
+        # vị liền nhau → dễ xén). Vị trí ô CỐ ĐỊNH giữa mọi tờ (cả mặt trước↔sau).
+        _slot_to_unit = []
+        for _ui, _cnt in enumerate(_cpp):
+            _slot_to_unit.extend([_ui] * int(_cnt))
+        _n_used = min(len(_slot_to_unit), len(_cells_rs))
 
         _sc = _cells_rs[:_n_used]
         _bw = max((c['x'] + c['width'] for c in _sc), default=0.0)
@@ -1768,34 +1940,50 @@ def run_nup_engine(
         else:
             _byb = margin_bottom + (sheet_usable_h - _bh) / 2
 
-        # Template 1 tờ — MỌI tờ dùng CHUNG (giống hệt nhau → xén chồng ra 1 loại).
-        _template = []
-        for _j in range(_n_used):
-            _c = _sc[_j]
-            _ax = _bx + _c['x']
-            _ayb = _byb + (_bh - _c['y'] - _c['height'])
-            _template.append({
-                'cluster_idx': 0,
-                'cell': dict(_c),
-                'src_page_idx': _slot_to_page[_j],
-                'abs_x': _ax,
-                'abs_y': _ayb,
-                'width': _c['width'],
-                'height': _c['height'],
-                'original_cell_y': sheet_h - _ayb - _c['height'],
-            })
-        # XUẤT 1 TỜ DUY NHẤT — mọi tờ GIỐNG HỆT nhau nên nhân bản n_sheets tờ là
-        # lãng phí thuần (n_sheets× thời gian render + dung lượng file, chồng in ra
-        # y đúc). Máy in chạy n_sheets lượt từ 1 tờ mẫu → chỉ cần 1 tờ + report
-        # "in n_sheets tờ" (giống cơ chế export-unique của bế tem cùng khuôn).
-        precalculated_placements = {0: _template}
-        total_sheets = 1
+        # Dựng template 1 tờ: ô j → trang nguồn theo hàm _page_of_unit (đơn vị của slot j).
+        # MỌI tờ cùng mặt dùng CHUNG template (giống hệt nhau → xén chồng ra 1 loại).
+        def _build_template_rs(_page_of_unit):
+            _tpl = []
+            for _j in range(_n_used):
+                _c = _sc[_j]
+                _ax = _bx + _c['x']
+                _ayb = _byb + (_bh - _c['y'] - _c['height'])
+                _tpl.append({
+                    'cluster_idx': 0,
+                    'cell': dict(_c),
+                    'src_page_idx': _page_of_unit(_slot_to_unit[_j]),
+                    'abs_x': _ax,
+                    'abs_y': _ayb,
+                    'width': _c['width'],
+                    'height': _c['height'],
+                    'original_cell_y': sheet_h - _ayb - _c['height'],
+                })
+            return _tpl
+
+        # XUẤT tờ mẫu — mọi tờ cùng mặt GIỐNG HỆT nhau nên nhân bản n_sheets tờ là lãng
+        # phí thuần. Máy in chạy n_sheets lượt từ 1 tờ mẫu (1 mặt) / 1 cặp tờ mẫu (2 mặt)
+        # → chỉ cần 1 tờ (hoặc 2 tờ front/back) + report "in n_sheets tờ".
+        if _duplex_rs:
+            # Tờ 0 = mặt trước (trang chẵn 2u), tờ 1 = mặt sau (trang lẻ 2u+1).
+            def _back_page_rs(_u):
+                _bp = _u * 2 + 1
+                # Trang lẻ thiếu (bất khả vì page_count chẵn) → tái dùng mặt trước.
+                return _bp if _bp < page_count else _u * 2
+            precalculated_placements = {
+                0: _build_template_rs(lambda _u: _u * 2),
+                1: _build_template_rs(_back_page_rs),
+            }
+            total_sheets = 2
+        else:
+            precalculated_placements = {0: _build_template_rs(lambda _u: _u)}
+            total_sheets = 1
 
         # Luôn ghi 1 dòng lệnh in (sheet_count=n_sheets) → message hoàn tất hiện
         # "in N tờ" dù reportDisplay tắt. Stamp lên PDF chỉ khi report bật.
         # KHÔNG thêm mỗi mẫu 1 dòng (bảng tổng hợp cộng sheet_count → nhân sai).
         _n_types_rs = sum(1 for q in _qtys if q > 0)
-        _label_rs = (settings.get('reportDisplay') or {}).get('labelNameText') or f"Bình tỷ lệ ({_n_types_rs} mẫu)"
+        _sides_lbl_rs = " · 2 mặt" if _duplex_rs else ""
+        _label_rs = (settings.get('reportDisplay') or {}).get('labelNameText') or f"Bình tỷ lệ ({_n_types_rs} mẫu{_sides_lbl_rs})"
         _req_qty_rs = sum(max(0, q) for q in _qtys)
         _report_rows.append({
             'label': _label_rs,
@@ -1823,9 +2011,9 @@ def run_nup_engine(
                     material=settings.get('reportMaterial', '') or '',
                     lamination_type=settings.get('reportLamination', 0) or 0,
                     lamination_sides=settings.get('reportLaminationSides', 1) or 1,
-                    mode_label='Cắt xén (chia tỷ lệ)',
+                    mode_label='Cắt xén (chia tỷ lệ, 2 mặt)' if _duplex_rs else 'Cắt xén (chia tỷ lệ)',
                     order_code=settings.get('reportOrderCode', '') or '',
-                    identifier=f"{_n_types_rs} mẫu",
+                    identifier=f"{_n_types_rs} mẫu{_sides_lbl_rs}",
                     sheet_count_override=n_sheets,
                 )
                 _reports_by_sheet[0] = _nr_rs.build_report_string(_rcfg_rs, _data_rs)
@@ -2420,9 +2608,14 @@ def run_nup_engine(
             )
         report_lines.append(f"  ⇒ Tổng số tờ cần in: {_total_sheets}")
         if layout_type == 'ratio_stack' and _total_sheets > 1:
-            report_lines.append(
-                f"  (File chỉ 1 tờ mẫu — máy in chạy {_total_sheets} bản giống hệt.)"
-            )
+            if locals().get('_duplex_rs'):
+                report_lines.append(
+                    f"  (File chỉ 1 CẶP tờ mẫu (mặt trước + sau) — máy in chạy {_total_sheets} lượt duplex giống hệt.)"
+                )
+            else:
+                report_lines.append(
+                    f"  (File chỉ 1 tờ mẫu — máy in chạy {_total_sheets} bản giống hệt.)"
+                )
     for _w in _ratio_stack_warnings:
         report_lines.append(_w)
 
