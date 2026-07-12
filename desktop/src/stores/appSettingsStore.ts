@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
+import i18n, { type AppLanguage } from '../i18n';
 
 // ─── Persistent storage ───
 // localStorage trong WebView2 nằm trong cache của WebView → bị XÓA khi update/cài lại
@@ -107,8 +108,10 @@ interface AppSettingsState {
   autoRenameFormat: string;
   measurementUnit: 'mm' | 'cm' | 'inch';
   previewQuality: 'high' | 'fast';
+  language: AppLanguage;
   showRulers: boolean;
   showMenuBar: boolean;
+  setLanguage: (lang: AppLanguage) => void;
   toggleToolVisibility: (toolKey: string) => void;
   toggleFavoriteTool: (toolKey: string) => void;
   setDefaultExportPath: (path: string | null) => void;
@@ -140,8 +143,13 @@ export const useAppSettingsStore = create<AppSettingsState>()(
       autoRenameFormat: '{original}_PrynX',
       measurementUnit: 'mm',
       previewQuality: 'high',
+      language: 'vi',
       showRulers: false,
       showMenuBar: true,
+      setLanguage: (lang) => {
+        i18n.changeLanguage(lang);
+        set({ language: lang });
+      },
       toggleToolVisibility: (toolKey) => set((state) => ({
         hiddenTools: state.hiddenTools.includes(toolKey)
           ? state.hiddenTools.filter((k) => k !== toolKey)
@@ -176,6 +184,13 @@ export const useAppSettingsStore = create<AppSettingsState>()(
     {
       name: STORAGE_KEY,
       storage: createJSONStorage(() => tauriStorage),
+      // Storage Tauri là ASYNC → ngôn ngữ đã lưu chỉ có sau khi rehydrate xong.
+      // Đẩy vào i18n ở đây; lúc init i18n mặc định 'vi' nên trước khi rehydrate UI vẫn ổn.
+      onRehydrateStorage: () => (state) => {
+        if (state?.language && state.language !== i18n.language) {
+          i18n.changeLanguage(state.language);
+        }
+      },
     }
   )
 );
