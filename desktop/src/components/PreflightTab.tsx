@@ -8,6 +8,7 @@ import { Button } from './Button';
 import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../i18n';
 
 // ── Types ──
 interface PreflightIssue {
@@ -331,8 +332,8 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                                       {sel && <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                      <div className="text-[11px] font-bold text-slate-700 dark:text-white leading-tight">{r.title}</div>
-                                      <div className="text-[9px] text-slate-500 dark:text-zinc-400 truncate mt-0.5">{r.desc}</div>
+                                      <div className="text-[11px] font-bold text-slate-700 dark:text-white leading-tight">{tv(r.title)}</div>
+                                      <div className="text-[9px] text-slate-500 dark:text-zinc-400 truncate mt-0.5">{tv(r.desc)}</div>
                                     </div>
                                   </button>
                                 );
@@ -386,7 +387,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                                     <div key={idx} className={`${s.bg} border ${s.border} rounded-lg p-2.5`}>
                                       <div className="flex items-center gap-1.5 mb-0.5">
                                         <span className="text-[10px]">{s.icon}</span>
-                                        <span className={`text-[10px] font-bold ${s.text}`}>{s.label}</span>
+                                        <span className={`text-[10px] font-bold ${s.text}`}>{tv(s.label)}</span>
                                         <span className="text-[9px] font-mono text-slate-400">{issue.rule_id}</span>
                                         {issue.page && <span className="text-[9px] text-slate-400 ml-auto">Tr.{issue.page}</span>}
                                       </div>
@@ -427,8 +428,8 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                                         ${sel ? 'border-teal-500 bg-teal-500/5' : 'border-transparent hover:bg-slate-100 dark:hover:bg-zinc-800'}`}>
                                       <span className="text-sm">{a.icon}</span>
                                       <div className="flex-1 min-w-0">
-                                        <div className="text-[11px] font-bold text-slate-700 dark:text-white">{a.title}</div>
-                                        <div className="text-[9px] text-slate-400">{a.desc}</div>
+                                        <div className="text-[11px] font-bold text-slate-700 dark:text-white">{tv(a.title)}</div>
+                                        <div className="text-[9px] text-slate-400">{tv(a.desc)}</div>
                                       </div>
                                       <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0
                                         ${sel ? 'bg-teal-500 border-teal-500 text-white' : 'border-slate-300 dark:border-zinc-600'}`}>

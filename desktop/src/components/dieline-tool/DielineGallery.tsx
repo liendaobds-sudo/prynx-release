@@ -6,6 +6,7 @@
 import React from 'react';
 import { BoxParams } from '../../lib/dieline/types';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface BoxTypeCard {
     type: BoxParams['boxType'];
@@ -81,15 +82,15 @@ function GalleryCard({
         >
             {/* Header: text + description */}
             <div className="dt-gallery-card-header">
-                <h3 className="dt-gallery-card-title">{card.name}</h3>
-                <p className="dt-gallery-card-desc">{card.desc}</p>
+                <h3 className="dt-gallery-card-title">{tv(card.name)}</h3>
+                <p className="dt-gallery-card-desc">{tv(card.desc)}</p>
             </div>
 
             {/* Image preview — fills remaining space */}
             <div className="dt-gallery-card-preview">
                 <img
                     src={card.image}
-                    alt={card.name}
+                    alt={tv(card.name)}
                     className="dt-gallery-card-img"
                     draggable={false}
                     loading="lazy"

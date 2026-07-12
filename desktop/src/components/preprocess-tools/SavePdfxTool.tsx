@@ -4,6 +4,7 @@ import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface Props {
   pdfFile: File | null;
@@ -171,7 +172,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
                       ?
                       <div className={`absolute bottom-full mb-2 w-max max-w-[220px] p-3 bg-slate-800 dark:bg-zinc-700 text-white text-[11px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words
                         ${isLeftCol ? 'left-1/2 -translate-x-[20%]' : 'right-1/2 translate-x-[20%]'}`}>
-                        {s.desc}
+                        {tv(s.desc)}
                         <div className={`absolute top-full w-2 h-2 bg-slate-800 dark:bg-zinc-700 transform rotate-45 -mt-1
                           ${isLeftCol ? 'left-[20%] -translate-x-1/2' : 'right-[20%] translate-x-1/2'}`} />
                       </div>

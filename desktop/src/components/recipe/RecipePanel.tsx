@@ -15,6 +15,7 @@ import type { Recipe, RecipeStep } from '../../lib/recipe/recipeTypes';
 import { toast } from '../ui/Toast';
 import { confirmDialog } from '../ui/confirmDialog';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface Props {
     open: boolean;
@@ -58,7 +59,7 @@ const PARAM_LABELS: Record<string, string> = {
 };
 
 function paramLabel(name: string): string {
-    return PARAM_LABELS[name] || name;
+    return tv(PARAM_LABELS[name] || name);
 }
 
 // ── Ô sửa 1 tham số (suy kiểu theo giá trị). Object/Array → JSON textarea. ──

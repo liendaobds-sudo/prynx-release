@@ -7,6 +7,7 @@ import { RichSelect, ToolItem } from '../imposition-tools/SharedUI';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface Props {
     pdfFile: File | null;
@@ -332,7 +333,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                                         : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
                                                 }`}
                                             >
-                                                {opt.label}
+                                                {tv(opt.label)}
                                             </button>
                                         ))}
                                     </div>

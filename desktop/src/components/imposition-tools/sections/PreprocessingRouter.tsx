@@ -31,6 +31,7 @@ import UpscaleTool from '../../preprocess-tools/UpscaleTool';
 import PageToolsPanel from '../../preprocess-tools/PageToolsPanel';
 import { PREPROCESS_ROUTER_TOOLS } from './preprocessRouterTools';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../../i18n';
 
 // ─── Tool Header Definitions ────────────────────────────────────────────────
 const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }> = {
@@ -102,9 +103,9 @@ export default function PreprocessingRouter({
                 <div className="pt-2 text-center pb-2">
                     <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
                         <span>{header.icon}</span>
-                        <span>{header.title}</span>
+                        <span>{tv(header.title)}</span>
                     </h2>
-                    <p className="text-[11px] text-slate-500 mt-1">{header.desc}</p>
+                    <p className="text-[11px] text-slate-500 mt-1">{tv(header.desc)}</p>
                 </div>
             )}
 

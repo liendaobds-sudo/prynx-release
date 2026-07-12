@@ -2,9 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { getToolHelp } from '../../lib/toolHelp';
 import ToolHelpModal from '../ToolHelpModal';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 // ==================== RichSelect (Custom Dropdown) ====================
 export const RichSelect = ({ value, onChange, options, compact = false }: { value: string, onChange: (v: string) => void, options: {value: string, title: string, desc?: string}[], compact?: boolean }) => {
+    useTranslation(); // subscribe → re-render khi đổi ngôn ngữ (tv() đọc i18n global)
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -29,8 +31,8 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
             >
                 <div className={`flex justify-between items-center gap-2 ${compact ? 'w-full' : ''}`}>
                     <div>
-                        <div className={`font-semibold text-slate-900 dark:text-white ${compact ? 'text-[12px]' : 'text-[13px]'}`}>{selected.title}</div>
-                        {!compact && selected.desc && <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">{selected.desc}</div>}
+                        <div className={`font-semibold text-slate-900 dark:text-white ${compact ? 'text-[12px]' : 'text-[13px]'}`}>{tv(selected.title)}</div>
+                        {!compact && selected.desc && <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">{tv(selected.desc)}</div>}
                     </div>
                     <svg className={`shrink-0 w-4 h-4 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                 </div>
@@ -49,9 +51,9 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
                                 <div className={`shrink-0 flex items-center justify-center w-3 h-3 rounded-full border ${opt.value === value ? 'border-indigo-500 bg-indigo-500' : 'border-slate-300 dark:border-zinc-500 bg-white dark:bg-zinc-800'}`}>
                                     {opt.value === value && <div className="w-1 h-1 rounded-full bg-white" />}
                                 </div>
-                                <div className={`font-semibold text-[13px] ${opt.value === value ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-800 dark:text-zinc-200'}`}>{opt.title}</div>
+                                <div className={`font-semibold text-[13px] ${opt.value === value ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-800 dark:text-zinc-200'}`}>{tv(opt.title)}</div>
                             </div>
-                            {opt.desc && <div className="text-[11px] text-slate-500 mt-0.5 ml-5 leading-snug">{opt.desc}</div>}
+                            {opt.desc && <div className="text-[11px] text-slate-500 mt-0.5 ml-5 leading-snug">{tv(opt.desc)}</div>}
                         </button>
                     ))}
                 </div>

@@ -3,6 +3,7 @@ import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 // ── Constants ──
 const I = {
@@ -182,7 +183,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                     className={`text-left px-3 py-2 rounded-lg border text-[12px] transition-all flex items-center gap-2
                       ${sel ? 'border-teal-500 bg-teal-500/10 font-semibold text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
                     <span className="text-sm shrink-0">{r.icon}</span>
-                    <span className="truncate flex-1">{r.label}</span>
+                    <span className="truncate flex-1">{tv(r.label)}</span>
                     
                     {/* Tooltip Icon */}
                     <div 
@@ -193,7 +194,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                       {/* Tooltip Content */}
                       <div className={`absolute bottom-full mb-2 w-max max-w-[220px] p-3 bg-slate-800 dark:bg-zinc-700 text-white text-[11px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words
                         ${isLeftCol ? 'left-1/2 -translate-x-[20%]' : 'right-1/2 translate-x-[20%]'}`}>
-                        {r.desc}
+                        {tv(r.desc)}
                         <div className={`absolute top-full w-2 h-2 bg-slate-800 dark:bg-zinc-700 transform rotate-45 -mt-1
                           ${isLeftCol ? 'left-[20%] -translate-x-1/2' : 'right-[20%] translate-x-1/2'}`}></div>
                       </div>
@@ -254,7 +255,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                     : 'border-amber-400 bg-amber-50 dark:bg-amber-900/10 text-amber-800 dark:text-amber-200'
                   }`}>
                     <div className="flex items-center justify-between font-bold text-[11px]">
-                      <span>{RULES.find(r => r.id === issue.rule_id)?.label || issue.rule_id}</span>
+                      <span>{tv(RULES.find(r => r.id === issue.rule_id)?.label) || issue.rule_id}</span>
                       {issue.page && <span className="opacity-70 text-[9px] px-1.5 py-0.5 bg-black/5 dark:bg-white/10 rounded">Trang {issue.page}</span>}
                     </div>
                     <span className="text-[10px] opacity-90 leading-snug">{issue.description}</span>
@@ -313,7 +314,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                     className={`text-left px-3 py-2 rounded-lg border text-[12px] transition-all flex items-center gap-2
                       ${sel ? 'border-teal-500 bg-teal-500/10 font-semibold text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
                     <span className="text-sm shrink-0">{a.icon}</span>
-                    <span className="truncate flex-1">{a.title}</span>
+                    <span className="truncate flex-1">{tv(a.title)}</span>
 
                     {/* Tooltip Icon */}
                     <div 
@@ -324,7 +325,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                       {/* Tooltip Content */}
                       <div className={`absolute bottom-full mb-2 w-max max-w-[220px] p-3 bg-slate-800 dark:bg-zinc-700 text-white text-[11px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words
                         ${isLeftCol ? 'left-1/2 -translate-x-[20%]' : 'right-1/2 translate-x-[20%]'}`}>
-                        {a.desc}
+                        {tv(a.desc)}
                         <div className={`absolute top-full w-2 h-2 bg-slate-800 dark:bg-zinc-700 transform rotate-45 -mt-1
                           ${isLeftCol ? 'left-[20%] -translate-x-1/2' : 'right-[20%] translate-x-1/2'}`}></div>
                       </div>
