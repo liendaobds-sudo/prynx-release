@@ -286,7 +286,7 @@ def get_optimal_head_to_tail_overlap(src_page, gap_pt=0.0):
 
         _cfg = DetectionConfig()
 
-        largest_path, _matched_by_spot = _select_from_paths(
+        largest_path, _matched_by_spot, _matched_by_area = _select_from_paths(
             paths, src_page.rect, _cfg.die_channel_names, _cfg.die_colors, _cfg.die_color_tol
         )
 
