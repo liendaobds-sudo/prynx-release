@@ -273,11 +273,11 @@
     "trai_phang_0": "Flat (0%)"
   },
   "dieline.environmentRig": {
-    "khong_nap_duoc_moi_truong_hdri_da": "",
-    "studio_am": "",
-    "studio_mem": "",
-    "studio_trung_tinh_lanh": "",
-    "studio_tuong_phan": ""
+    "khong_nap_duoc_moi_truong_hdri_da": "⚠ Could not load HDRI environment — switched to default studio lighting.",
+    "studio_am": "Warm studio",
+    "studio_mem": "Soft studio",
+    "studio_trung_tinh_lanh": "Cool neutral studio",
+    "studio_tuong_phan": "High-contrast studio"
   },
   "dieline.mockup": {
     "4_goc": "⬇ 4 corners",
@@ -535,10 +535,10 @@
     "vi_tri_vat_dan": "Glue seam position"
   },
   "dieline.shadowFloor": {
-    "nen_am": "",
-    "studio_toi": "",
-    "studio_trang": "",
-    "xam_trung_tinh": ""
+    "nen_am": "Warm Background",
+    "studio_toi": "Dark Studio",
+    "studio_trang": "White Studio",
+    "xam_trung_tinh": "Neutral Gray"
   },
   "dieline.useSceneExport": {
     "da_xuat_anh_filename": "Image exported: ${filename}",
@@ -757,9 +757,9 @@
     "xuat_luu_file": "💾 Export & Save file"
   },
   "imposition.api": {
-    "khong_tai_duoc_danh_sach_may_be_res": "",
-    "loi_may_chu_res_status": "",
-    "loi_may_chu_res_status_text": ""
+    "khong_tai_duoc_danh_sach_may_be_res": "Could not load cutter list (${res.status})",
+    "loi_may_chu_res_status": "Server error (${res.status})",
+    "loi_may_chu_res_status_text": "Server error (${res.status}): ${text}"
   },
   "imposition.autoCatalog": {
     "bia_cung_chat_lieu_dan_chung_voi_ruot": "Same-stock cover (imposed together with the body)",
@@ -1084,10 +1084,10 @@
     "xep_lan_luot": "Sequential"
   },
   "imposition.outputSettings": {
-    "duong_cat": "",
-    "kc_cum_phu": "",
-    "khoang_cach_giua_cum_chinh_va_cum_phu": "",
-    "mac_dinh": ""
+    "duong_cat": "CUT LINE",
+    "kc_cum_phu": "FILLER CLUSTER GAP",
+    "khoang_cach_giua_cum_chinh_va_cum_phu": "Distance between the main cluster and the filler cluster.&#10;Only applies when using Optimal packing + Single-blade die.&#10;Set > 0 so the single-blade die line has safe overhang room,&#10;without cutting into another cluster’s labels.",
+    "mac_dinh": "Default"
   },
   "imposition.paperSettingsUI": {
     "ap_dung": "Apply",
@@ -1264,15 +1264,15 @@
     "ve_voucher_so_so_nhay": "Tickets / vouchers / numbered books"
   },
   "imposition.sharedUI": {
-    "bo_khoi_yeu_thich": "",
-    "gioi_thieu_cong_cu": "",
-    "sap_ra_mat": "",
-    "them_vao_yeu_thich": ""
+    "bo_khoi_yeu_thich": "Remove from Favorites",
+    "gioi_thieu_cong_cu": "About this tool",
+    "sap_ra_mat": "(coming soon)",
+    "them_vao_yeu_thich": "Add to Favorites"
   },
   "imposition.toolMenuList": {
-    "cong_cu_yeu_thich": "",
-    "tim_cong_cu": "",
-    "xoa_tim_kiem": ""
+    "cong_cu_yeu_thich": "⭐ FAVORITE TOOLS",
+    "tim_cong_cu": "Search tools...",
+    "xoa_tim_kiem": "Clear search"
   },
   "imposition.types": {
     "can_bong": "Gloss lamination",
@@ -1321,9 +1321,9 @@
     "g_trim_output_pad_so_trang_len_boi_4": ""
   },
   "lib.cupSleeve": {
-    "khuon_boc_ly_giay_hinh_quat_cung": "",
-    "mi_dan_keo": "",
-    "than_boc_ly": ""
+    "khuon_boc_ly_giay_hinh_quat_cung": "Paper cup sleeve die — Fan/arc shape",
+    "mi_dan_keo": "Glue flap",
+    "than_boc_ly": "Sleeve body"
   },
   "lib.envelope": {
     "bi_thu_stylename": "${styleName} envelope",
@@ -1365,9 +1365,9 @@
     "w_panellabel_w_panelname_ho_w_gapmm": "• ${w.panelLabel || w.panelName}: gap ${w.gapMm.toFixed(3)}mm"
   },
   "lib.exportSizing": {
-    "kich_thuoc_khung_xem_khong_hop_le_phai": "",
-    "kich_thuoc_xuat_width_height_px_vuot": "",
-    "max_export_px_px_o_chieu_rong_hoac": ""
+    "kich_thuoc_khung_xem_khong_hop_le_phai": "Invalid viewport dimensions (must be finite positive numbers).",
+    "kich_thuoc_xuat_width_height_px_vuot": "Export size (${width}×${height} px) exceeds the limit",
+    "max_export_px_px_o_chieu_rong_hoac": "${MAX_EXPORT_PX} px in width or height."
   },
   "lib.foldCompensation": {
     "panel_panel_name_thieu_pivotedge_parent": ""
@@ -1419,18 +1419,18 @@
     "to_depth_1_mat_b": ""
   },
   "lib.maskValidation": {
-    "be_mat_ap_dung_surface_width_surface": "",
-    "dinh_dang_mat_na_khong_hop_le_mask": "",
-    "kich_thuoc_mat_na_hoac_be_mat_khong_hop": "",
-    "kich_thuoc_mat_na_mask_width_mask": "",
-    "mat_na_khong_ton_tai_null": ""
+    "be_mat_ap_dung_surface_width_surface": "applied surface (${surface.width}×${surface.height}).",
+    "dinh_dang_mat_na_khong_hop_le_mask": "Invalid mask format: \"${mask.format}\". Only PNG, JPEG or WebP are accepted.",
+    "kich_thuoc_mat_na_hoac_be_mat_khong_hop": "Invalid mask or surface dimensions (must be finite positive numbers).",
+    "kich_thuoc_mat_na_mask_width_mask": "Mask dimensions (${mask.width}×${mask.height}) do not match",
+    "mat_na_khong_ton_tai_null": "Mask does not exist (null)."
   },
   "lib.matchboxSleeve": {
-    "hong_1_vo": "",
-    "hong_2_vo": "",
-    "mat_sau_vo": "",
-    "mat_truoc_vo": "",
-    "mi_dan_keo_vo": ""
+    "hong_1_vo": "Side 1 (sleeve)",
+    "hong_2_vo": "Side 2 (sleeve)",
+    "mat_sau_vo": "Back (sleeve)",
+    "mat_truoc_vo": "Front (sleeve)",
+    "mi_dan_keo_vo": "Glue flap (sleeve)"
   },
   "lib.matchboxTray": {
     "dam_phai": "Right beam",
@@ -1484,11 +1484,11 @@
     "xen_ke_khoang_trong_math_round_overlapy": "Interleave gaps (−${Math.round(overlapY)}mm/row)"
   },
   "lib.nupRenderer": {
-    "dang_phan_tich_cau_truc_ma_tran_jobname": "",
-    "dang_xuat_mam_in_to_s_1_sheetstorender": "",
-    "kho_giay_hoac_cum_chia_qua_nho_so_luong": "",
-    "khoi_tao_luoi_jobname_cols_cot_x_rows": "",
-    "nhan_ban": ""
+    "dang_phan_tich_cau_truc_ma_tran_jobname": "Analyzing matrix structure of ${jobName}...",
+    "dang_xuat_mam_in_to_s_1_sheetstorender": "Exporting print sheet ${s + 1}/${sheetsToRender.length}...",
+    "kho_giay_hoac_cum_chia_qua_nho_so_luong": "Paper size or cluster spacing too small. Computed quantity <= 0. Please recheck paper size, margins, or cluster spacing.",
+    "khoi_tao_luoi_jobname_cols_cot_x_rows": "Initializing grid ${jobName} (${cols} cols x ${rows} rows) - Mode: ${layoutType === 'cut_stacks' ? 'Cut & stack' : (layoutType === 'repeat' ? 'Step & repeat' : 'Sequential')}...",
+    "nhan_ban": "Step & repeat"
   },
   "lib.paperBag": {
     "day_mi_dan": "Bottom glue flap",
@@ -1556,11 +1556,11 @@
     "xu_ly_tap_tin_that_bai_e_message": "File processing failed: ${e.message}"
   },
   "lib.pdfMerger": {
-    "dai_trang_chen_khong_hop_le_hoac_file": "",
-    "khong_tim_thay_file_pdf_chinh_dang_mo": "",
-    "vui_long_chon_du_2_file_nguon": "",
-    "vui_long_chon_file_chua_trang_can_chen": "",
-    "vui_long_chon_it_nhat_1_file_de_ghep": ""
+    "dai_trang_chen_khong_hop_le_hoac_file": "Insert page range is invalid or the file is empty.",
+    "khong_tim_thay_file_pdf_chinh_dang_mo": "Could not find the main open PDF file.",
+    "vui_long_chon_du_2_file_nguon": "Please select both source files.",
+    "vui_long_chon_file_chua_trang_can_chen": "Please select the file containing the pages to insert.",
+    "vui_long_chon_it_nhat_1_file_de_ghep": "Please select at least 1 file to merge."
   },
   "lib.pizzaBox": {
     "cuon_hong_phai": "Right side roll",
@@ -1644,11 +1644,11 @@
     "dang_render_mat_isfront_truoc_sau_to": ""
   },
   "lib.reportPreview": {
-    "data_gangcount_mau": "",
-    "lamination_lamsides_mat": "",
-    "sl_thuc_actualqty": "",
-    "sl_to_ips": "",
-    "so_to_sheetcount": ""
+    "data_gangcount_mau": "${data.gangCount} designs",
+    "lamination_lamsides_mat": "${lamination} ${lamSides} side(s)",
+    "sl_thuc_actualqty": "Actual qty: ${actualQty}",
+    "sl_to_ips": "Qty/sheet: ${ips}",
+    "so_to_sheetcount": "Sheets: ${sheetCount}"
   },
   "lib.reverseTuckEnd": {
     "hong_phai": "Right side panel",
@@ -1667,10 +1667,10 @@
     "tai_bui_tren_trai": "Top-left dust flap"
   },
   "lib.sharedGeometry": {
-    "dielinemodel_khong_hop_le_chuoi_cat": "",
-    "dielinemodel_khong_hop_le_segment_tag": "",
-    "dielinemodel_khong_hop_le_thieu_segment": "",
-    "khoang_ho_gap_tofixed_4_mm_snap": ""
+    "dielinemodel_khong_hop_le_chuoi_cat": "Invalid DielineModel: cut path is not closed",
+    "dielinemodel_khong_hop_le_segment_tag": "Invalid DielineModel: segment (tag=${seg.tag}) is missing points",
+    "dielinemodel_khong_hop_le_thieu_segment": "Invalid DielineModel: missing segment (allPaths empty or nonexistent)",
+    "khoang_ho_gap_tofixed_4_mm_snap": "(gap ${gap.toFixed(4)}mm > ${SNAP_TOLERANCE}mm)"
   },
   "lib.sheetOptimizer": {
     "kem_con_du_nhieu_recommended_gapwidthmm": "💡 Plate has a lot of spare room (${recommended.gapWidthMm}mm across). You could reduce the paper size to save material.",
@@ -1713,16 +1713,16 @@
     "tai_day_trai": "Left base flap"
   },
   "lib.spreadPlacer": {
-    "bia": "",
-    "kem_platecount_baselabel_tu_tro": "",
-    "kem_platecount_tay_sig_1_plateside": ""
+    "bia": "Cover",
+    "kem_platecount_baselabel_tu_tro": "Plate ${plateCount} - ${baseLabel} - Work & Turn",
+    "kem_platecount_tay_sig_1_plateside": "Plate ${plateCount} - Signature ${sig + 1}${plateSide === 'front' ? 'A' : 'B'} (${plateSide === 'front' ? 'Front' : 'Back'}) - Sheetwise A-B"
   },
   "lib.stampFormat": {
-    "chu_hoa_a_b": "",
-    "chu_thuong_a_b": "",
-    "la_ma_hoa_i_ii": "",
-    "la_ma_thuong_i_ii": "",
-    "so_1_2_3": ""
+    "chu_hoa_a_b": "Uppercase (A, B)",
+    "chu_thuong_a_b": "Lowercase (a, b)",
+    "la_ma_hoa_i_ii": "Uppercase Roman (I, II)",
+    "la_ma_thuong_i_ii": "Lowercase Roman (i, ii)",
+    "so_1_2_3": "Numbers (1, 2, 3)"
   },
   "lib.validateParams": {
     "chieu_cao_d_p_d_mm_kha_lon_cho_hop": "Height D=${p.D}mm is quite large for a pizza box (usually ≤ ${Math.floor(p.W / 3)}mm)",
@@ -1756,9 +1756,9 @@
     "tai_mau_bo_cuc_vdp": "Load VDP layout template"
   },
   "lib.virtualMap": {
-    "bao_cao_chia_tep_tong_cong_details": "",
-    "he_thong_da_tu_dong_gop_4_trang_du_cuoi": "",
-    "sigcounts_number_size_tep_size_trang": ""
+    "bao_cao_chia_tep_tong_cong_details": "Signature split report: Total ${details}.",
+    "he_thong_da_tu_dong_gop_4_trang_du_cuoi": "(The system automatically merged the last 4 leftover pages into the preceding signature to avoid thread tearing when clamped on the sewing machine).",
+    "sigcounts_number_size_tep_size_trang": "${sigCounts[Number(size)]} signatures of ${size} pages"
   },
   "misc.about": {
     "ban_dang_dung_ban_moi_nhat": "✓ You are on the latest version.",
@@ -1878,10 +1878,10 @@
     "vui_long_nhap_du_lieu": "Please enter data"
   },
   "misc.barcodeWorker": {
-    "dang_nen_zip": "",
-    "dang_tao_hinh": "",
-    "du_lieu_khong_hop_le": "",
-    "nen_zip_meta_percent_tofixed_0": ""
+    "dang_nen_zip": "Compressing ZIP...",
+    "dang_tao_hinh": "Generating images...",
+    "du_lieu_khong_hop_le": "Invalid data",
+    "nen_zip_meta_percent_tofixed_0": "Compressing ZIP ${meta.percent.toFixed(0)}%"
   },
   "misc.confirmDialog": {
     "huy_bo": "",
@@ -1938,9 +1938,9 @@
     "toan_man_hinh": "Fullscreen"
   },
   "misc.errorBoundary": {
-    "da_xay_ra_loi": "",
-    "tai_lai": "",
-    "ung_dung_gap_su_co_ngoai_y_muon_vui": ""
+    "da_xay_ra_loi": "An error occurred",
+    "tai_lai": "Reload",
+    "ung_dung_gap_su_co_ngoai_y_muon_vui": "The app hit an unexpected error. Please reload to continue."
   },
   "misc.exportImage": {
     "chat_luong_jpeg": "JPEG quality",
@@ -1970,9 +1970,9 @@
     "trang_trong": ""
   },
   "misc.flipbookDialog": {
-    "dang_nap_du_lieu": "",
-    "dong_esc": "",
-    "trang_logical1based_tep_signatureindex": ""
+    "dang_nap_du_lieu": "Loading data...",
+    "dong_esc": "Close (ESC)",
+    "trang_logical1based_tep_signatureindex": "Page ${logical1Based} | Signature ${signatureIndex}"
   },
   "misc.layer": {
     "an_doi_tuong": "Hide object",
@@ -2079,10 +2079,10 @@
     "vui_long_chon_hoac_tha_file_pdf": "Please choose or drop a PDF file"
   },
   "misc.progressTracker": {
-    "chuan_bi": "",
-    "co_loi_xay_ra": "",
-    "dang_so_sanh": "",
-    "hoan_thanh": ""
+    "chuan_bi": "Preparing...",
+    "co_loi_xay_ra": "An error occurred",
+    "dang_so_sanh": "Comparing...",
+    "hoan_thanh": "Done!"
   },
   "misc.qrEngine": {
     "bo_tron": "Rounded",
@@ -2143,15 +2143,15 @@
     "vuong": "Square"
   },
   "misc.qrLogos": {
-    "dien_thoai": "",
-    "mang_xa_hoi": "",
-    "nen_tang": "",
-    "tien_ich": ""
+    "dien_thoai": "Phone",
+    "mang_xa_hoi": "Social media",
+    "nen_tang": "Platform",
+    "tien_ich": "Utilities"
   },
   "misc.qrWorker": {
-    "dang_nen_zip": "",
-    "dang_tao_hinh": "",
-    "nen_zip_meta_percent_tofixed_0": ""
+    "dang_nen_zip": "Compressing ZIP...",
+    "dang_tao_hinh": "Generating images...",
+    "nen_zip_meta_percent_tofixed_0": "Compressing ZIP ${meta.percent.toFixed(0)}%"
   },
   "misc.recentFilesGrid": {
     "bo_chon_tat_ca": "Deselect all",
@@ -2325,9 +2325,9 @@
     "tat": "Off"
   },
   "misc.systemIntegrations": {
-    "get_file_size_loi_van_mo_size_0": "",
-    "khong_the_doc_file": "",
-    "nloi": ""
+    "get_file_size_loi_van_mo_size_0": "get_file_size error (still opening, size=0):",
+    "khong_the_doc_file": "Could not read file:",
+    "nloi": "\\nError:"
   },
   "misc.themeToggle": {
     "chuyen_sang_giao_dien_sang": "",
@@ -2354,17 +2354,17 @@
     "dong_esc": ""
   },
   "misc.trialExpiryBanner": {
-    "con_remainingdays_ngay": "",
-    "de_sau": "",
-    "gia_han_ngay": "",
-    "hom_nay": ""
+    "con_remainingdays_ngay": "${remainingDays} days left",
+    "de_sau": "Later",
+    "gia_han_ngay": "Renew now",
+    "hom_nay": "today"
   },
   "misc.updateChecker": {
-    "cap_nhat_khoi_dong_lai": "",
-    "cap_nhat_that_bai_thu_lai_sau_hoac_tai": "",
-    "da_tai_xong_dang_khoi_dong_lai": "",
-    "de_sau": "",
-    "dong": ""
+    "cap_nhat_khoi_dong_lai": "Update & restart",
+    "cap_nhat_that_bai_thu_lai_sau_hoac_tai": "Update failed. Try again later or download the new build manually.",
+    "da_tai_xong_dang_khoi_dong_lai": "Download complete, restarting...",
+    "de_sau": "Later",
+    "dong": "Close"
   },
   "misc.useAuthStore": {
     "ban_quyen_da_bi_thu_hoi_vui_long_lien": "License has been revoked. Please contact support for assistance.",
@@ -2380,11 +2380,11 @@
     "vo_best_sleeverot_best_sleevecols_best": ""
   },
   "misc.viewerContextMenu": {
-    "chen_trang_trang_insert": "",
-    "nhan_ban_duplicate": "",
-    "quan_ly_trang_xoay_nhan_ban": "",
-    "trich_xuat_trang": "",
-    "xoa_trang_nhanh": ""
+    "chen_trang_trang_insert": "Insert blank page (Insert)",
+    "nhan_ban_duplicate": "Duplicate",
+    "quan_ly_trang_xoay_nhan_ban": "Manage Pages (Rotate, Duplicate...)",
+    "trich_xuat_trang": "Extract pages",
+    "xoa_trang_nhanh": "Quick delete page"
   },
   "misc.viewerHelpers": {
     "dang_tai": "",
@@ -3295,11 +3295,11 @@
     "vui_long_mo_file_pdf_truoc": "Please open a PDF file first"
   },
   "preprocess.setPageBoxesUtils": {
-    "gia_tri_nhap_khong_phai_so_hop_le": "",
-    "trang_bat_dau_phai_trang_ket_thuc": "",
-    "trang_hop_le_1_total": "",
-    "x1_phai_lon_hon_x0": "",
-    "y1_phai_lon_hon_y0": ""
+    "gia_tri_nhap_khong_phai_so_hop_le": "Input value is not a valid number",
+    "trang_bat_dau_phai_trang_ket_thuc": "Start page must be ≤ end page",
+    "trang_hop_le_1_total": "Valid pages: 1–${total}",
+    "x1_phai_lon_hon_x0": "x1 must be greater than x0",
+    "y1_phai_lon_hon_y0": "y1 must be greater than y0"
   },
   "preprocess.shuffle": {
     "ap_dung_tac_vu_nay_se_tao_ra_mot_file": "Applying this task creates a new PDF with the pages reordered. You can feed this file into content imposition (Booklet / N-Up) in the next step.",
