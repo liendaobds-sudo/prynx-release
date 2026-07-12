@@ -838,7 +838,7 @@ export default function GridPreview(props: GridPreviewProps) {
         }
 
         // Ưu tiên materialize bytes (file bake không có .path, hoặc cần bản đã xóa trang).
-        let bytes: Uint8Array | null = null;
+        let bytes: Uint8Array<ArrayBuffer> | null = null;
         try {
           const ab = await wf.arrayBuffer();
           if (ab && ab.byteLength > 64) bytes = new Uint8Array(ab);
