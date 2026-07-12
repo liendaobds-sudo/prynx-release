@@ -31,6 +31,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { authenticatedFetch, getApiUrl } from '../lib/api';
 import type { EditOp, BBox } from '../components/workspace/editTypes';
+import { useTranslation } from 'react-i18next';
 
 /** Ngưỡng debounce mặc định: commit ~1.5s sau Edit_Op cuối (Yêu cầu 5.3). */
 const DEFAULT_DEBOUNCE_COMMIT_MS = 1500;
@@ -119,6 +120,7 @@ class SessionGoneError extends Error {
 }
 
 export function useEditSession(options: UseEditSessionOptions = {}): UseEditSession {
+  const { t } = useTranslation();
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [sessionFailed, setSessionFailed] = useState(false);
     const [canUndo, setCanUndo] = useState(false);
@@ -222,7 +224,7 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
         try {
             const data = await request('/open', jsonPost({ fid }));
             const sid: string = data?.session_id;
-            if (!sid) throw new Error('open: thiếu session_id');
+            if (!sid) throw new Error(t('hooks.useEditSession:open_thieu_session_id'));
             setSession(sid);
             setSessionFailed(false);
             setCanUndo(false);

@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { getApiUrl } from '../../lib/api';
+import { useTranslation } from 'react-i18next';
 
 // ═══════════════════════════════════════════════════════════
 //  F7 Layer Panel — Standalone OCG Layer Manager
@@ -34,6 +35,7 @@ interface OcgLayer {
 const ObjectRow = React.memo(function ObjectRow({ obj, objKey, depth }: {
     obj: any; objKey: string; depth: number;
 }) {
+  const { t } = useTranslation();
     const isObjHidden = useWorkspaceStore(s => s.hiddenObjectKeys.includes(objKey));
     const setHiddenObjectKeys = useWorkspaceStore(s => s.setHiddenObjectKeys);
     return (
@@ -51,7 +53,7 @@ const ObjectRow = React.memo(function ObjectRow({ obj, objKey, depth }: {
                     );
                 }}
                 className="w-3.5 h-3.5 flex items-center justify-center shrink-0 hover:bg-black/5 dark:hover:bg-white/10 rounded transition-colors"
-                aria-label={isObjHidden ? 'Hiện đối tượng' : 'Ẩn đối tượng'}
+                aria-label={isObjHidden ? t('misc.layer:hien_doi_tuong') : t('misc.layer:an_doi_tuong')}
             >
                 {isObjHidden ? (
                     <svg className="w-2.5 h-2.5 text-slate-300 dark:text-zinc-700" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -83,6 +85,7 @@ const ObjectRow = React.memo(function ObjectRow({ obj, objKey, depth }: {
 const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
     layer: OcgLayer; depth?: number;
 }) {
+  const { t } = useTranslation();
     const isHidden = useWorkspaceStore(s => s.hiddenOcgLayerIds.includes(layer.id));
     const isLocked = useWorkspaceStore(s => s.lockedOcgLayerIds.includes(layer.id));
     const isExpanded = useWorkspaceStore(s => s.expandedOcgLayerIds.includes(layer.id));
@@ -110,7 +113,7 @@ const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
                     <button
                         onClick={(e) => { e.stopPropagation(); setExpanded(prev => prev.includes(layer.id) ? prev.filter(id => id !== layer.id) : [...prev, layer.id]); }}
                         className="w-4 h-4 flex items-center justify-center text-slate-400 dark:text-zinc-500 hover:text-slate-700 dark:hover:text-zinc-200 transition-colors shrink-0"
-                        aria-label={isExpanded ? 'Thu gọn lớp' : 'Mở rộng lớp'}
+                        aria-label={isExpanded ? t('misc.layer:thu_gon_lop') : t('misc.layer:mo_rong_lop')}
                     >
                         <svg className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -134,8 +137,8 @@ const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
                             ? 'text-slate-300 dark:text-zinc-600 hover:text-slate-500 dark:hover:text-zinc-400'
                             : 'text-slate-500 dark:text-zinc-300 hover:text-blue-500 dark:hover:text-blue-400'
                     }`}
-                    title={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
-                    aria-label={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
+                    title={isHidden ? t('misc.layer:hien_thi_lop') : t('misc.layer:an_lop')}
+                    aria-label={isHidden ? t('misc.layer:hien_thi_lop') : t('misc.layer:an_lop')}
                 >
                     {isHidden ? (
                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -157,8 +160,8 @@ const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
                             ? 'text-amber-500 hover:text-amber-400'
                             : 'text-slate-300 dark:text-zinc-700 hover:text-slate-500 dark:hover:text-zinc-400 opacity-0 group-hover/layer:opacity-100'
                     }`}
-                    title={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
-                    aria-label={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
+                    title={isLocked ? t('misc.layer:mo_khoa_lop') : t('misc.layer:khoa_lop')}
+                    aria-label={isLocked ? t('misc.layer:mo_khoa_lop') : t('misc.layer:khoa_lop')}
                 >
                     {isLocked ? (
                         <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
@@ -208,6 +211,7 @@ const LayerItem = React.memo(function LayerItem({ layer, depth = 0 }: {
 });
 
 export default function LayerPanel() {
+  const { t } = useTranslation();
     // Selector useShallow: panel CHỈ re-render khi state layer đổi, không phải mọi
     // field của store (zoom/chuột/trang…) như destructure trần trước đây.
     const {
@@ -379,7 +383,7 @@ export default function LayerPanel() {
                 <button
                     onClick={() => setIsLayerPanelOpen(false)}
                     className="w-7 h-7 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200 transition-colors"
-                    aria-label="Đóng bảng lớp"
+                    aria-label={t('misc.layer:dong_bang_lop')}
                 >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -391,7 +395,7 @@ export default function LayerPanel() {
             {isLoading && (
                 <div className="flex items-center justify-center py-6 gap-2">
                     <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                    <span className="text-xs text-slate-500 dark:text-zinc-400">Đang quét layers...</span>
+                    <span className="text-xs text-slate-500 dark:text-zinc-400">{t('misc.layer:dang_quet_layers')}</span>
                 </div>
             )}
 
@@ -405,10 +409,10 @@ export default function LayerPanel() {
                     <div className="p-6 text-center">
                         <div className="text-3xl mb-3 opacity-20">🎨</div>
                         <p className="text-slate-500 dark:text-zinc-500 italic text-xs">
-                            Không tìm thấy lớp OCG nào.
+                            {t('misc.layer:khong_tim_thay_lop_ocg_nao')}
                         </p>
                         <p className="text-slate-400 dark:text-zinc-600 text-[10px] mt-1.5">
-                            File PDF cần có Optional Content Groups (OCG) — được tạo bởi Illustrator, InDesign hoặc PrynX Imposition.
+                            {t('misc.layer:file_pdf_can_co_optional_content_groups')}
                         </p>
                     </div>
                 ) : null}
@@ -418,8 +422,8 @@ export default function LayerPanel() {
             {pdfOcgLayers.length > 0 && (
                 <div className="shrink-0 px-3 py-2 border-t border-black/10 dark:border-white/5 flex items-center justify-between bg-slate-100 dark:bg-[#18181b]">
                     <div className="text-[9px] text-slate-400 dark:text-zinc-600 flex gap-3">
-                        <span>👁 Ẩn/Hiện</span>
-                        <span>🔒 Khóa</span>
+                        <span>{t('misc.layer:an_hien')}</span>
+                        <span>{t('misc.layer:khoa')}</span>
                     </div>
                     <span className="text-[10px] text-slate-400 dark:text-zinc-600 font-mono">
                         {pdfOcgLayers.length} layers

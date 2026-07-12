@@ -3,6 +3,7 @@ import {
     ToolSectionLabel, ToolDivider, ToolCardOption, 
     ToolCheckboxOption, ToolNumberInput,
 } from './ToolUI';
+import { useTranslation } from 'react-i18next';
 
 const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500";
 const selectCls = "w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm font-medium focus:outline-none focus:border-indigo-500";
@@ -36,6 +37,7 @@ interface Props {
 }
 
 export default function PageResizerTool({ settings, onChange }: Props) {
+  const { t } = useTranslation();
     
     const handlePresetChange = (presetId: string) => {
         const preset = COMMON_SIZES.find(p => p.id === presetId);
@@ -69,7 +71,7 @@ export default function PageResizerTool({ settings, onChange }: Props) {
         <div className="flex flex-col gap-4 animate-in fade-in duration-200 relative z-[60]">
             
             <div className="flex flex-col gap-2">
-                <ToolSectionLabel>1. Kích thước trang đích</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.pageResizer:1_kich_thuoc_trang_dich')}</ToolSectionLabel>
                 <select
                     value={settings.sizePresetId || 'A4'}
                     onChange={(e) => handlePresetChange(e.target.value)}
@@ -85,13 +87,13 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                 {settings.sizePresetId === 'custom' && (
                     <div className="grid grid-cols-2 gap-3 mt-1 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
                         <ToolNumberInput 
-                            label="Chiều ngang"
+                            label={t('preprocess.pageResizer:chieu_ngang')}
                             value={settings.targetW}
                             onChange={val => onChange({ ...settings, targetW: val })}
                             suffix="mm" step={0.1}
                         />
                         <ToolNumberInput 
-                            label="Chiều dọc"
+                            label={t('preprocess.pageResizer:chieu_doc')}
                             value={settings.targetH}
                             onChange={val => onChange({ ...settings, targetH: val })}
                             suffix="mm" step={0.1}
@@ -103,31 +105,31 @@ export default function PageResizerTool({ settings, onChange }: Props) {
             <ToolDivider />
 
             <div className="flex flex-col gap-2">
-                <ToolSectionLabel>2. Kiểu tỷ lệ</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.pageResizer:2_kieu_ty_le')}</ToolSectionLabel>
                 <div className="grid grid-cols-2 gap-2">
                     <ToolCheckboxOption 
                         selected={settings.scaleMode === 'fit'}
                         onClick={() => onChange({...settings, scaleMode: 'fit'})}
-                        label="Thu vừa khít"
-                        desc="Thu phóng nội dung vừa khít vào khổ giấy mới, phần thừa sẽ để trống (tạo lề trắng)."
+                        label={t('preprocess.pageResizer:thu_vua_khit')}
+                        desc={t('preprocess.pageResizer:thu_phong_noi_dung_vua_khit_vao_kho')}
                     />
                     <ToolCheckboxOption 
                         selected={settings.scaleMode === 'fill'}
                         onClick={() => onChange({...settings, scaleMode: 'fill'})}
-                        label="Phóng lấp đầy"
-                        desc="Phóng to nội dung lấp đầy khổ mới, phần dư thừa sẽ bị cắt xém."
+                        label={t('preprocess.pageResizer:phong_lap_day')}
+                        desc={t('preprocess.pageResizer:phong_to_noi_dung_lap_day_kho_moi_phan')}
                     />
                     <ToolCheckboxOption 
                         selected={settings.scaleMode === 'stretch'}
                         onClick={() => onChange({...settings, scaleMode: 'stretch'})}
-                        label="Ép bóp méo"
-                        desc="Ép nội dung vừa đúng khổ mới nhưng không giữ tỷ lệ gốc (ảnh có thể bị méo)."
+                        label={t('preprocess.pageResizer:ep_bop_meo')}
+                        desc={t('preprocess.pageResizer:ep_noi_dung_vua_dung_kho_moi_nhung')}
                     />
                     <ToolCheckboxOption 
                         selected={settings.scaleMode === 'center_no_scale'}
                         onClick={() => onChange({...settings, scaleMode: 'center_no_scale'})}
-                        label="Giữ nguyên ở giữa"
-                        desc="Giữ nguyên kích thước nội dung gốc, chỉ đặt ở giữa khổ giấy mới."
+                        label={t('preprocess.pageResizer:giu_nguyen_o_giua')}
+                        desc={t('preprocess.pageResizer:giu_nguyen_kich_thuoc_noi_dung_goc_chi')}
                     />
                 </div>
             </div>
@@ -135,12 +137,12 @@ export default function PageResizerTool({ settings, onChange }: Props) {
             <ToolDivider />
 
             <div className="flex flex-col gap-2">
-                <ToolSectionLabel>3. Áp dụng cho</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.pageResizer:3_ap_dung_cho')}</ToolSectionLabel>
                 <div className="grid grid-cols-2 gap-2">
-                    <ToolCardOption selected={settings.applyToStr === 'all'} onClick={() => handleApplyToChange('all')} label="Tất cả trang" />
-                    <ToolCardOption selected={settings.applyToStr === 'even'} onClick={() => handleApplyToChange('even')} label="Trang chẵn" />
-                    <ToolCardOption selected={settings.applyToStr === 'odd'} onClick={() => handleApplyToChange('odd')} label="Trang lẻ" />
-                    <ToolCardOption selected={!['all', 'even', 'odd'].includes(settings.applyToStr)} onClick={() => handleApplyToChange('custom')} label="Tùy chỉnh" />
+                    <ToolCardOption selected={settings.applyToStr === 'all'} onClick={() => handleApplyToChange('all')} label={t('preprocess.pageResizer:tat_ca_trang')} />
+                    <ToolCardOption selected={settings.applyToStr === 'even'} onClick={() => handleApplyToChange('even')} label={t('preprocess.pageResizer:trang_chan')} />
+                    <ToolCardOption selected={settings.applyToStr === 'odd'} onClick={() => handleApplyToChange('odd')} label={t('preprocess.pageResizer:trang_le')} />
+                    <ToolCardOption selected={!['all', 'even', 'odd'].includes(settings.applyToStr)} onClick={() => handleApplyToChange('custom')} label={t('preprocess.pageResizer:tuy_chinh')} />
                 </div>
 
                 {!['all', 'even', 'odd'].includes(settings.applyToStr) && (
@@ -152,7 +154,7 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                             placeholder="VD: 1, 3, 5-10"
                             className={inputCls}
                         />
-                        <div className="text-[10px] text-slate-400 mt-1.5 ml-1">Nhập số trang cách nhau bằng dấu phẩy hoặc gạch ngang.</div>
+                        <div className="text-[10px] text-slate-400 mt-1.5 ml-1">{t('preprocess.pageResizer:nhap_so_trang_cach_nhau_bang_dau_phay')}</div>
                     </div>
                 )}
             </div>
@@ -161,7 +163,7 @@ export default function PageResizerTool({ settings, onChange }: Props) {
 
             {/* 4. Giảm dung lượng theo khổ mới */}
             <div className="flex flex-col gap-2">
-                <ToolSectionLabel>4. Giảm dung lượng theo khổ mới</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.pageResizer:4_giam_dung_luong_theo_kho_moi')}</ToolSectionLabel>
                 {(() => {
                     const dpiChoice: 'auto' | 'off' | 'custom' =
                         settings.targetDpi === undefined ? 'auto'
@@ -178,20 +180,20 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                                 <ToolCardOption
                                     selected={dpiChoice === 'auto'}
                                     onClick={() => setChoice('auto')}
-                                    label="Tự động"
-                                    desc="Giảm mẫu 300 DPI khi thu nhỏ khổ (khuyến nghị)."
+                                    label={t('preprocess.pageResizer:tu_dong')}
+                                    desc={t('preprocess.pageResizer:giam_mau_300_dpi_khi_thu_nho_kho_khuyen')}
                                 />
                                 <ToolCardOption
                                     selected={dpiChoice === 'custom'}
                                     onClick={() => setChoice('custom')}
-                                    label="Chọn DPI"
-                                    desc="Tự đặt độ phân giải đích cho ảnh."
+                                    label={t('preprocess.pageResizer:chon_dpi')}
+                                    desc={t('preprocess.pageResizer:tu_dat_do_phan_giai_dich_cho_anh')}
                                 />
                                 <ToolCardOption
                                     selected={dpiChoice === 'off'}
                                     onClick={() => setChoice('off')}
-                                    label="Giữ nguyên"
-                                    desc="Không giảm mẫu (chất lượng tối đa, file lớn)."
+                                    label={t('preprocess.pageResizer:giu_nguyen')}
+                                    desc={t('preprocess.pageResizer:khong_giam_mau_chat_luong_toi_da_file')}
                                 />
                             </div>
 
@@ -203,7 +205,7 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                                             selected={settings.targetDpi === d}
                                             onClick={() => onChange({ ...settings, targetDpi: d })}
                                             label={`${d}`}
-                                            desc={d === 150 ? 'Xem màn hình' : d === 300 ? 'In offset' : 'In nét cao'}
+                                            desc={d === 150 ? t('preprocess.pageResizer:xem_man_hinh') : d === 300 ? 'In offset' : t('preprocess.pageResizer:in_net_cao')}
                                         />
                                     ))}
                                     <div className="w-28">
@@ -219,25 +221,25 @@ export default function PageResizerTool({ settings, onChange }: Props) {
 
                             {dpiChoice !== 'off' && (
                                 <div className="mt-3">
-                                    <div className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1.5 ml-0.5">Chế độ xử lý</div>
+                                    <div className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1.5 ml-0.5">{t('preprocess.pageResizer:che_do_xu_ly')}</div>
                                     <div className="grid grid-cols-3 gap-2">
                                         <ToolCardOption
                                             selected={mode === 'auto'}
                                             onClick={() => onChange({ ...settings, resizeMode: 'auto' })}
-                                            label="Tự động"
-                                            desc="Tự chọn theo nội dung trang."
+                                            label={t('preprocess.pageResizer:tu_dong')}
+                                            desc={t('preprocess.pageResizer:tu_chon_theo_noi_dung_trang')}
                                         />
                                         <ToolCardOption
                                             selected={mode === 'vector'}
                                             onClick={() => onChange({ ...settings, resizeMode: 'vector' })}
-                                            label="Ưu tiên chất lượng"
-                                            desc="Giữ chữ/vector & màu CMYK, chỉ giảm ảnh."
+                                            label={t('preprocess.pageResizer:uu_tien_chat_luong')}
+                                            desc={t('preprocess.pageResizer:giu_chu_vector_mau_cmyk_chi_giam_anh')}
                                         />
                                         <ToolCardOption
                                             selected={mode === 'raster'}
                                             onClick={() => onChange({ ...settings, resizeMode: 'raster' })}
-                                            label="Nhanh nhất"
-                                            desc="Dựng lại theo ảnh (mất vector, ra RGB)."
+                                            label={t('preprocess.pageResizer:nhanh_nhat')}
+                                            desc={t('preprocess.pageResizer:dung_lai_theo_anh_mat_vector_ra_rgb')}
                                         />
                                     </div>
                                 </div>

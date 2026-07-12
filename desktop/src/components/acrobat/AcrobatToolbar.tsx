@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
+import { useTranslation } from 'react-i18next';
 
 interface AcrobatToolbarProps {
     pageOrderLength: number;
@@ -12,6 +13,7 @@ interface AcrobatToolbarProps {
 }
 
 export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, applyFitPage, onOpenRotateModalOrTools, extraActions }: AcrobatToolbarProps) {
+  const { t } = useTranslation();
     const {
         viewerZoom: zoom, setViewerZoom: setZoom,
         viewerFitMode: fitMode, setViewerFitMode: setFitMode,
@@ -114,8 +116,8 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     <button
                         className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${isObjectEditMode ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 ring-1 ring-emerald-300 dark:ring-emerald-700' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
                         onClick={() => setIsObjectEditMode(!isObjectEditMode)}
-                        title="Chỉnh sửa đối tượng (di chuyển / resize / xoay / sửa text / thêm)"
-                        aria-label="Chỉnh sửa đối tượng"
+                        title={t('misc.acrobatToolbar:chinh_sua_doi_tuong_di_chuyen_resize')}
+                        aria-label={t('misc.acrobatToolbar:chinh_sua_doi_tuong')}
                     >
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
                     </button>
@@ -129,7 +131,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                         setIsCropMode(next);
                         if (next) { setIsObjectEditMode(false); setToolMode('pointer'); }
                     }}
-                    title="Crop PDF — quét chọn vùng rồi nhấn Enter để mở thiết lập cắt khổ"
+                    title={t('misc.acrobatToolbar:crop_pdf_quet_chon_vung_roi_nhan_enter')}
                     aria-label="Crop PDF"
                 >
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
@@ -170,7 +172,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                         <button
                             className="h-7 px-2 text-[13px] text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10 rounded cursor-text transition-colors tabular-nums"
                             onClick={() => { setZoomInputVal(String(Math.round(zoom * 100))); setIsZoomEditing(true); }}
-                            title="Nhấn để nhập tỷ lệ"
+                            title={t('misc.acrobatToolbar:nhan_de_nhap_ty_le')}
                         >
                             {Math.round(zoom * 100)}%
                         </button>
@@ -178,7 +180,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     <button
                         className="w-4 h-7 flex items-center justify-center text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300 focus:outline-none transition-colors"
                         onClick={() => setIsZoomMenuOpen(!isZoomMenuOpen)}
-                        aria-label="Chọn mức thu phóng"
+                        aria-label={t('misc.acrobatToolbar:chon_muc_thu_phong')}
                     >
                         <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor"><path d="M0 0l5 6 5-6z"/></svg>
                     </button>
@@ -202,14 +204,14 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                 </div>
 
                 <div className="relative mx-1">
-                    <button className={`h-8 px-2 flex items-center justify-center gap-1.5 rounded transition-colors ${isDisplayMenuOpen ? 'bg-black/10 dark:bg-white/20' : 'hover:bg-black/5 dark:hover:bg-white/10'} text-slate-700 dark:text-zinc-300`} onClick={() => setIsDisplayMenuOpen(!isDisplayMenuOpen)} title="Hiển thị trang" aria-label="Hiển thị trang">
+                    <button className={`h-8 px-2 flex items-center justify-center gap-1.5 rounded transition-colors ${isDisplayMenuOpen ? 'bg-black/10 dark:bg-white/20' : 'hover:bg-black/5 dark:hover:bg-white/10'} text-slate-700 dark:text-zinc-300`} onClick={() => setIsDisplayMenuOpen(!isDisplayMenuOpen)} title={t('misc.acrobatToolbar:hien_thi_trang')} aria-label={t('misc.acrobatToolbar:hien_thi_trang')}>
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             {pageDisplayMode === 'single_fit' && <rect x="5" y="3" width="14" height="18" rx="2" />}
                             {pageDisplayMode === 'single_scroll' && <><rect x="5" y="2" width="14" height="9" rx="2" /><rect x="5" y="13" width="14" height="9" rx="2" /></>}
                             {pageDisplayMode === 'two_fit' && <><rect x="2" y="4" width="9" height="16" rx="2" /><rect x="13" y="4" width="9" height="16" rx="2" /></>}
                             {pageDisplayMode === 'two_scroll' && <><rect x="2" y="2" width="9" height="9" rx="2" /><rect x="13" y="2" width="9" height="9" rx="2" /><rect x="2" y="13" width="9" height="9" rx="2" /><rect x="13" y="13" width="9" height="9" rx="2" /></>}
                         </svg>
-                        <span className="text-[13px] font-medium tb-label">Hiển thị</span>
+                        <span className="text-[13px] font-medium tb-label">{t('misc.acrobatToolbar:hien_thi')}</span>
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>
                     </button>
                     {isDisplayMenuOpen && (
@@ -217,7 +219,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                             <div className="fixed inset-0 z-40" onClick={() => setIsDisplayMenuOpen(false)} />
                             <div className="absolute top-10 right-0 w-64 bg-white dark:bg-[#2d3236] border border-black/10 dark:border-white/10 shadow-xl rounded py-1.5 z-50 text-[13px] text-slate-700 dark:text-zinc-200">
                                 
-                                <div className="px-4 py-1.5 text-[11px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider">THU PHÓNG (VỪA MÀN HÌNH)</div>
+                                <div className="px-4 py-1.5 text-[11px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider">{t('misc.acrobatToolbar:thu_phong_vua_man_hinh')}</div>
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {applyFitWidth(); setIsDisplayMenuOpen(false);}}>
                                     {fitMode === 'width' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-slate-500 dark:text-zinc-400">
@@ -226,7 +228,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                                       <path d="M16 11v4h4" />
                                       <path d="M7 18h10M9 16l-2 2 2 2M15 16l2 2-2 2" />
                                     </svg>
-                                    <span>Vừa chiều ngang</span>
+                                    <span>{t('misc.acrobatToolbar:vua_chieu_ngang')}</span>
                                 </button>
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {applyFitPage(); setIsDisplayMenuOpen(false);}}>
                                     {fitMode === 'page' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
@@ -235,21 +237,21 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                                       <path d="M15 2v6h6" />
                                       <path d="M8.5 11.5l2.5 2.5M8.5 11.5h2M8.5 11.5v2M15.5 11.5l-2.5 2.5M15.5 11.5h-2M15.5 11.5v2M8.5 18.5l2.5-2.5M8.5 18.5h2M8.5 18.5v-2M15.5 18.5l-2.5-2.5M15.5 18.5h-2M15.5 18.5v-2" />
                                     </svg>
-                                    <span>Vừa trọn trang</span>
+                                    <span>{t('misc.acrobatToolbar:vua_tron_trang')}</span>
                                 </button>
 
                                 <div className="w-full h-px bg-black/10 dark:bg-white/10 my-1.5" />
 
-                                <div className="px-4 py-1.5 text-[11px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider">BỐ CỤC TRANG</div>
+                                <div className="px-4 py-1.5 text-[11px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider">{t('misc.acrobatToolbar:bo_cuc_trang')}</div>
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('single_fit'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'single_fit' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500 dark:text-zinc-400"><rect x="5" y="3" width="14" height="18" rx="2" /></svg>
-                                    <span>Xem một trang</span>
+                                    <span>{t('misc.acrobatToolbar:xem_mot_trang')}</span>
                                 </button>
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('single_scroll'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'single_scroll' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500 dark:text-zinc-400"><rect x="5" y="2" width="14" height="9" rx="2" /><rect x="5" y="13" width="14" height="9" rx="2" /></svg>
-                                    <span>Cuộn trang dọc</span>
+                                    <span>{t('misc.acrobatToolbar:cuon_trang_doc')}</span>
                                 </button>
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('two_fit'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'two_fit' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
@@ -259,14 +261,14 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('two_scroll'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'two_scroll' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500 dark:text-zinc-400"><rect x="2" y="2" width="9" height="9" rx="2" /><rect x="13" y="2" width="9" height="9" rx="2" /><rect x="2" y="13" width="9" height="9" rx="2" /><rect x="13" y="13" width="9" height="9" rx="2" /></svg>
-                                    <span>Cuộn hai trang</span>
+                                    <span>{t('misc.acrobatToolbar:cuon_hai_trang')}</span>
                                 </button>
                             </div>
                         </>
                     )}
                 </div>
 
-                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-red-50 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400 transition-colors" onClick={() => onOpenRotateModalOrTools('delete')} title="Xóa Trang (Quick Delete)" aria-label="Xóa Trang">
+                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-red-50 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400 transition-colors" onClick={() => onOpenRotateModalOrTools('delete')} title={t('misc.acrobatToolbar:xoa_trang_quick_delete')} aria-label={t('misc.acrobatToolbar:xoa_trang')}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                 </button>
 

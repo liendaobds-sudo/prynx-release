@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import type { ImageBatchStore } from './store';
 import { normalizeAndAddFiles, openFilePicker } from './helpers';
+import { useTranslation } from 'react-i18next';
 
 // Preview dùng chung cho các công cụ batch ảnh (tách nền, upscale). Toàn bộ
 // zoom (lăn chuột), pan (Space/Ctrl/chuột-giữa + kéo), double-click reset, và
@@ -36,6 +37,7 @@ const checkerboardStyle: React.CSSProperties = {
 };
 
 export function ImageBatchPreview<O>({ tabId, store, labels }: Props<O>) {
+  const { t } = useTranslation();
     const tabState = store(state => state.tabs[tabId]);
     const batchItems = tabState?.batchItems ?? [];
     const selectedId = tabState?.selectedId ?? null;
@@ -161,14 +163,14 @@ export function ImageBatchPreview<O>({ tabId, store, labels }: Props<O>) {
                         <>
                             {/* Result layer (full, below) */}
                             <div style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
-                                <img src={selectedItem.resultUrl!} alt="Kết quả" className={imgClass} draggable={false} />
+                                <img src={selectedItem.resultUrl!} alt={t('preprocess.imageBatchPreview:ket_qua')} className={imgClass} draggable={false} />
                             </div>
 
                             {/* Original layer (clipped from the right side of slider) */}
                             <div className="absolute inset-0 flex items-center justify-center overflow-hidden"
                                 style={{ clipPath: `inset(0 0 0 ${sliderPos}%)` }}>
                                 <div style={{ transform: imgTransform, transition: imgTransition, transformOrigin: 'center center' }}>
-                                    <img src={selectedItem.originalUrl} alt="Ảnh gốc" className={imgClass} draggable={false} />
+                                    <img src={selectedItem.originalUrl} alt={t('preprocess.imageBatchPreview:anh_goc')} className={imgClass} draggable={false} />
                                 </div>
                             </div>
 

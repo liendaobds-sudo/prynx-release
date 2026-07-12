@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolInfo } from './ToolUI';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
     pdfFile: File | null;
@@ -26,6 +27,7 @@ const DPI_OPTIONS = [
 ];
 
 export default function OcrTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
     const [lang, setLang] = useState('vie+eng');
     const [dpi, setDpi] = useState('300');
@@ -37,14 +39,14 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
 
     const handleRun = async () => {
         if (!pdfFile) {
-            setError('Chưa mở file PDF nào.');
+            setError(t('preprocess.ocr:chua_mo_file_pdf_nao'));
             return;
         }
 
         setIsProcessing(true);
         setError('');
         setResult(null);
-        setProgress('Đang chuẩn bị dữ liệu...');
+        setProgress(t('preprocess.ocr:dang_chuan_bi_du_lieu'));
 
         try {
             const realFile = await prepareFileForUpload((await getWorkingFile()) || pdfFile);
@@ -54,7 +56,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
             formData.append('dpi', dpi);
             formData.append('preprocess', preprocess ? 'true' : 'false');
 
-            setProgress('Đang chạy OCR Tesseract (có thể mất vài phút cho file lớn)...');
+            setProgress(t('preprocess.ocr:dang_chay_ocr_tesseract_co_the_mat_vai'));
 
             const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/ocr-searchable`, {
                 method: 'POST',
@@ -82,7 +84,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
                 onFileFixed(blob, newName);
             }
         } catch (e: any) {
-            setError(e.message || 'Đã xảy ra lỗi không xác định.');
+            setError(e.message || t('preprocess.ocr:da_xay_ra_loi_khong_xac_dinh'));
             setProgress('');
         } finally {
             setIsProcessing(false);
@@ -93,7 +95,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
         <div className="flex flex-col gap-4">
             {/* Language Selection */}
             <div>
-                <ToolSectionLabel>Ngôn ngữ nhận diện</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.ocr:ngon_ngu_nhan_dien')}</ToolSectionLabel>
                 <div className="grid grid-cols-2 gap-1.5">
                     {LANG_OPTIONS.map(opt => (
                         <ToolCardOption
@@ -109,7 +111,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
 
             {/* DPI Selection */}
             <div>
-                <ToolSectionLabel>Độ phân giải quét</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.ocr:do_phan_giai_quet')}</ToolSectionLabel>
                 <div className="grid grid-cols-3 gap-1.5">
                     {DPI_OPTIONS.map(opt => (
                         <ToolCardOption
@@ -125,10 +127,10 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
 
             {/* Preprocess Toggle */}
             <div>
-                <ToolSectionLabel>Tiền xử lý ảnh</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.ocr:tien_xu_ly_anh')}</ToolSectionLabel>
                 <ToolCheckboxOption
-                    label="Khử nhiễu + Nắn thẳng (Deskew)"
-                    desc="Bật cho file scan từ giấy. Tắt nếu file đã sạch (export từ Photoshop/AI)."
+                    label={t('preprocess.ocr:khu_nhieu_nan_thang_deskew')}
+                    desc={t('preprocess.ocr:bat_cho_file_scan_tu_giay_tat_neu_file')}
                     selected={preprocess}
                     onClick={() => setPreprocess(!preprocess)}
                 />
@@ -137,7 +139,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
             {/* Info Box */}
             <ToolInfo desc={
                 <>
-                    <strong>OCR Searchable PDF</strong> — Nhúng lớp text vô hình vào PDF scan, giúp file có thể <strong>tìm kiếm (Ctrl+F)</strong>, <strong>bôi đen copy</strong> nội dung. Ảnh gốc không bị thay đổi.
+                    <strong>OCR Searchable PDF</strong> {t('preprocess.ocr:nhung_lop_text_vo_hinh_vao_pdf_scan')} <strong>{t('preprocess.ocr:tim_kiem_ctrl_f')}</strong>, <strong>{t('preprocess.ocr:boi_den_copy')}</strong> {t('preprocess.ocr:noi_dung_anh_goc_khong_bi_thay_doi')}
                 </>
             } />
 
@@ -151,7 +153,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
                         : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white shadow-cyan-500/25 hover:shadow-cyan-500/40'
                 }`}
             >
-                {isProcessing ? '⏳ Đang xử lý OCR...' : '🔍 Tạo Searchable PDF'}
+                {isProcessing ? t('preprocess.ocr:dang_xu_ly_ocr') : t('preprocess.ocr:tao_searchable_pdf')}
             </button>
 
             {/* Progress */}
@@ -172,19 +174,19 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
             {/* Result */}
             {result && (
                 <div className="bg-emerald-50 dark:bg-emerald-900/20 p-4 rounded-lg border border-emerald-200 dark:border-emerald-800/50">
-                    <h4 className="text-[12px] font-bold text-emerald-700 dark:text-emerald-400 mb-2">✅ OCR thành công!</h4>
+                    <h4 className="text-[12px] font-bold text-emerald-700 dark:text-emerald-400 mb-2">{t('preprocess.ocr:ocr_thanh_cong')}</h4>
                     <div className="grid grid-cols-3 gap-2">
                         <div className="text-center">
                             <div className="text-lg font-black text-emerald-600 dark:text-emerald-300">{result.totalPages}</div>
-                            <div className="text-[10px] text-emerald-600/70 dark:text-emerald-400/70">Tổng trang</div>
+                            <div className="text-[10px] text-emerald-600/70 dark:text-emerald-400/70">{t('preprocess.ocr:tong_trang')}</div>
                         </div>
                         <div className="text-center">
                             <div className="text-lg font-black text-emerald-600 dark:text-emerald-300">{result.pagesWithText}</div>
-                            <div className="text-[10px] text-emerald-600/70 dark:text-emerald-400/70">Trang có chữ</div>
+                            <div className="text-[10px] text-emerald-600/70 dark:text-emerald-400/70">{t('preprocess.ocr:trang_co_chu')}</div>
                         </div>
                         <div className="text-center">
                             <div className="text-lg font-black text-emerald-600 dark:text-emerald-300">{result.totalWords.toLocaleString()}</div>
-                            <div className="text-[10px] text-emerald-600/70 dark:text-emerald-400/70">Từ đã nhúng</div>
+                            <div className="text-[10px] text-emerald-600/70 dark:text-emerald-400/70">{t('preprocess.ocr:tu_da_nhung')}</div>
                         </div>
                     </div>
                 </div>

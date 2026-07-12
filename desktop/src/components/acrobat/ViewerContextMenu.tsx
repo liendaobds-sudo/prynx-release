@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface ViewerContextMenuProps {
     contextMenu: { x: number; y: number; visible: boolean } | null;
@@ -14,6 +15,7 @@ interface ViewerContextMenuProps {
 }
 
 export function ViewerContextMenu(props: ViewerContextMenuProps) {
+  const { t } = useTranslation();
     const {
         contextMenu, selectedIndices, setContextMenu,
         setIsInsertModalOpen, setIsExtractModalOpen, setExtractPagesStrForModal,
@@ -34,7 +36,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                 onClick={() => setIsInsertModalOpen(true)}
                 className="w-full text-left px-4 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg outline-none transition-colors"
             >
-                Chèn trang trắng (Insert)
+                {t('misc.viewerContextMenu:chen_trang_trang_insert')}
             </button>
 
             <button
@@ -45,14 +47,14 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                 }}
                 className="w-full text-left px-4 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg outline-none transition-colors"
             >
-                Trích xuất trang
+                {t('misc.viewerContextMenu:trich_xuat_trang')}
             </button>
 
             <button
                 onClick={() => onQuickDuplicate()}
                 className="w-full text-left px-4 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg outline-none transition-colors"
             >
-                Nhân bản (Duplicate)
+                {t('misc.viewerContextMenu:nhan_ban_duplicate')}
             </button>
 
 
@@ -63,7 +65,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                 onClick={() => { setIsDeleteModalOpen(true); setContextMenu(null); }}
                 className="w-full flex items-center justify-between px-4 py-2 text-[13px] font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg outline-none transition-colors group"
             >
-                <span>Xóa trang nhanh</span>
+                <span>{t('misc.viewerContextMenu:xoa_trang_nhanh')}</span>
                 <span className="text-[11px] text-slate-400 group-hover:text-red-400 tracking-wider">Del</span>
             </button>
 
@@ -71,7 +73,7 @@ export function ViewerContextMenu(props: ViewerContextMenuProps) {
                 onClick={() => { setActiveDashboardTool('pages'); setIsSidebarOpen(true); setContextMenu(null); }}
                 className="w-full text-left px-4 py-2 text-[13px] font-medium text-slate-700 dark:text-zinc-200 hover:bg-slate-50 dark:hover:bg-white/5 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg outline-none transition-colors"
             >
-                Quản lý Trang (Xoay, Nhân bản...)
+                {t('misc.viewerContextMenu:quan_ly_trang_xoay_nhan_ban')}
             </button>
         </div>
     );

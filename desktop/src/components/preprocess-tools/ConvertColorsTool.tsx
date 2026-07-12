@@ -5,6 +5,7 @@ import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import ToolHelpModal from '../ToolHelpModal';
 import type { ToolHelp } from '../../lib/toolHelp';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   pdfFile: File | null;
@@ -45,6 +46,7 @@ const COLOR_HELP: ToolHelp = {
 };
 
 export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [mode, setMode] = useState<'cmyk' | 'grayscale'>('cmyk');
   const [includeSpot, setIncludeSpot] = useState(false);
@@ -58,7 +60,7 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
     if (fileId) return fileId;
-    if (!pdfFile) throw new Error('Chưa có file PDF');
+    if (!pdfFile) throw new Error(t('preprocess.convertColors:chua_co_file_pdf'));
     const r = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(r.id);
     return r.id;
@@ -93,12 +95,12 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else { recipeRecorder.discardPending(); setError(data.error || data.detail || 'Thất bại'); }
+      } else { recipeRecorder.discardPending(); setError(data.error || data.detail || t('preprocess.convertColors:that_bai')); }
     } catch (e: any) { recipeRecorder.discardPending(); setError(e.message); }
     setRunning(false);
   };
 
-  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">Vui lòng mở file PDF trước</div>;
+  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.convertColors:vui_long_mo_file_pdf_truoc')}</div>;
 
   const ModeCard = ({ value, icon, label, desc }: { value: 'cmyk' | 'grayscale'; icon: string; label: string; desc: string }) => {
     const sel = mode === value;
@@ -124,14 +126,14 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
       {/* ═══ NÚT HƯỚNG DẪN ═══ */}
       <button onClick={() => setShowHelp(true)}
         className="w-full flex items-center justify-center gap-1.5 text-[12px] font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 py-2 rounded-lg border border-indigo-200 dark:border-indigo-800/50 transition-colors">
-        <HelpCircle className="w-4 h-4" /> Chưa rõ? Xem hướng dẫn &amp; giải thích
+        <HelpCircle className="w-4 h-4" /> {t('preprocess.convertColors:chua_ro_xem_huong_dan_amp_giai_thich')}
       </button>
       {showHelp && <ToolHelpModal help={COLOR_HELP} icon="🎨" onClose={() => setShowHelp(false)} />}
 
       {/* ═══ CHỌN CHẾ ĐỘ (chọn 1) ═══ */}
       <div className="space-y-2">
-        <ModeCard value="cmyk" icon="🟡" label="Chuyển sang CMYK" desc="Cho in offset / in 4 màu (RGB → CMYK)." />
-        <ModeCard value="grayscale" icon="⬛" label="Chuyển sang đen trắng" desc="Bỏ màu, in 1 màu đen (Grayscale)." />
+        <ModeCard value="cmyk" icon="🟡" label={t('preprocess.convertColors:chuyen_sang_cmyk')} desc={t('preprocess.convertColors:cho_in_offset_in_4_mau_rgb_cmyk')} />
+        <ModeCard value="grayscale" icon="⬛" label={t('preprocess.convertColors:chuyen_sang_den_trang')} desc={t('preprocess.convertColors:bo_mau_in_1_mau_den_grayscale')} />
       </div>
 
       {/* Tùy chọn màu pha — chỉ hiện ở chế độ CMYK */}
@@ -143,8 +145,8 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
             {includeSpot && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg>}
           </div>
           <div className="flex-1">
-            <span className="font-semibold block">Đổi luôn màu pha (Spot/Pantone) → CMYK</span>
-            <span className="text-[10px] text-slate-500 dark:text-zinc-400 block leading-snug mt-0.5">Bật khi in 4 màu. Tắt nếu giữ bản màu pha riêng.</span>
+            <span className="font-semibold block">{t('preprocess.convertColors:doi_luon_mau_pha_spot_pantone_cmyk')}</span>
+            <span className="text-[10px] text-slate-500 dark:text-zinc-400 block leading-snug mt-0.5">{t('preprocess.convertColors:bat_khi_in_4_mau_tat_neu_giu_ban_mau')}</span>
           </div>
         </button>
       )}
@@ -152,17 +154,17 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
       {/* ═══ THỰC THI ═══ */}
       <button onClick={run} disabled={running}
         className="w-full px-2.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[13px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
-        {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang chuyển đổi...</>) : (<>🚀 Thực thi</>)}
+        {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.convertColors:dang_chuyen_doi')}</>) : (<>{t('preprocess.convertColors:thuc_thi')}</>)}
       </button>
 
       {/* ═══ RESULT ═══ */}
       {result && (
         <div className="p-3 rounded-lg border bg-emerald-500/10 border-emerald-500/20">
-          <h4 className="text-[11px] font-bold mb-1 text-emerald-600">✅ Thành công!</h4>
+          <h4 className="text-[11px] font-bold mb-1 text-emerald-600">{t('preprocess.convertColors:thanh_cong')}</h4>
           {result.log?.map((l: any, i: number) => (
             <p key={i} className="text-[10px] text-slate-600 dark:text-zinc-300">{l.status === 'success' ? '✅' : '❌'} {l.message} ({l.duration_ms}ms)</p>
           ))}
-          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">✅ File đã được cập nhật trên Viewer.</p>
+          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">{t('preprocess.convertColors:file_da_duoc_cap_nhat_tren_viewer')}</p>
         </div>
       )}
 

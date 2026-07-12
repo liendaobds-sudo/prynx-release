@@ -26,6 +26,7 @@ import {
     pickFontForName as pickFontForNameUtil,
 } from './editGeometry';
 import { formatPageNumber, applyTokens, effectiveLR } from '../../lib/stampFormat';
+import { useTranslation } from 'react-i18next';
 
 // ─── Edit PDF Object (task 10.1) ─────────────────────────────────────────────
 // Object do GET /edit/objects trả về, SAU khi đã convert bbox PDF (bottom-left)
@@ -530,6 +531,7 @@ const SelectableTextLine = ({ line, scale, gapPt }: { line: any; scale: number; 
 };
 
 export const LivePageFrame = (props: any) => {
+  const { t } = useTranslation();
     //#region Props & State
     const { originalPageNum, actualWidth100, zoom, rotation, bleedView, highlightBoxes, pageDim,
         onObjectDelete,
@@ -1016,16 +1018,16 @@ export const LivePageFrame = (props: any) => {
                 hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
             } catch (err) {
                 if (!cancelled) {
-                    console.warn('[edit] Không tải được /edit/objects:', err);
+                    console.warn(t('misc.livePageFrame:edit_khong_tai_duoc_edit_objects'), err);
                     setEditObjects(prev => (prev.length ? [] : prev));
                     setSelectedObjectIds(prev => (prev.length ? [] : prev));
                     const m = err instanceof Error ? err.message : String(err);
                     // 404 = fid/file không còn trên backend (thường sau khi RESTART
                     // server, file tải lên cũ đã mất) → hướng dẫn mở lại file.
                     if (/HTTP 404/.test(m)) {
-                        setEditNotice('Không tải được đối tượng: file này không còn trên server (có thể do khởi động lại). Hãy MỞ LẠI file để chỉnh sửa.');
+                        setEditNotice(t('misc.livePageFrame:khong_tai_duoc_doi_tuong_file_nay_khong'));
                     } else {
-                        setEditNotice('Không tải được danh sách đối tượng để chỉnh sửa. Thử mở lại file hoặc khởi động lại app.');
+                        setEditNotice(t('misc.livePageFrame:khong_tai_duoc_danh_sach_doi_tuong_de'));
                     }
                     setTimeout(() => setEditNotice(null), 8000);
                 }
@@ -1495,7 +1497,7 @@ export const LivePageFrame = (props: any) => {
     // fallback). Lỗi op (409/422...) → ném để caller hiển thị thông báo phù hợp.
     const applyOpViaSession = async (op: EditOp): Promise<SessionOpOutcome | null> => {
         if (!editSession) {
-            setEditNotice('Phiên chỉnh sửa chưa sẵn sàng — hãy mở lại file để chỉnh sửa.');
+            setEditNotice(t('misc.livePageFrame:phien_chinh_sua_chua_san_sang_hay_mo'));
             setTimeout(() => setEditNotice(null), 6000);
             return null;
         }
@@ -1549,12 +1551,12 @@ export const LivePageFrame = (props: any) => {
             if (Math.abs(lt.dx) < 0.5 && Math.abs(lt.dy) < 0.5) { return; }
             // Guard: scale hỏng / zoom 0 → delta Infinity → chữ bay khỏi trang ("mất").
             if (!Number.isFinite(scale) || scale < 1e-6) {
-                console.warn('[edit] scale không hợp lệ, bỏ move', scale);
+                console.warn(t('misc.livePageFrame:edit_scale_khong_hop_le_bo_move'), scale);
                 return;
             }
             const delta = moveDeltaCanvasToPdf(lt.dx, lt.dy, scale);
             if (!Number.isFinite(delta.dx) || !Number.isFinite(delta.dy)) {
-                console.warn('[edit] delta không hợp lệ, bỏ move', delta);
+                console.warn(t('misc.livePageFrame:edit_delta_khong_hop_le_bo_move'), delta);
                 return;
             }
             // Chặn delta quá lớn (kéo nhầm / scale lệch) — tối đa 2× khổ trang.
@@ -1562,8 +1564,8 @@ export const LivePageFrame = (props: any) => {
             const pageH = pageHeightPtFromDim(pageDim.h);
             const maxD = Math.max(pageW, pageH) * 2;
             if (Math.abs(delta.dx) > maxD || Math.abs(delta.dy) > maxD) {
-                console.warn('[edit] delta quá lớn, bỏ move', delta, { pageW, pageH });
-                setEditNotice('Độ dịch quá lớn — thử kéo nhẹ hơn hoặc zoom vừa phải rồi kéo lại.');
+                console.warn(t('misc.livePageFrame:edit_delta_qua_lon_bo_move'), delta, { pageW, pageH });
+                setEditNotice(t('misc.livePageFrame:do_dich_qua_lon_thu_keo_nhe_hon_hoac'));
                 setTimeout(() => setEditNotice(null), 5000);
                 hideEditGhost();
                 return;
@@ -1589,10 +1591,10 @@ export const LivePageFrame = (props: any) => {
             // Overlay clip đã dán tại chỗ; ghost dashed bỏ đi (overlay là hình thật mới).
             hideEditGhost();
         } catch (err: any) {
-            console.warn('[edit] transform (session) thất bại:', err);
+            console.warn(t('misc.livePageFrame:edit_transform_session_that_bai'), err);
             const msg = String(err?.message || err);
             if (msg.includes('409') || msg.includes('ánh xạ') || msg.includes('map')) {
-                setEditNotice('Đối tượng quá phức tạp (clip/XObject) — không thể biến đổi an toàn. Thử Delete hoặc sửa ở file nguồn.');
+                setEditNotice(t('misc.livePageFrame:doi_tuong_qua_phuc_tap_clip_xobject'));
             } else {
                 setEditNotice(`Di chuyển thất bại: ${msg.slice(0, 120)}`);
             }
@@ -1617,22 +1619,22 @@ export const LivePageFrame = (props: any) => {
             const r: any = (outcome as any).opResult?.detail;
             const usedFallback = Array.isArray(r) ? r.some((x: any) => x?.used_fallback) : !!r?.used_fallback;
             if (usedFallback && !editFontPath) {
-                setEditNotice('Không giữ được font gốc → đã dùng font dự phòng (DejaVuSans). Mở lại để chọn font ở thanh "FONT" nếu muốn đúng kiểu chữ.');
+                setEditNotice(t('misc.livePageFrame:khong_giu_duoc_font_goc_da_dung_font_du'));
                 setTimeout(() => setEditNotice(null), 6000);
             }
         } catch (err) {
-            console.warn('[edit] thao tác thất bại:', err);
+            console.warn(t('misc.livePageFrame:edit_thao_tac_that_bai'), err);
             const msg = err instanceof Error ? err.message : String(err);
             let friendly: string;
             if (/HTTP 422/.test(msg)) {
                 // Thiếu glyph (font đã chọn không có ký tự cần) — thường do nội dung
                 // gốc đọc không chuẩn hoặc font thiếu dấu tiếng Việt.
                 friendly = 'Không đổi được: font đã chọn THIẾU GLYPH cho một số ký tự. '
-                    + 'Hãy gõ lại đúng nội dung, hoặc chọn font khác có đủ dấu tiếng Việt.';
+                    + t('misc.livePageFrame:hay_go_lai_dung_noi_dung_hoac_chon_font');
             } else if (/HTTP 409/.test(msg)) {
-                friendly = 'Không sửa được: không xác định được đối tượng duy nhất (đã hủy để bảo toàn màu in).';
+                friendly = t('misc.livePageFrame:khong_sua_duoc_khong_xac_dinh_duoc_doi');
             } else {
-                friendly = 'Thao tác chỉnh sửa thất bại. Thử lại hoặc chọn font/nội dung khác.';
+                friendly = t('misc.livePageFrame:thao_tac_chinh_sua_that_bai_thu_lai');
             }
             setEditNotice(friendly);
             setTimeout(() => setEditNotice(null), 7000);
@@ -2321,22 +2323,22 @@ export const LivePageFrame = (props: any) => {
                                                          setEditingTextId(null);
                                                          if (c.trim()) void commitEditObjectText(obj.id, c);
                                                      }}
-                                                 ><Check className="w-3 h-3" /> Áp dụng</button>
+                                                 ><Check className="w-3 h-3" /> {t('misc.livePageFrame:ap_dung')}</button>
                                                  <button type="button"
                                                      className="px-2 py-0.5 text-[11px] rounded border border-slate-300 text-slate-600 inline-flex items-center gap-1"
                                                      onClick={(e) => { e.stopPropagation(); setEditingTextId(null); }}
-                                                 ><X className="w-3 h-3" /> Hủy</button>
+                                                 ><X className="w-3 h-3" /> {t('misc.livePageFrame:huy')}</button>
                                                  {editFontPath && (
                                                      <button type="button" className="ml-auto text-[10px] text-slate-500 hover:text-rose-600 inline-flex items-center gap-1"
                                                          onClick={(e) => { e.stopPropagation(); setEditFontName(''); setEditFontPath(undefined); }}
-                                                     ><RotateCcw className="w-3 h-3" /> Bỏ font</button>
+                                                     ><RotateCcw className="w-3 h-3" /> {t('misc.livePageFrame:bo_font')}</button>
                                                  )}
                                              </div>
                                          </div>
                                          <textarea
                                              autoFocus
                                              value={editTextContent}
-                                             placeholder="Nhập nội dung…"
+                                             placeholder={t('misc.livePageFrame:nhap_noi_dung')}
                                              onChange={(ev) => setEditTextContent(ev.target.value)}
                                              onBlur={(e) => {
                                                  // Nếu focus chuyển sang thanh FONT (data-edit-ui) thì KHÔNG đóng
@@ -2390,7 +2392,7 @@ export const LivePageFrame = (props: any) => {
                              <textarea
                                  autoFocus
                                  value={editTextContent}
-                                 placeholder="Nhập text mới…"
+                                 placeholder={t('misc.livePageFrame:nhap_text_moi')}
                                  onChange={(ev) => setEditTextContent(ev.target.value)}
                                  onBlur={() => {
                                      const c = editTextContent;
@@ -2432,7 +2434,7 @@ export const LivePageFrame = (props: any) => {
              {isObjectEditMode && !isVdpMode && editAddMode && (
                  <div className="absolute top-1 left-1 z-[60] pointer-events-none">
                      <span className="px-1.5 py-0.5 text-[11px] rounded bg-black/70 text-white">
-                         Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : 'ảnh'}…
+                         Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : t('misc.livePageFrame:anh')}…
                      </span>
                  </div>
              )}
@@ -2637,7 +2639,7 @@ export const LivePageFrame = (props: any) => {
                                                     <img key={colIndex} src={watermarkImageUrl} alt="wm" style={{ width: `${scaledWmWidth}px`, height: `${scaledWmHeight}px`, objectFit: scaleMode === 'stretch' ? 'fill' : 'contain', flexShrink: 0, maxWidth: 'none', maxHeight: 'none' }} />
                                                  ) : (
                                                     <div key={colIndex} style={{ width: `${scaledWmWidth}px`, height: `${scaledWmHeight}px`, border: '2px dashed #94a3b8', background: 'rgba(241, 245, 249, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, maxWidth: 'none', maxHeight: 'none' }}>
-                                                        <span className="text-slate-500 font-bold text-[10px]">Phôi PDF</span>
+                                                        <span className="text-slate-500 font-bold text-[10px]">{t('misc.livePageFrame:phoi_pdf')}</span>
                                                     </div>
                                                  )
                                              ) : (
@@ -2667,7 +2669,7 @@ export const LivePageFrame = (props: any) => {
                                         <img src={watermarkImageUrl} alt="wm" style={{ width: `${scaledWmWidth}px`, height: `${scaledWmHeight}px`, objectFit: scaleMode === 'stretch' ? 'fill' : 'contain', maxWidth: 'none', maxHeight: 'none' }} />
                                      ) : (
                                         <div style={{ width: `${scaledWmWidth}px`, height: `${scaledWmHeight}px`, border: '2px dashed #94a3b8', background: 'rgba(241, 245, 249, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', maxWidth: 'none', maxHeight: 'none' }}>
-                                            <span className="text-slate-500 font-bold text-xs whitespace-nowrap">Phôi PDF</span>
+                                            <span className="text-slate-500 font-bold text-xs whitespace-nowrap">{t('misc.livePageFrame:phoi_pdf')}</span>
                                         </div>
                                      )
                                  ) : (
@@ -2852,7 +2854,7 @@ export const LivePageFrame = (props: any) => {
                              }}
                          >
                              <div className={`absolute -top-6 left-0 bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow whitespace-nowrap pointer-events-none transition-opacity z-[70] ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                                 {field.fieldName || field.name || 'Chưa đặt tên'} ({field.type})
+                                 {field.fieldName || field.name || t('misc.livePageFrame:chua_dat_ten')} ({field.type})
                              </div>
                              
                              {/* Visual Placeholders — xoay nội dung quanh tâm box theo
@@ -2991,8 +2993,8 @@ export const LivePageFrame = (props: any) => {
                  if (!target) return null;
                  const cur = ((Number(target.rotation) || 0) % 360 + 360) % 360;
                  const items: { label: string; rot: number; active?: boolean }[] = [
-                     { label: 'Xoay 90° theo chiều kim đồng hồ', rot: (cur + 90) % 360 },
-                     { label: 'Xoay 90° ngược chiều kim đồng hồ', rot: (cur + 270) % 360 },
+                     { label: t('misc.livePageFrame:xoay_90_theo_chieu_kim_dong_ho'), rot: (cur + 90) % 360 },
+                     { label: t('misc.livePageFrame:xoay_90_nguoc_chieu_kim_dong_ho'), rot: (cur + 270) % 360 },
                  ];
                  const presets = [0, 90, 180, 270];
                  // Portal ra document.body: overlay VDP nằm trong div trang có CSS
@@ -3147,7 +3149,7 @@ export const LivePageFrame = (props: any) => {
                      style={{ left: cropSel.x, top: cropSel.y, width: cropSel.w, height: cropSel.h }}
                  >
                      <div className="absolute -top-6 left-0 text-[10px] font-semibold bg-orange-500 text-white px-1.5 py-0.5 rounded shadow whitespace-nowrap">
-                         Enter: cắt khổ • Esc: huỷ
+                         {t('misc.livePageFrame:enter_cat_kho_esc_huy')}
                      </div>
                  </div>
              )}

@@ -3,6 +3,7 @@ import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   pdfFile: File | null;
@@ -18,6 +19,7 @@ interface InkInfo {
 }
 
 export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [inks, setInks] = useState<InkInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -30,7 +32,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
     if (fileId) return fileId;
-    if (!pdfFile) throw new Error('Chưa có file PDF');
+    if (!pdfFile) throw new Error(t('preprocess.inkManager:chua_co_file_pdf'));
     const r = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(r.id);
     return r.id;
@@ -82,7 +84,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
     return `#${[r, g, b].map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('')}`;
   };
 
-  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">Vui lòng mở file PDF trước</div>;
+  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.inkManager:vui_long_mo_file_pdf_truoc')}</div>;
 
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
@@ -92,7 +94,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
         <div className="flex items-center justify-between mb-3">
           <button onClick={() => setIsInksOpen(!isInksOpen)} className="flex items-center gap-2 group">
             <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
-              🎨 KÊNH MỰC (INK CHANNELS)
+              {t('preprocess.inkManager:kenh_muc_ink_channels')}
             </span>
             <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isInksOpen ? 'rotate-180' : ''}`} />
           </button>
@@ -104,7 +106,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
               </div>
             )}
             <button onClick={fetchInks} disabled={loading} className="text-[10px] text-blue-500 hover:text-blue-600 hover:bg-blue-50 px-2 py-0.5 rounded transition-colors font-medium">
-              {loading ? '...' : '↻ Quét lại'}
+              {loading ? '...' : t('preprocess.inkManager:quet_lai')}
             </button>
           </div>
         </div>
@@ -145,7 +147,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
                   </div>
                 ))}
 
-                {inks.length === 0 && <div className="text-center py-4 text-[11px] text-slate-400">Chưa có dữ liệu mực</div>}
+                {inks.length === 0 && <div className="text-center py-4 text-[11px] text-slate-400">{t('preprocess.inkManager:chua_co_du_lieu_muc')}</div>}
               </div>
             )}
           </div>
@@ -158,14 +160,14 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
           <div className="h-px w-full bg-slate-200 dark:bg-zinc-700" />
           <button onClick={() => convertSpot()} disabled={converting}
             className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
-            {converting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang chuyển đổi...</>) : (<>🚀 Chuyển tất cả Spot → CMYK</>)}
+            {converting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.inkManager:dang_chuyen_doi')}</>) : (<>{t('preprocess.inkManager:chuyen_tat_ca_spot_cmyk')}</>)}
           </button>
         </>
       )}
 
       {spotInks.length === 0 && !loading && inks.length > 0 && (
         <div className="p-3 rounded-lg border bg-emerald-500/10 border-emerald-500/20">
-          <span className="text-[11px] font-bold text-emerald-600">✅ File chỉ chứa màu Process (CMYK) — Không có Spot Color</span>
+          <span className="text-[11px] font-bold text-emerald-600">{t('preprocess.inkManager:file_chi_chua_mau_process_cmyk_khong_co')}</span>
         </div>
       )}
 
@@ -173,7 +175,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
       {status && (
         <div className={`p-3 rounded-lg border ${status.startsWith('✅') ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
           <span className={`text-[11px] font-bold ${status.startsWith('✅') ? 'text-emerald-600' : 'text-red-600'}`}>{status}</span>
-          {status.startsWith('✅') && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">✅ File đã được cập nhật trên Viewer.</p>}
+          {status.startsWith('✅') && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">{t('preprocess.inkManager:file_da_duoc_cap_nhat_tren_viewer')}</p>}
         </div>
       )}
     </div>

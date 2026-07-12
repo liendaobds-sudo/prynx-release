@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuthStore } from '../stores/useAuthStore';
+import { useTranslation } from 'react-i18next';
 
 interface AboutModalProps {
   onClose: () => void;
@@ -43,6 +44,7 @@ type UpdateState =
   | { kind: 'error'; message: string };
 
 export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
+  const { t } = useTranslation();
   const { user, remainingDays, licenseExpiresAt } = useAuthStore();
   const [version, setVersion] = useState('');
   const [upd, setUpd] = useState<UpdateState>({ kind: 'idle' });
@@ -70,7 +72,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
 
   const checkUpdate = async () => {
     if (!(window as any).__TAURI_INTERNALS__) {
-      setUpd({ kind: 'error', message: 'Chỉ khả dụng trong bản cài đặt.' });
+      setUpd({ kind: 'error', message: t('misc.about:chi_kha_dung_trong_ban_cai_dat') });
       return;
     }
     setUpd({ kind: 'checking' });
@@ -112,7 +114,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Giới thiệu PrynX"
+      aria-label={t('misc.about:gioi_thieu_prynx')}
     >
       <div
         className="w-full max-w-sm rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150"
@@ -136,10 +138,10 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
 
         {/* Account + license */}
         <div className="px-6 py-4 space-y-2 text-[13px] border-b border-slate-100 dark:border-white/10">
-          <Row label="Tài khoản" value={user?.email || 'Chưa đăng nhập'} />
+          <Row label={t('misc.about:tai_khoan')} value={user?.email || t('misc.about:chua_dang_nhap')} />
           {remainingDays !== null && (
             <Row
-              label="Hạn dùng"
+              label={t('misc.about:han_dung')}
               value={`Còn ${remainingDays} ngày${expiryStr ? ` (đến ${expiryStr})` : ''}`}
             />
           )}
@@ -153,13 +155,13 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
                 <div className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400">
                   Có bản mới{upd.version ? ` ${upd.version}` : ''}
                 </div>
-                <div className="text-[11px] text-slate-500 dark:text-zinc-400">Cài đặt rồi khởi động lại.</div>
+                <div className="text-[11px] text-slate-500 dark:text-zinc-400">{t('misc.about:cai_dat_roi_khoi_dong_lai')}</div>
               </div>
               <button
                 onClick={() => installUpdate(upd.update)}
                 className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-[13px] font-semibold transition-colors"
               >
-                Cập nhật ngay
+                {t('misc.about:cap_nhat_ngay')}
               </button>
             </div>
           ) : upd.kind === 'downloading' ? (
@@ -172,17 +174,17 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
           ) : (
             <div className="flex items-center gap-3">
               <div className="flex-1 min-w-0 text-[13px]">
-                {upd.kind === 'checking' && <span className="text-slate-500 dark:text-zinc-400">Đang kiểm tra cập nhật…</span>}
-                {upd.kind === 'latest' && <span className="text-emerald-600 dark:text-emerald-400 font-medium">✓ Bạn đang dùng bản mới nhất.</span>}
+                {upd.kind === 'checking' && <span className="text-slate-500 dark:text-zinc-400">{t('misc.about:dang_kiem_tra_cap_nhat')}</span>}
+                {upd.kind === 'latest' && <span className="text-emerald-600 dark:text-emerald-400 font-medium">{t('misc.about:ban_dang_dung_ban_moi_nhat')}</span>}
                 {upd.kind === 'error' && <span className="text-rose-500">Lỗi: {upd.message}</span>}
-                {upd.kind === 'idle' && <span className="text-slate-500 dark:text-zinc-400">Kiểm tra phiên bản mới nhất.</span>}
+                {upd.kind === 'idle' && <span className="text-slate-500 dark:text-zinc-400">{t('misc.about:kiem_tra_phien_ban_moi_nhat')}</span>}
               </div>
               <button
                 onClick={checkUpdate}
                 disabled={upd.kind === 'checking'}
                 className="shrink-0 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-200 text-[13px] font-semibold transition-colors disabled:opacity-50"
               >
-                Kiểm tra cập nhật
+                {t('misc.about:kiem_tra_cap_nhat')}
               </button>
             </div>
           )}
@@ -191,11 +193,11 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
         {/* Contact */}
         <div className="px-6 py-4 space-y-2">
           <div className="text-[11px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-wider mb-1">
-            Liên hệ hỗ trợ
+            {t('misc.about:lien_he_ho_tro')}
           </div>
-          <ContactButton icon="🌐" label="Trang chủ" sub="printsolutions.vn" onClick={() => openExternal(SUPPORT.website)} />
+          <ContactButton icon="🌐" label={t('misc.about:trang_chu')} sub="printsolutions.vn" onClick={() => openExternal(SUPPORT.website)} />
           <ContactButton icon="✉️" label="Email" sub={SUPPORT.email} onClick={() => openExternal(`mailto:${SUPPORT.email}`)} />
-          <ContactButton icon="📞" label="Điện thoại" sub={SUPPORT.phone} onClick={() => openExternal(`tel:${SUPPORT.phone}`)} />
+          <ContactButton icon="📞" label={t('misc.about:dien_thoai')} sub={SUPPORT.phone} onClick={() => openExternal(`tel:${SUPPORT.phone}`)} />
           <ContactButton icon="💬" label="Zalo" sub={SUPPORT.phone} onClick={() => openExternal(SUPPORT.zalo)} />
         </div>
 
@@ -208,7 +210,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
             onClick={onClose}
             className="w-full py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-200 text-[14px] font-semibold transition-colors"
           >
-            Đóng
+            {t('misc.about:dong')}
           </button>
         </div>
       </div>

@@ -6,6 +6,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { SectionLabel, Divider, inputCls, Checkbox, RichSelect } from '../SharedUI';
 import { DEFAULT_MATERIALS, LAMINATION_OPTIONS, PREDEFINED_SIZES, type ReportFieldKey } from '../types';
 import { buildReportPreview } from '../../../lib/reportPreview';
+import { useTranslation } from 'react-i18next';
 
 const REPORT_FIELD_LABELS: Record<string, string> = {
     orderCode: 'Mã đơn hàng', identifier: 'Mẫu/Trang', gangCount: 'Số mẫu ghép',
@@ -59,6 +60,7 @@ function CollapsibleGroup({
 }
 
 export default function AdvancedSettingsSection({ activeTool, sourceTotalPages = 0 }: { activeTool: string; sourceTotalPages?: number }) {
+  const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
         taskMode: state.taskMode,
         scaleMode: state.scaleMode,
@@ -167,10 +169,10 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
             >
                 <div className="flex items-center gap-2">
                     <svg className="w-5 h-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
-                    <span className="font-bold text-[13px] text-slate-800 dark:text-white uppercase tracking-wide">Thiết lập Mở rộng</span>
+                    <span className="font-bold text-[13px] text-slate-800 dark:text-white uppercase tracking-wide">{t('imposition.advancedSettings:thiet_lap_mo_rong')}</span>
                 </div>
                 <div className="flex items-center gap-2 text-slate-400">
-                    <span className="text-xs font-medium">{isExpanded ? 'Đóng lại' : 'Mở rộng'}</span>
+                    <span className="text-xs font-medium">{isExpanded ? t('imposition.advancedSettings:dong_lai') : t('imposition.advancedSettings:mo_rong')}</span>
                     <svg className={`w-4 h-4 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
@@ -185,11 +187,11 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                         {/* ══ BÌNH 2 MẶT (CNC) — In 2 mặt + Cạnh lật + Dấu canh in 2 mặt ══ */}
                         {activeTool === 'cnc_imposer' && (
-                        <CollapsibleGroup title="🔻 Bình 2 mặt (CNC)" defaultOpen>
+                        <CollapsibleGroup title={t('imposition.advancedSettings:binh_2_mat_cnc')} defaultOpen>
                             <Checkbox
                                 checked={s.duplexFlow === 'double'}
                                 onChange={(v) => s.setDuplexFlow(v ? 'double' : 'normal')}
-                                label="In 2 mặt (lật gương mặt sau)"
+                                label={t('imposition.advancedSettings:in_2_mat_lat_guong_mat_sau')}
                             />
                             {s.duplexFlow === 'double' && sourceTotalPages > 0 && sourceTotalPages % 2 !== 0 && (
                                 <div className="text-[11px] text-red-600 dark:text-red-400">
@@ -199,20 +201,20 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             {s.duplexFlow === 'double' && (
                                 <>
                                     <div className="flex items-center gap-3">
-                                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">CẠNH LẬT</label>
+                                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:canh_lat')}</label>
                                         <select
                                             value={s.cncFlipEdge}
                                             onChange={e => s.setCncFlipEdge(e.target.value)}
                                             className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                                         >
-                                            <option value="long">Cạnh dài (long-edge) — mặc định</option>
-                                            <option value="short">Cạnh ngắn (short-edge)</option>
+                                            <option value="long">{t('imposition.advancedSettings:canh_dai_long_edge_mac_dinh')}</option>
+                                            <option value="short">{t('imposition.advancedSettings:canh_ngan_short_edge')}</option>
                                         </select>
                                     </div>
                                     <Checkbox
                                         checked={s.cncDuplexMarks}
                                         onChange={(v) => s.setCncDuplexMarks(v)}
-                                        label="Dấu canh in 2 mặt (vẽ cả 2 mặt)"
+                                        label={t('imposition.advancedSettings:dau_canh_in_2_mat_ve_ca_2_mat')}
                                     />
                                 </>
                             )}
@@ -221,12 +223,12 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                         {/* ══ NHÓM ① ĐỊNH VỊ & CẮT ══ */}
                         {stickerLike && (
-                        <CollapsibleGroup title="🎯 Định vị & Cắt" defaultOpen>
+                        <CollapsibleGroup title={t('imposition.advancedSettings:dinh_vi_cat')} defaultOpen>
 
                         {/* === BOONG ĐỊNH VỊ (Bế tem & CNC) === */}
                         {stickerLike && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">BOONG ĐỊNH VỊ</label>
+                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:boong_dinh_vi')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
                                     <select
                                         value={s.pontType}
@@ -252,8 +254,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         }}
                                         className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                                     >
-                                        <option value="none">Không</option>
-                                        <option value="corner">Boong Góc Vuông</option>
+                                        <option value="none">{t('imposition.advancedSettings:khong')}</option>
+                                        <option value="corner">{t('imposition.advancedSettings:boong_goc_vuong')}</option>
                                         <option value="5mm">Boong 5mm</option>
                                         {(() => {
                                             try {
@@ -267,10 +269,10 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                             } catch (e) {}
                                             return null;
                                         })()}
-                                        <option value="custom">Tùy chỉnh...</option>
+                                        <option value="custom">{t('imposition.advancedSettings:tuy_chinh')}</option>
                                     </select>
                                     {s.pontType !== 'none' && (
-                                        <button onClick={() => s.setShowPontModal(true)} className="hover:bg-slate-200 dark:hover:bg-zinc-700 rounded transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 p-1" title="Tùy chỉnh Boong định vị...">
+                                        <button onClick={() => s.setShowPontModal(true)} className="hover:bg-slate-200 dark:hover:bg-zinc-700 rounded transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 p-1" title={t('imposition.advancedSettings:tuy_chinh_boong_dinh_vi')}>
                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                                         </button>
                                     )}
@@ -281,14 +283,14 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         {/* === ĐƯỜNG CẮT (chỉ Bế tem) === */}
                         {activeTool === 'sticker_imposer' && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">ĐƯỜNG CẮT</label>
+                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:duong_cat')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
                                     <select
                                         value={s.cutType}
                                         onChange={e => s.setCutType(e.target.value)}
                                         className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                                     >
-                                        <option value="default">Mặc định</option>
+                                        <option value="default">{t('imposition.advancedSettings:mac_dinh')}</option>
                                         <option value="one_dao">1 Dao (Dao LETA)</option>
                                     </select>
                                 </div>
@@ -298,7 +300,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         {/* KC CỤM PHỤ — chỉ khi 1 Dao */}
                         {activeTool === 'sticker_imposer' && s.cutType === 'one_dao' && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]" title="Khoảng cách giữa cụm chính và cụm phụ (lấp đầy). Chỉ áp dụng khi Xếp tối ưu + Bế 1 Dao.">KC CỤM PHỤ</label>
+                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]" title={t('imposition.advancedSettings:khoang_cach_giua_cum_chinh_va_cum_phu')}>{t('imposition.advancedSettings:kc_cum_phu')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
                                     <div className="relative flex-1">
                                         <input type="number" step="0.5" min="0" value={s.fillBlockGap} onChange={e => s.setFillBlockGap(Number(e.target.value))}
@@ -314,52 +316,52 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                         {/* === NHÓM ② THÔNG TIN SẢN PHẨM (REPORT) === */}
                         {reportCapable && (
-                        <CollapsibleGroup title="🏷️ Thông tin sản phẩm (Report)">
+                        <CollapsibleGroup title={t('imposition.advancedSettings:thong_tin_san_pham_report')}>
 
                         {/* === REPORT & XUẤT TỜ DUY NHẤT (sticker_imposer + cnc + cắt xén) === */}
                         {reportCapable && (
                             <div className="flex flex-col gap-3 pb-1">
                                 <div className="flex items-center justify-between">
-                                    <label className="text-[10px] text-slate-400 italic">Bật & tuỳ chỉnh khối thông tin in lên tờ</label>
+                                    <label className="text-[10px] text-slate-400 italic">{t('imposition.advancedSettings:bat_tuy_chinh_khoi_thong_tin_in_len_to')}</label>
                                     <div
                                         className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                         onClick={() => setInfoModal({
-                                            title: "Report & Lệnh in",
+                                            title: t('imposition.advancedSettings:report_lenh_in'),
                                             content: (
                                                 <div className="space-y-4">
                                                     <p className="text-slate-600 dark:text-zinc-300">
-                                                        Bình Tem Bế xuất <strong>mỗi loại 1 tờ in duy nhất</strong> (không nhân bản hàng trăm trang giống nhau).
-                                                        Số lượng bạn nhập được quy thành <strong>số tờ cần in</strong> và ghi vào khối thông tin (report) ngay trên tờ —
+                                                        {t('imposition.advancedSettings:binh_tem_be_xuat')} <strong>{t('imposition.advancedSettings:moi_loai_1_to_in_duy_nhat')}</strong> (không nhân bản hàng trăm trang giống nhau).
+                                                        Số lượng bạn nhập được quy thành <strong>{t('imposition.advancedSettings:so_to_can_in_2')}</strong> và ghi vào khối thông tin (report) ngay trên tờ —
                                                         thợ in chỉ việc đặt máy in đúng số bản đó.
                                                     </p>
                                                     <div className="space-y-1">
-                                                        <h4 className="font-bold text-slate-800 dark:text-white">Khối report gồm gì?</h4>
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:khoi_report_gom_gi')}</h4>
                                                         <p className="text-slate-600 dark:text-zinc-300">
-                                                            Mã đơn hàng, tên nhãn, chất liệu, cán màng, SL/tờ, <strong>số tờ cần in</strong>, số lượng thực, kích thước…
+                                                            {t('imposition.advancedSettings:ma_don_hang_ten_nhan_chat_lieu_can_mang')} <strong>{t('imposition.advancedSettings:so_to_can_in_2')}</strong>, số lượng thực, kích thước…
                                                             Bạn bật/tắt từng trường ở mục “Trường hiển thị”, chọn vị trí (trên/dưới/trái/phải) và cỡ chữ.
                                                         </p>
                                                     </div>
                                                     <div className="space-y-1">
-                                                        <h4 className="font-bold text-slate-800 dark:text-white">Chất liệu</h4>
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:chat_lieu')}</h4>
                                                         <p className="text-slate-600 dark:text-zinc-300">
-                                                            Chọn từ danh sách có sẵn hoặc bấm ＋ để thêm chất liệu riêng của xưởng (lưu lại cho lần sau), 🗑 để xóa chất liệu tự thêm.
+                                                            {t('imposition.advancedSettings:chon_tu_danh_sach_co_san_hoac_bam_de')}
                                                         </p>
                                                     </div>
                                                     <div className="space-y-1">
-                                                        <h4 className="font-bold text-slate-800 dark:text-white">Số tờ cần in tính thế nào?</h4>
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:so_to_can_in_tinh_the_nao')}</h4>
                                                         <p className="text-slate-600 dark:text-zinc-300">
-                                                            Số tờ = <em>làm tròn lên</em> (Số lượng ÷ Số tem mỗi tờ). VD 1000 tem, 48 tem/tờ → 21 tờ (in dư an toàn).
+                                                            {t('imposition.advancedSettings:so_to')} <em>{t('imposition.advancedSettings:lam_tron_len')}</em> (Số lượng ÷ Số tem mỗi tờ). VD 1000 tem, 48 tem/tờ → 21 tờ (in dư an toàn).
                                                             Xem bảng chi tiết ở ô “SL mỗi loại”.
                                                         </p>
                                                     </div>
                                                     <div className="space-y-1">
-                                                        <h4 className="font-bold text-slate-800 dark:text-white">Bỏ dấu tiếng Việt</h4>
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:bo_dau_tieng_viet')}</h4>
                                                         <p className="text-slate-600 dark:text-zinc-300">
-                                                            Bật khi máy/phần mềm cắt không đọc được chữ có dấu — report sẽ tự chuyển sang chữ không dấu.
+                                                            {t('imposition.advancedSettings:bat_khi_may_phan_mem_cat_khong_doc_duoc')}
                                                         </p>
                                                     </div>
                                                     <p className="text-amber-600 dark:text-amber-400 text-[12px]">
-                                                        Việc đặt tên file & lưu ra thư mục được làm ở bước <strong>“Lưu file in”</strong> sau khi bình xong.
+                                                        {t('imposition.advancedSettings:viec_dat_ten_file_luu_ra_thu_muc_duoc')} <strong>{t('imposition.advancedSettings:luu_file_in')}</strong> {t('imposition.advancedSettings:sau_khi_binh_xong')}
                                                     </p>
                                                 </div>
                                             )
@@ -372,7 +374,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                 <Checkbox
                                     checked={s.reportDisplay.enabled}
                                     onChange={(v) => s.setReportDisplay(prev => ({ ...prev, enabled: v }))}
-                                    label="Vẽ report lên tờ in"
+                                    label={t('imposition.advancedSettings:ve_report_len_to_in')}
                                 />
 
                                 {s.reportDisplay.enabled && (
@@ -380,36 +382,36 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         {/* Mã đơn hàng + Tên nhãn */}
                                         <div className="grid grid-cols-2 gap-2">
                                             <div>
-                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium">Mã đơn hàng</label>
+                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:ma_don_hang')}</label>
                                                 <input value={s.reportOrderCode} onChange={e => s.setReportOrderCode(e.target.value)} className={inputCls} style={{ paddingLeft: '9px' }} placeholder="VD: DH-001" />
                                             </div>
                                             <div>
-                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium">Tên nhãn</label>
-                                                <input value={s.reportDisplay.labelNameText} onChange={e => s.setReportDisplay(prev => ({ ...prev, labelNameText: e.target.value }))} className={inputCls} style={{ paddingLeft: '9px' }} placeholder="VD: Tem sầu riêng" />
+                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:ten_nhan')}</label>
+                                                <input value={s.reportDisplay.labelNameText} onChange={e => s.setReportDisplay(prev => ({ ...prev, labelNameText: e.target.value }))} className={inputCls} style={{ paddingLeft: '9px' }} placeholder={t('imposition.advancedSettings:vd_tem_sau_rieng')} />
                                             </div>
                                         </div>
 
                                         {/* Chất liệu */}
                                         <div>
-                                            <label className="text-[10px] text-slate-500 block mb-1 font-medium">Chất liệu</label>
+                                            <label className="text-[10px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:chat_lieu')}</label>
                                             <div className="flex items-center gap-2">
                                                 <select
                                                     value={s.reportMaterial}
                                                     onChange={e => s.setReportMaterial(e.target.value)}
                                                     className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-[13px] font-medium focus:outline-none focus:border-indigo-500"
                                                 >
-                                                    <option value="">— Chọn chất liệu —</option>
+                                                    <option value="">{t('imposition.advancedSettings:chon_chat_lieu')}</option>
                                                     {[...DEFAULT_MATERIALS, ...s.customMaterials].map((m: string) => (
                                                         <option key={m} value={m}>{m}</option>
                                                     ))}
                                                 </select>
                                                 <button
-                                                    title="Thêm chất liệu mới"
+                                                    title={t('imposition.advancedSettings:them_chat_lieu_moi')}
                                                     onClick={() => setMatInput('')}
                                                     className="shrink-0 w-8 h-8 rounded border border-slate-300 dark:border-white/20 text-slate-500 hover:text-indigo-600 hover:border-indigo-400"
                                                 >＋</button>
                                                 <button
-                                                    title="Xóa chất liệu tùy chỉnh đang chọn"
+                                                    title={t('imposition.advancedSettings:xoa_chat_lieu_tuy_chinh_dang_chon')}
                                                     disabled={!s.customMaterials.includes(s.reportMaterial)}
                                                     onClick={() => {
                                                         s.setCustomMaterials(s.customMaterials.filter((m: string) => m !== s.reportMaterial));
@@ -425,19 +427,19 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                         value={matInput}
                                                         onChange={e => setMatInput(e.target.value)}
                                                         onKeyDown={e => { if (e.key === 'Enter') addMaterial(); if (e.key === 'Escape') setMatInput(null); }}
-                                                        placeholder="Tên chất liệu mới..."
+                                                        placeholder={t('imposition.advancedSettings:ten_chat_lieu_moi')}
                                                         className={inputCls}
                                                         style={{ paddingLeft: '9px' }}
                                                     />
-                                                    <button onClick={addMaterial} className="shrink-0 h-8 px-3 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[12px] font-bold">Lưu</button>
-                                                    <button onClick={() => setMatInput(null)} className="shrink-0 h-8 px-3 rounded border border-slate-300 dark:border-white/20 text-[12px]">Hủy</button>
+                                                    <button onClick={addMaterial} className="shrink-0 h-8 px-3 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[12px] font-bold">{t('imposition.advancedSettings:luu')}</button>
+                                                    <button onClick={() => setMatInput(null)} className="shrink-0 h-8 px-3 rounded border border-slate-300 dark:border-white/20 text-[12px]">{t('imposition.advancedSettings:huy')}</button>
                                                 </div>
                                             )}
                                         </div>
 
                                         {/* Cán màng */}
                                         <div>
-                                            <label className="text-[10px] text-slate-500 block mb-1 font-medium">Cán màng</label>
+                                            <label className="text-[10px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:can_mang')}</label>
                                             <select value={s.reportLamination} onChange={e => s.setReportLamination(Number(e.target.value))}
                                                 className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-[13px] font-medium focus:outline-none focus:border-indigo-500">
                                                 {LAMINATION_OPTIONS.map((o: string, i: number) => <option key={i} value={i}>{o}</option>)}
@@ -446,7 +448,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                                         {/* Trường hiển thị */}
                                         <div>
-                                            <label className="text-[10px] text-slate-500 block mb-1 font-medium">Trường hiển thị trên report</label>
+                                            <label className="text-[10px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:truong_hien_thi_tren_report')}</label>
                                             <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                                                 {REPORT_SHOW_KEYS.map(([flag, key]) => (
                                                     <Checkbox
@@ -462,17 +464,17 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         {/* Vị trí + cỡ chữ */}
                                         <div className="grid grid-cols-2 gap-2">
                                             <div>
-                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium" title="Report sẽ được in ở mép nào của tờ in: trên / dưới / trái / phải.">Vị trí in trên tờ</label>
+                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium" title={t('imposition.advancedSettings:report_se_duoc_in_o_mep_nao_cua_to_in')}>{t('imposition.advancedSettings:vi_tri_in_tren_to')}</label>
                                                 <select value={s.reportDisplay.position} onChange={e => s.setReportDisplay(prev => ({ ...prev, position: e.target.value }))}
                                                     className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-[13px] font-medium focus:outline-none focus:border-indigo-500">
-                                                    <option value="top">Mép trên</option>
-                                                    <option value="bottom">Mép dưới</option>
-                                                    <option value="left">Mép trái</option>
-                                                    <option value="right">Mép phải</option>
+                                                    <option value="top">{t('imposition.advancedSettings:mep_tren')}</option>
+                                                    <option value="bottom">{t('imposition.advancedSettings:mep_duoi')}</option>
+                                                    <option value="left">{t('imposition.advancedSettings:mep_trai')}</option>
+                                                    <option value="right">{t('imposition.advancedSettings:mep_phai')}</option>
                                                 </select>
                                             </div>
                                             <div>
-                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium">Cỡ chữ (pt)</label>
+                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:co_chu_pt')}</label>
                                                 <input type="number" min={4} max={40} step={0.5} value={s.reportDisplay.fontSize}
                                                     onChange={e => s.setReportDisplay(prev => ({ ...prev, fontSize: Number(e.target.value) }))}
                                                     className={inputCls} style={{ paddingLeft: '9px' }} />
@@ -483,7 +485,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         <Checkbox
                                             checked={s.reportDisplay.centered ?? true}
                                             onChange={(v) => s.setReportDisplay(prev => ({ ...prev, centered: v }))}
-                                            label="Canh giữa theo mép (mặc định)"
+                                            label={t('imposition.advancedSettings:canh_giua_theo_mep_mac_dinh')}
                                         />
 
                                         {/* Toạ độ report: cách mép đã chọn bao nhiêu mm (tham khảo script Illustrator) */}
@@ -495,13 +497,13 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                             return (
                                         <div className="grid grid-cols-2 gap-2">
                                             <div>
-                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium" title="Khoảng cách theo phương NGANG tính từ mép trái tờ in (mm). Bị bỏ qua khi canh giữa ngang.">Cách lề X (mm)</label>
+                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium" title={t('imposition.advancedSettings:khoang_cach_theo_phuong_ngang_tinh_tu')}>{t('imposition.advancedSettings:cach_le_x_mm')}</label>
                                                 <input type="number" min={0} step={0.5} disabled={xDisabled} value={s.reportDisplay.offsetX ?? 5}
                                                     onChange={e => s.setReportDisplay(prev => ({ ...prev, offsetX: Number(e.target.value) }))}
                                                     className={inputCls} style={{ paddingLeft: '9px', opacity: xDisabled ? 0.4 : 1 }} />
                                             </div>
                                             <div>
-                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium" title="Khoảng cách tính từ mép đã chọn (mm). Bị bỏ qua khi canh giữa dọc.">Cách lề Y (mm)</label>
+                                                <label className="text-[10px] text-slate-500 block mb-1 font-medium" title={t('imposition.advancedSettings:khoang_cach_tinh_tu_mep_da_chon_mm_bi')}>{t('imposition.advancedSettings:cach_le_y_mm')}</label>
                                                 <input type="number" min={0} step={0.5} disabled={yDisabled} value={s.reportDisplay.offsetY ?? 5}
                                                     onChange={e => s.setReportDisplay(prev => ({ ...prev, offsetY: Number(e.target.value) }))}
                                                     className={inputCls} style={{ paddingLeft: '9px', opacity: yDisabled ? 0.4 : 1 }} />
@@ -512,7 +514,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                                         <Checkbox checked={s.reportDisplay.removeDiacritics}
                                             onChange={(v) => s.setReportDisplay(prev => ({ ...prev, removeDiacritics: v }))}
-                                            label="Bỏ dấu tiếng Việt" />
+                                            label={t('imposition.advancedSettings:bo_dau_tieng_viet')} />
 
                                         {/* Xem trước report NGAY tại đây (tick tới đâu thấy tới đó) */}
                                         {(() => {
@@ -529,13 +531,13 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                 material: s.reportMaterial,
                                                 laminationType: s.reportLamination,
                                                 laminationSides: s.reportLaminationSides,
-                                                modeLabel: activeTool === 'cnc_imposer' ? 'Bình bế rớt (CNC)' : activeTool === 'nup' ? 'Cắt xén' : 'Bế tem',
+                                                modeLabel: activeTool === 'cnc_imposer' ? t('imposition.advancedSettings:binh_be_rot_cnc') : activeTool === 'nup' ? t('imposition.advancedSettings:cat_xen') : t('imposition.advancedSettings:be_tem'),
                                             });
-                                            const posLabel = { top: 'mép trên', bottom: 'mép dưới', left: 'mép trái', right: 'mép phải' }[s.reportDisplay.position] || 'mép trên';
+                                            const posLabel = { top: t('imposition.advancedSettings:mep_tren_2'), bottom: t('imposition.advancedSettings:mep_duoi_2'), left: t('imposition.advancedSettings:mep_trai_2'), right: t('imposition.advancedSettings:mep_phai_2') }[s.reportDisplay.position] || t('imposition.advancedSettings:mep_tren_2');
                                             return (
                                                 <div className="rounded-md border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50/60 dark:bg-indigo-500/10 px-2.5 py-1.5 mt-1">
                                                     <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-300 mb-0.5">📋 Xem trước — sẽ in ở {posLabel}</div>
-                                                    <div className="text-[11px] text-slate-700 dark:text-zinc-200 leading-snug break-words">{previewStr || '(chưa có nội dung — hãy tick các trường ở trên)'}</div>
+                                                    <div className="text-[11px] text-slate-700 dark:text-zinc-200 leading-snug break-words">{previewStr || t('imposition.advancedSettings:chua_co_noi_dung_hay_tick_cac_truong_o')}</div>
                                                 </div>
                                             );
                                         })()}
@@ -550,36 +552,36 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                         {/* ══ NHÓM ③ XUẤT & LƯU FILE ══ */}
                         {stickerLike && (
-                        <CollapsibleGroup title="💾 Xuất & Lưu file" infoButton={
+                        <CollapsibleGroup title={t('imposition.advancedSettings:xuat_luu_file')} infoButton={
                                 <div
                                     className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
-                                    title="Giải thích cách lưu file"
+                                    title={t('imposition.advancedSettings:giai_thich_cach_luu_file')}
                                     onClick={() => setInfoModal({
-                                        title: "Tự động lưu file in",
+                                        title: t('imposition.advancedSettings:tu_dong_luu_file_in'),
                                         content: (
                                             <div className="space-y-4 text-[13px]">
                                                 <p className="text-slate-600 dark:text-zinc-300">
-                                                    Bật mục này để <b>sau khi bình xong, hệ thống tự tách từng tờ và ghi ra ổ cứng</b> vào thư mục bạn chọn (vẫn mở tab kết quả để xem lại).
-                                                    Mỗi loại tem được tách thành file riêng (Bế tem: <b>file In</b> + <b>file Bế</b>; CNC: <b>Mặt trước / Mặt sau / Khuôn</b>).
+                                                    {t('imposition.advancedSettings:bat_muc_nay_de')} <b>{t('imposition.advancedSettings:sau_khi_binh_xong_he_thong_tu_tach_tung')}</b> vào thư mục bạn chọn (vẫn mở tab kết quả để xem lại).
+                                                    Mỗi loại tem được tách thành file riêng (Bế tem: <b>file In</b> + <b>{t('imposition.advancedSettings:file_be_2')}</b>; CNC: <b>{t('imposition.advancedSettings:mat_truoc_mat_sau_khuon')}</b>).
                                                 </p>
                                                 <div className="space-y-1">
-                                                    <h4 className="font-bold text-slate-800 dark:text-white">Cách đặt tên file</h4>
+                                                    <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:cach_dat_ten_file')}</h4>
                                                     <p className="text-slate-600 dark:text-zinc-300">
-                                                        • <b>Theo report</b>: dùng Mã đơn hàng + Tên nhãn + số tờ (lấy ở mục ② Thông tin sản phẩm). VD: <code>1 - DH-001 - Tem sầu riêng - 21 tờ.pdf</code><br/>
-                                                        • <b>Đánh số</b>: 1.pdf, 2.pdf, 3.pdf…<br/>
-                                                        • <b>Giữ tên gốc</b>: dùng tên file gốc.
+                                                        • <b>Theo report</b>{t('imposition.advancedSettings:dung_ma_don_hang_ten_nhan_so_to_lay_o')} <code>{t('imposition.advancedSettings:1_dh_001_tem_sau_rieng_21_to_pdf')}</code><br/>
+                                                        • <b>{t('imposition.advancedSettings:danh_so')}</b>: 1.pdf, 2.pdf, 3.pdf…<br/>
+                                                        • <b>{t('imposition.advancedSettings:giu_ten_goc')}</b>{t('imposition.advancedSettings:dung_ten_file_goc')}
                                                     </p>
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <h4 className="font-bold text-slate-800 dark:text-white">Cách sắp xếp thư mục</h4>
+                                                    <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:cach_sap_xep_thu_muc')}</h4>
                                                     <p className="text-slate-600 dark:text-zinc-300">
-                                                        • <b>Gom theo đơn hàng</b>: tạo 1 thư mục mang tên đơn, bên trong chia thư mục con. VD:
+                                                        • <b>{t('imposition.advancedSettings:gom_theo_don_hang')}</b>{t('imposition.advancedSettings:tao_1_thu_muc_mang_ten_don_ben_trong')}
                                                     </p>
                                                     <pre className="text-[11px] bg-slate-100 dark:bg-zinc-800 rounded p-2 leading-snug">📁 DH-001/
    📁 In/    → các file in
    📁 Bế/    → các file khuôn bế</pre>
                                                     <p className="text-slate-600 dark:text-zinc-300">
-                                                        • <b>Để chung một chỗ</b>: tất cả file nằm thẳng trong thư mục đã chọn, không tạo thư mục con.
+                                                        • <b>{t('imposition.advancedSettings:de_chung_mot_cho')}</b>{t('imposition.advancedSettings:tat_ca_file_nam_thang_trong_thu_muc_da')}
                                                     </p>
                                                 </div>
                                             </div>
@@ -594,7 +596,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     <input type="checkbox" checked={s.savePrint.autoSave}
                                         onChange={e => s.setSavePrint({ autoSave: e.target.checked })}
                                         className="accent-emerald-600 w-4 h-4" />
-                                    🖨️ Tự động lưu file in sau khi bình
+                                    {t('imposition.advancedSettings:tu_dong_luu_file_in_sau_khi_binh')}
                                 </label>
                                 {s.savePrint.autoSave && (
                                     <>
@@ -603,21 +605,21 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                 onClick={async () => {
                                                     try {
                                                         const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
-                                                        const dir = await openDialog({ directory: true, multiple: false, title: 'Chọn thư mục lưu file in' });
+                                                        const dir = await openDialog({ directory: true, multiple: false, title: t('imposition.advancedSettings:chon_thu_muc_luu_file_in') });
                                                         if (typeof dir === 'string') s.setSavePrint({ lastFolder: dir });
                                                     } catch (e) { /* ignore */ }
                                                 }}
-                                                className="px-2.5 h-7 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-medium shrink-0">Chọn thư mục…</button>
+                                                className="px-2.5 h-7 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-medium shrink-0">{t('imposition.advancedSettings:chon_thu_muc')}</button>
                                             <span className="text-[11px] text-slate-600 dark:text-zinc-300 truncate flex-1" title={s.savePrint.lastFolder}>
-                                                {s.savePrint.lastFolder || 'Chưa chọn thư mục'}
+                                                {s.savePrint.lastFolder || t('imposition.advancedSettings:chua_chon_thu_muc')}
                                             </span>
                                         </div>
                                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-                                            <span className="text-slate-500">Tên file:</span>
+                                            <span className="text-slate-500">{t('imposition.advancedSettings:ten_file')}</span>
                                             {[
-                                                ['report', 'Theo report', 'Mã ĐH - Tên nhãn - số tờ (lấy ở mục ② Thông tin sản phẩm)'],
-                                                ['number', 'Đánh số', '1.pdf, 2.pdf, 3.pdf…'],
-                                                ['original', 'Giữ tên gốc', 'Dùng tên file gốc'],
+                                                ['report', 'Theo report', t('imposition.advancedSettings:ma_dh_ten_nhan_so_to_lay_o_muc_thong')],
+                                                ['number', t('imposition.advancedSettings:danh_so'), '1.pdf, 2.pdf, 3.pdf…'],
+                                                ['original', t('imposition.advancedSettings:giu_ten_goc'), t('imposition.advancedSettings:dung_ten_file_goc_2')],
                                             ].map(([v, lbl, tip]) => (
                                                 <label key={v} className="flex items-center gap-1 cursor-pointer" title={tip}>
                                                     <input type="radio" name="autoNameMode" checked={s.savePrint.nameMode === v}
@@ -627,22 +629,22 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         </div>
                                         {s.savePrint.nameMode === 'report' && (
                                             <p className="text-[10px] text-slate-500 dark:text-zinc-400 -mt-1">
-                                                ↳ Tên file lấy <b>Mã đơn hàng + Tên nhãn</b> ở mục <b>② Thông tin sản phẩm</b>.
+                                                {t('imposition.advancedSettings:ten_file_lay')} <b>{t('imposition.advancedSettings:ma_don_hang_ten_nhan')}</b> {t('imposition.advancedSettings:o_muc')} <b>{t('imposition.advancedSettings:thong_tin_san_pham')}</b>.
                                             </p>
                                         )}
                                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-                                            <span className="text-slate-500">Sắp xếp:</span>
-                                            <label className="flex items-center gap-1 cursor-pointer" title="Tạo một thư mục mang tên đơn hàng; bên trong chia thư mục con (In / Bế — hoặc Mặt trước / Mặt sau / Khuôn cho CNC).">
+                                            <span className="text-slate-500">{t('imposition.advancedSettings:sap_xep')}</span>
+                                            <label className="flex items-center gap-1 cursor-pointer" title={t('imposition.advancedSettings:tao_mot_thu_muc_mang_ten_don_hang_ben')}>
                                                 <input type="radio" name="autoFolderMode" checked={s.savePrint.folderMode === 'per_order'}
-                                                    onChange={() => s.setSavePrint({ folderMode: 'per_order' })} />Gom theo đơn hàng
+                                                    onChange={() => s.setSavePrint({ folderMode: 'per_order' })} />{t('imposition.advancedSettings:gom_theo_don_hang')}
                                             </label>
-                                            <label className="flex items-center gap-1 cursor-pointer" title="Tất cả file nằm thẳng trong thư mục đã chọn, không tạo thư mục con.">
+                                            <label className="flex items-center gap-1 cursor-pointer" title={t('imposition.advancedSettings:tat_ca_file_nam_thang_trong_thu_muc_da_2')}>
                                                 <input type="radio" name="autoFolderMode" checked={s.savePrint.folderMode === 'flat'}
-                                                    onChange={() => s.setSavePrint({ folderMode: 'flat' })} />Để chung một chỗ
+                                                    onChange={() => s.setSavePrint({ folderMode: 'flat' })} />{t('imposition.advancedSettings:de_chung_mot_cho')}
                                             </label>
                                         </div>
                                         {!s.savePrint.lastFolder && (
-                                            <p className="text-[10px] text-amber-600 dark:text-amber-400">Chọn thư mục để bật tự động lưu; nếu trống sẽ hỏi khi lưu thủ công.</p>
+                                            <p className="text-[10px] text-amber-600 dark:text-amber-400">{t('imposition.advancedSettings:chon_thu_muc_de_bat_tu_dong_luu_neu')}</p>
                                         )}
                                     </>
                                 )}
@@ -656,24 +658,24 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         {s.taskMode !== 'booklet' && stickerLike && (
                         <div>
                             <div className="flex items-center justify-between mb-2">
-                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">CÁCH CHIA CỤM</label>
+                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:cach_chia_cum')}</label>
                                 <div
                                     className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                     onClick={() => setInfoModal({
-                                        title: "Cách chia cụm (Grouping)",
+                                        title: t('imposition.advancedSettings:cach_chia_cum_grouping'),
                                         content: (
                                             <div className="space-y-4">
                                                 <div className="space-y-1">
-                                                    <h4 className="font-bold text-slate-800 dark:text-white">Không</h4>
-                                                    <p className="text-slate-600 dark:text-zinc-300">Dàn tem trực tiếp lấp đầy tờ in theo cách thông thường.</p>
+                                                    <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:khong')}</h4>
+                                                    <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:dan_tem_truc_tiep_lap_day_to_in_theo')}</p>
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <h4 className="font-bold text-slate-800 dark:text-white">Chia đều diện tích / Số lượng</h4>
-                                                    <p className="text-slate-600 dark:text-zinc-300">Dùng cho in N-Up nhiều mẫu. Tự động chia tỉ lệ diện tích giấy in theo số lượng tem của mỗi mẫu.</p>
+                                                    <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:chia_deu_dien_tich_so_luong')}</h4>
+                                                    <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:dung_cho_in_n_up_nhieu_mau_tu_dong_chia')}</p>
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <h4 className="font-bold text-slate-800 dark:text-white">Cụm nhân bản (Cluster Tile)</h4>
-                                                    <p className="text-slate-600 dark:text-zinc-300">Chia mặt giấy thành các cụm không gian, sau đó nhân bản mẫu thiết kế lấp đầy cụm đó. Hữu ích cho in vé xe hoặc tem nhãn chia dải.</p>
+                                                    <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:cum_nhan_ban_cluster_tile')}</h4>
+                                                    <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:chia_mat_giay_thanh_cac_cum_khong_gian')}</p>
                                                 </div>
                                             </div>
                                         )
@@ -687,36 +689,36 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                 onChange={(e) => s.setGroupingStrategy(e.target.value as any)}
                                 className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                             >
-                                <option value="none">Không chia cụm</option>
+                                <option value="none">{t('imposition.advancedSettings:khong_chia_cum')}</option>
                                 {s.taskMode !== 'step_repeat' && (
                                     <>
-                                        <option value="maximize_area">Chia đều diện tích</option>
-                                        <option value="strict_ratio">Chia đều số lượng</option>
+                                        <option value="maximize_area">{t('imposition.advancedSettings:chia_deu_dien_tich')}</option>
+                                        <option value="strict_ratio">{t('imposition.advancedSettings:chia_deu_so_luong')}</option>
                                     </>
                                 )}
-                                <option value="cluster_tile">Cụm nhân bản (Cluster Tile)</option>
+                                <option value="cluster_tile">{t('imposition.advancedSettings:cum_nhan_ban_cluster_tile')}</option>
                             </select>
 
                             {/* Cluster Tile Settings */}
                             {s.groupingStrategy === 'cluster_tile' && (
                                 <div className="mt-2 flex flex-col gap-3 p-3 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-white/10 rounded-lg">
                                     <div className="flex items-center gap-3">
-                                        <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wide shrink-0 w-[65px]">Định cỡ</label>
+                                        <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wide shrink-0 w-[65px]">{t('imposition.advancedSettings:dinh_co')}</label>
                                         <select
                                             value={s.clusterSizingMode}
                                             onChange={(e) => s.setClusterSizingMode(e.target.value as 'dims' | 'grid')}
                                             className="flex-1 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-[13px] font-medium focus:outline-none focus:border-indigo-500"
                                         >
-                                            <option value="dims">Theo khổ W x H</option>
-                                            <option value="split_cols">Chia theo Cột dọc</option>
-                                            <option value="split_rows">Chia theo Hàng ngang</option>
+                                            <option value="dims">{t('imposition.advancedSettings:theo_kho_w_x_h')}</option>
+                                            <option value="split_cols">{t('imposition.advancedSettings:chia_theo_cot_doc')}</option>
+                                            <option value="split_rows">{t('imposition.advancedSettings:chia_theo_hang_ngang')}</option>
                                         </select>
                                     </div>
 
                                     {s.clusterSizingMode === 'dims' ? (
                                         <div className="flex flex-col gap-2 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div className="flex items-center gap-3">
-                                                <label className="text-[11px] text-slate-500 shrink-0 w-[65px]">Khổ chuẩn</label>
+                                                <label className="text-[11px] text-slate-500 shrink-0 w-[65px]">{t('imposition.advancedSettings:kho_chuan')}</label>
                                                 <select
                                                     value={`${s.clusterTileW}x${s.clusterTileH}`}
                                                     onChange={(e) => {
@@ -729,16 +731,16 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                     <option value="105x148">A6 (105×148mm)</option>
                                                     <option value="148x210">A5 (148×210mm)</option>
                                                     <option value="210x297">A4 (210×297mm)</option>
-                                                    <option value="custom">Tùy chỉnh...</option>
+                                                    <option value="custom">{t('imposition.advancedSettings:tuy_chinh')}</option>
                                                 </select>
                                             </div>
                                             <div className="grid grid-cols-2 gap-x-3 gap-y-3">
                                                 <div>
-                                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Rộng cụm (mm)</label>
+                                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:rong_cum_mm')}</label>
                                                     <input type="number" min={10} max={600} step={1} value={s.clusterTileW} onChange={(e) => s.setClusterTileW(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
                                                 </div>
                                                 <div>
-                                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Cao cụm (mm)</label>
+                                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:cao_cum_mm')}</label>
                                                     <input type="number" min={10} max={600} step={1} value={s.clusterTileH} onChange={(e) => s.setClusterTileH(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
                                                 </div>
                                             </div>
@@ -746,14 +748,14 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     ) : s.clusterSizingMode === 'split_cols' ? (
                                         <div className="grid grid-cols-1 gap-x-3 gap-y-3 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div>
-                                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">Số cột dọc</label>
+                                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:so_cot_doc')}</label>
                                                 <input type="number" min={1} max={20} step={1} value={s.clusterCols} onChange={(e) => s.setClusterCols(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
                                             </div>
                                         </div>
                                     ) : s.clusterSizingMode === 'split_rows' ? (
                                         <div className="grid grid-cols-1 gap-x-3 gap-y-3 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div>
-                                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">Số hàng ngang</label>
+                                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:so_hang_ngang')}</label>
                                                 <input type="number" min={1} max={20} step={1} value={s.clusterRows} onChange={(e) => s.setClusterRows(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
                                             </div>
                                         </div>
@@ -761,18 +763,18 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                                     <div className="grid grid-cols-2 gap-x-3 gap-y-3">
                                         <div>
-                                            <label className="text-[11px] text-slate-500 block mb-1 font-medium">Khoảng hở dọc (mm)</label>
+                                            <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:khoang_ho_doc_mm')}</label>
                                             <input type="number" min={0} max={50} step={0.5} value={s.tileGapX} onChange={(e) => s.setTileGapX(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
                                         </div>
                                         <div>
-                                            <label className="text-[11px] text-slate-500 block mb-1 font-medium">Khoảng hở ngang (mm)</label>
+                                            <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:khoang_ho_ngang_mm')}</label>
                                             <input type="number" min={0} max={50} step={0.5} value={s.tileGapY} onChange={(e) => s.setTileGapY(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
                                         </div>
                                     </div>
 
                                     {stickerLike && (
                                         <div className="mt-1">
-                                            <Checkbox checked={s.clusterNesting} onChange={s.setClusterNesting} label="Bình lồng sát trong cụm (Nesting)" />
+                                            <Checkbox checked={s.clusterNesting} onChange={s.setClusterNesting} label={t('imposition.advancedSettings:binh_long_sat_trong_cum_nesting')} />
                                         </div>
                                     )}
                                 </div>
@@ -784,20 +786,20 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         {s.taskMode !== 'booklet' && !stickerLike && (
                             <div>
                                 <div className="flex items-center justify-between mb-2">
-                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">CANH KHỐI SAU KHI XẾP</label>
+                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:canh_khoi_sau_khi_xep')}</label>
                                     <div
                                         className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                         onClick={() => setInfoModal({
-                                            title: "Canh khối (Alignment)",
+                                            title: t('imposition.advancedSettings:canh_khoi_alignment'),
                                             content: (
                                                 <div className="space-y-4">
                                                     <div className="space-y-1">
-                                                        <h4 className="font-bold text-slate-800 dark:text-white">Canh Giữa trung tâm (Mặc định)</h4>
-                                                        <p className="text-slate-600 dark:text-zinc-300">Toàn bộ khối thiết kế sau khi dàn sẽ được canh giữa tờ giấy. Phù hợp với đại đa số ấn phẩm.</p>
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:canh_giua_trung_tam_mac_dinh')}</h4>
+                                                        <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:toan_bo_khoi_thiet_ke_sau_khi_dan_se')}</p>
                                                     </div>
                                                     <div className="space-y-1">
-                                                        <h4 className="font-bold text-slate-800 dark:text-white">Canh Góc / Cạnh</h4>
-                                                        <p className="text-slate-600 dark:text-zinc-300">Đẩy toàn bộ khối thiết kế dồn về một góc hoặc một cạnh của tờ giấy in. Hữu ích khi bạn muốn chừa phần giấy thừa ra một bên để tận dụng in ghép cái khác, hoặc khi máy in bị lệch biên.</p>
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:canh_goc_canh')}</h4>
+                                                        <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:day_toan_bo_khoi_thiet_ke_don_ve_mot')}</p>
                                                     </div>
                                                 </div>
                                             )
@@ -810,15 +812,15 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     value={s.align} onChange={(e) => s.setAlign(e.target.value as any)}
                                     className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                                 >
-                                    <option value="top-left">Canh Góc Trái - Trên</option>
-                                    <option value="top-center">Canh Giữa - Trên</option>
-                                    <option value="top-right">Canh Góc Phải - Trên</option>
-                                    <option value="center-left">Canh Trái - Giữa</option>
-                                    <option value="center">Canh Giữa trung tâm</option>
-                                    <option value="center-right">Canh Phải - Giữa</option>
-                                    <option value="bottom-left">Canh Góc Trái - Dưới</option>
-                                    <option value="bottom-center">Canh Giữa - Dưới</option>
-                                    <option value="bottom-right">Canh Góc Phải - Dưới</option>
+                                    <option value="top-left">{t('imposition.advancedSettings:canh_goc_trai_tren')}</option>
+                                    <option value="top-center">{t('imposition.advancedSettings:canh_giua_tren')}</option>
+                                    <option value="top-right">{t('imposition.advancedSettings:canh_goc_phai_tren')}</option>
+                                    <option value="center-left">{t('imposition.advancedSettings:canh_trai_giua')}</option>
+                                    <option value="center">{t('imposition.advancedSettings:canh_giua_trung_tam')}</option>
+                                    <option value="center-right">{t('imposition.advancedSettings:canh_phai_giua')}</option>
+                                    <option value="bottom-left">{t('imposition.advancedSettings:canh_goc_trai_duoi')}</option>
+                                    <option value="bottom-center">{t('imposition.advancedSettings:canh_giua_duoi')}</option>
+                                    <option value="bottom-right">{t('imposition.advancedSettings:canh_goc_phai_duoi')}</option>
                                 </select>
                             </div>
                         )}
@@ -828,24 +830,24 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             <div className="relative z-[20]">
                                 <div className="flex items-center justify-between mb-2">
                                     <div className="flex items-center gap-2">
-                                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">DẤU XÉN (TRIM MARKS)</label>
+                                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">{t('imposition.advancedSettings:dau_xen_trim_marks')}</label>
                                         <div
                                             className="shrink-0 w-5 h-5 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
                                             onClick={() => setInfoModal({
-                                                title: "Dấu xén (Trim Marks)",
+                                                title: t('imposition.advancedSettings:dau_xen_trim_marks_2'),
                                                 content: (
                                                     <div className="space-y-4">
                                                         <div className="space-y-1">
-                                                            <h4 className="font-bold text-slate-800 dark:text-white">Không vẽ dấu xén</h4>
-                                                            <p className="text-slate-600 dark:text-zinc-300">Chỉ dàn trang, không vẽ thêm bất kỳ vạch cắt nào.</p>
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:khong_ve_dau_xen')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:chi_dan_trang_khong_ve_them_bat_ky_vach')}</p>
                                                         </div>
                                                         <div className="space-y-1">
-                                                            <h4 className="font-bold text-slate-800 dark:text-white">Xén 4 góc ngoài (Die-cut Bounds)</h4>
-                                                            <p className="text-slate-600 dark:text-zinc-300">Chỉ vẽ 4 góc bo giới hạn toàn bộ khu vực dàn trang. Thường dùng khi bế viền (Tem nhãn) để máy bế nhận diện giới hạn tờ in mà không cần cắt rời từng con tem.</p>
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:xen_4_goc_ngoai_die_cut_bounds')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:chi_ve_4_goc_bo_gioi_han_toan_bo_khu')}</p>
                                                         </div>
                                                         <div className="space-y-1">
-                                                            <h4 className="font-bold text-slate-800 dark:text-white">Xén thành phẩm (Guillotine)</h4>
-                                                            <p className="text-slate-600 dark:text-zinc-300">Vẽ đầy đủ các vạch bo góc và vạch chia cắt giữa các sản phẩm (cả hàng dọc và ngang). Dùng khi dùng máy xén xén đứt rời thành phẩm (VD: Namecard, tờ rơi).</p>
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:xen_thanh_pham_guillotine')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:ve_day_du_cac_vach_bo_goc_va_vach_chia')}</p>
                                                         </div>
                                                     </div>
                                                 )
@@ -854,7 +856,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                                         </div>
                                     </div>
-                                    <button onClick={() => s.setShowMarksModal(true)} className="hover:bg-slate-200 dark:hover:bg-zinc-700 rounded transition-colors text-slate-400 hover:text-indigo-600 p-0.5" title="Cài đặt dấu xén...">
+                                    <button onClick={() => s.setShowMarksModal(true)} className="hover:bg-slate-200 dark:hover:bg-zinc-700 rounded transition-colors text-slate-400 hover:text-indigo-600 p-0.5" title={t('imposition.advancedSettings:cai_dat_dau_xen')}>
                                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                                     </button>
                                 </div>
@@ -863,9 +865,9 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     onChange={e => s.setMarkType(e.target.value as any)}
                                     className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium appearance-auto transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                    <option value="none">Không vẽ dấu xén</option>
-                                    {s.taskMode !== 'booklet' && <option value="corners">Xén 4 Góc ngoài (Die-cut bounds)</option>}
-                                    <option value="guillotine">Xén thành phẩm (Guillotine)</option>
+                                    <option value="none">{t('imposition.advancedSettings:khong_ve_dau_xen')}</option>
+                                    {s.taskMode !== 'booklet' && <option value="corners">{t('imposition.advancedSettings:xen_4_goc_ngoai_die_cut_bounds_2')}</option>}
+                                    <option value="guillotine">{t('imposition.advancedSettings:xen_thanh_pham_guillotine')}</option>
                                 </select>
                             </div>
                         )}
@@ -887,8 +889,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                 <div className="space-y-4">
                                                     <p className="text-slate-600 dark:text-zinc-300">Tự động tách tờ in thành các cọc riêng biệt, chừa sẵn rãnh dao giữa các cọc để máy xén chém an toàn mà không phạm vào thiết kế.</p>
                                                     <div className="space-y-1">
-                                                        <h4 className="font-bold text-slate-800 dark:text-white">Chia theo Hàng / Cột</h4>
-                                                        <p className="text-slate-600 dark:text-zinc-300">Cắt toàn bộ lưới giấy thành 2, 3, hoặc nhiều cọc theo chiều dọc hoặc ngang, giảm thiểu số lần chém mồi của máy cắt.</p>
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:chia_theo_hang_cot')}</h4>
+                                                        <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:cat_toan_bo_luoi_giay_thanh_2_3_hoac')}</p>
                                                     </div>
                                                 </div>
                                             )
@@ -902,14 +904,14 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         value={s.clusterMode} onChange={e => s.setClusterMode(e.target.value as any)}
                                         className="flex-1 min-w-0 h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium appearance-auto transition-colors"
                                     >
-                                        <option value="none">Không chia cọc</option>
-                                        <option value="row">Chia theo Hàng (Ngang)</option>
-                                        <option value="column">Chia theo Cột (Dọc)</option>
+                                        <option value="none">{t('imposition.advancedSettings:khong_chia_coc')}</option>
+                                        <option value="row">{t('imposition.advancedSettings:chia_theo_hang_ngang_2')}</option>
+                                        <option value="column">{t('imposition.advancedSettings:chia_theo_cot_doc_2')}</option>
                                     </select>
                                     {s.clusterMode !== 'none' && (
                                         <div className="flex items-center gap-2">
                                             <input type="number" min="2" value={s.clusterCount} onChange={e => s.setClusterCount(Math.max(2, parseInt(e.target.value) || 2))} className="w-14 h-8 px-2 font-medium border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 text-center" title="Số cọc" />
-                                            <button onClick={() => setShowClusterModal(true)} className="w-8 h-8 flex items-center justify-center border border-slate-300 dark:border-white/20 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors text-slate-500 hover:text-indigo-600" title="Cài đặt nâng cao">
+                                            <button onClick={() => setShowClusterModal(true)} className="w-8 h-8 flex items-center justify-center border border-slate-300 dark:border-white/20 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors text-slate-500 hover:text-indigo-600" title={t('imposition.advancedSettings:cai_dat_nang_cao')}>
                                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                                             </button>
                                         </div>
@@ -935,7 +937,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         <div className={`grid ${s.taskMode === 'booklet' && (s.signatureMode === 'saddle' || s.signatureMode === 'thread') ? 'grid-cols-2' : 'grid-cols-1'} gap-3 relative z-[30]`}>
                             {s.taskMode === 'booklet' && (s.signatureMode === 'saddle' || s.signatureMode === 'thread') && (
                                 <div className="flex flex-col gap-2 h-full justify-end">
-                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide block -mb-0.5" title="Sử dụng độ dày giấy để bù lẹm gáy (Creep compensation)">Dày giấy/Creep (mm)</label>
+                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide block -mb-0.5" title={t('imposition.advancedSettings:su_dung_do_day_giay_de_bu_lem_gay_creep')}>{t('imposition.advancedSettings:day_giay_creep_mm')}</label>
                                     <input
                                         type="number" step="0.01" value={s.paperThickness} onChange={e => s.setPaperThickness(Number(e.target.value))}
                                         className="w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
@@ -944,11 +946,11 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             )}
                             <div className="flex flex-col gap-2 h-full justify-end">
                                 <div className="flex items-center justify-between -mb-0.5">
-                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">Lề xén Bleed</label>
+                                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide">{t('imposition.advancedSettings:le_xen_bleed')}</label>
                                     <button
                                         onClick={() => s.setShowBleedView(!s.showBleedView)}
                                         className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors ${s.showBleedView ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400' : 'bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-400'}`}
-                                        title={s.showBleedView ? "Tắt đường viền Xem trước Bleed" : "Bật đường viền Xem trước Bleed"}
+                                        title={s.showBleedView ? t('imposition.advancedSettings:tat_duong_vien_xem_truoc_bleed') : t('imposition.advancedSettings:bat_duong_vien_xem_truoc_bleed')}
                                     >
                                         {s.showBleedView ? (
                                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
@@ -969,9 +971,9 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         <Divider />
                         <div className="space-y-2">
                             {activeTool === 'sticker_imposer' && (
-                                <Checkbox checked={s.separateCutPage} onChange={s.setSeparateCutPage} label="Tách trang khuôn bế riêng" />
+                                <Checkbox checked={s.separateCutPage} onChange={s.setSeparateCutPage} label={t('imposition.advancedSettings:tach_trang_khuon_be_rieng')} />
                             )}
-                            <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
+                            <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label={t('imposition.advancedSettings:mo_ket_qua_sang_tab_moi')} />
                         </div>
                     </div>
                 </div>
@@ -992,7 +994,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         </div>
                         <div className="px-5 py-4 bg-slate-50 dark:bg-zinc-800/50 border-t border-slate-200 dark:border-white/10 flex justify-end">
                             <button onClick={() => setInfoModal(null)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">
-                                Đã hiểu
+                                {t('imposition.advancedSettings:da_hieu')}
                             </button>
                         </div>
                     </div>
@@ -1005,7 +1007,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                 <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setShowClusterModal(false)}>
                     <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-white/10">
-                            <h3 className="text-lg font-bold text-slate-800 dark:text-white">Nâng cao: Chia cọc xén</h3>
+                            <h3 className="text-lg font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:nang_cao_chia_coc_xen')}</h3>
                             <button onClick={() => setShowClusterModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 transition-colors">
                                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
@@ -1013,10 +1015,10 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         <div className="p-5 flex flex-col gap-4">
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="text-xs font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wide block mb-1.5">KHOẢNG CÁCH TỪ</label>
+                                    <label className="text-xs font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wide block mb-1.5">{t('imposition.advancedSettings:khoang_cach_tu')}</label>
                                     <select value={s.clusterGapMode} onChange={e => s.setClusterGapMode(e.target.value as any)} className="w-full h-9 px-2 border border-slate-300 dark:border-white/20 rounded-lg bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium appearance-auto">
-                                        <option value="item">Mép tem con</option>
-                                        <option value="mark">Dấu xén ngoài</option>
+                                        <option value="item">{t('imposition.advancedSettings:mep_tem_con')}</option>
+                                        <option value="mark">{t('imposition.advancedSettings:dau_xen_ngoai')}</option>
                                     </select>
                                 </div>
                                 <div className="hidden">

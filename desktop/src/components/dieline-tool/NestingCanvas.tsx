@@ -82,6 +82,7 @@ function calcDielineTransform(
 // We chain them into a polygon and output one SVG sub-path per panel.
 
 import { Panel } from '../../lib/dieline/types';
+import { useTranslation } from 'react-i18next';
 
 interface Pt { x: number; y: number }
 
@@ -247,6 +248,7 @@ function MiniPathRenderer({ path, tagStyles }: { path: PathSegment; tagStyles: R
 }
 
 export default function NestingCanvas() {
+  const { t } = useTranslation();
     const { dieline, nestingConfig, nestingResult, sleeveNestingResult, params } = useBoxStore();
     const tagStyles = useTagStyles();
     const svgRef = useRef<SVGSVGElement>(null);
@@ -454,7 +456,7 @@ export default function NestingCanvas() {
     const sleeveBB = useMemo(() => partBBox(sleevePanels), [sleevePanels]);
 
     if (!dieline || !nestingResult) {
-        return <div className="dt-canvas-2d-empty">Nhập thông số để xem xếp khuôn</div>;
+        return <div className="dt-canvas-2d-empty">{t('dieline.nestingCanvas:nhap_thong_so_de_xem_xep_khuon')}</div>;
     }
 
     const { actualSheet, positions } = nestingResult;

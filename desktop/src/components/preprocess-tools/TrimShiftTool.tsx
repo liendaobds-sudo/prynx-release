@@ -3,6 +3,7 @@ import {
     ToolSectionLabel, ToolDivider, ToolCardOption,
     ToolCheckboxOption, ToolNumberInput, ToolInfo
 } from './ToolUI';
+import { useTranslation } from 'react-i18next';
 
 const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500";
 
@@ -52,6 +53,7 @@ interface Props {
 }
 
 export default function TrimShiftTool({ settings, onChange }: Props) {
+  const { t } = useTranslation();
 
     const u = settings.unit || 'mm';
     const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -91,7 +93,7 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
 
             {/* Đơn vị */}
             <div className="flex items-center justify-between">
-                <span className="text-[13px] font-semibold text-slate-700 dark:text-zinc-200">Đơn vị</span>
+                <span className="text-[13px] font-semibold text-slate-700 dark:text-zinc-200">{t('preprocess.trimShift:don_vi')}</span>
                 <div className="flex gap-1">
                     {UNIT_OPTIONS.map(opt => (
                         <button
@@ -110,32 +112,32 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
 
             {/* ══ CƠ BẢN: Cắt xén / thêm lề từng cạnh ══ */}
             <div className="flex flex-col gap-2">
-                <ToolSectionLabel>Cắt xén / Thêm lề (± mỗi cạnh)</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.trimShift:cat_xen_them_le_moi_canh')}</ToolSectionLabel>
                 <ToolCheckboxOption
                     selected={settings.sameAllEdges}
                     onClick={toggleSameEdges}
-                    label="Đồng đều cả 4 cạnh"
-                    desc="Nhập một lần, áp cùng lượng cho trên/dưới/trái/phải."
+                    label={t('preprocess.trimShift:dong_deu_ca_4_canh')}
+                    desc={t('preprocess.trimShift:nhap_mot_lan_ap_cung_luong_cho_tren')}
                 />
                 <div className="grid grid-cols-2 gap-3 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-                    <ToolNumberInput label="Cạnh trên" value={settings.trimTop} onChange={val => setEdge('trimTop', val)} suffix={u} step={0.1} />
-                    <ToolNumberInput label="Cạnh dưới" value={settings.trimBottom} onChange={val => setEdge('trimBottom', val)} suffix={u} step={0.1} className={settings.sameAllEdges ? 'opacity-50 pointer-events-none' : ''} />
-                    <ToolNumberInput label="Cạnh trái" value={settings.trimLeft} onChange={val => setEdge('trimLeft', val)} suffix={u} step={0.1} className={settings.sameAllEdges ? 'opacity-50 pointer-events-none' : ''} />
-                    <ToolNumberInput label="Cạnh phải" value={settings.trimRight} onChange={val => setEdge('trimRight', val)} suffix={u} step={0.1} className={settings.sameAllEdges ? 'opacity-50 pointer-events-none' : ''} />
+                    <ToolNumberInput label={t('preprocess.trimShift:canh_tren')} value={settings.trimTop} onChange={val => setEdge('trimTop', val)} suffix={u} step={0.1} />
+                    <ToolNumberInput label={t('preprocess.trimShift:canh_duoi')} value={settings.trimBottom} onChange={val => setEdge('trimBottom', val)} suffix={u} step={0.1} className={settings.sameAllEdges ? 'opacity-50 pointer-events-none' : ''} />
+                    <ToolNumberInput label={t('preprocess.trimShift:canh_trai')} value={settings.trimLeft} onChange={val => setEdge('trimLeft', val)} suffix={u} step={0.1} className={settings.sameAllEdges ? 'opacity-50 pointer-events-none' : ''} />
+                    <ToolNumberInput label={t('preprocess.trimShift:canh_phai')} value={settings.trimRight} onChange={val => setEdge('trimRight', val)} suffix={u} step={0.1} className={settings.sameAllEdges ? 'opacity-50 pointer-events-none' : ''} />
                 </div>
-                <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-1 ml-1 leading-relaxed">Dương = thêm khoảng trắng (nở khổ), âm = cắt bớt (thu khổ). Chỉ đổi khổ, không phá nội dung.</div>
+                <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-1 ml-1 leading-relaxed">{t('preprocess.trimShift:duong_them_khoang_trang_no_kho_am_cat')}</div>
             </div>
 
             <ToolDivider />
 
             {/* ══ CƠ BẢN: Phạm vi trang ══ */}
             <div className="flex flex-col gap-2">
-                <ToolSectionLabel>Áp dụng cho</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.trimShift:ap_dung_cho')}</ToolSectionLabel>
                 <div className="grid grid-cols-2 gap-2">
-                    <ToolCardOption selected={settings.applyToStr === 'all'} onClick={() => handleApplyToChange('all')} label="Tất cả trang" />
-                    <ToolCardOption selected={settings.applyToStr === 'even'} onClick={() => handleApplyToChange('even')} label="Trang chẵn" />
-                    <ToolCardOption selected={settings.applyToStr === 'odd'} onClick={() => handleApplyToChange('odd')} label="Trang lẻ" />
-                    <ToolCardOption selected={!['all', 'even', 'odd'].includes(settings.applyToStr)} onClick={() => handleApplyToChange('custom')} label="Tùy chỉnh" />
+                    <ToolCardOption selected={settings.applyToStr === 'all'} onClick={() => handleApplyToChange('all')} label={t('preprocess.trimShift:tat_ca_trang')} />
+                    <ToolCardOption selected={settings.applyToStr === 'even'} onClick={() => handleApplyToChange('even')} label={t('preprocess.trimShift:trang_chan')} />
+                    <ToolCardOption selected={settings.applyToStr === 'odd'} onClick={() => handleApplyToChange('odd')} label={t('preprocess.trimShift:trang_le')} />
+                    <ToolCardOption selected={!['all', 'even', 'odd'].includes(settings.applyToStr)} onClick={() => handleApplyToChange('custom')} label={t('preprocess.trimShift:tuy_chinh')} />
                 </div>
 
                 {!['all', 'even', 'odd'].includes(settings.applyToStr) && (
@@ -147,7 +149,7 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
                             placeholder="VD: 1, 3, 5-10"
                             className={inputCls}
                         />
-                        <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-1.5 ml-1">Nhập số trang cách nhau bằng dấu phẩy hoặc gạch ngang.</div>
+                        <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-1.5 ml-1">{t('preprocess.trimShift:nhap_so_trang_cach_nhau_bang_dau_phay')}</div>
                     </div>
                 )}
             </div>
@@ -165,7 +167,7 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
                             <span className="px-1.5 h-4 flex items-center rounded-full bg-teal-500/15 text-teal-600 dark:text-teal-300 text-[9.5px] font-bold">{advancedActive}</span>
                         )}
                     </span>
-                    <span className="text-[11px] text-slate-500 dark:text-zinc-400 font-normal">Dời nội dung · Bù gáy · Creep · Bù xén · Nội dung ẩn</span>
+                    <span className="text-[11px] text-slate-500 dark:text-zinc-400 font-normal">{t('preprocess.trimShift:doi_noi_dung_bu_gay_creep_bu_xen_noi')}</span>
                 </button>
 
                 {advancedOpen && (
@@ -173,33 +175,33 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
 
                         {/* Dời nội dung */}
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Dời nội dung (Shift)</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.trimShift:doi_noi_dung_shift')}</ToolSectionLabel>
                             <div className="grid grid-cols-2 gap-3 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
                                 <ToolNumberInput label="Ngang (X)" value={settings.shiftX} onChange={val => onChange({ ...settings, shiftX: val })} suffix={u} step={0.1} />
-                                <ToolNumberInput label="Dọc (Y)" value={settings.shiftY} onChange={val => onChange({ ...settings, shiftY: val })} suffix={u} step={0.1} />
+                                <ToolNumberInput label={t('preprocess.trimShift:doc_y')} value={settings.shiftY} onChange={val => onChange({ ...settings, shiftY: val })} suffix={u} step={0.1} />
                             </div>
-                            <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-1 ml-1">X dương = dịch phải, Y dương = dịch lên.</div>
+                            <div className="text-[11.5px] text-slate-500 dark:text-zinc-400 mt-1 ml-1">{t('preprocess.trimShift:x_duong_dich_phai_y_duong_dich_len')}</div>
                         </div>
 
                         <ToolDivider />
 
                         {/* Bù lề gáy */}
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Bù lề gáy (Binding)</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.trimShift:bu_le_gay_binding')}</ToolSectionLabel>
                             <ToolCheckboxOption
                                 selected={settings.bindingEnabled}
                                 onClick={() => onChange({ ...settings, bindingEnabled: !settings.bindingEnabled })}
-                                label="Dời lề trong/ngoài theo trang lẻ-chẵn"
-                                desc="Trang lẻ và chẵn dịch ngược chiều nhau để chừa khoảng đóng gáy."
+                                label={t('preprocess.trimShift:doi_le_trong_ngoai_theo_trang_le_chan')}
+                                desc={t('preprocess.trimShift:trang_le_va_chan_dich_nguoc_chieu_nhau')}
                             />
                             {settings.bindingEnabled && (
                                 <div className="grid grid-cols-2 gap-3 mt-1 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-                                    <ToolNumberInput label="Lượng bù" value={settings.bindingMm} onChange={val => onChange({ ...settings, bindingMm: val })} suffix={u} step={0.1} min={0} />
+                                    <ToolNumberInput label={t('preprocess.trimShift:luong_bu')} value={settings.bindingMm} onChange={val => onChange({ ...settings, bindingMm: val })} suffix={u} step={0.1} min={0} />
                                     <div>
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Hướng</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.trimShift:huong')}</span>
                                         <div className="grid grid-cols-2 gap-1">
-                                            <ToolCardOption selected={settings.bindingInward} onClick={() => onChange({ ...settings, bindingInward: true })} label="Vào gáy" />
-                                            <ToolCardOption selected={!settings.bindingInward} onClick={() => onChange({ ...settings, bindingInward: false })} label="Ra ngoài" />
+                                            <ToolCardOption selected={settings.bindingInward} onClick={() => onChange({ ...settings, bindingInward: true })} label={t('preprocess.trimShift:vao_gay')} />
+                                            <ToolCardOption selected={!settings.bindingInward} onClick={() => onChange({ ...settings, bindingInward: false })} label={t('preprocess.trimShift:ra_ngoai')} />
                                         </div>
                                     </div>
                                 </div>
@@ -210,21 +212,21 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
 
                         {/* Creep */}
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Bù gáy tăng dần (Creep)</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.trimShift:bu_gay_tang_dan_creep')}</ToolSectionLabel>
                             <ToolCheckboxOption
                                 selected={settings.creepEnabled}
                                 onClick={() => onChange({ ...settings, creepEnabled: !settings.creepEnabled })}
-                                label="Dời nội dung tăng dần theo vị trí trang"
-                                desc="Trang đầu dịch 0, tăng tuyến tính tới lượng đặt ở trang cuối (bù độ dày giấy khi gấp)."
+                                label={t('preprocess.trimShift:doi_noi_dung_tang_dan_theo_vi_tri_trang')}
+                                desc={t('preprocess.trimShift:trang_dau_dich_0_tang_tuyen_tinh_toi')}
                             />
                             {settings.creepEnabled && (
                                 <div className="grid grid-cols-2 gap-3 mt-1 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-                                    <ToolNumberInput label="Lượng tối đa" value={settings.creepMm} onChange={val => onChange({ ...settings, creepMm: val })} suffix={u} step={0.1} />
+                                    <ToolNumberInput label={t('preprocess.trimShift:luong_toi_da')} value={settings.creepMm} onChange={val => onChange({ ...settings, creepMm: val })} suffix={u} step={0.1} />
                                     <div>
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Trục</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.trimShift:truc')}</span>
                                         <div className="grid grid-cols-2 gap-1">
                                             <ToolCardOption selected={settings.creepAxis === 'x'} onClick={() => onChange({ ...settings, creepAxis: 'x' })} label="Ngang" />
-                                            <ToolCardOption selected={settings.creepAxis === 'y'} onClick={() => onChange({ ...settings, creepAxis: 'y' })} label="Dọc" />
+                                            <ToolCardOption selected={settings.creepAxis === 'y'} onClick={() => onChange({ ...settings, creepAxis: 'y' })} label={t('preprocess.trimShift:doc')} />
                                         </div>
                                     </div>
                                 </div>
@@ -235,12 +237,12 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
 
                         {/* Bù xén phản chiếu */}
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Bù xén phản chiếu (Mirror bleed)</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.trimShift:bu_xen_phan_chieu_mirror_bleed')}</ToolSectionLabel>
                             <ToolCheckboxOption
                                 selected={settings.mirrorFill}
                                 onClick={() => onChange({ ...settings, mirrorFill: !settings.mirrorFill })}
-                                label="Lấp vùng lề mới bằng nội dung lật gương"
-                                desc="Khi thêm lề (giá trị dương), phần trắng mới được lấp bằng nội dung sát mép phản chiếu ra — tránh lộ viền trắng khi xén. Chỉ áp cho trang không xoay."
+                                label={t('preprocess.trimShift:lap_vung_le_moi_bang_noi_dung_lat_guong')}
+                                desc={t('preprocess.trimShift:khi_them_le_gia_tri_duong_phan_trang')}
                             />
                         </div>
 
@@ -248,19 +250,19 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
 
                         {/* Nội dung ẩn khi nới khổ */}
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Nội dung ẩn khi nới khổ</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.trimShift:noi_dung_an_khi_noi_kho')}</ToolSectionLabel>
                             <div className="grid grid-cols-1 gap-2">
                                 <ToolCheckboxOption
                                     selected={settings.contentMode === 'original'}
                                     onClick={() => onChange({ ...settings, contentMode: 'original' })}
-                                    label="Giữ nguyên — để nội dung ẩn lộ ra"
-                                    desc="Khi nới khổ, phần nội dung nằm ngoài vùng crop cũ sẽ hiện ra. Giống chế độ Original của Quite."
+                                    label={t('preprocess.trimShift:giu_nguyen_de_noi_dung_an_lo_ra')}
+                                    desc={t('preprocess.trimShift:khi_noi_kho_phan_noi_dung_nam_ngoai')}
                                 />
                                 <ToolCheckboxOption
                                     selected={settings.contentMode === 'clip'}
                                     onClick={() => onChange({ ...settings, contentMode: 'clip' })}
-                                    label="Cắt sạch — vùng mới để trắng"
-                                    desc="Cắt nội dung theo vùng nhìn cũ, phần khổ mới để trắng hoàn toàn. Giống chế độ Improved của Quite. Bỏ qua nếu đã bật bù xén phản chiếu."
+                                    label={t('preprocess.trimShift:cat_sach_vung_moi_de_trang')}
+                                    desc={t('preprocess.trimShift:cat_noi_dung_theo_vung_nhin_cu_phan_kho')}
                                 />
                             </div>
                         </div>
@@ -272,15 +274,15 @@ export default function TrimShiftTool({ settings, onChange }: Props) {
                             <ToolCheckboxOption
                                 selected={settings.keepBleed}
                                 onClick={() => onChange({ ...settings, keepBleed: !settings.keepBleed })}
-                                label="Giữ nguyên lề bleed khi cắt"
-                                desc="Khi cắt/nới khổ, TrimBox & BleedBox co giãn cùng lượng để lượng bleed không đổi. Chỉ ảnh hưởng file đã có sẵn các box này."
+                                label={t('preprocess.trimShift:giu_nguyen_le_bleed_khi_cat')}
+                                desc={t('preprocess.trimShift:khi_cat_noi_kho_trimbox_bleedbox_co')}
                             />
                         </div>
                     </div>
                 )}
             </div>
 
-            <ToolInfo desc="Cơ bản: chỉ cần chọn lượng cắt/thêm lề và phạm vi trang. Mở 'Tùy chọn nâng cao' cho dời nội dung, bù gáy, creep và các tùy chọn xử lý file đã crop/có bleed." />
+            <ToolInfo desc={t('preprocess.trimShift:co_ban_chi_can_chon_luong_cat_them_le')} />
         </div>
     );
 }

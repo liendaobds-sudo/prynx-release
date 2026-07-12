@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../Button';
+import { useTranslation } from 'react-i18next';
 
 export interface CropMarksConfig {
     style: number; // 1 or 2
@@ -27,6 +28,7 @@ export const MarksSettingsDialog = ({
     config: CropMarksConfig;
     onSave: (cfg: CropMarksConfig) => void;
 }) => {
+  const { t } = useTranslation();
     const [localCfg, setLocalCfg] = useState<CropMarksConfig>(config);
 
     useEffect(() => {
@@ -53,7 +55,7 @@ export const MarksSettingsDialog = ({
                 
                 <div className="flex items-center justify-between">
                     <h3 className="text-lg font-bold text-slate-900 dark:text-white">
-                        Tuỳ chỉnh Dấu Xén
+                        {t('imposition.marksSettingsDialog:tuy_chinh_dau_xen')}
                     </h3>
                     <button onClick={onClose} className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-700 transition-colors">
                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
@@ -62,11 +64,11 @@ export const MarksSettingsDialog = ({
 
                 {/* Style */}
                 <div className="space-y-3">
-                    <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2">Kiểu Dấu Xén</h4>
+                    <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2">{t('imposition.marksSettingsDialog:kieu_dau_xen')}</h4>
                     <div className="grid grid-cols-2 gap-2">
                         {[
-                            { val: 1, label: 'Tiêu chuẩn', desc: 'Nét đơn ở góc (Western)' },
-                            { val: 2, label: 'Nét đôi (Nhật)', desc: 'Trim + Bleed (トンボ)' },
+                            { val: 1, label: t('imposition.marksSettingsDialog:tieu_chuan'), desc: t('imposition.marksSettingsDialog:net_don_o_goc_western') },
+                            { val: 2, label: t('imposition.marksSettingsDialog:net_doi_nhat'), desc: 'Trim + Bleed (トンボ)' },
                         ].map(opt => (
                             <button
                                 key={opt.val}
@@ -87,18 +89,18 @@ export const MarksSettingsDialog = ({
 
                 {/* Dimensions */}
                 <div className="space-y-4">
-                    <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2">Kích Thước Dấu Xén (mm)</h4>
+                    <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2">{t('imposition.marksSettingsDialog:kich_thuoc_dau_xen_mm')}</h4>
                     <div className="grid grid-cols-3 gap-3">
                         <div>
-                            <label className="text-[11px] text-slate-500 block mb-1">Khoảng cách tới tem</label>
+                            <label className="text-[11px] text-slate-500 block mb-1">{t('imposition.marksSettingsDialog:khoang_cach_toi_tem')}</label>
                             <input type="number" step="0.1" value={localCfg.distance} onChange={e => setLocalCfg(c => ({...c, distance: Number(e.target.value)}))} className={inputCls} />
                         </div>
                         <div>
-                            <label className="text-[11px] text-slate-500 block mb-1">Độ dài</label>
+                            <label className="text-[11px] text-slate-500 block mb-1">{t('imposition.marksSettingsDialog:do_dai')}</label>
                             <input type="number" step="0.1" value={localCfg.length} onChange={e => setLocalCfg(c => ({...c, length: Number(e.target.value)}))} className={inputCls} />
                         </div>
                         <div>
-                            <label className="text-[11px] text-slate-500 block mb-1">Độ dày nét</label>
+                            <label className="text-[11px] text-slate-500 block mb-1">{t('imposition.marksSettingsDialog:do_day_net')}</label>
                             <input type="number" step="0.01" value={localCfg.thickness} onChange={e => setLocalCfg(c => ({...c, thickness: Number(e.target.value)}))} className={inputCls} />
                         </div>
                     </div>
@@ -111,10 +113,10 @@ export const MarksSettingsDialog = ({
                         onClick={() => setLocalCfg(DEFAULT_MARKS_CONFIG)}
                         className="text-sm px-3 py-2 rounded text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-zinc-700 transition-colors font-medium mr-auto"
                     >
-                        Khôi phục mặc định
+                        {t('imposition.marksSettingsDialog:khoi_phuc_mac_dinh')}
                     </button>
 
-                    <Button variant="secondary" onClick={onClose}>Hủy</Button>
+                    <Button variant="secondary" onClick={onClose}>{t('imposition.marksSettingsDialog:huy')}</Button>
                     <Button 
                         variant="primary" 
                         onClick={() => { 
@@ -122,7 +124,7 @@ export const MarksSettingsDialog = ({
                             onClose(); 
                         }}
                     >
-                        Áp dụng
+                        {t('imposition.marksSettingsDialog:ap_dung')}
                     </Button>
                 </div>
             </div>

@@ -11,6 +11,7 @@ import { useVdpTool } from '@/hooks/useVdpTool';
 import { sortFieldsGeometrically, buildMultiUpJobInput } from '@/lib/vdpUtils';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
+import { useTranslation } from 'react-i18next';
 
 // ─── CMYK ↔ Hex Conversion Helpers ──────────────────────
 function hexToCmyk(hex: string): { c: number; m: number; y: number; k: number } {
@@ -37,6 +38,7 @@ function cmykToHex(c: number, m: number, y: number, k: number): string {
 
 // ─── CMYK Color Picker Component ────────────────────────
 export function CmykColorPicker({ label, value, onChange, disabled }: { label?: string; value: string; onChange: (hex: string) => void; disabled?: boolean }) {
+  const { t } = useTranslation();
     const [isOpen, setIsOpen] = useState(false);
     const popoverRef = useRef<HTMLDivElement>(null);
     const cmyk = hexToCmyk(value || '#000000');
@@ -83,7 +85,7 @@ export function CmykColorPicker({ label, value, onChange, disabled }: { label?: 
             
             {isOpen && (
                 <div className="absolute z-50 top-full left-0 mt-1 p-3 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl w-48 animate-fade-in origin-top-left">
-                    <div className="text-[10px] font-bold text-slate-600 dark:text-zinc-400 mb-2 uppercase tracking-wider">Thông số CMYK</div>
+                    <div className="text-[10px] font-bold text-slate-600 dark:text-zinc-400 mb-2 uppercase tracking-wider">{t('preprocess.dataMerge:thong_so_cmyk')}</div>
                     <div className="flex gap-1">
                         {(['c', 'm', 'y', 'k'] as const).map(ch => (
                             <div key={ch} className="flex flex-col items-center flex-1 min-w-0">
@@ -166,6 +168,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
     csvHeaders: string[];
     onChange: (changes: any) => void;
 }) {
+  const { t } = useTranslation();
     const conditions: VdpFieldCondition[] = Array.isArray(field.conditions) ? field.conditions : [];
     const rules: VdpRule[] = Array.isArray(field.rules) ? field.rules : [];
     const defaultCol = csvHeaders[0] || '';
@@ -203,7 +206,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
 
     const columnOptions = (selected: string) => (
         <>
-            {!csvHeaders.includes(selected) && <option value={selected}>{selected || '— chọn cột —'}</option>}
+            {!csvHeaders.includes(selected) && <option value={selected}>{selected || t('preprocess.dataMerge:chon_cot')}</option>}
             {csvHeaders.map(h => <option key={h} value={h}>{h}</option>)}
         </>
     );
@@ -213,16 +216,16 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
             {/* Nút trợ giúp: mở modal giải thích "khi nào dùng" bằng ví dụ đời thường */}
             <div className="flex items-start gap-2 text-[11px] text-slate-500 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700 rounded p-2">
                 <span className="flex-1">
-                    Dùng khi <b>các bản in cần khác nhau theo dữ liệu</b> (vd: chỉ một số tem có dấu VIP, hoặc đổi ảnh/chữ theo cột).
+                    {t('preprocess.dataMerge:dung_khi')} <b>{t('preprocess.dataMerge:cac_ban_in_can_khac_nhau_theo_du_lieu')}</b> {t('preprocess.dataMerge:vd_chi_mot_so_tem_co_dau_vip_hoac_doi')}
                 </span>
                 <button
                     type="button"
                     onClick={() => setShowHelp(true)}
                     className="shrink-0 inline-flex items-center gap-1 px-2 py-1 bg-teal-50 hover:bg-teal-100 dark:bg-teal-500/10 dark:hover:bg-teal-500/20 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-700 rounded font-medium transition-colors"
-                    title="Khi nào dùng? Xem ví dụ"
+                    title={t('preprocess.dataMerge:khi_nao_dung_xem_vi_du')}
                 >
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" /><path strokeLinecap="round" d="M12 16.5h.01" /></svg>
-                    Khi nào dùng?
+                    {t('preprocess.dataMerge:khi_nao_dung')}
                 </button>
             </div>
 
@@ -236,45 +239,45 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                         onClick={(e) => e.stopPropagation()}
                     >
                         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700 sticky top-0 bg-white dark:bg-zinc-900">
-                            <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">Logic điều kiện — khi nào dùng?</span>
+                            <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">{t('preprocess.dataMerge:logic_dieu_kien_khi_nao_dung')}</span>
                             <button
                                 type="button"
                                 onClick={() => setShowHelp(false)}
                                 className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
-                                title="Đóng"
+                                title={t('preprocess.dataMerge:dong')}
                             >
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
                         </div>
                         <div className="p-4 space-y-4 text-[12px] text-slate-600 dark:text-zinc-300 leading-relaxed">
                             <p>
-                                Bạn in <b>nhiều bản từ một bảng dữ liệu</b> (mỗi dòng = một tem/thẻ/vé).
+                                {t('preprocess.dataMerge:ban_in')} <b>{t('preprocess.dataMerge:nhieu_ban_tu_mot_bang_du_lieu')}</b> (mỗi dòng = một tem/thẻ/vé).
                                 Bình thường mọi bản giống khuôn, chỉ khác chữ điền vào. Phần này dùng khi
-                                <b> một số bản cần khác nhau tuỳ dòng</b>.
+                                <b> {t('preprocess.dataMerge:mot_so_ban_can_khac_nhau_tuy_dong')}</b>.
                             </p>
 
                             <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
-                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">👁️ Điều kiện ẩn/hiện</div>
-                                <div className="mb-1">Quyết định <b>có in chi tiết này hay không</b>.</div>
+                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.dataMerge:dieu_kien_an_hien')}</div>
+                                <div className="mb-1">{t('preprocess.dataMerge:quyet_dinh')} <b>{t('preprocess.dataMerge:co_in_chi_tiet_nay_hay_khong')}</b>.</div>
                                 <div className="text-slate-500 dark:text-zinc-400">
-                                    Ví dụ: vẽ sẵn dấu "VIP" lên thẻ → đặt <i>Hiện nếu</i> cột <code>Hạng</code> <i>Bằng</i> <code>VIP</code>.
+                                    Ví dụ: vẽ sẵn dấu "VIP" lên thẻ → đặt <i>{t('preprocess.dataMerge:hien_neu')}</i> {t('preprocess.dataMerge:cot')} <code>{t('preprocess.dataMerge:hang')}</code> <i>{t('preprocess.dataMerge:bang')}</i> <code>VIP</code>.
                                     Chỉ khách VIP mới in dấu; khách khác bỏ trống.
                                 </div>
                             </div>
 
                             <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
-                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">🔁 Bảng rule (đổi nội dung/ảnh)</div>
-                                <div className="mb-1">Field <b>vẫn in</b>, nhưng <b>đổi chữ/ảnh theo dữ liệu</b>. Xét từ trên xuống, gặp dòng đúng đầu tiên thì lấy.</div>
+                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.dataMerge:bang_rule_doi_noi_dung_anh')}</div>
+                                <div className="mb-1">Field <b>{t('preprocess.dataMerge:van_in')}</b>{t('preprocess.dataMerge:nhung')} <b>{t('preprocess.dataMerge:doi_chu_anh_theo_du_lieu')}</b>{t('preprocess.dataMerge:xet_tu_tren_xuong_gap_dong_dung_dau')}</div>
                                 <div className="text-slate-500 dark:text-zinc-400">
-                                    Ví dụ ảnh: cột <code>Nước</code> <i>Bằng</i> <code>VN</code> → <code>co_vn.png</code>;
-                                    <code>US</code> → <code>co_us.png</code>. Mỗi bản tự lấy đúng cờ.
+                                    {t('preprocess.dataMerge:vi_du_anh_cot')} <code>{t('preprocess.dataMerge:nuoc')}</code> <i>{t('preprocess.dataMerge:bang')}</i> <code>VN</code> → <code>co_vn.png</code>;
+                                    <code>US</code> → <code>co_us.png</code>{t('preprocess.dataMerge:moi_ban_tu_lay_dung_co')}
                                     <br />
-                                    Ví dụ chữ: cột <code>Điểm</code> <i>Chứa</i> ... → in "Vàng" / "Bạc".
+                                    {t('preprocess.dataMerge:vi_du_chu_cot')} <code>{t('preprocess.dataMerge:diem')}</code> <i>{t('preprocess.dataMerge:chua')}</i> ... → in "Vàng" / "Bạc".
                                 </div>
                             </div>
 
                             <div className="text-[11px] text-slate-500 dark:text-zinc-400">
-                                <b>Phân biệt nhanh:</b> Ẩn/hiện = "có in không?" · Rule = "in cái gì vào?".
+                                <b>{t('preprocess.dataMerge:phan_biet_nhanh')}</b> Ẩn/hiện = "có in không?" · Rule = "in cái gì vào?".
                                 Không cần thì cứ để trống — field in bình thường.
                             </div>
                         </div>
@@ -284,7 +287,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                 onClick={() => setShowHelp(false)}
                                 className="text-[12px] px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded font-medium transition-colors"
                             >
-                                Đã hiểu
+                                {t('preprocess.dataMerge:da_hieu')}
                             </button>
                         </div>
                     </div>
@@ -293,30 +296,30 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
 
             {csvHeaders.length === 0 && (
                 <div className="text-[11px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 rounded">
-                    Chưa nạp dữ liệu nguồn — hãy nạp CSV/Excel/Sheets để chọn cột.
+                    {t('preprocess.dataMerge:chua_nap_du_lieu_nguon_hay_nap_csv')}
                 </div>
             )}
 
             {/* ── Điều kiện ẩn/hiện ── */}
             <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between">
-                    <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">Điều kiện ẩn/hiện</span>
+                    <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">{t('preprocess.dataMerge:dieu_kien_an_hien_2')}</span>
                     <button
                         type="button"
                         onClick={addCondition}
                         className="text-[11px] px-2 py-1 bg-teal-50 hover:bg-teal-100 dark:bg-teal-500/10 dark:hover:bg-teal-500/20 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-700 rounded font-medium transition-colors"
                     >
-                        + Thêm điều kiện
+                        {t('preprocess.dataMerge:them_dieu_kien')}
                     </button>
                 </div>
                 <span className="text-[10px] text-slate-500 dark:text-zinc-400 italic">
-                    Nếu cột thoả điều kiện → hiện (show_if) hoặc ẩn (hide_if) field này.
+                    {t('preprocess.dataMerge:neu_cot_thoa_dieu_kien_hien_show_if')}
                 </span>
                 <span className="text-[10px] text-teal-700 dark:text-teal-400">
-                    Ví dụ: Hiện nếu <b>Hạng</b> Bằng <b>VIP</b> → chỉ khách VIP mới in field này.
+                    {t('preprocess.dataMerge:vi_du_hien_neu')} <b>{t('preprocess.dataMerge:hang')}</b> {t('preprocess.dataMerge:bang')} <b>VIP</b> {t('preprocess.dataMerge:chi_khach_vip_moi_in_field_nay')}
                 </span>
                 {conditions.length === 0 ? (
-                    <span className="text-[11px] text-slate-400 dark:text-zinc-500">Chưa có điều kiện (field luôn hiện).</span>
+                    <span className="text-[11px] text-slate-400 dark:text-zinc-500">{t('preprocess.dataMerge:chua_co_dieu_kien_field_luon_hien')}</span>
                 ) : (
                     <div className="flex flex-col gap-2">
                         {conditions.map((c, i) => (
@@ -327,8 +330,8 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                         onChange={(e) => updateCondition(i, { action: e.target.value as VdpFieldCondition['action'] })}
                                         className={selectClass + " w-24 shrink-0"}
                                     >
-                                        <option value="show_if">Hiện nếu</option>
-                                        <option value="hide_if">Ẩn nếu</option>
+                                        <option value="show_if">{t('preprocess.dataMerge:hien_neu')}</option>
+                                        <option value="hide_if">{t('preprocess.dataMerge:an_neu')}</option>
                                     </select>
                                     <select
                                         value={c.column}
@@ -341,7 +344,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                         type="button"
                                         onClick={() => removeCondition(i)}
                                         className="shrink-0 text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
-                                        title="Xóa điều kiện"
+                                        title={t('preprocess.dataMerge:xoa_dieu_kien')}
                                     >
                                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                                     </button>
@@ -359,7 +362,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                         value={c.value}
                                         onChange={(e) => updateCondition(i, { value: e.target.value })}
                                         disabled={!operatorNeedsValue(c.operator)}
-                                        placeholder={operatorNeedsValue(c.operator) ? 'Giá trị so sánh' : '(không cần giá trị)'}
+                                        placeholder={operatorNeedsValue(c.operator) ? t('preprocess.dataMerge:gia_tri_so_sanh') : t('preprocess.dataMerge:khong_can_gia_tri')}
                                         className={inputClass + " flex-1 min-w-0 disabled:bg-slate-100 dark:disabled:bg-zinc-800 disabled:text-slate-400"}
                                     />
                                 </div>
@@ -374,23 +377,23 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
             {/* ── Bảng rule ── */}
             <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between">
-                    <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">Bảng rule (đổi nội dung/ảnh)</span>
+                    <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">{t('preprocess.dataMerge:bang_rule_doi_noi_dung_anh_2')}</span>
                     <button
                         type="button"
                         onClick={addRule}
                         className="text-[11px] px-2 py-1 bg-teal-50 hover:bg-teal-100 dark:bg-teal-500/10 dark:hover:bg-teal-500/20 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-700 rounded font-medium transition-colors"
                     >
-                        + Thêm rule
+                        {t('preprocess.dataMerge:them_rule')}
                     </button>
                 </div>
                 <span className="text-[10px] text-slate-500 dark:text-zinc-400 italic">
-                    Nếu cột thoả điều kiện → đặt nội dung/ảnh = kết quả. Áp rule khớp đầu tiên.
+                    {t('preprocess.dataMerge:neu_cot_thoa_dieu_kien_dat_noi_dung_anh')}
                 </span>
                 <span className="text-[10px] text-teal-700 dark:text-teal-400">
-                    Ví dụ: <b>Nước</b> Bằng <b>VN</b> → kết quả <b>co_vn.png</b> (mỗi bản tự lấy đúng cờ).
+                    {t('preprocess.dataMerge:vi_du')} <b>{t('preprocess.dataMerge:nuoc')}</b> {t('preprocess.dataMerge:bang')} <b>VN</b> {t('preprocess.dataMerge:ket_qua')} <b>co_vn.png</b> {t('preprocess.dataMerge:moi_ban_tu_lay_dung_co_2')}
                 </span>
                 {rules.length === 0 ? (
-                    <span className="text-[11px] text-slate-400 dark:text-zinc-500">Chưa có rule.</span>
+                    <span className="text-[11px] text-slate-400 dark:text-zinc-500">{t('preprocess.dataMerge:chua_co_rule')}</span>
                 ) : (
                     <div className="flex flex-col gap-2">
                         {rules.map((r, i) => (
@@ -408,7 +411,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                         type="button"
                                         onClick={() => removeRule(i)}
                                         className="shrink-0 text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
-                                        title="Xóa rule"
+                                        title={t('preprocess.dataMerge:xoa_rule')}
                                     >
                                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                                     </button>
@@ -426,7 +429,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                         value={r.value}
                                         onChange={(e) => updateRule(i, { value: e.target.value })}
                                         disabled={!operatorNeedsValue(r.operator)}
-                                        placeholder={operatorNeedsValue(r.operator) ? 'Giá trị so sánh' : '(không cần giá trị)'}
+                                        placeholder={operatorNeedsValue(r.operator) ? t('preprocess.dataMerge:gia_tri_so_sanh') : t('preprocess.dataMerge:khong_can_gia_tri')}
                                         className={inputClass + " flex-1 min-w-0 disabled:bg-slate-100 dark:disabled:bg-zinc-800 disabled:text-slate-400"}
                                     />
                                 </div>
@@ -434,7 +437,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                     type="text"
                                     value={r.result}
                                     onChange={(e) => updateRule(i, { result: e.target.value })}
-                                    placeholder="→ Kết quả (nội dung hoặc đường dẫn ảnh)"
+                                    placeholder={t('preprocess.dataMerge:ket_qua_noi_dung_hoac_duong_dan_anh')}
                                     className={inputClass + " w-full"}
                                 />
                             </div>
@@ -471,6 +474,7 @@ export default function DataMergeTool({
     onApplyResult,
     isActive = true
 }: Props) {
+  const { t } = useTranslation();
     const [csvData, setCsvData] = useState<Record<string, string>[]>([]);
     const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
     const [dataMode, setDataMode] = useState<'csv' | 'manual' | 'xlsx' | 'gsheet'>('csv');
@@ -540,7 +544,7 @@ export default function DataMergeTool({
     };
 
     const loadCsvIntoState = (file: File, hasHeader: boolean) => {
-        setStatusMessage("Đang đọc file CSV...");
+        setStatusMessage(t('preprocess.dataMerge:dang_doc_file_csv'));
         parseCsv(file, hasHeader).then(({ headers, data, duplicated }) => {
             if (data.length > 0) {
                 setCsvHeaders(headers);
@@ -549,9 +553,9 @@ export default function DataMergeTool({
                 else setStatusMessage(`Đã tải ${data.length} dòng dữ liệu.`);
             } else {
                 setCsvHeaders([]); setCsvData([]);
-                setStatusMessage("File CSV rỗng hoặc lỗi định dạng.");
+                setStatusMessage(t('preprocess.dataMerge:file_csv_rong_hoac_loi_dinh_dang'));
             }
-        }).catch((err) => { console.error("CSV Parse Error:", err); setStatusMessage("Lỗi đọc file CSV."); });
+        }).catch((err) => { console.error("CSV Parse Error:", err); setStatusMessage(t('preprocess.dataMerge:loi_doc_file_csv')); });
     };
 
     const handleCsvFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -601,8 +605,8 @@ export default function DataMergeTool({
             applySourceResult(result, `Excel · ${sheet}`);
         } catch (err: any) {
             clearSourceState();
-            setSourceError(err?.message || 'Không đọc được file Excel.');
-            setStatusMessage('Lỗi đọc file Excel.');
+            setSourceError(err?.message || t('preprocess.dataMerge:khong_doc_duoc_file_excel'));
+            setStatusMessage(t('preprocess.dataMerge:loi_doc_file_excel'));
         } finally {
             setSourceLoading(false);
         }
@@ -619,7 +623,7 @@ export default function DataMergeTool({
         clearSourceState();
         setSourceLoading(true);
         setSourceError('');
-        setStatusMessage('Đang đọc danh sách sheet...');
+        setStatusMessage(t('preprocess.dataMerge:dang_doc_danh_sach_sheet'));
         try {
             const sheets = await listVdpSheets(file);
             setSheetList(sheets);
@@ -629,14 +633,14 @@ export default function DataMergeTool({
                 await loadXlsxSheet(file, first);
             } else {
                 setSourceLoading(false);
-                setSourceError('File Excel không có sheet nào.');
-                setStatusMessage('File Excel rỗng.');
+                setSourceError(t('preprocess.dataMerge:file_excel_khong_co_sheet_nao'));
+                setStatusMessage(t('preprocess.dataMerge:file_excel_rong'));
             }
         } catch (err: any) {
             setSourceLoading(false);
             setXlsxFile(null);
-            setSourceError(err?.message || 'Không đọc được file Excel.');
-            setStatusMessage('Lỗi đọc file Excel.');
+            setSourceError(err?.message || t('preprocess.dataMerge:khong_doc_duoc_file_excel'));
+            setStatusMessage(t('preprocess.dataMerge:loi_doc_file_excel'));
         }
     };
 
@@ -649,17 +653,17 @@ export default function DataMergeTool({
     // Nạp dữ liệu từ link Google Sheets công khai qua /vdp/datasource.
     const loadGsheet = async () => {
         const url = gsheetUrl.trim();
-        if (!url) { setSourceError('Hãy dán link Google Sheets.'); return; }
+        if (!url) { setSourceError(t('preprocess.dataMerge:hay_dan_link_google_sheets')); return; }
         setSourceLoading(true);
         setSourceError('');
-        setStatusMessage('Đang lấy dữ liệu Google Sheets...');
+        setStatusMessage(t('preprocess.dataMerge:dang_lay_du_lieu_google_sheets'));
         try {
             const result = await readVdpDatasource({ kind: 'gsheet', url, hasHeader: csvHasHeader });
             applySourceResult(result, 'Google Sheets');
         } catch (err: any) {
             clearSourceState();
-            setSourceError(err?.message || 'Không lấy được dữ liệu Google Sheets.');
-            setStatusMessage('Lỗi lấy dữ liệu Google Sheets.');
+            setSourceError(err?.message || t('preprocess.dataMerge:khong_lay_duoc_du_lieu_google_sheets'));
+            setStatusMessage(t('preprocess.dataMerge:loi_lay_du_lieu_google_sheets'));
         } finally {
             setSourceLoading(false);
         }
@@ -673,7 +677,7 @@ export default function DataMergeTool({
         setBatchFiles([]); // chế độ nhập tay không dùng chạy hàng loạt
         if (lines.length === 0) {
             setCsvHeaders([]); setCsvData([]);
-            setStatusMessage('Nhập tay: chưa có nội dung (mỗi dòng = 1 bản ghi).');
+            setStatusMessage(t('preprocess.dataMerge:nhap_tay_chua_co_noi_dung_moi_dong_1'));
             return;
         }
         setCsvHeaders([col]);
@@ -892,11 +896,11 @@ export default function DataMergeTool({
 
     // Chạy hàng loạt nhiều file CSV: mỗi file → 1 tab kết quả riêng, đặt tên theo tên file CSV.
     const handleBatchGenerate = async (fileList: File[] | FileList) => {
-        if (vdpFields.length === 0) { setStatusMessage("Chưa có trường dữ liệu (VDP Field) nào."); return; }
-        if (!pdfFile) { setStatusMessage("Chưa có file PDF gốc."); return; }
-        if (!onSpawnTab) { setStatusMessage("Không thể mở tab kết quả (thiếu onSpawnTab)."); return; }
+        if (vdpFields.length === 0) { setStatusMessage(t('preprocess.dataMerge:chua_co_truong_du_lieu_vdp_field_nao')); return; }
+        if (!pdfFile) { setStatusMessage(t('preprocess.dataMerge:chua_co_file_pdf_goc')); return; }
+        if (!onSpawnTab) { setStatusMessage(t('preprocess.dataMerge:khong_the_mo_tab_ket_qua_thieu')); return; }
         const files = Array.from(fileList).filter(f => /\.csv$/i.test(f.name));
-        if (files.length === 0) { setStatusMessage("Không có file CSV hợp lệ."); return; }
+        if (files.length === 0) { setStatusMessage(t('preprocess.dataMerge:khong_co_file_csv_hop_le')); return; }
 
         setIsGenerating(true);
         try {
@@ -973,12 +977,12 @@ export default function DataMergeTool({
         if (!csvData || csvData.length === 0) {
             setPreviewImg(null);
             setPreviewErrors([]);
-            setPreviewMsg('Chưa có dữ liệu nguồn để xem trước.');
+            setPreviewMsg(t('preprocess.dataMerge:chua_co_du_lieu_nguon_de_xem_truoc'));
             return;
         }
         const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
         if (!templateFile) {
-            setPreviewMsg('Chưa có file PDF template để xem trước.');
+            setPreviewMsg(t('preprocess.dataMerge:chua_co_file_pdf_template_de_xem_truoc'));
             return;
         }
 
@@ -1021,7 +1025,7 @@ export default function DataMergeTool({
             if (result.empty_source) {
                 setPreviewImg(null);
                 setPreviewErrors([]);
-                setPreviewMsg(result.message || 'Nguồn dữ liệu rỗng (0 record).');
+                setPreviewMsg(result.message || t('preprocess.dataMerge:nguon_du_lieu_rong_0_record'));
                 return;
             }
             setPreviewImg(result.image_png_base64 ? `data:image/png;base64,${result.image_png_base64}` : null);
@@ -1033,7 +1037,7 @@ export default function DataMergeTool({
             setPreviewMsg(result.message || '');
         } catch (err: any) {
             if (err?.name === 'AbortError' || ac.signal.aborted) return;
-            setPreviewMsg(err?.message || 'Lỗi tạo bản xem trước.');
+            setPreviewMsg(err?.message || t('preprocess.dataMerge:loi_tao_ban_xem_truoc'));
         } finally {
             clearTimeout(slowTimer);
             if (!ac.signal.aborted) {
@@ -1048,13 +1052,13 @@ export default function DataMergeTool({
         if (previewTotal <= 0) {
             setPreviewImg(null);
             setPreviewErrors([]);
-            setPreviewMsg('Nguồn dữ liệu rỗng (0 record) — không thể xem trước.');
+            setPreviewMsg(t('preprocess.dataMerge:nguon_du_lieu_rong_0_record_khong_the'));
             return;
         }
         let idx = target;
         let clampMsg = '';
-        if (idx < 1) { idx = 1; clampMsg = 'Đã ở record đầu tiên.'; }
-        else if (idx > previewTotal) { idx = previewTotal; clampMsg = 'Đã ở record cuối cùng.'; }
+        if (idx < 1) { idx = 1; clampMsg = t('preprocess.dataMerge:da_o_record_dau_tien'); }
+        else if (idx > previewTotal) { idx = previewTotal; clampMsg = t('preprocess.dataMerge:da_o_record_cuoi_cung'); }
         setPreviewIndex(idx);
         if (clampMsg) setPreviewMsg(clampMsg);
         runPreview(idx);
@@ -1122,15 +1126,15 @@ export default function DataMergeTool({
 
     // Nút "Kiểm tra (validate)" thủ công — hiển thị gating + danh sách issue.
     const handleManualValidate = async () => {
-        if (vdpFields.length === 0) { setStatusMessage('Chưa có trường dữ liệu (VDP Field) nào.'); return; }
+        if (vdpFields.length === 0) { setStatusMessage(t('preprocess.dataMerge:chua_co_truong_du_lieu_vdp_field_nao')); return; }
         setValidating(true);
-        setStatusMessage('Đang kiểm tra dữ liệu...');
+        setStatusMessage(t('preprocess.dataMerge:dang_kiem_tra_du_lieu'));
         try {
             const result = await runValidate();
             if (!result) return;
             const errCount = result.issues.filter(i => i.severity === 'error').length;
             const warnCount = result.issues.filter(i => i.severity === 'warning').length;
-            if (result.gating === 'allow') setStatusMessage('Kiểm tra xong: không có lỗi, sẵn sàng sinh lô.');
+            if (result.gating === 'allow') setStatusMessage(t('preprocess.dataMerge:kiem_tra_xong_khong_co_loi_san_sang'));
             else if (result.gating === 'needs_confirmation') setStatusMessage(`Kiểm tra xong: ${warnCount} cảnh báo — cần xác nhận trước khi sinh lô.`);
             else setStatusMessage(`Kiểm tra xong: ${errCount} lỗi chặn — phải khắc phục trước khi sinh lô.`);
         } catch (err: any) {
@@ -1144,7 +1148,7 @@ export default function DataMergeTool({
     // cảnh báo (Req 5.9), cho chạy nếu sạch (Req 5.10). Trả true nếu được tiếp tục.
     const runPreGenerateValidation = async (): Promise<boolean> => {
         setValidating(true);
-        setStatusMessage('Đang kiểm tra dữ liệu trước khi sinh lô...');
+        setStatusMessage(t('preprocess.dataMerge:dang_kiem_tra_du_lieu_truoc_khi_sinh_lo'));
         try {
             const result = await runValidate();
             if (!result) return false;
@@ -1158,10 +1162,10 @@ export default function DataMergeTool({
             if (result.gating === 'needs_confirmation') {
                 const ok = window.confirm(
                     `Phát hiện ${warnCount} cảnh báo (ví dụ: ảnh biến đổi thiếu file).\n\n` +
-                    `Các record liên quan có thể bị thiếu nội dung. Bạn vẫn muốn tiếp tục sinh lô?`
+                    t('preprocess.dataMerge:cac_record_lien_quan_co_the_bi_thieu')
                 );
                 if (!ok) {
-                    setStatusMessage('Đã huỷ sinh lô do còn cảnh báo chưa xử lý.');
+                    setStatusMessage(t('preprocess.dataMerge:da_huy_sinh_lo_do_con_canh_bao_chua_xu'));
                     return false;
                 }
                 return true;
@@ -1179,7 +1183,7 @@ export default function DataMergeTool({
     // nếu chưa → gửi fields + nguồn để backend tự tính (vẫn xuất CSV "không lỗi").
     const handleExportReport = async () => {
         setReportLoading(true);
-        setStatusMessage('Đang tạo báo cáo lỗi CSV...');
+        setStatusMessage(t('preprocess.dataMerge:dang_tao_bao_cao_loi_csv'));
         try {
             if (validateGating !== null) {
                 await downloadVdpErrorReport({ issues: validateIssues });
@@ -1191,7 +1195,7 @@ export default function DataMergeTool({
                     ...(dataMode === 'xlsx' && selectedSheet ? { sheet: selectedSheet } : {}),
                 });
             }
-            setStatusMessage('Đã xuất báo cáo lỗi CSV.');
+            setStatusMessage(t('preprocess.dataMerge:da_xuat_bao_cao_loi_csv'));
         } catch (err: any) {
             setStatusMessage(`Lỗi xuất báo cáo lỗi: ${err?.message || err}`);
         } finally {
@@ -1201,15 +1205,15 @@ export default function DataMergeTool({
 
     const handleGenerate = async () => {
         if (vdpFields.length === 0) {
-            setStatusMessage("Chưa có trường dữ liệu (VDP Field) nào.");
+            setStatusMessage(t('preprocess.dataMerge:chua_co_truong_du_lieu_vdp_field_nao'));
             return;
         }
         if (!pdfFile) {
-            setStatusMessage("Chưa có file PDF gốc.");
+            setStatusMessage(t('preprocess.dataMerge:chua_co_file_pdf_goc'));
             return;
         }
         if (!csvData || csvData.length === 0) {
-            setStatusMessage("Chưa có dữ liệu. Tải CSV hoặc chuyển sang 'Nhập tay' (mỗi dòng = 1 bản ghi).");
+            setStatusMessage(t('preprocess.dataMerge:chua_co_du_lieu_tai_csv_hoac_chuyen'));
             return;
         }
 
@@ -1236,7 +1240,7 @@ export default function DataMergeTool({
             const result = await pollVdpJob(jobId, setStatusMessage, true, pollAbortRef.current.signal);
             const blob = result.blob;
             const path = result.path;
-            if (!blob) throw new Error('Không nhận được file kết quả từ máy chủ');
+            if (!blob) throw new Error(t('preprocess.dataMerge:khong_nhan_duoc_file_ket_qua_tu_may_chu'));
 
             const originalName = pdfFile.name.replace(/\.[^/.]+$/, "") || "Document";
             const outName = `VDP_${originalName}_${fullData.length || 1}records.pdf`;
@@ -1246,12 +1250,12 @@ export default function DataMergeTool({
                 // Small delay so the UI updates with the message before the heavy tab creation
                 await new Promise(r => setTimeout(r, 100));
                 onSpawnTab(blob, outName, path ?? undefined);
-                setStatusMessage(`Hoàn thành! Đã tạo Tab PDF mới.`);
+                setStatusMessage(t('preprocess.dataMerge:hoan_thanh_da_tao_tab_pdf_moi'));
             } else if (onApplyResult) {
-                setStatusMessage(`Đang mở file kết quả...`);
+                setStatusMessage(t('preprocess.dataMerge:dang_mo_file_ket_qua'));
                 await new Promise(r => setTimeout(r, 100));
                 onApplyResult(blob, outName, path ?? undefined);
-                setStatusMessage(`Hoàn thành! Đã đè dữ liệu lên file hiện tại.`);
+                setStatusMessage(t('preprocess.dataMerge:hoan_thanh_da_de_du_lieu_len_file_hien'));
             }
         } catch (error: any) {
             if (error?.name === 'AbortError') return;
@@ -1271,26 +1275,26 @@ export default function DataMergeTool({
                 <button 
                     onClick={onBack}
                     className="p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-md text-slate-500 transition-colors"
-                    title="Quay lại"
+                    title={t('preprocess.dataMerge:quay_lai')}
                 >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
                 </button>
                 <div className="flex-1 min-w-0 text-center pr-8">
                     <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
                         <span>🔤</span>
-                        <span>TRỘN DỮ LIỆU VDP</span>
+                        <span>{t('preprocess.dataMerge:tron_du_lieu_vdp')}</span>
                     </h2>
-                    <p className="text-[11px] text-slate-500 mt-1">Vẽ vùng dữ liệu trực tiếp trên PDF</p>
+                    <p className="text-[11px] text-slate-500 mt-1">{t('preprocess.dataMerge:ve_vung_du_lieu_truc_tiep_tren_pdf')}</p>
                 </div>
             </div>
 
             {/* Data Section: CSV / Excel / Google Sheets / Nhập tay */}
-            <VdpSection step="1" title="Dữ liệu (CSV / Excel / Sheets / Nhập tay)" defaultOpen>
+            <VdpSection step="1" title={t('preprocess.dataMerge:du_lieu_csv_excel_sheets_nhap_tay')} defaultOpen>
                 <div className="grid grid-cols-2 gap-1 mb-3 p-0.5 bg-slate-100 dark:bg-zinc-800 rounded-md">
                     <button
                         onClick={() => setDataMode('csv')}
                         className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'csv' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
-                    >📄 Tải CSV</button>
+                    >{t('preprocess.dataMerge:tai_csv')}</button>
                     <button
                         onClick={() => setDataMode('xlsx')}
                         className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'xlsx' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
@@ -1302,13 +1306,13 @@ export default function DataMergeTool({
                     <button
                         onClick={() => { setDataMode('manual'); applyManualData(manualText, manualColName); }}
                         className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'manual' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
-                    >✍️ Nhập tay</button>
+                    >{t('preprocess.dataMerge:nhap_tay')}</button>
                 </div>
 
                 {dataMode === 'manual' ? (
                     <div className="flex flex-col gap-2">
                         <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 shrink-0">Tên cột:</span>
+                            <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400 shrink-0">{t('preprocess.dataMerge:ten_cot')}</span>
                             <input
                                 value={manualColName}
                                 onChange={(e) => { setManualColName(e.target.value); applyManualData(manualText, e.target.value); }}
@@ -1324,7 +1328,7 @@ export default function DataMergeTool({
                             className="w-full p-2 text-[12px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-blue-500 resize-y leading-relaxed"
                         />
                         <p className="text-[10px] text-slate-400 leading-snug">
-                            Mỗi dòng là 1 bản ghi: <b>1 dòng → 1 trang</b>, nhiều dòng → nhiều trang.
+                            {t('preprocess.dataMerge:moi_dong_la_1_ban_ghi')} <b>{t('preprocess.dataMerge:1_dong_1_trang')}</b>, nhiều dòng → nhiều trang.
                             Field cần dùng thì gán vào cột <b>"{manualColName || 'Noidung'}"</b>.
                             (Muốn cùng 1 nội dung cố định trên mọi trang thì gõ thẳng nội dung vào ô text của field.)
                         </p>
@@ -1334,7 +1338,7 @@ export default function DataMergeTool({
                 <label className="flex items-center justify-center w-full p-3 border-2 border-dashed border-blue-300 dark:border-blue-700/50 rounded-md cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
                     <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-                        <span className="text-sm font-medium">Tải file CSV (1 hoặc nhiều)</span>
+                        <span className="text-sm font-medium">{t('preprocess.dataMerge:tai_file_csv_1_hoac_nhieu')}</span>
                     </div>
                     <input type="file" accept=".csv" multiple onChange={handleCsvFiles} className="hidden" />
                 </label>
@@ -1350,7 +1354,7 @@ export default function DataMergeTool({
                 }}
                 className="w-4 h-4 accent-blue-500"
             />
-            <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">Hàng đầu là tiêu đề cột</span>
+            <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">{t('preprocess.dataMerge:hang_dau_la_tieu_de_cot')}</span>
         </label>
         <p className="text-[10px] text-slate-400 leading-snug -mt-1">Bỏ chọn nếu file không có dòng tiêu đề — cột sẽ tự đặt tên "Cột 1", "Cột 2"…</p>
         </>
@@ -1359,7 +1363,7 @@ export default function DataMergeTool({
             <label className="flex items-center justify-center w-full p-3 border-2 border-dashed border-emerald-300 dark:border-emerald-700/50 rounded-md cursor-pointer hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
                 <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-                    <span className="text-sm font-medium">{xlsxFile ? 'Đổi file Excel (.xlsx)' : 'Tải file Excel (.xlsx)'}</span>
+                    <span className="text-sm font-medium">{xlsxFile ? t('preprocess.dataMerge:doi_file_excel_xlsx') : t('preprocess.dataMerge:tai_file_excel_xlsx')}</span>
                 </div>
                 <input type="file" accept=".xlsx" onChange={handleXlsxFile} className="hidden" />
             </label>
@@ -1392,13 +1396,13 @@ export default function DataMergeTool({
                     }}
                     className="w-4 h-4 accent-emerald-500"
                 />
-                <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">Hàng đầu là tiêu đề cột</span>
+                <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">{t('preprocess.dataMerge:hang_dau_la_tieu_de_cot')}</span>
             </label>
         </>
         ) : (
         <>
             <div className="flex flex-col gap-2">
-                <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">Link Google Sheets (chia sẻ công khai)</span>
+                <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">{t('preprocess.dataMerge:link_google_sheets_chia_se_cong_khai')}</span>
                 <input
                     type="url"
                     value={gsheetUrl}
@@ -1414,14 +1418,14 @@ export default function DataMergeTool({
                         onChange={(e) => setCsvHasHeader(e.target.checked)}
                         className="w-4 h-4 accent-blue-500"
                     />
-                    <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">Hàng đầu là tiêu đề cột</span>
+                    <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">{t('preprocess.dataMerge:hang_dau_la_tieu_de_cot')}</span>
                 </label>
                 <button
                     onClick={loadGsheet}
                     disabled={sourceLoading || !gsheetUrl.trim()}
                     className="self-start h-8 px-4 text-[12px] font-semibold bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
-                    {sourceLoading ? 'Đang tải…' : 'Lấy dữ liệu'}
+                    {sourceLoading ? t('preprocess.dataMerge:dang_tai') : t('preprocess.dataMerge:lay_du_lieu')}
                 </button>
                 <p className="text-[10px] text-slate-400 leading-snug">
                     Sheet phải được chia sẻ ở chế độ "Bất kỳ ai có đường liên kết". Dữ liệu được lấy qua đường export CSV của Google.
@@ -1433,7 +1437,7 @@ export default function DataMergeTool({
         {sourceLoading && (
             <div className="flex items-center gap-2 text-[12px] text-slate-500 dark:text-zinc-400">
                 <svg className="w-4 h-4 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                Đang đọc nguồn dữ liệu…
+                {t('preprocess.dataMerge:dang_doc_nguon_du_lieu')}
             </div>
         )}
 
@@ -1448,13 +1452,13 @@ export default function DataMergeTool({
             <div className="text-[13px] text-slate-600 dark:text-zinc-400 space-y-2">
                 {batchFiles.length < 2 && (
                 <div className="flex items-center justify-between">
-                    <span>Số bản ghi:</span>
+                    <span>{t('preprocess.dataMerge:so_ban_ghi')}</span>
                     <span className="font-bold">{sourceRecordCount ?? csvData.length}</span>
                 </div>
                 )}
                 <div className="flex items-center justify-between">
                     <span>Các cột ({csvHeaders.length}):</span>
-                    {!csvHasHeader && <span className="text-[10px] text-amber-600 dark:text-amber-400">tên theo vị trí</span>}
+                    {!csvHasHeader && <span className="text-[10px] text-amber-600 dark:text-amber-400">{t('preprocess.dataMerge:ten_theo_vi_tri')}</span>}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                     {csvHeaders.map(h => (
@@ -1472,15 +1476,15 @@ export default function DataMergeTool({
         <div className="mt-3 pt-3 border-t border-dashed border-slate-200 dark:border-zinc-700">
                 <div className="mt-2 flex flex-col gap-2">
                     <div className="text-[11px] text-slate-500 dark:text-zinc-400 leading-snug flex items-center justify-between gap-2">
-                        <span>Đã chọn <b>{batchFiles.length}</b> file</span>
-                        <button onClick={openBatchInfo} className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline shrink-0">Chi tiết</button>
+                        <span>{t('preprocess.dataMerge:da_chon')} <b>{batchFiles.length}</b> file</span>
+                        <button onClick={openBatchInfo} className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline shrink-0">{t('preprocess.dataMerge:chi_tiet')}</button>
                     </div>
                     <button
                         onClick={() => setBatchFiles([])}
                         disabled={isGenerating}
                         className="self-start h-8 px-3 text-[12px] font-semibold text-slate-600 dark:text-zinc-300 border border-slate-300 dark:border-white/20 rounded-md hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 transition-colors"
                     >
-                        Bỏ chọn
+                        {t('preprocess.dataMerge:bo_chon')}
                     </button>
                 </div>
             <p className="text-[10px] text-slate-400 mt-1.5 leading-snug">Cột lấy từ file đầu để map. Map xong bấm nút "Chạy {batchFiles.length} file" ở dưới — mỗi file ra 1 tab đặt tên theo tên file CSV.</p>
@@ -1489,45 +1493,45 @@ export default function DataMergeTool({
             </VdpSection>
 
             {/* Drag and Drop Toolbar */}
-            <VdpSection step="2" title="Kéo thả vào PDF" defaultOpen>
+            <VdpSection step="2" title={t('preprocess.dataMerge:keo_tha_vao_pdf')} defaultOpen>
         <div className="grid grid-cols-2 gap-2">
             <div 
-                onPointerDown={(e) => startVdpDrag(e, 'text', 'Chữ (Text)')}
+                onPointerDown={(e) => startVdpDrag(e, 'text', t('preprocess.dataMerge:chu_text'))}
                 className="bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 p-3 rounded-lg cursor-grab active:cursor-grabbing hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center justify-center gap-2 transition-colors shadow-sm"
             >
                 <svg className="w-5 h-5 text-slate-600 dark:text-zinc-400 shrink-0 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h7"/></svg>
-                <span className="text-xs font-medium text-slate-700 dark:text-zinc-300 pointer-events-none">Chữ (Text)</span>
+                <span className="text-xs font-medium text-slate-700 dark:text-zinc-300 pointer-events-none">{t('preprocess.dataMerge:chu_text')}</span>
             </div>
             <div 
-                onPointerDown={(e) => startVdpDrag(e, 'qrcode', 'Mã QR')}
+                onPointerDown={(e) => startVdpDrag(e, 'qrcode', t('preprocess.dataMerge:ma_qr'))}
                 className="bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 p-3 rounded-lg cursor-grab active:cursor-grabbing hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center justify-center gap-2 transition-colors shadow-sm"
             >
                 <svg className="w-5 h-5 text-slate-600 dark:text-zinc-400 shrink-0 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm14 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z"/></svg>
-                <span className="text-xs font-medium text-slate-700 dark:text-zinc-300 pointer-events-none">Mã QR</span>
+                <span className="text-xs font-medium text-slate-700 dark:text-zinc-300 pointer-events-none">{t('preprocess.dataMerge:ma_qr')}</span>
             </div>
             <div 
-                onPointerDown={(e) => startVdpDrag(e, 'barcode', 'Mã vạch')}
+                onPointerDown={(e) => startVdpDrag(e, 'barcode', t('preprocess.dataMerge:ma_vach'))}
                 className="bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 p-3 rounded-lg cursor-grab active:cursor-grabbing hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center justify-center gap-2 transition-colors shadow-sm"
             >
                 <svg className="w-5 h-5 text-slate-600 dark:text-zinc-400 shrink-0 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 10H4zM4 14h16M4 18h16" strokeDasharray="2 2" /></svg>
-                <span className="text-xs font-medium text-slate-700 dark:text-zinc-300 pointer-events-none">Mã vạch</span>
+                <span className="text-xs font-medium text-slate-700 dark:text-zinc-300 pointer-events-none">{t('preprocess.dataMerge:ma_vach')}</span>
             </div>
             <div 
-                onPointerDown={(e) => startVdpDrag(e, 'image', 'Hình ảnh')}
+                onPointerDown={(e) => startVdpDrag(e, 'image', t('preprocess.dataMerge:hinh_anh'))}
                 className="bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 p-3 rounded-lg cursor-grab active:cursor-grabbing hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center justify-center gap-2 transition-colors shadow-sm"
             >
                 <svg className="w-5 h-5 text-slate-600 dark:text-zinc-400 shrink-0 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                <span className="text-xs font-medium text-slate-700 dark:text-zinc-300 pointer-events-none">Hình ảnh</span>
+                <span className="text-xs font-medium text-slate-700 dark:text-zinc-300 pointer-events-none">{t('preprocess.dataMerge:hinh_anh')}</span>
             </div>
         </div>
             </VdpSection>
 
             {/* Field List */}
-            <VdpSection step="3" title="Danh sách trường" badge={<span className="text-[11px] px-2 py-0.5 bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full font-medium text-slate-600 dark:text-zinc-400">{vdpFields.length}</span>}>
+            <VdpSection step="3" title={t('preprocess.dataMerge:danh_sach_truong')} badge={<span className="text-[11px] px-2 py-0.5 bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full font-medium text-slate-600 dark:text-zinc-400">{vdpFields.length}</span>}>
         <div className="max-h-[250px] overflow-y-auto space-y-2 pr-1 scroller-thin">
             {vdpFields.length === 0 ? (
                 <div className="text-center text-xs text-slate-400 py-4 flex flex-col items-center gap-3">
-                    <span>Kéo (drag) một công cụ từ trên vào trang PDF để tạo trường.</span>
+                    <span>{t('preprocess.dataMerge:keo_drag_mot_cong_cu_tu_tren_vao_trang')}</span>
                 </div>
             ) : (
                 vdpFields.map(field => {
@@ -1550,7 +1554,7 @@ export default function DataMergeTool({
                                                 }
                                             }}
                                             className="w-full h-8 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-blue-300 dark:border-blue-600 rounded focus:outline-none focus:border-teal-500 transition-all shadow-sm"
-                                            placeholder="Tên trường (Khớp header CSV)..."
+                                            placeholder={t('preprocess.dataMerge:ten_truong_khop_header_csv')}
                                             autoFocus
                                         />
                                         <datalist id="csv-headers-list">
@@ -1558,7 +1562,7 @@ export default function DataMergeTool({
                                         </datalist>
                                     </div>
                                 ) : (
-                                    <span className="font-semibold text-sm text-slate-800 dark:text-zinc-200 truncate pr-2">{field.name || 'Chưa đặt tên'}</span>
+                                    <span className="font-semibold text-sm text-slate-800 dark:text-zinc-200 truncate pr-2">{field.name || t('preprocess.dataMerge:chua_dat_ten')}</span>
                                 )}
                                 <div className="flex items-center gap-1.5 shrink-0">
                                     <span className="text-[11px] px-1.5 py-0.5 bg-slate-100 dark:bg-zinc-700 rounded uppercase">{field.type}</span>
@@ -1566,7 +1570,7 @@ export default function DataMergeTool({
                                         <button 
                                             onClick={(e) => { e.stopPropagation(); deleteSelectedField(); }}
                                             className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
-                                            title="Xóa trường này"
+                                            title={t('preprocess.dataMerge:xoa_truong_nay')}
                                         >
                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                                         </button>
@@ -1582,37 +1586,37 @@ export default function DataMergeTool({
 
             {/* Field Settings Editor */}
             {selectedField && (
-                <VdpSection step="4" title="Cài đặt trường" accent defaultOpen>
+                <VdpSection step="4" title={t('preprocess.dataMerge:cai_dat_truong')} accent defaultOpen>
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col gap-1 p-2.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-                            <span className="text-[12px] font-bold text-blue-700 dark:text-blue-400 block mb-1">Cột chính của ô này</span>
+                            <span className="text-[12px] font-bold text-blue-700 dark:text-blue-400 block mb-1">{t('preprocess.dataMerge:cot_chinh_cua_o_nay')}</span>
                             <select 
                                 value={csvHeaders.includes(selectedField.name) ? selectedField.name : ""}
                                 onChange={(e) => updateSelectedField({ name: e.target.value })}
                                 className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-blue-300 dark:border-blue-600 rounded focus:outline-none focus:border-blue-500 transition-all text-blue-900 dark:text-blue-100"
                             >
-                                <option value="" disabled>-- Chọn cột dữ liệu để ghép --</option>
+                                <option value="" disabled>{t('preprocess.dataMerge:chon_cot_du_lieu_de_ghep')}</option>
                                 {csvHeaders.map(h => (
                                     <option key={h} value={h}>{h}</option>
                                 ))}
                             </select>
                             <span className="text-[10px] text-blue-600/80 mt-1 italic">
                                 Giá trị cột này sẽ được in vào ô (mỗi bản in lấy theo dòng của nó).
-                                {selectedField.type === 'text' && <> Hoặc gõ thẳng {'{Tên Cột}'} vào vùng Nội dung bên dưới.</>}
+                                {selectedField.type === 'text' && <> Hoặc gõ thẳng {t('preprocess.dataMerge:ten_cot_2')} vào vùng Nội dung bên dưới.</>}
                             </span>
                         </div>
                     
                         <div className="flex flex-col gap-1">
-                            <span className="text-[11px] font-medium text-slate-500 block mb-1">Loại công cụ</span>
+                            <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:loai_cong_cu')}</span>
                             <select 
                                 value={selectedField.type}
                                 onChange={(e) => updateSelectedField({ type: e.target.value })}
                                 className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                             >
-                                <option value="text">Chữ (Text)</option>
-                                <option value="qrcode">Mã QR (QRCode)</option>
-                                <option value="barcode">Mã vạch (Barcode)</option>
-                                <option value="image">Hình ảnh (Image)</option>
+                                <option value="text">{t('preprocess.dataMerge:chu_text')}</option>
+                                <option value="qrcode">{t('preprocess.dataMerge:ma_qr_qrcode')}</option>
+                                <option value="barcode">{t('preprocess.dataMerge:ma_vach_barcode')}</option>
+                                <option value="image">{t('preprocess.dataMerge:hinh_anh_image')}</option>
                             </select>
                         </div>
                         
@@ -1621,7 +1625,7 @@ export default function DataMergeTool({
                                 {/* Field lưu theo "mm phồng" (CSS px). Hiển thị/nhập theo mm THẬT
                                     (×0.75) để khớp kích thước trang & file xuất. */}
                                 <ToolNumberInput 
-                                    label="Rộng W"
+                                    label={t('preprocess.dataMerge:rong_w')}
                                     value={Math.round((selectedField.width || 0) * 0.75 * 100) / 100}
                                     onChange={(val) => updateSelectedField({ width: val / 0.75 })}
                                     suffix="mm" step={0.1}
@@ -1647,7 +1651,7 @@ export default function DataMergeTool({
                             control này chỉ hiện trong khối barcode nên text/qr/ảnh không
                             xoay được. */}
                         <div className="flex flex-col gap-1 mt-1">
-                            <span className="text-[11px] font-medium text-slate-500 block mb-1">Xoay (độ)</span>
+                            <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:xoay_do')}</span>
                             <select
                                 value={selectedField.rotation || 0}
                                 onChange={(e) => updateSelectedField({ rotation: Number(e.target.value) })}
@@ -1663,8 +1667,8 @@ export default function DataMergeTool({
                             <div className="flex flex-col gap-3 mt-1">
                                 <div className="flex flex-col gap-1">
                                     <span className="text-[10px] font-medium text-slate-500 block mb-1">
-                                        Nội dung {selectedField.type === 'text' ? 'Text' : selectedField.type === 'qrcode' ? 'QR Code' : 'Mã vạch'} 
-                                        <span className="text-slate-400 font-normal"> (gõ {'{Tên_Cột}'}, hoặc dùng "Chèn thêm cột vào câu" bên dưới)</span>
+                                        {t('preprocess.dataMerge:noi_dung')} {selectedField.type === 'text' ? 'Text' : selectedField.type === 'qrcode' ? 'QR Code' : t('preprocess.dataMerge:ma_vach')} 
+                                        <span className="text-slate-400 font-normal"> (gõ {t('preprocess.dataMerge:ten_cot_3')}, hoặc dùng "Chèn thêm cột vào câu" bên dưới)</span>
                                     </span>
                                     <input 
                                         type="text" 
@@ -1682,15 +1686,15 @@ export default function DataMergeTool({
                                                 type="button"
                                                 onClick={() => setShowQuickInsert(v => !v)}
                                                 className="flex items-center justify-between flex-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide hover:text-teal-600 transition-colors"
-                                                title="Công cụ tạo nhanh placeholder {cột} để chèn vào câu (tuỳ chọn)"
+                                                title={t('preprocess.dataMerge:cong_cu_tao_nhanh_placeholder_cot_de')}
                                             >
-                                                <span>Chèn thêm cột vào câu (nâng cao)</span>
+                                                <span>{t('preprocess.dataMerge:chen_them_cot_vao_cau_nang_cao')}</span>
                                                 <svg className={`w-3.5 h-3.5 transition-transform ${showQuickInsert ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                                             </button>
                                             <button
                                                 type="button"
                                                 onClick={() => setShowQuickHelp(true)}
-                                                title="Xem hướng dẫn & ví dụ"
+                                                title={t('preprocess.dataMerge:xem_huong_dan_vi_du')}
                                                 className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full text-teal-600 dark:text-teal-300 bg-teal-50 dark:bg-teal-500/10 hover:bg-teal-100 dark:hover:bg-teal-500/20 border border-teal-200 dark:border-teal-700 transition-colors"
                                             >
                                                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" /><path strokeLinecap="round" d="M12 16.5h.01" /></svg>
@@ -1698,57 +1702,57 @@ export default function DataMergeTool({
                                         </div>
                                         {showQuickInsert && (
                                         <>
-                                        <span className="text-[10px] text-slate-400 italic">Tạo nhanh {'{cột}'} (có thể tách phần &amp; định dạng) rồi bấm Chèn vào ô Nội dung.</span>
+                                        <span className="text-[10px] text-slate-400 italic">Tạo nhanh {t('preprocess.dataMerge:cot_3')} (có thể tách phần &amp; định dạng) rồi bấm Chèn vào ô Nội dung.</span>
                                         <div className="grid grid-cols-2 gap-1.5">
-                                            <select value={splitCol} onChange={e => setSplitCol(e.target.value)} title="Chọn cột dữ liệu muốn chèn placeholder vào câu" className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500">
-                                                <option value="">— Chọn cột —</option>
+                                            <select value={splitCol} onChange={e => setSplitCol(e.target.value)} title={t('preprocess.dataMerge:chon_cot_du_lieu_muon_chen_placeholder')} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500">
+                                                <option value="">{t('preprocess.dataMerge:chon_cot_2')}</option>
                                                 {csvHeaders.map(h => <option key={h} value={h}>{h}</option>)}
                                             </select>
-                                            <select value={splitMode} onChange={e => setSplitMode(e.target.value)} title="Lấy cả ô, hoặc tách theo dấu rồi lấy 1 phần. VD: '123-456' tách '-' lấy phần 1 → 123" className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500">
-                                                <option value="whole">Cả cột (không tách)</option>
-                                                <option value="ws">Tách: khoảng trắng</option>
-                                                <option value="-">Tách: gạch ngang (-)</option>
-                                                <option value=",">Tách: phẩy (,)</option>
-                                                <option value=";">Tách: chấm phẩy (;)</option>
-                                                <option value="/">Tách: gạch chéo (/)</option>
-                                                <option value="custom">Tách: dấu khác…</option>
+                                            <select value={splitMode} onChange={e => setSplitMode(e.target.value)} title={t('preprocess.dataMerge:lay_ca_o_hoac_tach_theo_dau_roi_lay_1')} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500">
+                                                <option value="whole">{t('preprocess.dataMerge:ca_cot_khong_tach')}</option>
+                                                <option value="ws">{t('preprocess.dataMerge:tach_khoang_trang')}</option>
+                                                <option value="-">{t('preprocess.dataMerge:tach_gach_ngang')}</option>
+                                                <option value=",">{t('preprocess.dataMerge:tach_phay')}</option>
+                                                <option value=";">{t('preprocess.dataMerge:tach_cham_phay')}</option>
+                                                <option value="/">{t('preprocess.dataMerge:tach_gach_cheo')}</option>
+                                                <option value="custom">{t('preprocess.dataMerge:tach_dau_khac')}</option>
                                             </select>
                                         </div>
                                         {splitMode !== 'whole' && (
                                             <div className="grid grid-cols-2 gap-1.5">
                                                 <div className="flex items-center gap-1.5">
-                                                    <span className="text-[11px] text-slate-500 shrink-0">Phần</span>
-                                                    <input type="number" min={1} value={splitPart} onChange={e => setSplitPart(Math.max(1, parseInt(e.target.value) || 1))} title="Lấy phần thứ mấy sau khi tách (1 = phần đầu tiên)" className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
+                                                    <span className="text-[11px] text-slate-500 shrink-0">{t('preprocess.dataMerge:phan')}</span>
+                                                    <input type="number" min={1} value={splitPart} onChange={e => setSplitPart(Math.max(1, parseInt(e.target.value) || 1))} title={t('preprocess.dataMerge:lay_phan_thu_may_sau_khi_tach_1_phan')} className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
                                                 </div>
                                                 {splitMode === 'custom' && (
-                                                    <input value={splitCustom} onChange={e => setSplitCustom(e.target.value)} placeholder="Nhập dấu phân cách" title="Ký tự dùng để tách ô (vd: | hoặc _)" className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
+                                                    <input value={splitCustom} onChange={e => setSplitCustom(e.target.value)} placeholder={t('preprocess.dataMerge:nhap_dau_phan_cach')} title={t('preprocess.dataMerge:ky_tu_dung_de_tach_o_vd_hoac')} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" />
                                                 )}
                                             </div>
                                         )}
                                         {/* #8 Định dạng dữ liệu */}
                                         <div className="grid grid-cols-2 gap-1.5">
-                                            <select value={splitFmt} onChange={e => { setSplitFmt(e.target.value); setSplitFmtArg(e.target.value === 'date' ? '%d/%m/%Y' : ''); }} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" title="Biến đổi giá trị trước khi in: VIẾT HOA, số 1,234, ngày, đệm số 0…">
-                                                <option value="">Định dạng: Không</option>
-                                                <option value="upper">CHỮ HOA</option>
-                                                <option value="lower">chữ thường</option>
-                                                <option value="title">Viết Hoa Đầu Từ</option>
-                                                <option value="number">Số (1,234)</option>
-                                                <option value="money">Tiền tệ</option>
-                                                <option value="date">Ngày tháng</option>
-                                                <option value="pad">Đệm số 0 (000123)</option>
+                                            <select value={splitFmt} onChange={e => { setSplitFmt(e.target.value); setSplitFmtArg(e.target.value === 'date' ? '%d/%m/%Y' : ''); }} className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500" title={t('preprocess.dataMerge:bien_doi_gia_tri_truoc_khi_in_viet_hoa')}>
+                                                <option value="">{t('preprocess.dataMerge:dinh_dang_khong')}</option>
+                                                <option value="upper">{t('preprocess.dataMerge:chu_hoa')}</option>
+                                                <option value="lower">{t('preprocess.dataMerge:chu_thuong')}</option>
+                                                <option value="title">{t('preprocess.dataMerge:viet_hoa_dau_tu')}</option>
+                                                <option value="number">{t('preprocess.dataMerge:so_1_234')}</option>
+                                                <option value="money">{t('preprocess.dataMerge:tien_te')}</option>
+                                                <option value="date">{t('preprocess.dataMerge:ngay_thang')}</option>
+                                                <option value="pad">{t('preprocess.dataMerge:dem_so_0_000123')}</option>
                                             </select>
                                             {(splitFmt === 'number' || splitFmt === 'money' || splitFmt === 'pad' || splitFmt === 'date') && (
                                                 <input
                                                     value={splitFmtArg}
                                                     onChange={e => setSplitFmtArg(e.target.value)}
-                                                    placeholder={splitFmt === 'date' ? '%d/%m/%Y' : splitFmt === 'pad' ? 'Độ rộng (vd 6)' : 'Số lẻ (vd 0)'}
+                                                    placeholder={splitFmt === 'date' ? '%d/%m/%Y' : splitFmt === 'pad' ? t('preprocess.dataMerge:do_rong_vd_6') : t('preprocess.dataMerge:so_le_vd_0')}
                                                     className="h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500"
                                                 />
                                             )}
                                         </div>
                                         <div className="flex items-center justify-between gap-2">
-                                            <code className="text-[11px] text-teal-600 dark:text-teal-400 font-mono truncate" title="Cú pháp sẽ được chèn">{buildSplitToken() || '—'}</code>
-                                            <button onClick={() => insertSplitToken(selectedField)} disabled={!splitCol} title="Chèn placeholder vừa tạo vào ô Nội dung ở trên" className="shrink-0 h-7 px-3 text-[11px] font-semibold bg-teal-500 text-white rounded-md hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Chèn</button>
+                                            <code className="text-[11px] text-teal-600 dark:text-teal-400 font-mono truncate" title={t('preprocess.dataMerge:cu_phap_se_duoc_chen')}>{buildSplitToken() || '—'}</code>
+                                            <button onClick={() => insertSplitToken(selectedField)} disabled={!splitCol} title={t('preprocess.dataMerge:chen_placeholder_vua_tao_vao_o_noi_dung')} className="shrink-0 h-7 px-3 text-[11px] font-semibold bg-teal-500 text-white rounded-md hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">{t('preprocess.dataMerge:chen')}</button>
                                         </div>
                                         </>
                                         )}
@@ -1756,31 +1760,31 @@ export default function DataMergeTool({
                                             <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4" onClick={() => setShowQuickHelp(false)}>
                                                 <div className="max-w-lg w-full max-h-[80vh] overflow-auto bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-slate-200 dark:border-zinc-700" onClick={(e) => e.stopPropagation()}>
                                                     <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700 sticky top-0 bg-white dark:bg-zinc-900">
-                                                        <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">Chèn thêm cột vào câu — hướng dẫn</span>
-                                                        <button type="button" onClick={() => setShowQuickHelp(false)} className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors" title="Đóng">
+                                                        <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">{t('preprocess.dataMerge:chen_them_cot_vao_cau_huong_dan')}</span>
+                                                        <button type="button" onClick={() => setShowQuickHelp(false)} className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors" title={t('preprocess.dataMerge:dong')}>
                                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                                                         </button>
                                                     </div>
                                                     <div className="p-4 space-y-4 text-[12px] text-slate-600 dark:text-zinc-300 leading-relaxed">
-                                                        <p>Công cụ này <b>tạo nhanh placeholder</b> <code>{'{cột}'}</code> rồi bỏ vào ô <b>Nội dung</b> — khỏi phải gõ cú pháp tay. Khi in, mỗi bản sẽ thay <code>{'{cột}'}</code> bằng giá trị dòng của nó.</p>
+                                                        <p>{t('preprocess.dataMerge:cong_cu_nay')} <b>{t('preprocess.dataMerge:tao_nhanh_placeholder')}</b> <code>{t('preprocess.dataMerge:cot_3')}</code> {t('preprocess.dataMerge:roi_bo_vao_o')} <b>{t('preprocess.dataMerge:noi_dung')}</b> {t('preprocess.dataMerge:khoi_phai_go_cu_phap_tay_khi_in_moi_ban')} <code>{t('preprocess.dataMerge:cot_3')}</code> {t('preprocess.dataMerge:bang_gia_tri_dong_cua_no')}</p>
                                                         <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60 space-y-2">
-                                                            <div><b>1. Chọn cột</b>: lấy dữ liệu từ cột nào.</div>
+                                                            <div><b>{t('preprocess.dataMerge:1_chon_cot')}</b>{t('preprocess.dataMerge:lay_du_lieu_tu_cot_nao')}</div>
                                                             <div>
-                                                                <b>2. Cả cột / Tách</b>: lấy nguyên ô, hoặc tách theo dấu rồi lấy phần thứ N.
-                                                                <div className="text-slate-500 dark:text-zinc-400 mt-0.5">VD ô <code>123-456</code>, tách <code>-</code> lấy phần 1 → <b>123</b>.</div>
+                                                                <b>{t('preprocess.dataMerge:2_ca_cot_tach')}</b>{t('preprocess.dataMerge:lay_nguyen_o_hoac_tach_theo_dau_roi_lay')}
+                                                                <div className="text-slate-500 dark:text-zinc-400 mt-0.5">{t('preprocess.dataMerge:vd_o')} <code>123-456</code>{t('preprocess.dataMerge:tach')} <code>-</code> {t('preprocess.dataMerge:lay_phan_1')} <b>123</b>.</div>
                                                             </div>
                                                             <div>
-                                                                <b>3. Định dạng</b>: biến đổi giá trị trước khi in.
-                                                                <div className="text-slate-500 dark:text-zinc-400 mt-0.5">VIẾT HOA · số <code>1,234</code> · ngày <code>dd/mm/yyyy</code> · đệm 0 <code>000123</code>.</div>
+                                                                <b>{t('preprocess.dataMerge:3_dinh_dang')}</b>{t('preprocess.dataMerge:bien_doi_gia_tri_truoc_khi_in')}
+                                                                <div className="text-slate-500 dark:text-zinc-400 mt-0.5">{t('preprocess.dataMerge:viet_hoa_so')} <code>1,234</code> {t('preprocess.dataMerge:ngay')} <code>dd/mm/yyyy</code> {t('preprocess.dataMerge:dem_0')} <code>000123</code>.</div>
                                                             </div>
-                                                            <div><b>4. Bấm "Chèn"</b>: ghép thành token (vd <code>{'{cao}'}</code>, <code>{'{cao[2|-]}'}</code>, <code>{'{cao|upper}'}</code>) và thêm vào ô Nội dung.</div>
+                                                            <div><b>4. Bấm "Chèn"</b>{t('preprocess.dataMerge:ghep_thanh_token_vd')} <code>{'{cao}'}</code>, <code>{'{cao[2|-]}'}</code>, <code>{'{cao|upper}'}</code>{t('preprocess.dataMerge:va_them_vao_o_noi_dung')}</div>
                                                         </div>
                                                         <div className="text-[11px] text-slate-500 dark:text-zinc-400">
-                                                            Mẹo: bạn có thể chèn nhiều cột vào một câu, vd <code>{'Mã: {SKU} - {Tên}'}</code>. Không cần công cụ này thì gõ tay <code>{'{Tên_Cột}'}</code> cũng được.
+                                                            {t('preprocess.dataMerge:meo_ban_co_the_chen_nhieu_cot_vao_mot')} <code>{t('preprocess.dataMerge:ma_sku_ten')}</code>{t('preprocess.dataMerge:khong_can_cong_cu_nay_thi_go_tay')} <code>{t('preprocess.dataMerge:ten_cot_3')}</code> {t('preprocess.dataMerge:cung_duoc')}
                                                         </div>
                                                     </div>
                                                     <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-700 text-right">
-                                                        <button type="button" onClick={() => setShowQuickHelp(false)} className="text-[12px] px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded font-medium transition-colors">Đã hiểu</button>
+                                                        <button type="button" onClick={() => setShowQuickHelp(false)} className="text-[12px] px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded font-medium transition-colors">{t('preprocess.dataMerge:da_hieu')}</button>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1790,7 +1794,7 @@ export default function DataMergeTool({
                                 {selectedField.type === 'text' && (
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="flex flex-col gap-1 col-span-2">
-                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">Font chữ (Font Family)</span>
+                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:font_chu_font_family')}</span>
                                         <FontSelector 
                                             value={selectedField.fontName || 'Helvetica'}
                                             fontFile={selectedField.fontFile}
@@ -1798,7 +1802,7 @@ export default function DataMergeTool({
                                         />
                                     </div>
                                     <div className="flex flex-col gap-1 col-span-2">
-                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">Nét font (Font Style)</span>
+                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:net_font_font_style')}</span>
                                         <select 
                                             value={selectedField.fontStyle || 'normal'}
                                             onChange={(e) => updateSelectedField({ fontStyle: e.target.value })}
@@ -1812,34 +1816,34 @@ export default function DataMergeTool({
                                     </div>
                                     
                                     <ToolNumberInput 
-                                        label="Cỡ chữ"
+                                        label={t('preprocess.dataMerge:co_chu')}
                                         value={selectedField.fontSize || 13}
                                         onChange={(val) => updateSelectedField({ fontSize: val })}
                                         suffix="pt" step={1}
                                     />
                                     <ToolNumberInput 
-                                        label="Dòng (Leading)"
+                                        label={t('preprocess.dataMerge:dong_leading')}
                                         value={selectedField.lineHeight || 1}
                                         onChange={(val) => updateSelectedField({ lineHeight: val })}
                                         suffix="em" step={0.1}
                                     />
                                     <ToolNumberInput 
-                                        label="Khoảng cách (Tracking)"
+                                        label={t('preprocess.dataMerge:khoang_cach_tracking')}
                                         value={selectedField.characterSpacing || 0}
                                         onChange={(val) => updateSelectedField({ characterSpacing: val })}
                                         suffix="pt" step={0.5}
                                     />
                                     <div>
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Căn lề</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:can_le')}</span>
                                         <div className="flex items-center gap-1.5">
                                             <select 
                                                 value={selectedField.alignment || 'left'}
                                                 onChange={(e) => updateSelectedField({ alignment: e.target.value })}
                                                 className="flex-1 min-w-0 h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                             >
-                                                <option value="left">Trái</option>
-                                                <option value="center">Giữa</option>
-                                                <option value="right">Phải</option>
+                                                <option value="left">{t('preprocess.dataMerge:trai')}</option>
+                                                <option value="center">{t('preprocess.dataMerge:giua')}</option>
+                                                <option value="right">{t('preprocess.dataMerge:phai')}</option>
                                             </select>
                                         </div>
                                     </div>
@@ -1851,18 +1855,18 @@ export default function DataMergeTool({
                                                 onChange={(e) => updateSelectedField({ autoFit: e.target.checked })}
                                                 className="w-4 h-4 accent-teal-500"
                                             />
-                                            Tự bóp chữ vừa khung
+                                            {t('preprocess.dataMerge:tu_bop_chu_vua_khung')}
                                         </label>
                                         <button
-                                            title="Thu chiều cao khung vừa khít nội dung text"
+                                            title={t('preprocess.dataMerge:thu_chieu_cao_khung_vua_khit_noi_dung')}
                                             onClick={fitHeightToText}
                                             className="h-8 px-2 text-[11px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md hover:border-teal-500 hover:text-teal-600 transition-all"
                                         >
-                                            Thu khung theo chữ
+                                            {t('preprocess.dataMerge:thu_khung_theo_chu')}
                                         </button>
                                     </div>
                                     <div className="col-span-2">
-                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">Màu chữ</span>
+                                        <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:mau_chu')}</span>
                                         <CmykColorPicker
                                             value={selectedField.fontColor || '#000000'}
                                             onChange={(hex) => updateSelectedField({ fontColor: hex })}
@@ -1875,25 +1879,25 @@ export default function DataMergeTool({
 
                         {selectedField.type === 'qrcode' && selectedField.qrStyle && (
                             <div className="flex flex-col gap-3 mt-1 pt-3 border-t border-slate-200 dark:border-white/10">
-                                <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">Tuỳ chỉnh QR Code</span>
+                                <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">{t('preprocess.dataMerge:tuy_chinh_qr_code')}</span>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Kiểu chấm</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:kieu_cham')}</span>
                                         <select 
                                             value={selectedField.qrStyle.dotType || 'square'}
                                             onChange={(e) => updateSelectedField({ qrStyle: { ...selectedField.qrStyle, dotType: e.target.value } })}
                                             className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                         >
-                                            <option value="square">Vuông</option>
-                                            <option value="rounded">Bo tròn</option>
-                                            <option value="dots">Chấm tròn</option>
+                                            <option value="square">{t('preprocess.dataMerge:vuong')}</option>
+                                            <option value="rounded">{t('preprocess.dataMerge:bo_tron')}</option>
+                                            <option value="dots">{t('preprocess.dataMerge:cham_tron')}</option>
                                             <option value="classy">Classy</option>
                                             <option value="classy-rounded">Classy bo</option>
-                                            <option value="extra-rounded">Siêu tròn</option>
+                                            <option value="extra-rounded">{t('preprocess.dataMerge:sieu_tron')}</option>
                                         </select>
                                     </div>
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Sửa lỗi (Mức)</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:sua_loi_muc')}</span>
                                         <select 
                                             value={selectedField.errorCorrection || 'M'}
                                             onChange={(e) => updateSelectedField({ errorCorrection: e.target.value })}
@@ -1906,14 +1910,14 @@ export default function DataMergeTool({
                                         </select>
                                     </div>
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Màu chấm</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:mau_cham')}</span>
                                         <CmykColorPicker
                                             value={selectedField.qrStyle.dotColor || '#000000'}
                                             onChange={(hex) => updateSelectedField({ qrStyle: { ...selectedField.qrStyle, dotColor: hex } })}
                                         />
                                     </div>
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Màu nền</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:mau_nen')}</span>
                                         <CmykColorPicker
                                             value={selectedField.qrStyle.bgColor || '#FFFFFF'}
                                             onChange={(hex) => updateSelectedField({ qrStyle: { ...selectedField.qrStyle, bgColor: hex } })}
@@ -1921,7 +1925,7 @@ export default function DataMergeTool({
                                         />
                                     </div>
                                     <ToolNumberInput 
-                                        label="Lề trắng (mm)"
+                                        label={t('preprocess.dataMerge:le_trang_mm')}
                                         value={selectedField.quietZone ?? 2}
                                         onChange={(val) => updateSelectedField({ quietZone: val })}
                                         suffix="mm" step={0.5}
@@ -1934,7 +1938,7 @@ export default function DataMergeTool({
                                                 onChange={(e) => updateSelectedField({ qrStyle: { ...selectedField.qrStyle, transparentBg: e.target.checked } })}
                                                 className="w-4 h-4 rounded border-slate-300 text-teal-500 focus:ring-teal-500"
                                             />
-                                            <span className="text-[11px] text-slate-600 dark:text-zinc-400 font-medium">Nền trong suốt (Transparent)</span>
+                                            <span className="text-[11px] text-slate-600 dark:text-zinc-400 font-medium">{t('preprocess.dataMerge:nen_trong_suot_transparent')}</span>
                                         </label>
                                     </div>
                                 </div>
@@ -1943,45 +1947,45 @@ export default function DataMergeTool({
 
                         {selectedField.type === 'barcode' && (
                             <div className="flex flex-col gap-3 mt-1 pt-3 border-t border-slate-200 dark:border-zinc-700">
-                                <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">Tuỳ chỉnh Mã Vạch</span>
+                                <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">{t('preprocess.dataMerge:tuy_chinh_ma_vach')}</span>
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="flex flex-col gap-1 col-span-2">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Loại mã vạch</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:loai_ma_vach')}</span>
                                         <select 
                                             value={selectedField.barcodeType || 'code128'}
                                             onChange={(e) => updateSelectedField({ barcodeType: e.target.value })}
                                             className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                         >
-                                            <option value="code128">Code 128 (Đa năng, mọi ký tự)</option>
-                                            <option value="ean13">EAN-13 (Bán lẻ, 13 số)</option>
-                                            <option value="upca">UPC-A (Bán lẻ Mỹ, 12 số)</option>
-                                            <option value="ean8">EAN-8 (Gọn, 8 số)</option>
-                                            <option value="code39">Code 39 (Công nghiệp, A-Z + số)</option>
-                                            <option value="itf14">ITF-14 (Thùng carton, 14 số)</option>
-                                            <option value="codabar">Codabar (Y tế, thư viện)</option>
+                                            <option value="code128">{t('preprocess.dataMerge:code_128_da_nang_moi_ky_tu')}</option>
+                                            <option value="ean13">{t('preprocess.dataMerge:ean_13_ban_le_13_so')}</option>
+                                            <option value="upca">{t('preprocess.dataMerge:upc_a_ban_le_my_12_so')}</option>
+                                            <option value="ean8">{t('preprocess.dataMerge:ean_8_gon_8_so')}</option>
+                                            <option value="code39">{t('preprocess.dataMerge:code_39_cong_nghiep_a_z_so')}</option>
+                                            <option value="itf14">{t('preprocess.dataMerge:itf_14_thung_carton_14_so')}</option>
+                                            <option value="codabar">{t('preprocess.dataMerge:codabar_y_te_thu_vien')}</option>
                                         </select>
                                     </div>
                                     <ToolNumberInput 
-                                        label="Độ cao vạch"
+                                        label={t('preprocess.dataMerge:do_cao_vach')}
                                         value={selectedField.barHeight || 12}
                                         onChange={(val) => updateSelectedField({ barHeight: val })}
                                         suffix="mm" step={0.5}
                                     />
                                     <ToolNumberInput 
-                                        label="Lề trắng (mm)"
+                                        label={t('preprocess.dataMerge:le_trang_mm')}
                                         value={selectedField.quietZone ?? 2}
                                         onChange={(val) => updateSelectedField({ quietZone: val })}
                                         suffix="mm" step={0.5}
                                     />
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Màu vạch</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:mau_vach')}</span>
                                         <CmykColorPicker
                                             value={selectedField.barColor || '#000000'}
                                             onChange={(hex) => updateSelectedField({ barColor: hex })}
                                         />
                                     </div>
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Màu nền</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:mau_nen')}</span>
                                         <CmykColorPicker
                                             value={selectedField.bgColor || '#FFFFFF'}
                                             onChange={(hex) => updateSelectedField({ bgColor: hex })}
@@ -1996,7 +2000,7 @@ export default function DataMergeTool({
                                                 onChange={(e) => updateSelectedField({ transparentBg: e.target.checked })}
                                                 className="w-4 h-4 rounded border-slate-300 text-teal-500 focus:ring-teal-500"
                                             />
-                                            <span className="text-[11px] text-slate-600 dark:text-zinc-400 font-medium">Nền trong suốt (Transparent)</span>
+                                            <span className="text-[11px] text-slate-600 dark:text-zinc-400 font-medium">{t('preprocess.dataMerge:nen_trong_suot_transparent')}</span>
                                         </label>
                                     </div>
                                     <div className="flex flex-col gap-2 col-span-2 mt-1">
@@ -2007,28 +2011,28 @@ export default function DataMergeTool({
                                                 onChange={(e) => updateSelectedField({ showText: e.target.checked })}
                                                 className="w-4 h-4 rounded border-slate-300 text-teal-500 focus:ring-teal-500"
                                             />
-                                            <span className="text-[11px] text-slate-600 dark:text-zinc-400 font-medium">Hiển thị số bên dưới mã</span>
+                                            <span className="text-[11px] text-slate-600 dark:text-zinc-400 font-medium">{t('preprocess.dataMerge:hien_thi_so_ben_duoi_ma')}</span>
                                         </label>
                                         
                                         {selectedField.showText !== false && (
                                             <div className="grid grid-cols-2 gap-3 mt-1">
                                                 <ToolNumberInput 
-                                                    label="Cỡ chữ"
+                                                    label={t('preprocess.dataMerge:co_chu')}
                                                     value={selectedField.fontSize || 10}
                                                     onChange={(val) => updateSelectedField({ fontSize: val })}
                                                     suffix="pt" step={1}
                                                 />
                                                 <div>
-                                                    <span className="text-[11px] font-medium text-slate-500 block mb-1">Căn chữ</span>
+                                                    <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:can_chu')}</span>
                                                     <div className="flex items-center gap-1.5">
                                                         <select 
                                                             value={selectedField.textAlign || 'center'}
                                                             onChange={(e) => updateSelectedField({ textAlign: e.target.value })}
                                                             className="flex-1 min-w-0 h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                                         >
-                                                            <option value="left">Trái</option>
-                                                            <option value="center">Giữa</option>
-                                                            <option value="right">Phải</option>
+                                                            <option value="left">{t('preprocess.dataMerge:trai')}</option>
+                                                            <option value="center">{t('preprocess.dataMerge:giua')}</option>
+                                                            <option value="right">{t('preprocess.dataMerge:phai')}</option>
                                                         </select>
                                                     </div>
                                                 </div>
@@ -2041,13 +2045,13 @@ export default function DataMergeTool({
 
                         {selectedField.type === 'image' && (
                             <div className="flex flex-col gap-3 mt-1 pt-3 border-t border-slate-200 dark:border-zinc-700">
-                                <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">Tuỳ chỉnh Hình ảnh</span>
+                                <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">{t('preprocess.dataMerge:tuy_chinh_hinh_anh')}</span>
                                 <div className="text-[10px] text-slate-500 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-zinc-700 rounded p-2 leading-relaxed">
-                                    <b>Tên trường</b> = cột CSV chứa <b>tên file</b> (vd <code>anh.png</code>) hoặc đường dẫn đầy đủ của ảnh từng bản ghi. Nếu chỉ là tên file, điền <b>Thư mục gốc</b> bên dưới.
+                                    <b>{t('preprocess.dataMerge:ten_truong')}</b> {t('preprocess.dataMerge:cot_csv_chua')} <b>{t('preprocess.dataMerge:ten_file')}</b> (vd <code>anh.png</code>{t('preprocess.dataMerge:hoac_duong_dan_day_du_cua_anh_tung_ban')} <b>{t('preprocess.dataMerge:thu_muc_goc')}</b> {t('preprocess.dataMerge:ben_duoi')}
                                 </div>
                                 <div className="flex flex-col gap-3">
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Thư mục gốc ảnh (nếu cột chứa tên file)</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:thu_muc_goc_anh_neu_cot_chua_ten_file')}</span>
                                         <input
                                             value={selectedField.imageBaseDir || ''}
                                             onChange={(e) => updateSelectedField({ imageBaseDir: e.target.value })}
@@ -2056,7 +2060,7 @@ export default function DataMergeTool({
                                         />
                                     </div>
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Ảnh mặc định (khi cột rỗng — không bắt buộc)</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:anh_mac_dinh_khi_cot_rong_khong_bat')}</span>
                                         <input
                                             value={selectedField.imagePath || ''}
                                             onChange={(e) => updateSelectedField({ imagePath: e.target.value })}
@@ -2065,29 +2069,29 @@ export default function DataMergeTool({
                                         />
                                     </div>
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Hình dáng khung (Shape)</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:hinh_dang_khung_shape')}</span>
                                         <select 
                                             value={selectedField.imageShape || 'rectangle'}
                                             onChange={(e) => updateSelectedField({ imageShape: e.target.value })}
                                             className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                         >
-                                            <option value="rectangle">Hình chữ nhật / Vuông</option>
-                                            <option value="rounded">Bo góc (Rounded Rectangle)</option>
-                                            <option value="circle">Hình tròn / Oval</option>
-                                            <option value="polygon">Đa giác (Polygon)</option>
-                                            <option value="star">Hình ngôi sao (Star)</option>
+                                            <option value="rectangle">{t('preprocess.dataMerge:hinh_chu_nhat_vuong')}</option>
+                                            <option value="rounded">{t('preprocess.dataMerge:bo_goc_rounded_rectangle')}</option>
+                                            <option value="circle">{t('preprocess.dataMerge:hinh_tron_oval')}</option>
+                                            <option value="polygon">{t('preprocess.dataMerge:da_giac_polygon')}</option>
+                                            <option value="star">{t('preprocess.dataMerge:hinh_ngoi_sao_star')}</option>
                                         </select>
                                     </div>
                                     <div className="flex flex-col gap-1">
-                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Chế độ căn chỉnh (Fit)</span>
+                                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.dataMerge:che_do_can_chinh_fit')}</span>
                                         <select 
                                             value={selectedField.imageFit || 'cover'}
                                             onChange={(e) => updateSelectedField({ imageFit: e.target.value })}
                                             className="w-full h-9 px-2 text-[13px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                         >
-                                            <option value="cover">Vừa khung, cắt phần thừa (Cover)</option>
-                                            <option value="fill">Bóp méo vừa khít khung (Fill)</option>
-                                            <option value="contain">Giữ tỷ lệ, thấy toàn bộ ảnh (Contain)</option>
+                                            <option value="cover">{t('preprocess.dataMerge:vua_khung_cat_phan_thua_cover')}</option>
+                                            <option value="fill">{t('preprocess.dataMerge:bop_meo_vua_khit_khung_fill')}</option>
+                                            <option value="contain">{t('preprocess.dataMerge:giu_ty_le_thay_toan_bo_anh_contain')}</option>
                                         </select>
                                     </div>
                                 </div>
@@ -2099,7 +2103,7 @@ export default function DataMergeTool({
 
             {/* Logic điều kiện: ẩn/hiện + bảng rule cho field (task 14.2, Req 2.1/2.2/2.5/2.6) */}
             {selectedField && (
-                <VdpSection step="5" title="Logic điều kiện (ẩn/hiện · rule)" defaultOpen={false}>
+                <VdpSection step="5" title={t('preprocess.dataMerge:logic_dieu_kien_an_hien_rule')} defaultOpen={false}>
                     <VdpLogicPanel
                         field={selectedField}
                         csvHeaders={csvHeaders}
@@ -2109,7 +2113,7 @@ export default function DataMergeTool({
             )}
 
             {/* Xem trước record + điều hướng + dấu lỗi (task 14.3, Req 4.2/4.3/4.5/4.6/4.9) */}
-            <VdpSection step="6" title="Xem trước record" defaultOpen={false}>
+            <VdpSection step="6" title={t('preprocess.dataMerge:xem_truoc_record')} defaultOpen={false}>
                 <div className="flex flex-col gap-3">
                     {/* Điều hướng record: Prev / ô chỉ số / Next + nút Xem */}
                     <div className="flex items-center gap-2">
@@ -2117,7 +2121,7 @@ export default function DataMergeTool({
                             type="button"
                             onClick={() => goToPreview(previewIndex - 1)}
                             disabled={previewLoading || previewTotal <= 0}
-                            title="Record trước"
+                            title={t('preprocess.dataMerge:record_truoc')}
                             className="shrink-0 h-8 w-8 flex items-center justify-center rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                         >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
@@ -2140,7 +2144,7 @@ export default function DataMergeTool({
                             type="button"
                             onClick={() => goToPreview(previewIndex + 1)}
                             disabled={previewLoading || previewTotal <= 0}
-                            title="Record kế tiếp"
+                            title={t('preprocess.dataMerge:record_ke_tiep')}
                             className="shrink-0 h-8 w-8 flex items-center justify-center rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                         >
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
@@ -2202,7 +2206,7 @@ export default function DataMergeTool({
                         {previewProcessing && (
                             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/70 dark:bg-zinc-900/70 backdrop-blur-[1px]">
                                 <svg className="animate-spin h-6 w-6 text-teal-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                                <span className="text-[11px] font-medium text-slate-600 dark:text-zinc-300">Đang xử lý xem trước…</span>
+                                <span className="text-[11px] font-medium text-slate-600 dark:text-zinc-300">{t('preprocess.dataMerge:dang_xu_ly_xem_truoc')}</span>
                             </div>
                         )}
                     </div>
@@ -2226,10 +2230,10 @@ export default function DataMergeTool({
             </VdpSection>
 
             {/* Kiểm tra trước khi chạy + xuất báo cáo lỗi CSV (task 14.4, Req 4.7/4.8/5.8/5.9/5.10) */}
-            <VdpSection step="7" title="Kiểm tra trước khi chạy" defaultOpen={false}>
+            <VdpSection step="7" title={t('preprocess.dataMerge:kiem_tra_truoc_khi_chay')} defaultOpen={false}>
                 <div className="flex flex-col gap-3">
                     <span className="text-[10px] text-slate-500 dark:text-zinc-400 italic leading-snug">
-                        Kiểm tra placeholder, ảnh biến đổi và giá trị barcode trước khi sinh lô. Có lỗi → chặn; chỉ cảnh báo → cần xác nhận; sạch → cho chạy.
+                        {t('preprocess.dataMerge:kiem_tra_placeholder_anh_bien_doi_va')}
                     </span>
 
                     <div className="flex items-center gap-2">
@@ -2242,18 +2246,18 @@ export default function DataMergeTool({
                             {validating ? (
                                 <>
                                     <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                                    Đang kiểm tra…
+                                    {t('preprocess.dataMerge:dang_kiem_tra')}
                                 </>
-                            ) : 'Kiểm tra (validate)'}
+                            ) : t('preprocess.dataMerge:kiem_tra_validate')}
                         </button>
                         <button
                             type="button"
                             onClick={handleExportReport}
                             disabled={reportLoading}
                             className="flex-1 h-9 px-3 text-[12px] font-semibold text-slate-700 dark:text-zinc-200 border border-slate-300 dark:border-white/20 rounded-md hover:bg-slate-100 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
-                            title="Tải báo cáo các record có lỗi (MISSING/ERR) dạng CSV"
+                            title={t('preprocess.dataMerge:tai_bao_cao_cac_record_co_loi_missing')}
                         >
-                            {reportLoading ? 'Đang tạo…' : 'Xuất báo cáo lỗi (CSV)'}
+                            {reportLoading ? t('preprocess.dataMerge:dang_tao') : t('preprocess.dataMerge:xuat_bao_cao_loi_csv')}
                         </button>
                     </div>
 
@@ -2266,9 +2270,9 @@ export default function DataMergeTool({
                                     ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
                                     : 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
                         }`}>
-                            {validateGating === 'block' && '⛔ Có lỗi chặn — không thể sinh lô cho tới khi khắc phục.'}
-                            {validateGating === 'needs_confirmation' && '⚠️ Chỉ có cảnh báo — cần xác nhận trước khi sinh lô.'}
-                            {validateGating === 'allow' && '✅ Không có lỗi — sẵn sàng sinh lô.'}
+                            {validateGating === 'block' && t('preprocess.dataMerge:co_loi_chan_khong_the_sinh_lo_cho_toi')}
+                            {validateGating === 'needs_confirmation' && t('preprocess.dataMerge:chi_co_canh_bao_can_xac_nhan_truoc_khi')}
+                            {validateGating === 'allow' && t('preprocess.dataMerge:khong_co_loi_san_sang_sinh_lo')}
                         </div>
                     )}
 
@@ -2284,7 +2288,7 @@ export default function DataMergeTool({
                                             : 'bg-amber-50 dark:bg-amber-900/10 text-amber-700 dark:text-amber-300'
                                     }`}
                                 >
-                                    <span className="font-mono font-bold uppercase">[{iss.severity === 'error' ? 'LỖI' : 'CẢNH BÁO'}]</span>{' '}
+                                    <span className="font-mono font-bold uppercase">[{iss.severity === 'error' ? t('preprocess.dataMerge:loi') : t('preprocess.dataMerge:canh_bao')}]</span>{' '}
                                     {iss.record_idx != null && <span className="font-semibold">dòng {iss.record_idx}</span>}
                                     {iss.field ? <span> · {iss.field}</span> : null}
                                     {iss.reason ? <span> — {iss.reason}</span> : null}
@@ -2293,7 +2297,7 @@ export default function DataMergeTool({
                         </div>
                     )}
                     {validateGating === 'allow' && validateIssues.length === 0 && (
-                        <span className="text-[11px] text-slate-400 dark:text-zinc-500">Không có lỗi hay cảnh báo nào.</span>
+                        <span className="text-[11px] text-slate-400 dark:text-zinc-500">{t('preprocess.dataMerge:khong_co_loi_hay_canh_bao_nao')}</span>
                     )}
                 </div>
             </VdpSection>
@@ -2314,12 +2318,12 @@ export default function DataMergeTool({
                     {isGenerating ? (
                         <>
                             <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                            Đang xử lý...
+                            {t('preprocess.dataMerge:dang_xu_ly')}
                         </>
                     ) : (
                         <>
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                            {batchFiles.length >= 2 ? `Chạy ${batchFiles.length} file` : 'Chạy dữ liệu (Run)'}
+                            {batchFiles.length >= 2 ? `Chạy ${batchFiles.length} file` : t('preprocess.dataMerge:chay_du_lieu_run')}
                         </>
                     )}
                 </button>
@@ -2332,7 +2336,7 @@ export default function DataMergeTool({
                         className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 bg-white dark:bg-zinc-900 border-slate-300 dark:border-zinc-600 cursor-pointer"
                     />
                     <label htmlFor="spawnNewTabVdp" className="text-[11px] text-slate-600 dark:text-zinc-400 cursor-pointer select-none">
-                        Mở kết quả sang Tab mới (thay vì đè file hiện tại)
+                        {t('preprocess.dataMerge:mo_ket_qua_sang_tab_moi_thay_vi_de_file')}
                     </label>
                 </div>
             </div>
@@ -2357,8 +2361,8 @@ export default function DataMergeTool({
                                     <thead>
                                         <tr className="text-left text-slate-400 border-b border-slate-200 dark:border-zinc-700">
                                             <th className="py-1.5 px-2 font-semibold w-6">#</th>
-                                            <th className="py-1.5 px-2 font-semibold">Tên file</th>
-                                            <th className="py-1.5 px-2 font-semibold text-right">Bản ghi</th>
+                                            <th className="py-1.5 px-2 font-semibold">{t('preprocess.dataMerge:ten_file_2')}</th>
+                                            <th className="py-1.5 px-2 font-semibold text-right">{t('preprocess.dataMerge:ban_ghi')}</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -2366,7 +2370,7 @@ export default function DataMergeTool({
                                             <tr key={i} className="border-b border-slate-100 dark:border-zinc-700/50">
                                                 <td className="py-1.5 px-2 text-slate-400">{i + 1}</td>
                                                 <td className="py-1.5 px-2 text-slate-700 dark:text-zinc-200 break-all">{it.name}</td>
-                                                <td className="py-1.5 px-2 text-right font-bold text-slate-800 dark:text-white">{it.records < 0 ? 'Lỗi' : it.records.toLocaleString('vi-VN')}</td>
+                                                <td className="py-1.5 px-2 text-right font-bold text-slate-800 dark:text-white">{it.records < 0 ? t('preprocess.dataMerge:loi_2') : it.records.toLocaleString('vi-VN')}</td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -2375,7 +2379,7 @@ export default function DataMergeTool({
                         </div>
                         {!batchInfoLoading && batchInfo.length > 0 && (
                             <div className="px-4 py-2.5 border-t border-slate-200 dark:border-zinc-700 flex items-center justify-between text-[12px]">
-                                <span className="text-slate-500">Tổng cộng</span>
+                                <span className="text-slate-500">{t('preprocess.dataMerge:tong_cong')}</span>
                                 <span className="font-bold text-slate-800 dark:text-white">{batchInfo.reduce((s, it) => s + (it.records > 0 ? it.records : 0), 0).toLocaleString('vi-VN')} bản ghi</span>
                             </div>
                         )}

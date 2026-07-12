@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useThumbSidebar } from './useThumbSidebar';
 import { thumbCacheRef } from '../workspace/ViewerHelpers';
+import { useTranslation } from 'react-i18next';
 
 interface ThumbSidebarProps {
     // Page state
@@ -242,6 +243,7 @@ function useThumbLoadGate(pdfUrl: string | null, skipReset?: boolean) {
 }
 
 export function ThumbSidebar(props: ThumbSidebarProps) {
+  const { t } = useTranslation();
     const {
         pageOrder, setPageOrder,
         pageInstanceIds, setPageInstanceIds,
@@ -339,7 +341,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
             <button
                 onClick={() => setIsThumbMenuOpen(!isThumbMenuOpen)}
                 className="absolute top-1/2 -right-[14px] -translate-y-1/2 w-7 h-7 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full flex items-center justify-center shadow-sm hover:bg-slate-50 dark:hover:bg-zinc-700 transition-colors z-[100] text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400"
-                title={isThumbMenuOpen ? "Thu gọn (Thumbnails)" : "Mở rộng (Thumbnails)"}
+                title={isThumbMenuOpen ? t('misc.thumbSidebar:thu_gon_thumbnails') : t('misc.thumbSidebar:mo_rong_thumbnails')}
             >
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                     {isThumbMenuOpen ? (
@@ -360,7 +362,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                         <div className="shrink-0 flex items-center justify-center gap-1 px-1">
                             <button
                                 className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${selectedIndices.size > 0 ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title="Xoay trái (Rotate CCW)"
+                                title={t('misc.thumbSidebar:xoay_trai_rotate_ccw')}
                                 onClick={() => handleQuickRotate(270)}
                                 disabled={selectedIndices.size === 0}
                             >
@@ -368,7 +370,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                             </button>
                             <button
                                 className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${selectedIndices.size > 0 ? 'hover:bg-black/10 dark:hover:bg-white/10 text-slate-700 dark:text-zinc-200' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title="Xoay phải (Rotate CW)"
+                                title={t('misc.thumbSidebar:xoay_phai_rotate_cw')}
                                 onClick={() => handleQuickRotate(90)}
                                 disabled={selectedIndices.size === 0}
                             >
@@ -377,7 +379,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                             <div className="w-[1px] h-4 bg-slate-300 dark:bg-zinc-600 mx-0.5"></div>
                             <button
                                 className={`w-7 h-7 flex items-center justify-center rounded transition-colors ${selectedIndices.size > 0 ? 'hover:bg-black/10 dark:hover:bg-white/10 text-red-600 dark:text-red-400' : 'text-slate-300 dark:text-zinc-600 cursor-not-allowed'}`}
-                                title="Xóa trang (Delete)"
+                                title={t('misc.thumbSidebar:xoa_trang_delete')}
                                 onClick={() => setIsDeleteModalOpen(true)}
                                 disabled={selectedIndices.size === 0}
                             >
@@ -390,7 +392,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                         <button
                             onClick={() => setIsThumbMenuOpen(true)}
                             className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10 text-slate-500 transition-colors"
-                            title="Mở Thumbnails"
+                            title={t('misc.thumbSidebar:mo_thumbnails')}
                         >
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
                         </button>
@@ -454,7 +456,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                             {pageOrder.length > 1000 && (
                                 <div className="w-full text-center py-6 px-4 text-slate-500 dark:text-zinc-400 text-xs italic bg-slate-100 dark:bg-zinc-800/50 rounded-lg mx-2 border border-dashed border-slate-300 dark:border-zinc-700">
                                     Đang ẩn {pageOrder.length - 1000} thumbnails còn lại để tránh treo máy.<br/>
-                                    Sử dụng ô nhập số trang ở thanh trên cùng để điều hướng.
+                                    {t('misc.thumbSidebar:su_dung_o_nhap_so_trang_o_thanh_tren')}
                                 </div>
                             )}
                         </div>

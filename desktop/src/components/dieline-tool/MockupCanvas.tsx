@@ -25,6 +25,7 @@ import * as THREE from 'three';
 import { useWebGLSupport } from './useWebGLSupport';
 import WebGLFallback from './WebGLFallback';
 import { useMockupStore } from '../../store/useMockupStore';
+import { useTranslation } from 'react-i18next';
 
 export interface MockupCanvasProps {
     /** Nội dung cảnh 3D (Environment, Camera, panels, shadow, overlay…). */
@@ -55,6 +56,7 @@ export default function MockupCanvas({
     style,
     fallbackMessage,
 }: MockupCanvasProps) {
+  const { t } = useTranslation();
     const { supported } = useWebGLSupport();
     const setWebglSupported = useMockupStore((s) => s.setWebglSupported);
 
@@ -75,7 +77,7 @@ export default function MockupCanvas({
                 role="status"
                 aria-live="polite"
             >
-                <p>Đang kiểm tra hỗ trợ đồ hoạ…</p>
+                <p>{t('dieline.mockupCanvas:dang_kiem_tra_ho_tro_do_hoa')}</p>
             </div>
         );
     }

@@ -32,6 +32,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Environment, Lightformer, Html } from '@react-three/drei';
 import { useMockupStore } from '../../store/useMockupStore';
+import { useTranslation } from 'react-i18next';
 
 // ─── Mô tả preset ───────────────────────────────────────────────────────────
 
@@ -254,6 +255,7 @@ function FallbackStudioLights() {
  * để không chặn thao tác orbit/zoom.
  */
 function HdriFailureBanner() {
+  const { t } = useTranslation();
     return (
         <Html fullscreen prepend zIndexRange={[100, 0]} style={{ pointerEvents: 'none' }}>
             <div
@@ -276,7 +278,7 @@ function HdriFailureBanner() {
                     pointerEvents: 'none',
                 }}
             >
-                ⚠ Không nạp được môi trường HDRI — đã chuyển sang đèn studio mặc định.
+                {t('dieline.environmentRig:khong_nap_duoc_moi_truong_hdri_da')}
             </div>
         </Html>
     );

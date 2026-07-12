@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 
 // ── Kiểu dữ liệu menu ──────────────────────────────────────────────────────
 export interface MenuItem {
@@ -107,6 +108,7 @@ export function MenuBar({ menus }: MenuBarProps) {
 
 // ── Một dòng trong menu: item thường, hoặc item có submenu xổ ngang ─────────
 function MenuRow({ item, onRun, reserveCheck, reserveIcon }: { item: MenuItem; onRun: (it: MenuItem) => void; reserveCheck?: boolean; reserveIcon?: boolean }) {
+  const { t } = useTranslation();
     const [subOpen, setSubOpen] = useState(false);
     const hasSub = !!item.submenu && item.submenu.length > 0;
 
@@ -151,7 +153,7 @@ function MenuRow({ item, onRun, reserveCheck, reserveIcon }: { item: MenuItem; o
             {subOpen && !item.disabled && (
                 <div className="absolute top-0 left-full ml-0.5 min-w-[200px] max-h-[70vh] overflow-y-auto bg-white dark:bg-[#2d3236] border border-black/10 dark:border-white/10 shadow-xl rounded-md py-1 z-[210] animate-in fade-in slide-in-from-left-1 duration-100">
                     {item.submenu!.length === 0
-                        ? <div className="px-3 py-1.5 text-[12px] text-slate-400 dark:text-zinc-600">Trống</div>
+                        ? <div className="px-3 py-1.5 text-[12px] text-slate-400 dark:text-zinc-600">{t('misc.menuBar:trong')}</div>
                         : item.submenu!.map((sub, k) =>
                             sub.separator
                                 ? <div key={`ssep-${k}`} className="my-1 h-px bg-black/10 dark:bg-white/10" />

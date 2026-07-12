@@ -1,5 +1,6 @@
 import { useAuthStore } from '../../stores/useAuthStore';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 /**
  * TrialExpiryBanner: dải nhắc nhẹ (KHÔNG chặn) khi license sắp hết hạn.
@@ -10,6 +11,7 @@ const WARN_THRESHOLD_DAYS = 7; // bắt đầu nhắc khi còn <= 7 ngày
 const FORCE_SHOW_DAYS = 3;     // <=3 ngày: không cho ẩn
 
 export default function TrialExpiryBanner() {
+  const { t } = useTranslation();
   const { licenseValid, remainingDays } = useAuthStore();
   const [dismissed, setDismissed] = useState(false);
 
@@ -19,7 +21,7 @@ export default function TrialExpiryBanner() {
 
   const urgent = remainingDays <= FORCE_SHOW_DAYS;
   const dayText =
-    remainingDays <= 0 ? 'hôm nay' : `còn ${remainingDays} ngày`;
+    remainingDays <= 0 ? t('misc.trialExpiryBanner:hom_nay') : `còn ${remainingDays} ngày`;
 
   const openRenew = async () => {
     const url = 'https://printsolutions.vn/product/prynx';
@@ -65,7 +67,7 @@ export default function TrialExpiryBanner() {
           cursor: 'pointer',
         }}
       >
-        Gia hạn ngay
+        {t('misc.trialExpiryBanner:gia_han_ngay')}
       </button>
       {!urgent && (
         <button
@@ -80,7 +82,7 @@ export default function TrialExpiryBanner() {
             cursor: 'pointer',
           }}
         >
-          Để sau
+          {t('misc.trialExpiryBanner:de_sau')}
         </button>
       )}
     </div>

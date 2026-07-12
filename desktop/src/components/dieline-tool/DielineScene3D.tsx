@@ -33,6 +33,7 @@ import SolidPanelMesh from './SolidPanelMesh';
 import GussetMesh from './GussetMesh';
 import { computeConeWarp } from '../../lib/mockup3d/cupSleeveCone';
 import { useSceneExport } from './useSceneExport';
+import { useTranslation } from 'react-i18next';
 
 // ─── Helpers ───────────────────────────────────────────────
 
@@ -226,6 +227,7 @@ function BoxScene() {
 // ─── Controls ──────────────────────────────────────────────
 
 function FoldControls() {
+  const { t } = useTranslation();
     const { foldProgress, setFoldProgress, isAnimating, setIsAnimating } = useBoxStore();
     const animRef = useRef<number | null>(null);
 
@@ -265,16 +267,16 @@ function FoldControls() {
             <button
                 className={`dt-fold-play-btn ${isAnimating ? 'active' : ''}`}
                 onClick={() => setIsAnimating(!isAnimating)}
-                title={isAnimating ? 'Dừng' : 'Chạy hoạt ảnh gập'}
+                title={isAnimating ? t('dieline.dielineScene3D:dung') : t('dieline.dielineScene3D:chay_hoat_anh_gap')}
             >
                 {isAnimating ? '⏸' : '▶'}
             </button>
             <button
                 className="dt-fold-step-btn"
                 onClick={() => { setIsAnimating(false); setFoldProgress(0); }}
-                title="Trải phẳng (0%)"
+                title={t('dieline.dielineScene3D:trai_phang_0')}
             >
-                ⟱ Trải
+                {t('dieline.dielineScene3D:trai')}
             </button>
             <input
                 type="range"
@@ -291,9 +293,9 @@ function FoldControls() {
             <button
                 className="dt-fold-step-btn"
                 onClick={() => { setIsAnimating(false); setFoldProgress(1); }}
-                title="Gập hoàn tất (100%)"
+                title={t('dieline.dielineScene3D:gap_hoan_tat_100')}
             >
-                ⟰ Gập
+                {t('dieline.dielineScene3D:gap')}
             </button>
             <span className="dt-fold-value" style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
                 <input
@@ -311,7 +313,7 @@ function FoldControls() {
                     }}
                     className="dt-num-input"
                     style={{ width: 48 }}
-                    title="Nhập % gập chính xác"
+                    title={t('dieline.dielineScene3D:nhap_gap_chinh_xac')}
                 />
                 %
             </span>
@@ -375,13 +377,14 @@ function SceneExporter() {
 // ─── Main Export ────────────────────────────────────────────
 
 export default function DielineScene3D() {
+  const { t } = useTranslation();
     const { dieline, isStanding } = useBoxStore();
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
 
     if (!dieline) {
         return (
             <div className="dt-scene-loading">
-                <p>Nhập thông số để xem mô phỏng 3D</p>
+                <p>{t('dieline.dielineScene3D:nhap_thong_so_de_xem_mo_phong_3d')}</p>
             </div>
         );
     }

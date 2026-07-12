@@ -10,6 +10,7 @@ import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { toast } from './ui/Toast';
 import { sizeKeyLabel, groupBySizeKey } from '../lib/combineGroupBySize';
+import { useTranslation } from 'react-i18next';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -113,6 +114,7 @@ const ImageThumbnail = React.memo(({ file, rotation }: { file: File; rotation?: 
 });
 
 export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTabs, onTitleChange, isActive }: Props) {
+  const { t } = useTranslation();
   const [nodes, setNodes] = useState<CombineNode[]>([]);
   const [pageCounts, setPageCounts] = useState<Record<string, number>>({});
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
@@ -448,7 +450,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     if (nodes.length < 2) return;
 
     setIsProcessing(true);
-    setStatusMsg('Đang xử lý đan xen...');
+    setStatusMsg(t('tabs.combine:dang_xu_ly_dan_xen'));
 
     try {
       const finalDoc = await PDFDocument.create();
@@ -481,7 +483,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         rotations.push(p.rotation || 0);
       }
 
-      if (pdfsToInterleave.length === 0) throw new Error("Không có dữ liệu hợp lệ để đan xen.");
+      if (pdfsToInterleave.length === 0) throw new Error(t('tabs.combine:khong_co_du_lieu_hop_le_de_dan_xen'));
 
       const maxPages = Math.max(...pdfsToInterleave.map(d => d.getPageCount()));
 
@@ -520,7 +522,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       let finalBytes = await finalDoc.save();
 
       if (scaleMode !== 'keep') {
-        setStatusMsg('Đang đồng bộ khổ giấy...');
+        setStatusMsg(t('tabs.combine:dang_dong_bo_kho_giay'));
         const targetSize = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
         const targetW = targetSize[0] / 2.83465;
         const targetH = targetSize[1] / 2.83465;
@@ -672,7 +674,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
   const runRegroup = useCallback(async (source: CombineNode[], opts?: { toast?: boolean }) => {
     if (source.length === 0) return;
     setIsGrouping(true);
-    setStatusMsg('Đang chia nhóm theo kích thước...');
+    setStatusMsg(t('tabs.combine:dang_chia_nhom_theo_kich_thuoc'));
     try {
       const next = await regroupNodesBySize(source);
       // Chặn useEffect re-entry sau setNodes
@@ -733,7 +735,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     if (nodes.length === 0) return;
 
     setIsProcessing(true);
-    setStatusMsg('Đang xử lý tài liệu...');
+    setStatusMsg(t('tabs.combine:dang_xu_ly_tai_lieu'));
 
     try {
       const loadedDocs = new Map<File, PDFDocument>();
@@ -765,7 +767,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       }
 
       const groups = groupBySizeKey(sized);
-      if (groups.size === 0) throw new Error('Không có trang hợp lệ để ghép.');
+      if (groups.size === 0) throw new Error(t('tabs.combine:khong_co_trang_hop_le_de_ghep'));
 
       const results: { file: File; title: string; sizeKey: string }[] = [];
       let gi = 0;
@@ -853,7 +855,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         );
       }
 
-      let label = node.type === 'blank' ? 'Trang Trắng' : (node.file?.name || '');
+      let label = node.type === 'blank' ? t('tabs.combine:trang_trang') : (node.file?.name || '');
       if (node.type === 'single' && node.groupId) {
         const leaderIndex = nodes.findIndex(n => n.groupId === node.groupId);
         isGroupLeader = i === leaderIndex;
@@ -976,7 +978,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
             <button 
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleCollapseGroup(currentGroupId!, currentGroupName!); }}
               className="w-8 h-8 flex items-center justify-center text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-700 rounded transition-colors" 
-              title="Thu lại (Collapse)"
+              title={t('tabs.combine:thu_lai_collapse')}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M4 14h6v6M20 10h-6V4M10 14l-7 7M14 10l7-7"/>
@@ -986,7 +988,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
             <button 
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleExpandFile(index); }}
               className="w-8 h-8 flex items-center justify-center text-slate-600 dark:text-zinc-300 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/30 rounded transition-colors" 
-              title="Xổ ra (Expand pages)"
+              title={t('tabs.combine:xo_ra_expand_pages')}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
@@ -1047,7 +1049,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
             className="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-white/10 hover:bg-slate-100 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-200 rounded-md transition-colors text-sm font-medium"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg>
-            Trang trắng
+            {t('tabs.combine:trang_trang_2')}
           </button>
 
           <button 
@@ -1068,21 +1070,21 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
 
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-slate-600 dark:text-zinc-300">Kích thước trang:</span>
+            <span className="text-sm font-medium text-slate-600 dark:text-zinc-300">{t('tabs.combine:kich_thuoc_trang')}</span>
             <select
               value={scaleMode}
               onChange={(e) => setScaleMode(e.target.value as any)}
               className="px-3 py-1.5 text-sm bg-white dark:bg-zinc-800 border border-slate-200 dark:border-white/10 rounded-md outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-700 dark:text-zinc-300"
             >
-              <option value="keep">Giữ nguyên gốc (Không ép khổ)</option>
-              <option value="fit_a4">Chuẩn hoá: Ép tất cả về khổ A4</option>
-              <option value="fit_first">Chuẩn hoá: Bằng đúng trang đầu tiên</option>
+              <option value="keep">{t('tabs.combine:giu_nguyen_goc_khong_ep_kho')}</option>
+              <option value="fit_a4">{t('tabs.combine:chuan_hoa_ep_tat_ca_ve_kho_a4')}</option>
+              <option value="fit_first">{t('tabs.combine:chuan_hoa_bang_dung_trang_dau_tien')}</option>
             </select>
           </div>
 
           <label
             className="flex items-center gap-2 cursor-pointer select-none px-2 py-1 rounded-md hover:bg-slate-50 dark:hover:bg-zinc-800/80"
-            title="Đo kích thước trang như vùng view (MediaBox + xoay). Mỗi cỡ ghép thành 1 file và mở 1 tab Combine riêng."
+            title={t('tabs.combine:do_kich_thuoc_trang_nhu_vung_view')}
           >
             <input
               type="checkbox"
@@ -1092,14 +1094,14 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
               className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
             />
             <span className="text-sm font-medium text-slate-700 dark:text-zinc-200 whitespace-nowrap">
-              Chia nhóm theo kích thước
+              {t('tabs.combine:chia_nhom_theo_kich_thuoc')}
             </span>
           </label>
 
           {(isProcessing || isGrouping) && (
             <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
               <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
-              {statusMsg || (isGrouping ? 'Đang chia nhóm...' : 'Đang xử lý...')}
+              {statusMsg || (isGrouping ? t('tabs.combine:dang_chia_nhom') : t('tabs.combine:dang_xu_ly'))}
             </div>
           )}
           
@@ -1107,10 +1109,10 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
             onClick={handleInterleave}
             disabled={nodes.length < 2 || isProcessing || isGrouping}
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md transition-colors font-bold disabled:opacity-50 disabled:cursor-not-allowed shadow-sm flex items-center gap-2"
-            title="Trộn xen kẽ từng trang của tất cả các file trong danh sách"
+            title={t('tabs.combine:tron_xen_ke_tung_trang_cua_tat_ca_cac')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>
-            Trộn đan xen
+            {t('tabs.combine:tron_dan_xen')}
           </button>
 
           <button 
@@ -1118,10 +1120,10 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
             disabled={nodes.length === 0 || isProcessing || isGrouping}
             className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors font-bold disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
             title={groupByPageSize
-              ? 'Ghép từng nhóm: tab này = nhóm 1, các nhóm khác mở tab Combine mới'
-              : 'Ghép tất cả thành 1 file'}
+              ? t('tabs.combine:ghep_tung_nhom_tab_nay_nhom_1_cac_nhom')
+              : t('tabs.combine:ghep_tat_ca_thanh_1_file')}
           >
-            {groupByPageSize ? 'Combine theo nhóm' : 'Combine'}
+            {groupByPageSize ? t('tabs.combine:combine_theo_nhom') : 'Combine'}
           </button>
         </div>
       </div>
@@ -1135,7 +1137,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         {nodes.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400">
             <div className="text-6xl mb-4 opacity-50">📄</div>
-            <p className="text-lg font-medium">Chưa có file nào được chọn</p>
+            <p className="text-lg font-medium">{t('tabs.combine:chua_co_file_nao_duoc_chon')}</p>
             <p className="text-sm mt-2 opacity-80">Bấm "Add Files..." để thêm PDF hoặc Ảnh vào danh sách ghép.</p>
           </div>
         ) : (

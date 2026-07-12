@@ -10,6 +10,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { X } from 'lucide-react';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { buildSavePlan, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
     open: boolean;
@@ -29,6 +30,7 @@ interface Props {
 }
 
 export default function SavePrintFilesModal({ open, onClose, resultBlob, types: typesProp, separateCut, cncMode, cncTwoSided, originalName }: Props) {
+  const { t } = useTranslation();
     const savePrint = useImposerSettingsStore(s => s.savePrint);
     const setSavePrint = useImposerSettingsStore(s => s.setSavePrint);
     const orderCode = useImposerSettingsStore(s => s.reportOrderCode);
@@ -90,7 +92,7 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
     const pickFolder = async () => {
         try {
             const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
-            const dir = await openDialog({ directory: true, multiple: false, title: 'Chọn thư mục lưu file in' });
+            const dir = await openDialog({ directory: true, multiple: false, title: t('misc.savePrintFiles:chon_thu_muc_luu_file_in') });
             if (typeof dir === 'string') { setFolder(dir); setSavePrint({ lastFolder: dir }); }
         } catch (e) {
             setStatus('Không mở được hộp thoại chọn thư mục: ' + (e as any)?.message);
@@ -98,9 +100,9 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
     };
 
     const doSave = async () => {
-        if (!folder) { setStatus('Vui lòng chọn thư mục đích.'); return; }
-        if (!resultBlob) { setStatus('Không có file kết quả.'); return; }
-        setBusy(true); setStatus('Đang tách & ghi file...');
+        if (!folder) { setStatus(t('misc.savePrintFiles:vui_long_chon_thu_muc_dich')); return; }
+        if (!resultBlob) { setStatus(t('misc.savePrintFiles:khong_co_file_ket_qua')); return; }
+        setBusy(true); setStatus(t('misc.savePrintFiles:dang_tach_ghi_file'));
         try {
             const { savePrintFilesToFolder, pagesPerTypeFor } = await import('../../lib/savePrintFiles');
             const { ok } = await savePrintFilesToFolder(resultBlob, folder, cfg, {
@@ -120,34 +122,34 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
     // Gom preview theo thư mục
     const tree: Record<string, string[]> = {};
     for (const it of plan) {
-        const k = it.folder || '(thư mục gốc)';
+        const k = it.folder || t('misc.savePrintFiles:thu_muc_goc');
         (tree[k] = tree[k] || []).push(it.filename);
     }
     const totalSheets = types.reduce((s, t) => s + (t.sheetCount || 0), 0);
 
     return (
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-            <div role="dialog" aria-modal="true" aria-label="Lưu file in" className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-[560px] max-h-[85vh] overflow-hidden flex flex-col border border-black/10 dark:border-white/10">
+            <div role="dialog" aria-modal="true" aria-label={t('misc.savePrintFiles:luu_file_in')} className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-[560px] max-h-[85vh] overflow-hidden flex flex-col border border-black/10 dark:border-white/10">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-white/10">
-                    <h2 className="text-[16px] font-bold text-slate-800 dark:text-white">🖨️ Lưu file in</h2>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-white" title="Đóng" aria-label="Đóng"><X className="w-4 h-4" /></button>
+                    <h2 className="text-[16px] font-bold text-slate-800 dark:text-white">{t('misc.savePrintFiles:luu_file_in_2')}</h2>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-white" title={t('misc.savePrintFiles:dong')} aria-label={t('misc.savePrintFiles:dong')}><X className="w-4 h-4" /></button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4">
                     {/* Thư mục */}
                     <div>
-                        <label className="text-[11px] font-bold text-slate-600 uppercase">Thư mục đích</label>
+                        <label className="text-[11px] font-bold text-slate-600 uppercase">{t('misc.savePrintFiles:thu_muc_dich')}</label>
                         <div className="flex gap-2 mt-1">
-                            <input readOnly value={folder} placeholder="Chưa chọn..." className="flex-1 h-9 px-2 border border-slate-300 dark:border-white/20 rounded bg-slate-50 dark:bg-zinc-800 text-sm" />
-                            <button onClick={pickFolder} className="px-3 h-9 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">Chọn...</button>
+                            <input readOnly value={folder} placeholder={t('misc.savePrintFiles:chua_chon')} className="flex-1 h-9 px-2 border border-slate-300 dark:border-white/20 rounded bg-slate-50 dark:bg-zinc-800 text-sm" />
+                            <button onClick={pickFolder} className="px-3 h-9 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">{t('misc.savePrintFiles:chon')}</button>
                         </div>
                     </div>
 
                     {/* Đặt tên */}
                     <div>
-                        <label className="text-[11px] font-bold text-slate-600 uppercase">Đặt tên file</label>
+                        <label className="text-[11px] font-bold text-slate-600 uppercase">{t('misc.savePrintFiles:dat_ten_file')}</label>
                         <div className="flex gap-3 mt-1 text-sm">
-                            {[['report', 'Theo report'], ['number', 'Đánh số'], ['original', 'Giữ tên gốc']].map(([v, lbl]) => (
+                            {[['report', 'Theo report'], ['number', t('misc.savePrintFiles:danh_so')], ['original', t('misc.savePrintFiles:giu_ten_goc')]].map(([v, lbl]) => (
                                 <label key={v} className="flex items-center gap-1.5 cursor-pointer">
                                     <input type="radio" name="nameMode" checked={savePrint.nameMode === v} onChange={() => setSavePrint({ nameMode: v as any })} />
                                     {lbl}
@@ -156,27 +158,27 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                         </div>
                         {savePrint.nameMode === 'report' && (
                             <div className="flex gap-4 mt-2 text-[13px]">
-                                <label className="flex items-center gap-1.5"><input type="checkbox" checked={savePrint.includeOrderCode} onChange={e => setSavePrint({ includeOrderCode: e.target.checked })} />Kèm mã ĐH</label>
-                                <label className="flex items-center gap-1.5"><input type="checkbox" checked={savePrint.includeDate} onChange={e => setSavePrint({ includeDate: e.target.checked })} />Kèm ngày</label>
+                                <label className="flex items-center gap-1.5"><input type="checkbox" checked={savePrint.includeOrderCode} onChange={e => setSavePrint({ includeOrderCode: e.target.checked })} />{t('misc.savePrintFiles:kem_ma_dh')}</label>
+                                <label className="flex items-center gap-1.5"><input type="checkbox" checked={savePrint.includeDate} onChange={e => setSavePrint({ includeDate: e.target.checked })} />{t('misc.savePrintFiles:kem_ngay')}</label>
                             </div>
                         )}
                     </div>
 
                     {/* Cấu trúc thư mục */}
                     <div>
-                        <label className="text-[11px] font-bold text-slate-600 uppercase">Sắp xếp thư mục</label>
+                        <label className="text-[11px] font-bold text-slate-600 uppercase">{t('misc.savePrintFiles:sap_xep_thu_muc')}</label>
                         <div className="flex gap-3 mt-1 text-sm">
-                            <label className="flex items-center gap-1.5 cursor-pointer" title="Tạo một thư mục mang tên đơn hàng; bên trong chia thư mục con (In / Bế — hoặc Mặt trước / Mặt sau / Khuôn cho CNC)."><input type="radio" name="folderMode" checked={savePrint.folderMode === 'per_order'} onChange={() => setSavePrint({ folderMode: 'per_order' })} />Gom theo đơn hàng</label>
-                            <label className="flex items-center gap-1.5 cursor-pointer" title="Tất cả file nằm thẳng trong thư mục đã chọn, không tạo thư mục con."><input type="radio" name="folderMode" checked={savePrint.folderMode === 'flat'} onChange={() => setSavePrint({ folderMode: 'flat' })} />Để chung một chỗ</label>
+                            <label className="flex items-center gap-1.5 cursor-pointer" title={t('misc.savePrintFiles:tao_mot_thu_muc_mang_ten_don_hang_ben')}><input type="radio" name="folderMode" checked={savePrint.folderMode === 'per_order'} onChange={() => setSavePrint({ folderMode: 'per_order' })} />{t('misc.savePrintFiles:gom_theo_don_hang')}</label>
+                            <label className="flex items-center gap-1.5 cursor-pointer" title={t('misc.savePrintFiles:tat_ca_file_nam_thang_trong_thu_muc_da')}><input type="radio" name="folderMode" checked={savePrint.folderMode === 'flat'} onChange={() => setSavePrint({ folderMode: 'flat' })} />{t('misc.savePrintFiles:de_chung_mot_cho')}</label>
                         </div>
-                        {cncMode && <p className="text-[11px] text-slate-400 mt-1">CNC: mỗi đơn vị tách {cncTwoSided ? 'Mặt trước / Mặt sau / Khuôn' : 'Mặt trước / Khuôn'} ra file riêng.</p>}
-                        {!cncMode && separateCut && <p className="text-[11px] text-slate-400 mt-1">File in & file bế sẽ tách riêng (in trang chẵn, bế trang lẻ).</p>}
+                        {cncMode && <p className="text-[11px] text-slate-400 mt-1">CNC: mỗi đơn vị tách {cncTwoSided ? t('misc.savePrintFiles:mat_truoc_mat_sau_khuon') : t('misc.savePrintFiles:mat_truoc_khuon')} ra file riêng.</p>}
+                        {!cncMode && separateCut && <p className="text-[11px] text-slate-400 mt-1">{t('misc.savePrintFiles:file_in_file_be_se_tach_rieng_in_trang')}</p>}
                         {!cncMode && !separateCut && <p className="text-[11px] text-amber-500 mt-1">Để tách file bế riêng, bật "Tách trang khuôn bế" ở thiết lập bình bài trước khi chạy.</p>}
                     </div>
 
                     {/* Preview */}
                     <div>
-                        <label className="text-[11px] font-bold text-slate-600 uppercase">Xem trước</label>
+                        <label className="text-[11px] font-bold text-slate-600 uppercase">{t('misc.savePrintFiles:xem_truoc')}</label>
                         <div className="mt-1 p-3 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-white/10 rounded-lg text-[12px] font-mono max-h-48 overflow-y-auto">
                             {Object.entries(tree).map(([dir, files]) => (
                                 <div key={dir} className="mb-1">
@@ -192,9 +194,9 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                 </div>
 
                 <div className="flex justify-end gap-2 px-5 py-3 border-t border-slate-200 dark:border-white/10">
-                    <button onClick={onClose} className="px-4 h-9 rounded border border-slate-300 dark:border-white/20 text-sm">Hủy</button>
+                    <button onClick={onClose} className="px-4 h-9 rounded border border-slate-300 dark:border-white/20 text-sm">{t('misc.savePrintFiles:huy')}</button>
                     <button onClick={doSave} disabled={busy || !folder} className="px-5 h-9 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold">
-                        {busy ? 'Đang lưu...' : 'Lưu tất cả'}
+                        {busy ? t('misc.savePrintFiles:dang_luu') : t('misc.savePrintFiles:luu_tat_ca')}
                     </button>
                 </div>
             </div>

@@ -9,6 +9,7 @@ import { Button } from './Button';
 
 import CutterMachinesPanel from './imposition-tools/cut-export/CutterMachinesPanel';
 import { Star, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 type SettingsTab = 'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter';
 
@@ -19,6 +20,7 @@ interface SettingsModalProps {
 }
 
 export default function SettingsModal({ onClose, initialTab = 'tools' }: SettingsModalProps) {
+  const { t } = useTranslation();
   const { 
     hiddenTools, toggleToolVisibility, favoriteTools, toggleFavoriteTool,
     defaultExportPath, setDefaultExportPath,
@@ -41,7 +43,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
 
   return createPortal(
     <div className="fixed inset-0 z-modal bg-slate-900/40 dark:bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div role="dialog" aria-modal="true" aria-label="Cài đặt" className="glass-card w-full max-w-4xl h-[600px] flex flex-row rounded-2xl shadow-2xl relative border border-slate-200 animate-fade-in transition-colors overflow-hidden">
+      <div role="dialog" aria-modal="true" aria-label={t('settings:cai_dat')} className="glass-card w-full max-w-4xl h-[600px] flex flex-row rounded-2xl shadow-2xl relative border border-slate-200 animate-fade-in transition-colors overflow-hidden">
         
         {/* Left Sidebar */}
         <div className="w-64 bg-slate-50 dark:bg-zinc-800/80 border-r border-slate-200 dark:border-white/10 flex flex-col z-10 flex-shrink-0">
@@ -49,11 +51,11 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
              <h2 className="text-lg font-bold text-slate-900 dark:text-white transition-colors">⚙️ Preferences</h2>
           </div>
           <div className="flex-1 py-4 flex flex-col gap-1 px-3">
-             <button onClick={() => setActiveTab('tools')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'tools' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>🛠 Quản lý công cụ</button>
-             <button onClick={() => setActiveTab('export')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'export' ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>📁 Lưu trữ & Đầu ra</button>
-             <button onClick={() => setActiveTab('workspace')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'workspace' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>📏 Không gian làm việc</button>
-             <button onClick={() => setActiveTab('shortcuts')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'shortcuts' ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>⌨️ Phím tắt hệ thống</button>
-             <button onClick={() => setActiveTab('cutter')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'cutter' ? 'bg-pink-100 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>✂️ Máy bế</button>
+             <button onClick={() => setActiveTab('tools')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'tools' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:quan_ly_cong_cu')}</button>
+             <button onClick={() => setActiveTab('export')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'export' ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:luu_tru_dau_ra')}</button>
+             <button onClick={() => setActiveTab('workspace')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'workspace' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:khong_gian_lam_viec')}</button>
+             <button onClick={() => setActiveTab('shortcuts')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'shortcuts' ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:phim_tat_he_thong')}</button>
+             <button onClick={() => setActiveTab('cutter')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'cutter' ? 'bg-pink-100 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:may_be')}</button>
           </div>
         </div>
 
@@ -62,8 +64,8 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
           <button 
             onClick={onClose}
             className="absolute top-4 right-4 text-slate-400 dark:text-zinc-500 hover:text-slate-900 dark:hover:text-white w-8 h-8 rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 flex items-center justify-center transition-colors z-20"
-            title="Đóng"
-            aria-label="Đóng"
+            title={t('settings:dong')}
+            aria-label={t('settings:dong')}
           >
             <X className="w-4 h-4" />
           </button>
@@ -72,9 +74,9 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
 
             {activeTab === 'tools' && (
               <div className="animate-fade-in flex flex-col h-full">
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 transition-colors">Quản lý hiển thị công cụ</h3>
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2 transition-colors">{t('settings:quan_ly_hien_thi_cong_cu')}</h3>
                 <p className="text-sm text-slate-500 dark:text-zinc-400 mb-8 leading-relaxed transition-colors shrink-0">
-                  Bật/tắt các công cụ không sử dụng để không gian làm việc gọn gàng hơn.
+                  {t('settings:bat_tat_cac_cong_cu_khong_su_dung_de')}
                 </p>
 
                 <div className="space-y-6 flex-1 pr-4">
@@ -108,7 +110,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                                         ? 'text-amber-400'
                                         : 'text-slate-300 dark:text-zinc-600 hover:text-amber-400'
                                     }`}
-                                    title={favoriteTools.includes(uniqueKey) ? 'Bỏ yêu thích' : 'Thêm vào yêu thích'}
+                                    title={favoriteTools.includes(uniqueKey) ? t('settings:bo_yeu_thich') : t('settings:them_vao_yeu_thich')}
                                   >
                                     <Star className="w-5 h-5" fill={favoriteTools.includes(uniqueKey) ? 'currentColor' : 'none'} />
                                   </button>
@@ -136,17 +138,17 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
 
             {activeTab === 'export' && (
               <div className="animate-fade-in flex flex-col h-full">
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Lưu trữ & Đầu ra</h3>
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">{t('settings:luu_tru_dau_ra_2')}</h3>
                 <p className="text-sm text-slate-500 dark:text-zinc-400 mb-8 leading-relaxed shrink-0">
-                  Cấu hình đường dẫn xuất file mặc định và tùy chỉnh hậu tố đổi tên tự động cho file xử lý xong.
+                  {t('settings:cau_hinh_duong_dan_xuat_file_mac_dinh')}
                 </p>
 
                 <div className="space-y-6 flex-1 pr-4">
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
-                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">Vị trí lưu mặc định</h4>
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">{t('settings:vi_tri_luu_mac_dinh')}</h4>
                     <div className="flex gap-2">
                       <div className="flex-1 bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-lg px-3 py-2 text-sm text-slate-600 dark:text-zinc-300 flex items-center overflow-hidden text-ellipsis whitespace-nowrap">
-                        {defaultExportPath || 'Chưa thiết lập (Luôn hỏi khi lưu)'}
+                        {defaultExportPath || t('settings:chua_thiet_lap_luon_hoi_khi_luu')}
                       </div>
                       <Button 
                         variant="secondary"
@@ -154,21 +156,21 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                           const selected = await open({
                             directory: true,
                             multiple: false,
-                            title: 'Chọn thư mục lưu mặc định'
+                            title: t('settings:chon_thu_muc_luu_mac_dinh')
                           });
                           if (selected && typeof selected === 'string') {
                             setDefaultExportPath(selected);
                           }
                         }}
                       >
-                        Chọn thư mục
+                        {t('settings:chon_thu_muc')}
                       </Button>
                       {defaultExportPath && (
                         <Button 
                           variant="destructive" 
                           onClick={() => setDefaultExportPath(null)}
-                          title="Xóa mặc định"
-                          aria-label="Xóa mặc định"
+                          title={t('settings:xoa_mac_dinh')}
+                          aria-label={t('settings:xoa_mac_dinh')}
                         >
                           <X className="w-4 h-4" />
                         </Button>
@@ -177,7 +179,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                   </div>
 
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
-                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">Quy tắc tự đổi tên file (Auto-rename)</h4>
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">{t('settings:quy_tac_tu_doi_ten_file_auto_rename')}</h4>
                     <input 
                       type="text" 
                       value={autoRenameFormat}
@@ -186,9 +188,9 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                       className="w-full bg-white dark:!bg-zinc-900 text-slate-900 dark:!text-white text-sm rounded-lg border border-slate-300 dark:!border-white/20 px-3 py-2 outline-none focus:border-indigo-500 shadow-sm transition-colors mb-3"
                     />
                     <div className="text-xs text-slate-500 dark:text-zinc-400 bg-slate-200/50 dark:bg-zinc-800/50 p-3 rounded-lg border border-slate-200 dark:border-white/5">
-                      <span className="font-semibold block mb-1">Ví dụ:</span>
-                      File gốc: <code className="text-slate-700 dark:text-zinc-300">BaoBi_KhachHang.pdf</code><br/>
-                      Sau khi xử lý: <code className="text-indigo-600 dark:text-indigo-400">{autoRenameFormat.replace('{original}', 'BaoBi_KhachHang')}.pdf</code>
+                      <span className="font-semibold block mb-1">{t('settings:vi_du')}</span>
+                      {t('settings:file_goc')} <code className="text-slate-700 dark:text-zinc-300">BaoBi_KhachHang.pdf</code><br/>
+                      {t('settings:sau_khi_xu_ly')} <code className="text-indigo-600 dark:text-indigo-400">{autoRenameFormat.replace('{original}', 'BaoBi_KhachHang')}.pdf</code>
                     </div>
                   </div>
                 </div>
@@ -197,9 +199,9 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
 
             {activeTab === 'workspace' && (
               <div className="animate-fade-in flex flex-col h-full">
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Không gian làm việc</h3>
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">{t('settings:khong_gian_lam_viec_2')}</h3>
                 <p className="text-sm text-slate-500 dark:text-zinc-400 mb-8 leading-relaxed shrink-0">
-                  Cấu hình hệ đo lường và chất lượng hiển thị hình ảnh Preview.
+                  {t('settings:cau_hinh_he_do_luong_va_chat_luong_hien')}
                 </p>
 
                 <div className="space-y-6 flex-1 pr-4">
@@ -228,7 +230,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                       <div className="min-w-0">
                         <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200">Thanh menu (File / Edit / View…)</h4>
                         <p className="text-[12px] text-slate-500 dark:text-zinc-400 mt-1 leading-snug">
-                          Hiện thanh menu ngang kiểu Acrobat cho khách quen thao tác bằng chuột. Tắt đi để giao diện gọn tối giản.
+                          {t('settings:hien_thanh_menu_ngang_kieu_acrobat_cho')}
                         </p>
                       </div>
                       <label className="relative flex items-center cursor-pointer group shrink-0 mt-0.5">
@@ -245,7 +247,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                   </div>
 
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
-                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">Đơn vị đo lường mặc định</h4>
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">{t('settings:don_vi_do_luong_mac_dinh')}</h4>
                     <div className="flex gap-4">
                       {['mm', 'cm', 'inch'].map(unit => (
                         <label 
@@ -265,7 +267,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                   </div>
 
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
-                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">Chất lượng Preview PDF</h4>
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">{t('settings:chat_luong_preview_pdf')}</h4>
                     <div className="flex flex-col gap-3">
                       <label 
                         className="flex items-start gap-3 cursor-pointer group p-3 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800/50 transition-colors border border-transparent hover:border-slate-200 dark:hover:border-zinc-700"
@@ -275,8 +277,8 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                           {previewQuality === 'high' && <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />}
                         </div>
                         <div>
-                          <div className={`text-sm font-bold ${previewQuality === 'high' ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-zinc-300'}`}>Chất lượng cao (Nét căng)</div>
-                          <div className="text-[11px] text-slate-500 mt-0.5">Render sắc nét từng vector, dùng cho soi lỗi kỹ thuật. Cần RAM lớn.</div>
+                          <div className={`text-sm font-bold ${previewQuality === 'high' ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-zinc-300'}`}>{t('settings:chat_luong_cao_net_cang')}</div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">{t('settings:render_sac_net_tung_vector_dung_cho_soi')}</div>
                         </div>
                       </label>
                       <label 
@@ -287,8 +289,8 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                           {previewQuality === 'fast' && <div className="w-2.5 h-2.5 rounded-full bg-amber-500" />}
                         </div>
                         <div>
-                          <div className={`text-sm font-bold ${previewQuality === 'fast' ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-zinc-300'}`}>Tốc độ nhanh (Low-res)</div>
-                          <div className="text-[11px] text-slate-500 mt-0.5">Giảm chất lượng render để xem trước PDF hàng ngàn trang siêu mượt mà.</div>
+                          <div className={`text-sm font-bold ${previewQuality === 'fast' ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-zinc-300'}`}>{t('settings:toc_do_nhanh_low_res')}</div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">{t('settings:giam_chat_luong_render_de_xem_truoc_pdf')}</div>
                         </div>
                       </label>
                     </div>
@@ -299,18 +301,18 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
 
             {activeTab === 'shortcuts' && (
               <div className="animate-fade-in flex flex-col h-full">
-                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Phím tắt hệ thống</h3>
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-2">{t('settings:phim_tat_he_thong_2')}</h3>
                 <p className="text-sm text-slate-500 dark:text-zinc-400 mb-8 leading-relaxed shrink-0">
-                  Bảng tra cứu nhanh các phím tắt làm việc trong PrynX. Tính năng tự tùy biến phím tắt sẽ có mặt trong bản cập nhật sau.
+                  {t('settings:bang_tra_cuu_nhanh_cac_phim_tat_lam')}
                 </p>
 
                 <div className="space-y-2 flex-1 pr-4 overflow-y-auto custom-scrollbar pb-10">
                   {[
-                    { keys: ['Ctrl', 'S'], desc: 'Lưu / Xuất file PDF hiện tại' },
-                    { keys: ['Ctrl', 'Shift', 'S'], desc: 'Lưu đè file (Save As)' },
-                    { keys: ['Ctrl', 'W'], desc: 'Đóng tab công cụ đang mở' },
-                    { keys: ['Ctrl', 'K'], desc: 'Mở / Đóng bảng Cài đặt này' },
-                    { keys: ['Alt', 'F4'], desc: 'Thoát phần mềm' },
+                    { keys: ['Ctrl', 'S'], desc: t('settings:luu_xuat_file_pdf_hien_tai') },
+                    { keys: ['Ctrl', 'Shift', 'S'], desc: t('settings:luu_de_file_save_as') },
+                    { keys: ['Ctrl', 'W'], desc: t('settings:dong_tab_cong_cu_dang_mo') },
+                    { keys: ['Ctrl', 'K'], desc: t('settings:mo_dong_bang_cai_dat_nay') },
+                    { keys: ['Alt', 'F4'], desc: t('settings:thoat_phan_mem') },
                   ].map((shortcut, i) => (
                     <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/5 hover:border-cyan-500/30 transition-colors">
                       <span className="text-sm font-medium text-slate-700 dark:text-zinc-300">{shortcut.desc}</span>
@@ -336,7 +338,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
               onClick={onClose}
               variant="primary"
             >
-              Đóng
+              {t('settings:dong')}
             </Button>
           </div>
         </div>

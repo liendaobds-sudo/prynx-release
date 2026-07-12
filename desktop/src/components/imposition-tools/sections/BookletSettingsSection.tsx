@@ -18,8 +18,10 @@ import React from 'react';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { RichSelect, Checkbox, SectionLabel, Divider } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
+import { useTranslation } from 'react-i18next';
 
 export default function BookletSettingsSection() {
+  const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
         taskMode: state.taskMode,
         signatureMode: state.signatureMode, setSignatureMode: state.setSignatureMode,
@@ -43,21 +45,21 @@ export default function BookletSettingsSection() {
         <>
             {/* ═══ KIỂU ĐÓNG SÁCH ═══ */}
             <div className="flex flex-col gap-2 relative z-[65] animate-in fade-in duration-200">
-                <SectionLabel>KIỂU ĐÓNG SÁCH</SectionLabel>
+                <SectionLabel>{t('imposition.bookletSettings:kieu_dong_sach')}</SectionLabel>
                 <RichSelect
                     value={s.signatureMode}
                     onChange={(v) => s.setSignatureMode(v as any)}
                     options={[
-                        { value: 'saddle', title: 'Bấm kim giữa (Saddle stitched)', desc: 'Lồng toàn bộ trang thành 1 cuốn duy nhất. Bìa ngoài cùng chung tờ in.' },
-                        { value: 'thread', title: 'Khâu chỉ / Chia tép (Thread sewn)', desc: 'Chia file thành nhiều tép nhỏ bằng nhau rồi xếp chồng. Thích hợp khâu chỉ dán gáy.' },
-                        { value: 'cut_stacks', title: 'Cắt đôi ráp xấp (Half-Split)', desc: 'Cắt giữa tờ in làm đôi để ráp úp lên nhau thành thứ tự chuẩn (Vé xe, Voucher).' },
-                        { value: 'continuous', title: 'Keo gáy / Lò xo (Perfect Bound)', desc: 'Các trang xếp nối tiếp liền mạch (1-2, 3-4). Dùng để cắt phay gáy đổ keo hoặc gáy xoắn.' },
-                        ...(s.paperClassification === 'in_nhanh' ? [{ value: 'flush_mount', title: 'Dán đối lưng (Flush Mount)', desc: 'Sách mở phẳng 180 độ. In 1 mặt, mỗi tờ chứa 1 trang đôi liền mạch (1-2, 3-4...).' }] : [])
+                        { value: 'saddle', title: t('imposition.bookletSettings:bam_kim_giua_saddle_stitched'), desc: t('imposition.bookletSettings:long_toan_bo_trang_thanh_1_cuon_duy') },
+                        { value: 'thread', title: t('imposition.bookletSettings:khau_chi_chia_tep_thread_sewn'), desc: t('imposition.bookletSettings:chia_file_thanh_nhieu_tep_nho_bang_nhau') },
+                        { value: 'cut_stacks', title: t('imposition.bookletSettings:cat_doi_rap_xap_half_split'), desc: t('imposition.bookletSettings:cat_giua_to_in_lam_doi_de_rap_up_len') },
+                        { value: 'continuous', title: t('imposition.bookletSettings:keo_gay_lo_xo_perfect_bound'), desc: t('imposition.bookletSettings:cac_trang_xep_noi_tiep_lien_mach_1_2_3') },
+                        ...(s.paperClassification === 'in_nhanh' ? [{ value: 'flush_mount', title: t('imposition.bookletSettings:dan_doi_lung_flush_mount'), desc: t('imposition.bookletSettings:sach_mo_phang_180_do_in_1_mat_moi_to') }] : [])
                     ]}
                 />
                 {s.signatureMode === 'thread' && !s.autoCatalog && (
                     <div className="mt-1 p-3 flex items-center gap-3 rounded-lg bg-slate-50 dark:bg-zinc-800/40">
-                        <label className="text-xs text-slate-600 dark:text-zinc-400">Số trang mỗi tép (Tay sách):</label>
+                        <label className="text-xs text-slate-600 dark:text-zinc-400">{t('imposition.bookletSettings:so_trang_moi_tep_tay_sach')}</label>
                         <input
                             type="number" step="4" min="4" value={s.foliosize}
                             onChange={e => s.setFoliosize(Number(e.target.value))}
@@ -69,7 +71,7 @@ export default function BookletSettingsSection() {
                             }}
                             className="w-16 h-7 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500"
                         />
-                        <span className="text-[10px] text-slate-400">Bội số của 4</span>
+                        <span className="text-[10px] text-slate-400">{t('imposition.bookletSettings:boi_so_cua_4')}</span>
                     </div>
                 )}
 
@@ -78,12 +80,12 @@ export default function BookletSettingsSection() {
                     <div className="mt-1 space-y-2">
                         <div className="p-3 rounded-lg bg-slate-50 dark:bg-zinc-800/40 space-y-2">
                             <div className="flex items-center gap-3">
-                                <label className="text-xs text-slate-600 dark:text-zinc-400 whitespace-nowrap">Lề gáy (mm):</label>
+                                <label className="text-xs text-slate-600 dark:text-zinc-400 whitespace-nowrap">{t('imposition.bookletSettings:le_gay_mm')}</label>
                                 <input
                                     type="number" step="0.5" min="0" value={s.gutterMargin} onChange={e => s.setGutterMargin(Number(e.target.value))}
                                     className="w-20 h-7 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500"
                                 />
-                                <span className="text-[10px] text-slate-400">Bù phần bị keo/chỉ che</span>
+                                <span className="text-[10px] text-slate-400">{t('imposition.bookletSettings:bu_phan_bi_keo_chi_che')}</span>
                             </div>
                         </div>
                         <div className="p-3 rounded-lg bg-slate-50 dark:bg-zinc-800/40 space-y-2">
@@ -92,17 +94,17 @@ export default function BookletSettingsSection() {
                                     type="checkbox" checked={s.separateCover} onChange={e => s.setSeparateCover(e.target.checked)}
                                     className="rounded border-slate-300"
                                 />
-                                <span className="text-xs text-slate-600 dark:text-zinc-400">Tách bìa riêng</span>
+                                <span className="text-xs text-slate-600 dark:text-zinc-400">{t('imposition.bookletSettings:tach_bia_rieng')}</span>
                             </label>
                             {s.separateCover && (
                                 <div className="flex items-center gap-2 ml-6">
-                                    <label className="text-[11px] text-slate-500">Số trang bìa:</label>
+                                    <label className="text-[11px] text-slate-500">{t('imposition.bookletSettings:so_trang_bia')}</label>
                                     <select
                                         value={s.coverPageCount} onChange={e => s.setCoverPageCount(Number(e.target.value))}
                                         className="h-7 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-xs focus:outline-none focus:border-indigo-500"
                                     >
-                                        <option value={2}>2 (trước + sau)</option>
-                                        <option value={4}>4 (trước, 01, N-1, sau)</option>
+                                        <option value={2}>{t('imposition.bookletSettings:2_truoc_sau')}</option>
+                                        <option value={4}>{t('imposition.bookletSettings:4_truoc_01_n_1_sau')}</option>
                                     </select>
                                 </div>
                             )}
@@ -116,15 +118,15 @@ export default function BookletSettingsSection() {
             {!s.autoCatalog && s.paperClassification !== 'offset' && (
                 <>
                     <div className="space-y-2 pb-1 animate-in fade-in duration-200 relative z-[60]">
-                        <SectionLabel>SỐ CUỐN TRÊN TỜ IN</SectionLabel>
+                        <SectionLabel>{t('imposition.bookletSettings:so_cuon_tren_to_in')}</SectionLabel>
                         <RichSelect
                             value={s.scaleMode}
                             onChange={(v) => s.setScaleMode(v as any)}
                             options={[
-                                { value: '100', title: '1 cuốn / tờ (100%)', desc: 'Giữ nguyên kích thước trang. Không vừa khổ giấy → báo lỗi (không tự co).' },
-                                { value: 'fit', title: '1 cuốn / tờ (bóp vừa khổ)', desc: 'Thu nội dung cho vừa khổ giấy đã chọn, canh giữa.' },
-                                { value: 'chain_nup', title: 'Nhiều cuốn / tờ (Step & Repeat)', desc: 'Nhân bản nhiều cuốn giống hệt nhau lấp đầy tờ giấy lớn. Xén ra nhiều cuốn.' },
-                                ...(s.paperClassification === 'in_nhanh' && s.signatureMode !== 'cut_stacks' ? [{ value: 'cut_stack', title: 'Ghép nửa cuốn (Cut & Stack)', desc: '2 nửa cuốn trên 1 tờ, xén đôi ráp lại thành 1 cuốn hoàn chỉnh.' }] : [])
+                                { value: '100', title: t('imposition.bookletSettings:1_cuon_to_100'), desc: t('imposition.bookletSettings:giu_nguyen_kich_thuoc_trang_khong_vua') },
+                                { value: 'fit', title: t('imposition.bookletSettings:1_cuon_to_bop_vua_kho'), desc: t('imposition.bookletSettings:thu_noi_dung_cho_vua_kho_giay_da_chon') },
+                                { value: 'chain_nup', title: t('imposition.bookletSettings:nhieu_cuon_to_step_repeat'), desc: t('imposition.bookletSettings:nhan_ban_nhieu_cuon_giong_het_nhau_lap') },
+                                ...(s.paperClassification === 'in_nhanh' && s.signatureMode !== 'cut_stacks' ? [{ value: 'cut_stack', title: t('imposition.bookletSettings:ghep_nua_cuon_cut_stack'), desc: t('imposition.bookletSettings:2_nua_cuon_tren_1_to_xen_doi_rap_lai') }] : [])
                             ]}
                         />
                     </div>
@@ -136,17 +138,17 @@ export default function BookletSettingsSection() {
             {!s.autoCatalog && s.paperClassification === 'offset' && (
                 <>
                     <div className="space-y-3 animate-in fade-in duration-200 relative z-[55]">
-                        <SectionLabel>SƠ ĐỒ GẤP OFFSET (FOLD PATTERN)</SectionLabel>
+                        <SectionLabel>{t('imposition.bookletSettings:so_do_gap_offset_fold_pattern')}</SectionLabel>
                         <RichSelect
                             value={s.foldPattern}
                             onChange={(v) => s.setFoldPattern(v)}
                             options={[
-                                { value: '', title: '2-Up Classic (Mặc định)', desc: 'Nhân bản booklet 2-up lên khổ lớn. Không dùng sơ đồ gấp offset.' },
-                                ...(s.autoCatalog ? [{ value: 'auto', title: 'Tự động theo tay sách', desc: 'Tự chọn sơ đồ gấp phù hợp nhất cho từng tay sách (4p/8p/16p).' }] : []),
-                                { value: 'sig_4p_1up', title: 'Tay 4 Trang (1 Bộ, khổ lớn)', desc: 'In 1 bộ tự trở lật nhíp (Work & Tumble). Dành cho sách khổ lớn in trên kẽm nhỏ.' },
-                                { value: 'sig_4p_2up', title: 'Tay 4 Trang (Nhân bản 2-Up)', desc: 'Lưới 2×2 spreads (8 con/mặt). In 2 tay 4 trang trên 1 tờ kẽm.' },
-                                { value: 'sig_8p', title: 'Tay 8 Trang (Tự trở)', desc: 'Lưới 2×2 spreads (8 con/mặt). Tự trở lật ngang, 1 tờ kẽm = 1 tay 8.' },
-                                { value: 'sig_16p', title: 'Tay 16 Trang (In 2 mặt)', desc: 'Lưới 2×2 spreads (8 con/mặt). Tiêu chuẩn công nghiệp.' },
+                                { value: '', title: t('imposition.bookletSettings:2_up_classic_mac_dinh'), desc: t('imposition.bookletSettings:nhan_ban_booklet_2_up_len_kho_lon_khong') },
+                                ...(s.autoCatalog ? [{ value: 'auto', title: t('imposition.bookletSettings:tu_dong_theo_tay_sach'), desc: t('imposition.bookletSettings:tu_chon_so_do_gap_phu_hop_nhat_cho_tung') }] : []),
+                                { value: 'sig_4p_1up', title: t('imposition.bookletSettings:tay_4_trang_1_bo_kho_lon'), desc: t('imposition.bookletSettings:in_1_bo_tu_tro_lat_nhip_work_tumble') },
+                                { value: 'sig_4p_2up', title: t('imposition.bookletSettings:tay_4_trang_nhan_ban_2_up'), desc: t('imposition.bookletSettings:luoi_2_2_spreads_8_con_mat_in_2_tay_4') },
+                                { value: 'sig_8p', title: t('imposition.bookletSettings:tay_8_trang_tu_tro'), desc: t('imposition.bookletSettings:luoi_2_2_spreads_8_con_mat_tu_tro_lat') },
+                                { value: 'sig_16p', title: t('imposition.bookletSettings:tay_16_trang_in_2_mat'), desc: t('imposition.bookletSettings:luoi_2_2_spreads_8_con_mat_tieu_chuan') },
                             ]}
                         />
                     </div>
@@ -166,15 +168,15 @@ export default function BookletSettingsSection() {
                 {/* Interleave */}
                 {!s.autoCatalog && s.paperClassification === 'offset' && (
                     <div className="flex flex-col gap-2 relative z-[40]">
-                        <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">Thế phơi / Sắp trang</label>
+                        <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">{t('imposition.bookletSettings:the_phoi_sap_trang')}</label>
                         <RichSelect
                             value={s.interleave}
                             onChange={(v) => s.setInterleave(v as any)}
                             options={[
-                                { value: 'normal', title: 'Bình thường', desc: 'Trải đều Trước - Sau xen kẽ.' },
-                                { value: 'all_fronts_first', title: 'Tách riêng', desc: 'Ra hết Mặt Trước, rồi đến Mặt Sau.' },
-                                { value: 'reverse_backs', title: 'Trở Nhíp / Trở Ngang', desc: 'Mặt Trước bình thường, Mặt Sau lộn ngược theo thứ tự tờ.' },
-                                { value: 'reverse_backs_180', title: 'Trở Đầu / Trở lật', desc: 'Giống Trở Nhíp nhưng cộng thêm xoay ngược 180° mặt sau.' }
+                                { value: 'normal', title: t('imposition.bookletSettings:binh_thuong'), desc: t('imposition.bookletSettings:trai_deu_truoc_sau_xen_ke') },
+                                { value: 'all_fronts_first', title: t('imposition.bookletSettings:tach_rieng'), desc: t('imposition.bookletSettings:ra_het_mat_truoc_roi_den_mat_sau') },
+                                { value: 'reverse_backs', title: t('imposition.bookletSettings:tro_nhip_tro_ngang'), desc: t('imposition.bookletSettings:mat_truoc_binh_thuong_mat_sau_lon_nguoc') },
+                                { value: 'reverse_backs_180', title: t('imposition.bookletSettings:tro_dau_tro_lat'), desc: t('imposition.bookletSettings:giong_tro_nhip_nhung_cong_them_xoay') }
                             ]}
                         />
                     </div>
@@ -185,15 +187,15 @@ export default function BookletSettingsSection() {
                     <div className="flex flex-col gap-3 relative z-[20] mt-1 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-lg border border-slate-200 dark:border-white/10">
                         <div className="flex items-center justify-between">
                             <label className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wide">
-                                {s.signatureMode === 'cut_stacks' ? 'CƠ CHẾ RÁP XẤP (CUT & STACK)' : 'KHOẢNG HỞ CỤM TRANG (GAP)'}
+                                {s.signatureMode === 'cut_stacks' ? t('imposition.bookletSettings:co_che_rap_xap_cut_stack') : t('imposition.bookletSettings:khoang_ho_cum_trang_gap')}
                             </label>
                             {s.signatureMode === 'cut_stacks' && (
                                 <div className="group relative flex items-center justify-center w-4 h-4 rounded-full bg-slate-200 dark:bg-zinc-700 text-slate-500 text-[10px] font-bold cursor-help">
                                     ?
                                     <div className="absolute bottom-full right-0 mb-2 w-64 p-2.5 bg-slate-800 text-white text-xs rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
-                                        <p className="mb-1 font-bold text-indigo-300">Cut & Stack (Cắt đôi ráp xấp):</p>
+                                        <p className="mb-1 font-bold text-indigo-300">{t('imposition.bookletSettings:cut_stack_cat_doi_rap_xap')}</p>
                                         <p className="opacity-90 leading-relaxed">
-                                            Cơ chế mặc định <strong>Hút gáy & Xén úp</strong> sẽ tự động xoay 180° cọc bên phải để đảm bảo khi úp 2 cọc vào nhau, lề xén đối xứng hoàn hảo và dấu xén trùng khớp 100%. Không cần tự lật tay!
+                                            {t('imposition.bookletSettings:co_che_mac_dinh')} <strong>{t('imposition.bookletSettings:hut_gay_xen_up')}</strong> {t('imposition.bookletSettings:se_tu_dong_xoay_180_coc_ben_phai_de_dam')}
                                         </p>
                                     </div>
                                 </div>
@@ -205,8 +207,8 @@ export default function BookletSettingsSection() {
                                 value={s.spreadDistribution}
                                 onChange={(v) => s.setSpreadDistribution(v as 'even' | 'clustered')}
                                 options={[
-                                    { value: 'clustered', title: 'Hút gáy & Xén úp (Đối xứng 180°)', desc: 'Tự động xoay ngược cọc phải 180°. Giúp 2 nửa đối xứng lề khi chập vào.' },
-                                    { value: 'even', title: 'Trải đều (Giữ nguyên chiều)', desc: 'Tản đều các trang trên mặt giấy, không xoay hướng. Thích hợp xén rời.' }
+                                    { value: 'clustered', title: t('imposition.bookletSettings:hut_gay_xen_up_doi_xung_180'), desc: t('imposition.bookletSettings:tu_dong_xoay_nguoc_coc_phai_180_giup_2') },
+                                    { value: 'even', title: t('imposition.bookletSettings:trai_deu_giu_nguyen_chieu'), desc: t('imposition.bookletSettings:tan_deu_cac_trang_tren_mat_giay_khong') }
                                 ]}
                             />
                         ) : (
@@ -217,7 +219,7 @@ export default function BookletSettingsSection() {
                                     onChange={e => s.setSpreadDistribution(e.target.checked ? 'even' : 'clustered')}
                                 />
                                 <label htmlFor="spreadDistribution" className="text-xs text-zinc-700 dark:text-zinc-300 cursor-pointer">
-                                    Dàn đều 2 bên (chia đều, tạo khoảng hở lớn ở giữa) thay vì Hút sát gáy
+                                    {t('imposition.bookletSettings:dan_deu_2_ben_chia_deu_tao_khoang_ho')}
                                 </label>
                             </div>
                         )}
@@ -225,11 +227,11 @@ export default function BookletSettingsSection() {
                         {s.spreadDistribution !== 'even' && (
                             <div className="grid grid-cols-2 gap-x-3 gap-y-3 pt-2 border-t border-slate-200 dark:border-white/10 mt-1">
                                 <div>
-                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Khoảng cách Gáy (Gap X)</label>
+                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.bookletSettings:khoang_cach_gay_gap_x')}</label>
                                     <input type="number" step="1" value={s.gapX} onChange={e => s.setGapX(Number(e.target.value))} className="w-full h-8 px-3 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 transition-colors" />
                                 </div>
                                 <div>
-                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Hở Dọc (Gap Y)</label>
+                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.bookletSettings:ho_doc_gap_y')}</label>
                                     <input type="number" step="1" value={s.gapY} onChange={e => s.setGapY(Number(e.target.value))} className="w-full h-8 px-3 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 transition-colors" />
                                 </div>
                             </div>

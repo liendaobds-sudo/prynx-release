@@ -5,6 +5,7 @@ import { useImposerSettingsStore } from "../useImposerSettingsStore";
 import { useShallow } from "zustand/react/shallow";
 import { useAppSettingsStore } from "../../../stores/appSettingsStore";
 import { parsePastedQuantities } from "../../../lib/parsePastedQuantities";
+import { useTranslation } from 'react-i18next';
 
 export interface GridSettingsProps {
   taskMode: string;
@@ -43,6 +44,7 @@ export interface GridSettingsProps {
 }
 
 export default function GridSettingsSection(props: GridSettingsProps) {
+  const { t } = useTranslation();
   const { measurementUnit } = useAppSettingsStore();
   const {
     taskMode,
@@ -173,7 +175,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           {/* === TÁC VỤ — First in workflow === */}
           <div className="flex items-center gap-3">
             <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-              TÁC VỤ
+              {t('imposition.gridSettings:tac_vu')}
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <select
@@ -181,19 +183,19 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 onChange={(e) => setTaskMode(e.target.value)}
                 className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
               >
-                <option value="step_repeat">Bình trang (S&R)</option>
-                <option value="nup">Dàn nhiều mẫu (N-Up)</option>
+                <option value="step_repeat">{t('imposition.gridSettings:binh_trang_s_r')}</option>
+                <option value="nup">{t('imposition.gridSettings:dan_nhieu_mau_n_up')}</option>
               </select>
               <div
                 className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
                 onClick={() =>
                   setInfoModal({
-                    title: "Tác vụ",
+                    title: t('imposition.gridSettings:tac_vu_2'),
                     content: (
                       <div className="space-y-4">
                         <div className="space-y-1">
                           <h4 className="font-bold text-slate-800 dark:text-white">
-                            Bình trang (S&R)
+                            {t('imposition.gridSettings:binh_trang_s_r')}
                           </h4>
                           <p className="text-slate-600 dark:text-zinc-300">
                             Nhân bản một mẫu thiết kế lặp lại nhiều lần trên
@@ -203,7 +205,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                         </div>
                         <div className="space-y-1">
                           <h4 className="font-bold text-slate-800 dark:text-white">
-                            Dàn nhiều mẫu (N-Up)
+                            {t('imposition.gridSettings:dan_nhieu_mau_n_up')}
                           </h4>
                           <p className="text-slate-600 dark:text-zinc-300">
                             Ghép nhiều mẫu thiết kế hoặc nhiều trang tài liệu
@@ -237,7 +239,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           {taskMode === "nup" && activeTool !== "sticker_imposer" && (
             <div className="flex items-center gap-3">
               <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-                CÁCH THỨC RÁP
+                {t('imposition.gridSettings:cach_thuc_rap')}
               </label>
               <div className="flex flex-1 items-center gap-2 min-w-0">
                 <select
@@ -253,46 +255,46 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   }}
                   className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                 >
-                  <option value="sequential">Xếp lần lượt</option>
-                  <option value="cut_stacks">Xếp chồng (Úp xấp đúng thứ tự)</option>
-                  <option value="ratio_stack">Chia tỷ lệ + xếp chồng (nhiều mẫu, SL riêng)</option>
+                  <option value="sequential">{t('imposition.gridSettings:xep_lan_luot')}</option>
+                  <option value="cut_stacks">{t('imposition.gridSettings:xep_chong_up_xap_dung_thu_tu')}</option>
+                  <option value="ratio_stack">{t('imposition.gridSettings:chia_ty_le_xep_chong_nhieu_mau_sl_rieng')}</option>
                 </select>
                 <div
                   className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
                   onClick={() =>
                     setInfoModal({
-                      title: "Cách thức ráp",
+                      title: t('imposition.gridSettings:cach_thuc_rap_2'),
                       content: (
                         <div className="space-y-4">
                           <div className="space-y-1">
                             <h4 className="font-bold text-slate-800 dark:text-white">
-                              Xếp lần lượt
+                              {t('imposition.gridSettings:xep_lan_luot')}
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
-                              <strong>1 mặt:</strong> trang 1, 2, 3… liên tiếp theo SL (hết loại này mới sang loại kia).
+                              <strong>{t('imposition.gridSettings:1_mat')}</strong> trang 1, 2, 3… liên tiếp theo SL (hết loại này mới sang loại kia).
                               Trống = lấp đầy 1 tờ.
                             </p>
                             <p className="text-slate-600 dark:text-zinc-300">
-                              <strong>2 mặt:</strong> mỗi sản phẩm = cặp trang (1–2, 3–4…).
+                              <strong>{t('imposition.gridSettings:2_mat')}</strong> mỗi sản phẩm = cặp trang (1–2, 3–4…).
                               Cùng một ô: mặt trước tờ chẵn, mặt sau tờ lẻ (lật gương).
-                              File nên có số trang <strong>chẵn</strong>.
+                              File nên có số trang <strong>{t('imposition.gridSettings:chan')}</strong>.
                             </p>
                           </div>
                           <div className="space-y-1">
                             <h4 className="font-bold text-slate-800 dark:text-white">
-                              Xếp chồng (Úp xấp đúng thứ tự)
+                              {t('imposition.gridSettings:xep_chong_up_xap_dung_thu_tu')}
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
                               Bố trí cut-stack: cùng một vị trí ô trên mọi tờ tạo một cọc.
                               Xén rời cọc rồi úp chồng → đúng thứ tự trang 1, 2, 3… (collation sách/sổ).
                             </p>
                             <p className="text-amber-600 dark:text-amber-400 text-[12px]">
-                              Khác với <strong>“Chia cọc xén”</strong> ở Thiết lập mở rộng: cái đó chia tờ thành nhiều cọc + chừa rãnh dao để máy xén chém ít nhát, KHÔNG liên quan thứ tự trang.
+                              {t('imposition.gridSettings:khac_voi')} <strong>{t('imposition.gridSettings:chia_coc_xen')}</strong> {t('imposition.gridSettings:o_thiet_lap_mo_rong_cai_do_chia_to')}
                             </p>
                           </div>
                           <div className="space-y-1">
                             <h4 className="font-bold text-slate-800 dark:text-white">
-                              Chia tỷ lệ + xếp chồng
+                              {t('imposition.gridSettings:chia_ty_le_xep_chong')}
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
                               Nhiều mẫu cùng cỡ, số lượng khác nhau: mỗi mẫu chiếm số ô theo tỷ lệ số lượng.
@@ -329,7 +331,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]"
                 title={`Trang hiện tại: ${viewerActivePage}`}
               >
-                HÌNH DẠNG TEM
+                {t('imposition.gridSettings:hinh_dang_tem')}
               </label>
               <div className="flex flex-1 items-center gap-2 min-w-0">
                 <select
@@ -342,23 +344,23 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   }}
                   className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                 >
-                  <option value="CIRCLE_ELLIPSE">Tròn / Elip</option>
-                  <option value="RECTANGLE">Vuông / Chữ nhật</option>
-                  <option value="TRIANGLE">Tam giác</option>
-                  <option value="PENTAGON">Ngũ giác</option>
-                  <option value="HEXAGON">Lục giác</option>
-                  <option value="DUMBBELL">Tạ tay</option>
-                  <option value="HAMMER">Búa</option>
-                  <option value="TRAPEZOID">Hình thang</option>
-                  <option value="PARALLELOGRAM">Bình hành</option>
-                  <option value="ARROW">Mũi tên</option>
-                  <option value="CUSTOM">Đặc biệt</option>
+                  <option value="CIRCLE_ELLIPSE">{t('imposition.gridSettings:tron_elip')}</option>
+                  <option value="RECTANGLE">{t('imposition.gridSettings:vuong_chu_nhat')}</option>
+                  <option value="TRIANGLE">{t('imposition.gridSettings:tam_giac')}</option>
+                  <option value="PENTAGON">{t('imposition.gridSettings:ngu_giac')}</option>
+                  <option value="HEXAGON">{t('imposition.gridSettings:luc_giac')}</option>
+                  <option value="DUMBBELL">{t('imposition.gridSettings:ta_tay')}</option>
+                  <option value="HAMMER">{t('imposition.gridSettings:bua')}</option>
+                  <option value="TRAPEZOID">{t('imposition.gridSettings:hinh_thang')}</option>
+                  <option value="PARALLELOGRAM">{t('imposition.gridSettings:binh_hanh')}</option>
+                  <option value="ARROW">{t('imposition.gridSettings:mui_ten')}</option>
+                  <option value="CUSTOM">{t('imposition.gridSettings:dac_biet')}</option>
                 </select>
                 <div
                   className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
                   onClick={() =>
                     setInfoModal({
-                      title: "Hình dạng tem",
+                      title: t('imposition.gridSettings:hinh_dang_tem_2'),
                       content: (
                         <div className="space-y-4">
                           <p className="text-slate-600 dark:text-zinc-300">
@@ -399,7 +401,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
 
           <div className="flex items-center gap-3">
             <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-              CÁCH XẾP
+              {t('imposition.gridSettings:cach_xep')}
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <select
@@ -407,39 +409,39 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 onChange={(e) => setGridStrategy(e.target.value)}
                 className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
               >
-                <option value="optimal_auto">Xếp tối ưu</option>
-                <option value="simple_auto">Lưới đơn giản</option>
-                <option value="manual">Tùy chỉnh</option>
+                <option value="optimal_auto">{t('imposition.gridSettings:xep_toi_uu')}</option>
+                <option value="simple_auto">{t('imposition.gridSettings:luoi_don_gian')}</option>
+                <option value="manual">{t('imposition.gridSettings:tuy_chinh')}</option>
               </select>
               <div
                 className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 cursor-pointer transition-colors"
                 onClick={() =>
                   setInfoModal({
-                    title: "Cách xếp",
+                    title: t('imposition.gridSettings:cach_xep_2'),
                     content: (
                       <div className="space-y-4">
                         <div className="space-y-1">
                           <h4 className="font-bold text-slate-800 dark:text-white">
-                            Xếp tối ưu
+                            {t('imposition.gridSettings:xep_toi_uu')}
                           </h4>
                           <p className="text-slate-600 dark:text-zinc-300">
-                            Tự động tính toán số hàng, cột và hướng xoay tối ưu nhất để lấp đầy tờ in với số lượng tem nhiều nhất có thể.
+                            {t('imposition.gridSettings:tu_dong_tinh_toan_so_hang_cot_va_huong')}
                           </p>
                         </div>
                         <div className="space-y-1">
                           <h4 className="font-bold text-slate-800 dark:text-white">
-                            Lưới đơn giản
+                            {t('imposition.gridSettings:luoi_don_gian')}
                           </h4>
                           <p className="text-slate-600 dark:text-zinc-300">
-                            Tự động tính hàng, cột nhưng không xoay tem. Phù hợp khi bạn muốn giữ nguyên hướng thiết kế gốc.
+                            {t('imposition.gridSettings:tu_dong_tinh_hang_cot_nhung_khong_xoay')}
                           </p>
                         </div>
                         <div className="space-y-1">
                           <h4 className="font-bold text-slate-800 dark:text-white">
-                            Tùy chỉnh
+                            {t('imposition.gridSettings:tuy_chinh')}
                           </h4>
                           <p className="text-slate-600 dark:text-zinc-300">
-                            Tự nhập số hàng và cột theo ý muốn.
+                            {t('imposition.gridSettings:tu_nhap_so_hang_va_cot_theo_y_muon')}
                           </p>
                         </div>
                       </div>
@@ -468,7 +470,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
             <div className="grid grid-cols-2 gap-x-3 gap-y-3">
               <div>
                 <label className="text-[11px] text-slate-500 block mb-1 font-medium">
-                  Cột
+                  {t('imposition.gridSettings:cot')}
                 </label>
                 <input
                   type="number"
@@ -480,7 +482,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
               </div>
               <div>
                 <label className="text-[11px] text-slate-500 block mb-1 font-medium">
-                  Dòng
+                  {t('imposition.gridSettings:dong')}
                 </label>
                 <input
                   type="number"
@@ -494,7 +496,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           )}
           <div className="flex items-center gap-3">
             <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-              HỞ TEM
+              {t('imposition.gridSettings:ho_tem')}
             </label>
             <div className="flex flex-1 items-center gap-3 min-w-0">
                 <div className="relative flex-1 min-w-0">
@@ -507,7 +509,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                         }}
                         className="w-full h-8 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium pr-7"
                         style={{ paddingLeft: "9px" }}
-                        title="Khoảng hở giữa các nhãn (Gap)"
+                        title={t('imposition.gridSettings:khoang_ho_giua_cac_nhan_gap')}
                     />
                     <div className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none uppercase">
                         {measurementUnit}
@@ -536,7 +538,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                             ? "text-rose-600 dark:text-rose-400"
                             : "text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300"
                         }`}
-                        title={s.showBleedView ? "Tắt Xem trước Bleed" : "Bật Xem trước Bleed"}
+                        title={s.showBleedView ? t('imposition.gridSettings:tat_xem_truoc_bleed') : t('imposition.gridSettings:bat_xem_truoc_bleed')}
                       >
                         {s.showBleedView ? (
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -562,7 +564,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-3">
                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-                  SỐ MẶT
+                  {t('imposition.gridSettings:so_mat')}
                 </label>
                 <div className="flex flex-1 items-center gap-3 min-w-0">
                   <select
@@ -579,14 +581,14 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                     }}
                     className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                   >
-                    <option value="normal">1 Mặt</option>
-                    <option value="double">2 Mặt</option>
+                    <option value="normal">{t('imposition.gridSettings:1_mat_2')}</option>
+                    <option value="double">{t('imposition.gridSettings:2_mat_2')}</option>
                   </select>
                 </div>
               </div>
               {duplexFlow === "double" && sourceTotalPages > 0 && sourceTotalPages % 2 !== 0 && (
                 <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
-                  ⚠️ Bình 2 mặt bắt buộc số trang <strong>chẵn</strong>. File hiện{" "}
+                  {t('imposition.gridSettings:binh_2_mat_bat_buoc_so_trang')} <strong>{t('imposition.gridSettings:chan')}</strong>. File hiện{" "}
                   {sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.
                 </div>
               )}
@@ -594,8 +596,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 taskMode === "nup" &&
                 s.layoutType === "cut_stacks" && (
                 <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
-                  ⚠️ «Xếp chồng» chưa hỗ trợ 2 mặt — chọn <strong>1 Mặt</strong>, hoặc đổi sang{" "}
-                  <strong>Xếp lần lượt</strong> / <strong>Chia tỷ lệ</strong>.
+                  ⚠️ «Xếp chồng» chưa hỗ trợ 2 mặt — chọn <strong>{t('imposition.gridSettings:1_mat_2')}</strong>, hoặc đổi sang{" "}
+                  <strong>{t('imposition.gridSettings:xep_lan_luot')}</strong> / <strong>Chia tỷ lệ</strong>.
                 </div>
               )}
             </div>
@@ -610,8 +612,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           <div className="flex items-center gap-3">
             <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
               {taskMode === "nup" || taskMode === "sticker_imposer"
-                ? "SL MỖI LOẠI"
-                : "SỐ LƯỢNG"}
+                ? t('imposition.gridSettings:sl_moi_loai')
+                : t('imposition.gridSettings:so_luong')}
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <input
@@ -625,15 +627,15 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 style={{ paddingLeft: "9px", paddingRight: "8px" }}
                 placeholder={
                   taskMode === "nup" || taskMode === "sticker_imposer"
-                    ? "Trống = Tự động lấp đầy 1 tờ"
-                    : "0 = Xếp tối đa trên 1 tờ"
+                    ? t('imposition.gridSettings:trong_tu_dong_lap_day_1_to')
+                    : t('imposition.gridSettings:0_xep_toi_da_tren_1_to')
                 }
               />
               {sourceTotalPages > 1 ? (
                 <button
                   onClick={() => setShowPageQuantities(!showPageQuantities)}
                   className={`shrink-0 w-8 h-8 rounded flex items-center justify-center transition-colors ${showPageQuantities ? "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400" : "bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"}`}
-                  title="Cài đặt số lượng in riêng cho từng trang"
+                  title={t('imposition.gridSettings:cai_dat_so_luong_in_rieng_cho_tung')}
                 >
                   <svg
                     className={`w-4 h-4 transition-transform duration-200 ${showPageQuantities ? "rotate-180" : ""}`}
@@ -661,7 +663,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 {/* Dán cột số lượng từ Excel → điền theo thứ tự trang (bỏ gõ tay từng ô) */}
                 <div className="pb-2 mb-1 border-b border-slate-200 dark:border-white/10 space-y-1.5">
                   <div className="text-[10px] font-bold text-slate-500 uppercase">
-                    Dán số lượng từ Excel
+                    {t('imposition.gridSettings:dan_so_luong_tu_excel')}
                   </div>
                   <textarea
                     value={pasteText}
@@ -675,7 +677,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                       onClick={fillQuantitiesFromPaste}
                       className="px-3 h-7 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold transition-colors"
                     >
-                      Điền số lượng
+                      {t('imposition.gridSettings:dien_so_luong')}
                     </button>
                     {pasteStatus && (
                       <span
@@ -694,7 +696,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
 
                 <div className="text-[10px] text-slate-500 mb-2 italic">
                   Để trống để dùng chung số lượng (
-                  {targetQuantity === 0 ? "Mặc định" : targetQuantity})
+                  {targetQuantity === 0 ? t('imposition.gridSettings:mac_dinh') : targetQuantity})
                 </div>
 
                 {/* Header: N-Up mode hides T/Tờ and Số Tờ columns (sticker_imposer vẫn hiện để biết số tờ cần in) */}
@@ -704,7 +706,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                       Trang
                     </div>
                     <div className="text-[10px] font-bold text-slate-500 uppercase">
-                      Số lượng
+                      {t('imposition.gridSettings:so_luong_2')}
                     </div>
                   </div>
                 ) : (
@@ -713,23 +715,23 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                       Trang
                     </div>
                     <div className="text-[10px] font-bold text-slate-500 uppercase">
-                      Số lượng
+                      {t('imposition.gridSettings:so_luong_2')}
                     </div>
                     <div
                       className="text-[10px] font-bold text-slate-500 uppercase text-center"
-                      title="Số tem (sản phẩm) bình được trên mỗi tờ in"
+                      title={t('imposition.gridSettings:so_tem_san_pham_binh_duoc_tren_moi_to')}
                     >
-                      Tem/tờ
+                      {t('imposition.gridSettings:tem_to')}
                     </div>
                     <div className="text-[10px] font-bold text-slate-500 uppercase text-right">
-                      Số tờ
+                      {t('imposition.gridSettings:so_to')}
                     </div>
                     {_isCnc && (
                       <div
                         className="text-[10px] font-bold text-slate-500 uppercase text-right"
-                        title="Số con in thực tế = Tem/tờ × số tờ in (luôn dư so với SL đặt)"
+                        title={t('imposition.gridSettings:so_con_in_thuc_te_tem_to_so_to_in_luon')}
                       >
-                        SL thực
+                        {t('imposition.gridSettings:sl_thuc')}
                       </div>
                     )}
                   </div>
@@ -785,7 +787,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                           targetQuantity === 0
                             ? isNup
                               ? "1"
-                              : "Mặc định"
+                              : t('imposition.gridSettings:mac_dinh')
                             : targetQuantity.toString()
                         }
                         className="w-full h-7 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-xs focus:outline-none focus:border-indigo-500"
@@ -802,7 +804,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                           {_isCnc && (
                             <div
                               className="text-[10px] text-right leading-tight"
-                              title="Số con in thực tế = Tem/tờ × số tờ in (luôn dư so với SL đặt)"
+                              title={t('imposition.gridSettings:so_con_in_thuc_te_tem_to_so_to_in_luon')}
                             >
                               {cap > 0 && qty > 0 ? (
                                 <>
@@ -828,7 +830,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 {!(taskMode === "nup") && (
                   <div className="mt-2 pt-2 border-t border-slate-200 dark:border-white/10 flex justify-between items-center">
                     <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400">
-                      TỔNG SỐ TỜ DỰ KIẾN:
+                      {t('imposition.gridSettings:tong_so_to_du_kien')}
                     </span>
                     <span className="text-[13px] font-bold text-indigo-600 dark:text-indigo-400">
                       {_isCnc ? cncGlobalSheets : Array.from({ length: (duplexFlow === "double" && activeTool !== "sticker_imposer") ? Math.ceil(sourceTotalPages / 2) : sourceTotalPages }).reduce(
@@ -898,7 +900,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   onClick={() => setInfoModal(null)}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors"
                 >
-                  Đã hiểu
+                  {t('imposition.gridSettings:da_hieu')}
                 </button>
               </div>
             </div>

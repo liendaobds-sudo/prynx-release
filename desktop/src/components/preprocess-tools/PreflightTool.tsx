@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
+import { useTranslation } from 'react-i18next';
 
 // ── Constants ──
 const I = {
@@ -59,6 +60,7 @@ interface Props {
 }
 
 export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onOpenOutputPreview }: Props) {
+  const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [selectedRules, setSelectedRules] = useState<Set<string>>(new Set());
   const [selectedActions, setSelectedActions] = useState<Set<string>>(new Set());
@@ -82,7 +84,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
     if (fileId) return fileId;
-    if (!pdfFile) throw new Error('Chưa có file PDF');
+    if (!pdfFile) throw new Error(t('preprocess.preflight:chua_co_file_pdf'));
     const result = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(result.id);
     return result.id;
@@ -98,7 +100,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, rules: Array.from(selectedRules), tac_threshold: 300 }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Lỗi kiểm tra');
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preprocess.preflight:loi_kiem_tra'));
       setReport(await res.json());
     } catch (e: any) { setError(e.message); }
     finally { setIsInspecting(false); }
@@ -115,7 +117,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fid, actions }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Lỗi');
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preprocess.preflight:loi'));
       const data = await res.json();
       setFixResult(data);
 
@@ -151,7 +153,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                 className="flex items-center gap-2 group"
             >
                 <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
-                    🔍 CHẨN ĐOÁN (TÙY CHỌN)
+                    {t('preprocess.preflight:chan_doan_tuy_chon')}
                 </span>
                 <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isInspectOpen ? 'rotate-180' : ''}`} />
             </button>
@@ -165,7 +167,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                 }}
                 className="text-[11px] font-medium text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-500/10 px-2 py-0.5 rounded transition-colors"
             >
-                {selectedRules.size === RULES.length ? 'Bỏ chọn hết' : 'Chọn tất cả'}
+                {selectedRules.size === RULES.length ? t('preprocess.preflight:bo_chon_het') : t('preprocess.preflight:chon_tat_ca')}
             </button>
         </div>
 
@@ -207,19 +209,19 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                 className="flex-1 px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700"
               >
                 {isInspecting ? (
-                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang quét...</>
+                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.preflight:dang_quet')}</>
                 ) : (
-                  <>🔍 Quét Preflight</>
+                  <>{t('preprocess.preflight:quet_preflight')}</>
                 )}
               </button>
               
               {onOpenOutputPreview && (
                   <button 
                     onClick={onOpenOutputPreview}
-                    title="Mở Output Preview (Phân tách kẽm màu)"
+                    title={t('preprocess.preflight:mo_output_preview_phan_tach_kem_mau')}
                     className="flex-1 px-2.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors flex items-center justify-center gap-2 border border-teal-700"
                   >
-                    👁️ Xem trước bản in
+                    {t('preprocess.preflight:xem_truoc_ban_in')}
                   </button>
               )}
             </div>
@@ -234,15 +236,15 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
         <div className="space-y-2" style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #e2e8f0' }}>
           <div className="flex gap-1.5">
             <MiniCard className="flex-1" icon="📄" label="Trang" value={String(report.total_pages)} />
-            <MiniCard className="flex-1" icon="⚠️" label="Lỗi" value={String(report.issues?.length || 0)} />
+            <MiniCard className="flex-1" icon="⚠️" label={t('preprocess.preflight:loi')} value={String(report.issues?.length || 0)} />
             {selectedRules.has('COLOR_RGB_DETECTED') && (
-              <MiniCard className="flex-1" icon="🎨" label="Màu" value={report.color_summary?.dominant_space || '—'} />
+              <MiniCard className="flex-1" icon="🎨" label={t('preprocess.preflight:mau')} value={report.color_summary?.dominant_space || '—'} />
             )}
           </div>
 
           {report.issues?.length > 0 && (
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-500 uppercase">Danh sách lỗi</label>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.preflight:danh_sach_loi')}</label>
               <div className="max-h-[180px] overflow-y-auto space-y-1 pr-1">
                 {report.issues.map((issue: any, i: number) => (
                   <div key={i} 
@@ -264,7 +266,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
 
           {report.issues?.length === 0 && (
             <div className="text-center py-2 text-emerald-600 dark:text-emerald-400 text-[12px] font-bold">
-              ✅ Không phát hiện lỗi nào trong các mục đã chọn!
+              {t('preprocess.preflight:khong_phat_hien_loi_nao_trong_cac_muc')}
             </div>
           )}
 
@@ -273,9 +275,9 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
               <div className="flex gap-2">
                 <span className="text-sm">⚠️</span>
                 <div className="flex-1">
-                  <h4 className="text-[11px] font-bold text-red-600 dark:text-red-400 leading-tight">Cảnh báo rủi ro sai Font</h4>
+                  <h4 className="text-[11px] font-bold text-red-600 dark:text-red-400 leading-tight">{t('preprocess.preflight:canh_bao_rui_ro_sai_font')}</h4>
                   <p className="text-[10px] text-red-700/80 dark:text-red-300/80 mt-0.5 leading-snug">
-                    File thiếu font gốc. <b>Khóa Font</b> / <b>Nhúng Font</b> có thể thay bằng font mặc định.
+                    {t('preprocess.preflight:file_thieu_font_goc')} <b>{t('preprocess.preflight:khoa_font')}</b> / <b>{t('preprocess.preflight:nhung_font')}</b> {t('preprocess.preflight:co_the_thay_bang_font_mac_dinh')}
                   </p>
                 </div>
               </div>
@@ -295,7 +297,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
           className="w-full flex items-center justify-center gap-2 mb-3 group"
         >
           <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
-            🛠️ SỬA LỖI (CHẠY TRỰC TIẾP)
+            {t('preprocess.preflight:sua_loi_chay_truc_tiep')}
           </span>
           <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isFixOpen ? 'rotate-180' : ''}`} />
         </button>
@@ -341,7 +343,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                 className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700"
               >
                 {fixingAction ? (
-                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang sửa...</>
+                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.preflight:dang_sua')}</>
                 ) : (
                   <>🚀 Thực thi ({selectedActions.size})</>
                 )}
@@ -355,14 +357,14 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
       {fixResult && (
         <div className={`p-3 rounded-lg border ${fixResult.success ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
           <h4 className={`text-[11px] font-bold mb-1 ${fixResult.success ? 'text-emerald-600' : 'text-red-600'}`}>
-            {fixResult.success ? '✅ Thành công!' : '❌ Thất bại'}
+            {fixResult.success ? t('preprocess.preflight:thanh_cong') : t('preprocess.preflight:that_bai')}
           </h4>
           {fixResult.log?.map((e: any, i: number) => (
             <p key={i} className="text-[10px] text-slate-600 dark:text-zinc-300">{e.status === 'success' ? '✅' : '❌'} {e.message} ({e.duration_ms}ms)</p>
           ))}
           {fixResult.success && (
             <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">
-              ✅ File đã được cập nhật trên Viewer.
+              {t('preprocess.preflight:file_da_duoc_cap_nhat_tren_viewer')}
             </p>
           )}
           {fixResult.error && <p className="text-[10px] text-red-500 mt-1">{fixResult.error}</p>}

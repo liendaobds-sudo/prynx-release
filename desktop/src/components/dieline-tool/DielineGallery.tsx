@@ -5,6 +5,7 @@
 
 import React from 'react';
 import { BoxParams } from '../../lib/dieline/types';
+import { useTranslation } from 'react-i18next';
 
 interface BoxTypeCard {
     type: BoxParams['boxType'];
@@ -107,16 +108,17 @@ interface DielineGalleryProps {
 }
 
 export default function DielineGallery({ onSelect }: DielineGalleryProps) {
+  const { t } = useTranslation();
     return (
         <div className="dt-gallery">
             <header className="dt-gallery-header">
                 <div className="dt-gallery-header-text">
                     <h1 className="dt-gallery-title">
                         <span className="dt-gallery-title-icon">📦</span>
-                        Khuôn bế Bao bì
+                        {t('dieline.dielineGallery:khuon_be_bao_bi')}
                     </h1>
                     <p className="dt-gallery-subtitle">
-                        Chọn loại khuôn bao bì để bắt đầu thiết kế. Hỗ trợ 8 loại hộp tiêu chuẩn quốc tế.
+                        {t('dieline.dielineGallery:chon_loai_khuon_bao_bi_de_bat_dau_thiet')}
                     </p>
                 </div>
             </header>

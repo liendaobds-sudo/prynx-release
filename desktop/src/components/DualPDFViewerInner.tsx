@@ -5,6 +5,7 @@ import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { useTranslation } from 'react-i18next';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -210,6 +211,7 @@ function DualPDFViewerInner({
   scrollToPage,
   focusedRegion,
 }: Props) {
+  const { t } = useTranslation();
   const [leftNumPages, setLeftNumPages] = useState(0);
   const [rightNumPages, setRightNumPages] = useState(0);
   
@@ -364,13 +366,13 @@ function DualPDFViewerInner({
           style={{ width: `${leftPanePercent}%` }}
         >
           <div className="text-center text-xs font-semibold text-slate-600 dark:text-zinc-400 p-2 bg-slate-100/80 dark:bg-zinc-900/80 border-b border-black/5 dark:border-white/10 shrink-0 transition-colors">
-            📄 PDF GỐC (Trước khi sửa)
+            {t('misc.dualPDFViewerInner:pdf_goc_truoc_khi_sua')}
           </div>
           <Document
             file={leftPdfUrl}
             onLoadSuccess={({ numPages: n }) => setLeftNumPages(n)}
-            loading={<div className="text-center p-8 text-slate-500 dark:text-zinc-400 transition-colors">Đang tải PDF...</div>}
-            error={<div className="text-center p-8 text-red-500 dark:text-red-400 transition-colors">Không thể tải PDF</div>}
+            loading={<div className="text-center p-8 text-slate-500 dark:text-zinc-400 transition-colors">{t('misc.dualPDFViewerInner:dang_tai_pdf')}</div>}
+            error={<div className="text-center p-8 text-red-500 dark:text-red-400 transition-colors">{t('misc.dualPDFViewerInner:khong_the_tai_pdf')}</div>}
             className="flex-1 flex flex-col relative min-h-0"
           >
             {leftNumPages > 0 && (
@@ -457,7 +459,7 @@ function DualPDFViewerInner({
               <button 
                 onClick={(e) => { e.stopPropagation(); setIsRightFullscreen(true); }}
                 className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-md border transition-all z-[60] bg-red-50 dark:bg-red-900/30 hover:bg-red-100 dark:hover:bg-red-900/50 text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 border-red-200 dark:border-red-500/30"
-                title="Toàn màn hình"
+                title={t('misc.dualPDFViewerInner:toan_man_hinh')}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
               </button>
@@ -468,7 +470,7 @@ function DualPDFViewerInner({
             <button 
               className="fixed top-6 right-6 w-12 h-12 rounded-full bg-white dark:bg-zinc-800 hover:bg-slate-50 dark:hover:bg-zinc-700 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-white flex items-center justify-center transition-all z-[110] shadow-2xl backdrop-blur-md"
               onClick={(e) => { e.stopPropagation(); setIsRightFullscreen(false); }}
-              title="Đóng (Esc)"
+              title={t('misc.dualPDFViewerInner:dong_esc')}
             >
               ✕
             </button>
@@ -477,8 +479,8 @@ function DualPDFViewerInner({
           <Document
             file={rightPdfUrl}
             onLoadSuccess={({ numPages: n }) => setRightNumPages(n)}
-            loading={<div className="text-center p-8 text-slate-500 dark:text-zinc-400 transition-colors">Đang tải PDF...</div>}
-            error={<div className="text-center p-8 text-red-500 dark:text-red-400 transition-colors">Không thể tải PDF</div>}
+            loading={<div className="text-center p-8 text-slate-500 dark:text-zinc-400 transition-colors">{t('misc.dualPDFViewerInner:dang_tai_pdf')}</div>}
+            error={<div className="text-center p-8 text-red-500 dark:text-red-400 transition-colors">{t('misc.dualPDFViewerInner:khong_the_tai_pdf')}</div>}
             className="flex-1 flex flex-col relative min-h-0"
           >
             {rightNumPages > 0 && (

@@ -3,6 +3,7 @@ import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   pdfFile: File | null;
@@ -73,6 +74,7 @@ const CHECK_HELP: Record<string, CheckHelp> = {
 };
 
 export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [standard, setStandard] = useState<'x1a' | 'x4'>('x4');
   const [checks, setChecks] = useState<CheckItem[]>([]);
@@ -96,7 +98,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
     if (fileId) return fileId;
-    if (!pdfFile) throw new Error('Chưa có file PDF');
+    if (!pdfFile) throw new Error(t('preprocess.savePdfx:chua_co_file_pdf'));
     const r = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(r.id);
     return r.id;
@@ -135,7 +137,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
     setExporting(false);
   };
 
-  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">Vui lòng mở file PDF trước</div>;
+  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.savePdfx:vui_long_mo_file_pdf_truoc')}</div>;
 
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
@@ -145,7 +147,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
         <div className="flex items-center justify-between mb-3">
           <button onClick={() => setIsStandardOpen(!isStandardOpen)} className="flex items-center gap-2 group">
             <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
-              📄 CHỌN CHUẨN PDF/X
+              {t('preprocess.savePdfx:chon_chuan_pdf_x')}
             </span>
             <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isStandardOpen ? 'rotate-180' : ''}`} />
           </button>
@@ -181,11 +183,11 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
 
             {/* Comparison Table */}
             <div className="mt-3 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2">So sánh chuẩn</span>
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2">{t('preprocess.savePdfx:so_sanh_chuan')}</span>
               <table className="w-full text-[10px]">
                 <thead>
                   <tr className="text-slate-400 border-b border-slate-100 dark:border-white/5">
-                    <th className="text-left font-medium pb-1.5 pr-2">Tính năng</th>
+                    <th className="text-left font-medium pb-1.5 pr-2">{t('preprocess.savePdfx:tinh_nang')}</th>
                     <th className="text-center font-medium pb-1.5 px-2">X-1a</th>
                     <th className="text-center font-medium pb-1.5 pl-2">X-4</th>
                   </tr>
@@ -206,7 +208,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
             <div style={{ marginTop: '12px' }} className="flex gap-2">
               <button onClick={checkCompliance} disabled={checking}
                 className="flex-1 px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
-                {checking ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang kiểm tra...</>) : (<>🔍 Kiểm tra Compliance</>)}
+                {checking ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.savePdfx:dang_kiem_tra')}</>) : (<>{t('preprocess.savePdfx:kiem_tra_compliance')}</>)}
               </button>
             </div>
           </div>
@@ -216,7 +218,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
       {/* ═══ COMPLIANCE REPORT ═══ */}
       {checks.length > 0 && (
         <div className="space-y-2" style={{ paddingTop: '12px', borderTop: '1px solid #e2e8f0' }}>
-          <label className="text-[10px] font-bold text-slate-500 uppercase">Kết quả kiểm tra</label>
+          <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.savePdfx:ket_qua_kiem_tra')}</label>
           <div className="space-y-1">
             {checks.map((c) => (
               <div key={c.id} className={`p-2 rounded border-l-2 flex flex-col gap-1 ${
@@ -228,7 +230,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
                   {CHECK_HELP[c.id] && (
                     <button
                       onClick={() => setHelpFor(c)}
-                      title="Giải thích lỗi này"
+                      title={t('preprocess.savePdfx:giai_thich_loi_nay')}
                       className="shrink-0 w-4 h-4 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/10 text-[10px] font-bold opacity-70 hover:opacity-100 transition-opacity">
                       ?
                     </button>
@@ -262,14 +264,14 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
       <div className="h-px w-full bg-slate-200 dark:bg-zinc-700" />
       <button onClick={exportPdfx} disabled={exporting}
         className="w-full px-2.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-teal-700">
-        {exporting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang xuất...</>) : (<>🚀 Xuất {standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4'}</>)}
+        {exporting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.savePdfx:dang_xuat')}</>) : (<>🚀 Xuất {standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4'}</>)}
       </button>
 
       {/* ═══ STATUS ═══ */}
       {status && (
         <div className={`p-3 rounded-lg border ${status.startsWith('✅') ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
           <h4 className={`text-[11px] font-bold ${status.startsWith('✅') ? 'text-emerald-600' : 'text-red-600'}`}>{status}</h4>
-          {status.startsWith('✅') && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">✅ File đã được cập nhật trên Viewer.</p>}
+          {status.startsWith('✅') && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">{t('preprocess.savePdfx:file_da_duoc_cap_nhat_tren_viewer')}</p>}
         </div>
       )}
 
@@ -288,15 +290,15 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
             </div>
             <div className="p-4 space-y-3 text-[12px] leading-relaxed text-slate-600 dark:text-zinc-300">
               <div>
-                <h4 className="font-bold text-slate-700 dark:text-zinc-200 mb-1">Kiểm tra gì?</h4>
+                <h4 className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.savePdfx:kiem_tra_gi')}</h4>
                 <p>{CHECK_HELP[helpFor.id].what}</p>
               </div>
               <div>
-                <h4 className="font-bold text-slate-700 dark:text-zinc-200 mb-1">Vì sao quan trọng?</h4>
+                <h4 className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.savePdfx:vi_sao_quan_trong')}</h4>
                 <p>{CHECK_HELP[helpFor.id].why}</p>
               </div>
               <div className="rounded-lg bg-teal-50 dark:bg-teal-500/10 border border-teal-100 dark:border-teal-500/20 p-3">
-                <h4 className="font-bold text-teal-700 dark:text-teal-300 mb-1">Cách khắc phục</h4>
+                <h4 className="font-bold text-teal-700 dark:text-teal-300 mb-1">{t('preprocess.savePdfx:cach_khac_phuc')}</h4>
                 <p className="text-teal-800 dark:text-teal-200">{CHECK_HELP[helpFor.id].fix}</p>
               </div>
             </div>

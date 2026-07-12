@@ -6,6 +6,7 @@ import {
     ToolNumberInput, ToolInfo 
 } from './ToolUI';
 import { ArrowLeft, ArrowRight, RotateCw, Trash2, Plus } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 const inputCls = "w-full h-8 px-2.5 text-[12px] border border-slate-300 dark:border-white/20 rounded-md bg-white dark:bg-zinc-900 font-medium focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/20 transition-all";
 
@@ -25,6 +26,7 @@ interface Props {
 type TabId = 'quick' | 'preset' | 'custom';
 
 export default function ShuffleTool({ settings, onChange }: Props) {
+  const { t } = useTranslation();
     const [localRule, setLocalRule] = useState(settings.rule);
     const [parentRef] = useAutoAnimate<HTMLDivElement>({ duration: 150 });
     const [activeTab, setActiveTab] = useState<TabId>(() => {
@@ -51,14 +53,14 @@ export default function ShuffleTool({ settings, onChange }: Props) {
             } else {
                 const rules = parseRule(localRule || settings.rule);
                 if (rules.length === 0) {
-                    setPreviewStr('Vui lòng nhập chuỗi quy tắc hợp lệ.');
+                    setPreviewStr(t('preprocess.shuffle:vui_long_nhap_chuoi_quy_tac_hop_le'));
                     return;
                 }
                 mapping = applyRule(rules, simulatedPages, settings.groupSize || 1, settings.mode);
             }
             
             const displayMapping = mapping.slice(0, 32).map(m => {
-                if (m.srcPage === -1) return 'Trống';
+                if (m.srcPage === -1) return t('preprocess.shuffle:trong');
                 let str = (m.srcPage + 1).toString();
                 if (m.rotation === 180) str += '*';
                 if (m.rotation === 90) str += '>';
@@ -70,7 +72,7 @@ export default function ShuffleTool({ settings, onChange }: Props) {
             if (mapping.length > 32) res += '...';
             setPreviewStr(`[${res}]`);
         } catch (e) {
-            setPreviewStr('Quy tắc không hợp lệ.');
+            setPreviewStr(t('preprocess.shuffle:quy_tac_khong_hop_le'));
         }
     }, [activeTab, settings, localRule]);
 
@@ -116,9 +118,9 @@ export default function ShuffleTool({ settings, onChange }: Props) {
             {/* Tabs */}
             <div className="flex bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-lg border border-slate-200 dark:border-white/5">
                 {[
-                    { id: 'quick', label: 'Tác vụ cơ bản' },
-                    { id: 'preset', label: 'Mẫu bình bài' },
-                    { id: 'custom', label: 'Tùy chỉnh' }
+                    { id: 'quick', label: t('preprocess.shuffle:tac_vu_co_ban') },
+                    { id: 'preset', label: t('preprocess.shuffle:mau_binh_bai') },
+                    { id: 'custom', label: t('preprocess.shuffle:tuy_chinh') }
                 ].map(tab => (
                     <button
                         key={tab.id}
@@ -138,32 +140,32 @@ export default function ShuffleTool({ settings, onChange }: Props) {
             <div className="min-h-[140px]">
                 {activeTab === 'quick' && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 flex flex-col gap-2">
-                        <ToolSectionLabel>Chọn tác vụ nhanh</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.shuffle:chon_tac_vu_nhanh')}</ToolSectionLabel>
                         <div className="grid grid-cols-2 gap-2">
                             <ToolCardOption 
                                 selected={settings.specialAction === 'split_odd_even'} 
                                 onClick={() => handleSpecialAction('split_odd_even')} 
-                                label="Tách Chẵn / Lẻ" desc="Tạo 2 Tab mới hoàn toàn độc lập"
+                                label={t('preprocess.shuffle:tach_chan_le')} desc={t('preprocess.shuffle:tao_2_tab_moi_hoan_toan_doc_lap')}
                             />
                             <ToolCardOption 
                                 selected={settings.specialAction === 'reverse'} 
                                 onClick={() => handleSpecialAction('reverse')} 
-                                label="Đảo Ngược" desc="1, 2, 3 ➔ 3, 2, 1"
+                                label={t('preprocess.shuffle:dao_nguoc')} desc="1, 2, 3 ➔ 3, 2, 1"
                             />
                             <ToolCardOption 
                                 selected={settings.specialAction === 'reverse_even'} 
                                 onClick={() => handleSpecialAction('reverse_even')} 
-                                label="Đảo trang Chẵn" desc="Lật mặt in 2 mặt"
+                                label={t('preprocess.shuffle:dao_trang_chan')} desc={t('preprocess.shuffle:lat_mat_in_2_mat')}
                             />
                             <ToolCardOption 
                                 selected={settings.specialAction === 'odd_first'} 
                                 onClick={() => handleSpecialAction('odd_first')} 
-                                label="Lẻ trước / Chẵn sau" desc="1, 3, 5, 2, 4, 6"
+                                label={t('preprocess.shuffle:le_truoc_chan_sau')} desc="1, 3, 5, 2, 4, 6"
                             />
                             <ToolCardOption 
                                 selected={settings.specialAction === 'interleave'} 
                                 onClick={() => handleSpecialAction('interleave')} 
-                                label="Trộn xen kẽ" desc="Ghép file chẵn/lẻ"
+                                label={t('preprocess.shuffle:tron_xen_ke')} desc={t('preprocess.shuffle:ghep_file_chan_le')}
                             />
                         </div>
                     </div>
@@ -171,30 +173,30 @@ export default function ShuffleTool({ settings, onChange }: Props) {
 
                 {activeTab === 'preset' && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 flex flex-col gap-2">
-                        <ToolSectionLabel>Chọn mẫu xáo trộn</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.shuffle:chon_mau_xao_tron')}</ToolSectionLabel>
                         <select
                             value={settings.presetId}
                             onChange={(e) => handlePresetChange(e.target.value)}
                             className={inputCls}
                         >
-                            <optgroup label="Saddle Stitch (Bấm giữa)">
+                            <optgroup label={t('preprocess.shuffle:saddle_stitch_bam_giua')}>
                                 {SHUFFLE_PRESETS.filter(p => p.mode === 'saddle').map(p => (
                                     <option key={p.id} value={p.id}>{p.name}</option>
                                 ))}
                             </optgroup>
-                            <optgroup label="Thread (Bóc tép)">
+                            <optgroup label={t('preprocess.shuffle:thread_boc_tep')}>
                                 {SHUFFLE_PRESETS.filter(p => p.id.startsWith('thread')).map(p => (
                                     <option key={p.id} value={p.id}>{p.name}</option>
                                 ))}
                             </optgroup>
-                            <optgroup label="Cut & Stack (Cắt & Xếp chồng)">
+                            <optgroup label={t('preprocess.shuffle:cut_stack_cat_xep_chong')}>
                                 {SHUFFLE_PRESETS.filter(p => p.mode.startsWith('cut_stack')).map(p => (
                                     <option key={p.id} value={p.id}>{p.name}</option>
                                 ))}
                             </optgroup>
                         </select>
                         <div className="text-[11px] text-slate-500 italic mt-2 ml-1">
-                            * {getPresetById(settings.presetId)?.description || 'Mẫu cấu hình sẵn cho các kiểu đóng cuốn.'}
+                            * {getPresetById(settings.presetId)?.description || t('preprocess.shuffle:mau_cau_hinh_san_cho_cac_kieu_dong_cuon')}
                         </div>
                     </div>
                 )}
@@ -204,28 +206,28 @@ export default function ShuffleTool({ settings, onChange }: Props) {
                         
                         <div className="grid grid-cols-2 gap-3 mt-1 p-3 bg-slate-50 dark:bg-zinc-800/30 rounded-lg border border-slate-200 dark:border-white/5">
                             <ToolNumberInput 
-                                label="Số trang/nhóm (Group Size)"
+                                label={t('preprocess.shuffle:so_trang_nhom_group_size')}
                                 value={settings.groupSize}
                                 onChange={val => onChange({ ...settings, groupSize: val || 1 })}
                                 step={1}
                             />
                             <div>
-                                <span className="text-[10px] font-medium text-slate-500 block mb-1">Cách lặp</span>
+                                <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.shuffle:cach_lap')}</span>
                                 <select
                                     value={settings.mode}
                                     onChange={(e) => onChange({ ...settings, mode: e.target.value as RepeatMode })}
                                     className={inputCls}
                                 >
-                                    <option value="normal">Normal (Lặp group)</option>
-                                    <option value="saddle">Saddle (Kéo giãn)</option>
-                                    <option value="cut_stack_1side">Cut & Stack (1 mặt)</option>
-                                    <option value="cut_stack_2side">Cut & Stack (2 mặt)</option>
+                                    <option value="normal">{t('preprocess.shuffle:normal_lap_group')}</option>
+                                    <option value="saddle">{t('preprocess.shuffle:saddle_keo_gian')}</option>
+                                    <option value="cut_stack_1side">{t('preprocess.shuffle:cut_stack_1_mat')}</option>
+                                    <option value="cut_stack_2side">{t('preprocess.shuffle:cut_stack_2_mat')}</option>
                                 </select>
                             </div>
                         </div>
 
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Quy tắc xáo trộn (Thứ tự mới)</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.shuffle:quy_tac_xao_tron_thu_tu_moi')}</ToolSectionLabel>
                             
                             {/* Cards Area */}
                             <div 
@@ -242,7 +244,7 @@ export default function ShuffleTool({ settings, onChange }: Props) {
                                     };
 
                                     if (parsedRules.length === 0) {
-                                        return <div className="text-[11px] text-slate-400 italic flex items-center justify-center w-full h-full">Chưa có trang nào. Hãy thêm ở bên dưới.</div>;
+                                        return <div className="text-[11px] text-slate-400 italic flex items-center justify-center w-full h-full">{t('preprocess.shuffle:chua_co_trang_nao_hay_them_o_ben_duoi')}</div>;
                                     }
 
                                     return parsedRules.map((rule, idx) => {
@@ -258,7 +260,7 @@ export default function ShuffleTool({ settings, onChange }: Props) {
                                                             updateRules(newRules);
                                                         }}
                                                         className="text-slate-400 hover:text-red-500 transition-colors"
-                                                        title="Xóa"
+                                                        title={t('preprocess.shuffle:xoa')}
                                                     ><Trash2 size={10} /></button>
                                                     <button 
                                                         onClick={() => {
@@ -278,7 +280,7 @@ export default function ShuffleTool({ settings, onChange }: Props) {
                                                         className="font-bold text-[14px] text-slate-700 dark:text-zinc-200 transition-transform duration-300"
                                                         style={{ transform: `rotate(${rule.rotation}deg)` }}
                                                     >
-                                                        {isBlank ? 'Trắng' : rule.pageIndex}
+                                                        {isBlank ? t('preprocess.shuffle:trang') : rule.pageIndex}
                                                     </div>
                                                 </div>
 
@@ -343,12 +345,12 @@ export default function ShuffleTool({ settings, onChange }: Props) {
                                     }}
                                     className="h-6 px-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-600 dark:text-zinc-300 text-[11px] font-bold rounded flex items-center gap-1 transition-colors border border-slate-200 dark:border-white/10 shadow-sm ml-auto"
                                 >
-                                    <Plus size={10} strokeWidth={3} /> Trang trắng (X)
+                                    <Plus size={10} strokeWidth={3} /> {t('preprocess.shuffle:trang_trang_x')}
                                 </button>
                             </div>
                             
                             <div className="mt-2">
-                                <label className="text-[10px] text-slate-500 font-medium mb-1 block">Chuỗi quy tắc nội bộ (Đọc để kiểm tra)</label>
+                                <label className="text-[10px] text-slate-500 font-medium mb-1 block">{t('preprocess.shuffle:chuoi_quy_tac_noi_bo_doc_de_kiem_tra')}</label>
                                 <input
                                     type="text"
                                     value={localRule}
@@ -365,7 +367,7 @@ export default function ShuffleTool({ settings, onChange }: Props) {
             
             {/* Live Preview */}
             <div className="mt-2 bg-indigo-50/50 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-500/20 rounded-lg p-3">
-                <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider block mb-1">Live Preview (Mô phỏng)</span>
+                <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider block mb-1">{t('preprocess.shuffle:live_preview_mo_phong')}</span>
                 <div className="text-[11px] font-mono text-slate-700 dark:text-zinc-300 leading-relaxed break-words">
                     {previewStr}
                 </div>
@@ -375,7 +377,7 @@ export default function ShuffleTool({ settings, onChange }: Props) {
             </div>
             
             <ToolInfo desc={
-                <><strong>Ghi chú:</strong> Áp dụng tác vụ này sẽ tạo ra một file PDF mới với thứ tự trang đã được xáo trộn. Bạn có thể sử dụng file này để đưa vào bình bài nội dung (Booklet / N-Up) ở bước tiếp theo.</>
+                <><strong>{t('preprocess.shuffle:ghi_chu')}</strong> {t('preprocess.shuffle:ap_dung_tac_vu_nay_se_tao_ra_mot_file')}</>
             } />
         </div>
     );

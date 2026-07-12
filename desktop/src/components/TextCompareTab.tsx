@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react';
 import { Button } from './Button';
+import { useTranslation } from 'react-i18next';
 
 // Ngưỡng cảnh báo: trên mức này nên dùng so theo DÒNG cho nhanh.
 const BIG_INPUT_CHARS = 300_000;
 
 export default function TextCompareTab() {
+  const { t } = useTranslation();
   const [textA, setTextA] = useState('');
   const [textB, setTextB] = useState('');
   const [ignoreSpaces, setIgnoreSpaces] = useState(false);
@@ -47,7 +49,7 @@ export default function TextCompareTab() {
     worker.onmessage = (e: MessageEvent) => {
       const data = e.data;
       if (data?.ok) setDifferences(data.parts);
-      else { setError(data?.error || 'Lỗi khi so sánh văn bản'); setDifferences(null); }
+      else { setError(data?.error || t('tabs.textCompare:loi_khi_so_sanh_van_ban')); setDifferences(null); }
       setIsComparing(false);
       worker.terminate();
       if (workerRef.current === worker) workerRef.current = null;
@@ -73,34 +75,34 @@ export default function TextCompareTab() {
   return (
     <div className="flex flex-col h-full gap-6 animate-fade-in relative w-full max-w-5xl mx-auto px-6 lg:px-10 py-8 overflow-y-auto">
       <div className="text-center mb-6">
-        <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">📝 So sánh Văn bản</h2>
+        <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">{t('tabs.textCompare:so_sanh_van_ban')}</h2>
         <p className="text-slate-600 dark:text-zinc-400 transition-colors">
-          Phát hiện ngay lập tức lỗi gõ sai, thừa thiếu ký tự giữa Copywriter và Designer.
+          {t('tabs.textCompare:phat_hien_ngay_lap_tuc_loi_go_sai_thua')}
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full">
         <div className="flex flex-col">
           <label className="text-sm font-semibold text-slate-700 dark:text-zinc-300 mb-2 flex justify-between transition-colors">
-            Bản Gốc (Text 1)
+            {t('tabs.textCompare:ban_goc_text_1')}
           </label>
           <textarea
             value={textA}
             onChange={(e) => handleTextChangeA(e.target.value)}
             className="w-full h-48 bg-white dark:!bg-zinc-800 shadow-sm border border-slate-200/60 dark:!border-white/10 rounded-xl p-4 text-slate-900 dark:!text-zinc-200 placeholder-slate-400 dark:!placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-y transition-colors"
-            placeholder="Dán nội dung văn bản gốc vào đây..."
+            placeholder={t('tabs.textCompare:dan_noi_dung_van_ban_goc_vao_day')}
           />
         </div>
 
         <div className="flex flex-col">
           <label className="text-sm font-semibold text-slate-700 dark:text-zinc-300 mb-2 flex justify-between transition-colors">
-            Bản Đã Sửa (Text 2)
+            {t('tabs.textCompare:ban_da_sua_text_2')}
           </label>
           <textarea
             value={textB}
             onChange={(e) => handleTextChangeB(e.target.value)}
             className="w-full h-48 bg-white dark:!bg-zinc-800 shadow-sm border border-slate-200/60 dark:!border-white/10 rounded-xl p-4 text-slate-900 dark:!text-zinc-200 placeholder-slate-400 dark:!placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 resize-y transition-colors"
-            placeholder="Dán nội dung phiên bản mới vào đây..."
+            placeholder={t('tabs.textCompare:dan_noi_dung_phien_ban_moi_vao_day')}
           />
         </div>
       </div>
@@ -108,8 +110,8 @@ export default function TextCompareTab() {
       {/* Tuỳ chọn so sánh + cảnh báo văn bản lớn */}
       <div className="flex flex-wrap items-center justify-center gap-3 -mt-2">
         <div className="flex items-center gap-1 bg-slate-100 dark:bg-zinc-800 rounded-lg p-0.5 text-[12px]">
-          <button onClick={() => { setMode('word'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'word' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>So theo Từ</button>
-          <button onClick={() => { setMode('line'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'line' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>So theo Dòng</button>
+          <button onClick={() => { setMode('word'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'word' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>{t('tabs.textCompare:so_theo_tu')}</button>
+          <button onClick={() => { setMode('line'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'line' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>{t('tabs.textCompare:so_theo_dong')}</button>
         </div>
         {isBig && (
           <span className="text-[12px] text-amber-600 dark:text-amber-400">⚠️ Văn bản lớn (~{Math.round(totalLen / 1000)}K ký tự) — nên chọn "So theo Dòng" cho nhanh.</span>
@@ -128,10 +130,10 @@ export default function TextCompareTab() {
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              Đang phân tích text...
+              {t('tabs.textCompare:dang_phan_tich_text')}
             </span>
           ) : (
-            "🚀 Tiến hành so sánh Text"
+            t('tabs.textCompare:tien_hanh_so_sanh_text')
           )}
         </Button>
       </div>
@@ -139,11 +141,11 @@ export default function TextCompareTab() {
       <div className="glass-card p-6 min-h-[250px] flex flex-col transition-colors">
         <div className="flex justify-between items-end mb-4 border-b border-slate-200 dark:border-white/10 pb-4 transition-colors">
           <div>
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-white transition-colors">Kết quả phân tích</h3>
+            <h3 className="text-lg font-semibold text-slate-900 dark:text-white transition-colors">{t('tabs.textCompare:ket_qua_phan_tich')}</h3>
             {hasDifferences ? (
-              <p className="text-sm text-amber-600 mt-1">⚠️ Phát hiện có sự thay đổi nội dung</p>
+              <p className="text-sm text-amber-600 mt-1">{t('tabs.textCompare:phat_hien_co_su_thay_doi_noi_dung')}</p>
             ) : (
-              (textA || textB) && <p className="text-sm text-emerald-600 mt-1">✅ Hai đoạn văn bản giống nhau hoàn toàn</p>
+              (textA || textB) && <p className="text-sm text-emerald-600 mt-1">{t('tabs.textCompare:hai_doan_van_ban_giong_nhau_hoan_toan')}</p>
             )}
           </div>
           
@@ -166,7 +168,7 @@ export default function TextCompareTab() {
                 className="hidden"
               />
               <span className="text-sm text-slate-700 dark:text-zinc-300 font-medium">
-                Bỏ qua khoảng trống (Space)
+                {t('tabs.textCompare:bo_qua_khoang_trong_space')}
               </span>
             </label>
             
@@ -175,13 +177,13 @@ export default function TextCompareTab() {
                 style={{ padding: '8px 16px' }}
                 className="flex items-center gap-2 text-sm text-slate-600 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-900 shrink-0 whitespace-nowrap rounded-lg border border-slate-200 dark:!border-white/20 transition-colors"
               >
-                <span className="w-4 h-4 text-xs font-bold leading-none bg-red-100 text-red-700 border border-red-300 inline-flex items-center justify-center rounded-[3px] line-through">a</span> Nội dung bị xóa
+                <span className="w-4 h-4 text-xs font-bold leading-none bg-red-100 text-red-700 border border-red-300 inline-flex items-center justify-center rounded-[3px] line-through">a</span> {t('tabs.textCompare:noi_dung_bi_xoa')}
               </div>
               <div 
                 style={{ padding: '8px 16px' }}
                 className="flex items-center gap-2 text-sm text-slate-600 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-900 shrink-0 whitespace-nowrap rounded-lg border border-slate-200 dark:!border-white/20 transition-colors"
               >
-                <span className="w-4 h-4 text-xs font-bold leading-none bg-emerald-100 text-emerald-700 border border-emerald-300 inline-flex items-center justify-center rounded-[3px] underline">b</span> Nội dung thêm mới
+                <span className="w-4 h-4 text-xs font-bold leading-none bg-emerald-100 text-emerald-700 border border-emerald-300 inline-flex items-center justify-center rounded-[3px] underline">b</span> {t('tabs.textCompare:noi_dung_them_moi')}
               </div>
               <Button variant="secondary" size="sm" onClick={handleClear} className="ml-2">
                 Clear
@@ -193,7 +195,7 @@ export default function TextCompareTab() {
         <div className="w-full flex-1 bg-white dark:!bg-zinc-950 shadow-sm rounded-lg p-5 border border-slate-200 dark:!border-white/10 overflow-y-auto whitespace-pre-wrap font-mono text-[15px] leading-relaxed break-words text-slate-800 dark:!text-zinc-200 transition-colors">
           {isComparing ? (
             <div className="h-full flex items-center justify-center text-slate-400">
-               <span className="animate-pulse">Đang rà soát nội dung...</span>
+               <span className="animate-pulse">{t('tabs.textCompare:dang_ra_soat_noi_dung')}</span>
             </div>
           ) : !differences ? (
             <div className="h-full flex items-center justify-center text-slate-400 italic">

@@ -2,6 +2,7 @@ import { useCallback, useState, useRef } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { toast } from './ui/Toast';
+import { useTranslation } from 'react-i18next';
 
 interface PDFUploaderProps {
   label: string;
@@ -22,6 +23,7 @@ export default function PDFUploader({
   pageCount,
   accentColor = '#3b82f6',
 }: PDFUploaderProps) {
+  const { t } = useTranslation();
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -30,11 +32,11 @@ export default function PDFUploader({
       if (!files.length) return;
       const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
       if (!pdfs.length) {
-        toast.info('Vui lòng chọn hoặc thả file PDF');
+        toast.info(t('misc.pDFUploader:vui_long_chon_hoac_tha_file_pdf'));
         return;
       }
       if (pdfs[0].size > 500 * 1024 * 1024) {
-        toast.error('File quá lớn. Tối đa 500MB.');
+        toast.error(t('misc.pDFUploader:file_qua_lon_toi_da_500mb'));
         return;
       }
       onFileSelected(pdfs[0], pdfs);
@@ -131,7 +133,7 @@ export default function PDFUploader({
       {isUploading ? (
         <div className="flex flex-col items-center gap-3">
           <div className="w-10 h-10 border-3 border-blue-400 border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm text-slate-400 dark:text-zinc-500">Đang upload...</p>
+          <p className="text-sm text-slate-400 dark:text-zinc-500">{t('misc.pDFUploader:dang_upload')}</p>
         </div>
       ) : uploaded ? (
         <div className="flex flex-col items-center gap-3 animate-fade-in">
@@ -142,7 +144,7 @@ export default function PDFUploader({
               {pageCount} trang
             </span>
           )}
-          <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">Click để chọn file khác</p>
+          <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">{t('misc.pDFUploader:click_de_chon_file_khac')}</p>
         </div>
       ) : (
         <div className="flex flex-col items-center gap-3">
@@ -162,9 +164,9 @@ export default function PDFUploader({
             <p className="text-xs text-slate-400 dark:text-zinc-500">{sublabel}</p>
           </div>
           <p className="text-xs text-slate-400 dark:text-zinc-500 mt-2">
-            Kéo thả file PDF vào đây hoặc click để chọn
+            {t('misc.pDFUploader:keo_tha_file_pdf_vao_day_hoac_click_de')}
           </p>
-          <p className="text-xs text-slate-500 dark:text-zinc-400">Tối đa 500MB</p>
+          <p className="text-xs text-slate-500 dark:text-zinc-400">{t('misc.pDFUploader:toi_da_500mb')}</p>
         </div>
       )}
     </div>

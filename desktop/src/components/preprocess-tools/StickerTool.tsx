@@ -6,6 +6,7 @@ import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput, 
 import { RichSelect, ToolItem } from '../imposition-tools/SharedUI';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
     pdfFile: File | null;
@@ -37,6 +38,7 @@ const BLEED_COLOR_MODES_RECTANGLE = [
 ];
 
 export default function StickerTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
     const { setDetectedShapeType, setDetectedShapeParams } = useWorkspaceStore();
     const { setActiveDashboardTool } = useImposerSettingsStore();
@@ -122,7 +124,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 body: JSON.stringify({ file_id: currentFid, pages: null, margin_mm: 0 }),
             });
             const trimData = await trimRes.json();
-            if (!trimData.success) throw new Error(trimData.detail || 'Lỗi xóa lề trắng');
+            if (!trimData.success) throw new Error(trimData.detail || t('preprocess.sticker:loi_xoa_le_trang'));
             
             // Download the trimmed file to re-upload it (since API expects file_id)
             const dlRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${trimData.output_filename}`);
@@ -138,7 +140,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             body: JSON.stringify({ file_id: currentFid, bleed_mm: bleedMm, pages: null }),
         });
         const bleedData = await bleedRes.json();
-        if (!bleedData.success) throw new Error(bleedData.detail || 'Lỗi tạo bù xén Vector');
+        if (!bleedData.success) throw new Error(bleedData.detail || t('preprocess.sticker:loi_tao_bu_xen_vector'));
         
         // Final Output
         const finalRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${bleedData.output_filename}`);
@@ -158,7 +160,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 body: JSON.stringify({ file_id: currentFid, pages: null, margin_mm: 0 }),
             });
             const trimData = await trimRes.json();
-            if (!trimData.success) throw new Error(trimData.detail || 'Lỗi xóa lề trắng');
+            if (!trimData.success) throw new Error(trimData.detail || t('preprocess.sticker:loi_xoa_le_trang'));
             
             const dlRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${trimData.output_filename}`);
             const trimBlob = await dlRes.blob();
@@ -246,7 +248,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             }
         } catch (e: any) {
             recipeRecorder.discardPending();
-            setError(e.message || 'Đã xảy ra lỗi không xác định.');
+            setError(e.message || t('preprocess.sticker:da_xay_ra_loi_khong_xac_dinh'));
         } finally {
             setIsProcessing(false);
         }
@@ -275,7 +277,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                     }`}
                 >
                     <span className="text-lg">🔵</span>
-                    BẾ TEM NHÃN
+                    {t('preprocess.sticker:be_tem_nhan')}
                 </button>
                 <button
                     onClick={() => handleProductTypeChange('rectangle')}
@@ -287,7 +289,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                     }`}
                 >
                     <span className="text-lg">🟦</span>
-                    XÉN VUÔNG GÓC
+                    {t('preprocess.sticker:xen_vuong_goc')}
                 </button>
             </div>
 
@@ -296,7 +298,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-4">
                     {/* 1. Đường cắt */}
                     <div>
-                        <ToolSectionLabel>1. Đường cắt (Dieline)</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.sticker:1_duong_cat_dieline')}</ToolSectionLabel>
                         <div className="flex flex-col gap-1.5 mb-4 relative z-[60]">
                             <RichSelect
                                 value={cutMode}
@@ -309,7 +311,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             <>
                                 <div className="flex gap-2 mt-4 items-end">
                                     <ToolNumberInput
-                                        label="Co/Giãn viền"
+                                        label={t('preprocess.sticker:co_gian_vien')}
                                         value={offsetMm}
                                         onChange={setOffsetMm}
                                         suffix="mm"
@@ -335,29 +337,29 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                         ))}
                                     </div>
                                 </div>
-                                <p className="text-[10px] text-slate-400 mt-1 mb-4">Số âm (vd -0.5) ép đường cắt lún vào trong, tránh lộ viền trắng.</p>
+                                <p className="text-[10px] text-slate-400 mt-1 mb-4">{t('preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong')}</p>
                                 <button
                                     onClick={() => setCutFirstPageOnly(!cutFirstPageOnly)}
                                     aria-pressed={cutFirstPageOnly}
-                                    title="File nhiều loại tem DÙNG CHUNG 1 khuôn: chỉ trang đầu vẽ đường cắt (làm khuôn mẫu), các trang sau chỉ bù xén. Đưa sang Bình tem bế / CNC để bình nhiều loại cùng 1 khuôn."
+                                    title={t('preprocess.sticker:file_nhieu_loai_tem_dung_chung_1_khuon')}
                                     className={`w-full h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-2 ${
                                         cutFirstPageOnly
                                             ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
                                             : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
                                     }`}
                                 >
-                                    {cutFirstPageOnly ? '✅ Tạo đường cắt cho trang đầu' : 'Tạo đường cắt cho trang đầu'}
+                                    {cutFirstPageOnly ? t('preprocess.sticker:tao_duong_cat_cho_trang_dau') : t('preprocess.sticker:tao_duong_cat_cho_trang_dau_2')}
                                 </button>
-                                <p className="text-[10px] text-slate-400 mt-1 mb-4">Nhiều loại tem CHUNG khuôn: chỉ trang đầu có đường cắt (khuôn mẫu), trang sau chỉ bù xén → đưa sang Bình tem bế / CNC.</p>
+                                <p className="text-[10px] text-slate-400 mt-1 mb-4">{t('preprocess.sticker:nhieu_loai_tem_chung_khuon_chi_trang')}</p>
                             </>
                         )}
                     </div>
                     {/* 2. Tràn lề */}
                     <div>
-                        <ToolSectionLabel>2. Tràn lề & Đặc ruột</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.sticker:2_tran_le_dac_ruot')}</ToolSectionLabel>
                         <div className="flex gap-2 mb-4 items-end">
                             <ToolNumberInput
-                                label="Tràn màu"
+                                label={t('preprocess.sticker:tran_mau')}
                                 value={bleedMm}
                                 onChange={setBleedMm}
                                 suffix="mm"
@@ -370,33 +372,33 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 <button
                                     onClick={() => setFillHoles(!fillHoles)}
                                     aria-pressed={fillHoles}
-                                    title="Bỏ qua các lỗ rỗng bên trong khối hình. Máy bế chỉ cắt viền ngoài cùng."
+                                    title={t('preprocess.sticker:bo_qua_cac_lo_rong_ben_trong_khoi_hinh')}
                                     className={`flex-1 h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-1 whitespace-nowrap overflow-hidden ${
                                         fillHoles
                                             ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
                                             : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
                                     }`}
                                 >
-                                    {fillHoles ? '✅ Đặc ruột' : 'Đặc ruột'}
+                                    {fillHoles ? t('preprocess.sticker:dac_ruot') : t('preprocess.sticker:dac_ruot_2')}
                                 </button>
                                 <button
                                     onClick={() => setRemoveWhiteBg(!removeWhiteBg)}
                                     aria-pressed={removeWhiteBg}
-                                    title="Chỉ dò viền của chi tiết, bỏ qua mảng nền trắng."
+                                    title={t('preprocess.sticker:chi_do_vien_cua_chi_tiet_bo_qua_mang')}
                                     className={`flex-1 h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-1 whitespace-nowrap overflow-hidden ${
                                         removeWhiteBg
                                             ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
                                             : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
                                     }`}
                                 >
-                                    {removeWhiteBg ? '✅ Bỏ nền trắng' : 'Bỏ nền trắng'}
+                                    {removeWhiteBg ? t('preprocess.sticker:bo_nen_trang') : t('preprocess.sticker:bo_nen_trang_2')}
                                 </button>
                             </div>
                         </div>
                         
                         {(cutMode === 'bleed' || cutMode === 'none' || bleedMm > 0) && (
                             <div className="mt-6 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
-                                <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">Màu nền bù xén</label>
+                                <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">{t('preprocess.sticker:mau_nen_bu_xen')}</label>
                                 <div className="flex flex-col gap-1.5 mb-2 relative z-[50]">
                                     <RichSelect
                                         value={bleedColorType}
@@ -439,11 +441,11 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             {productType === 'rectangle' && (
                 <div className="animate-in slide-in-from-right-4 fade-in duration-300 space-y-4">
                     <div>
-                        <ToolSectionLabel>Xóa Lề Trắng & Bù Xén</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.sticker:xoa_le_trang_bu_xen')}</ToolSectionLabel>
                         
                         <div className="flex gap-2 mb-4 items-end">
                             <ToolNumberInput
-                                label="Độ dày Bleed"
+                                label={t('preprocess.sticker:do_day_bleed')}
                                 value={bleedMm}
                                 onChange={setBleedMm}
                                 suffix="mm"
@@ -456,20 +458,20 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 <button
                                     onClick={() => setTrimWhiteEdge(!trimWhiteEdge)}
                                     aria-pressed={trimWhiteEdge}
-                                    title="Tự động thu gọn các khoảng trắng vô dụng xung quanh hình trước khi bù xén. Giữ nguyên chất lượng vector gốc của file."
+                                    title={t('preprocess.sticker:tu_dong_thu_gon_cac_khoang_trang_vo')}
                                     className={`w-full h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-2 whitespace-nowrap overflow-hidden ${
                                         trimWhiteEdge
                                             ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
                                             : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
                                     }`}
                                 >
-                                    {trimWhiteEdge ? '✅ Xóa lề trắng thừa' : 'Xóa lề trắng thừa'}
+                                    {trimWhiteEdge ? t('preprocess.sticker:xoa_le_trang_thua') : t('preprocess.sticker:xoa_le_trang_thua_2')}
                                 </button>
                             </div>
                         </div>
                         
                         <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
-                            <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">Màu nền bù xén</label>
+                            <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">{t('preprocess.sticker:mau_nen_bu_xen')}</label>
                             <div className="flex flex-col gap-1.5 mb-2 relative z-[50]">
                                 <RichSelect
                                     value={bleedColorType}
@@ -482,7 +484,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 <div className="flex items-start gap-2 mb-2 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40">
                                     <span className="text-amber-500 text-sm leading-none mt-0.5">⚠️</span>
                                     <p className="text-[10.5px] text-amber-700 dark:text-amber-300 leading-snug">
-                                        Lật gương <strong>soi ngược nội dung sát mép</strong> ra vùng bù xén (vd chữ "n" → "m"). Nếu xén lệch vào trim, phần soi gương có thể lộ ra gây <strong>sai nội dung</strong>. Chỉ nên dùng cho nền trừu tượng/hoa văn. Ảnh có chữ/chi tiết nên chọn <strong>"Kéo giãn mép ảnh"</strong>.
+                                        {t('preprocess.sticker:lat_guong')} <strong>{t('preprocess.sticker:soi_nguoc_noi_dung_sat_mep')}</strong> ra vùng bù xén (vd chữ "n" → "m"). Nếu xén lệch vào trim, phần soi gương có thể lộ ra gây <strong>{t('preprocess.sticker:sai_noi_dung')}</strong>{t('preprocess.sticker:chi_nen_dung_cho_nen_truu_tuong_hoa_van')} <strong>"Kéo giãn mép ảnh"</strong>.
                                     </p>
                                 </div>
                             )}
@@ -519,7 +521,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         {(bleedColorType === 'image' || bleedColorType === 'inpaint') && (
                             <div className="mt-3 flex gap-2 items-end">
                                 <ToolNumberInput
-                                    label="Độ lẹm mép"
+                                    label={t('preprocess.sticker:do_lem_mep')}
                                     value={edgeBiteMm}
                                     onChange={setEdgeBiteMm}
                                     suffix="mm"
@@ -529,7 +531,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                     className="w-[90px] shrink-0"
                                 />
                                 <p className="flex-1 text-[10.5px] text-slate-500 dark:text-zinc-400 leading-snug pb-1">
-                                    Lẹm nhẹ vào trong để <strong>doa viền trắng mảnh</strong> khi file không tràn lề. Đặt <strong>0</strong> nếu có chữ/chi tiết sát mép.
+                                    {t('preprocess.sticker:lem_nhe_vao_trong_de')} <strong>{t('preprocess.sticker:doa_vien_trang_manh')}</strong> {t('preprocess.sticker:khi_file_khong_tran_le_dat')} <strong>0</strong> {t('preprocess.sticker:neu_co_chu_chi_tiet_sat_mep')}
                                 </p>
                             </div>
                         )}
@@ -547,7 +549,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                     }`}
                 >
-                    {isProcessing ? '⏳ Đang xử lý...' : (productType === 'sticker' ? '✂️ Tự động Bù xén & Tạo viền cắt' : '🔲 Tự động Bù xén Hình vuông')}
+                    {isProcessing ? t('preprocess.sticker:dang_xu_ly') : (productType === 'sticker' ? t('preprocess.sticker:tu_dong_bu_xen_tao_vien_cat') : t('preprocess.sticker:tu_dong_bu_xen_hinh_vuong'))}
                 </button>
             ) : (
                 <div className="mt-4 bg-white dark:bg-zinc-800 p-4 rounded-xl shadow-sm border border-emerald-200 dark:border-emerald-800/50 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -556,8 +558,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             <span className="text-sm">✅</span>
                         </div>
                         <div className="flex flex-col">
-                            <h3 className="text-[13px] font-bold text-emerald-700 dark:text-emerald-400">Đã tạo bù xén thành công!</h3>
-                            <p className="text-[10px] text-slate-500 leading-tight">Bước tiếp theo: Chọn kiểu dàn trang (Imposition)</p>
+                            <h3 className="text-[13px] font-bold text-emerald-700 dark:text-emerald-400">{t('preprocess.sticker:da_tao_bu_xen_thanh_cong')}</h3>
+                            <p className="text-[10px] text-slate-500 leading-tight">{t('preprocess.sticker:buoc_tiep_theo_chon_kieu_dan_trang')}</p>
                         </div>
                     </div>
                     <div className="flex flex-col gap-2">
@@ -567,12 +569,12 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         {productType === 'rectangle' && (
                             <>
                                 <ToolItem 
-                                    icon="📚" label="Bình Sách & Tạp chí" desc="Khâu chỉ, lồng đôi, bù gáy"
+                                    icon="📚" label={t('preprocess.sticker:binh_sach_tap_chi')} desc={t('preprocess.sticker:khau_chi_long_doi_bu_gay')}
                                     onClick={() => { setActiveDashboardTool('booklet'); setTaskMode('booklet'); }} 
                                     hoverColor="hover:border-emerald-400 dark:hover:border-emerald-500" 
                                 />
                                 <ToolItem 
-                                    icon="🎴" label="Bình bài Xén (N-Up)" desc="N-Up, Nhân bản S&R"
+                                    icon="🎴" label={t('preprocess.sticker:binh_bai_xen_n_up')} desc={t('preprocess.sticker:n_up_nhan_ban_s_r')}
                                     onClick={() => { setActiveDashboardTool('nup'); setTaskMode('nup'); }} 
                                     hoverColor="hover:border-rose-400 dark:hover:border-rose-500" 
                                 />
@@ -580,7 +582,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         )}
                         {productType === 'sticker' && (
                             <ToolItem 
-                                icon="✂️" label="Bình bài Bế Tem" desc="Xếp tem bế, tổ ong"
+                                icon="✂️" label={t('preprocess.sticker:binh_bai_be_tem')} desc={t('preprocess.sticker:xep_tem_be_to_ong')}
                                 onClick={() => { setActiveDashboardTool('sticker_imposer'); setTaskMode('sticker_imposer'); }} 
                                 hoverColor="hover:border-pink-400 dark:hover:border-pink-500" 
                             />
@@ -590,7 +592,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         onClick={() => setIsSuccess(false)}
                         className="mt-4 w-full text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 py-1 transition-colors"
                     >
-                        Quay lại chỉnh sửa bù xén
+                        {t('preprocess.sticker:quay_lai_chinh_sua_bu_xen')}
                     </button>
                 </div>
             )}

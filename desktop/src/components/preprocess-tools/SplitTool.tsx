@@ -4,6 +4,7 @@ import {
     ToolSectionLabel, ToolDivider, ToolCheckboxOption, 
     ToolNumberInput, ToolInfo 
 } from './ToolUI';
+import { useTranslation } from 'react-i18next';
 
 const inputCls = "w-full h-8 px-2.5 text-[12px] border border-slate-300 dark:border-white/20 rounded-md bg-white dark:bg-zinc-900 font-medium focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/20 transition-all";
 
@@ -20,29 +21,30 @@ interface Props {
 }
 
 export default function SplitTool({ settings, onChange }: Props) {
+  const { t } = useTranslation();
     return (
         <div className="flex flex-col gap-4 animate-in fade-in duration-200 relative z-[60]">
             
             <div className="flex flex-col gap-2">
-                <ToolSectionLabel>1. Chế độ tách</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.split:1_che_do_tach')}</ToolSectionLabel>
                 <div className="flex flex-col gap-2">
                     <ToolCheckboxOption 
                         selected={settings.mode === 'by_range'}
                         onClick={() => onChange({...settings, mode: 'by_range'})}
-                        label="Tách theo Dải trang"
-                        desc="Tách PDF thành nhiều file tùy chỉnh dựa theo dải trang nhập vào."
+                        label={t('preprocess.split:tach_theo_dai_trang')}
+                        desc={t('preprocess.split:tach_pdf_thanh_nhieu_file_tuy_chinh_dua')}
                     />
                     <ToolCheckboxOption 
                         selected={settings.mode === 'by_count'}
                         onClick={() => onChange({...settings, mode: 'by_count'})}
-                        label="Chia đều số lượng trang"
-                        desc="Chia đều PDF thành các file nhỏ có cùng số trang (vd: 4 trang một file)."
+                        label={t('preprocess.split:chia_deu_so_luong_trang')}
+                        desc={t('preprocess.split:chia_deu_pdf_thanh_cac_file_nho_co_cung')}
                     />
                     <ToolCheckboxOption 
                         selected={settings.mode === 'extract_pages'}
                         onClick={() => onChange({...settings, mode: 'extract_pages'})}
-                        label="Trích xuất trang"
-                        desc="Trích xuất các trang được chỉ định ra thành 1 file duy nhất."
+                        label={t('preprocess.split:trich_xuat_trang')}
+                        desc={t('preprocess.split:trich_xuat_cac_trang_duoc_chi_dinh_ra')}
                     />
                 </div>
             </div>
@@ -52,7 +54,7 @@ export default function SplitTool({ settings, onChange }: Props) {
             <div className="flex flex-col gap-2 min-h-[90px]">
                 {settings.mode === 'by_range' && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-                        <ToolSectionLabel>Cú pháp dải trang</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.split:cu_phap_dai_trang')}</ToolSectionLabel>
                         <input
                             type="text"
                             value={settings.ranges}
@@ -61,7 +63,7 @@ export default function SplitTool({ settings, onChange }: Props) {
                             className={inputCls}
                         />
                         <div className="text-[10px] text-slate-500 mt-2 leading-relaxed">
-                            Mỗi dải phân cách bởi dấu phẩy tương ứng 1 file output.<br/>
+                            {t('preprocess.split:moi_dai_phan_cach_boi_dau_phay_tuong')}<br/>
                             VD: "1-4, 5-8" → Tạo ra 2 file (file chứa tr1-tr4, file chứa tr5-tr8).
                         </div>
                     </div>
@@ -69,7 +71,7 @@ export default function SplitTool({ settings, onChange }: Props) {
 
                 {settings.mode === 'by_count' && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-                        <ToolSectionLabel>Số trang mỗi file</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.split:so_trang_moi_file')}</ToolSectionLabel>
                         <ToolNumberInput 
                             label=""
                             value={settings.pagesPerFile}
@@ -77,14 +79,14 @@ export default function SplitTool({ settings, onChange }: Props) {
                             step={1}
                         />
                         <div className="text-[10px] text-slate-500 mt-2 leading-relaxed">
-                            Chia tài liệu gốc thành nhiều file con, số trang mỗi file được chia làm tròn.
+                            {t('preprocess.split:chia_tai_lieu_goc_thanh_nhieu_file_con')}
                         </div>
                     </div>
                 )}
 
                 {settings.mode === 'extract_pages' && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-                        <ToolSectionLabel>Trang cần trích xuất</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.split:trang_can_trich_xuat')}</ToolSectionLabel>
                         <input
                             type="text"
                             value={settings.pageListStr}
@@ -93,14 +95,14 @@ export default function SplitTool({ settings, onChange }: Props) {
                             className={inputCls}
                         />
                         <div className="text-[10px] text-slate-500 mt-2 leading-relaxed">
-                            Nhập các số trang riêng biệt, cách nhau bằng dấu phẩy. Chúng sẽ được gộp chung vào 1 file PDF mới.
+                            {t('preprocess.split:nhap_cac_so_trang_rieng_biet_cach_nhau')}
                         </div>
                     </div>
                 )}
             </div>
             
             <ToolInfo desc={
-                <><strong>Ghi chú:</strong> Tác vụ Split sẽ tạo ra nhiều file PDF hoặc một file PDF tùy theo chế độ, bạn sẽ tải xuống toàn bộ dưới định dạng tệp ZIP hoặc xuất ra các tab mới tương ứng.</>
+                <><strong>{t('preprocess.split:ghi_chu')}</strong> {t('preprocess.split:tac_vu_split_se_tao_ra_nhieu_file_pdf')}</>
             } />
         </div>
     );

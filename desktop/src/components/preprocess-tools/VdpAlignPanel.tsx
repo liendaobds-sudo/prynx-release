@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 // ─── Icon căn chỉnh kiểu Illustrator ───
 function AlignIcon({ type }: { type: string }) {
@@ -28,6 +29,7 @@ interface Props {
 }
 
 export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageDimMm }: Props) {
+  const { t } = useTranslation();
     const [open, setOpen] = useState(true);
     if (!selectedFieldIds || selectedFieldIds.length < 1) return null;
 
@@ -84,12 +86,12 @@ export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageD
     };
 
     const aligns: { m: AlignMode; t: string }[] = [
-        { m: 'left', t: 'Căn trái' },
-        { m: 'hcenter', t: 'Căn giữa (ngang)' },
-        { m: 'right', t: 'Căn phải' },
-        { m: 'top', t: 'Căn trên' },
-        { m: 'vmiddle', t: 'Căn giữa (dọc)' },
-        { m: 'bottom', t: 'Căn dưới' },
+        { m: 'left', t: t('preprocess.vdpAlign:can_trai') },
+        { m: 'hcenter', t: t('preprocess.vdpAlign:can_giua_ngang') },
+        { m: 'right', t: t('preprocess.vdpAlign:can_phai') },
+        { m: 'top', t: t('preprocess.vdpAlign:can_tren') },
+        { m: 'vmiddle', t: t('preprocess.vdpAlign:can_giua_doc') },
+        { m: 'bottom', t: t('preprocess.vdpAlign:can_duoi') },
     ];
 
     return (
@@ -105,10 +107,10 @@ export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageD
             {open && (
                 <div className="flex flex-col gap-2.5">
                     {single && !canPageAlign && (
-                        <span className="text-[10px] text-amber-600 dark:text-amber-400">Chọn thêm đối tượng để căn theo nhóm.</span>
+                        <span className="text-[10px] text-amber-600 dark:text-amber-400">{t('preprocess.vdpAlign:chon_them_doi_tuong_de_can_theo_nhom')}</span>
                     )}
                     <div>
-                        <span className="text-[10px] font-medium text-slate-500 block mb-1">{canPageAlign ? 'Căn theo trang' : 'Căn đối tượng'}</span>
+                        <span className="text-[10px] font-medium text-slate-500 block mb-1">{canPageAlign ? t('preprocess.vdpAlign:can_theo_trang') : t('preprocess.vdpAlign:can_doi_tuong')}</span>
                         <div className="grid grid-cols-6 gap-1">
                             {aligns.map(b => (
                                 <button key={b.m} title={b.t} disabled={single && !canPageAlign} onClick={() => alignFields(b.m)} className={`${BTN} disabled:opacity-40 disabled:cursor-not-allowed`}>
@@ -119,12 +121,12 @@ export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageD
                     </div>
                     {selectedFieldIds.length >= 3 && (
                         <div>
-                            <span className="text-[10px] font-medium text-slate-500 block mb-1">Phân bố đều</span>
+                            <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.vdpAlign:phan_bo_deu')}</span>
                             <div className="grid grid-cols-6 gap-1">
-                                <button title="Dàn đều theo chiều ngang" onClick={() => distributeFields('h')} className={BTN}>
+                                <button title={t('preprocess.vdpAlign:dan_deu_theo_chieu_ngang')} onClick={() => distributeFields('h')} className={BTN}>
                                     <AlignIcon type="disth" />
                                 </button>
-                                <button title="Dàn đều theo chiều dọc" onClick={() => distributeFields('v')} className={BTN}>
+                                <button title={t('preprocess.vdpAlign:dan_deu_theo_chieu_doc')} onClick={() => distributeFields('v')} className={BTN}>
                                     <AlignIcon type="distv" />
                                 </button>
                             </div>

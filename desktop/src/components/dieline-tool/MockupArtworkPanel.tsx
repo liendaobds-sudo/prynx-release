@@ -31,6 +31,7 @@ import {
     type ArtworkTransform,
     type PlacementMode,
 } from '../../lib/mockup3d';
+import { useTranslation } from 'react-i18next';
 
 /** Định dạng ảnh chấp nhận cho mọi input tải ảnh (GĐ-4). */
 const ACCEPT_IMAGE = 'image/png, image/jpeg, image/webp';
@@ -124,53 +125,54 @@ function TransformControls(props: {
     transform: ArtworkTransform;
     onChange: (t: ArtworkTransform) => void;
 }) {
+  const { t } = useTranslation();
     const { transform, onChange } = props;
     return (
         <>
             <SliderRow
-                label="Tỉ lệ" value={transform.scalePct} min={SCALE_MIN_PCT} max={SCALE_MAX_PCT}
-                step={1} unit="%" title="Phóng to/thu nhỏ ảnh quanh tâm mặt"
+                label={t('dieline.mockupArtwork:ti_le')} value={transform.scalePct} min={SCALE_MIN_PCT} max={SCALE_MAX_PCT}
+                step={1} unit="%" title={t('dieline.mockupArtwork:phong_to_thu_nho_anh_quanh_tam_mat')}
                 onChange={(v) => onChange({ ...transform, scalePct: v })}
             />
             <SliderRow
-                label="Lệch ngang (X)" value={transform.offsetXPct} min={OFFSET_MIN_PCT} max={OFFSET_MAX_PCT}
-                step={1} unit="%" title="Dịch ảnh theo trục ngang"
+                label={t('dieline.mockupArtwork:lech_ngang_x')} value={transform.offsetXPct} min={OFFSET_MIN_PCT} max={OFFSET_MAX_PCT}
+                step={1} unit="%" title={t('dieline.mockupArtwork:dich_anh_theo_truc_ngang')}
                 onChange={(v) => onChange({ ...transform, offsetXPct: v })}
             />
             <SliderRow
-                label="Lệch dọc (Y)" value={transform.offsetYPct} min={OFFSET_MIN_PCT} max={OFFSET_MAX_PCT}
-                step={1} unit="%" title="Dịch ảnh theo trục dọc"
+                label={t('dieline.mockupArtwork:lech_doc_y')} value={transform.offsetYPct} min={OFFSET_MIN_PCT} max={OFFSET_MAX_PCT}
+                step={1} unit="%" title={t('dieline.mockupArtwork:dich_anh_theo_truc_doc')}
                 onChange={(v) => onChange({ ...transform, offsetYPct: v })}
             />
             <SliderRow
                 label="Xoay" value={transform.rotationDeg ?? 0} min={ROTATION_MIN_DEG} max={ROTATION_MAX_DEG}
-                step={1} unit="°" title="Xoay ảnh quanh tâm"
+                step={1} unit="°" title={t('dieline.mockupArtwork:xoay_anh_quanh_tam')}
                 onChange={(v) => onChange({ ...transform, rotationDeg: v })}
             />
             <div className="dt-art-actions">
-                <button type="button" className="dt-mini-btn" title="Canh ảnh về giữa mặt"
+                <button type="button" className="dt-mini-btn" title={t('dieline.mockupArtwork:canh_anh_ve_giua_mat')}
                     onClick={() => onChange({ ...transform, offsetXPct: 0, offsetYPct: 0 })}>
-                    ⌖ Giữa
+                    {t('dieline.mockupArtwork:giua')}
                 </button>
-                <button type="button" className="dt-mini-btn" title="Đặt tỉ lệ về 100%"
+                <button type="button" className="dt-mini-btn" title={t('dieline.mockupArtwork:dat_ti_le_ve_100')}
                     onClick={() => onChange({ ...transform, scalePct: 100 })}>
                     ⤢ 100%
                 </button>
-                <button type="button" className="dt-mini-btn" title="Xoay thêm 90°"
+                <button type="button" className="dt-mini-btn" title={t('dieline.mockupArtwork:xoay_them_90')}
                     onClick={() => onChange({ ...transform, rotationDeg: wrapDeg((transform.rotationDeg ?? 0) + 90) })}>
                     ⟳ 90°
                 </button>
-                <button type="button" className={`dt-mini-btn ${transform.flipH ? 'active' : ''}`} title="Lật ngang ảnh"
+                <button type="button" className={`dt-mini-btn ${transform.flipH ? 'active' : ''}`} title={t('dieline.mockupArtwork:lat_ngang_anh')}
                     onClick={() => onChange({ ...transform, flipH: !transform.flipH })}>
                     ⇋ Ngang
                 </button>
-                <button type="button" className={`dt-mini-btn ${transform.flipV ? 'active' : ''}`} title="Lật dọc ảnh"
+                <button type="button" className={`dt-mini-btn ${transform.flipV ? 'active' : ''}`} title={t('dieline.mockupArtwork:lat_doc_anh')}
                     onClick={() => onChange({ ...transform, flipV: !transform.flipV })}>
-                    ⇅ Dọc
+                    {t('dieline.mockupArtwork:doc')}
                 </button>
-                <button type="button" className="dt-mini-btn" title="Đặt lại toàn bộ transform"
+                <button type="button" className="dt-mini-btn" title={t('dieline.mockupArtwork:dat_lai_toan_bo_transform')}
                     onClick={() => onChange({ ...DEFAULT_TRANSFORM })}>
-                    ↺ Đặt lại
+                    {t('dieline.mockupArtwork:dat_lai')}
                 </button>
             </div>
         </>
@@ -185,6 +187,7 @@ function ArtworkUploader(props: {
     onFile: (file: File) => void;
     onClear: () => void;
 }) {
+  const { t } = useTranslation();
     const { label, url, fileName, onFile, onClear } = props;
     const [dragOver, setDragOver] = React.useState(false);
 
@@ -208,7 +211,7 @@ function ArtworkUploader(props: {
                     <span className="dt-dropzone-icon" aria-hidden>🖼️</span>
                 )}
                 <span className="dt-dropzone-text">
-                    {url ? (fileName ?? 'Ảnh đã tải') : `Kéo-thả hoặc bấm để tải ${label.toLowerCase()}`}
+                    {url ? (fileName ?? t('dieline.mockupArtwork:anh_da_tai')) : `Kéo-thả hoặc bấm để tải ${label.toLowerCase()}`}
                 </span>
                 <input
                     type="file"
@@ -229,7 +232,7 @@ function ArtworkUploader(props: {
                     style={{ marginTop: '0.4rem', color: 'var(--dt-danger)' }}
                     title={`Xoá ${label.toLowerCase()}`}
                 >
-                    🗑️ Xoá ảnh
+                    {t('dieline.mockupArtwork:xoa_anh')}
                 </button>
             )}
         </div>
@@ -237,6 +240,7 @@ function ArtworkUploader(props: {
 }
 
 export default function MockupArtworkPanel() {
+  const { t } = useTranslation();
     const artwork = useMockupStore((s) => s.artwork);
     const setArtworkMode = useMockupStore((s) => s.setArtworkMode);
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
@@ -307,7 +311,7 @@ export default function MockupArtworkPanel() {
         } catch {
             setUrl(null);
             setName(null);
-            setError('Không nạp được ảnh. Bề mặt giữ vật liệu hiện tại; tỉ lệ/vị trí được giữ nguyên.');
+            setError(t('dieline.mockupArtwork:khong_nap_duoc_anh_be_mat_giu_vat_lieu'));
         }
     }
 
@@ -315,14 +319,14 @@ export default function MockupArtworkPanel() {
     async function handleMaskUpload(file: File, setMaskUrl: (url: string | null) => void) {
         setMaskError(null);
         if (!surface) {
-            setMaskError('Chưa có khuôn bế để xác định kích thước bề mặt áp mặt nạ.');
+            setMaskError(t('dieline.mockupArtwork:chua_co_khuon_be_de_xac_dinh_kich_thuoc'));
             return;
         }
         let info: LoadedImageInfo;
         try {
             info = await loadImageFile(file);
         } catch {
-            setMaskError('Không nạp được mặt nạ (ảnh hỏng hoặc sai định dạng).');
+            setMaskError(t('dieline.mockupArtwork:khong_nap_duoc_mat_na_anh_hong_hoac_sai'));
             return;
         }
         const result = validateMask(
@@ -332,7 +336,7 @@ export default function MockupArtworkPanel() {
         );
         if (!result.valid) {
             URL.revokeObjectURL(info.url);
-            setMaskError(result.reason ?? 'Mặt nạ không hợp lệ.');
+            setMaskError(result.reason ?? t('dieline.mockupArtwork:mat_na_khong_hop_le'));
             return;
         }
         setMaskUrl(info.url);
@@ -343,8 +347,8 @@ export default function MockupArtworkPanel() {
     }
 
     const placementModes: { id: PlacementMode; label: string; hint: string }[] = [
-        { id: 'per-face', label: 'Theo từng mặt', hint: 'Mỗi mặt ánh xạ ảnh độc lập theo bbox riêng của mặt đó.' },
-        { id: 'aligned-to-dieline', label: 'Canh theo khuôn', hint: 'Canh ảnh theo toạ độ khuôn bế — biên ảnh trùng vị trí mặt.' },
+        { id: 'per-face', label: t('dieline.mockupArtwork:theo_tung_mat'), hint: t('dieline.mockupArtwork:moi_mat_anh_xa_anh_doc_lap_theo_bbox') },
+        { id: 'aligned-to-dieline', label: t('dieline.mockupArtwork:canh_theo_khuon'), hint: t('dieline.mockupArtwork:canh_anh_theo_toa_do_khuon_be_bien_anh') },
     ];
 
     return (
@@ -357,9 +361,9 @@ export default function MockupArtworkPanel() {
                     onClick={() => undoArtwork()}
                     disabled={!canUndo}
                     style={!canUndo ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
-                    title="Hoàn tác (Ctrl+Z)"
+                    title={t('dieline.mockupArtwork:hoan_tac_ctrl_z')}
                 >
-                    ↶ Hoàn tác
+                    {t('dieline.mockupArtwork:hoan_tac')}
                 </button>
                 <button
                     type="button"
@@ -367,16 +371,16 @@ export default function MockupArtworkPanel() {
                     onClick={() => redoArtwork()}
                     disabled={!canRedo}
                     style={!canRedo ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
-                    title="Làm lại (Ctrl+Y)"
+                    title={t('dieline.mockupArtwork:lam_lai_ctrl_y')}
                 >
-                    ↷ Làm lại
+                    {t('dieline.mockupArtwork:lam_lai')}
                 </button>
             </div>
 
             {/* ─── Ảnh mặt ngoài (mở sẵn) ─── */}
-            <CollapsibleSection title="Ảnh mặt ngoài" defaultOpen badge={artwork.outer.url ? '●' : undefined}>
+            <CollapsibleSection title={t('dieline.mockupArtwork:anh_mat_ngoai')} defaultOpen badge={artwork.outer.url ? '●' : undefined}>
                 <ArtworkUploader
-                    label="Ảnh mặt ngoài"
+                    label={t('dieline.mockupArtwork:anh_mat_ngoai')}
                     url={artwork.outer.url}
                     fileName={outerName}
                     onFile={(f) => handleArtworkUpload(f, setOuterArtworkUrl, setOuterError, setOuterName)}
@@ -393,10 +397,10 @@ export default function MockupArtworkPanel() {
                     className={`dt-param-cell ${artworkEditMode ? 'active-edit' : ''}`}
                     style={{ cursor: artwork.outer.url ? 'pointer' : 'not-allowed', marginTop: '0.5rem', opacity: artwork.outer.url ? 1 : 0.5 }}
                     onClick={() => { if (artwork.outer.url) setArtworkEditMode(!artworkEditMode); }}
-                    title="Bật để KÉO ảnh trực tiếp trên mặt 3D (tạm tắt xoay quỹ đạo)"
+                    title={t('dieline.mockupArtwork:bat_de_keo_anh_truc_tiep_tren_mat_3d')}
                 >
                     <label className="dt-param-cell-label" style={{ cursor: 'inherit' }}>
-                        ✋ Kéo ảnh trên mô hình 3D
+                        {t('dieline.mockupArtwork:keo_anh_tren_mo_hinh_3d')}
                     </label>
                     <input
                         type="checkbox"
@@ -407,13 +411,13 @@ export default function MockupArtworkPanel() {
                 </div>
                 {artworkEditMode && (
                     <p className="dt-param-desc">
-                        Đang bật: kéo chuột trên mặt hộp để dời ảnh; xoay quỹ đạo tạm tắt. Tắt lại để xoay mô hình.
+                        {t('dieline.mockupArtwork:dang_bat_keo_chuot_tren_mat_hop_de_doi')}
                     </p>
                 )}
             </CollapsibleSection>
 
             {/* ─── Chế độ đặt ảnh ─── */}
-            <CollapsibleSection title="Chế độ đặt ảnh">
+            <CollapsibleSection title={t('dieline.mockupArtwork:che_do_dat_anh')}>
                 <div className="dt-glue-side-toggle">
                     {placementModes.map((m) => (
                         <button
@@ -432,15 +436,15 @@ export default function MockupArtworkPanel() {
             </CollapsibleSection>
 
             {/* ─── In mặt trong (độc lập mặt ngoài — Yêu cầu 5.4) ─── */}
-            <CollapsibleSection title="In mặt trong" badge={artwork.inner.enabled ? 'Bật' : undefined}>
+            <CollapsibleSection title={t('dieline.mockupArtwork:in_mat_trong')} badge={artwork.inner.enabled ? t('dieline.mockupArtwork:bat') : undefined}>
                 <div
                     className="dt-param-cell"
                     style={{ cursor: 'pointer' }}
                     onClick={() => setInnerArtworkEnabled(!artwork.inner.enabled)}
-                    title="In ảnh riêng cho mặt trong hộp (đọc đúng chiều từ phía trong)"
+                    title={t('dieline.mockupArtwork:in_anh_rieng_cho_mat_trong_hop_doc_dung')}
                 >
                     <label className="dt-section-label" style={{ cursor: 'pointer', margin: 0 }}>
-                        Bật in mặt trong
+                        {t('dieline.mockupArtwork:bat_in_mat_trong')}
                     </label>
                     <input
                         type="checkbox"
@@ -453,7 +457,7 @@ export default function MockupArtworkPanel() {
                 {artwork.inner.enabled && (
                     <>
                         <ArtworkUploader
-                            label="Ảnh mặt trong"
+                            label={t('dieline.mockupArtwork:anh_mat_trong')}
                             url={artwork.inner.url}
                             fileName={innerName}
                             onFile={(f) => handleArtworkUpload(f, setInnerArtworkUrl, setInnerError, setInnerName)}
@@ -476,10 +480,10 @@ export default function MockupArtworkPanel() {
                     className="dt-param-cell"
                     style={{ cursor: 'pointer' }}
                     onClick={() => setShowBleedSafe(!artwork.showBleedSafe)}
-                    title="Hiện đường biên vùng tràn lề (bleed) và vùng an toàn (safe-area)"
+                    title={t('dieline.mockupArtwork:hien_duong_bien_vung_tran_le_bleed_va')}
                 >
                     <label className="dt-section-label" style={{ cursor: 'pointer', margin: 0 }}>
-                        Hiện bleed / safe-area
+                        {t('dieline.mockupArtwork:hien_bleed_safe_area')}
                     </label>
                     <input
                         type="checkbox"
@@ -491,15 +495,15 @@ export default function MockupArtworkPanel() {
             </CollapsibleSection>
 
             {/* ─── Mặt nạ spot-UV / emboss (Yêu cầu 4.6) ─── */}
-            <CollapsibleSection title="Mặt nạ gia công">
+            <CollapsibleSection title={t('dieline.mockupArtwork:mat_na_gia_cong')}>
                 <p className="dt-param-desc">
                     {surface
                         ? `Kích thước mặt nạ phải khớp bề mặt ${surface.width}×${surface.height} px.`
-                        : 'Cần có khuôn bế để xác định kích thước mặt nạ.'}
+                        : t('dieline.mockupArtwork:can_co_khuon_be_de_xac_dinh_kich_thuoc')}
                 </p>
 
                 <div className="dt-glue-side-toggle">
-                    <label className="dt-glue-side-btn" style={{ cursor: 'pointer' }} title="Tải mặt nạ phủ UV cục bộ (spot-UV)">
+                    <label className="dt-glue-side-btn" style={{ cursor: 'pointer' }} title={t('dieline.mockupArtwork:tai_mat_na_phu_uv_cuc_bo_spot_uv')}>
                         ✨ Mask spot-UV
                         <input
                             type="file"
@@ -517,7 +521,7 @@ export default function MockupArtworkPanel() {
                             className="dt-glue-side-btn"
                             onClick={() => setSpotUvMaskUrl(null)}
                             style={{ flex: '0 0 auto', padding: '0.5rem', color: 'var(--dt-danger)' }}
-                            title="Xoá mask spot-UV"
+                            title={t('dieline.mockupArtwork:xoa_mask_spot_uv')}
                         >
                             🗑️
                         </button>
@@ -525,7 +529,7 @@ export default function MockupArtworkPanel() {
                 </div>
 
                 <div className="dt-glue-side-toggle" style={{ marginTop: '0.5rem' }}>
-                    <label className="dt-glue-side-btn" style={{ cursor: 'pointer' }} title="Tải mặt nạ dập nổi (emboss)">
+                    <label className="dt-glue-side-btn" style={{ cursor: 'pointer' }} title={t('dieline.mockupArtwork:tai_mat_na_dap_noi_emboss')}>
                         🔲 Mask emboss
                         <input
                             type="file"
@@ -543,7 +547,7 @@ export default function MockupArtworkPanel() {
                             className="dt-glue-side-btn"
                             onClick={() => setEmbossMaskUrl(null)}
                             style={{ flex: '0 0 auto', padding: '0.5rem', color: 'var(--dt-danger)' }}
-                            title="Xoá mask emboss"
+                            title={t('dieline.mockupArtwork:xoa_mask_emboss')}
                         >
                             🗑️
                         </button>
@@ -558,13 +562,13 @@ export default function MockupArtworkPanel() {
                 )}
 
                 <SliderRow
-                    label="Độ cao emboss"
+                    label={t('dieline.mockupArtwork:do_cao_emboss')}
                     value={artwork.embossHeightMm}
                     min={EMBOSS_MIN_HEIGHT_MM}
                     max={EMBOSS_MAX_HEIGHT_MM}
                     step={0.1}
                     unit=" mm"
-                    title="Chiều cao dập nổi mô phỏng theo mặt nạ emboss"
+                    title={t('dieline.mockupArtwork:chieu_cao_dap_noi_mo_phong_theo_mat_na')}
                     onChange={setEmbossHeightMm}
                 />
             </CollapsibleSection>

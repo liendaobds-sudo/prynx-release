@@ -9,6 +9,7 @@ import { sortFieldsGeometrically, VdpSortMethod } from '@/lib/vdpUtils';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useNumberingJobStore } from '@/stores/useNumberingJobStore';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   pdfFile: File | null;
@@ -35,6 +36,7 @@ export default function NumberingTool({
   onApplyResult,
   isActive = true
 }: Props) {
+  const { t } = useTranslation();
     const [statusMessage, setStatusMessage] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
     const [spawnNewTab, setSpawnNewTab] = useState(true);
@@ -183,9 +185,9 @@ export default function NumberingTool({
     };
 
     const generateDataMatrix = () => {
-        if (vdpFields.length === 0) throw new Error("Vui lòng kéo ít nhất 1 trường Nhảy số vào PDF.");
+        if (vdpFields.length === 0) throw new Error(t('preprocess.numbering:vui_long_keo_it_nhat_1_truong_nhay_so'));
         const rawSequence = generateSequence();
-        if (rawSequence.length === 0) throw new Error("Dãy số trống. Vui lòng kiểm tra lại thiết lập.");
+        if (rawSequence.length === 0) throw new Error(t('preprocess.numbering:day_so_trong_vui_long_kiem_tra_lai'));
         
         // Group fields into Slots
         const slots: any[] = [];
@@ -256,10 +258,10 @@ export default function NumberingTool({
     const handleGenerate = async () => {
         try {
             setIsGenerating(true);
-            setStatusMessage("Đang tính toán ma trận số...");
+            setStatusMessage(t('preprocess.numbering:dang_tinh_toan_ma_tran_so'));
             const csvData = generateDataMatrix();
             
-            if (!pdfFile) throw new Error("Chưa có file PDF gốc.");
+            if (!pdfFile) throw new Error(t('preprocess.numbering:chua_co_file_pdf_goc'));
             
             setStatusMessage(`Đang đẩy dữ liệu lên máy chủ (${csvData.length} trang)...`);
             // Tuân thủ kết quả cuối cùng: dùng file đã áp dụng sửa đổi trang làm template.
@@ -270,15 +272,15 @@ export default function NumberingTool({
             const result = await pollVdpJob(jobId, setStatusMessage, true, pollAbortRef.current.signal);
             const blob = result.blob;
             const path = result.path;
-            if (!blob) throw new Error('Không nhận được file kết quả từ máy chủ');
+            if (!blob) throw new Error(t('preprocess.numbering:khong_nhan_duoc_file_ket_qua_tu_may_chu'));
             const outName = `Numbered_${pdfFile.name}`;
             
             if (spawnNewTab && onSpawnTab) {
                 onSpawnTab(blob, outName, path ?? undefined);
-                setStatusMessage(`Hoàn thành! Đã tạo Tab PDF mới.`);
+                setStatusMessage(t('preprocess.numbering:hoan_thanh_da_tao_tab_pdf_moi'));
             } else if (onApplyResult) {
                 onApplyResult(blob, outName, path ?? undefined);
-                setStatusMessage(`Hoàn thành! Đã ghi đè file hiện tại.`);
+                setStatusMessage(t('preprocess.numbering:hoan_thanh_da_ghi_de_file_hien_tai'));
             }
         } catch (error: any) {
             if (error?.name === 'AbortError') return;
@@ -291,9 +293,9 @@ export default function NumberingTool({
 
     const previewLines = React.useMemo(() => {
         try {
-            if (vdpFields.length === 0) return ["Kéo thả ít nhất 1 Slot lên màn hình để xem trước."];
+            if (vdpFields.length === 0) return [t('preprocess.numbering:keo_tha_it_nhat_1_slot_len_man_hinh_de')];
             const rawSequence = generateSequence();
-            if (rawSequence.length === 0) return ["Dãy số trống."];
+            if (rawSequence.length === 0) return [t('preprocess.numbering:day_so_trong')];
             
             const numSlots = vdpFields.length;
             const totalPages = Math.ceil(rawSequence.length / numSlots);
@@ -321,7 +323,7 @@ export default function NumberingTool({
             if (totalPages > maxPreviewPages) lines.push('...');
             return lines;
         } catch (err) {
-            return ["Lỗi cấu hình dãy số."];
+            return [t('preprocess.numbering:loi_cau_hinh_day_so')];
         }
     }, [genMethod, startNum, endNum, increment, padZero, padLength, prefix, suffix, setTotal, setStartStr, seqTotal, seqStart, formatTemplate, isShuffle, applyStyle, vdpFields.length]);
 
@@ -332,14 +334,14 @@ export default function NumberingTool({
                 <button 
                     onClick={onBack}
                     className="p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-md text-slate-500 transition-colors"
-                    title="Quay lại"
+                    title={t('preprocess.numbering:quay_lai')}
                 >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
                 </button>
                 <div className="flex-1 min-w-0 text-center pr-8">
                     <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
                         <span>🔢</span>
-                        <span>NHẢY SỐ TỰ ĐỘNG</span>
+                        <span>{t('preprocess.numbering:nhay_so_tu_dong')}</span>
                     </h2>
                     <p className="text-[11px] text-slate-500 mt-1">Numbering & Ticket Generator</p>
                 </div>
@@ -347,20 +349,20 @@ export default function NumberingTool({
 
             {/* Step 1: Configuration */}
             <div className="shrink-0 space-y-3">
-                <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">1. Cấu hình Dãy Số</span>
+                <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">{t('preprocess.numbering:1_cau_hinh_day_so')}</span>
                 
                 <div className="flex bg-slate-100 dark:bg-zinc-800 p-1 rounded-md">
                     <button 
                         className={`flex-1 text-xs py-1.5 rounded font-bold transition-all ${genMethod === 'range' ? 'bg-white dark:bg-zinc-700 shadow text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700/50'}`}
                         onClick={() => setGenMethod('range')}
                     >
-                        Dãy số (1, 2, 3...)
+                        {t('preprocess.numbering:day_so_1_2_3')}
                     </button>
                     <button 
                         className={`flex-1 text-xs py-1.5 rounded font-bold transition-all ${genMethod === 'set' ? 'bg-white dark:bg-zinc-700 shadow text-indigo-600 dark:text-indigo-400' : 'text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700/50'}`}
                         onClick={() => setGenMethod('set')}
                     >
-                        Theo bộ (A-01, B-01)
+                        {t('preprocess.numbering:theo_bo_a_01_b_01')}
                     </button>
                 </div>
 
@@ -368,11 +370,11 @@ export default function NumberingTool({
                     {genMethod === 'range' ? (
                         <div className="space-y-3">
                             <div className="flex flex-col gap-1 pb-3 border-b border-slate-200 dark:border-zinc-700">
-                                <label className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase">Trích xuất tự động (Smart Extract)</label>
+                                <label className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 uppercase">{t('preprocess.numbering:trich_xuat_tu_dong_smart_extract')}</label>
                                 <div className="flex gap-2">
                                     <input 
                                         type="text" 
-                                        placeholder="Ví dụ: No.00123-VIP"
+                                        placeholder={t('preprocess.numbering:vi_du_no_00123_vip')}
                                         className="flex-1 h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-900"
                                         onChange={(e) => {
                                             const val = e.target.value;
@@ -391,19 +393,19 @@ export default function NumberingTool({
                                         }}
                                     />
                                 </div>
-                                <span className="text-[9px] text-slate-500">Nhập chuỗi mẫu, phần mềm sẽ tự tách Tiền tố, Số và Hậu tố.</span>
+                                <span className="text-[9px] text-slate-500">{t('preprocess.numbering:nhap_chuoi_mau_phan_mem_se_tu_tach_tien')}</span>
                             </div>
                             <div className="grid grid-cols-3 gap-2">
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">Bắt đầu từ</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bat_dau_tu')}</label>
                                     <input type="number" value={startNum} onChange={e => setStartNum(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">Đến số</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:den_so')}</label>
                                     <input type="number" value={endNum} onChange={e => setEndNum(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">Bước nhảy</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:buoc_nhay')}</label>
                                     <input type="number" min={1} value={increment} onChange={e => setIncrement(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                             </div>
@@ -412,24 +414,24 @@ export default function NumberingTool({
                         <div className="space-y-3">
                             <div className="grid grid-cols-2 gap-2">
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">Số lượng bộ</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:so_luong_bo')}</label>
                                     <input type="number" value={setTotal} onChange={e => setSetTotal(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">Bộ bắt đầu (Ký tự/Số)</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bo_bat_dau_ky_tu_so')}</label>
                                     <input type="text" value={setStartStr} onChange={e => setSetStartStr(e.target.value)} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">Số lượng vé/bộ</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:so_luong_ve_bo')}</label>
                                     <input type="number" value={seqTotal} onChange={e => setSeqTotal(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[10px] font-medium text-slate-500">Bắt đầu từ số</label>
+                                    <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:bat_dau_tu_so')}</label>
                                     <input type="number" value={seqStart} onChange={e => setSeqStart(Number(e.target.value))} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                             </div>
                             <div className="flex flex-col gap-1">
-                                <label className="text-[10px] font-medium text-slate-500">Cấu trúc hiển thị</label>
+                                <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:cau_truc_hien_thi')}</label>
                                 <input type="text" value={formatTemplate} onChange={e => setFormatTemplate(e.target.value)} placeholder="{%b}-{%t}" className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded font-mono" />
                                 <span className="text-[9px] text-slate-400">Dùng {'{%b}'} cho Bộ và {'{%t}'} cho Số thứ tự.</span>
                             </div>
@@ -438,27 +440,27 @@ export default function NumberingTool({
                     
                     <div className="border-t border-slate-200 dark:border-zinc-700 pt-3 grid grid-cols-2 gap-2">
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-medium text-slate-500">Tiền tố</label>
+                            <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:tien_to')}</label>
                             <input type="text" value={prefix} onChange={e => setPrefix(e.target.value)} placeholder="VD: No." className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                         </div>
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-medium text-slate-500">Hậu tố</label>
+                            <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:hau_to')}</label>
                             <input type="text" value={suffix} onChange={e => setSuffix(e.target.value)} className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                         </div>
                         <div className="flex flex-col gap-1 col-span-2">
                             <div className="flex items-center gap-2 mb-1">
                                 <input type="checkbox" checked={padZero} onChange={e => setPadZero(e.target.checked)} id="padZero" />
-                                <label htmlFor="padZero" className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 cursor-pointer">Đệm số 0 vào đầu</label>
+                                <label htmlFor="padZero" className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 cursor-pointer">{t('preprocess.numbering:dem_so_0_vao_dau')}</label>
                             </div>
                             {padZero && (
                                 <div className="flex items-center gap-2">
-                                    <span className="text-[10px] text-slate-500">Chiều dài cố định:</span>
+                                    <span className="text-[10px] text-slate-500">{t('preprocess.numbering:chieu_dai_co_dinh')}</span>
                                     <input type="number" min={1} value={padLength} onChange={e => setPadLength(Number(e.target.value))} className="w-16 h-7 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                                 </div>
                             )}
                             <div className="flex items-center gap-2 mt-1">
                                 <input type="checkbox" checked={isShuffle} onChange={e => setIsShuffle(e.target.checked)} id="isShuffle" />
-                                <label htmlFor="isShuffle" className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 cursor-pointer">Xáo trộn ngẫu nhiên (Làm vé bốc thăm)</label>
+                                <label htmlFor="isShuffle" className="text-[11px] font-medium text-slate-600 dark:text-zinc-300 cursor-pointer">{t('preprocess.numbering:xao_tron_ngau_nhien_lam_ve_boc_tham')}</label>
                             </div>
                         </div>
                     </div>
@@ -469,14 +471,14 @@ export default function NumberingTool({
 
             {/* Step 2: Placement & Drag */}
             <div className="shrink-0 space-y-3">
-                <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">2. Kéo thả lên trang PDF</span>
-                <p className="text-[11px] text-slate-500">Kéo công cụ dưới đây thả vào các vị trí cần đánh số trên màn hình PDF.</p>
+                <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">{t('preprocess.numbering:2_keo_tha_len_trang_pdf')}</span>
+                <p className="text-[11px] text-slate-500">{t('preprocess.numbering:keo_cong_cu_duoi_day_tha_vao_cac_vi_tri')}</p>
                 <div 
-                    onPointerDown={(e) => startVdpDrag(e, 'text', 'Vị trí Nhảy số (Slot)')}
+                    onPointerDown={(e) => startVdpDrag(e, 'text', t('preprocess.numbering:vi_tri_nhay_so_slot'))}
                     className="bg-indigo-50 border-2 border-indigo-200 dark:bg-indigo-900/20 dark:border-indigo-800 p-3 rounded-lg cursor-grab active:cursor-grabbing hover:border-indigo-400 flex items-center justify-center gap-2 transition-colors shadow-sm"
                 >
                     <svg className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" /></svg>
-                    <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300">Vị trí Nhảy số (Slot)</span>
+                    <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300">{t('preprocess.numbering:vi_tri_nhay_so_slot')}</span>
                 </div>
             </div>
 
@@ -485,41 +487,41 @@ export default function NumberingTool({
             {/* Step 3: Application Style */}
             <div className="shrink-0 space-y-3">
                 <div className="flex items-center justify-between">
-                    <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">3. Phương thức phân bổ</span>
+                    <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">{t('preprocess.numbering:3_phuong_thuc_phan_bo')}</span>
                     <span className="text-[11px] font-bold text-indigo-600 bg-indigo-100 dark:bg-indigo-900/50 px-2 py-0.5 rounded-full">{vdpFields.length} Slots</span>
                 </div>
                 
                 <div className="grid grid-cols-2 gap-3">
                     <div className="flex flex-col gap-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase">Thứ tự đọc (Sorting)</label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.numbering:thu_tu_doc_sorting')}</label>
                         <select 
                             value={sortMethod} 
                             onChange={e => setSortMethod(e.target.value as 'rows'|'cols'|'ushape'|'clockwise')}
                             className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-800"
                         >
-                            <option value="rows">Quét theo Hàng (Z)</option>
-                            <option value="cols">Quét theo Cột (N)</option>
-                            <option value="ushape">Chữ U (U-Shape)</option>
-                            <option value="clockwise">Vòng Tròn (Clockwise)</option>
+                            <option value="rows">{t('preprocess.numbering:quet_theo_hang_z')}</option>
+                            <option value="cols">{t('preprocess.numbering:quet_theo_cot_n')}</option>
+                            <option value="ushape">{t('preprocess.numbering:chu_u_u_shape')}</option>
+                            <option value="clockwise">{t('preprocess.numbering:vong_tron_clockwise')}</option>
                         </select>
                     </div>
                     <div className="flex flex-col gap-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase">Phân bổ trang</label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.numbering:phan_bo_trang')}</label>
                         <select 
                             value={applyStyle} 
                             onChange={e => setApplyStyle(e.target.value as 'linear'|'stack')}
                             className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-800"
                         >
-                            <option value="linear">Theo thứ tự (Linear)</option>
-                            <option value="stack">Xếp chồng (Stacked)</option>
+                            <option value="linear">{t('preprocess.numbering:theo_thu_tu_linear')}</option>
+                            <option value="stack">{t('preprocess.numbering:xep_chong_stacked')}</option>
                         </select>
                     </div>
                 </div>
                 
                 <p className="text-[10px] text-slate-500 bg-slate-50 dark:bg-zinc-800 p-2 rounded">
                     {applyStyle === 'stack' 
-                        ? "Chế độ Xếp chồng (Cut & Stack): Số sẽ nhảy xuyên qua các trang. Sau khi in xong, cắt cọc giấy làm đôi và chồng lên nhau thì số sẽ chạy liên tục." 
-                        : "Chế độ Tuyến tính: Đánh số từ trái sang phải, từ trang này sang trang khác một cách bình thường."}
+                        ? t('preprocess.numbering:che_do_xep_chong_cut_stack_so_se_nhay') 
+                        : t('preprocess.numbering:che_do_tuyen_tinh_danh_so_tu_trai_sang')}
                 </p>
             </div>
 
@@ -542,19 +544,19 @@ export default function NumberingTool({
                         </span>
                         {selectedFieldIds.length > 1 && (
                             <button onClick={handleGroupFields} className="text-[10px] bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 px-2 py-1 rounded text-slate-600 dark:text-zinc-300 font-medium">
-                                Group (Nhóm)
+                                {t('preprocess.numbering:group_nhom')}
                             </button>
                         )}
                         {selectedFieldIds.length > 0 && vdpFields.find(f=>f.id===selectedFieldIds[0])?.groupId && (
                             <button onClick={handleUngroupFields} className="text-[10px] bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 px-2 py-1 rounded text-red-500 font-medium">
-                                Ungroup (Bỏ nhóm)
+                                {t('preprocess.numbering:ungroup_bo_nhom')}
                             </button>
                         )}
                         {selectedFieldIds.length > 0 && (
                             <button 
                                 onClick={deleteSelectedField}
                                 className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 p-1.5 rounded transition-colors"
-                                title="Xóa trường này"
+                                title={t('preprocess.numbering:xoa_truong_nay')}
                             >
                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                             </button>
@@ -562,7 +564,7 @@ export default function NumberingTool({
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         <div className="flex flex-col gap-1 col-span-2">
-                            <span className="text-[10px] font-medium text-slate-500 block mb-1">Font chữ (Font Family)</span>
+                            <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:font_chu_font_family')}</span>
                             <FontSelector 
                                 value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontName || 'Helvetica'}
                                 fontFile={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontFile}
@@ -570,7 +572,7 @@ export default function NumberingTool({
                             />
                         </div>
                         <div className="flex flex-col gap-1 col-span-2">
-                            <span className="text-[10px] font-medium text-slate-500 block mb-1">Nét font (Font Style)</span>
+                            <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:net_font_font_style')}</span>
                             <select 
                                 value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontStyle || 'normal'}
                                 onChange={(e) => updateSelectedField({ fontStyle: e.target.value })}
@@ -584,41 +586,41 @@ export default function NumberingTool({
                         </div>
                         
                         <ToolNumberInput 
-                            label="Cỡ chữ"
+                            label={t('preprocess.numbering:co_chu')}
                             value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontSize || 13}
                             onChange={(val) => updateSelectedField({ fontSize: val })}
                             suffix="pt" step={1}
                         />
                         <ToolNumberInput 
-                            label="Dòng (Leading)"
+                            label={t('preprocess.numbering:dong_leading')}
                             value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.lineHeight || 1}
                             onChange={(val) => updateSelectedField({ lineHeight: val })}
                             suffix="em" step={0.1}
                         />
                         <ToolNumberInput 
-                            label="Khoảng cách (Tracking)"
+                            label={t('preprocess.numbering:khoang_cach_tracking')}
                             value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.characterSpacing || 0}
                             onChange={(val) => updateSelectedField({ characterSpacing: val })}
                             suffix="pt" step={0.5}
                         />
                         <div>
-                            <span className="text-[11px] font-medium text-slate-500 block mb-1">Căn lề</span>
+                            <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:can_le')}</span>
                             <div className="flex items-center gap-1.5">
                                 <select 
                                     value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.alignment || 'left'}
                                     onChange={(e) => updateSelectedField({ alignment: e.target.value })}
                                     className="flex-1 min-w-0 h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 transition-all"
                                 >
-                                    <option value="left">Trái</option>
-                                    <option value="center">Giữa</option>
-                                    <option value="right">Phải</option>
+                                    <option value="left">{t('preprocess.numbering:trai')}</option>
+                                    <option value="center">{t('preprocess.numbering:giua')}</option>
+                                    <option value="right">{t('preprocess.numbering:phai')}</option>
                                 </select>
                             </div>
                         </div>
                         <div className="col-span-2">
-                            <span className="text-[10px] font-medium text-slate-500 block mb-1">Màu chữ</span>
+                            <span className="text-[10px] font-medium text-slate-500 block mb-1">{t('preprocess.numbering:mau_chu')}</span>
                             <CmykColorPicker
-                                label="Màu CMYK"
+                                label={t('preprocess.numbering:mau_cmyk')}
                                 value={vdpFields.find(f=>f.id===selectedFieldIds[0])?.fontColor || '#000000'}
                                 onChange={(hex: string) => updateSelectedField({ fontColor: hex })}
                             />
@@ -655,7 +657,7 @@ export default function NumberingTool({
                         className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 bg-white dark:bg-zinc-900 border-slate-300 dark:border-zinc-600 cursor-pointer"
                     />
                     <label htmlFor="spawnNewTabNum" className="text-[11px] text-slate-600 dark:text-zinc-400 cursor-pointer select-none">
-                        Mở kết quả sang Tab mới (thay vì đè file hiện tại)
+                        {t('preprocess.numbering:mo_ket_qua_sang_tab_moi_thay_vi_de_file')}
                     </label>
                 </div>
                 
@@ -667,7 +669,7 @@ export default function NumberingTool({
                     {isGenerating ? (
                         <>
                             <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                            Đang xử lý...
+                            {t('preprocess.numbering:dang_xu_ly')}
                         </>
                     ) : (
                         <>Tạo file Nhảy số ({vdpFields.length} Slots)</>

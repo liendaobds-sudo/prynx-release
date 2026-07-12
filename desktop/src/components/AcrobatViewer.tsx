@@ -23,6 +23,7 @@ import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useViewerZoom } from '../hooks/viewer/useViewerZoom';
 import { useVdpHistory } from '../hooks/useVdpHistory';
 import type { UseEditSession } from '../hooks/useEditSession';
+import { useTranslation } from 'react-i18next';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -69,6 +70,7 @@ interface Props {
 }
 
 export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, onViewerDirtyChange, editSession }: Props) {
+  const { t } = useTranslation();
     // ═══ Global Store ═══
     const {
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue,
@@ -135,7 +137,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
 
     const ensureCropFileId = useCallback(async () => {
         if (selectionFileId) return selectionFileId;
-        if (!file) throw new Error('Chưa có file để cắt khổ');
+        if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
         const res = await uploadPDF(file);
         setSelectionFileId(res.id);
         return res.id;
@@ -156,7 +158,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     const [exportFileId, setExportFileId] = useState<string | undefined>(undefined);
     const [exportFilePath, setExportFilePath] = useState<string | undefined>(undefined);
     const openExportImage = useCallback(async () => {
-        if (!file) { toast.info('Chưa có file để xuất ảnh.'); return; }
+        if (!file) { toast.info(t('misc.acrobatViewer:chua_co_file_de_xuat_anh')); return; }
         try {
             const p = (file as any)?.path;
             if (p) { setExportFilePath(p); setExportFileId(undefined); }
@@ -740,7 +742,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         try {
             commitSnapshot();
             setIsProcessing(true);
-            setProcessStatus('Đang sao chép trang...');
+            setProcessStatus(t('misc.acrobatViewer:dang_sao_chep_trang'));
 
             const { PDFDocument } = await import('pdf-lib');
             const srcResp = await fetch(sourcePdfUrl);
@@ -1001,13 +1003,13 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                 <svg className="w-16 h-16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
-                <h2 className="text-2xl font-bold">Lỗi tải PDF</h2>
+                <h2 className="text-2xl font-bold">{t('misc.acrobatViewer:loi_tai_pdf')}</h2>
                 <p className="text-lg font-medium">{loadError.message}</p>
                 <button 
                     onClick={() => window.location.reload()}
                     className="mt-4 px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 font-medium"
                 >
-                    Tải lại trang
+                    {t('misc.acrobatViewer:tai_lai_trang')}
                 </button>
             </div>
         );
@@ -1039,12 +1041,12 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                     {file && (
                         <button
                             onClick={openExportImage}
-                            title="Xuất ảnh (PNG/JPEG/TIFF)"
-                            aria-label="Xuất ảnh"
+                            title={t('misc.acrobatViewer:xuat_anh_png_jpeg_tiff')}
+                            aria-label={t('misc.acrobatViewer:xuat_anh')}
                             className="flex items-center gap-1.5 px-2.5 h-8 rounded text-[13px] font-medium text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
                         >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
-                            <span className="tb-label">Xuất ảnh</span>
+                            <span className="tb-label">{t('misc.acrobatViewer:xuat_anh')}</span>
                         </button>
                     )}
                     {toolbarExtra}
@@ -1085,7 +1087,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                     {pdfUrl && numPages === 0 && !loadError && (
                         <div className="flex-1 flex flex-col items-center justify-center gap-4 bg-[#525659]">
                             <div className="w-10 h-10 border-[3px] border-indigo-400/30 border-t-indigo-400 rounded-full animate-spin" />
-                            <p className="text-sm text-zinc-400 font-medium animate-pulse">Đang tải file PDF...</p>
+                            <p className="text-sm text-zinc-400 font-medium animate-pulse">{t('misc.acrobatViewer:dang_tai_file_pdf')}</p>
                         </div>
                     )}
 

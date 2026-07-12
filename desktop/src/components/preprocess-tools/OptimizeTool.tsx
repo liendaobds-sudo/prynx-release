@@ -3,6 +3,7 @@ import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/a
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput, ToolInfo } from './ToolUI';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
     pdfFile: File | null;
@@ -24,6 +25,7 @@ function formatSize(bytes: number): string {
 }
 
 export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
     const [preset, setPreset] = useState('ebook');
     const [imageDpi, setImageDpi] = useState(300);
@@ -40,14 +42,14 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
 
     const handleRun = async () => {
         if (!pdfFile) {
-            setError('Chưa mở file PDF nào.');
+            setError(t('preprocess.optimize:chua_mo_file_pdf_nao'));
             return;
         }
 
         setIsProcessing(true);
         setError('');
         setResult(null);
-        setProgress('Đang chuẩn bị dữ liệu...');
+        setProgress(t('preprocess.optimize:dang_chuan_bi_du_lieu'));
 
         try {
             const realFile = await prepareFileForUpload((await getWorkingFile()) || pdfFile);
@@ -64,7 +66,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
             formData.append('strip_metadata', stripMetadata ? 'true' : 'false');
             formData.append('grayscale', grayscale ? 'true' : 'false');
 
-            setProgress('Hệ thống đang tiến hành nén và tối ưu PDF...');
+            setProgress(t('preprocess.optimize:he_thong_dang_tien_hanh_nen_va_toi_uu'));
 
             const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/optimize`, {
                 method: 'POST',
@@ -91,7 +93,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
             }
         } catch (e: any) {
             recipeRecorder.discardPending();
-            setError(e.message || 'Đã xảy ra lỗi không xác định.');
+            setError(e.message || t('preprocess.optimize:da_xay_ra_loi_khong_xac_dinh'));
             setProgress('');
         } finally {
             setIsProcessing(false);
@@ -104,7 +106,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
         <div className="flex flex-col gap-4">
             {/* Preset Selection */}
             <div>
-                <ToolSectionLabel>Mức nén</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.optimize:muc_nen')}</ToolSectionLabel>
                 <div className="flex flex-col gap-1.5">
                     {PRESETS.map(opt => (
                         <ToolCardOption
@@ -122,29 +124,29 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
             {preset === 'custom' && (
                 <div>
                     <ToolNumberInput
-                        label="DPI ảnh đầu ra"
+                        label={t('preprocess.optimize:dpi_anh_dau_ra')}
                         value={imageDpi}
                         onChange={setImageDpi}
                         suffix="DPI"
                         step={50}
                     />
-                    <p className="text-[10px] text-slate-400 mt-1">In offset: 300 DPI | In kỹ thuật số: 150-200 DPI | Web: 72 DPI</p>
+                    <p className="text-[10px] text-slate-400 mt-1">{t('preprocess.optimize:in_offset_300_dpi_in_ky_thuat_so_150')}</p>
                 </div>
             )}
 
             {/* Options */}
             <div>
-                <ToolSectionLabel>Tùy chọn</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.optimize:tuy_chon')}</ToolSectionLabel>
                 <div className="flex flex-col gap-1.5">
                     <ToolCheckboxOption
-                        label="Xóa metadata thừa"
-                        desc="Gỡ XMP, history Photoshop, thông tin tác giả. Giảm thêm vài %."
+                        label={t('preprocess.optimize:xoa_metadata_thua')}
+                        desc={t('preprocess.optimize:go_xmp_history_photoshop_thong_tin_tac')}
                         selected={stripMetadata}
                         onClick={() => setStripMetadata(!stripMetadata)}
                     />
                     <ToolCheckboxOption
-                        label="Chuyển sang Grayscale"
-                        desc="Bỏ toàn bộ màu, chỉ giữ đen trắng. Giảm mạnh nhưng mất màu hoàn toàn."
+                        label={t('preprocess.optimize:chuyen_sang_grayscale')}
+                        desc={t('preprocess.optimize:bo_toan_bo_mau_chi_giu_den_trang_giam')}
                         selected={grayscale}
                         onClick={() => setGrayscale(!grayscale)}
                     />
@@ -155,8 +157,8 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
             <ToolInfo desc={
                 <>
                     <strong>Optimize PDF</strong> — Giảm dung lượng file bằng cách nén ảnh, subset font, gỡ rác. 
-                    Chất lượng in {selectedPreset?.id === 'screen' ? 'giảm đáng kể' : selectedPreset?.id === 'ebook' ? 'giảm nhẹ' : 'giữ nguyên'}.
-                    {pdfFile && <> File hiện tại: <strong>{formatSize(pdfFile.size)}</strong></>}
+                    Chất lượng in {selectedPreset?.id === 'screen' ? t('preprocess.optimize:giam_dang_ke') : selectedPreset?.id === 'ebook' ? t('preprocess.optimize:giam_nhe') : t('preprocess.optimize:giu_nguyen')}.
+                    {pdfFile && <> {t('preprocess.optimize:file_hien_tai')} <strong>{formatSize(pdfFile.size)}</strong></>}
                 </>
             } />
 
@@ -170,7 +172,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
                         : 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-emerald-500/25 hover:shadow-emerald-500/40'
                 }`}
             >
-                {isProcessing ? '⏳ Đang nén...' : '📦 Tối ưu PDF'}
+                {isProcessing ? t('preprocess.optimize:dang_nen') : t('preprocess.optimize:toi_uu_pdf')}
             </button>
 
             {/* Progress */}
@@ -192,13 +194,13 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
             {result && (
                 <div className="bg-emerald-50 dark:bg-emerald-900/20 p-4 rounded-lg border border-emerald-200 dark:border-emerald-800/50">
                     <h4 className="text-[12px] font-bold text-emerald-700 dark:text-emerald-400 mb-3">
-                        {result.ratio > 0 ? '✅ Nén thành công!' : '⚠️ File đã tối ưu sẵn, không giảm thêm được.'}
+                        {result.ratio > 0 ? t('preprocess.optimize:nen_thanh_cong') : t('preprocess.optimize:file_da_toi_uu_san_khong_giam_them_duoc')}
                     </h4>
 
                     {/* Visual size comparison */}
                     <div className="flex items-center gap-3 mb-3">
                         <div className="flex-1 text-center">
-                            <div className="text-[10px] text-slate-500 mb-1">Trước</div>
+                            <div className="text-[10px] text-slate-500 mb-1">{t('preprocess.optimize:truoc')}</div>
                             <div className="text-lg font-black text-slate-600 dark:text-zinc-300">{formatSize(result.originalSize)}</div>
                         </div>
                         <div className="flex flex-col items-center">

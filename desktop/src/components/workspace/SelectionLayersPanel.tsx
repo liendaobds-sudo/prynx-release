@@ -4,6 +4,7 @@ import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { authenticatedFetch, getApiUrl } from '../../lib/api';
 import { Lock, LockOpen, Eye, EyeOff, Trash2, FolderOpen, Plus, Image as ImageIcon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 // ═══════════════════════════════════════════════════════════
 //  Edit PDF Layers & Components Panel (unified)
@@ -38,6 +39,7 @@ export default function EditLayersPanel({
     editObjects,
     isEditMode,
 }: EditLayersPanelProps) {
+  const { t } = useTranslation();
     const { 
         pdfUrl, pdfObjectsVersion, selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
         lockedObjectIds, setLockedObjectIds,
@@ -328,7 +330,7 @@ export default function EditLayersPanel({
                         <button
                             onClick={(e) => { e.stopPropagation(); handleToggleExpand(layer.id); }}
                             className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 transition-colors shrink-0"
-                            aria-label={isExpanded ? 'Thu gọn nhóm lớp' : 'Mở rộng nhóm lớp'}
+                            aria-label={isExpanded ? t('misc.selectionLayers:thu_gon_nhom_lop') : t('misc.selectionLayers:mo_rong_nhom_lop')}
                         >
                             <svg className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -352,8 +354,8 @@ export default function EditLayersPanel({
                                 ? 'text-slate-300 dark:text-zinc-600 hover:text-slate-500' 
                                 : 'text-slate-500 dark:text-zinc-300 hover:text-blue-600 dark:hover:text-blue-400'
                         }`}
-                        title={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
-                        aria-label={isHidden ? 'Hiển thị lớp' : 'Ẩn lớp'}
+                        title={isHidden ? t('misc.selectionLayers:hien_thi_lop') : t('misc.selectionLayers:an_lop')}
+                        aria-label={isHidden ? t('misc.selectionLayers:hien_thi_lop') : t('misc.selectionLayers:an_lop')}
                     >
                         {isHidden ? (
                             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -375,8 +377,8 @@ export default function EditLayersPanel({
                                 ? 'text-amber-500 hover:text-amber-600' 
                                 : 'text-slate-300 dark:text-zinc-600 hover:text-slate-500 dark:hover:text-zinc-400 opacity-0 group-hover/layer:opacity-100'
                         }`}
-                        title={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
-                        aria-label={isLocked ? 'Mở khóa lớp' : 'Khóa lớp'}
+                        title={isLocked ? t('misc.selectionLayers:mo_khoa_lop') : t('misc.selectionLayers:khoa_lop')}
+                        aria-label={isLocked ? t('misc.selectionLayers:mo_khoa_lop') : t('misc.selectionLayers:khoa_lop')}
                     >
                         {isLocked ? (
                             <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
@@ -435,14 +437,14 @@ export default function EditLayersPanel({
     return (
         <div className="flex flex-col h-full gap-3">
             {/* Unified OCG + Thành phần view for Edit PDF upgrade */}
-            <div className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 px-1">🎨 Lớp & Thành phần (Edit PDF)</div>
+            <div className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 px-1">{t('misc.selectionLayers:lop_thanh_phan_edit_pdf')}</div>
 
             {/* Loading Overlay */}
             {isLoading && (
                 <div className="absolute inset-0 z-50 bg-white/70 dark:bg-zinc-900/70 flex items-center justify-center rounded-lg backdrop-blur-sm">
                     <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
                         <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                        <span className="text-xs font-medium">Đang xử lý...</span>
+                        <span className="text-xs font-medium">{t('misc.selectionLayers:dang_xu_ly')}</span>
                     </div>
                 </div>
             )}
@@ -454,7 +456,7 @@ export default function EditLayersPanel({
                         <button
                             onClick={handleFlatten}
                             className="text-[10px] bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-2 py-1 rounded transition-colors text-slate-600 dark:text-zinc-300 flex items-center gap-1"
-                            title="Flatten Visible — gộp tất cả layer thành 1"
+                            title={t('misc.selectionLayers:flatten_visible_gop_tat_ca_layer_thanh')}
                         >
                             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
@@ -477,10 +479,10 @@ export default function EditLayersPanel({
                             <div className="p-6 text-center">
                                 <div className="text-3xl mb-2 opacity-30">🎨</div>
                                 <p className="text-slate-400 dark:text-zinc-500 italic text-xs">
-                                    Không tìm thấy Lớp OCG nào trong file PDF này.
+                                    {t('misc.selectionLayers:khong_tim_thay_lop_ocg_nao_trong_file')}
                                 </p>
                                 <p className="text-slate-300 dark:text-zinc-600 text-[10px] mt-1">
-                                    File cần có cấu trúc OCG (Optional Content Groups)
+                                    {t('misc.selectionLayers:file_can_co_cau_truc_ocg_optional')}
                                 </p>
                             </div>
                         )}
@@ -488,10 +490,10 @@ export default function EditLayersPanel({
 
                     {/* Keyboard Hints */}
                     <div className="shrink-0 text-[9px] text-slate-400 dark:text-zinc-600 px-1 flex gap-3">
-                        <span className="flex items-center gap-1"><Eye className="w-3 h-3" /> Ẩn/Hiện</span>
-                        <span className="flex items-center gap-1"><Lock className="w-3 h-3" /> Khóa</span>
-                        <span>2x Click = Đổi tên</span>
-                        <span>Kéo = Sắp xếp</span>
+                        <span className="flex items-center gap-1"><Eye className="w-3 h-3" /> {t('misc.selectionLayers:an_hien')}</span>
+                        <span className="flex items-center gap-1"><Lock className="w-3 h-3" /> {t('misc.selectionLayers:khoa')}</span>
+                        <span>{t('misc.selectionLayers:2x_click_doi_ten')}</span>
+                        <span>{t('misc.selectionLayers:keo_sap_xep')}</span>
                     </div>
                 </>
 
@@ -508,21 +510,21 @@ export default function EditLayersPanel({
                             type="button"
                             onClick={() => setEditAddMode(editAddMode === 'image' ? null : 'image')}
                             className={`flex-1 px-2 py-1 text-[12px] rounded border inline-flex items-center justify-center gap-1 transition-colors ${editAddMode === 'image' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 border-slate-300 dark:border-zinc-600 hover:bg-slate-50 dark:hover:bg-zinc-700'}`}
-                        ><ImageIcon className="w-3.5 h-3.5" /> Ảnh</button>
+                        ><ImageIcon className="w-3.5 h-3.5" /> {t('misc.selectionLayers:anh')}</button>
                     </div>
                     {editAddMode && (
                         <div className="shrink-0 text-[11px] text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded">
-                            Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : 'ảnh'}…
+                            Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : t('misc.selectionLayers:anh_2')}…
                         </div>
                     )}
 
             {/* Components (Thành phần) Section - using editObjects for accuracy */}
                     <div className="flex items-center justify-between shrink-0 bg-white dark:bg-zinc-800 p-2 rounded-md border border-slate-200 dark:border-zinc-700">
-                        <span className="font-medium text-[13px] text-slate-700 dark:text-zinc-300">Đã chọn: <strong className="text-blue-600 dark:text-blue-400">{selectedObjectIds.length}</strong></span>
+                        <span className="font-medium text-[13px] text-slate-700 dark:text-zinc-300">{t('misc.selectionLayers:da_chon')} <strong className="text-blue-600 dark:text-blue-400">{selectedObjectIds.length}</strong></span>
                         <div className="flex gap-2">
                             <input
                                 type="text"
-                                placeholder="Tìm thành phần..."
+                                placeholder={t('misc.selectionLayers:tim_thanh_phan')}
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
                                 className="text-[11px] px-2 py-0.5 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800"
@@ -539,7 +541,7 @@ export default function EditLayersPanel({
                                 }}
                                 className="text-[11px] bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-2 py-1 rounded transition-colors text-slate-600 dark:text-zinc-300"
                             >
-                                {selectedObjectIds.length > 0 ? 'Bỏ chọn' : 'Chọn tất cả'}
+                                {selectedObjectIds.length > 0 ? t('misc.selectionLayers:bo_chon') : t('misc.selectionLayers:chon_tat_ca')}
                             </button>
                         </div>
                     </div>
@@ -551,7 +553,7 @@ export default function EditLayersPanel({
                                 !searchTerm || (obj.content || obj.type || '').toLowerCase().includes(searchTerm.toLowerCase())
                             );
                             if (filtered.length === 0) {
-                                return <div className="p-4 text-center text-slate-400 italic text-xs">Không có thành phần khớp tìm kiếm.</div>;
+                                return <div className="p-4 text-center text-slate-400 italic text-xs">{t('misc.selectionLayers:khong_co_thanh_phan_khop_tim_kiem')}</div>;
                             }
                             return filtered.map((obj: any) => {
                                 const isSelected = selectedObjectIds.includes(obj.id);
@@ -571,8 +573,8 @@ export default function EditLayersPanel({
                                                 );
                                             }}
                                             className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isHidden ? 'text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
-                                            title={isHidden ? 'Hiện thành phần' : 'Ẩn thành phần'}
-                                            aria-label={isHidden ? 'Hiện thành phần' : 'Ẩn thành phần'}
+                                            title={isHidden ? t('misc.selectionLayers:hien_thanh_phan') : t('misc.selectionLayers:an_thanh_phan')}
+                                            aria-label={isHidden ? t('misc.selectionLayers:hien_thanh_phan') : t('misc.selectionLayers:an_thanh_phan')}
                                         >
                                             {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                                         </button>
@@ -586,8 +588,8 @@ export default function EditLayersPanel({
                                                 setSelectedObjectIds(prev => prev.filter(id => id !== obj.id));
                                             }}
                                             className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isLocked ? 'text-amber-500' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
-                                            title={isLocked ? 'Mở khóa thành phần' : 'Khóa thành phần'}
-                                            aria-label={isLocked ? 'Mở khóa thành phần' : 'Khóa thành phần'}
+                                            title={isLocked ? t('misc.selectionLayers:mo_khoa_thanh_phan') : t('misc.selectionLayers:khoa_thanh_phan')}
+                                            aria-label={isLocked ? t('misc.selectionLayers:mo_khoa_thanh_phan') : t('misc.selectionLayers:khoa_thanh_phan')}
                                         >
                                             {isLocked ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
                                         </button>
@@ -659,14 +661,14 @@ export default function EditLayersPanel({
                             onClick={() => startRename(contextMenu.layer)}
                             className="w-full text-left px-3 py-1.5 text-[12px] text-slate-700 dark:text-zinc-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center gap-2"
                         >
-                            <span>✏️</span> Đổi tên
+                            <span>✏️</span> {t('misc.selectionLayers:doi_ten')}
                         </button>
                         <button 
                             onClick={() => handleToggleLock(contextMenu.layer.id)}
                             className="w-full text-left px-3 py-1.5 text-[12px] text-slate-700 dark:text-zinc-200 hover:bg-blue-50 dark:hover:bg-blue-900/30 flex items-center gap-2"
                         >
                             <span>{lockedOcgLayerIds.includes(contextMenu.layer.id) ? <LockOpen className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}</span> 
-                            {lockedOcgLayerIds.includes(contextMenu.layer.id) ? 'Mở khóa' : 'Khóa'}
+                            {lockedOcgLayerIds.includes(contextMenu.layer.id) ? t('misc.selectionLayers:mo_khoa') : t('misc.selectionLayers:khoa')}
                         </button>
                         <div className="border-t border-slate-100 dark:border-zinc-700 my-1" />
                         <button 
@@ -680,7 +682,7 @@ export default function EditLayersPanel({
                             onClick={() => handleDeleteLayer(contextMenu.layer.id)}
                             className="w-full text-left px-3 py-1.5 text-[12px] text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 flex items-center gap-2"
                         >
-                            <span><Trash2 className="w-3.5 h-3.5" /></span> Xóa lớp
+                            <span><Trash2 className="w-3.5 h-3.5" /></span> {t('misc.selectionLayers:xoa_lop')}
                         </button>
                     </div>
                 </>

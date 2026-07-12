@@ -31,6 +31,7 @@ import {
     EXPLODED_FACTOR_MAX,
 } from '../../store/useMockupStore';
 import CollapsibleSection from './CollapsibleSection';
+import { useTranslation } from 'react-i18next';
 
 /** Bốn preset camera hợp lệ (Yêu cầu 7.1). */
 const CAMERA_PRESETS: { id: CameraPreset; label: string }[] = [
@@ -50,6 +51,7 @@ const EDGE_COLORS: { id: EdgeColor; label: string }[] = [
 ];
 
 export default function MockupPanel() {
+  const { t } = useTranslation();
     const finishId = useMockupStore((s) => s.finishId);
     const setFinishId = useMockupStore((s) => s.setFinishId);
     const edgeColor = useMockupStore((s) => s.edgeColor);
@@ -83,26 +85,26 @@ export default function MockupPanel() {
     return (
         <div className="dt-param-panel">
             {/* ─── Vật liệu / Finish (mở sẵn) ─── */}
-            <CollapsibleSection title="Vật liệu / Gia công bề mặt" defaultOpen badge={finishLabel}>
+            <CollapsibleSection title={t('dieline.mockup:vat_lieu_gia_cong_be_mat')} defaultOpen badge={finishLabel}>
                 <select
                     className="dt-param-select"
                     value={finishId}
                     onChange={(e) => setFinishId(e.target.value as FinishId)}
-                    title="Kiểu gia công bề mặt (PBR): kraft, cán mờ/bóng, spot-UV, ép kim, dập nổi…"
+                    title={t('dieline.mockup:kieu_gia_cong_be_mat_pbr_kraft_can_mo')}
                 >
                     {finishes.map((f) => (
                         <option key={f.id} value={f.id}>{f.label}</option>
                     ))}
                 </select>
 
-                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>Màu cạnh giấy</label>
+                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>{t('dieline.mockup:mau_canh_giay')}</label>
                 <div className="dt-glue-side-toggle">
                     {EDGE_COLORS.map((c) => (
                         <button
                             key={c.id}
                             className={`dt-glue-side-btn ${edgeColor === c.id ? 'active' : ''}`}
                             onClick={() => setEdgeColor(c.id)}
-                            title="Màu mép giấy lộ ở tường cạnh"
+                            title={t('dieline.mockup:mau_mep_giay_lo_o_tuong_canh')}
                         >
                             {c.label}
                         </button>
@@ -111,20 +113,20 @@ export default function MockupPanel() {
             </CollapsibleSection>
 
             {/* ─── Cảnh / Ánh sáng / Camera ─── */}
-            <CollapsibleSection title="Cảnh & Góc nhìn" defaultOpen>
-                <label className="dt-section-label">Ánh sáng studio (HDRI)</label>
+            <CollapsibleSection title={t('dieline.mockup:canh_goc_nhin')} defaultOpen>
+                <label className="dt-section-label">{t('dieline.mockup:anh_sang_studio_hdri')}</label>
                 <select
                     className="dt-param-select"
                     value={hdriPreset}
                     onChange={(e) => setHdriPreset(e.target.value)}
-                    title="Môi trường chiếu sáng IBL/HDRI"
+                    title={t('dieline.mockup:moi_truong_chieu_sang_ibl_hdri')}
                 >
                     {HDRI_PRESETS.map((p) => (
                         <option key={p.id} value={p.id}>{p.label}</option>
                     ))}
                 </select>
 
-                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>Phông nền / sàn</label>
+                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>{t('dieline.mockup:phong_nen_san')}</label>
                 <select
                     className="dt-param-select"
                     value={backgroundPreset}
@@ -135,7 +137,7 @@ export default function MockupPanel() {
                     ))}
                 </select>
 
-                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>Góc nhìn camera</label>
+                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>{t('dieline.mockup:goc_nhin_camera')}</label>
                 <div className="dt-glue-side-toggle">
                     {CAMERA_PRESETS.map((c) => (
                         <button
@@ -152,17 +154,17 @@ export default function MockupPanel() {
                     className="dt-glue-side-btn"
                     style={{ width: '100%', marginTop: '0.5rem' }}
                     onClick={() => requestCameraReset()}
-                    title="Canh khung & đặt lại góc nhìn về preset hiện tại (sau khi đã xoay/zoom/kéo)"
+                    title={t('dieline.mockup:canh_khung_dat_lai_goc_nhin_ve_preset')}
                 >
-                    🎯 Canh khung / Đặt lại góc nhìn
+                    {t('dieline.mockup:canh_khung_dat_lai_goc_nhin')}
                 </button>
             </CollapsibleSection>
 
             {/* ─── Exploded view + overlay kích thước ─── */}
-            <CollapsibleSection title="Tách rời & Kích thước">
+            <CollapsibleSection title={t('dieline.mockup:tach_roi_kich_thuoc')}>
                 <div className="dt-param-slider">
                     <div className="dt-param-header">
-                        <label className="dt-param-label">Tách rời (exploded)</label>
+                        <label className="dt-param-label">{t('dieline.mockup:tach_roi_exploded')}</label>
                         <span className="dt-param-value">{explodedFactor.toFixed(1)}×</span>
                     </div>
                     <input
@@ -174,7 +176,7 @@ export default function MockupPanel() {
                         className="dt-param-range"
                         style={{ accentColor: 'var(--dt-accent)', width: '100%' }}
                         onChange={(e) => setExplodedFactor(parseFloat(e.target.value))}
-                        title="Tách các mặt theo pháp tuyến để xem cấu trúc gập"
+                        title={t('dieline.mockup:tach_cac_mat_theo_phap_tuyen_de_xem_cau')}
                     />
                 </div>
 
@@ -182,10 +184,10 @@ export default function MockupPanel() {
                     className="dt-param-cell"
                     style={{ cursor: 'pointer', marginTop: '0.5rem' }}
                     onClick={() => setShowDimensions(!showDimensions)}
-                    title="Hiện nhãn kích thước Dài × Rộng × Cao"
+                    title={t('dieline.mockup:hien_nhan_kich_thuoc_dai_rong_cao')}
                 >
                     <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
-                        Hiện kích thước L×W×H
+                        {t('dieline.mockup:hien_kich_thuoc_l_w_h')}
                     </label>
                     <input
                         type="checkbox"
@@ -197,9 +199,9 @@ export default function MockupPanel() {
             </CollapsibleSection>
 
             {/* ─── Xuất ảnh / mô hình ─── */}
-            <CollapsibleSection title="Xuất mockup">
+            <CollapsibleSection title={t('dieline.mockup:xuat_mockup')}>
                 <div className="dt-param-header" style={{ marginBottom: '0.35rem' }}>
-                    <label className="dt-param-label">Độ phân giải</label>
+                    <label className="dt-param-label">{t('dieline.mockup:do_phan_giai')}</label>
                 </div>
                 <div className="dt-glue-side-toggle">
                     {EXPORT_SCALES.map((s) => (
@@ -214,13 +216,13 @@ export default function MockupPanel() {
                 </div>
 
                 <div className="dt-glue-side-toggle" style={{ marginTop: '0.5rem' }}>
-                    <button className="dt-glue-side-btn" onClick={() => requestExportPng()} title="Xuất ảnh PNG phía client">
-                        ⬇ Xuất PNG
+                    <button className="dt-glue-side-btn" onClick={() => requestExportPng()} title={t('dieline.mockup:xuat_anh_png_phia_client')}>
+                        {t('dieline.mockup:xuat_png')}
                     </button>
-                    <button className="dt-glue-side-btn" onClick={() => requestExportBatch()} title="Xuất 4 góc: mặt trước, phối cảnh, từ trên, trực giao">
-                        ⬇ 4 góc
+                    <button className="dt-glue-side-btn" onClick={() => requestExportBatch()} title={t('dieline.mockup:xuat_4_goc_mat_truoc_phoi_canh_tu_tren')}>
+                        {t('dieline.mockup:4_goc')}
                     </button>
-                    <button className="dt-glue-side-btn" onClick={() => requestExportGlb()} title="Xuất mô hình GLB phía client">
+                    <button className="dt-glue-side-btn" onClick={() => requestExportGlb()} title={t('dieline.mockup:xuat_mo_hinh_glb_phia_client')}>
                         ⬇ GLB
                     </button>
                 </div>
@@ -229,10 +231,10 @@ export default function MockupPanel() {
                     className="dt-param-cell"
                     style={{ cursor: 'pointer', marginTop: '0.5rem' }}
                     onClick={() => setExportTransparent(!exportTransparent)}
-                    title="Ẩn nền/sàn và xuất PNG có nền trong suốt (alpha)"
+                    title={t('dieline.mockup:an_nen_san_va_xuat_png_co_nen_trong')}
                 >
                     <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
-                        Nền trong suốt (PNG)
+                        {t('dieline.mockup:nen_trong_suot_png')}
                     </label>
                     <input
                         type="checkbox"
@@ -242,27 +244,27 @@ export default function MockupPanel() {
                     />
                 </div>
                 <p className="dt-param-desc">
-                    Ảnh PNG xuất theo độ phân giải đã chọn; GLB xuất hộp ở trạng thái gập hiện tại.
+                    {t('dieline.mockup:anh_png_xuat_theo_do_phan_giai_da_chon')}
                 </p>
             </CollapsibleSection>
 
             {/* ─── Lưu / khôi phục cấu hình cảnh ─── */}
-            <CollapsibleSection title="Cấu hình cảnh">
+            <CollapsibleSection title={t('dieline.mockup:cau_hinh_canh')}>
                 <p className="dt-param-desc" style={{ marginTop: 0 }}>
-                    Lưu finish, môi trường, góc nhìn và canh chỉnh ảnh (không gồm tệp ảnh) để dùng lại lần sau.
+                    {t('dieline.mockup:luu_finish_moi_truong_goc_nhin_va_canh')}
                 </p>
                 <div className="dt-glue-side-toggle">
-                    <button className="dt-glue-side-btn" onClick={() => saveScenePreset()} title="Lưu cấu hình cảnh hiện tại">
-                        💾 Lưu
+                    <button className="dt-glue-side-btn" onClick={() => saveScenePreset()} title={t('dieline.mockup:luu_cau_hinh_canh_hien_tai')}>
+                        {t('dieline.mockup:luu')}
                     </button>
                     <button
                         className="dt-glue-side-btn"
                         onClick={() => loadScenePreset()}
                         disabled={!scenePresetSaved}
                         style={!scenePresetSaved ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-                        title={scenePresetSaved ? 'Khôi phục cấu hình đã lưu' : 'Chưa có cấu hình đã lưu'}
+                        title={scenePresetSaved ? t('dieline.mockup:khoi_phuc_cau_hinh_da_luu') : t('dieline.mockup:chua_co_cau_hinh_da_luu')}
                     >
-                        ♻ Khôi phục
+                        {t('dieline.mockup:khoi_phuc')}
                     </button>
                 </div>
             </CollapsibleSection>

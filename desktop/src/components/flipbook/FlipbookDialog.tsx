@@ -7,6 +7,7 @@ import { generateBindingMap } from '../../lib/imposerEngine/VirtualMap';
 
 // Ensure worker is set up
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { useTranslation } from 'react-i18next';
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
 interface FlipbookDialogProps {
@@ -22,6 +23,7 @@ interface FlipbookDialogProps {
 export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({ 
     isOpen, onClose, pdfUrl, pdfFile, pageOrder, bindingMode, foliosize 
 }) => {
+  const { t } = useTranslation();
     const [bookData, setBookData] = useState<BookData>({ pages: [] });
     const [currentPageIndex, setCurrentPageIndex] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
@@ -227,13 +229,13 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                         onClick={onClose}
                         className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer"
                     >
-                        Đóng (ESC)
+                        {t('misc.flipbookDialog:dong_esc')}
                     </button>
                 </div>
 
             <div className="text-white text-xl font-serif mb-4 flex items-center gap-4">
                 📖 Xem Trước Thành Phẩm
-                {isLoading && <span className="text-sm bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded">Đang nạp dữ liệu...</span>}
+                {isLoading && <span className="text-sm bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded">{t('misc.flipbookDialog:dang_nap_du_lieu')}</span>}
             </div>
 
             <div className="flex-1 w-full flex flex-col items-center justify-center relative">

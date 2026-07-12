@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
 import { getQRBlob, DEFAULT_QR_STYLE } from '@/engine/barcode/qrEngine';
 import { generateBarcodeDataURL } from '@/engine/barcode/barcodeEngine';
+import { useTranslation } from 'react-i18next';
 
 /**
  * VdpPreviewImage — Renders a live preview of a VDP field (QR code or barcode).
  * Generates a data URL asynchronously and displays it as an image.
  */
 export const VdpPreviewImage = ({ field }: { field: any }) => {
+  const { t } = useTranslation();
     const [dataUrl, setDataUrl] = useState<string | null>(null);
 
     useEffect(() => {
@@ -57,7 +59,7 @@ export const VdpPreviewImage = ({ field }: { field: any }) => {
                     if (isMounted) setDataUrl(url);
                 }
             } catch (e) {
-                console.error("Lỗi preview VDP:", e);
+                console.error(t('misc.viewerHelpers:loi_preview_vdp'), e);
             }
         };
         generate();
@@ -76,7 +78,7 @@ export const VdpPreviewImage = ({ field }: { field: any }) => {
     if (!dataUrl) {
         return (
             <div className="w-full h-full flex items-center justify-center bg-slate-100 text-slate-400 text-[10px]">
-                Đang tải...
+                {t('misc.viewerHelpers:dang_tai')}
             </div>
         );
     }

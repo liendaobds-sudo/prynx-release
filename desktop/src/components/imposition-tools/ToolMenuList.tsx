@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ToolItem } from './SharedUI';
 import { TOOL_CATEGORIES, getToolsByCategory, toolMatchesQuery } from '../../lib/toolRegistry';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
+import { useTranslation } from 'react-i18next';
 
 interface ToolMenuListProps {
     setActiveTool: (tool: string) => void;
@@ -17,6 +18,7 @@ const SectionToggle = ({ sectionKey, label, collapsed, onToggle }: { sectionKey:
 );
 
 export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuListProps) {
+  const { t } = useTranslation();
     const hiddenTools = useAppSettingsStore(state => state.hiddenTools);
     const favoriteTools = useAppSettingsStore(state => state.favoriteTools);
     const toggleFavoriteTool = useAppSettingsStore(state => state.toggleFavoriteTool);
@@ -45,11 +47,11 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                 <input
                     value={query}
                     onChange={e => setQuery(e.target.value)}
-                    placeholder="Tìm công cụ..."
+                    placeholder={t('imposition.toolMenuList:tim_cong_cu')}
                     className="w-full h-8 pl-8 pr-7 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-zinc-900 text-[13px] focus:outline-none focus:border-indigo-400"
                 />
                 {query && (
-                    <button onClick={() => setQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title="Xoá tìm kiếm">
+                    <button onClick={() => setQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title={t('imposition.toolMenuList:xoa_tim_kiem')}>
                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
                 )}
@@ -63,7 +65,7 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
                 const isCollapsed = !q && !!collapsedSections['favorites'];
                 return (
                     <React.Fragment key="favorites">
-                        <SectionToggle sectionKey="favorites" label="⭐ CÔNG CỤ YÊU THÍCH" collapsed={isCollapsed} onToggle={toggleSection} />
+                        <SectionToggle sectionKey="favorites" label={t('imposition.toolMenuList:cong_cu_yeu_thich')} collapsed={isCollapsed} onToggle={toggleSection} />
                         {!isCollapsed && favTools.map(tool => (
                             <ToolItem
                                 key={`fav-${keyOf(tool)}`}

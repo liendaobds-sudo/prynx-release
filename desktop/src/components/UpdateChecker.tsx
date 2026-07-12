@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Tự động kiểm tra bản cập nhật (Tauri updater) khi khởi động.
@@ -7,6 +8,7 @@ import { useEffect, useState } from 'react';
  * Hoàn toàn không chặn UI; chỉ chạy trong môi trường Tauri.
  */
 export default function UpdateChecker() {
+  const { t } = useTranslation();
     const [update, setUpdate] = useState<any>(null);
     const [status, setStatus] = useState<'idle' | 'downloading' | 'done' | 'error'>('idle');
     const [percent, setPercent] = useState(0);
@@ -60,7 +62,7 @@ export default function UpdateChecker() {
                     Có bản cập nhật mới {update.version ? `(${update.version})` : ''}
                 </div>
                 {status === 'idle' && (
-                    <button onClick={() => setDismissed(true)} className="text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 leading-none text-lg" title="Để sau">×</button>
+                    <button onClick={() => setDismissed(true)} className="text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 leading-none text-lg" title={t('misc.updateChecker:de_sau')}>×</button>
                 )}
             </div>
 
@@ -71,10 +73,10 @@ export default function UpdateChecker() {
             {status === 'idle' && (
                 <div className="mt-3 flex gap-2">
                     <button onClick={doInstall} className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-semibold transition-colors">
-                        Cập nhật & khởi động lại
+                        {t('misc.updateChecker:cap_nhat_khoi_dong_lai')}
                     </button>
                     <button onClick={() => setDismissed(true)} className="px-3 py-1.5 rounded border border-slate-300 dark:border-zinc-600 text-slate-600 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800">
-                        Để sau
+                        {t('misc.updateChecker:de_sau')}
                     </button>
                 </div>
             )}
@@ -89,13 +91,13 @@ export default function UpdateChecker() {
             )}
 
             {status === 'done' && (
-                <div className="mt-3 text-xs text-emerald-600">Đã tải xong, đang khởi động lại...</div>
+                <div className="mt-3 text-xs text-emerald-600">{t('misc.updateChecker:da_tai_xong_dang_khoi_dong_lai')}</div>
             )}
 
             {status === 'error' && (
                 <div className="mt-3">
-                    <div className="text-xs text-red-600 mb-2">Cập nhật thất bại. Thử lại sau hoặc tải bản mới thủ công.</div>
-                    <button onClick={() => setDismissed(true)} className="text-xs text-slate-500 hover:underline">Đóng</button>
+                    <div className="text-xs text-red-600 mb-2">{t('misc.updateChecker:cap_nhat_that_bai_thu_lai_sau_hoac_tai')}</div>
+                    <button onClick={() => setDismissed(true)} className="text-xs text-slate-500 hover:underline">{t('misc.updateChecker:dong')}</button>
                 </div>
             )}
         </div>

@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { toast } from './ui/Toast';
+import { useTranslation } from 'react-i18next';
 
 export default function SystemIntegrations() {
+  const { t } = useTranslation();
 
     const processPaths = async (paths: string[]) => {
         const validPaths = paths.filter(p => {
@@ -35,7 +37,7 @@ export default function SystemIntegrations() {
                 try {
                     size = await invoke<number>('get_file_size', { path });
                 } catch (e) {
-                    console.warn('get_file_size lỗi (vẫn mở, size=0):', path, e);
+                    console.warn(t('misc.systemIntegrations:get_file_size_loi_van_mo_size_0'), path, e);
                 }
                 const fileObj = new File([], name, { type });
                 Object.defineProperty(fileObj, 'path', { value: path }); // CRITICAL: Skip HTTP upload polyfill by providing absolute path

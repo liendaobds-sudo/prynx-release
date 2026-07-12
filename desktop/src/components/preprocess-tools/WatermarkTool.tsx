@@ -6,6 +6,7 @@ import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib';
 import { getFileArrayBuffer } from '../../lib/utils';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { normalizeImageToPngBytes } from '../../lib/imageNormalizer';
+import { useTranslation } from 'react-i18next';
 
 const ZINDEX_OPTIONS = [
     { value: 'top', title: '⬆️ Đè lên trên' },
@@ -43,6 +44,7 @@ interface Props {
 }
 
 export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
     const [isProcessing, setIsProcessing] = useState(false);
     const [progress, setProgress] = useState('');
@@ -139,7 +141,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
         setIsSuccess(false);
         setIsProcessing(true);
         setError('');
-        setProgress('Đang đóng dấu bản quyền...');
+        setProgress(t('preprocess.watermark:dang_dong_dau_ban_quyen'));
 
         try {
             const buf = await getFileArrayBuffer((await getWorkingFile()) || pdfFile);
@@ -334,7 +336,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                 setIsSuccess(true);
             }
         } catch (e: any) {
-            setError(e.message || 'Đã xảy ra lỗi không xác định.');
+            setError(e.message || t('preprocess.watermark:da_xay_ra_loi_khong_xac_dinh'));
             setProgress('');
         } finally {
             setIsProcessing(false);
@@ -344,7 +346,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
     return (
         <div className="flex flex-col gap-4 animate-in fade-in duration-300">
             <div>
-                <ToolSectionLabel>Chèn Nền & Đóng Dấu (Background/Watermark)</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.watermark:chen_nen_dong_dau_background_watermark')}</ToolSectionLabel>
                 <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50 mt-2">
                     <p className="text-xs text-slate-600 dark:text-zinc-400">
                         Chèn hình nền (File PDF/Ảnh) bên dưới hoặc đóng dấu văn bản/logo đè lên trên trang PDF.
@@ -361,50 +363,50 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                             onClick={() => setWatermarkType('text')}
                             className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-colors ${watermarkType === 'text' ? 'bg-white dark:bg-zinc-800 shadow text-slate-800 dark:text-white' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
                         >
-                            📝 Chữ (Text)
+                            {t('preprocess.watermark:chu_text')}
                         </button>
                         <button
                             onClick={() => setWatermarkType('image')}
                             className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-colors ${watermarkType === 'image' ? 'bg-white dark:bg-zinc-800 shadow text-slate-800 dark:text-white' : 'text-slate-500 hover:text-slate-700 dark:hover:text-zinc-300'}`}
                         >
-                            🖼️ Hình Ảnh / Phôi PDF
+                            {t('preprocess.watermark:hinh_anh_phoi_pdf')}
                         </button>
                     </div>
 
                     {watermarkType === 'text' ? (
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider">Nội dung văn bản</label>
+                            <label className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider">{t('preprocess.watermark:noi_dung_van_ban')}</label>
                             <input 
                                 type="text" 
                                 value={watermarkText} 
                                 onChange={(e) => setWatermarkText(e.target.value)} 
                                 className="w-full bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                                placeholder="VD: BẢN NHÁP - KHÔNG IN"
+                                placeholder={t('preprocess.watermark:vd_ban_nhap_khong_in')}
                             />
                             {/* Nút bấm nhanh chèn biến */}
                             <div className="flex flex-wrap gap-1.5 mt-1">
-                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[PAGE]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 px-2 py-1 rounded-md text-slate-600 dark:text-zinc-400 font-medium transition-colors">+ Số trang</button>
-                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[TOTAL]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 px-2 py-1 rounded-md text-slate-600 dark:text-zinc-400 font-medium transition-colors">+ Tổng số</button>
-                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[DATE]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 px-2 py-1 rounded-md text-slate-600 dark:text-zinc-400 font-medium transition-colors">+ Ngày</button>
-                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[TIME]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 px-2 py-1 rounded-md text-slate-600 dark:text-zinc-400 font-medium transition-colors">+ Giờ</button>
-                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[BATES]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-indigo-100 dark:bg-indigo-900/50 hover:bg-indigo-200 dark:hover:bg-indigo-800 px-2 py-1 rounded-md text-indigo-700 dark:text-indigo-300 font-bold border border-indigo-200 dark:border-indigo-700 transition-colors">+ Mã Bates</button>
+                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[PAGE]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 px-2 py-1 rounded-md text-slate-600 dark:text-zinc-400 font-medium transition-colors">{t('preprocess.watermark:so_trang')}</button>
+                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[TOTAL]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 px-2 py-1 rounded-md text-slate-600 dark:text-zinc-400 font-medium transition-colors">{t('preprocess.watermark:tong_so')}</button>
+                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[DATE]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 px-2 py-1 rounded-md text-slate-600 dark:text-zinc-400 font-medium transition-colors">{t('preprocess.watermark:ngay')}</button>
+                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[TIME]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 px-2 py-1 rounded-md text-slate-600 dark:text-zinc-400 font-medium transition-colors">{t('preprocess.watermark:gio')}</button>
+                                <button type="button" onClick={() => { setWatermarkText(prev => prev + '[BATES]'); setIsRepeated(false); setRotation(0); setOpacity(1); }} className="text-[10px] bg-indigo-100 dark:bg-indigo-900/50 hover:bg-indigo-200 dark:hover:bg-indigo-800 px-2 py-1 rounded-md text-indigo-700 dark:text-indigo-300 font-bold border border-indigo-200 dark:border-indigo-700 transition-colors">{t('preprocess.watermark:ma_bates')}</button>
                             </div>
                             
                             {/* Cấu hình Bates */}
                             {watermarkText.includes('[BATES]') && (
                                 <div className="flex items-center gap-4 mt-2 bg-indigo-50/50 dark:bg-indigo-900/10 p-3 rounded-lg border border-indigo-100 dark:border-indigo-800/50 animate-in fade-in duration-300">
                                     <div className="flex-1">
-                                        <ToolNumberInput label="Bates Bắt Đầu" value={batesStart} onChange={setBatesStart} />
+                                        <ToolNumberInput label={t('preprocess.watermark:bates_bat_dau')} value={batesStart} onChange={setBatesStart} />
                                     </div>
                                     <div className="flex-1">
-                                        <ToolNumberInput label="Độ dài số (Padding)" value={batesPadding} onChange={setBatesPadding} />
+                                        <ToolNumberInput label={t('preprocess.watermark:do_dai_so_padding')} value={batesPadding} onChange={setBatesPadding} />
                                     </div>
                                 </div>
                             )}
                         </div>
                     ) : (
                         <div className="flex flex-col gap-1">
-                            <label className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider">Tải lên File Nền (PDF/PNG/JPG)</label>
+                            <label className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider">{t('preprocess.watermark:tai_len_file_nen_pdf_png_jpg')}</label>
                             <div className="flex items-center gap-2">
                                 <input
                                     type="file"
@@ -449,17 +451,17 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                 {/* 2. Z-INDEX & RANGE */}
                 <div className="grid grid-cols-2 gap-4 border-t border-slate-200 dark:border-zinc-800 pt-4">
                     <div className="relative z-[60]">
-                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Lớp hiển thị (Z-Index)</span>
+                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:lop_hien_thi_z_index')}</span>
                         <RichSelect compact={true} value={layerZIndex} onChange={v => setLayerZIndex(v as 'top'|'bottom')} options={ZINDEX_OPTIONS} />
                     </div>
                     <div className="relative z-[50]">
-                        <span className="text-[11px] font-medium text-slate-500 block mb-1">Áp dụng cho trang</span>
+                        <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:ap_dung_cho_trang')}</span>
                         <RichSelect compact={true} value={targetType} onChange={v => setTargetType(v as any)} options={TARGET_OPTIONS} />
                         
                         {targetType === 'range' && (
                             <div className="flex items-center gap-2 mt-2">
-                                <ToolNumberInput label="Từ" value={rangeStart} onChange={setRangeStart} className="flex-1" />
-                                <ToolNumberInput label="Đến" value={rangeEnd} onChange={setRangeEnd} className="flex-1" />
+                                <ToolNumberInput label={t('preprocess.watermark:tu')} value={rangeStart} onChange={setRangeStart} className="flex-1" />
+                                <ToolNumberInput label={t('preprocess.watermark:den')} value={rangeEnd} onChange={setRangeEnd} className="flex-1" />
                             </div>
                         )}
                     </div>
@@ -470,32 +472,32 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                     {watermarkType === 'text' ? (
                         <>
                             <div>
-                                <span className="text-[11px] font-medium text-slate-500 block mb-1">Màu chữ</span>
+                                <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:mau_chu')}</span>
                                 <div className="flex items-center justify-between bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md p-1 pl-2.5 h-8">
                                     <span className="text-[12px] font-semibold font-mono text-slate-600 dark:text-zinc-400">{color.toUpperCase()}</span>
                                     <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="w-6 h-6 rounded cursor-pointer border-0 p-0" />
                                 </div>
                             </div>
-                            <ToolNumberInput label="Cỡ chữ" value={fontSize} onChange={setFontSize} suffix="pt" />
+                            <ToolNumberInput label={t('preprocess.watermark:co_chu')} value={fontSize} onChange={setFontSize} suffix="pt" />
                         </>
                     ) : (
                         <>
                             <div className="relative z-[40]">
-                                <span className="text-[11px] font-medium text-slate-500 block mb-1">Chế độ Scale</span>
+                                <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:che_do_scale')}</span>
                                 <RichSelect compact={true} value={scaleMode} onChange={v => setScaleMode(v as any)} options={SCALE_OPTIONS} />
                             </div>
                             {scaleMode === 'absolute' && (
-                                <ToolNumberInput label="Tỷ lệ kích thước" value={imageScale * 100} onChange={v => setImageScale(v / 100)} suffix="%" />
+                                <ToolNumberInput label={t('preprocess.watermark:ty_le_kich_thuoc')} value={imageScale * 100} onChange={v => setImageScale(v / 100)} suffix="%" />
                             )}
                         </>
                     )}
 
                     <div className="flex flex-col gap-2">
-                        <ToolNumberInput label="Độ mờ (Opacity)" value={Math.round(opacity * 100)} onChange={v => setOpacity(v / 100)} suffix="%" step={5} />
+                        <ToolNumberInput label={t('preprocess.watermark:do_mo_opacity')} value={Math.round(opacity * 100)} onChange={v => setOpacity(v / 100)} suffix="%" step={5} />
                     </div>
                     
                     <div className="flex flex-col gap-2">
-                        <ToolNumberInput label="Góc xoay" value={rotation} onChange={setRotation} suffix="°" step={1} />
+                        <ToolNumberInput label={t('preprocess.watermark:goc_xoay')} value={rotation} onChange={setRotation} suffix="°" step={1} />
                     </div>
                 </div>
 
@@ -504,30 +506,30 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                     <ToolCheckboxOption 
                         selected={isRepeated} 
                         onClick={() => setIsRepeated(!isRepeated)} 
-                        label="Lặp kín trang (Canvas Wrap)" 
-                        desc="Lặp lại nội dung phủ kín toàn bộ bề mặt trang PDF như dạng lưới chéo."
+                        label={t('preprocess.watermark:lap_kin_trang_canvas_wrap')} 
+                        desc={t('preprocess.watermark:lap_lai_noi_dung_phu_kin_toan_bo_be_mat')}
                     />
 
                     {isRepeated ? (
-                        <ToolNumberInput label="Khoảng cách giữa các mắt lưới" value={spacing} onChange={setSpacing} suffix="px" step={10} />
+                        <ToolNumberInput label={t('preprocess.watermark:khoang_cach_giua_cac_mat_luoi')} value={spacing} onChange={setSpacing} suffix="px" step={10} />
                     ) : (
                         <div className="bg-slate-50 dark:bg-zinc-800/30 p-4 rounded-xl border border-slate-200 dark:border-zinc-700 flex flex-col gap-4">
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="relative z-[30]">
-                                    <span className="text-[11px] font-medium text-slate-500 block mb-1">Gốc tọa độ dọc</span>
+                                    <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:goc_toa_do_doc')}</span>
                                     <RichSelect compact={true} value={positionYMode} onChange={v => setPositionYMode(v as any)} options={POS_Y_OPTIONS} />
                                 </div>
                                 <div>
-                                    <ToolNumberInput label="Dịch chuyển dọc" value={offsetY} onChange={setOffsetY} suffix="mm" />
+                                    <ToolNumberInput label={t('preprocess.watermark:dich_chuyen_doc')} value={offsetY} onChange={setOffsetY} suffix="mm" />
                                 </div>
                             </div>
                             <div className="grid grid-cols-2 gap-4 border-t border-slate-200 dark:border-zinc-700 pt-4">
                                 <div className="relative z-[20]">
-                                    <span className="text-[11px] font-medium text-slate-500 block mb-1">Gốc tọa độ ngang</span>
+                                    <span className="text-[11px] font-medium text-slate-500 block mb-1">{t('preprocess.watermark:goc_toa_do_ngang')}</span>
                                     <RichSelect compact={true} value={positionXMode} onChange={v => setPositionXMode(v as any)} options={POS_X_OPTIONS} />
                                 </div>
                                 <div>
-                                    <ToolNumberInput label="Dịch chuyển ngang" value={offsetX} onChange={setOffsetX} suffix="mm" />
+                                    <ToolNumberInput label={t('preprocess.watermark:dich_chuyen_ngang')} value={offsetX} onChange={setOffsetX} suffix="mm" />
                                 </div>
                             </div>
                         </div>
@@ -547,7 +549,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                             : 'bg-sky-600 hover:bg-sky-700 text-white shadow-md'
                     }`}
                 >
-                    {isProcessing ? '⏳ Đang xử lý...' : '©️ Áp dụng Thay đổi'}
+                    {isProcessing ? t('preprocess.watermark:dang_xu_ly') : t('preprocess.watermark:ap_dung_thay_doi')}
                 </button>
             ) : (
                 <div className="mt-4 bg-white dark:bg-zinc-800 p-4 rounded-xl shadow-sm border border-emerald-200 dark:border-emerald-800/50 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -556,12 +558,12 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                             <span className="text-sm">✅</span>
                         </div>
                         <div className="flex flex-col">
-                            <h3 className="text-[13px] font-bold text-emerald-700 dark:text-emerald-400">Chèn thành công!</h3>
-                            <p className="text-[10px] text-slate-500 leading-tight">File PDF đã được xử lý hoàn tất.</p>
+                            <h3 className="text-[13px] font-bold text-emerald-700 dark:text-emerald-400">{t('preprocess.watermark:chen_thanh_cong')}</h3>
+                            <p className="text-[10px] text-slate-500 leading-tight">{t('preprocess.watermark:file_pdf_da_duoc_xu_ly_hoan_tat')}</p>
                         </div>
                     </div>
                     <button onClick={() => setIsSuccess(false)} className="mt-4 w-full text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 py-1 transition-colors">
-                        Xử lý một file khác
+                        {t('preprocess.watermark:xu_ly_mot_file_khac')}
                     </button>
                 </div>
             )}

@@ -4,6 +4,7 @@ import {
     type Unit, type BoxType, type PageScope,
     toMm, fromMm, roundMm2, validateRectUnit, resolvePages,
 } from '../preprocess-tools/setPageBoxesUtils';
+import { useTranslation } from 'react-i18next';
 
 interface BoxMm { x0: number; y0: number; x1: number; y1: number; width: number; height: number; }
 interface PageBoxesResponse {
@@ -28,6 +29,7 @@ const BOX_LABELS: Record<BoxType, string> = {
 };
 
 export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) {
+  const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const [pageNum, setPageNum] = useState(1);
     const [fileId, setFileId] = useState('');
@@ -143,13 +145,13 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                 body: JSON.stringify({ file_id: fileId, box_type: applyTo, rect_mm: rectMm, pages: pr.pages }),
             });
             const data = await res.json();
-            if (!data.success || !data.output_filename) throw new Error(data.detail || 'Cắt khổ thất bại');
+            if (!data.success || !data.output_filename) throw new Error(data.detail || t('misc.cropDialog:cat_kho_that_bai'));
             const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
             const blob = await dl.blob();
             onApplied(blob, data.output_filename);
             close();
         } catch (err: any) {
-            setError(err?.message || 'Cắt khổ thất bại');
+            setError(err?.message || t('misc.cropDialog:cat_kho_that_bai'));
         } finally {
             setBusy(false);
         }
@@ -171,8 +173,8 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) { onClose(); close(); } }}>
             <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-2xl w-[680px] max-w-[95vw] border border-black/10 dark:border-white/10 text-slate-800 dark:text-zinc-200">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-black/10 dark:border-white/10">
-                    <h2 className="text-[15px] font-bold">Cắt khổ trang</h2>
-                    <button onClick={() => { onClose(); close(); }} className="w-7 h-7 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10" title="Đóng">
+                    <h2 className="text-[15px] font-bold">{t('misc.cropDialog:cat_kho_trang')}</h2>
+                    <button onClick={() => { onClose(); close(); }} className="w-7 h-7 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10" title={t('misc.cropDialog:dong')}>
                         <svg width="14" height="14" viewBox="0 0 14 14" stroke="currentColor" strokeWidth="1.5"><path d="M1 1l12 12M1 13L13 1" strokeLinecap="round" /></svg>
                     </button>
                 </div>
@@ -181,14 +183,14 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                     {/* CỘT TRÁI: Margin Controls */}
                     <div className="space-y-3">
                         <div className="flex items-center gap-2">
-                            <label className="text-[12px] w-20 text-slate-500">Đơn vị</label>
+                            <label className="text-[12px] w-20 text-slate-500">{t('misc.cropDialog:don_vi')}</label>
                             <select value={unit} onChange={(e) => changeUnit(e.target.value as Unit)}
                                 className="flex-1 h-8 px-2 text-[12px] border border-black/15 dark:border-white/15 rounded bg-white dark:bg-zinc-900">
                                 {(Object.keys(UNIT_LABELS) as Unit[]).map(u => <option key={u} value={u}>{UNIT_LABELS[u]}</option>)}
                             </select>
                         </div>
                         <div className="flex items-center gap-2">
-                            <label className="text-[12px] w-20 text-slate-500">Áp dụng cho</label>
+                            <label className="text-[12px] w-20 text-slate-500">{t('misc.cropDialog:ap_dung_cho')}</label>
                             <select value={applyTo} onChange={(e) => setApplyTo(e.target.value as BoxType)}
                                 className="flex-1 h-8 px-2 text-[12px] border border-black/15 dark:border-white/15 rounded bg-white dark:bg-zinc-900">
                                 {(Object.keys(BOX_LABELS) as BoxType[]).map(b => <option key={b} value={b}>{BOX_LABELS[b]}</option>)}
@@ -199,7 +201,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                             {(['top', 'bottom', 'left', 'right'] as const).map(k => (
                                 <label key={k} className="flex items-center gap-1.5 text-[12px]">
                                     <span className="w-14 text-slate-500">{
-                                        k === 'top' ? 'Lề trên' : k === 'bottom' ? 'Lề dưới' : k === 'left' ? 'Lề trái' : 'Lề phải'
+                                        k === 'top' ? t('misc.cropDialog:le_tren') : k === 'bottom' ? t('misc.cropDialog:le_duoi') : k === 'left' ? t('misc.cropDialog:le_trai') : t('misc.cropDialog:le_phai')
                                     }</span>
                                     <input type="number" step={0.1} value={margins[k]}
                                         onChange={(e) => setMargins(m => ({ ...m, [k]: parseFloat(e.target.value) || 0 }))}
@@ -209,7 +211,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                         </div>
                         <button onClick={() => setMargins({ top: 0, bottom: 0, left: 0, right: 0 })}
                             className="text-[11px] px-2 py-1 rounded border border-black/15 dark:border-white/15 hover:bg-black/5 dark:hover:bg-white/10">
-                            Đặt lề về 0
+                            {t('misc.cropDialog:dat_le_ve_0')}
                         </button>
                     </div>
 
@@ -224,22 +226,22 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                             }} />
                         </div>
                         <div className="mt-2 text-[11px] text-slate-500">
-                            Khổ sau khi cắt: <span className="font-semibold text-slate-700 dark:text-zinc-200">{cropW} × {cropH} mm</span>
+                            {t('misc.cropDialog:kho_sau_khi_cat')} <span className="font-semibold text-slate-700 dark:text-zinc-200">{cropW} × {cropH} mm</span>
                         </div>
                     </div>
                 </div>
 
                 {/* Page Range */}
                 <div className="px-5 pb-2">
-                    <div className="text-[12px] font-semibold text-slate-500 mb-1.5">Phạm vi trang</div>
+                    <div className="text-[12px] font-semibold text-slate-500 mb-1.5">{t('misc.cropDialog:pham_vi_trang')}</div>
                     <div className="flex items-center gap-4 text-[12px]">
-                        <label className="flex items-center gap-1.5"><input type="radio" checked={scope === 'all'} onChange={() => setScope('all')} /> Tất cả</label>
-                        <label className="flex items-center gap-1.5"><input type="radio" checked={scope === 'single'} onChange={() => setScope('single')} /> Trang này</label>
+                        <label className="flex items-center gap-1.5"><input type="radio" checked={scope === 'all'} onChange={() => setScope('all')} /> {t('misc.cropDialog:tat_ca')}</label>
+                        <label className="flex items-center gap-1.5"><input type="radio" checked={scope === 'single'} onChange={() => setScope('single')} /> {t('misc.cropDialog:trang_nay')}</label>
                         <label className="flex items-center gap-1.5">
-                            <input type="radio" checked={scope === 'range'} onChange={() => setScope('range')} /> Từ
+                            <input type="radio" checked={scope === 'range'} onChange={() => setScope('range')} /> {t('misc.cropDialog:tu')}
                             <input type="number" min={1} max={total} value={rangeStart} onChange={(e) => setRangeStart(parseInt(e.target.value) || 1)}
                                 className="w-14 h-7 px-1 text-right border border-black/15 dark:border-white/15 rounded bg-white dark:bg-zinc-900" disabled={scope !== 'range'} />
-                            đến
+                            {t('misc.cropDialog:den')}
                             <input type="number" min={1} max={total} value={rangeEnd} onChange={(e) => setRangeEnd(parseInt(e.target.value) || 1)}
                                 className="w-14 h-7 px-1 text-right border border-black/15 dark:border-white/15 rounded bg-white dark:bg-zinc-900" disabled={scope !== 'range'} />
                             <span className="text-slate-400">/ {total}</span>
@@ -250,10 +252,10 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                 {error && <div className="px-5 pb-2 text-[12px] text-red-600 dark:text-red-400">❌ {error}</div>}
 
                 <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-black/10 dark:border-white/10">
-                    <button onClick={() => { onClose(); close(); }} className="px-4 h-9 text-[13px] rounded border border-black/15 dark:border-white/15 hover:bg-black/5 dark:hover:bg-white/10">Huỷ</button>
+                    <button onClick={() => { onClose(); close(); }} className="px-4 h-9 text-[13px] rounded border border-black/15 dark:border-white/15 hover:bg-black/5 dark:hover:bg-white/10">{t('misc.cropDialog:huy')}</button>
                     <button onClick={handleApply} disabled={busy || !boxes}
                         className={`px-5 h-9 text-[13px] font-bold rounded text-white ${busy || !boxes ? 'bg-slate-400 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700'}`}>
-                        {busy ? 'Đang xử lý...' : 'Áp dụng'}
+                        {busy ? t('misc.cropDialog:dang_xu_ly') : t('misc.cropDialog:ap_dung')}
                     </button>
                 </div>
             </div>

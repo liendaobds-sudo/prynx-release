@@ -47,6 +47,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { globalPdfObjectCache } from '../stores/pdfObjectCache';
 import { BgRemoverPreview } from './preprocess-tools/BgRemoverTool';
 import { UpscalePreview } from './preprocess-tools/UpscaleTool';
+import { useTranslation } from 'react-i18next';
 
 // Phase type is now defined in useWorkspaceStore
 
@@ -104,6 +105,7 @@ export function isEphemeralBackendPath(p?: string | null): boolean {
 }
 
 function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, initialRecovery, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
+  const { t } = useTranslation();
     //#region State & Hooks
     // ═══ All state from Zustand store ═══
     const {
@@ -352,15 +354,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             applyLockedMode(lockedMode);
             if (!file) {
                 const names: Record<string, string> = {
-                    'bgremover': 'Tách Nền AI',
-                    'upscale': 'Phóng To Ảnh',
-                    'sticker': 'Tạo Viền Cắt Bế',
-                    'split': 'Tách File',
-                    'datamerge': 'Trộn Dữ Liệu VDP',
-                    'numbering': 'Nhảy Số Tự Động',
-                    'optimize': 'Nén / Tối ưu PDF',
-                    'shuffle': 'Xáo trộn trang',
-                    'resize': 'Co giãn trang'
+                    'bgremover': t('tabs.imposition:tach_nen_ai'),
+                    'upscale': t('tabs.imposition:phong_to_anh'),
+                    'sticker': t('tabs.imposition:tao_vien_cat_be'),
+                    'split': t('tabs.imposition:tach_file'),
+                    'datamerge': t('tabs.imposition:tron_du_lieu_vdp'),
+                    'numbering': t('tabs.imposition:nhay_so_tu_dong'),
+                    'optimize': t('tabs.imposition:nen_toi_uu_pdf'),
+                    'shuffle': t('tabs.imposition:xao_tron_trang'),
+                    'resize': t('tabs.imposition:co_gian_trang')
                 };
                 if (names[initialFeature]) {
                     onTitleChange?.(names[initialFeature]);
@@ -490,11 +492,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             void deleteSnapshot(tabId);
             return;
         }
-        const t = setTimeout(() => {
+        const snapTimer = setTimeout(() => {
             void writeSnapshot({
                 v: 1,
                 tabId,
-                title: originalFileName || file?.name || 'Tài liệu',
+                title: originalFileName || file?.name || t('tabs.imposition:tai_lieu'),
                 savedAt: new Date().toISOString(),
                 originalPath: fpath,
                 originalName: file?.name || originalFileName || 'document.pdf',
@@ -505,7 +507,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 vdpFields: (vdpFields && vdpFields.length) ? vdpFields : undefined,
             });
         }, 8000);
-        return () => clearTimeout(t);
+        return () => clearTimeout(snapTimer);
     }, [tabId, isDirty, file, originalFileName, viewerPageOrder, viewerPageRotations, vdpFields, initialFeature, lockedMode]);
 
     // Áp KHÔI PHỤC một lần khi mở tab từ snapshot: dựng lại thao tác sửa trên file gốc.
@@ -678,7 +680,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 : `${getApiUrl()}/preflight/objects/${fid}/${pageNum}`;
 
             const res = await authenticatedFetch(endpoint);
-            if (!res.ok) throw new Error('Không thể tải danh sách objects');
+            if (!res.ok) throw new Error(t('tabs.imposition:khong_the_tai_danh_sach_objects'));
 
             const data = await res.json();
             const objects = data.objects || data; // edit returns {objects, pageBox}, preflight {objects}
@@ -727,17 +729,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     const handleDeleteObjects = useCallback(async (objs: any[], pageNum: number) => {
         if (!selectionFileId) {
-            setError("Lỗi: Không tìm thấy selectionFileId! (Có thể file chưa tải xong)");
+            setError(t('tabs.imposition:loi_khong_tim_thay_selectionfileid_co'));
             return;
         }
         if (objs.length === 0) {
-            setError("Lỗi: Chưa có object nào được chọn!");
+            setError(t('tabs.imposition:loi_chua_co_object_nao_duoc_chon'));
             return;
         }
 
         // alert(`Bắt đầu xóa ${objs.length} object trên trang ${pageNum}...`);
         setIsProcessing(true);
-        setProcessStatus('Đang xóa đối tượng...');
+        setProcessStatus(t('tabs.imposition:dang_xoa_doi_tuong'));
         setError('');
         try {
             const res = await authenticatedFetch(`${getApiUrl()}/preflight/delete-object`, {
@@ -753,7 +755,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     }))
                 })
             });
-            if (!res.ok) throw new Error('Xóa thất bại');
+            if (!res.ok) throw new Error(t('tabs.imposition:xoa_that_bai'));
             const data = await res.json();
 
             if (data.success && data.output_filename) {
@@ -762,13 +764,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     const blob = await pdfRes.blob();
                     commitWorkingFile(blob, data.output_filename);
                 } else {
-                    setError('Lỗi tải file mới');
+                    setError(t('tabs.imposition:loi_tai_file_moi'));
                 }
             } else {
-                setError('API trả về thành công nhưng thiếu dữ liệu');
+                setError(t('tabs.imposition:api_tra_ve_thanh_cong_nhung_thieu_du'));
             }
         } catch (err: any) {
-            setError(err.message || 'Lỗi xóa đối tượng');
+            setError(err.message || t('tabs.imposition:loi_xoa_doi_tuong'));
         } finally {
             setIsProcessing(false);
         }
@@ -854,7 +856,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // LƯU Ý: KHÔNG reset viewerPageOrder/rotations (edit không đụng thứ tự trang)
             // và KHÔNG detectColorSpace (bỏ để giảm tải mỗi op) — khác commitWorkingFile.
         } catch (err: any) {
-            setError(err?.message || 'Lỗi cập nhật sau chỉnh sửa');
+            setError(err?.message || t('tabs.imposition:loi_cap_nhat_sau_chinh_sua'));
         }
     }, [file, pdfUrl, setHistory, setFile, setOriginalFileName, setPdfUrl, setFileSizeStr,
         setIsSaved, onTitleChange, setSelectionFileId, setError, selectionFileId, editHistory]);
@@ -874,7 +876,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }
         },
         onSessionFailed: () => {
-            setError('Không mở được phiên chỉnh sửa (backend không phản hồi hoặc phiên hết hạn) — hãy mở lại file để chỉnh sửa.');
+            setError(t('tabs.imposition:khong_mo_duoc_phien_chinh_sua_backend'));
         },
     });
 
@@ -1148,7 +1150,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Chuỗi working file CỤC BỘ trong 1 lần phát: getWorkingBytes/commitWorkingFile
     // ghi đè để bước sau nhận output bước trước (tránh state `file` cũ trong closure).
     const playRecipe = useCallback(async (recipe: Recipe) => {
-        if (!file) { toast.error('Hãy mở một file PDF trước khi phát lại.'); return; }
+        if (!file) { toast.error(t('tabs.imposition:hay_mo_mot_file_pdf_truoc_khi_phat_lai')); return; }
         const base = buildProcessContext();
         let currentBytes: Uint8Array;
         try { currentBytes = await base.getWorkingBytes(); }
@@ -1400,7 +1402,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setDetectedDimensionsByPage({});
         setDetectedShapeParamsByPage({});
         
-        onTitleChange?.('Không có file');
+        onTitleChange?.(t('tabs.imposition:khong_co_file'));
     };
 
     const handleReset = () => {
@@ -1556,7 +1558,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 // Nhường 1 microtask cho React flush setFile/setPdfUrl từ onCommit.
                 await new Promise<void>(r => setTimeout(r, 0));
             } catch {
-                setError('Không lưu được thay đổi chỉnh sửa vào file — thử lại.');
+                setError(t('tabs.imposition:khong_luu_duoc_thay_doi_chinh_sua_vao'));
                 return;
             }
         }
@@ -1592,7 +1594,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // KHÔNG commitWorkingFile (tránh đổi tên "Edited_" + race set isSaved=false).
         if (!isGeneratedResult && (_hasRot || _hasReorder)) {
             setIsProcessing(true);
-            setProcessStatus('Đang áp dụng thay đổi và lưu...');
+            setProcessStatus(t('tabs.imposition:dang_ap_dung_thay_doi_va_luu'));
             try {
                 const editedBlob = await applyAcrobatEdits();
                 if (editedBlob) {
@@ -1758,7 +1760,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (!file || !onSpawnTab || !viewerPageOrder || !viewerPageRotations) return;
         try {
             setIsProcessing(true);
-            setProcessStatus('Đang bóc tách file PDF...');
+            setProcessStatus(t('tabs.imposition:dang_boc_tach_file_pdf'));
             const arrayBuffer = await getFileArrayBuffer(file);
             const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
             const newDoc = await PDFDocument.create();
@@ -1793,7 +1795,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const extractedFile = new File([blob], `Bi_Broc_Tach_${file.name}`, { type: 'application/pdf' });
             onSpawnTab(extractedFile);
         } catch (e: any) {
-            setError(e.message || 'Lỗi hệ thống khi trích xuất.');
+            setError(e.message || t('tabs.imposition:loi_he_thong_khi_trich_xuat'));
         } finally {
             setIsProcessing(false);
             setProcessStatus('');
@@ -1823,19 +1825,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 <div className="flex-1 flex flex-col items-center justify-center py-12 px-6">
                     <div className="text-center mb-10 animate-fade-in">
                         <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">
-                            {toolInfo ? `🚀 ${toolInfo.title}` : '📐 Công cụ Bình Bài & Xử lý AI'}
+                            {toolInfo ? `🚀 ${toolInfo.title}` : t('tabs.imposition:cong_cu_binh_bai_xu_ly_ai')}
                         </h1>
                         <p className="text-slate-600 dark:text-zinc-400 transition-colors max-w-2xl mx-auto leading-relaxed">
-                            {toolInfo ? toolInfo.longDescription : 'Hoạt động offline 100%. Hỗ trợ tính toán Xẹp Giấy (Creep), bù lề xén (Bleed) cắt dọc gáy, và vẽ tự động vạch chuẩn cực kỳ chính xác. Đi kèm công cụ Tách nền AI và Tạo viền cắt bế tự động.'}
+                            {toolInfo ? toolInfo.longDescription : t('tabs.imposition:hoat_dong_offline_100_ho_tro_tinh_toan')}
                         </p>
                     </div>
                     <div className="max-w-xl w-full animate-slide-up">
                         <PDFUploader
-                            label={toolInfo ? "Tải file lên để tiếp tục" : "Kéo thả PDF Bản thảo (Single Pages)"}
+                            label={toolInfo ? t('tabs.imposition:tai_file_len_de_tiep_tuc') : t('tabs.imposition:keo_tha_pdf_ban_thao_single_pages')}
                             sublabel={
                                 toolInfo ? 
                                 `Bạn đang mở công cụ: ${toolInfo.title}. Vui lòng chọn một file PDF để bắt đầu.`
-                                : "Catalog, Tạp chí, Sách truyện cần lồng ghép trang in"
+                                : t('tabs.imposition:catalog_tap_chi_sach_truyen_can_long')
                             }
                             onFileSelected={handleFileSelected}
                             isUploading={false}
@@ -1846,7 +1848,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             onClick={() => setPhase('workspace')}
                             className="mt-6 w-full py-2.5 rounded-lg border-2 border-dashed border-slate-300 dark:border-zinc-700 bg-transparent text-slate-500 dark:text-zinc-400 font-medium hover:bg-slate-100 dark:hover:bg-zinc-800 hover:text-slate-700 dark:hover:text-zinc-300 transition-all text-[13px]"
                         >
-                            Bỏ qua tải file (Vào Không gian làm việc)
+                            {t('tabs.imposition:bo_qua_tai_file_vao_khong_gian_lam_viec')}
                         </button>
                     </div>
                 </div>
@@ -1866,12 +1868,12 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-slide-up" onClick={e => e.stopPropagation()}>
                                 <div className="p-5 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
                                     <h2 className="text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                                        <span>🛑</span> Xác nhận Bình Sách
+                                        <span>🛑</span> {t('tabs.imposition:xac_nhan_binh_sach')}
                                     </h2>
                                 </div>
                                 <div className="p-6">
                                     <p className="text-slate-700 dark:text-zinc-300 mb-4 text-[15px]">
-                                        File pdf gốc gồm <strong>{confirmBookletSettings.totalPages} trang</strong>.
+                                        {t('tabs.imposition:file_pdf_goc_gom')} <strong>{confirmBookletSettings.totalPages} trang</strong>.
                                         {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as any).bindingMode !== 'flush_mount' && (
                                             <span className="text-emerald-600 dark:text-emerald-400 font-medium ml-1">
                                                 (Cần thêm {confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages} trang trắng để làm tròn thành {confirmBookletSettings.paddedPages} trang chẵn theo quy tắc gấp tay sách).
@@ -1884,7 +1886,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 Đặt {confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages} trang trắng ở đâu?
                                             </label>
                                             <div className="grid grid-cols-2 gap-2">
-                                                {(([['end', 'Cuối sách', 'Dồn vào cuối / bìa sau (mặc định).'], ['center', 'Giữa sách', 'Nhét vào ruột trong cùng — bìa & trang đầu luôn có nội dung.']]) as const).map(([val, title, desc]) => (
+                                                {(([['end', t('tabs.imposition:cuoi_sach'), t('tabs.imposition:don_vao_cuoi_bia_sau_mac_dinh')], ['center', t('tabs.imposition:giua_sach'), t('tabs.imposition:nhet_vao_ruot_trong_cung_bia_trang_dau')]]) as const).map(([val, title, desc]) => (
                                                     <button key={val} type="button" onClick={() => setConfirmBlankPlacement(val)}
                                                         className={`text-left p-3 rounded-lg border-2 transition-colors ${confirmBlankPlacement === val ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/30' : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20'}`}>
                                                         <div className="text-[13px] font-bold text-slate-800 dark:text-white">{title}</div>
@@ -1900,16 +1902,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         </div>
                                     )}
                                     <p className="text-slate-600 dark:text-zinc-400 text-sm">
-                                        Bạn có chắc chắn muốn tiến hành bình trang với cấu hình này không?
+                                        {t('tabs.imposition:ban_co_chac_chan_muon_tien_hanh_binh')}
                                     </p>
                                 </div>
                                 <div className="p-4 bg-slate-50 dark:bg-zinc-900/50 flex justify-end gap-3 border-t border-slate-200 dark:border-white/10 mt-2">
-                                    <Button variant="secondary" onClick={() => setConfirmBookletSettings(null)}>Hủy bỏ</Button>
+                                    <Button variant="secondary" onClick={() => setConfirmBookletSettings(null)}>{t('tabs.imposition:huy_bo')}</Button>
                                     <Button variant="primary" onClick={() => {
                                         const finalSettings = { ...(confirmBookletSettings.settings as any), blankPlacement: confirmBlankPlacement };
                                         processEngine(finalSettings, confirmBookletSettings.spawnNewTab);
                                         setConfirmBookletSettings(null);
-                                    }}>Đồng ý & Khởi chạy</Button>
+                                    }}>{t('tabs.imposition:dong_y_khoi_chay')}</Button>
                                 </div>
                             </div>
                         </div>,
@@ -1944,7 +1946,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             <div className="absolute inset-0 bg-[#525659]/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white">
                                 <div className="w-16 h-16 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mb-6"></div>
                                 <h3 className="font-bold text-2xl tracking-widest uppercase mb-3">
-                                    {/(bình|kẽm|thuật toán|catalog)/i.test(processStatus) ? 'ĐANG BÌNH TRANG' : 'ĐANG XỬ LÝ FILE'}
+                                    {/(bình|kẽm|thuật toán|catalog)/i.test(processStatus) ? t('tabs.imposition:dang_binh_trang') : t('tabs.imposition:dang_xu_ly_file')}
                                 </h3>
                                 <p className="text-emerald-200 mt-2 text-sm tracking-normal font-medium">{processStatus}</p>
                             </div>
@@ -2003,8 +2005,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         />
                                         <div className={`shrink-0 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 rounded-3xl flex items-center justify-center group-hover:scale-110 group-hover:-rotate-3 transition-transform drop-shadow-sm w-24 h-24 md:w-28 md:h-28 text-6xl md:text-7xl`}>📁</div>
                                         <div className="text-center xl:text-left flex-1 min-w-0">
-                                           <h2 className={`font-black text-slate-800 dark:text-white tracking-tight text-2xl md:text-3xl mb-2 md:mb-3`}>Mở File PDF</h2>
-                                           <p className="text-slate-500 dark:text-zinc-400 font-medium text-[13px] md:text-[14px] leading-relaxed w-full">Click chọn hoặc kéo thả File PDF vào vùng này để bắt đầu. Bạn đang ở Không gian làm việc.</p>
+                                           <h2 className={`font-black text-slate-800 dark:text-white tracking-tight text-2xl md:text-3xl mb-2 md:mb-3`}>{t('tabs.imposition:mo_file_pdf')}</h2>
+                                           <p className="text-slate-500 dark:text-zinc-400 font-medium text-[13px] md:text-[14px] leading-relaxed w-full">{t('tabs.imposition:click_chon_hoac_keo_tha_file_pdf_vao')}</p>
                                         </div>
                                     </div>
                                 </div>
@@ -2031,9 +2033,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 <button
                                                     onClick={() => setShowCutExport(true)}
                                                     className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
-                                                    title="Gửi dữ liệu cắt tới máy bế"
+                                                    title={t('tabs.imposition:gui_du_lieu_cat_toi_may_be')}
                                                 >
-                                                    <Scissors className="w-4 h-4" /> Gửi Máy Bế
+                                                    <Scissors className="w-4 h-4" /> {t('tabs.imposition:gui_may_be')}
                                                 </button>
                                             )}
                                         </div>
@@ -2074,10 +2076,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             <button
                                                                 onClick={() => setActiveDashboardTool('none')}
                                                                 className="flex items-center gap-1.5 text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors"
-                                                                title="Quay lại danh sách công cụ"
+                                                                title={t('tabs.imposition:quay_lai_danh_sach_cong_cu')}
                                                             >
                                                                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
-                                                                QUAY LẠI
+                                                                {t('tabs.imposition:quay_lai')}
                                                             </button>
                                                         ) : (
                                                             <>
@@ -2093,16 +2095,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                     onClick={handleSaveVdpTemplate}
                                                                     disabled={!vdpFields || vdpFields.length === 0}
                                                                     className="w-7 h-7 flex items-center justify-center hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                                                    title="Lưu mẫu bố cục field (.json)"
-                                                                    aria-label="Lưu mẫu bố cục"
+                                                                    title={t('tabs.imposition:luu_mau_bo_cuc_field_json')}
+                                                                    aria-label={t('tabs.imposition:luu_mau_bo_cuc')}
                                                                 >
                                                                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                                                                 </button>
                                                                 <button
                                                                     onClick={handleLoadVdpTemplate}
                                                                     className="w-7 h-7 flex items-center justify-center hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 rounded transition-colors"
-                                                                    title="Tải mẫu bố cục field (.json)"
-                                                                    aria-label="Tải mẫu bố cục"
+                                                                    title={t('tabs.imposition:tai_mau_bo_cuc_field_json')}
+                                                                    aria-label={t('tabs.imposition:tai_mau_bo_cuc')}
                                                                 >
                                                                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1"/><polyline points="8 12 12 16 16 12"/><line x1="12" y1="4" x2="12" y2="16"/></svg>
                                                                 </button>
@@ -2113,8 +2115,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             <button
                                                                 onClick={() => window.dispatchEvent(new CustomEvent('open-preset-modal'))}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
-                                                                title="Tải preset sản phẩm"
-                                                                aria-label="Tải preset sản phẩm"
+                                                                title={t('tabs.imposition:tai_preset_san_pham')}
+                                                                aria-label={t('tabs.imposition:tai_preset_san_pham')}
                                                             >
                                                                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                                                             </button>
@@ -2124,8 +2126,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             <button
                                                                 onClick={() => { if (isObjectEditMode) void editSession.undo(); else handleUndo(); }}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
-                                                                title="Hoàn tác thao tác trước (Ctrl+Z)"
-                                                                aria-label="Hoàn tác thao tác trước"
+                                                                title={t('tabs.imposition:hoan_tac_thao_tac_truoc_ctrl_z')}
+                                                                aria-label={t('tabs.imposition:hoan_tac_thao_tac_truoc')}
                                                             >
                                                                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
                                                             </button>
@@ -2137,8 +2139,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         <button
                                                             onClick={() => setIsSidebarOpen(false)}
                                                             className="w-7 h-7 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 hover:text-slate-800 dark:text-zinc-400 dark:hover:text-zinc-200 rounded transition-colors"
-                                                            title="Thu gọn Menu"
-                                                            aria-label="Thu gọn Menu"
+                                                            title={t('tabs.imposition:thu_gon_menu')}
+                                                            aria-label={t('tabs.imposition:thu_gon_menu')}
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                                                         </button>
@@ -2284,8 +2286,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         }
                                                     }}
                                                     className="absolute top-1/2 -left-[14px] -translate-y-1/2 w-7 h-7 bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 rounded-full flex items-center justify-center shadow-sm hover:bg-slate-50 dark:hover:bg-zinc-700 transition-colors z-[100] text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400"
-                                                    title={isMiniToolbarExpanded ? "Thu gọn menu" : "Mở rộng menu"}
-                                                    aria-label={isMiniToolbarExpanded ? "Thu gọn menu" : "Mở rộng menu"}
+                                                    title={isMiniToolbarExpanded ? t('tabs.imposition:thu_gon_menu_2') : t('tabs.imposition:mo_rong_menu')}
+                                                    aria-label={isMiniToolbarExpanded ? t('tabs.imposition:thu_gon_menu_2') : t('tabs.imposition:mo_rong_menu')}
                                                 >
                                                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                                                         {isMiniToolbarExpanded ? (
@@ -2304,11 +2306,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 setIsSidebarOpen(true);
                                                             }}
                                                             className={`h-8 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 transition-colors rounded outline-none w-full ${showMiniLabels ? 'justify-start px-2' : ''}`}
-                                                            title="Mở Bảng Cấu Hình"
-                                                            aria-label="Mở Bảng Cấu Hình"
+                                                            title={t('tabs.imposition:mo_bang_cau_hinh')}
+                                                            aria-label={t('tabs.imposition:mo_bang_cau_hinh')}
                                                         >
                                                             <span className="text-slate-500 dark:text-zinc-400"><Settings className="w-4 h-4" /></span>
-                                                            {showMiniLabels && <span className="ml-2 text-[13px] font-bold text-slate-700 dark:text-zinc-300">Công cụ</span>}
+                                                            {showMiniLabels && <span className="ml-2 text-[13px] font-bold text-slate-700 dark:text-zinc-300">{t('tabs.imposition:cong_cu')}</span>}
                                                         </button>
                                                     </div>
                                                     
@@ -2327,11 +2329,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                 <div key="favorites" className="w-full flex flex-col items-center mb-1">
                                                                     {showMiniLabels ? (
                                                                         <div className="w-full px-2 mt-2 mb-1.5 flex items-center gap-2">
-                                                                            <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1"><Star className="w-2.5 h-2.5" fill="currentColor" /> Yêu Thích</span>
+                                                                            <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1"><Star className="w-2.5 h-2.5" fill="currentColor" /> {t('tabs.imposition:yeu_thich')}</span>
                                                                             <div className="flex-1 h-px bg-amber-500 opacity-40" />
                                                                         </div>
                                                                     ) : (
-                                                                        <div className="w-6 h-[2px] bg-amber-500 opacity-40 my-2 rounded-full" title="Yêu Thích" />
+                                                                        <div className="w-6 h-[2px] bg-amber-500 opacity-40 my-2 rounded-full" title={t('tabs.imposition:yeu_thich')} />
                                                                     )}
                                                                     <div className="flex flex-col items-center gap-1.5 w-full">
                                                                         {favTools.map(tool => {
@@ -2453,7 +2455,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         <div className="px-6 py-4 border-b border-slate-200 dark:border-zinc-700 flex justify-between items-center bg-amber-50 dark:bg-amber-500/10">
                             <h3 className="text-lg font-bold text-amber-600 dark:text-amber-500 flex items-center gap-2">
                                 <span className="material-symbols-outlined">warning</span>
-                                Cảnh báo kích thước
+                                {t('tabs.imposition:canh_bao_kich_thuoc')}
                             </h3>
                         </div>
                         <div className="px-6 py-6 text-slate-600 dark:text-slate-300">
@@ -2467,7 +2469,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 }}
                                 className="px-4 py-2 rounded-lg font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors"
                             >
-                                Hủy bỏ (Cancel)
+                                {t('tabs.imposition:huy_bo_cancel')}
                             </button>
                             <button
                                 onClick={() => {
@@ -2476,7 +2478,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 }}
                                 className="px-4 py-2 rounded-lg font-medium bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
                             >
-                                Tiếp tục (Thu nhỏ)
+                                {t('tabs.imposition:tiep_tuc_thu_nho')}
                             </button>
                         </div>
                     </div>
@@ -2490,10 +2492,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     <div className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10" onClick={e => e.stopPropagation()}>
                         <div className="p-6">
                             <h3 className="text-[16px] font-semibold text-slate-800 dark:text-white mb-2">
-                                Đóng file chưa lưu?
+                                {t('tabs.imposition:dong_file_chua_luu')}
                             </h3>
                             <p className="text-[14px] text-slate-600 dark:text-zinc-300 leading-relaxed">
-                                File này đã bị thay đổi nhưng chưa được lưu. Bạn có chắc chắn muốn đóng và mất các thay đổi không?
+                                {t('tabs.imposition:file_nay_da_bi_thay_doi_nhung_chua_duoc')}
                             </p>
                         </div>
                         <div className="bg-slate-50 dark:bg-black/20 p-4 border-t border-slate-100 dark:border-white/5 flex justify-end gap-3">
@@ -2501,13 +2503,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 onClick={() => setShowCloseConfirm(false)}
                                 className="px-5 h-[38px] flex items-center justify-center rounded font-medium text-[13px] text-slate-700 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-white/10 border border-transparent hover:border-slate-200 dark:hover:border-white/10 transition-colors outline-none min-w-[90px]"
                             >
-                                Hủy bỏ
+                                {t('tabs.imposition:huy_bo')}
                             </button>
                             <button
                                 onClick={forceReset}
                                 className="px-6 h-[38px] flex items-center justify-center rounded font-medium text-[13px] bg-red-600 hover:bg-red-700 text-white shadow-sm min-w-[120px] transition-colors outline-none"
                             >
-                                Đóng không lưu
+                                {t('tabs.imposition:dong_khong_luu')}
                             </button>
                         </div>
                     </div>

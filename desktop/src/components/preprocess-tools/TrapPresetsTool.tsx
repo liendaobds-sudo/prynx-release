@@ -5,6 +5,7 @@ import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import {
     ToolSectionLabel, ToolDivider, ToolCheckboxOption, ToolWarning
 } from './ToolUI';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   pdfFile: File | null;
@@ -17,6 +18,7 @@ const OPTIONS = [
 ];
 
 export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [overprintBlack, setOverprintBlack] = useState(true);
   const [preserveOverprint, setPreserveOverprint] = useState(true);
@@ -28,7 +30,7 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
     if (fileId) return fileId;
-    if (!pdfFile) throw new Error('Chưa có file PDF');
+    if (!pdfFile) throw new Error(t('preprocess.trapPresets:chua_co_file_pdf'));
     const r = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(r.id);
     return r.id;
@@ -49,7 +51,7 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
       });
       const data = await res.json();
       if (data.success) {
-        setStatus('✅ Đã áp dụng Overprint đen');
+        setStatus(t('preprocess.trapPresets:da_ap_dung_overprint_den'));
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
@@ -65,14 +67,14 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
   };
   const getOpt = (key: string) => key === 'overprint_black' ? overprintBlack : preserveOverprint;
 
-  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">Vui lòng mở file PDF trước</div>;
+  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.trapPresets:vui_long_mo_file_pdf_truoc')}</div>;
 
   return (
     <div className="flex flex-col gap-4 animate-in fade-in duration-200">
 
       {/* ═══ SECTION 1: CẤU HÌNH OVERPRINT ═══ */}
       <div className="flex flex-col gap-2">
-        <ToolSectionLabel>Cấu hình Overprint đen</ToolSectionLabel>
+        <ToolSectionLabel>{t('preprocess.trapPresets:cau_hinh_overprint_den')}</ToolSectionLabel>
 
         {/* Options */}
         <div className="flex flex-col gap-2 pt-1">
@@ -89,8 +91,8 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
 
         {/* Info Note */}
         <ToolWarning
-            title="Phạm vi công cụ"
-            desc={<>Công cụ này bật <b>Overprint</b> cho object màu đen thuần (chống viền trắng quanh chữ/nét đen). <b>Trapping spread/choke</b> (bẫy mực hình học) cần hệ thống RIP chuyên nghiệp trên máy CTP — không thực hiện ở đây.</>}
+            title={t('preprocess.trapPresets:pham_vi_cong_cu')}
+            desc={<>{t('preprocess.trapPresets:cong_cu_nay_bat')} <b>Overprint</b> {t('preprocess.trapPresets:cho_object_mau_den_thuan_chong_vien')} <b>Trapping spread/choke</b> {t('preprocess.trapPresets:bay_muc_hinh_hoc_can_he_thong_rip')}</>}
         />
       </div>
 
@@ -98,14 +100,14 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
       <ToolDivider />
       <button onClick={apply} disabled={running}
         className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
-        {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang áp dụng...</>) : (<>🚀 Áp dụng Overprint đen</>)}
+        {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.trapPresets:dang_ap_dung')}</>) : (<>{t('preprocess.trapPresets:ap_dung_overprint_den')}</>)}
       </button>
 
       {/* ═══ STATUS ═══ */}
       {status && (
         <div className={`p-3 rounded-lg border ${status.startsWith('✅') ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
           <span className={`text-[11px] font-bold ${status.startsWith('✅') ? 'text-emerald-600' : 'text-red-600'}`}>{status}</span>
-          {status.startsWith('✅') && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">✅ File đã được cập nhật trên Viewer.</p>}
+          {status.startsWith('✅') && <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">{t('preprocess.trapPresets:file_da_duoc_cap_nhat_tren_viewer')}</p>}
         </div>
       )}
     </div>

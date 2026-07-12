@@ -1,13 +1,15 @@
 import { useTheme } from '../hooks/useTheme';
+import { useTranslation } from 'react-i18next';
 
 export function ThemeToggle() {
+  const { t } = useTranslation();
   const { theme, toggleTheme } = useTheme();
 
   return (
     <button
       onClick={toggleTheme}
       className="w-[26px] h-[26px] rounded-md text-slate-500 hover:text-slate-800 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/10 flex items-center justify-center transition-colors border border-transparent hover:border-black/10 dark:hover:border-white/10 relative overflow-hidden group"
-      title={theme === 'dark' ? 'Chuyển sang Giao diện Sáng' : 'Chuyển sang Giao diện Tối'}
+      title={theme === 'dark' ? t('misc.themeToggle:chuyen_sang_giao_dien_sang') : t('misc.themeToggle:chuyen_sang_giao_dien_toi')}
     >
       {/* Sun icon */}
       <svg

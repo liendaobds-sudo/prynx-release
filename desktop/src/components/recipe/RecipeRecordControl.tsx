@@ -12,6 +12,7 @@ import { createRecipe } from '../../lib/recipe/recipeTypes';
 import { saveRecipe } from '../../lib/recipe/recipeStore';
 import { toast } from '../ui/Toast';
 import type { RecipeStep } from '../../lib/recipe/recipeTypes';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
     /** Mở panel "Quy trình đã lưu". */
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export default function RecipeRecordControl({ onOpenPanel, sourcePageCount }: Props) {
+  const { t } = useTranslation();
     const isRecording = useRecipeRecorder(s => s.isRecording);
     const draftCount = useRecipeRecorder(s => s.draftSteps.length);
     const [saveDialog, setSaveDialog] = useState<{ steps: RecipeStep[] } | null>(null);
@@ -28,12 +30,12 @@ export default function RecipeRecordControl({ onOpenPanel, sourcePageCount }: Pr
     const handleToggle = () => {
         if (!isRecording) {
             recipeRecorder.start();
-            toast.info('Bắt đầu ghi quy trình. Hãy thực hiện các bước xử lý.');
+            toast.info(t('recipe.recipeRecordControl:bat_dau_ghi_quy_trinh_hay_thuc_hien_cac'));
             return;
         }
         const steps = recipeRecorder.stop();
         if (steps.length === 0) {
-            toast.info('Chưa ghi được bước nào — đã hủy phiên ghi.');
+            toast.info(t('recipe.recipeRecordControl:chua_ghi_duoc_buoc_nao_da_huy_phien_ghi'));
             return;
         }
         setSaveDialog({ steps });
@@ -50,14 +52,14 @@ export default function RecipeRecordControl({ onOpenPanel, sourcePageCount }: Pr
                             : 'hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 dark:text-zinc-400'
                     }`}
                     title={isRecording
-                        ? 'Dừng ghi & lưu quy trình (Recipe)'
-                        : 'Ghi quy trình (Recipe): tự động lưu CHUỖI nhiều bước bạn thao tác để PHÁT LẠI lên file khác bằng 1 click. Khác với "Lưu preset" (chỉ nhớ 1 bộ thiết lập bình bài).'}
-                    aria-label={isRecording ? 'Dừng ghi quy trình' : 'Ghi quy trình'}
+                        ? t('recipe.recipeRecordControl:dung_ghi_luu_quy_trinh_recipe')
+                        : t('recipe.recipeRecordControl:ghi_quy_trinh_recipe_tu_dong_luu_chuoi')}
+                    aria-label={isRecording ? t('recipe.recipeRecordControl:dung_ghi_quy_trinh') : t('recipe.recipeRecordControl:ghi_quy_trinh')}
                 >
                     {isRecording ? (
                         <>
                             <Square className="w-3 h-3 fill-current" />
-                            <span className="tb-label">Dừng ghi</span>
+                            <span className="tb-label">{t('recipe.recipeRecordControl:dung_ghi')}</span>
                             <span className="ml-0.5 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white text-[10px] leading-none">
                                 {draftCount}
                             </span>
@@ -65,7 +67,7 @@ export default function RecipeRecordControl({ onOpenPanel, sourcePageCount }: Pr
                     ) : (
                         <>
                             <Circle className="w-3 h-3 text-rose-500 fill-rose-500" />
-                            <span className="tb-label">Ghi quy trình</span>
+                            <span className="tb-label">{t('recipe.recipeRecordControl:ghi_quy_trinh')}</span>
                         </>
                     )}
                 </button>
@@ -73,8 +75,8 @@ export default function RecipeRecordControl({ onOpenPanel, sourcePageCount }: Pr
                 <button
                     onClick={onOpenPanel}
                     className="w-7 h-7 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 text-slate-500 hover:text-indigo-600 dark:text-zinc-400 dark:hover:text-indigo-400 rounded transition-colors"
-                    title="Quy trình đã lưu"
-                    aria-label="Quy trình đã lưu"
+                    title={t('recipe.recipeRecordControl:quy_trinh_da_luu')}
+                    aria-label={t('recipe.recipeRecordControl:quy_trinh_da_luu')}
                 >
                     <ListVideo className="w-4 h-4" />
                 </button>
@@ -99,13 +101,14 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
     sourcePageCount?: number;
     onClose: () => void;
 }) {
+  const { t } = useTranslation();
     const [name, setName] = useState('');
     const [description, setDescription] = useState('');
     const [saving, setSaving] = useState(false);
 
     const handleSave = async () => {
         const trimmed = name.trim();
-        if (!trimmed) { toast.error('Vui lòng nhập tên quy trình.'); return; }
+        if (!trimmed) { toast.error(t('recipe.recipeRecordControl:vui_long_nhap_ten_quy_trinh')); return; }
         setSaving(true);
         try {
             const recipe = createRecipe(trimmed, steps, {
@@ -129,26 +132,26 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
                 onClick={e => e.stopPropagation()}
             >
                 <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/10">
-                    <h3 className="text-sm font-semibold text-slate-800 dark:text-zinc-100">Lưu quy trình</h3>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200" aria-label="Đóng">
+                    <h3 className="text-sm font-semibold text-slate-800 dark:text-zinc-100">{t('recipe.recipeRecordControl:luu_quy_trinh')}</h3>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200" aria-label={t('recipe.recipeRecordControl:dong')}>
                         <X className="w-4 h-4" />
                     </button>
                 </div>
 
                 <div className="p-4 space-y-3">
                     <div>
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1">Tên quy trình</label>
+                        <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1">{t('recipe.recipeRecordControl:ten_quy_trinh')}</label>
                         <input
                             autoFocus
                             value={name}
                             onChange={e => setName(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') handleSave(); }}
-                            placeholder="Vd: Booklet 16 trang (doa nền + chuyển màu)"
+                            placeholder={t('recipe.recipeRecordControl:vd_booklet_16_trang_doa_nen_chuyen_mau')}
                             className="w-full px-2.5 py-1.5 text-[13px] rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                         />
                     </div>
                     <div>
-                        <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1">Mô tả (tùy chọn)</label>
+                        <label className="block text-[11px] font-medium text-slate-500 dark:text-zinc-400 mb-1">{t('recipe.recipeRecordControl:mo_ta_tuy_chon')}</label>
                         <textarea
                             value={description}
                             onChange={e => setDescription(e.target.value)}
@@ -168,7 +171,7 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
                                     <span className="flex-1 text-slate-700 dark:text-zinc-200 truncate">{s.label}</span>
                                     {!s.recordable && (
                                         <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400">
-                                            không phát lại
+                                            {t('recipe.recipeRecordControl:khong_phat_lai')}
                                         </span>
                                     )}
                                 </li>
@@ -182,14 +185,14 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
                         onClick={onClose}
                         className="px-3 py-1.5 text-[12px] rounded-lg text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
                     >
-                        Hủy
+                        {t('recipe.recipeRecordControl:huy')}
                     </button>
                     <button
                         onClick={handleSave}
                         disabled={saving}
                         className="px-3 py-1.5 text-[12px] rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium transition-colors disabled:opacity-60"
                     >
-                        {saving ? 'Đang lưu...' : 'Lưu quy trình'}
+                        {saving ? t('recipe.recipeRecordControl:dang_luu') : t('recipe.recipeRecordControl:luu_quy_trinh')}
                     </button>
                 </div>
             </div>

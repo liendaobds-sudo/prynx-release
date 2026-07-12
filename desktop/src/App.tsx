@@ -25,6 +25,7 @@ import { ToastViewport, toast } from './components/ui/Toast';
 import { ConfirmDialogHost } from './components/ui/confirmDialog';
 import { listSnapshots, clearAllSnapshots, deleteSnapshot, type RecoverySnapshot } from './lib/recovery';
 import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Columns2, Rows2, Ruler, Moon } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 type AppTabType = 'home' | AppToolId;
 
@@ -39,6 +40,7 @@ interface AppTab {
 
 // Custom Frameless Window Titlebar (OhMyShot style)
 function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const { t } = useTranslation();
   return (
     <div
       data-tauri-drag-region
@@ -72,7 +74,7 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
           <button
             onClick={onOpenSettings}
             className="w-[26px] h-[26px] rounded-md text-slate-500 hover:text-slate-800 hover:bg-black/5 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-white/10 flex items-center justify-center transition-colors border border-transparent hover:border-black/10 dark:hover:border-white/10"
-            title="Cài đặt hệ thống & Cấu hình API mô hình ngôn ngữ (⚙️)"
+            title={t('shell:cai_dat_he_thong_cau_hinh_api_mo_hinh')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
           </button>
@@ -86,9 +88,9 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
           onClick={() => {
             getCurrentWindow().minimize().catch((e: any) => toast.error("Min Error: " + (e.message || e)));
           }}
-          title="Thu nhỏ"
+          title={t('shell:thu_nho')}
           role="button"
-          aria-label="Thu nhỏ cửa sổ"
+          aria-label={t('shell:thu_nho_cua_so')}
         >
           <svg width="10" height="1" viewBox="0 0 10 1" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
             <rect width="10" height="1" fill="currentColor" />
@@ -99,9 +101,9 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
           onClick={() => {
             getCurrentWindow().toggleMaximize().catch((e: any) => toast.error("Max Error: " + (e.message || e)));
           }}
-          title="Phóng to"
+          title={t('shell:phong_to')}
           role="button"
-          aria-label="Phóng to cửa sổ"
+          aria-label={t('shell:phong_to_cua_so')}
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
             <rect x="0.5" y="0.5" width="9" height="9" stroke="currentColor" />
@@ -115,9 +117,9 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
             // như min/max, cùng họ lệnh window đang chạy tốt, bỏ qua vòng close-requested kẹt).
             window.dispatchEvent(new CustomEvent('prynx-request-quit'));
           }}
-          title="Đóng (Alt+F4)"
+          title={t('shell:dong_alt_f4')}
           role="button"
-          aria-label="Đóng cửa sổ"
+          aria-label={t('shell:dong_cua_so')}
         >
           <svg width="10" height="10" viewBox="0 0 14 14" fill="none" className="opacity-50 group-hover:opacity-100 transition-opacity pointer-events-none">
             <path d="M1 1L13 13M1 13L13 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
@@ -193,6 +195,7 @@ function SplashScreen() {
 }
 
 function AppInner() {
+  const { t } = useTranslation();
   const [tabs, setTabs] = useState<AppTab[]>([
     { id: 'home', type: 'home', title: 'Home', isClosable: false }
   ]);
@@ -821,8 +824,8 @@ function AppInner() {
     {
       label: 'View',
       items: [
-        { label: 'Phóng to', shortcut: 'Ctrl++', icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
-        { label: 'Thu nhỏ', shortcut: 'Ctrl+-', icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
+        { label: t('shell:phong_to'), shortcut: 'Ctrl++', icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
+        { label: t('shell:thu_nho'), shortcut: 'Ctrl+-', icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
         { label: 'Về 100%', icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
         { separator: true },
         { label: 'Vừa chiều ngang', icon: <MoveHorizontal className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },

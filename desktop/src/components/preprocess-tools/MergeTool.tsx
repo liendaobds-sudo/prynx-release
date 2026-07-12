@@ -4,6 +4,7 @@ import {
     ToolSectionLabel, ToolDivider, ToolCheckboxOption, 
     ToolNumberInput, ToolInfo 
 } from './ToolUI';
+import { useTranslation } from 'react-i18next';
 
 const inputCls = "w-full h-8 px-2.5 text-[12px] border border-slate-300 dark:border-white/20 rounded-md bg-white dark:bg-zinc-900 font-medium focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/20 transition-all";
 
@@ -58,6 +59,7 @@ interface Props {
 }
 
 export default function MergeTool({ settings, onChange }: Props) {
+  const { t } = useTranslation();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const oddInputRef = useRef<HTMLInputElement>(null);
     const evenInputRef = useRef<HTMLInputElement>(null);
@@ -104,9 +106,9 @@ export default function MergeTool({ settings, onChange }: Props) {
             {/* Tabs */}
             <div className="flex bg-slate-100 dark:bg-zinc-800/50 p-1 rounded-lg border border-slate-200 dark:border-white/5">
                 {[
-                    { id: 'merge_files', label: 'Ghép nối tiếp' },
-                    { id: 'interleave', label: 'Trộn xen kẽ' },
-                    { id: 'insert_pages', label: 'Chèn trang' }
+                    { id: 'merge_files', label: t('preprocess.merge:ghep_noi_tiep') },
+                    { id: 'interleave', label: t('preprocess.merge:tron_xen_ke') },
+                    { id: 'insert_pages', label: t('preprocess.merge:chen_trang') }
                 ].map(tab => (
                     <button
                         key={tab.id}
@@ -126,11 +128,11 @@ export default function MergeTool({ settings, onChange }: Props) {
                 {/* 1. GHÉP NỐI TIẾP */}
                 {settings.mode === 'merge_files' && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 flex flex-col gap-2">
-                        <ToolSectionLabel>Danh sách file cần ghép</ToolSectionLabel>
+                        <ToolSectionLabel>{t('preprocess.merge:danh_sach_file_can_ghep')}</ToolSectionLabel>
                         <div className="border border-slate-300 dark:border-white/10 rounded-lg p-2 min-h-[100px] flex flex-col gap-1 bg-white dark:bg-zinc-900/50">
                             {settings.filesToMerge.length === 0 ? (
                                 <div className="flex-1 flex items-center justify-center text-[11px] text-slate-400">
-                                    Chưa chọn file nào. Bấm nút bên dưới để thêm.
+                                    {t('preprocess.merge:chua_chon_file_nao_bam_nut_ben_duoi_de')}
                                 </div>
                             ) : (
                                 settings.filesToMerge.map((f, i) => (
@@ -142,14 +144,14 @@ export default function MergeTool({ settings, onChange }: Props) {
                                         <div className="flex-1 text-[11px] font-medium text-slate-700 dark:text-zinc-200 truncate" title={f.name}>
                                             {f.name}
                                         </div>
-                                        <button onClick={() => removeFile(i)} className="text-red-400 hover:text-red-600 px-1 opacity-0 group-hover:opacity-100 transition-opacity" title="Xóa" aria-label="Xóa file"><X className="w-3.5 h-3.5" /></button>
+                                        <button onClick={() => removeFile(i)} className="text-red-400 hover:text-red-600 px-1 opacity-0 group-hover:opacity-100 transition-opacity" title={t('preprocess.merge:xoa')} aria-label={t('preprocess.merge:xoa_file')}><X className="w-3.5 h-3.5" /></button>
                                     </div>
                                 ))
                             )}
                         </div>
                         <input type="file" multiple accept=".pdf,image/png,image/jpeg,image/jpg" ref={fileInputRef} className="hidden" onChange={handleFilesAdded} />
                         <button onClick={() => fileInputRef.current?.click()} className="mt-1 w-full py-2 bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 border border-slate-200 dark:border-white/10 rounded-lg text-[11px] font-bold text-slate-600 dark:text-zinc-300 transition-colors">
-                            + Thêm file PDF/Ảnh
+                            {t('preprocess.merge:them_file_pdf_anh')}
                         </button>
                     </div>
                 )}
@@ -158,23 +160,23 @@ export default function MergeTool({ settings, onChange }: Props) {
                 {settings.mode === 'interleave' && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 flex flex-col gap-4">
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Nguồn Trang Lẻ (Odds from)</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.merge:nguon_trang_le_odds_from')}</ToolSectionLabel>
                             <input type="file" accept=".pdf,image/png,image/jpeg,image/jpg" ref={oddInputRef} className="hidden" onChange={(e) => handleSingleFileSelect('oddFile', e)} />
                             <div className="flex items-center gap-2">
-                                <button onClick={() => oddInputRef.current?.click()} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-slate-300 dark:border-white/10 rounded text-[11px] font-semibold text-slate-600 dark:text-zinc-300 whitespace-nowrap">Chọn File</button>
-                                <span className="text-[11px] text-slate-600 dark:text-zinc-400 truncate flex-1">{settings.oddFile ? settings.oddFile.name : 'Chưa chọn file...'}</span>
+                                <button onClick={() => oddInputRef.current?.click()} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-slate-300 dark:border-white/10 rounded text-[11px] font-semibold text-slate-600 dark:text-zinc-300 whitespace-nowrap">{t('preprocess.merge:chon_file')}</button>
+                                <span className="text-[11px] text-slate-600 dark:text-zinc-400 truncate flex-1">{settings.oddFile ? settings.oddFile.name : t('preprocess.merge:chua_chon_file')}</span>
                             </div>
                         </div>
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Nguồn Trang Chẵn (Evens from)</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.merge:nguon_trang_chan_evens_from')}</ToolSectionLabel>
                             <input type="file" accept=".pdf,image/png,image/jpeg,image/jpg" ref={evenInputRef} className="hidden" onChange={(e) => handleSingleFileSelect('evenFile', e)} />
                             <div className="flex items-center gap-2">
-                                <button onClick={() => evenInputRef.current?.click()} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-slate-300 dark:border-white/10 rounded text-[11px] font-semibold text-slate-600 dark:text-zinc-300 whitespace-nowrap">Chọn File</button>
-                                <span className="text-[11px] text-slate-600 dark:text-zinc-400 truncate flex-1">{settings.evenFile ? settings.evenFile.name : 'Chưa chọn file...'}</span>
+                                <button onClick={() => evenInputRef.current?.click()} className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-slate-300 dark:border-white/10 rounded text-[11px] font-semibold text-slate-600 dark:text-zinc-300 whitespace-nowrap">{t('preprocess.merge:chon_file')}</button>
+                                <span className="text-[11px] text-slate-600 dark:text-zinc-400 truncate flex-1">{settings.evenFile ? settings.evenFile.name : t('preprocess.merge:chua_chon_file')}</span>
                             </div>
                         </div>
                         <div className="text-[10px] text-slate-500 mt-1 italic">
-                            Hệ thống sẽ lấy lần lượt 1 trang từ nguồn Trang Lẻ, rồi 1 trang từ nguồn Trang Chẵn ghép lại thành 1 file duy nhất.
+                            {t('preprocess.merge:he_thong_se_lay_lan_luot_1_trang_tu')}
                         </div>
                     </div>
                 )}
@@ -183,26 +185,26 @@ export default function MergeTool({ settings, onChange }: Props) {
                 {settings.mode === 'insert_pages' && (
                     <div className="animate-in fade-in slide-in-from-top-1 duration-200 flex flex-col gap-4">
                         <div className="flex flex-col gap-2">
-                            <ToolSectionLabel>Chèn từ File (Insert from)</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.merge:chen_tu_file_insert_from')}</ToolSectionLabel>
                             <input type="file" accept=".pdf,image/png,image/jpeg,image/jpg" ref={insertInputRef} className="hidden" onChange={(e) => handleSingleFileSelect('insertFile', e)} />
                             <div className="flex items-center gap-2">
-                                <button onClick={() => insertInputRef.current?.click()} className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 border border-blue-200 dark:border-blue-800 rounded text-[11px] font-bold text-blue-600 dark:text-blue-400 whitespace-nowrap">Chọn File PDF/Ảnh</button>
-                                <span className="text-[11px] text-slate-700 dark:text-zinc-300 font-medium truncate flex-1">{settings.insertFile ? settings.insertFile.name : 'Chưa chọn file...'}</span>
+                                <button onClick={() => insertInputRef.current?.click()} className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:hover:bg-blue-900/40 border border-blue-200 dark:border-blue-800 rounded text-[11px] font-bold text-blue-600 dark:text-blue-400 whitespace-nowrap">{t('preprocess.merge:chon_file_pdf_anh')}</button>
+                                <span className="text-[11px] text-slate-700 dark:text-zinc-300 font-medium truncate flex-1">{settings.insertFile ? settings.insertFile.name : t('preprocess.merge:chua_chon_file')}</span>
                             </div>
                         </div>
 
                         <div className="flex flex-col gap-2 bg-slate-50 dark:bg-zinc-800/50 p-3 rounded-lg border border-slate-200 dark:border-white/5">
-                            <ToolSectionLabel>Dải trang cần lấy</ToolSectionLabel>
+                            <ToolSectionLabel>{t('preprocess.merge:dai_trang_can_lay')}</ToolSectionLabel>
                             <div className="flex flex-col gap-2 mt-1">
                                 <label className="flex items-center gap-2 text-[11px] text-slate-700 dark:text-zinc-300">
                                     <input type="radio" checked={settings.insertWhat === 'entire'} onChange={() => onChange({ ...settings, insertWhat: 'entire' })} className="text-teal-500 focus:ring-teal-500" />
-                                    Toàn bộ tài liệu (Entire document)
+                                    {t('preprocess.merge:toan_bo_tai_lieu_entire_document')}
                                 </label>
                                 <label className="flex items-center gap-2 text-[11px] text-slate-700 dark:text-zinc-300">
                                     <input type="radio" checked={settings.insertWhat === 'range'} onChange={() => onChange({ ...settings, insertWhat: 'range' })} className="text-teal-500 focus:ring-teal-500" />
-                                    Từ trang (From) 
+                                    {t('preprocess.merge:tu_trang_from')} 
                                     <input type="number" min={1} value={settings.insertRangeFrom} onChange={e => onChange({ ...settings, insertRangeFrom: parseInt(e.target.value)||1 })} className="w-12 h-6 px-1 border border-slate-300 rounded text-center" disabled={settings.insertWhat !== 'range'} />
-                                    đến
+                                    {t('preprocess.merge:den')}
                                     <input type="number" min={1} value={settings.insertRangeTo} onChange={e => onChange({ ...settings, insertRangeTo: parseInt(e.target.value)||1 })} className="w-12 h-6 px-1 border border-slate-300 rounded text-center" disabled={settings.insertWhat !== 'range'} />
                                 </label>
                             </div>
@@ -211,45 +213,45 @@ export default function MergeTool({ settings, onChange }: Props) {
                         <div className="flex flex-col gap-2">
                             <label className="flex items-center gap-2 text-[12px] font-bold text-slate-800 dark:text-zinc-200">
                                 <input type="checkbox" checked={settings.useIntervals} onChange={e => onChange({ ...settings, useIntervals: e.target.checked })} className="w-4 h-4 rounded text-teal-500 focus:ring-teal-500" />
-                                Insert at intervals (Chèn lặp lại chu kỳ)
+                                {t('preprocess.merge:insert_at_intervals_chen_lap_lai_chu_ky')}
                             </label>
 
                             {settings.useIntervals && (
                                 <div className="ml-6 flex flex-col gap-3 mt-1 animate-in fade-in slide-in-from-left-2">
                                     <div className="flex items-center gap-2 text-[11px] text-slate-700 dark:text-zinc-300">
-                                        Vị trí bắt đầu:
-                                        <label className="flex items-center gap-1"><input type="radio" checked={settings.startInserting === 'before_first'} onChange={() => onChange({ ...settings, startInserting: 'before_first' })} /> Trước trang 1</label>
+                                        {t('preprocess.merge:vi_tri_bat_dau')}
+                                        <label className="flex items-center gap-1"><input type="radio" checked={settings.startInserting === 'before_first'} onChange={() => onChange({ ...settings, startInserting: 'before_first' })} /> {t('preprocess.merge:truoc_trang_1')}</label>
                                         <label className="flex items-center gap-1"><input type="radio" checked={settings.startInserting === 'after_page'} onChange={() => onChange({ ...settings, startInserting: 'after_page' })} /> Sau trang</label>
                                         <input type="number" min={1} value={settings.afterPageNum} onChange={e => onChange({ ...settings, afterPageNum: parseInt(e.target.value)||1 })} className="w-12 h-6 px-1 border border-slate-300 rounded text-center" disabled={settings.startInserting !== 'after_page'} />
                                     </div>
                                     
                                     <div className="flex items-center gap-2 text-[11px] text-slate-700 dark:text-zinc-300">
-                                        Sau khi chèn, bỏ qua
+                                        {t('preprocess.merge:sau_khi_chen_bo_qua')}
                                         <input type="number" min={1} value={settings.skipPages} onChange={e => onChange({ ...settings, skipPages: parseInt(e.target.value)||1 })} className="w-12 h-6 px-1 border border-slate-300 rounded text-center" />
-                                        trang và lặp lại
+                                        {t('preprocess.merge:trang_va_lap_lai')}
                                     </div>
 
                                     <div className="flex flex-col gap-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10 p-2 rounded">
-                                        <div className="text-[10px] font-semibold text-slate-500 uppercase">Cách lặp lại (How to repeat)</div>
+                                        <div className="text-[10px] font-semibold text-slate-500 uppercase">{t('preprocess.merge:cach_lap_lai_how_to_repeat')}</div>
                                         <label className="flex items-center gap-2 text-[11px] text-slate-700 dark:text-zinc-300">
                                             <input type="radio" checked={settings.repeatMode === 'entire'} onChange={() => onChange({ ...settings, repeatMode: 'entire' })} />
-                                            Chèn toàn bộ khối trang mỗi lần
+                                            {t('preprocess.merge:chen_toan_bo_khoi_trang_moi_lan')}
                                         </label>
                                         <div className="flex flex-col gap-1">
                                             <label className="flex items-center gap-2 text-[11px] text-slate-700 dark:text-zinc-300">
                                                 <input type="radio" checked={settings.repeatMode === 'pages'} onChange={() => onChange({ ...settings, repeatMode: 'pages' })} />
-                                                Chỉ chèn
+                                                {t('preprocess.merge:chi_chen')}
                                                 <input type="number" min={1} value={settings.insertPagesEachTime} onChange={e => onChange({ ...settings, insertPagesEachTime: parseInt(e.target.value)||1 })} className="w-12 h-6 px-1 border border-slate-300 rounded text-center" disabled={settings.repeatMode !== 'pages'} />
-                                                trang mỗi lần, sau đó...
+                                                {t('preprocess.merge:trang_moi_lan_sau_do')}
                                             </label>
                                             <div className="ml-6 flex flex-col gap-1">
                                                 <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-zinc-400">
                                                     <input type="radio" checked={settings.whenFinished === 'start_again'} onChange={() => onChange({ ...settings, whenFinished: 'start_again' })} disabled={settings.repeatMode !== 'pages'} />
-                                                    Khi chèn hết nguồn, quay lại đầu nguồn
+                                                    {t('preprocess.merge:khi_chen_het_nguon_quay_lai_dau_nguon')}
                                                 </label>
                                                 <label className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-zinc-400">
                                                     <input type="radio" checked={settings.whenFinished === 'stop'} onChange={() => onChange({ ...settings, whenFinished: 'stop' })} disabled={settings.repeatMode !== 'pages'} />
-                                                    Khi chèn hết nguồn thì dừng lại
+                                                    {t('preprocess.merge:khi_chen_het_nguon_thi_dung_lai')}
                                                 </label>
                                             </div>
                                         </div>
@@ -262,7 +264,7 @@ export default function MergeTool({ settings, onChange }: Props) {
             </div>
             
             <ToolInfo desc={
-                <><strong>Ghi chú:</strong> Tác vụ này sẽ tự động xử lý và tạo ra một file PDF mới chứa kết quả, giữ nguyên các file gốc không thay đổi.</>
+                <><strong>{t('preprocess.merge:ghi_chu')}</strong> {t('preprocess.merge:tac_vu_nay_se_tu_dong_xu_ly_va_tao_ra')}</>
             } />
         </div>
     );

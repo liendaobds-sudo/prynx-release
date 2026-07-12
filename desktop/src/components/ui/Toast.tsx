@@ -2,6 +2,7 @@ import { useEffect, type ComponentType } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 import { Check, AlertTriangle, Info, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 export type ToastType = 'success' | 'error' | 'info';
 
@@ -55,6 +56,7 @@ const TYPE_STYLES: Record<ToastType, { bar: string; Icon: ComponentType<{ classN
 };
 
 function ToastCard({ item }: { item: ToastItem }) {
+  const { t } = useTranslation();
   const dismiss = useToastStore((s) => s.dismiss);
 
   useEffect(() => {
@@ -77,8 +79,8 @@ function ToastCard({ item }: { item: ToastItem }) {
       <button
         onClick={() => dismiss(item.id)}
         className="shrink-0 text-slate-400 hover:text-slate-700 dark:text-zinc-500 dark:hover:text-zinc-200 transition-colors leading-none focus:outline-none"
-        title="Đóng"
-        aria-label="Đóng thông báo"
+        title={t('misc.toast:dong')}
+        aria-label={t('misc.toast:dong_thong_bao')}
       >
         <X className="w-4 h-4" />
       </button>

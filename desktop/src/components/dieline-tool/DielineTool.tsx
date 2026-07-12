@@ -15,6 +15,7 @@ import { downloadPDF } from '../../lib/dieline/exportPDF';
 import { downloadNestingPDF } from '../../lib/dieline/exportNestingPDF';
 import { BoxParams } from '../../lib/dieline/types';
 import '../../styles/dieline-tool.css';
+import { useTranslation } from 'react-i18next';
 
 // Lazy load 3D scene (heavy Three.js bundle)
 const DielineScene3D = lazy(() => import('./DielineScene3D'));
@@ -45,6 +46,7 @@ class Scene3DErrorBoundary extends Component<{ children: ReactNode }, { hasError
 }
 
 export default function DielineTool() {
+  const { t } = useTranslation();
     const [view, setView] = useState<'gallery' | 'editor'>('gallery');
     const [activeTab, setActiveTab] = useState<'2d' | '3d' | 'split' | 'nesting'>('2d');
     const { dieline, nestingResult, nestingConfig, setParam } = useBoxStore();
@@ -92,29 +94,29 @@ export default function DielineTool() {
                         onClick={() => setActiveTab('2d')}
                     >
                         <span className="dt-tab-icon">📐</span>
-                        Bản vẽ 2D
+                        {t('dieline.dieline:ban_ve_2d')}
                     </button>
                     <button
                         className={`dt-tab ${activeTab === '3d' ? 'active' : ''}`}
                         onClick={() => setActiveTab('3d')}
                     >
                         <span className="dt-tab-icon">📦</span>
-                        Mô phỏng 3D
+                        {t('dieline.dieline:mo_phong_3d')}
                     </button>
                     <button
                         className={`dt-tab ${activeTab === 'split' ? 'active' : ''}`}
                         onClick={() => setActiveTab('split')}
-                        title="Xem đồng thời bản vẽ 2D và mô phỏng 3D"
+                        title={t('dieline.dieline:xem_dong_thoi_ban_ve_2d_va_mo_phong_3d')}
                     >
                         <span className="dt-tab-icon">🔲</span>
-                        Chia đôi
+                        {t('dieline.dieline:chia_doi')}
                     </button>
                     <button
                         className={`dt-tab ${activeTab === 'nesting' ? 'active' : ''}`}
                         onClick={() => setActiveTab('nesting')}
                     >
                         <span className="dt-tab-icon">📋</span>
-                        Xếp khuôn
+                        {t('dieline.dieline:xep_khuon')}
                     </button>
                     {(activeTab === '2d' || activeTab === 'split') && dieline && (
                         <button
@@ -128,9 +130,9 @@ export default function DielineTool() {
                         <button
                             className="dt-export-tab"
                             onClick={() => downloadNestingPDF(dieline, nestingResult, nestingConfig)}
-                            title="Xuất PDF bình bản xếp khuôn"
+                            title={t('dieline.dieline:xuat_pdf_binh_ban_xep_khuon')}
                         >
-                            ⬇ PDF Xếp khuôn
+                            {t('dieline.dieline:pdf_xep_khuon')}
                         </button>
                     )}
                 </div>
@@ -148,7 +150,7 @@ export default function DielineTool() {
                                     <Suspense fallback={
                                         <div className="dt-scene-loading">
                                             <div className="dt-loading-spinner" />
-                                            <p>Đang tải mô phỏng 3D...</p>
+                                            <p>{t('dieline.dieline:dang_tai_mo_phong_3d')}</p>
                                         </div>
                                     }>
                                         <DielineScene3D />
@@ -161,7 +163,7 @@ export default function DielineTool() {
                             <Suspense fallback={
                                 <div className="dt-scene-loading">
                                     <div className="dt-loading-spinner" />
-                                    <p>Đang tải mô phỏng 3D...</p>
+                                    <p>{t('dieline.dieline:dang_tai_mo_phong_3d')}</p>
                                 </div>
                             }>
                                 <DielineScene3D />

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { authenticatedFetch, getApiUrl, uploadPDF } from "../../../lib/api";
 import type { NupSettings } from "../types";
+import { useTranslation } from 'react-i18next';
 
 export interface GridPreviewProps {
   taskMode: string;
@@ -703,6 +704,7 @@ function renderCellShape(
 // GridPreview Component
 // =====================================================================
 export default function GridPreview(props: GridPreviewProps) {
+  const { t } = useTranslation();
   const {
     taskMode,
     isDieCut,
@@ -1530,11 +1532,11 @@ export default function GridPreview(props: GridPreviewProps) {
               <div
                 className="relative cursor-pointer group flex-shrink-0"
                 onClick={() => setExpanded(!expanded)}
-                title={expanded ? "Thu gọn" : "Phóng to xem chi tiết"}
+                title={expanded ? t('imposition.gridPreview:thu_gon') : t('imposition.gridPreview:phong_to_xem_chi_tiet')}
               >
                 {duplexFlow === "double" && (
                   <div className="text-center text-[11px] font-bold text-slate-500 mb-2">
-                    MẶT TRƯỚC
+                    {t('imposition.gridPreview:mat_truoc')}
                   </div>
                 )}
                 <svg
@@ -1805,7 +1807,7 @@ export default function GridPreview(props: GridPreviewProps) {
                 )}
 
                 <div className="absolute bottom-1 right-1 bg-white/80 dark:bg-zinc-800/80 rounded px-1.5 py-0.5 text-[9px] text-slate-400 dark:text-zinc-500 font-medium opacity-0 group-hover:opacity-100 transition-opacity">
-                  {expanded ? "⊖ Thu gọn" : "⊕ Phóng to"}
+                  {expanded ? t('imposition.gridPreview:thu_gon_2') : t('imposition.gridPreview:phong_to')}
                 </div>
               </div>
 
@@ -1814,10 +1816,10 @@ export default function GridPreview(props: GridPreviewProps) {
                 <div
                   className="relative cursor-pointer group flex-shrink-0"
                   onClick={() => setExpanded(!expanded)}
-                  title={expanded ? "Thu gọn" : "Phóng to xem chi tiết"}
+                  title={expanded ? t('imposition.gridPreview:thu_gon') : t('imposition.gridPreview:phong_to_xem_chi_tiet')}
                 >
                   <div className="text-center text-[11px] font-bold text-slate-500 mb-2">
-                    MẶT SAU
+                    {t('imposition.gridPreview:mat_sau')}
                   </div>
                   <svg
                     width={svgW}
@@ -2061,7 +2063,7 @@ export default function GridPreview(props: GridPreviewProps) {
                   </svg>
 
                   <div className="absolute bottom-1 right-1 bg-white/80 dark:bg-zinc-800/80 rounded px-1.5 py-0.5 text-[9px] text-slate-400 dark:text-zinc-500 font-medium opacity-0 group-hover:opacity-100 transition-opacity">
-                    {expanded ? "⊖ Thu gọn" : "⊕ Phóng to"}
+                    {expanded ? t('imposition.gridPreview:thu_gon_2') : t('imposition.gridPreview:phong_to')}
                   </div>
                 </div>
               )}
@@ -2070,21 +2072,21 @@ export default function GridPreview(props: GridPreviewProps) {
 
           {isDetectingShape && (
             <div className="text-[11px] text-amber-600 dark:text-amber-400 animate-pulse font-medium">
-              🔍 Đang nhận diện hình dạng tem...
+              {t('imposition.gridPreview:dang_nhan_dien_hinh_dang_tem')}
             </div>
           )}
         </div>
       ) : (
         <div className="text-sm text-slate-500 flex items-center gap-2">
           {isDetectingShape ? (
-            "🔍 Đang nhận diện hình dạng tem..."
+            t('imposition.gridPreview:dang_nhan_dien_hinh_dang_tem')
           ) : isLoading ? (
             <>
               <div className="w-3.5 h-3.5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-              Đang tính toán bố cục...
+              {t('imposition.gridPreview:dang_tinh_toan_bo_cuc')}
             </>
           ) : (
-            "Chưa có dữ liệu bố cục"
+            t('imposition.gridPreview:chua_co_du_lieu_bo_cuc')
           )}
         </div>
       )}

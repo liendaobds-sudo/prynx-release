@@ -4,6 +4,7 @@ import pako from 'pako';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
 import SoftProofPanel from './SoftProofPanel';
 import { toast } from './ui/Toast';
+import { useTranslation } from 'react-i18next';
 
 interface PlateInfo {
     name: string;
@@ -71,6 +72,7 @@ function reconstructPlateDataUrl(plate: PlateInfo, width: number, height: number
 }
 
 export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPages = 1, onClose, onPlatesChange, onFileFixed }: OutputPreviewTabProps) {
+  const { t } = useTranslation();
     const [pageNum, setPageNum] = useState(initialPageNum);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -174,7 +176,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             try {
                 const gsParam = useGhostscript ? '&use_gs=true' : '';
                 const res = await authenticatedFetch(`${getApiUrl()}/preflight/separations/${fileId}/${pageNum}?dpi=150${gsParam}`);
-                if (!res.ok) throw new Error('Không thể phân tách kẽm');
+                if (!res.ok) throw new Error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
                 const result: SeparationsData = await res.json();
                 if (!isMounted) return;
                 const arrays: Record<string, Uint8ClampedArray> = {};
@@ -323,7 +325,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             >
                 <div className="flex items-center gap-2">
                     <span className="text-[14px]">👁️</span>
-                    <span className="font-bold text-[13px] text-slate-700 dark:text-zinc-200 uppercase tracking-wide">Xem trước bản in</span>
+                    <span className="font-bold text-[13px] text-slate-700 dark:text-zinc-200 uppercase tracking-wide">{t('tabs.outputPreview:xem_truoc_ban_in')}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                     {detectedSpots.length > 0 && (
@@ -343,8 +345,8 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 {/* ─── Mode + Engine ─── */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <span className="text-[12px] text-slate-500">Chế độ:</span>
-                        <span className="text-[12px] font-semibold text-indigo-600 dark:text-indigo-400">Tách kẽm (Separations)</span>
+                        <span className="text-[12px] text-slate-500">{t('tabs.outputPreview:che_do')}</span>
+                        <span className="text-[12px] font-semibold text-indigo-600 dark:text-indigo-400">{t('tabs.outputPreview:tach_kem_separations')}</span>
                     </div>
                     {engineUsed && (
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
@@ -352,7 +354,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                                 ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' 
                                 : 'bg-slate-100 text-slate-500 dark:bg-zinc-800 dark:text-zinc-400'
                         }`}>
-                            {engineUsed === 'ghostscript' ? 'Chế độ chuyên sâu' : 'Chế độ nhanh'}
+                            {engineUsed === 'ghostscript' ? t('tabs.outputPreview:che_do_chuyen_sau') : t('tabs.outputPreview:che_do_nhanh')}
                         </span>
                     )}
                 </div>
@@ -379,7 +381,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 {/* ─── Plate List ─── */}
                 <div>
                     <div className="flex items-center justify-between" style={{ marginBottom: '4px' }}>
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Bản kẽm</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t('tabs.outputPreview:ban_kem')}</span>
                         <button
                             onClick={toggleAllProcess}
                             className={`text-[11px] font-medium rounded transition-colors ${
@@ -387,14 +389,14 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             }`}
                             style={{ padding: '2px 6px' }}
                         >
-                            {allProcessVisible ? 'Bỏ chọn tất cả' : 'Chọn tất cả'}
+                            {allProcessVisible ? t('tabs.outputPreview:bo_chon_tat_ca') : t('tabs.outputPreview:chon_tat_ca')}
                         </button>
                     </div>
 
                     {loading ? (
                         <div className="flex flex-col items-center gap-3 py-8 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-100 dark:border-zinc-800">
                             <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                            <span className="text-[13px] text-slate-500 font-medium">Đang phân tách kẽm...</span>
+                            <span className="text-[13px] text-slate-500 font-medium">{t('tabs.outputPreview:dang_phan_tach_kem')}</span>
                         </div>
                     ) : error ? (
                         <div className="py-4 px-4 text-red-600 text-[13px] text-center bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-100 dark:border-red-900/30">
@@ -453,7 +455,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                                                         ? 'bg-indigo-500 text-white' 
                                                         : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-zinc-700 hover:text-slate-600'
                                                 }`}
-                                                title={isSolo ? 'Tắt xem riêng' : `Xem riêng plate ${plate.name}`}
+                                                title={isSolo ? t('tabs.outputPreview:tat_xem_rieng') : `Xem riêng plate ${plate.name}`}
                                             >
                                                 {isSolo ? '◉' : '○'}
                                             </button>
@@ -473,7 +475,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             })}
                             {/* TAC Row */}
                             <div className="flex items-center justify-between bg-slate-50/80 dark:bg-zinc-800/80 border-t border-slate-200 dark:border-zinc-700" style={{ padding: '5px 12px' }}>
-                                <span className="text-[11px] text-slate-500 italic" style={{ paddingLeft: '30px' }}>Tổng phủ mực (TAC)</span>
+                                <span className="text-[11px] text-slate-500 italic" style={{ paddingLeft: '30px' }}>{t('tabs.outputPreview:tong_phu_muc_tac')}</span>
                                 <span ref={tacRef} className="font-mono text-[11px] text-slate-400 tabular-nums">0%</span>
                             </div>
                         </div>
@@ -490,7 +492,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                                 onChange={(e) => setShowTacWarning(e.target.checked)}
                                 className="w-3.5 h-3.5 rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 cursor-pointer"
                             />
-                            <span className="text-[12px] text-slate-600 dark:text-zinc-300">Cảnh báo TAC</span>
+                            <span className="text-[12px] text-slate-600 dark:text-zinc-300">{t('tabs.outputPreview:canh_bao_tac')}</span>
                         </label>
                         <div className="flex items-center gap-1.5">
                             <div className="w-4 h-4 rounded-sm bg-emerald-500 ring-1 ring-black/10"></div>
@@ -515,7 +517,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                                 onChange={(e) => setShowTacHeatmap(e.target.checked)}
                                 className="w-3.5 h-3.5 rounded border-slate-300 text-red-500 focus:ring-red-500 cursor-pointer"
                             />
-                            <span className="text-[12px] text-slate-600 dark:text-zinc-300">🔥 Heatmap vùng quá mực</span>
+                            <span className="text-[12px] text-slate-600 dark:text-zinc-300">{t('tabs.outputPreview:heatmap_vung_qua_muc')}</span>
                         </label>
                         <div className="flex items-center gap-1">
                             <div className="w-3 h-3 rounded-sm bg-gradient-to-r from-yellow-400 to-red-500"></div>
@@ -532,7 +534,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                                 className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer" 
                             />
                             <span className="text-[12px] text-slate-600 dark:text-zinc-300">
-                                Chế độ tách màu chuyên sâu {detectedSpots.length > 0 ? '(đã tự bật)' : '(chậm hơn)'}
+                                Chế độ tách màu chuyên sâu {detectedSpots.length > 0 ? t('tabs.outputPreview:da_tu_bat') : t('tabs.outputPreview:cham_hon')}
                             </span>
                         </label>
                         
@@ -541,9 +543,9 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             ?
                             {/* Tooltip Content */}
                             <div className="absolute bottom-full right-1/2 translate-x-[20%] mb-2 w-max max-w-[260px] p-3 bg-slate-800 dark:bg-zinc-700 text-white text-[11px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words">
-                                <p className="mb-1 text-emerald-300">Hệ thống sẽ tự động bật chế độ này nếu file có màu pha (Spot Color/Pantone).</p>
-                                <p className="mb-1 opacity-90"><strong className="text-white">Mặc định:</strong> Tách 4 màu CMYK tiêu chuẩn (tốc độ siêu tốc).</p>
-                                <p className="opacity-90"><strong className="text-white">Chuyên sâu:</strong> Giả lập máy RIP thực tế, bóc chính xác từng màu pha và xử lý các hiệu ứng in chồng (Overprint/Transparency) phức tạp. Tốc độ sẽ chậm hơn.</p>
+                                <p className="mb-1 text-emerald-300">{t('tabs.outputPreview:he_thong_se_tu_dong_bat_che_do_nay_neu')}</p>
+                                <p className="mb-1 opacity-90"><strong className="text-white">{t('tabs.outputPreview:mac_dinh')}</strong> {t('tabs.outputPreview:tach_4_mau_cmyk_tieu_chuan_toc_do_sieu')}</p>
+                                <p className="opacity-90"><strong className="text-white">{t('tabs.outputPreview:chuyen_sau')}</strong> {t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}</p>
                                 <div className="absolute top-full right-[20%] translate-x-1/2 w-2 h-2 bg-slate-800 dark:bg-zinc-700 transform rotate-45 -mt-1"></div>
                             </div>
                         </div>
@@ -561,9 +563,9 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                         className="w-full px-3 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[12px] font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                     >
                         {convertingSpot === '__all__' ? (
-                            <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang chuyển...</>
+                            <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('tabs.outputPreview:dang_chuyen')}</>
                         ) : (
-                            <>🎨 Chuyển tất cả Spot → CMYK</>
+                            <>{t('tabs.outputPreview:chuyen_tat_ca_spot_cmyk')}</>
                         )}
                     </button>
                 )}
@@ -571,24 +573,24 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 {/* ─── Page Info ─── */}
                 <div className="bg-slate-50 dark:bg-zinc-800/50 rounded-lg border border-slate-100 dark:border-zinc-800" style={{ padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
                     <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500">Tổng bản kẽm:</span>
+                        <span className="text-[11px] text-slate-500">{t('tabs.outputPreview:tong_ban_kem')}</span>
                         <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300">
                             {plateList.length} ({plateList.filter(p => !PROCESS_NAMES.has(p.name)).length} Spot)
                         </span>
                     </div>
                     <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500">Trong suốt:</span>
+                        <span className="text-[11px] text-slate-500">{t('tabs.outputPreview:trong_suot')}</span>
                         <span className={`text-[11px] font-semibold ${pageHasTransparency ? 'text-amber-600' : 'text-slate-600'}`}>
-                            {pageHasTransparency ? 'Có' : 'Không'}
+                            {pageHasTransparency ? t('tabs.outputPreview:co') : t('tabs.outputPreview:khong')}
                         </span>
                     </div>
                     <div className="flex items-center justify-between">
-                        <span className="text-[11px] text-slate-500">Hệ màu hoà trộn:</span>
+                        <span className="text-[11px] text-slate-500">{t('tabs.outputPreview:he_mau_hoa_tron')}</span>
                         <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300">{blendingColorSpace}</span>
                     </div>
                     {detectedSpots.length > 0 && (
                         <div className="flex items-start justify-between mt-1 pt-1 border-t border-slate-200 dark:border-zinc-700">
-                            <span className="text-[11px] text-slate-500">Màu Spot:</span>
+                            <span className="text-[11px] text-slate-500">{t('tabs.outputPreview:mau_spot')}</span>
                             <div className="flex flex-wrap gap-1 justify-end max-w-[200px]">
                                 {detectedSpots.map(s => (
                                     <span key={s} className="text-[9px] px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded font-medium">{s}</span>
@@ -616,6 +618,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
 }
 
 function OverprintPreviewToggle({ fileId, pageNum }: { fileId: string; pageNum: number }) {
+  const { t } = useTranslation();
     const [active, setActive] = useState(false);
     const [loading, setLoading] = useState(false);
     const [diffCount, setDiffCount] = useState<number | null>(null);
@@ -649,7 +652,7 @@ function OverprintPreviewToggle({ fileId, pageNum }: { fileId: string; pageNum: 
                     setOverprintPreviewUrl(null);
                 }
             } else {
-                setError(data.error || 'Lỗi không xác định');
+                setError(data.error || t('tabs.outputPreview:loi_khong_xac_dinh'));
             }
         } catch (e: any) {
             setError(e.message);
@@ -677,9 +680,9 @@ function OverprintPreviewToggle({ fileId, pageNum }: { fileId: string; pageNum: 
                 }`}
             >
                 {loading ? (
-                    <><div className="w-3.5 h-3.5 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin" /> Đang phân tích...</>
+                    <><div className="w-3.5 h-3.5 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin" /> {t('tabs.outputPreview:dang_phan_tich')}</>
                 ) : active ? (
-                    <>🔲 Tắt Overprint Preview</>
+                    <>{t('tabs.outputPreview:tat_overprint_preview')}</>
                 ) : (
                     <>🔲 Overprint Preview</>
                 )}
@@ -692,7 +695,7 @@ function OverprintPreviewToggle({ fileId, pageNum }: { fileId: string; pageNum: 
                 }`}>
                     {diffCount > 0
                         ? `⚠️ Phát hiện ${diffCount.toLocaleString()} pixel thay đổi khi bật Overprint`
-                        : '✅ Không có sự khác biệt — file không bị ảnh hưởng bởi Overprint'}
+                        : t('tabs.outputPreview:khong_co_su_khac_biet_file_khong_bi_anh')}
                 </div>
             )}
             {error && <div className="text-[10px] text-red-500 px-2">{error}</div>}

@@ -1,5 +1,6 @@
 import React from 'react';
 import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput } from './ToolUI';
+import { useTranslation } from 'react-i18next';
 
 export interface BgRemoverOptionsState {
     aiEngine: 'fast' | 'general' | 'hair';
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export default function BgRemoverOptions({ options, onChange }: Props) {
+  const { t } = useTranslation();
     const update = (key: keyof BgRemoverOptionsState, val: any) => {
         onChange({ ...options, [key]: val });
     };
@@ -23,23 +25,23 @@ export default function BgRemoverOptions({ options, onChange }: Props) {
         <div className="flex flex-col gap-4 mt-2">
             {/* AI Engine Selection */}
             <div>
-                <ToolSectionLabel>Mô hình Phân tích</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.bgRemoverOptions:mo_hinh_phan_tich')}</ToolSectionLabel>
                 <div className="grid grid-cols-1 gap-1.5">
                     <ToolCardOption
-                        label="Chất lượng cao (Khuyên dùng)"
-                        desc="Viền sắc nét, bám chi tiết tốt. Cân bằng đẹp/nhanh (~vài giây). Dùng cho hầu hết sản phẩm, tem, người, vật thể."
+                        label={t('preprocess.bgRemoverOptions:chat_luong_cao_khuyen_dung')}
+                        desc={t('preprocess.bgRemoverOptions:vien_sac_net_bam_chi_tiet_tot_can_bang')}
                         selected={options.aiEngine === 'general'}
                         onClick={() => update('aiEngine', 'general')}
                     />
                     <ToolCardOption
-                        label="Nhanh (xử lý hàng loạt)"
-                        desc="Tách gần như tức thì, nhẹ. Chất lượng khá — hợp khi cần nhanh nhiều ảnh hoặc nền đơn giản."
+                        label={t('preprocess.bgRemoverOptions:nhanh_xu_ly_hang_loat')}
+                        desc={t('preprocess.bgRemoverOptions:tach_gan_nhu_tuc_thi_nhe_chat_luong_kha')}
                         selected={options.aiEngine === 'fast'}
                         onClick={() => update('aiEngine', 'fast')}
                     />
                     <ToolCardOption
-                        label="Tối đa — Lông, Tóc & Kính"
-                        desc="Chất lượng cao nhất cho tóc rối, lông thú, lưới, kính bán trong suốt. CHẬM (GPU yếu sẽ chạy CPU, có thể ~10–15s/ảnh)."
+                        label={t('preprocess.bgRemoverOptions:toi_da_long_toc_kinh')}
+                        desc={t('preprocess.bgRemoverOptions:chat_luong_cao_nhat_cho_toc_roi_long')}
                         selected={options.aiEngine === 'hair'}
                         onClick={() => update('aiEngine', 'hair')}
                     />
@@ -49,7 +51,7 @@ export default function BgRemoverOptions({ options, onChange }: Props) {
             {/* Edge Shift */}
             <div>
                 <div className="flex justify-between items-end mb-1">
-                    <ToolSectionLabel>Khử viền rác (Edge Shift)</ToolSectionLabel>
+                    <ToolSectionLabel>{t('preprocess.bgRemoverOptions:khu_vien_rac_edge_shift')}</ToolSectionLabel>
                 </div>
                 <div className="flex items-center gap-3">
                     <input 
@@ -64,16 +66,16 @@ export default function BgRemoverOptions({ options, onChange }: Props) {
                     </div>
                 </div>
                 <p className="text-[10px] text-slate-400 mt-1.5">
-                    Kéo âm (-) để ăn lẹm vào trong, cắt bỏ viền trắng mờ rác bao quanh chủ thể. Kéo dương (+) để mở rộng vùng chọn.
+                    {t('preprocess.bgRemoverOptions:keo_am_de_an_lem_vao_trong_cat_bo_vien')}
                 </p>
             </div>
 
             {/* Auto Crop */}
             <div>
-                <ToolSectionLabel>Tùy chọn Khung ảnh</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.bgRemoverOptions:tuy_chon_khung_anh')}</ToolSectionLabel>
                 <ToolCheckboxOption
-                    label="Tự động cắt cúp (Auto-Crop)"
-                    desc="Phần mềm tự động xén bỏ tất cả các khoảng trống vô ích xung quanh chủ thể. Rất tiện để dồn file bình bài N-Up giúp tiết kiệm giấy."
+                    label={t('preprocess.bgRemoverOptions:tu_dong_cat_cup_auto_crop')}
+                    desc={t('preprocess.bgRemoverOptions:phan_mem_tu_dong_xen_bo_tat_ca_cac')}
                     selected={options.autoCrop}
                     onClick={() => update('autoCrop', !options.autoCrop)}
                 />

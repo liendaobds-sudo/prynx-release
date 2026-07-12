@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
+import { useTranslation } from 'react-i18next';
 
 export interface ConfirmOptions {
   title?: string;
@@ -46,6 +47,7 @@ export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
  * Mount 1 lần ở App root để confirmDialog() hoạt động ở mọi nơi.
  */
 export function ConfirmDialogHost() {
+  const { t } = useTranslation();
   const open = useConfirmStore((s) => s.open);
   const options = useConfirmStore((s) => s.options);
   const close = useConfirmStore((s) => s.close);
@@ -99,7 +101,7 @@ export function ConfirmDialogHost() {
             onClick={() => close(false)}
             className="px-6 py-2.5 min-w-[100px] text-[15px] font-semibold rounded bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 transition-colors focus:outline-none"
           >
-            {options.cancelText || 'Hủy bỏ'}
+            {options.cancelText || t('misc.confirmDialog:huy_bo')}
           </button>
           <button
             ref={confirmBtnRef}
@@ -108,7 +110,7 @@ export function ConfirmDialogHost() {
               danger ? 'bg-rose-500 hover:bg-rose-600' : 'bg-indigo-500 hover:bg-indigo-600'
             }`}
           >
-            {options.confirmText || 'Xác nhận'}
+            {options.confirmText || t('misc.confirmDialog:xac_nhan')}
           </button>
         </div>
       </div>

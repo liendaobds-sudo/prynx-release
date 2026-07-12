@@ -14,6 +14,7 @@ import { opBaseLabel, summarizeParams } from '../../lib/recipe/recipeOps';
 import type { Recipe, RecipeStep } from '../../lib/recipe/recipeTypes';
 import { toast } from '../ui/Toast';
 import { confirmDialog } from '../ui/confirmDialog';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
     open: boolean;
@@ -62,6 +63,7 @@ function paramLabel(name: string): string {
 
 // ── Ô sửa 1 tham số (suy kiểu theo giá trị). Object/Array → JSON textarea. ──
 function ParamField({ name, value, onChange }: { name: string; value: unknown; onChange: (v: unknown) => void }) {
+  const { t } = useTranslation();
     const [jsonText, setJsonText] = useState('');
     const [jsonErr, setJsonErr] = useState(false);
 
@@ -107,12 +109,13 @@ function ParamField({ name, value, onChange }: { name: string; value: unknown; o
                 }}
                 rows={2}
                 className={`flex-1 px-1.5 py-1 rounded border bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100 font-mono ${jsonErr ? 'border-rose-500' : 'border-slate-300 dark:border-zinc-600'}`}
-                title={jsonErr ? 'JSON không hợp lệ — sửa lại' : 'JSON'} />
+                title={jsonErr ? t('recipe.recipe:json_khong_hop_le_sua_lai') : 'JSON'} />
         </div>
     );
 }
 
 export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, hasFile }: Props) {
+  const { t } = useTranslation();
     const [recipes, setRecipes] = useState<Recipe[]>([]);
     const [loading, setLoading] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -135,7 +138,7 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
     const updateSteps = (r: Recipe, newSteps: RecipeStep[]) => {
         const updated: Recipe = { ...r, steps: newSteps, updatedAt: new Date().toISOString() };
         setRecipes(prev => prev.map(x => x.id === r.id ? updated : x));
-        saveRecipe(updated).catch(() => toast.error('Lưu thay đổi thất bại.'));
+        saveRecipe(updated).catch(() => toast.error(t('recipe.recipe:luu_thay_doi_that_bai')));
     };
 
     const moveStep = (r: Recipe, i: number, dir: -1 | 1) => {
@@ -162,7 +165,7 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
         }));
 
     const handlePlay = async (r: Recipe) => {
-        if (!hasFile) { toast.error('Hãy mở một file PDF trước khi phát lại.'); return; }
+        if (!hasFile) { toast.error(t('recipe.recipe:hay_mo_mot_file_pdf_truoc_khi_phat_lai')); return; }
         setPlayingId(r.id);
         try { await onPlay(r); }
         finally { setPlayingId(null); }
@@ -172,7 +175,7 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
         const ok = await confirmDialog({ message: `Xóa quy trình "${r.name}"?`, danger: true });
         if (!ok) return;
         await deleteRecipe(r.id);
-        toast.success('Đã xóa quy trình.');
+        toast.success(t('recipe.recipe:da_xoa_quy_trinh'));
         refresh();
     };
 
@@ -190,7 +193,7 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
         if (!file) return;
         const imported = await importRecipeFromFile(file);
         if (imported) { toast.success(`Đã nhập quy trình "${imported.name}".`); refresh(); }
-        else toast.error('File quy trình không hợp lệ.');
+        else toast.error(t('recipe.recipe:file_quy_trinh_khong_hop_le'));
     };
 
     return createPortal(
@@ -200,13 +203,13 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
                 onClick={e => e.stopPropagation()}
             >
                 <div className="flex items-center justify-between px-4 py-3 border-b border-black/5 dark:border-white/10">
-                    <h3 className="text-sm font-semibold text-slate-800 dark:text-zinc-100">Quy trình đã lưu</h3>
+                    <h3 className="text-sm font-semibold text-slate-800 dark:text-zinc-100">{t('recipe.recipe:quy_trinh_da_luu')}</h3>
                     <div className="flex items-center gap-1">
-                        <label className="w-7 h-7 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-500 dark:text-zinc-400 rounded cursor-pointer transition-colors" title="Nhập quy trình từ file">
+                        <label className="w-7 h-7 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-500 dark:text-zinc-400 rounded cursor-pointer transition-colors" title={t('recipe.recipe:nhap_quy_trinh_tu_file')}>
                             <Upload className="w-4 h-4" />
                             <input type="file" accept="application/json,.json" className="hidden" onChange={handleImport} />
                         </label>
-                        <button onClick={onClose} className="w-7 h-7 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 rounded transition-colors" aria-label="Đóng">
+                        <button onClick={onClose} className="w-7 h-7 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 rounded transition-colors" aria-label={t('recipe.recipe:dong')}>
                             <X className="w-4 h-4" />
                         </button>
                     </div>
@@ -214,11 +217,11 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
 
                 <div className="flex-1 overflow-y-auto scroller-thin p-3 space-y-2">
                     {loading ? (
-                        <div className="text-center text-[12px] text-slate-400 py-8">Đang tải...</div>
+                        <div className="text-center text-[12px] text-slate-400 py-8">{t('recipe.recipe:dang_tai')}</div>
                     ) : recipes.length === 0 ? (
                         <div className="text-center text-[12px] text-slate-400 dark:text-zinc-500 py-10">
-                            Chưa có quy trình nào.<br />
-                            Bấm <span className="text-rose-500 font-medium">Ghi quy trình</span> trên thanh công cụ để tạo.
+                            {t('recipe.recipe:chua_co_quy_trinh_nao')}<br />
+                            {t('recipe.recipe:bam')} <span className="text-rose-500 font-medium">{t('recipe.recipe:ghi_quy_trinh')}</span> {t('recipe.recipe:tren_thanh_cong_cu_de_tao')}
                         </div>
                     ) : (
                         recipes.map(r => {
@@ -237,7 +240,7 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
                                                         onKeyDown={e => { if (e.key === 'Enter') handleRename(r); if (e.key === 'Escape') setEditingId(null); }}
                                                         className="flex-1 px-2 py-1 text-[13px] rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 text-slate-800 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                                                     />
-                                                    <button onClick={() => handleRename(r)} className="w-6 h-6 flex items-center justify-center text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded" aria-label="Lưu tên">
+                                                    <button onClick={() => handleRename(r)} className="w-6 h-6 flex items-center justify-center text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded" aria-label={t('recipe.recipe:luu_ten')}>
                                                         <Check className="w-3.5 h-3.5" />
                                                     </button>
                                                 </div>
@@ -245,8 +248,8 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
                                                 <div className="flex items-center gap-1.5">
                                                     <span className="text-[13px] font-medium text-slate-800 dark:text-zinc-100 truncate">{r.name}</span>
                                                     {matchesPage && (
-                                                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400" title="Khớp số trang file đang mở">
-                                                            phù hợp
+                                                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400" title={t('recipe.recipe:khop_so_trang_file_dang_mo')}>
+                                                            {t('recipe.recipe:phu_hop')}
                                                         </span>
                                                     )}
                                                 </div>
@@ -262,18 +265,18 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
                                                 onClick={() => handlePlay(r)}
                                                 disabled={playingId !== null}
                                                 className="h-7 px-2 flex items-center gap-1 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-medium transition-colors disabled:opacity-60"
-                                                title="Phát lại quy trình trên file đang mở"
+                                                title={t('recipe.recipe:phat_lai_quy_trinh_tren_file_dang_mo')}
                                             >
                                                 <Play className="w-3 h-3 fill-current" />
-                                                {playingId === r.id ? 'Đang chạy...' : 'Phát lại'}
+                                                {playingId === r.id ? t('recipe.recipe:dang_chay') : t('recipe.recipe:phat_lai')}
                                             </button>
-                                            <button onClick={() => { setEditingId(r.id); setEditName(r.name); }} className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-700 rounded transition-colors" title="Sửa tên" aria-label="Sửa tên">
+                                            <button onClick={() => { setEditingId(r.id); setEditName(r.name); }} className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-700 rounded transition-colors" title={t('recipe.recipe:sua_ten')} aria-label={t('recipe.recipe:sua_ten')}>
                                                 <Pencil className="w-3.5 h-3.5" />
                                             </button>
-                                            <button onClick={() => exportRecipeAsFile(r)} className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-700 rounded transition-colors" title="Xuất file" aria-label="Xuất file">
+                                            <button onClick={() => exportRecipeAsFile(r)} className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-700 rounded transition-colors" title={t('recipe.recipe:xuat_file')} aria-label={t('recipe.recipe:xuat_file')}>
                                                 <Download className="w-3.5 h-3.5" />
                                             </button>
-                                            <button onClick={() => handleDelete(r)} className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded transition-colors" title="Xóa" aria-label="Xóa">
+                                            <button onClick={() => handleDelete(r)} className="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded transition-colors" title={t('recipe.recipe:xoa')} aria-label={t('recipe.recipe:xoa')}>
                                                 <Trash2 className="w-3.5 h-3.5" />
                                             </button>
                                         </div>
@@ -291,7 +294,7 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
                                                         <button
                                                             onClick={() => setExpandedStep(isOpen ? null : key)}
                                                             className="w-4 h-4 flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200"
-                                                            title={isOpen ? 'Thu gọn' : 'Xem / sửa tham số'}
+                                                            title={isOpen ? t('recipe.recipe:thu_gon') : t('recipe.recipe:xem_sua_tham_so')}
                                                         >
                                                             {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                                                         </button>
@@ -299,25 +302,25 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
                                                         <span className={`flex-1 truncate ${s.recordable ? 'text-slate-600 dark:text-zinc-300' : 'text-slate-400 dark:text-zinc-500 line-through'}`}>
                                                             {s.label}
                                                         </span>
-                                                        {!playable && <span className="shrink-0 text-[10px] text-amber-500">bỏ qua</span>}
+                                                        {!playable && <span className="shrink-0 text-[10px] text-amber-500">{t('recipe.recipe:bo_qua')}</span>}
                                                         <div className="flex items-center gap-0.5 shrink-0">
-                                                            <button onClick={() => toggleStep(r, i)} className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-indigo-600 rounded" title={s.recordable ? 'Tắt phát lại bước này' : 'Bật phát lại bước này'}>
+                                                            <button onClick={() => toggleStep(r, i)} className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-indigo-600 rounded" title={s.recordable ? t('recipe.recipe:tat_phat_lai_buoc_nay') : t('recipe.recipe:bat_phat_lai_buoc_nay')}>
                                                                 {s.recordable ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
                                                             </button>
-                                                            <button onClick={() => moveStep(r, i, -1)} disabled={i === 0} className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-indigo-600 rounded disabled:opacity-30" title="Lên"><ArrowUp className="w-3 h-3" /></button>
-                                                            <button onClick={() => moveStep(r, i, 1)} disabled={i === r.steps.length - 1} className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-indigo-600 rounded disabled:opacity-30" title="Xuống"><ArrowDown className="w-3 h-3" /></button>
-                                                            <button onClick={() => removeStep(r, i)} className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-rose-600 rounded" title="Xóa bước"><Trash2 className="w-3 h-3" /></button>
+                                                            <button onClick={() => moveStep(r, i, -1)} disabled={i === 0} className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-indigo-600 rounded disabled:opacity-30" title={t('recipe.recipe:len')}><ArrowUp className="w-3 h-3" /></button>
+                                                            <button onClick={() => moveStep(r, i, 1)} disabled={i === r.steps.length - 1} className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-indigo-600 rounded disabled:opacity-30" title={t('recipe.recipe:xuong')}><ArrowDown className="w-3 h-3" /></button>
+                                                            <button onClick={() => removeStep(r, i)} className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-rose-600 rounded" title={t('recipe.recipe:xoa_buoc')}><Trash2 className="w-3 h-3" /></button>
                                                         </div>
                                                     </div>
                                                     {isOpen && (
                                                         <div className="ml-6 mr-1 mb-1 mt-0.5 p-2 rounded bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 space-y-1.5">
                                                             {paramKeys.length === 0 ? (
-                                                                <div className="text-[11px] text-slate-400">Bước này không có tham số.</div>
+                                                                <div className="text-[11px] text-slate-400">{t('recipe.recipe:buoc_nay_khong_co_tham_so')}</div>
                                                             ) : paramKeys.map(k => (
                                                                 <ParamField key={k} name={k} value={(s.params as any)[k]}
                                                                     onChange={(v) => setParam(r, i, k, v)} />
                                                             ))}
-                                                            <p className="text-[10px] text-slate-400 pt-1">Sửa tham số nâng cao — nhập sai có thể khiến bước phát lại lỗi.</p>
+                                                            <p className="text-[10px] text-slate-400 pt-1">{t('recipe.recipe:sua_tham_so_nang_cao_nhap_sai_co_the')}</p>
                                                         </div>
                                                     )}
                                                 </li>

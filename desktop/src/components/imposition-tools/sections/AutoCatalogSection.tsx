@@ -10,8 +10,10 @@ import React from 'react';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { Checkbox } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
+import { useTranslation } from 'react-i18next';
 
 export default function AutoCatalogSection() {
+  const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
         taskMode: state.taskMode,
         paperClassification: state.paperClassification, setPaperClassification: state.setPaperClassification,
@@ -64,45 +66,45 @@ export default function AutoCatalogSection() {
                     <Checkbox 
                         checked={s.autoCatalog} 
                         onChange={s.setAutoCatalog} 
-                        label="📋 Tự động chia kẽm (Auto Catalog)" 
+                        label={t('imposition.autoCatalog:tu_dong_chia_kem_auto_catalog')} 
                     />
                     {s.autoCatalog && (
                         <div className="mt-2 ml-6 space-y-3">
                             <div className="flex flex-col gap-1 mt-1">
-                                <label className="text-[10px] font-bold text-slate-500 uppercase">Loại Bìa Catalog</label>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase">{t('imposition.autoCatalog:loai_bia_catalog')}</label>
                                 <select 
                                     value={s.catalogHasCover ? 'different' : 'same'}
                                     onChange={(e) => s.setCatalogHasCover(e.target.value === 'different')}
                                     className="h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-xs focus:outline-none focus:border-purple-500"
                                 >
-                                    <option value="different">Bìa Khác Chất Liệu (Bóc 4 trang bìa ra kẽm riêng)</option>
-                                    <option value="same">Bìa Cùng Chất Liệu (Dàn chung với ruột cuốn)</option>
+                                    <option value="different">{t('imposition.autoCatalog:bia_khac_chat_lieu_boc_4_trang_bia_ra')}</option>
+                                    <option value="same">{t('imposition.autoCatalog:bia_cung_chat_lieu_dan_chung_voi_ruot')}</option>
                                 </select>
                             </div>
                             <div className="flex flex-col gap-1 mt-2">
-                                <label className="text-[10px] font-bold text-slate-500 uppercase">Khóa Tay Sách (Ưu tiên)</label>
+                                <label className="text-[10px] font-bold text-slate-500 uppercase">{t('imposition.autoCatalog:khoa_tay_sach_uu_tien')}</label>
                                 <select 
                                     value={s.catalogMasterSigOverride}
                                     onChange={(e) => s.setCatalogMasterSigOverride(e.target.value as any)}
                                     className="h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-xs focus:outline-none focus:border-purple-500"
                                 >
-                                    <option value="auto">Tự động tối ưu (Đề xuất)</option>
-                                    <option value="16">Ép dùng Tay 16 Trang (Bình 8 con/mặt)</option>
-                                    <option value="8">Ép dùng Tay 8 Trang (Bình 4 con/mặt)</option>
-                                    <option value="4">Ép dùng Tay 4 Trang (Bình 2 con/mặt)</option>
+                                    <option value="auto">{t('imposition.autoCatalog:tu_dong_toi_uu_de_xuat')}</option>
+                                    <option value="16">{t('imposition.autoCatalog:ep_dung_tay_16_trang_binh_8_con_mat')}</option>
+                                    <option value="8">{t('imposition.autoCatalog:ep_dung_tay_8_trang_binh_4_con_mat')}</option>
+                                    <option value="4">{t('imposition.autoCatalog:ep_dung_tay_4_trang_binh_2_con_mat')}</option>
                                 </select>
                             </div>
 
                             {s.signatureMode === 'saddle' && (
                                 <div className="flex flex-col gap-1 mt-2">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase">Vị trí tay dư (Ghép lồng)</label>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase">{t('imposition.autoCatalog:vi_tri_tay_du_ghep_long')}</label>
                                     <select 
                                         value={s.catalogRemainderPlacement}
                                         onChange={(e) => s.setCatalogRemainderPlacement(e.target.value as any)}
                                         className="h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-xs focus:outline-none focus:border-purple-500"
                                     >
-                                        <option value="outside">Tay bù bọc ngoài (Sát bìa nhựa)</option>
-                                        <option value="inside">Tay bù nhét lõi (Sát kim lược)</option>
+                                        <option value="outside">{t('imposition.autoCatalog:tay_bu_boc_ngoai_sat_bia_nhua')}</option>
+                                        <option value="inside">{t('imposition.autoCatalog:tay_bu_nhet_loi_sat_kim_luoc')}</option>
                                     </select>
                                 </div>
                             )}
@@ -118,7 +120,7 @@ export default function AutoCatalogSection() {
                                             ✓ Tay tối ưu: {s.optimalData.recommended.label} (Hiệu suất: {s.optimalData.recommended.sheetUtilization}%)
                                         </div>
                                     ) : (
-                                        <div className="text-red-500 font-bold">❌ Không tìm thấy tay in phù hợp với khổ giấy này.</div>
+                                        <div className="text-red-500 font-bold">{t('imposition.autoCatalog:khong_tim_thay_tay_in_phu_hop_voi_kho')}</div>
                                     )}
                                 </div>
                             )}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getSystemFonts } from '@/lib/api';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { useTranslation } from 'react-i18next';
 
 interface FontSelectorProps {
     value: string;
@@ -9,6 +10,7 @@ interface FontSelectorProps {
 }
 
 export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) => {
+  const { t } = useTranslation();
     const [systemFonts, setSystemFonts] = useState<{name: string, path: string}[]>([]);
     const [fontSearch, setFontSearch] = useState('');
     const [isOpen, setIsOpen] = useState(false);
@@ -62,7 +64,7 @@ export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) =
                     setFontSearch('');
                     setIsOpen(true);
                 }}
-                placeholder="Gõ để tìm Font..."
+                placeholder={t('preprocess.fontSelector:go_de_tim_font')}
                 className="w-full h-8 px-2 text-[12px] font-semibold bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-indigo-500 transition-all"
             />
             {isOpen && (
@@ -100,7 +102,7 @@ export const FontSelector = ({ value, fontFile, onChange }: FontSelectorProps) =
                         );
                     })}
                     {filteredFonts.length === 0 && (
-                        <div className="px-3 py-2 text-xs text-slate-500 italic text-center">Không tìm thấy font</div>
+                        <div className="px-3 py-2 text-xs text-slate-500 italic text-center">{t('preprocess.fontSelector:khong_tim_thay_font')}</div>
                     )}
                 </div>
             )}

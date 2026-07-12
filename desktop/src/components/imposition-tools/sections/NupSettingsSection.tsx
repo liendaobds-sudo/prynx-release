@@ -9,8 +9,10 @@ import React from 'react';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { RichSelect } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
+import { useTranslation } from 'react-i18next';
 
 export default function NupSettingsSection({ activeTool }: { activeTool: string }) {
+  const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
         taskMode: state.taskMode, setTaskMode: state.setTaskMode,
         layoutType: state.layoutType, setLayoutType: state.setLayoutType,
@@ -24,7 +26,7 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                 {/* Layout Type */}
                 {activeTool !== 'sticker_imposer' && (
                     <div className="flex flex-col gap-2">
-                        <label className="text-[11px] font-bold text-slate-600 tracking-wide block -mb-0.5">CÁCH THỨC RÁP THÀNH PHẨM</label>
+                        <label className="text-[11px] font-bold text-slate-600 tracking-wide block -mb-0.5">{t('imposition.nupSettings:cach_thuc_rap_thanh_pham')}</label>
                         <RichSelect
                             value={s.layoutType}
                             onChange={(v) => {
@@ -34,9 +36,9 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                                 }
                             }}
                             options={[
-                                { value: 'sequential', title: 'Xếp lần lượt', desc: '1 mặt: trang 1,2,3… liên tiếp theo SL. 2 mặt: mỗi SP = cặp trang trước/sau cùng ô; tờ lẻ lật gương canh mặt sau (số trang chẵn).' },
-                                { value: 'cut_stacks', title: 'Xếp chồng', desc: 'Xén cọc rồi úp đúng thứ tự trang (1 mặt). Không dùng với 2 mặt.' },
-                                { value: 'ratio_stack', title: 'Chia tỷ lệ + xếp chồng', desc: 'Nhiều mẫu cùng cỡ, SL khác nhau; mọi tờ giống hệt. 1 mặt: 1 tờ mẫu. 2 mặt: mỗi mẫu = cặp trang trước/sau (SL theo trang lẻ 1,3,5…), số trang chẵn.' }
+                                { value: 'sequential', title: t('imposition.nupSettings:xep_lan_luot'), desc: t('imposition.nupSettings:1_mat_trang_1_2_3_lien_tiep_theo_sl_2') },
+                                { value: 'cut_stacks', title: t('imposition.nupSettings:xep_chong'), desc: 'Xén cọc rồi úp đúng thứ tự trang (1 mặt). Không dùng với 2 mặt.' },
+                                { value: 'ratio_stack', title: t('imposition.nupSettings:chia_ty_le_xep_chong'), desc: t('imposition.nupSettings:nhieu_mau_cung_co_sl_khac_nhau_moi_to') }
                             ]}
                         />
                     </div>
@@ -45,7 +47,7 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                 {activeTool !== 'sticker_imposer' && (
                     <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-3">
-                            <label className="text-[11px] font-bold text-slate-600 tracking-wide shrink-0 w-[65px]">SỐ MẶT</label>
+                            <label className="text-[11px] font-bold text-slate-600 tracking-wide shrink-0 w-[65px]">{t('imposition.nupSettings:so_mat')}</label>
                             <select
                                 value={s.duplexFlow}
                                 onChange={(e) => {
@@ -59,8 +61,8 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                                 }}
                                 className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                             >
-                                <option value="normal">1 Mặt</option>
-                                <option value="double">2 Mặt</option>
+                                <option value="normal">{t('imposition.nupSettings:1_mat')}</option>
+                                <option value="double">{t('imposition.nupSettings:2_mat')}</option>
                             </select>
                         </div>
                     </div>
@@ -75,13 +77,13 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
             <div className="flex flex-col gap-5 animate-in fade-in duration-200 relative z-[60]">
                 {activeTool !== 'sticker_imposer' && (
                     <div className="flex items-center gap-3">
-                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[65px]">SỐ MẶT</label>
+                        <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[65px]">{t('imposition.nupSettings:so_mat')}</label>
                         <select
                             value={s.duplexFlow} onChange={(e) => s.setDuplexFlow(e.target.value as 'normal' | 'double')}
                             className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
                         >
-                            <option value="normal">1 Mặt</option>
-                            <option value="double">2 Mặt</option>
+                            <option value="normal">{t('imposition.nupSettings:1_mat')}</option>
+                            <option value="double">{t('imposition.nupSettings:2_mat')}</option>
                         </select>
                     </div>
                 )}

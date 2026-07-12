@@ -44,9 +44,11 @@ export { PREDEFINED_SIZES } from './types';
 
 import type { ImpositionPreset } from '../../lib/presetManager';
 import { toast } from '../ui/Toast';
+import { useTranslation } from 'react-i18next';
 
 
 export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, getWorkingFile }: ImposerDashboardProps) {
+  const { t } = useTranslation();
 
     // ═══ Workspace State ═══
     const {
@@ -135,7 +137,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const { savedForms, handleSavePreset: _savePreset, handleUpdatePreset: _updatePreset, handleDeletePreset: _deletePreset } = usePaperPresets('printauto_saved_forms');
 
     const handleSavePreset = useCallback((name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number, usages: PaperUsage[] = ['in_nhanh']) => {
-        if (savedForms.some(f => f.name === name)) { toast.error('Tên "' + name + '" đã tồn tại.'); return; }
+        if (savedForms.some(f => f.name === name)) { toast.error(t('imposition.imposerDashboard:ten') + name + t('imposition.imposerDashboard:da_ton_tai')); return; }
         const newId = _savePreset(name, w, h, mT, mB, mL, mR, mMode, classification, gripper, usages);
         s.setFormsize(newId);
         s.setCustomSheetWidth(w); s.setCustomSheetHeight(h);
@@ -354,7 +356,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     if (Array.isArray(data.perPage)) {
                         const failed = data.perPage.filter((p: any) => p && p.ok === false);
                         if (failed.length > 0) {
-                            console.warn('[detect-shape] trang lỗi/CUSTOM:', failed);
+                            console.warn(t('imposition.imposerDashboard:detect_shape_trang_loi_custom'), failed);
                         }
                     }
                 }
@@ -516,7 +518,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     s.setCatalogJobsState(planRes.jobs);
                 });
             } else {
-                s.setCatalogPreview('--- Lỗi: Khổ giấy quá bé ---');
+                s.setCatalogPreview(t('imposition.imposerDashboard:loi_kho_giay_qua_be'));
                 s.setCatalogJobsState(null);
             }
         });
@@ -597,7 +599,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 const _lt = s.taskMode === 'step_repeat' ? 'repeat' : s.layoutType;
                 if (_lt === 'cut_stacks') {
                     toast.error(
-                        `Chế độ «Xếp chồng» chưa hỗ trợ 2 mặt. Chọn 1 Mặt, hoặc dùng Xếp lần lượt / Chia tỷ lệ / Bình trang.`,
+                        t('imposition.imposerDashboard:che_do_xep_chong_chua_ho_tro_2_mat_chon'),
                     );
                     return;
                 }
@@ -645,7 +647,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             if ((activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer') && s.savePrint.autoSave && !autoFolder) {
                 try {
                     const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
-                    const dir = await openDialog({ directory: true, multiple: false, title: 'Đã bật Tự động lưu — chọn thư mục lưu file in' });
+                    const dir = await openDialog({ directory: true, multiple: false, title: t('imposition.imposerDashboard:da_bat_tu_dong_luu_chon_thu_muc_luu') });
                     if (typeof dir === 'string') { autoFolder = dir; s.setSavePrint({ lastFolder: dir }); }
                 } catch { /* ignore */ }
             }
@@ -779,8 +781,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             <div className={`space-y-1 transition-opacity ${showPaperSection ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
 
                 <div className="flex items-center gap-3">
-                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]" title="Khổ giấy (Paper)">
-                        KHỔ GIẤY
+                    <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]" title={t('imposition.imposerDashboard:kho_giay_paper')}>
+                        {t('imposition.imposerDashboard:kho_giay')}
                     </label>
                     <div className="flex flex-1 items-center gap-2 min-w-0">
                         <select value={s.formsize} onChange={(e) => s.setFormsize(e.target.value)}
@@ -792,19 +794,19 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                         ? 'nup'
                                         : (s.paperClassification as PaperUsage);
                                 const savedLabel = paperContext === 'nup'
-                                    ? 'Khổ Đã Lưu (Bình bài xén)'
+                                    ? t('imposition.imposerDashboard:kho_da_luu_binh_bai_xen')
                                     : paperContext === 'diecut'
-                                        ? 'Khổ Đã Lưu (Bế tem)'
+                                        ? t('imposition.imposerDashboard:kho_da_luu_be_tem')
                                         : paperContext === 'offset'
-                                            ? 'Khổ Đã Lưu (In Offset)'
-                                            : 'Khổ Đã Lưu (In Nhanh)';
+                                            ? t('imposition.imposerDashboard:kho_da_luu_in_offset')
+                                            : t('imposition.imposerDashboard:kho_da_luu_in_nhanh');
                                 const matchedForms = savedForms.filter(f => formUsages(f).includes(paperContext));
                                 return (
                                     <>
                                         {(paperContext === 'in_nhanh' || paperContext === 'nup') && (
-                                            <optgroup label="Khổ Mặc Định (In Nhanh)">
+                                            <optgroup label={t('imposition.imposerDashboard:kho_mac_dinh_in_nhanh')}>
                                                 <option value="A4">A4 (210 x 297 mm)</option><option value="A3">A3 (297 x 420 mm)</option>
-                                                <option value="SRA3">SRA3 (320 x 450 mm)</option><option value="B">Khổ B (320 x 430 mm)</option>
+                                                <option value="SRA3">SRA3 (320 x 450 mm)</option><option value="B">{t('imposition.imposerDashboard:kho_b_320_x_430_mm')}</option>
                                                 <option value="Ledger">Ledger (279 x 432 mm)</option>
                                             </optgroup>
                                         )}
@@ -813,12 +815,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                                 {matchedForms.map(f => (<option key={f.id} value={f.id}>{f.name} ({f.w}x{f.h}mm)</option>))}
                                             </optgroup>
                                         )}
-                                        <optgroup label="Khác"><option value="custom">+ Tạo khổ giấy mới (Custom)...</option></optgroup>
+                                        <optgroup label={t('imposition.imposerDashboard:khac')}><option value="custom">{t('imposition.imposerDashboard:tao_kho_giay_moi_custom')}</option></optgroup>
                                     </>
                                 );
                             })()}
                         </select>
-                        <button onClick={() => s.setShowSettings(true)} className="shrink-0 w-8 h-8 rounded border border-slate-300 dark:border-white/20 flex items-center justify-center text-slate-500 hover:text-indigo-600 hover:border-indigo-400 transition-colors bg-white dark:bg-zinc-900" title="Thiết lập Lề giấy">
+                        <button onClick={() => s.setShowSettings(true)} className="shrink-0 w-8 h-8 rounded border border-slate-300 dark:border-white/20 flex items-center justify-center text-slate-500 hover:text-indigo-600 hover:border-indigo-400 transition-colors bg-white dark:bg-zinc-900" title={t('imposition.imposerDashboard:thiet_lap_le_giay')}>
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                         </button>
                     </div>
@@ -847,17 +849,17 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     <div className="pt-2 text-center pb-2">
                         <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
                             <span>🔗</span>
-                            <span>Ghép file & Chèn trang</span>
+                            <span>{t('imposition.imposerDashboard:ghep_file_chen_trang')}</span>
                         </h2>
-                        <p className="text-[11px] text-slate-500 mt-1">Gộp nhiều PDF, trộn xen kẽ lẻ chẵn, chèn trang đệm.</p>
+                        <p className="text-[11px] text-slate-500 mt-1">{t('imposition.imposerDashboard:gop_nhieu_pdf_tron_xen_ke_le_chan_chen')}</p>
                     </div>
                     <MergeTool settings={mergeSettings} onChange={setMergeSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTabByTool['merge'] ?? true} onChange={(v) => s.setSpawnNewTab('merge', v)} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool['merge'] ?? true} onChange={(v) => s.setSpawnNewTab('merge', v)} label={t('imposition.imposerDashboard:mo_ket_qua_sang_tab_moi')} />
                     </div>
                     <button onClick={() => onStartMerge && onStartMerge({ ...mergeSettings, spawnNewTab: s.spawnNewTabByTool['merge'] ?? true })} disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50">
-                        {isProcessing ? 'Đang áp dụng...' : 'Thực Thi Ghép File'}
+                        {isProcessing ? t('imposition.imposerDashboard:dang_ap_dung') : t('imposition.imposerDashboard:thuc_thi_ghep_file')}
                     </button>
                 </div>
             )}
@@ -868,29 +870,29 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     {/* ═══ IMPOSITION HEADER ═══ */}
                     {activeTool === 'booklet' && (
                         <div className="pt-2 text-center pb-2">
-                            <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">📚 BÌNH SÁCH & TẠP CHÍ</h2>
-                            <p className="text-[11px] text-slate-500 mt-1">Dựng tay sách lồng đôi, tính độ bù gáy (Creep).</p>
+                            <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">{t('imposition.imposerDashboard:binh_sach_tap_chi')}</h2>
+                            <p className="text-[11px] text-slate-500 mt-1">{t('imposition.imposerDashboard:dung_tay_sach_long_doi_tinh_do_bu_gay')}</p>
                         </div>
                     )}
                     
                     {activeTool === 'nup' && (
                         <div className="pt-2 text-center pb-2">
-                            <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">🎴 BÌNH BÀI XÉN</h2>
-                            <p className="text-[11px] text-slate-500 mt-1">Sắp xếp tự động nhiều đối tượng hoặc nhân bản chính xác trên khổ in.</p>
+                            <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">{t('imposition.imposerDashboard:binh_bai_xen')}</h2>
+                            <p className="text-[11px] text-slate-500 mt-1">{t('imposition.imposerDashboard:sap_xep_tu_dong_nhieu_doi_tuong_hoac')}</p>
                         </div>
                     )}
 
                     {activeTool === 'sticker_imposer' && (
                         <div className="pt-2 text-center pb-2">
-                            <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">🏷️ BÌNH BÀI BẾ TEM</h2>
-                            <p className="text-[11px] text-slate-500 mt-1">Sắp xếp tối ưu tem nhãn và tự động nhận diện hình dạng.</p>
+                            <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">{t('imposition.imposerDashboard:binh_bai_be_tem')}</h2>
+                            <p className="text-[11px] text-slate-500 mt-1">{t('imposition.imposerDashboard:sap_xep_toi_uu_tem_nhan_va_tu_dong_nhan')}</p>
                         </div>
                     )}
 
                     {activeTool === 'cnc_imposer' && (
                         <div className="pt-2 text-center pb-2">
-                            <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">🔻 BÌNH BẾ RỚT (CNC)</h2>
-                            <p className="text-[11px] text-slate-500 mt-1">Cắt rời CNC: bình 2 mặt (lật gương), dấu canh CNC, xuất Trước/Sau/Khuôn.</p>
+                            <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">{t('imposition.imposerDashboard:binh_be_rot_cnc')}</h2>
+                            <p className="text-[11px] text-slate-500 mt-1">{t('imposition.imposerDashboard:cat_roi_cnc_binh_2_mat_lat_guong_dau')}</p>
                         </div>
                     )}
 
@@ -904,9 +906,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10'
                                 : 'border-slate-200 dark:border-white/10 hover:border-indigo-400'}`}
                         >
-                            <span className="text-[13px] font-semibold text-indigo-700 dark:text-indigo-400">✨ Đề xuất theo sản phẩm</span>
+                            <span className="text-[13px] font-semibold text-indigo-700 dark:text-indigo-400">{t('imposition.imposerDashboard:de_xuat_theo_san_pham')}</span>
                             <span className="block text-[11px] text-slate-500">
-                                {showProductFirst ? 'Đang bật — chọn sản phẩm để hệ thống tự tính. Bấm để tắt.' : 'Chọn sản phẩm + khổ giấy → tự đề xuất "1 tờ mấy con".'}
+                                {showProductFirst ? t('imposition.imposerDashboard:dang_bat_chon_san_pham_de_he_thong_tu') : t('imposition.imposerDashboard:chon_san_pham_kho_giay_tu_de_xuat_1_to')}
                             </span>
                         </button>
                     )}
@@ -1068,14 +1070,14 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         {s.taskMode === 'booklet' && (
                             <div className="flex gap-3">
                                 <button onClick={() => s.setShowFlipbook(true)} disabled={isProcessing || !pdfFile}
-                                    className="flex-1 h-11 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">📖 Xem Thành Phẩm</button>
+                                    className="flex-1 h-11 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">{t('imposition.imposerDashboard:xem_thanh_pham')}</button>
                                 <button onClick={() => s.setShowSheetViewer(true)} disabled={isProcessing || !pdfFile}
-                                    className="flex-1 h-11 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-slate-600">🖨️ Xem Bài In</button>
+                                    className="flex-1 h-11 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-slate-600">{t('imposition.imposerDashboard:xem_bai_in')}</button>
                             </div>
                         )}
                         <button onClick={handleExecute} disabled={isProcessing}
                             className="w-full h-11 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1">
-                            {isProcessing ? 'Đang xử lý...' : (activeTool === 'cnc_imposer' ? 'Thực thi Bình Bế Rớt (CNC)' : activeTool === 'sticker_imposer' ? 'Thực thi Bình Tem Bế' : s.taskMode === 'booklet' ? 'Thực thi Bình Sách (Booklet)' : s.taskMode === 'step_repeat' ? 'Thực thi Nhân bản (Step & Repeat)' : 'Thực thi Dàn trang (N-Up)')}
+                            {isProcessing ? t('imposition.imposerDashboard:dang_xu_ly') : (activeTool === 'cnc_imposer' ? t('imposition.imposerDashboard:thuc_thi_binh_be_rot_cnc') : activeTool === 'sticker_imposer' ? t('imposition.imposerDashboard:thuc_thi_binh_tem_be') : s.taskMode === 'booklet' ? t('imposition.imposerDashboard:thuc_thi_binh_sach_booklet') : s.taskMode === 'step_repeat' ? t('imposition.imposerDashboard:thuc_thi_nhan_ban_step_repeat') : t('imposition.imposerDashboard:thuc_thi_dan_trang_n_up'))}
                         </button>
                     </div>
                 </>

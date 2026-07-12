@@ -4,8 +4,10 @@ import { useAuthStore } from '../../stores/useAuthStore';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
+import { useTranslation } from 'react-i18next';
 
 export default function LoginScreen() {
+  const { t } = useTranslation();
   const { user, licenseKey, setLicenseKey } = useAuthStore();
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -143,10 +145,10 @@ export default function LoginScreen() {
         // Open the URL in the system's default browser
         await open(data.url);
       } else {
-        throw new Error('Không lấy được URL đăng nhập');
+        throw new Error(t('misc.login:khong_lay_duoc_url_dang_nhap'));
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Lỗi đăng nhập Google');
+      setErrorMsg(err.message || t('misc.login:loi_dang_nhap_google'));
       setLoading(false);
     }
   };
@@ -178,10 +180,10 @@ export default function LoginScreen() {
         const ok = await useAuthStore.getState().validateLicense();
         if (ok) useAuthStore.getState().startHeartbeat();
       } else {
-        throw new Error(res?.message || 'Key không hợp lệ.');
+        throw new Error(res?.message || t('misc.login:key_khong_hop_le'));
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Lỗi xác thực bản quyền.');
+      setErrorMsg(err.message || t('misc.login:loi_xac_thuc_ban_quyen'));
     } finally {
       setLoading(false);
     }
@@ -214,7 +216,7 @@ export default function LoginScreen() {
             // STEP 1: LOGIN
             <div className="space-y-4">
               <div className="text-center text-sm text-slate-300 mb-6">
-                Vui lòng đăng nhập để xác thực bản quyền
+                {t('misc.login:vui_long_dang_nhap_de_xac_thuc_ban')}
               </div>
               <button
                 onClick={handleGoogleLogin}
@@ -227,7 +229,7 @@ export default function LoginScreen() {
                   <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
                   <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
                 </svg>
-                Tiếp tục với Google
+                {t('misc.login:tiep_tuc_voi_google')}
               </button>
             </div>
           ) : (
@@ -236,17 +238,17 @@ export default function LoginScreen() {
               <div className="flex items-center gap-3 mb-6 p-3 rounded-xl bg-white/5 border border-white/10 backdrop-blur-sm">
                 <img src={user.user_metadata?.avatar_url} alt="Avatar" className="w-10 h-10 rounded-full border border-white/20" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-white truncate">{user.user_metadata?.full_name || 'Người dùng'}</div>
+                  <div className="text-sm font-medium text-white truncate">{user.user_metadata?.full_name || t('misc.login:nguoi_dung')}</div>
                   <div className="text-xs text-slate-400 truncate">{user.email}</div>
                 </div>
-                <button type="button" onClick={() => supabase.auth.signOut()} className="p-2 text-slate-400 hover:text-white transition-colors" title="Đăng xuất">
+                <button type="button" onClick={() => supabase.auth.signOut()} className="p-2 text-slate-400 hover:text-white transition-colors" title={t('misc.login:dang_xuat')}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
                 </button>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-2">
-                  Hãy nhập mã bản quyền (License Key) của Prynx
+                  {t('misc.login:hay_nhap_ma_ban_quyen_license_key_cua')}
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
@@ -256,7 +258,7 @@ export default function LoginScreen() {
                     type="text"
                     value={inputKey}
                     onChange={(e) => setInputKey(e.target.value)}
-                    placeholder="Nhập mã bản quyền..."
+                    placeholder={t('misc.login:nhap_ma_ban_quyen')}
                     className="w-full bg-black/30 border border-white/10 rounded-xl py-3.5 pl-10 pr-4 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono tracking-wider"
                     autoFocus
                   />
@@ -272,7 +274,7 @@ export default function LoginScreen() {
                   <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
                 ) : (
                   <>
-                    Xác Thực <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+                    {t('misc.login:xac_thuc')} <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
                   </>
                 )}
               </button>

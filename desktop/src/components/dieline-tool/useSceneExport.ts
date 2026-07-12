@@ -32,6 +32,7 @@ import { computeExportSize } from '../../lib/mockup3d/exportSizing';
 import type { ExportScale } from '../../lib/mockup3d/types';
 import { PRESETS, computeTargetPose } from './CameraRig';
 import type { CameraPreset } from '../../store/useMockupStore';
+import { useTranslation } from 'react-i18next';
 
 // ─── Tùy chọn & kiểu trả về ─────────────────────────────────────────────────
 
@@ -117,6 +118,7 @@ function downloadBlob(blob: Blob, filename: string): void {
  * _Requirements: 6.1, 6.3, 6.5, 6.6, 6.7, 6.8_
  */
 export function useSceneExport(options: UseSceneExportOptions = {}): SceneExportApi {
+  const { t } = useTranslation();
     const { filePrefix = 'mockup', onSuccess, onError } = options;
 
     // Lấy renderer/scene/camera trực tiếp từ store R3F (không gây re-render).
@@ -199,7 +201,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
             // (Yêu cầu 6.4): nếu vượt 16384 px → giữ cảnh, báo lỗi.
             const sizing = computeExportSize(size.width, size.height, effectiveScale);
             if (!sizing.ok) {
-                reportError('png', sizing.reason ?? 'Kích thước xuất vượt giới hạn cho phép.');
+                reportError('png', sizing.reason ?? t('dieline.useSceneExport:kich_thuoc_xuat_vuot_gioi_han_cho_phep'));
                 return false;
             }
 
@@ -224,7 +226,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 const blob = await renderToBlob(exportTransparent);
 
                 if (!blob) {
-                    throw new Error('Trình duyệt không tạo được dữ liệu ảnh PNG.');
+                    throw new Error(t('dieline.useSceneExport:trinh_duyet_khong_tao_duoc_du_lieu_anh'));
                 }
 
                 const filename = buildFilename(filePrefix, 'png');
@@ -234,7 +236,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
             } catch (err) {
                 const message =
                     'Xuất ảnh PNG thất bại: ' +
-                    (err instanceof Error ? err.message : 'Lỗi không xác định');
+                    (err instanceof Error ? err.message : t('dieline.useSceneExport:loi_khong_xac_dinh'));
                 console.error('[useSceneExport] exportPNG error:', err);
                 reportError('png', message);
                 return false;
@@ -260,7 +262,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
 
         const sizing = computeExportSize(size.width, size.height, storeExportScale);
         if (!sizing.ok) {
-            reportError('png', sizing.reason ?? 'Kích thước xuất vượt giới hạn cho phép.');
+            reportError('png', sizing.reason ?? t('dieline.useSceneExport:kich_thuoc_xuat_vuot_gioi_han_cho_phep'));
             return false;
         }
 
@@ -299,10 +301,10 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 }
             }
             if (okCount > 0) reportSuccess('png', `${okCount} góc`);
-            else reportError('png', 'Không xuất được góc nào.');
+            else reportError('png', t('dieline.useSceneExport:khong_xuat_duoc_goc_nao'));
             return okCount > 0;
         } catch (err) {
-            reportError('png', 'Xuất batch thất bại: ' + (err instanceof Error ? err.message : 'lỗi không xác định'));
+            reportError('png', 'Xuất batch thất bại: ' + (err instanceof Error ? err.message : t('dieline.useSceneExport:loi_khong_xac_dinh_2')));
             return false;
         } finally {
             // Khôi phục camera + kích thước renderer + đồng bộ controls.
@@ -337,7 +339,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
             });
 
             if (!(result instanceof ArrayBuffer)) {
-                throw new Error('Kết quả xuất không ở định dạng nhị phân GLB.');
+                throw new Error(t('dieline.useSceneExport:ket_qua_xuat_khong_o_dinh_dang_nhi_phan'));
             }
 
             const blob = new Blob([result], { type: 'model/gltf-binary' });
@@ -348,7 +350,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
         } catch (err) {
             const message =
                 'Xuất mô hình GLB thất bại: ' +
-                (err instanceof Error ? err.message : 'Lỗi không xác định');
+                (err instanceof Error ? err.message : t('dieline.useSceneExport:loi_khong_xac_dinh'));
             console.error('[useSceneExport] exportGLB error:', err);
             reportError('glb', message);
             return false;

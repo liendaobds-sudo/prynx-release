@@ -9,6 +9,7 @@ import { useMockupStore } from '../../store/useMockupStore';
 import { DielineModel, PathSegment, Panel } from '../../lib/dieline/types';
 import { buildChains, chainToSvgD, computeEnvelopeDims, deriveLegendTags } from '../../lib/dieline/sharedGeometry';
 import { tracePerimeter } from '../../lib/dieline/tracePerimeter';
+import { useTranslation } from 'react-i18next';
 // Desktop: no auth/settings needed — all features available
 
 // Màu sắc và style cho từng loại nét
@@ -23,6 +24,7 @@ const PATH_STYLES: Record<string, { stroke: string; dashArray: string; width: nu
 const IS_DEV = import.meta.env.DEV;
 
 export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.ReactNode } = {}) {
+  const { t } = useTranslation();
     const { dieline } = useBoxStore();
     const svgRef = useRef<SVGSVGElement>(null);
     const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -251,25 +253,25 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
     }, []);
 
     if (!dieline) {
-        return <div className="dt-canvas-2d-empty">Nhập thông số để tạo khuôn bế</div>;
+        return <div className="dt-canvas-2d-empty">{t('dieline.dielineCanvas2D:nhap_thong_so_de_tao_khuon_be')}</div>;
     }
 
     return (
         <div className="dt-canvas-2d-container" style={{ position: 'relative' }}>
             {/* Toolbar */}
             <div className="dt-canvas-toolbar">
-                <button onClick={() => setShowDimensions(!showDimensions)} className="dt-toolbar-btn" title="Hiển thị kích thước">
-                    📏 {showDimensions ? 'Ẩn' : 'Hiện'} kích thước
+                <button onClick={() => setShowDimensions(!showDimensions)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:hien_thi_kich_thuoc')}>
+                    📏 {showDimensions ? t('dieline.dielineCanvas2D:an') : t('dieline.dielineCanvas2D:hien')} kích thước
                 </button>
                 {IS_DEV && (
                     <>
-                        <button onClick={() => setShowPanelLabels(!showPanelLabels)} className="dt-toolbar-btn" title="[DEV] Hiển thị tên các mặt">
+                        <button onClick={() => setShowPanelLabels(!showPanelLabels)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:dev_hien_thi_ten_cac_mat')}>
                             {showPanelLabels ? '👁️' : '🚫'} Tên mặt
                         </button>
-                        <button onClick={() => setShowSegmentLabels(!showSegmentLabels)} className="dt-toolbar-btn" title="[DEV] Hiển thị tên từng đoạn cắt">
+                        <button onClick={() => setShowSegmentLabels(!showSegmentLabels)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:dev_hien_thi_ten_tung_doan_cat')}>
                             {showSegmentLabels ? '👁️' : '🚫'} Đoạn cắt
                         </button>
-                        <button onClick={() => setShowAnnotations(!showAnnotations)} className="dt-toolbar-btn" title="[DEV] Hiển thị chú thích điểm">
+                        <button onClick={() => setShowAnnotations(!showAnnotations)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:dev_hien_thi_chu_thich_diem')}>
                             {showAnnotations ? '👁️' : '🚫'} Chú thích điểm
                         </button>
                     </>
@@ -294,23 +296,23 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
 
                 {/* Ảnh in (mockup) — canh chỉnh trực tiếp trên khuôn */}
                 <span className="dt-toolbar-sep" />
-                <label className="dt-toolbar-btn" title="Tải ảnh in lên khuôn" style={{ cursor: 'pointer' }}>
-                    🖼 Ảnh in
+                <label className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:tai_anh_in_len_khuon')} style={{ cursor: 'pointer' }}>
+                    {t('dieline.dielineCanvas2D:anh_in')}
                     <input type="file" accept="image/png,image/jpeg,image/webp" style={{ display: 'none' }} onChange={onUploadArtwork} />
                 </label>
                 {artworkUrl && (
                     <>
-                        <button onClick={() => setShowArtwork((v) => !v)} className="dt-toolbar-btn" title="Ẩn/hiện ảnh in">
+                        <button onClick={() => setShowArtwork((v) => !v)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:an_hien_anh_in')}>
                             {showArtwork ? '👁️' : '🚫'} Ảnh
                         </button>
-                        <label className="dt-art-ctl" title="Tỉ lệ ảnh">
+                        <label className="dt-art-ctl" title={t('dieline.dielineCanvas2D:ti_le_anh')}>
                             ⤢
                             <input type="range" min={10} max={400} step={1}
                                 value={artTransform.scalePct}
                                 onChange={(e) => setArtTransform({ ...artTransform, scalePct: parseFloat(e.target.value) })}
                                 style={{ width: 80, verticalAlign: 'middle', accentColor: 'var(--dt-accent)' }} />
                         </label>
-                        <label className="dt-art-ctl" title="Xoay ảnh">
+                        <label className="dt-art-ctl" title={t('dieline.dielineCanvas2D:xoay_anh')}>
                             ⟳
                             <input type="range" min={-180} max={180} step={1}
                                 value={artTransform.rotationDeg ?? 0}
@@ -319,7 +321,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                         </label>
                         <button
                             onClick={() => setArtTransform({ scalePct: 100, offsetXPct: 0, offsetYPct: 0, rotationDeg: 0 })}
-                            className="dt-toolbar-btn" title="Đặt lại vị trí ảnh">↺ Reset ảnh</button>
+                            className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:dat_lai_vi_tri_anh')}>{t('dieline.dielineCanvas2D:reset_anh')}</button>
                     </>
                 )}
             </div>

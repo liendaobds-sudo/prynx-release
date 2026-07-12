@@ -7,6 +7,7 @@ import { getFileArrayBuffer } from '../lib/utils';
 import { Button } from './Button';
 import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
+import { useTranslation } from 'react-i18next';
 
 // ── Types ──
 interface PreflightIssue {
@@ -60,6 +61,7 @@ const INSPECT_RULES = [
 type Phase = 'upload' | 'workspace';
 
 export default function PreflightTab({ onDirtyChange }: any = {}) {
+  const { t } = useTranslation();
   const [phase, setPhase] = useState<Phase>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [fileId, setFileId] = useState('');
@@ -132,7 +134,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
       const result = await uploadPDF(f);
       setFileId(result.id);
     } catch (e: any) {
-      setError(e.message || 'Upload thất bại');
+      setError(e.message || t('preflight.preflight:upload_that_bai'));
     }
   }, []);
 
@@ -145,7 +147,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fileId, rules: Array.from(selectedRules), tac_threshold: 300 }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Lỗi kiểm tra');
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preflight.preflight:loi_kiem_tra'));
       setReport(await res.json());
     } catch (e: any) { setError(e.message); }
     finally { setIsInspecting(false); }
@@ -160,7 +162,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fileId, action_id: actionId }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Lỗi');
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preflight.preflight:loi'));
       setFixResult(await res.json());
     } catch (e: any) { setError(e.message); }
     finally { setFixingAction(''); }
@@ -176,7 +178,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file_id: fileId, actions }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Lỗi');
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preflight.preflight:loi'));
       const data = await res.json();
       setFixResult(data);
 
@@ -213,15 +215,15 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
       <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
         <div className="flex-1 flex flex-col items-center justify-center py-12 px-6">
           <div className="text-center mb-10 animate-fade-in">
-            <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">🩺 Preflight — Kiểm tra chuẩn in</h1>
+            <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">{t('preflight.preflight:preflight_kiem_tra_chuan_in')}</h1>
             <p className="text-slate-600 dark:text-zinc-400 transition-colors max-w-2xl mx-auto leading-relaxed">
-              Phân tích cấu trúc PDF: hệ màu RGB/CMYK, font nhúng, ảnh low-res, transparency, bleed. Tự động sửa lỗi giống PitStop.
+              {t('preflight.preflight:phan_tich_cau_truc_pdf_he_mau_rgb_cmyk')}
             </p>
           </div>
           <div className="max-w-xl w-full animate-slide-up">
             <PDFUploader
-              label="Kéo thả PDF cần Kiểm tra"
-              sublabel="Phân tích 8 quy tắc chuẩn in offset + tự động sửa lỗi"
+              label={t('preflight.preflight:keo_tha_pdf_can_kiem_tra')}
+              sublabel={t('preflight.preflight:phan_tich_8_quy_tac_chuan_in_offset_tu')}
               onFileSelected={handleFileSelected}
               isUploading={false}
               uploadedName=""
@@ -253,14 +255,14 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
           <div className="absolute inset-0 bg-[#525659]/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white">
             <div className="w-16 h-16 border-4 border-teal-500/30 border-t-teal-500 rounded-full animate-spin mb-6" />
             <h3 className="font-bold text-2xl tracking-widest uppercase mb-3">
-              {isInspecting ? 'Đang Kiểm tra' : 'Đang Sửa lỗi'}
+              {isInspecting ? t('preflight.preflight:dang_kiem_tra') : t('preflight.preflight:dang_sua_loi')}
             </h3>
             <p className="text-teal-300 font-medium text-lg">
-              {isInspecting ? 'Hệ thống đang phân tích cấu trúc PDF...' :
-                fixingAction === 'PIPELINE' ? 'Đang chạy Pipeline sửa lỗi...' :
+              {isInspecting ? t('preflight.preflight:he_thong_dang_phan_tich_cau_truc_pdf') :
+                fixingAction === 'PIPELINE' ? t('preflight.preflight:dang_chay_pipeline_sua_loi') :
                   `Hệ thống xử lý: ${ACTIONS.find(a => a.id === fixingAction)?.title || fixingAction}...`}
             </p>
-            <p className="text-slate-400 mt-4 text-sm">* Xử lý trên server nội bộ *</p>
+            <p className="text-slate-400 mt-4 text-sm">{t('preflight.preflight:xu_ly_tren_server_noi_bo')}</p>
           </div>
         )}
 
@@ -278,7 +280,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                     <button
                       onClick={() => setIsSidebarOpen(true)}
                       className="absolute inset-x-0 top-0 w-full h-12 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 transition-colors border-b border-black/5 dark:border-white/10"
-                      title="Mở Bảng Preflight"
+                      title={t('preflight.preflight:mo_bang_preflight')}
                     >
                       <span className="text-slate-500 dark:text-zinc-400">🩺</span>
                     </button>
@@ -288,10 +290,10 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                     <>
                       {/* Panel Header */}
                       <div className="text-xs font-semibold text-slate-600 dark:text-zinc-400 p-2 bg-slate-100/80 dark:bg-zinc-900/80 border-b border-black/5 dark:border-white/10 shrink-0 flex items-center justify-between transition-colors">
-                        <h2 className="flex items-center gap-2"><span>🩺</span> PREFLIGHT CHUẨN IN</h2>
+                        <h2 className="flex items-center gap-2"><span>🩺</span> {t('preflight.preflight:preflight_chuan_in')}</h2>
                         <div className="flex items-center gap-1">
-                          <button onClick={() => setIsSidebarOpen(false)} className="w-6 h-6 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 rounded transition-colors" title="Thu gọn">▶</button>
-                          <button onClick={handleReset} className="w-6 h-6 flex items-center justify-center hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/20 rounded transition-colors" title="Đóng file" aria-label="Đóng file"><X className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => setIsSidebarOpen(false)} className="w-6 h-6 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-zinc-800 rounded transition-colors" title={t('preflight.preflight:thu_gon')}>▶</button>
+                          <button onClick={handleReset} className="w-6 h-6 flex items-center justify-center hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/20 rounded transition-colors" title={t('preflight.preflight:dong_file')} aria-label={t('preflight.preflight:dong_file')}><X className="w-3.5 h-3.5" /></button>
                         </div>
                       </div>
 
@@ -312,11 +314,11 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                             <div className="text-center mb-4">
                               <span className="text-4xl block mb-2">🩺</span>
                               <p className="text-[12px] text-slate-500 dark:text-zinc-400 leading-relaxed">
-                                Chọn các quy tắc kiểm tra bên dưới và bấm chạy Preflight để phân tích PDF.
+                                {t('preflight.preflight:chon_cac_quy_tac_kiem_tra_ben_duoi_va')}
                               </p>
                             </div>
 
-                            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2">⚙️ Chọn Quy tắc (Rules)</h3>
+                            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2">{t('preflight.preflight:chon_quy_tac_rules')}</h3>
                             <div className="space-y-1 mb-4">
                               {INSPECT_RULES.map(r => {
                                 const sel = selectedRules.has(r.id);
@@ -348,19 +350,19 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                           <>
                             {/* Re-scan button */}
                             <Button variant="secondary" size="sm" className="w-full mb-4" onClick={runInspect} disabled={isInspecting}>
-                              🔄 Quét lại
+                              {t('preflight.preflight:quet_lai')}
                             </Button>
 
                             {/* Summary Cards */}
                             <div className="space-y-1.5 mb-4">
-                              <MiniCard icon="🎨" label="Hệ màu" value={
-                                [report.color_summary.has_cmyk && 'CMYK', report.color_summary.has_rgb && '⚠️RGB', report.color_summary.has_spot && 'Spot'].filter(Boolean).join(', ') || 'Không rõ/Vector'
+                              <MiniCard icon="🎨" label={t('preflight.preflight:he_mau')} value={
+                                [report.color_summary.has_cmyk && 'CMYK', report.color_summary.has_rgb && '⚠️RGB', report.color_summary.has_spot && 'Spot'].filter(Boolean).join(', ') || t('preflight.preflight:khong_ro_vector')
                               } />
                               <MiniCard icon="🔤" label="Font" value={
                                 report.font_summary.not_embedded > 0 ? `❌ ${report.font_summary.not_embedded}/${report.font_summary.total} chưa nhúng` : `✅ ${report.font_summary.total} đã nhúng`
                               } />
-                              <MiniCard icon="🖼️" label="Ảnh" value={
-                                report.image_summary.total === 0 ? 'Không có' :
+                              <MiniCard icon="🖼️" label={t('preflight.preflight:anh')} value={
+                                report.image_summary.total === 0 ? t('preflight.preflight:khong_co') :
                                   report.image_summary.low_res > 0 ? `⚠️ ${report.image_summary.low_res}/${report.image_summary.total} low-res` :
                                     `✅ ${report.image_summary.total} ảnh OK (min ${report.image_summary.min_dpi} DPI)`
                               } />
@@ -373,8 +375,8 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                             {report.issues.length === 0 ? (
                               <div className="text-center py-6 text-slate-400">
                                 <span className="text-3xl block mb-2">🎉</span>
-                                <p className="text-[13px] font-semibold">Không có vấn đề!</p>
-                                <p className="text-[11px] mt-1">File sẵn sàng đưa in.</p>
+                                <p className="text-[13px] font-semibold">{t('preflight.preflight:khong_co_van_de')}</p>
+                                <p className="text-[11px] mt-1">{t('preflight.preflight:file_san_sang_dua_in')}</p>
                               </div>
                             ) : (
                               <div className="space-y-1.5 mb-4">
@@ -404,9 +406,9 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                                 <div className="flex gap-2">
                                   <span className="text-sm">⚠️</span>
                                   <div className="flex-1">
-                                    <h4 className="text-[11px] font-bold text-red-600 dark:text-red-400 leading-tight">Cảnh báo rủi ro sai Font</h4>
+                                    <h4 className="text-[11px] font-bold text-red-600 dark:text-red-400 leading-tight">{t('preflight.preflight:canh_bao_rui_ro_sai_font')}</h4>
                                     <p className="text-[10px] text-red-700/80 dark:text-red-300/80 mt-0.5 leading-snug">
-                                      File thiếu font gốc. Nếu dùng lệnh <b>Khóa Font</b> hoặc <b>Nhúng Font</b> bên dưới, hệ thống có thể tự thay bằng font mặc định làm sai hình dáng chữ. Đề nghị cân nhắc kỹ.
+                                      {t('preflight.preflight:file_thieu_font_goc_neu_dung_lenh')} <b>{t('preflight.preflight:khoa_font')}</b> {t('preflight.preflight:hoac')} <b>{t('preflight.preflight:nhung_font')}</b> {t('preflight.preflight:ben_duoi_he_thong_co_the_tu_thay_bang')}
                                     </p>
                                   </div>
                                 </div>
@@ -415,7 +417,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
 
                             {/* Actions */}
                             <div className="border-t border-black/5 dark:border-white/5 pt-3 mt-2">
-                              <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2">🛠️ Sửa lỗi tự động</h3>
+                              <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2">{t('preflight.preflight:sua_loi_tu_dong')}</h3>
                               <div className="space-y-1.5 mb-3">
                                 {ACTIONS.map(a => {
                                   const sel = selectedActions.has(a.id);
@@ -446,14 +448,14 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                             {fixResult && (
                               <div className={`mt-3 p-3 rounded-lg border ${fixResult.success ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
                                 <h4 className={`text-[11px] font-bold mb-1 ${fixResult.success ? 'text-emerald-600' : 'text-red-600'}`}>
-                                  {fixResult.success ? '✅ Thành công!' : '❌ Thất bại'}
+                                  {fixResult.success ? t('preflight.preflight:thanh_cong') : t('preflight.preflight:that_bai')}
                                 </h4>
                                 {fixResult.log.map((e, i) => (
                                   <p key={i} className="text-[10px] text-slate-600 dark:text-zinc-300">{e.status === 'success' ? '✅' : '❌'} {e.message} ({e.duration_ms}ms)</p>
                                 ))}
                                 {fixResult.success && fixResult.output_filename && (
                                   <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">
-                                    ✅ File đã được cập nhật trên Viewer. Bạn có thể xem và lưu lại.
+                                    {t('preflight.preflight:file_da_duoc_cap_nhat_tren_viewer_ban')}
                                   </p>
                                 )}
                                 {fixResult.error && <p className="text-[10px] text-red-500 mt-1">{fixResult.error}</p>}

@@ -1,5 +1,6 @@
 import { useAuthStore } from '../../stores/useAuthStore';
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 
 /**
  * RevocationCountdown: panel NỔI (không che toàn màn, KHÔNG chặn thao tác) hiện khi
@@ -8,6 +9,7 @@ import { useState, useEffect } from 'react';
  * lưu được → đi ngược mục tiêu. Hết giờ → store tự gọi enforceHardLock → overlay khóa cứng.
  */
 function RevocationCountdown() {
+  const { t } = useTranslation();
   const { revokeDeadline, revokeReason } = useAuthStore();
   const [now, setNow] = useState(Date.now());
 
@@ -37,14 +39,14 @@ function RevocationCountdown() {
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
         <span style={{ fontSize: '24px' }}>⚠️</span>
         <h3 style={{ color: '#fff', fontSize: '15px', fontWeight: 600, margin: 0 }}>
-          Bản quyền sắp bị khóa
+          {t('misc.licenseLockOverlay:ban_quyen_sap_bi_khoa')}
         </h3>
       </div>
       <p style={{ color: '#a0aec0', fontSize: '13px', lineHeight: 1.55, margin: '0 0 12px 0' }}>
         {revokeReason}
       </p>
       <p style={{ color: '#fbbf24', fontSize: '13px', fontWeight: 600, margin: '0 0 4px 0' }}>
-        Vui lòng lưu công việc đang làm ngay. Ứng dụng sẽ khóa sau:
+        {t('misc.licenseLockOverlay:vui_long_luu_cong_viec_dang_lam_ngay')}
       </p>
       <div style={{
         fontSize: '32px', fontWeight: 700, color: '#fff',
@@ -64,6 +66,7 @@ function RevocationCountdown() {
  * When internet returns → auto-unlocks seamlessly.
  */
 export default function LicenseLockOverlay() {
+  const { t } = useTranslation();
   const { isLicenseLocked, lockReason, retryValidation, isRevoking } = useAuthStore();
   const [isRetrying, setIsRetrying] = useState(false);
 
@@ -88,8 +91,8 @@ export default function LicenseLockOverlay() {
   const isSevere = isLicense || isBlocked;
 
   const title = isLicense
-    ? (isExpired ? 'Bản quyền đã hết hạn' : 'Bản quyền đã bị thu hồi')
-    : (isBlocked ? 'Phát hiện sự cố kết nối' : 'Cần kết nối mạng');
+    ? (isExpired ? t('misc.licenseLockOverlay:ban_quyen_da_het_han') : t('misc.licenseLockOverlay:ban_quyen_da_bi_thu_hoi'))
+    : (isBlocked ? t('misc.licenseLockOverlay:phat_hien_su_co_ket_noi') : t('misc.licenseLockOverlay:can_ket_noi_mang'));
   const icon = isLicense ? '⛔' : (isBlocked ? '🚫' : '🔒');
 
   return (
@@ -145,10 +148,10 @@ export default function LicenseLockOverlay() {
           margin: '0 0 20px 0',
         }}>
           {isRetrying
-            ? '⏳ Đang kiểm tra...'
+            ? t('misc.licenseLockOverlay:dang_kiem_tra')
             : (isLicense
-                ? '🔄 Nếu bạn vừa gia hạn/mở khóa, bấm "Thử lại" để cập nhật.'
-                : '🔄 Hệ thống tự động kiểm tra định kỳ')}
+                ? t('misc.licenseLockOverlay:neu_ban_vua_gia_han_mo_khoa_bam_thu_lai')
+                : t('misc.licenseLockOverlay:he_thong_tu_dong_kiem_tra_dinh_ky'))}
         </p>
 
         {/* Retry button */}
@@ -170,7 +173,7 @@ export default function LicenseLockOverlay() {
             opacity: isRetrying ? 0.6 : 1,
           }}
         >
-          {isRetrying ? 'Đang thử...' : 'Thử lại ngay'}
+          {isRetrying ? t('misc.licenseLockOverlay:dang_thu') : t('misc.licenseLockOverlay:thu_lai_ngay')}
         </button>
 
         {/* Help text for blocked case */}
@@ -181,7 +184,7 @@ export default function LicenseLockOverlay() {
             marginTop: '16px',
             lineHeight: '1.5',
           }}>
-            💡 Kiểm tra kết nối mạng hoặc cài đặt tường lửa của bạn.
+            {t('misc.licenseLockOverlay:kiem_tra_ket_noi_mang_hoac_cai_dat')}
           </p>
         )}
       </div>

@@ -6,8 +6,10 @@
 import React from 'react';
 import { useBoxStore } from '../../store/useBoxStore';
 import { SHEET_PRESETS, RotationMode, TrayNestingMode } from '../../lib/dieline/nestingTypes';
+import { useTranslation } from 'react-i18next';
 
 export default function NestingPanel() {
+  const { t } = useTranslation();
     const { nestingConfig, nestingResult, sleeveNestingResult, setNestingConfig, params } = useBoxStore();
     const [customSheet, setCustomSheet] = React.useState(false);
     const [orderQty, setOrderQty] = React.useState(1000);
@@ -43,19 +45,19 @@ export default function NestingPanel() {
 
             {/* Chế độ xếp khuôn */}
             <div className="dt-params-section">
-                <label className="dt-section-label">🧠 Chế độ xếp</label>
+                <label className="dt-section-label">{t('dieline.nesting:che_do_xep')}</label>
                 <div className="dt-glue-side-toggle">
                     <button
                         className={`dt-glue-side-btn ${nestingConfig.nestingMode === 'grid' ? 'active' : ''}`}
                         onClick={() => setNestingConfig({ nestingMode: 'grid' })}
                     >
-                        ▦ Grid (lưới đều)
+                        {t('dieline.nesting:grid_luoi_deu')}
                     </button>
                     <button
                         className={`dt-glue-side-btn ${nestingConfig.nestingMode === 'smart' ? 'active' : ''}`}
                         onClick={() => setNestingConfig({ nestingMode: 'smart' })}
                     >
-                        ✨ Xếp tối ưu
+                        {t('dieline.nesting:xep_toi_uu')}
                     </button>
                 </div>
             </div>
@@ -63,31 +65,31 @@ export default function NestingPanel() {
             {/* Chế độ chất liệu — chỉ hiện cho tray */}
             {params.boxType === 'tray' && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">🧵 Chất liệu khay & vỏ</label>
+                    <label className="dt-section-label">{t('dieline.nesting:chat_lieu_khay_vo')}</label>
                     <div className="dt-glue-side-toggle">
                         <button
                             className={`dt-glue-side-btn ${nestingConfig.trayNestingMode === 'combined' ? 'active' : ''}`}
                             onClick={() => setNestingConfig({ trayNestingMode: 'combined' as TrayNestingMode })}
                         >
-                            🟰 Cùng chất liệu
+                            {t('dieline.nesting:cung_chat_lieu')}
                         </button>
                         <button
                             className={`dt-glue-side-btn ${nestingConfig.trayNestingMode === 'split' ? 'active' : ''}`}
                             onClick={() => setNestingConfig({ trayNestingMode: 'split' as TrayNestingMode })}
                         >
-                            ✂️ Khác chất liệu
+                            {t('dieline.nesting:khac_chat_lieu')}
                         </button>
                     </div>
                     <p className="dt-param-hint" style={{ fontSize: '0.65rem', opacity: 0.5, marginTop: '0.25rem' }}>
                         {nestingConfig.trayNestingMode === 'combined'
-                            ? 'Khay và vỏ xếp chung trên 1 tờ'
-                            : 'Khay và vỏ xếp riêng, khổ giấy độc lập'}
+                            ? t('dieline.nesting:khay_va_vo_xep_chung_tren_1_to')
+                            : t('dieline.nesting:khay_va_vo_xep_rieng_kho_giay_doc_lap')}
                     </p>
                 </div>
             )}
 
             <div className="dt-params-section">
-                <label className="dt-section-label">📋 Khổ giấy in</label>
+                <label className="dt-section-label">{t('dieline.nesting:kho_giay_in')}</label>
                 <select
                     className="dt-param-select"
                     value={customSheet ? 'custom' : (SHEET_PRESETS.findIndex(
@@ -99,14 +101,14 @@ export default function NestingPanel() {
                     {SHEET_PRESETS.map((p, i) => (
                         <option key={i} value={i}>{p.name}</option>
                     ))}
-                    <option value="custom">✏️ Tùy chỉnh...</option>
+                    <option value="custom">{t('dieline.nesting:tuy_chinh')}</option>
                 </select>
 
                 {/* Custom sheet size inputs */}
                 {(customSheet || !currentPreset) && (
                     <div className="dt-param-grid" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-cell">
-                            <label className="dt-param-cell-label">Rộng</label>
+                            <label className="dt-param-cell-label">{t('dieline.nesting:rong')}</label>
                             <input
                                 type="number"
                                 defaultValue={nestingConfig.sheet.width}
@@ -158,7 +160,7 @@ export default function NestingPanel() {
             {/* Khổ giấy vỏ bao — chỉ hiện khi split mode */}
             {params.boxType === 'tray' && nestingConfig.trayNestingMode === 'split' && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">📋 Khổ giấy vỏ bao</label>
+                    <label className="dt-section-label">{t('dieline.nesting:kho_giay_vo_bao')}</label>
                     <select
                         className="dt-param-select"
                         value={SHEET_PRESETS.findIndex(
@@ -176,11 +178,11 @@ export default function NestingPanel() {
                         {SHEET_PRESETS.map((p, i) => (
                             <option key={i} value={i}>{p.name}</option>
                         ))}
-                        <option value="-1">✏️ Tùy chỉnh...</option>
+                        <option value="-1">{t('dieline.nesting:tuy_chinh')}</option>
                     </select>
                     <div className="dt-param-grid" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-cell">
-                            <label className="dt-param-cell-label">Rộng</label>
+                            <label className="dt-param-cell-label">{t('dieline.nesting:rong')}</label>
                             <input
                                 type="number"
                                 defaultValue={nestingConfig.sleeveSheet.width}
@@ -231,7 +233,7 @@ export default function NestingPanel() {
 
             {/* Ràng buộc máy in */}
             <div className="dt-params-section">
-                <label className="dt-section-label">🏭 Ràng buộc máy in</label>
+                <label className="dt-section-label">{t('dieline.nesting:rang_buoc_may_in')}</label>
                 <div className="dt-param-grid">
                     <div className="dt-param-cell">
                         <label className="dt-param-cell-label" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}
@@ -243,7 +245,7 @@ export default function NestingPanel() {
                                 background: nestingConfig.gripperMargin > 0 ? 'var(--dt-accent, #f97316)' : 'transparent',
                                 transition: 'background 0.15s',
                             }} />
-                            🔴 Cắn nhíp
+                            {t('dieline.nesting:can_nhip')}
                         </label>
                         {nestingConfig.gripperMargin > 0 && (
                             <>
@@ -262,7 +264,7 @@ export default function NestingPanel() {
                         )}
                     </div>
                     <div className="dt-param-cell">
-                        <label className="dt-param-cell-label">🔪 Hở dao bế</label>
+                        <label className="dt-param-cell-label">{t('dieline.nesting:ho_dao_be')}</label>
                         <input type="number" defaultValue={nestingConfig.dieGap}
                             key={`dg-${nestingConfig.dieGap}`}
                             min={2} max={8} step={0.5}
@@ -280,10 +282,10 @@ export default function NestingPanel() {
 
             {/* Lề tay kê — 4 cạnh */}
             <div className="dt-params-section">
-                <label className="dt-section-label">📏 Lề tay kê</label>
+                <label className="dt-section-label">{t('dieline.nesting:le_tay_ke')}</label>
                 <div className="dt-param-grid">
                     <div className="dt-param-cell">
-                        <label className="dt-param-cell-label">Trên</label>
+                        <label className="dt-param-cell-label">{t('dieline.nesting:tren')}</label>
                         <input type="number" defaultValue={nestingConfig.margin.top}
                             key={`mt-${nestingConfig.margin.top}`}
                             min={0} max={50} step={1}
@@ -298,7 +300,7 @@ export default function NestingPanel() {
                     </div>
                     {/* BUG-5 FIX: Thêm lề dưới input */}
                     <div className="dt-param-cell">
-                        <label className="dt-param-cell-label">Dưới</label>
+                        <label className="dt-param-cell-label">{t('dieline.nesting:duoi')}</label>
                         <input type="number" defaultValue={nestingConfig.margin.bottom}
                             key={`mb-${nestingConfig.margin.bottom}`}
                             min={0} max={50} step={1}
@@ -312,7 +314,7 @@ export default function NestingPanel() {
                         <span className="dt-param-cell-unit">mm</span>
                     </div>
                     <div className="dt-param-cell">
-                        <label className="dt-param-cell-label">Trái</label>
+                        <label className="dt-param-cell-label">{t('dieline.nesting:trai')}</label>
                         <input type="number" defaultValue={nestingConfig.margin.left}
                             key={`ml-${nestingConfig.margin.left}`}
                             min={0} max={50} step={1}
@@ -326,7 +328,7 @@ export default function NestingPanel() {
                         <span className="dt-param-cell-unit">mm</span>
                     </div>
                     <div className="dt-param-cell">
-                        <label className="dt-param-cell-label">Phải</label>
+                        <label className="dt-param-cell-label">{t('dieline.nesting:phai')}</label>
                         <input type="number" defaultValue={nestingConfig.margin.right}
                             key={`mr-${nestingConfig.margin.right}`}
                             min={0} max={50} step={1}
@@ -341,35 +343,35 @@ export default function NestingPanel() {
                     </div>
                 </div>
                 <p className="dt-param-hint" style={{ fontSize: '0.65rem', opacity: 0.5, marginTop: '0.25rem' }}>
-                    Lề dưới ≥ cắn nhíp sẽ được tự động điều chỉnh
+                    {t('dieline.nesting:le_duoi_can_nhip_se_duoc_tu_dong_dieu')}
                 </p>
             </div>
 
             {/* Chế độ xoay — chỉ hiện cho grid mode */}
             {nestingConfig.nestingMode === 'grid' && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">🔄 Chế độ xoay</label>
+                    <label className="dt-section-label">{t('dieline.nesting:che_do_xoay')}</label>
                     <select
                         className="dt-param-select"
                         value={nestingConfig.rotation}
                         onChange={(e) => setNestingConfig({ rotation: e.target.value as RotationMode })}
                     >
-                        <option value="none">— Không xoay</option>
+                        <option value="none">{t('dieline.nesting:khong_xoay')}</option>
                         <option value="90">↰ Xoay 90°</option>
-                        <option value="auto">✨ Tự động</option>
+                        <option value="auto">{t('dieline.nesting:tu_dong')}</option>
                     </select>
                 </div>
             )}
 
             {/* Hướng tờ giấy */}
             <div className="dt-params-section">
-                <label className="dt-section-label">📄 Hướng giấy</label>
+                <label className="dt-section-label">{t('dieline.nesting:huong_giay')}</label>
                 <div className="dt-glue-side-toggle">
                     <button
                         className={`dt-glue-side-btn ${nestingConfig.sheetOrientation === 'portrait' ? 'active' : ''}`}
                         onClick={() => setNestingConfig({ sheetOrientation: 'portrait' })}
                     >
-                        ▯ Dọc
+                        {t('dieline.nesting:doc')}
                     </button>
                     <button
                         className={`dt-glue-side-btn ${nestingConfig.sheetOrientation === 'landscape' || nestingConfig.sheetOrientation === 'auto' ? 'active' : ''}`}
@@ -386,19 +388,19 @@ export default function NestingPanel() {
                     <label className="dt-section-label">
                         📊 {params.boxType === 'tray' && nestingConfig.trayNestingMode === 'split'
                             ? 'Khay'
-                            : 'Kết quả xếp khuôn'}
+                            : t('dieline.nesting:ket_qua_xep_khuon')}
                     </label>
                     <div className="dt-nesting-stats">
                         <div className="dt-nesting-stat-main">
                             <span className="dt-nesting-stat-value">{nestingResult.countPerSheet}</span>
-                            <span className="dt-nesting-stat-label">khuôn / tờ</span>
+                            <span className="dt-nesting-stat-label">{t('dieline.nesting:khuon_to')}</span>
                         </div>
                         <div className="dt-nesting-stat-row">
-                            <span>Bố cục:</span>
+                            <span>{t('dieline.nesting:bo_cuc')}</span>
                             <span>{nestingResult.cols} × {nestingResult.rows}</span>
                         </div>
                         <div className="dt-nesting-stat-row">
-                            <span>% sử dụng:</span>
+                            <span>{t('dieline.nesting:su_dung')}</span>
                             <span style={{
                                 color: nestingResult.utilization > 70 ? 'var(--dt-success, #22c55e)' :
                                     nestingResult.utilization > 50 ? 'var(--dt-warning, #eab308)' :
@@ -408,7 +410,7 @@ export default function NestingPanel() {
                             </span>
                         </div>
                         <div className="dt-nesting-stat-row">
-                            <span>Tờ giấy:</span>
+                            <span>{t('dieline.nesting:to_giay')}</span>
                             <span>{nestingResult.actualSheet.width} × {nestingResult.actualSheet.height} mm</span>
                         </div>
 
@@ -423,14 +425,14 @@ export default function NestingPanel() {
                     <div className="dt-nesting-stats">
                         <div className="dt-nesting-stat-main">
                             <span className="dt-nesting-stat-value">{sleeveNestingResult.countPerSheet}</span>
-                            <span className="dt-nesting-stat-label">vỏ / tờ</span>
+                            <span className="dt-nesting-stat-label">{t('dieline.nesting:vo_to')}</span>
                         </div>
                         <div className="dt-nesting-stat-row">
-                            <span>Bố cục:</span>
+                            <span>{t('dieline.nesting:bo_cuc')}</span>
                             <span>{sleeveNestingResult.cols} × {sleeveNestingResult.rows}</span>
                         </div>
                         <div className="dt-nesting-stat-row">
-                            <span>% sử dụng:</span>
+                            <span>{t('dieline.nesting:su_dung')}</span>
                             <span style={{
                                 color: sleeveNestingResult.utilization > 70 ? 'var(--dt-success, #22c55e)' :
                                     sleeveNestingResult.utilization > 50 ? 'var(--dt-warning, #eab308)' :
@@ -446,10 +448,10 @@ export default function NestingPanel() {
             {/* MISS-4: Ước lượng số tờ cho đơn hàng */}
             {nestingResult && nestingResult.countPerSheet > 0 && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">🧮 Ước lượng đơn hàng</label>
+                    <label className="dt-section-label">{t('dieline.nesting:uoc_luong_don_hang')}</label>
                     <div className="dt-param-grid">
                         <div className="dt-param-cell" style={{ gridColumn: '1 / -1' }}>
-                            <label className="dt-param-cell-label">Số lượng hộp</label>
+                            <label className="dt-param-cell-label">{t('dieline.nesting:so_luong_hop')}</label>
                             <input type="number"
                                 value={orderQty}
                                 min={1} max={1000000} step={100}
@@ -459,23 +461,23 @@ export default function NestingPanel() {
                                     if (!isNaN(v) && v > 0) setOrderQty(v);
                                 }}
                             />
-                            <span className="dt-param-cell-unit">hộp</span>
+                            <span className="dt-param-cell-unit">{t('dieline.nesting:hop')}</span>
                         </div>
                     </div>
                     <div className="dt-nesting-stats" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-nesting-stat-row">
-                            <span>Số tờ cần:</span>
+                            <span>{t('dieline.nesting:so_to_can')}</span>
                             <span style={{ fontWeight: 700, color: 'var(--dt-accent)' }}>
                                 {sheetsNeeded.toLocaleString()} tờ
                             </span>
                         </div>
                         <div className="dt-nesting-stat-row">
-                            <span>Tổng in:</span>
-                            <span>{totalPrinted.toLocaleString()} hộp</span>
+                            <span>{t('dieline.nesting:tong_in')}</span>
+                            <span>{totalPrinted.toLocaleString()} {t('dieline.nesting:hop')}</span>
                         </div>
                         {waste > 0 && (
                             <div className="dt-nesting-stat-row">
-                                <span>Dư thừa:</span>
+                                <span>{t('dieline.nesting:du_thua')}</span>
                                 <span style={{ color: 'var(--dt-warning, #eab308)' }}>
                                     +{waste.toLocaleString()} hộp ({Math.round(waste / totalPrinted * 100)}%)
                                 </span>

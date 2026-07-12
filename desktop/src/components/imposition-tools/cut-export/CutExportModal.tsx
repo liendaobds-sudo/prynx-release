@@ -19,6 +19,7 @@ import {
   type Pt,
 } from "./api";
 import { getMachineConn } from "./machineSettings";
+import { useTranslation } from 'react-i18next';
 
 export interface CutExportModalProps {
   open: boolean;
@@ -63,6 +64,7 @@ function saveSettings(s: SavedSettings) {
 }
 
 export default function CutExportModal(props: CutExportModalProps) {
+  const { t } = useTranslation();
   const { open, onClose, sheetWmm, sheetHmm, paths, marks, defaultName, sourcePdfPath, sourceName, currentPage } = props;
 
   const saved = useRef<SavedSettings>(loadSettings());
@@ -248,7 +250,7 @@ export default function CutExportModal(props: CutExportModalProps) {
         r = await cutExport(req);
       }
       setResult(r);
-      if (!r.ok) setError(r.error || r.detail || "Gửi thất bại");
+      if (!r.ok) setError(r.error || r.detail || t('imposition.cutExport:gui_that_bai'));
     } catch (e: unknown) {
       setError(String(e));
     } finally {
@@ -296,26 +298,26 @@ export default function CutExportModal(props: CutExportModalProps) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="px-5 py-4 border-b border-slate-200 dark:border-white/10 flex items-center justify-between">
-          <h3 className="text-base font-bold text-slate-800 dark:text-white">✂️ Gửi Máy Bế</h3>
-          <button onClick={onClose} className="w-7 h-7 rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-500 flex items-center justify-center" title="Đóng (Esc)">✕</button>
+          <h3 className="text-base font-bold text-slate-800 dark:text-white">{t('imposition.cutExport:gui_may_be')}</h3>
+          <button onClick={onClose} className="w-7 h-7 rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-500 flex items-center justify-center" title={t('imposition.cutExport:dong_esc')}>✕</button>
         </div>
 
         <div className="p-5 space-y-3">
           {useFileSource && (
             <p className="text-[13px] text-slate-500 dark:text-zinc-400 truncate">
-              Nguồn: <span className="font-medium text-slate-700 dark:text-zinc-200">{sourceName || "(file đã bình)"}</span>
+              {t('imposition.cutExport:nguon')} <span className="font-medium text-slate-700 dark:text-zinc-200">{sourceName || t('imposition.cutExport:file_da_binh')}</span>
               {hasCutPages ? ` — ${sheetCount} trang khuôn` : ""}
             </p>
           )}
 
           {useFileSource && (
             <div className="h-[200px] rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-zinc-900/50 flex items-center justify-center overflow-hidden [&>div>svg]:max-w-full [&>div>svg]:max-h-full">
-              {previewing && <span className="text-[13px] text-slate-400">Đang dựng xem trước...</span>}
+              {previewing && <span className="text-[13px] text-slate-400">{t('imposition.cutExport:dang_dung_xem_truoc')}</span>}
               {!previewing && preview?.ok && previewSvg && (
                 <div className="w-full h-full flex items-center justify-center p-2" dangerouslySetInnerHTML={{ __html: previewSvg }} />
               )}
               {!previewing && preview && !preview.ok && (
-                <span className="text-[13px] text-red-500 px-3 text-center">{preview.error || "Không xem trước được"}</span>
+                <span className="text-[13px] text-red-500 px-3 text-center">{preview.error || t('imposition.cutExport:khong_xem_truoc_duoc')}</span>
               )}
             </div>
           )}
@@ -323,9 +325,9 @@ export default function CutExportModal(props: CutExportModalProps) {
           {useFileSource && preview && !preview.ok && preview.candidates &&
             (preview.candidates.layers.length > 0 || preview.candidates.spots.length > 0) && (
             <label className="text-[13px] text-slate-600 dark:text-zinc-300 flex flex-col gap-1">
-              Chọn lớp cắt thủ công
+              {t('imposition.cutExport:chon_lop_cat_thu_cong')}
               <select className={`${selStyle} border-amber-400`} value={forceLayer} onChange={(e) => setForceLayer(e.target.value)}>
-                <option value="">— Chọn lớp / spot-color —</option>
+                <option value="">{t('imposition.cutExport:chon_lop_spot_color')}</option>
                 {preview.candidates.layers.map((l) => <option key={"L:" + l} value={l}>Lớp: {l}</option>)}
                 {preview.candidates.spots.map((s) => <option key={"S:" + s} value={s}>Spot: {s}</option>)}
               </select>
@@ -334,7 +336,7 @@ export default function CutExportModal(props: CutExportModalProps) {
 
           {/* Máy + chuyển tờ — hàng chính */}
           <label className="text-[13px] text-slate-600 dark:text-zinc-300 flex flex-col gap-1">
-            Máy
+            {t('imposition.cutExport:may')}
             <select className={selStyle} value={profileId} onChange={(e) => setProfileId(e.target.value)}>
               {profiles.map((p) => <option key={p.id} value={p.id}>{p.vendor} {p.model}</option>)}
             </select>
@@ -342,7 +344,7 @@ export default function CutExportModal(props: CutExportModalProps) {
 
           {useFileSource && sheetCount > 1 && (
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[13px] text-slate-600 dark:text-zinc-300">Trang khuôn:</span>
+              <span className="text-[13px] text-slate-600 dark:text-zinc-300">{t('imposition.cutExport:trang_khuon')}</span>
               <div className="flex items-center gap-2">
                 <button className="w-8 h-8 rounded border border-slate-300 dark:border-white/20 disabled:opacity-40" disabled={cutPos <= 0} onClick={() => goToSheet(cutPos - 1)}>‹</button>
                 <span className="text-[13px] font-semibold min-w-[64px] text-center">Tờ {cutPos + 1} / {sheetCount}</span>
@@ -352,13 +354,13 @@ export default function CutExportModal(props: CutExportModalProps) {
           )}
 
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[13px] text-slate-600 dark:text-zinc-300">Số con / tờ:</span>
+            <span className="text-[13px] text-slate-600 dark:text-zinc-300">{t('imposition.cutExport:so_con_to')}</span>
             <span className="text-[13px] font-semibold">{useFileSource ? (preview?.ok ? preview.total_items : "—") : totalItems}</span>
           </div>
 
           {useFileSource && (
             <div className="flex items-center justify-between gap-2">
-              <label className="text-[13px] text-slate-600 dark:text-zinc-300" htmlFor="cut-copies">Số tờ in (số lần cắt):</label>
+              <label className="text-[13px] text-slate-600 dark:text-zinc-300" htmlFor="cut-copies">{t('imposition.cutExport:so_to_in_so_lan_cat')}</label>
               <input
                 id="cut-copies"
                 type="number"
@@ -372,7 +374,7 @@ export default function CutExportModal(props: CutExportModalProps) {
 
           {useFileSource && preview?.ok && (
             <p className="text-[13px] text-slate-500 dark:text-zinc-400">
-              Tổng: <span className="font-semibold text-slate-700 dark:text-zinc-200">{(preview.total_items || 0) * Math.max(1, copies || 1)}</span> con
+              {t('imposition.cutExport:tong')} <span className="font-semibold text-slate-700 dark:text-zinc-200">{(preview.total_items || 0) * Math.max(1, copies || 1)}</span> con
               {" "}({preview.total_items} con/tờ × {Math.max(1, copies || 1)} tờ)
             </p>
           )}
@@ -382,37 +384,37 @@ export default function CutExportModal(props: CutExportModalProps) {
             onClick={() => setAdvancedOpen((v) => !v)}
             className="text-[13px] text-indigo-600 dark:text-indigo-400 hover:underline"
           >
-            {advancedOpen ? "▾ Ẩn tùy chọn nâng cao" : "▸ Tùy chọn nâng cao (định dạng, kênh, lưu)"}
+            {advancedOpen ? t('imposition.cutExport:an_tuy_chon_nang_cao') : t('imposition.cutExport:tuy_chon_nang_cao_dinh_dang_kenh_luu')}
           </button>
 
           {advancedOpen && (
             <div className="grid grid-cols-2 gap-3 pt-1">
               <label className="text-[13px] text-slate-600 dark:text-zinc-300 flex flex-col gap-1">
-                Định dạng
+                {t('imposition.cutExport:dinh_dang')}
                 <select className={selStyle} value={emitter} onChange={(e) => setEmitter(e.target.value as Emitter)}>
-                  <option value="command_stream">Lệnh máy (PLT)</option>
+                  <option value="command_stream">{t('imposition.cutExport:lenh_may_plt')}</option>
                   <option value="dxf">DXF</option>
                   <option value="pdf">PDF (CutContour)</option>
                   <option value="svg">SVG</option>
                 </select>
               </label>
               <label className="text-[13px] text-slate-600 dark:text-zinc-300 flex flex-col gap-1">
-                Kênh
+                {t('imposition.cutExport:kenh')}
                 <select className={selStyle} value={channel} onChange={(e) => setChannel(e.target.value as Channel)}>
-                  <option value="file">Lưu file</option>
-                  <option value="tcp">Gửi LAN</option>
+                  <option value="file">{t('imposition.cutExport:luu_file')}</option>
+                  <option value="tcp">{t('imposition.cutExport:gui_lan')}</option>
                 </select>
               </label>
               {channel === "tcp" && (
                 <label className="text-[13px] text-slate-600 dark:text-zinc-300 flex flex-col gap-1 col-span-2">
-                  IP máy
+                  {t('imposition.cutExport:ip_may')}
                   <input className={selStyle} value={tcpHost} onChange={(e) => setTcpHost(e.target.value)} placeholder="192.168.1.50" />
                 </label>
               )}
               {channel === "file" && (
                 <label className="text-[13px] text-slate-600 dark:text-zinc-300 flex flex-col gap-1 col-span-2">
-                  Thư mục lưu
-                  <input className={selStyle} value={destDir} onChange={(e) => setDestDir(e.target.value)} placeholder="(mặc định)" />
+                  {t('imposition.cutExport:thu_muc_luu')}
+                  <input className={selStyle} value={destDir} onChange={(e) => setDestDir(e.target.value)} placeholder={t('imposition.cutExport:mac_dinh')} />
                 </label>
               )}
             </div>
@@ -428,14 +430,14 @@ export default function CutExportModal(props: CutExportModalProps) {
         </div>
 
         <div className="px-5 py-4 border-t border-slate-200 dark:border-white/10 flex justify-end gap-2">
-          <button onClick={onClose} disabled={busy} className="h-10 px-4 rounded-lg border border-slate-300 dark:border-white/20 text-slate-700 dark:text-zinc-200 text-sm font-medium hover:bg-slate-50 dark:hover:bg-white/5 disabled:opacity-50">Đóng</button>
+          <button onClick={onClose} disabled={busy} className="h-10 px-4 rounded-lg border border-slate-300 dark:border-white/20 text-slate-700 dark:text-zinc-200 text-sm font-medium hover:bg-slate-50 dark:hover:bg-white/5 disabled:opacity-50">{t('imposition.cutExport:dong')}</button>
           {useFileSource && sheetCount > 1 && (
             <button onClick={handleSendAll} disabled={busy || !canSend} className="h-10 px-4 rounded-lg border border-emerald-600 text-emerald-700 dark:text-emerald-400 text-sm font-semibold hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50">
               Gửi tất cả ({sheetCount})
             </button>
           )}
           <button onClick={handleSend} disabled={busy || !canSend} className="h-10 px-5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold disabled:opacity-50">
-            {busy ? "Đang gửi..." : (useFileSource && sheetCount > 1 ? "Gửi tờ này" : "Gửi")}
+            {busy ? t('imposition.cutExport:dang_gui') : (useFileSource && sheetCount > 1 ? t('imposition.cutExport:gui_to_nay') : t('imposition.cutExport:gui'))}
           </button>
         </div>
       </div>

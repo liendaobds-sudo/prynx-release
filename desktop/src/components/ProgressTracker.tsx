@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 interface ProgressTrackerProps {
   progress: number;
   status: string;
@@ -13,6 +14,7 @@ export default function ProgressTracker({
   totalPages,
   message,
 }: ProgressTrackerProps) {
+  const { t } = useTranslation();
   const isCompleted = status === 'completed';
   const isFailed = status === 'failed';
 
@@ -30,10 +32,10 @@ export default function ProgressTracker({
         <div>
           <h3 className="text-lg font-bold text-white">
             {isCompleted
-              ? 'Hoàn thành!'
+              ? t('misc.progressTracker:hoan_thanh')
               : isFailed
-              ? 'Có lỗi xảy ra'
-              : 'Đang so sánh...'}
+              ? t('misc.progressTracker:co_loi_xay_ra')
+              : t('misc.progressTracker:dang_so_sanh')}
           </h3>
           <p className="text-sm text-slate-400">{message}</p>
         </div>
@@ -57,7 +59,7 @@ export default function ProgressTracker({
       {/* Stats */}
       <div className="flex justify-between text-sm">
         <span className="text-slate-500">
-          {totalPages > 0 ? `Trang ${currentPage}/${totalPages}` : 'Chuẩn bị...'}
+          {totalPages > 0 ? `Trang ${currentPage}/${totalPages}` : t('misc.progressTracker:chuan_bi')}
         </span>
         <span
           className={`font-semibold ${

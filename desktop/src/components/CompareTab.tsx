@@ -10,10 +10,12 @@ import DiffSidebar from './DiffSidebar';
 import ReportModal from './ReportModal';
 import { Button } from './Button';
 import { ThemeToggle } from './ThemeToggle';
+import { useTranslation } from 'react-i18next';
 
 type Phase = 'upload' | 'processing' | 'results';
 
 export default function CompareTab() {
+  const { t } = useTranslation();
   const store = useComparisonStore();
   const [phase, setPhase] = useState<Phase>('upload');
   const [uploadingA, setUploadingA] = useState(false);
@@ -63,7 +65,7 @@ export default function CompareTab() {
       const result = await uploadPDF(file);
       store.setFileB({ ...result, localFile: file });
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Upload thất bại');
+      setError(e instanceof Error ? e.message : t('tabs.compare:upload_that_bai'));
     } finally {
       setUploadingB(false);
     }
@@ -81,7 +83,7 @@ export default function CompareTab() {
          setTimeout(() => handleUploadB(allFiles[1]), 500);
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Upload thất bại');
+      setError(e instanceof Error ? e.message : t('tabs.compare:upload_that_bai'));
     } finally {
       setUploadingA(false);
     }
@@ -111,7 +113,7 @@ export default function CompareTab() {
           const job = await getJobStatus(job_id);
           store.setJobStatus(job.status);
 
-          let message = 'Chuẩn bị...';
+          let message = t('tabs.compare:chuan_bi');
           if (job.status === 'processing') {
             if (job.status_message) message = job.status_message;
             else if (job.current_page && job.total_pages) message = `Đang so sánh trang ${job.current_page}/${job.total_pages}`;
@@ -126,7 +128,7 @@ export default function CompareTab() {
             setPhase('results');
             return true;
           } else if (job.status === 'failed') {
-            setError(job.error_message || 'Có lỗi xảy ra khi so sánh');
+            setError(job.error_message || t('tabs.compare:co_loi_xay_ra_khi_so_sanh'));
             setPhase('upload');
             return true;
           }
@@ -147,13 +149,13 @@ export default function CompareTab() {
         setTimeout(() => {
           clearInterval(pollInterval);
           if (useComparisonStore.getState().jobStatus !== 'completed') {
-            setError('Quá thời gian chờ xử lý (10 phút). File có thể quá lớn hoặc máy chủ đang bận — thử lại với DPI thấp hơn hoặc chia nhỏ file PDF.');
+            setError(t('tabs.compare:qua_thoi_gian_cho_xu_ly_10_phut_file_co'));
             setPhase('upload');
           }
         }, 600000);
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Không thể tạo job');
+      setError(e instanceof Error ? e.message : t('tabs.compare:khong_the_tao_job'));
       setPhase('upload');
     }
   }, [store]);
@@ -178,16 +180,16 @@ export default function CompareTab() {
       <div className="flex-1 overflow-y-auto w-full h-full">
         <div className="max-w-5xl mx-auto px-6 py-12 h-full flex flex-col items-center">
           <div className="text-center mb-10 animate-fade-in">
-            <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">🔍 So sánh PDF</h1>
+            <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">{t('tabs.compare:so_sanh_pdf')}</h1>
             <p className="text-slate-600 dark:text-zinc-400 transition-colors">
-              Hỗ trợ tự động nhận diện và giám sát lỗi trên tờ in Bình bài (Imposition).
+              {t('tabs.compare:ho_tro_tu_dong_nhan_dien_va_giam_sat')}
             </p>
           </div>
 
           <div className="upload-grid w-full">
             <PDFUploader
-              label="PDF Gốc / Template"
-              sublabel="File trước khi sửa hoặc Bản mẫu"
+              label={t('tabs.compare:pdf_goc_template')}
+              sublabel={t('tabs.compare:file_truoc_khi_sua_hoac_ban_mau')}
               onFileSelected={handleUploadA}
               isUploading={uploadingA}
               uploadedName={store.fileA?.original_name}
@@ -195,8 +197,8 @@ export default function CompareTab() {
               accentColor="#3b82f6"
             />
             <PDFUploader
-              label="PDF Đã Sửa / Bản in"
-              sublabel="File sau khi sửa hoặc Tờ in ghép khổ lớn"
+              label={t('tabs.compare:pdf_da_sua_ban_in')}
+              sublabel={t('tabs.compare:file_sau_khi_sua_hoac_to_in_ghep_kho')}
               onFileSelected={handleUploadB}
               isUploading={uploadingB}
               uploadedName={store.fileB?.original_name}
@@ -206,29 +208,29 @@ export default function CompareTab() {
           </div>
 
           <div className="glass-card p-6 mb-6 w-full mt-8">
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white mb-4 transition-colors">⚙️ Cài đặt & Khởi chạy</h3>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white mb-4 transition-colors">{t('tabs.compare:cai_dat_khoi_chay')}</h3>
             <div className="settings-grid">
               <div>
-                <label className="text-xs text-slate-500 dark:text-zinc-400 block mb-1.5 transition-colors">Độ chính xác</label>
+                <label className="text-xs text-slate-500 dark:text-zinc-400 block mb-1.5 transition-colors">{t('tabs.compare:do_chinh_xac')}</label>
                 <select
                   value={store.tolerance}
                   onChange={(e) => store.setTolerance(e.target.value)}
                   className="select-input"
                 >
-                  <option value="STRICT">Nghiêm ngặt — Mọi pixel</option>
-                  <option value="NORMAL">Bình thường — Bỏ qua nhiễu nhỏ</option>
-                  <option value="LOOSE">Rộng — Chỉ thay đổi lớn</option>
+                  <option value="STRICT">{t('tabs.compare:nghiem_ngat_moi_pixel')}</option>
+                  <option value="NORMAL">{t('tabs.compare:binh_thuong_bo_qua_nhieu_nho')}</option>
+                  <option value="LOOSE">{t('tabs.compare:rong_chi_thay_doi_lon')}</option>
                 </select>
               </div>
               <div>
-                <label className="text-xs text-slate-500 dark:text-zinc-400 block mb-1.5 transition-colors">Độ phân giải</label>
+                <label className="text-xs text-slate-500 dark:text-zinc-400 block mb-1.5 transition-colors">{t('tabs.compare:do_phan_giai')}</label>
                 <select
                   value={store.dpi}
                   onChange={(e) => store.setDpi(Number(e.target.value))}
                   className="select-input"
                 >
                   <option value={150}>150 DPI — Nhanh</option>
-                  <option value={300}>300 DPI — Chính xác</option>
+                  <option value={300}>{t('tabs.compare:300_dpi_chinh_xac')}</option>
                 </select>
               </div>
               <div className="flex flex-col gap-3 justify-end">
@@ -245,7 +247,7 @@ export default function CompareTab() {
                   </div>
                   <div>
                     <span className="text-xs font-semibold text-slate-700 dark:text-zinc-200">CMYK</span>
-                    <span className="text-[10px] text-slate-400 dark:text-zinc-500 ml-1.5">Tách kênh màu in</span>
+                    <span className="text-[10px] text-slate-400 dark:text-zinc-500 ml-1.5">{t('tabs.compare:tach_kenh_mau_in')}</span>
                   </div>
                 </label>
                 <label className="flex items-center gap-2.5 cursor-pointer group">
@@ -260,8 +262,8 @@ export default function CompareTab() {
                     <div className="absolute left-[3px] top-[3px] bg-white dark:bg-zinc-200 rounded-sm h-[14px] w-[14px] shadow-sm transform transition-transform duration-300 peer-checked:translate-x-[16px]"></div>
                   </div>
                   <div>
-                    <span className="text-xs font-semibold text-slate-700 dark:text-zinc-200">Bao bì</span>
-                    <span className="text-[10px] text-slate-400 dark:text-zinc-500 ml-1.5">Xếp lồng khớp</span>
+                    <span className="text-xs font-semibold text-slate-700 dark:text-zinc-200">{t('tabs.compare:bao_bi')}</span>
+                    <span className="text-[10px] text-slate-400 dark:text-zinc-500 ml-1.5">{t('tabs.compare:xep_long_khop')}</span>
                   </div>
                 </label>
               </div>
@@ -272,7 +274,7 @@ export default function CompareTab() {
                   variant="primary"
                   fullWidth
                 >
-                  🚀 Bắt đầu So sánh
+                  {t('tabs.compare:bat_dau_so_sanh')}
                 </Button>
               </div>
             </div>
@@ -302,7 +304,7 @@ export default function CompareTab() {
             <div className="error-banner mt-6 text-center">
               {error}
               <button onClick={handleReset} className="ml-4 text-blue-400 underline">
-                Thử lại
+                {t('tabs.compare:thu_lai')}
               </button>
             </div>
           )}
@@ -316,7 +318,7 @@ export default function CompareTab() {
     <div className="results-layout flex flex-col h-full w-full overflow-hidden bg-slate-50 dark:bg-zinc-950 transition-colors">
       <header className="results-header shrink-0 px-4 py-2 flex items-center justify-between border-b border-black/5 dark:border-white/5 bg-white/60 dark:bg-zinc-900/60 backdrop-blur-xl">
         <div className="flex items-center gap-4">
-          <Button onClick={handleReset} variant="ghost" size="sm">← So sánh mới</Button>
+          <Button onClick={handleReset} variant="ghost" size="sm">{t('tabs.compare:so_sanh_moi')}</Button>
           <span className="w-px h-6 bg-black/10 mx-2 transition-colors dark:bg-white/10"></span>
           <span className="text-xs font-semibold text-slate-800 dark:text-zinc-200">
              {store.fileA?.original_name} ↔ {store.fileB?.original_name}
@@ -337,7 +339,7 @@ export default function CompareTab() {
              </div>
           )}
           {store.jobId && (
-            <Button onClick={() => setIsReportOpen(true)} variant="secondary" size="sm">📋 Xem Báo cáo</Button>
+            <Button onClick={() => setIsReportOpen(true)} variant="secondary" size="sm">{t('tabs.compare:xem_bao_cao')}</Button>
           )}
         </div>
       </header>
@@ -403,7 +405,7 @@ export default function CompareTab() {
              <button 
                 className="fixed top-6 right-6 w-12 h-12 rounded-full bg-slate-800 hover:bg-slate-700 border border-white/20 text-white flex items-center justify-center transition-all z-[110] shadow-2xl backdrop-blur-md"
                 onClick={() => { setActiveGif(null); setGifZoom(1); setGifPan({ x: 0, y: 0 }); }}
-                title="Đóng (Esc)"
+                title={t('tabs.compare:dong_esc')}
               >
                 ✕
               </button>
@@ -416,7 +418,7 @@ export default function CompareTab() {
                  <button 
                    className="w-10 h-10 rounded-lg hover:bg-white/10 flex items-center justify-center text-2xl font-light transition-colors text-white/90" 
                    onClick={() => setGifZoom(z => Math.max(0.2, z - 0.25))}
-                   title="Thu nhỏ"
+                   title={t('tabs.compare:thu_nho')}
                  >
                    -
                  </button>
@@ -426,7 +428,7 @@ export default function CompareTab() {
                  <button 
                    className="w-10 h-10 rounded-lg hover:bg-white/10 flex items-center justify-center text-2xl font-light transition-colors text-white/90" 
                    onClick={() => setGifZoom(z => Math.min(10, z + 0.25))}
-                   title="Phóng to"
+                   title={t('tabs.compare:phong_to')}
                  >
                    +
                  </button>

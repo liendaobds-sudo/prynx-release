@@ -6,6 +6,7 @@ import { FontSelector } from './FontSelector';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { formatPageNumber, applyTokens, effectiveLR, NUMBER_STYLES, type NumberStyle } from '../../lib/stampFormat';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
     pdfFile: File | null;
@@ -14,6 +15,7 @@ interface Props {
 }
 
 export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Props) {
+  const { t } = useTranslation();
     const [isProcessing, setIsProcessing] = useState(false);
     const [progress, setProgress] = useState('');
     const [error, setError] = useState('');
@@ -81,7 +83,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
         setIsSuccess(false);
         setIsProcessing(true);
         setError('');
-        setProgress('Đang xử lý đóng dấu...');
+        setProgress(t('preprocess.stickTextNumber:dang_xu_ly_dong_dau'));
 
         try {
             // Đóng dấu trên BẢN ĐÃ CHỈNH (viewer reorder/xoay/xoá) nếu có — đồng bộ
@@ -217,7 +219,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                 setIsSuccess(true);
             }
         } catch (e: any) {
-            setError(e.message || 'Đã xảy ra lỗi khi xử lý.');
+            setError(e.message || t('preprocess.stickTextNumber:da_xay_ra_loi_khi_xu_ly'));
             setProgress('');
         } finally {
             setIsProcessing(false);
@@ -241,7 +243,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                 onChange={e => setFields(prev => ({ ...prev, [name]: e.target.value }))}
                 onFocus={() => lastFocusedField.current = name}
                 className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded dark:bg-zinc-900 text-[11px] focus:outline-none focus:ring-1 focus:ring-sky-500"
-                placeholder={`Nhập text...`}
+                placeholder={t('preprocess.stickTextNumber:nhap_text')}
             />
         </div>
     );
@@ -253,7 +255,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                 <button 
                     onClick={onBack}
                     className="p-1.5 hover:bg-slate-100 dark:bg-zinc-800 rounded-md text-slate-500 transition-colors"
-                    title="Quay lại"
+                    title={t('preprocess.stickTextNumber:quay_lai')}
                 >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
                 </button>
@@ -262,7 +264,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                         <span>🔠</span>
                         <span>HEADER & FOOTER</span>
                     </h2>
-                    <p className="text-[11px] text-slate-500 mt-1">Chèn số trang, ngày tháng, text cố định vào đầu/chân trang (6 góc).</p>
+                    <p className="text-[11px] text-slate-500 mt-1">{t('preprocess.stickTextNumber:chen_so_trang_ngay_thang_text_co_dinh')}</p>
                 </div>
             </div>
 
@@ -271,43 +273,43 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                 <div className="bg-slate-50 dark:bg-zinc-800/30 p-3 rounded-lg border border-slate-200 dark:border-zinc-700/50 flex flex-col gap-3">
                     {/* Quick tokens */}
                     <div className="flex justify-center gap-2 mb-2">
-                        <button onClick={() => insertToken('[page]')} className="px-3 py-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 text-xs font-bold rounded shadow-sm hover:bg-sky-200 border border-sky-200 dark:border-sky-800">📄 Số Trang [page]</button>
-                        <button onClick={() => insertToken('[total]')} className="px-3 py-1 bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs font-bold rounded shadow-sm hover:bg-emerald-200 border border-emerald-200 dark:border-emerald-800">🔢 Tổng trang [total]</button>
-                        <button onClick={() => insertToken('[date]')} className="px-3 py-1 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-xs font-bold rounded shadow-sm hover:bg-amber-200 border border-amber-200 dark:border-amber-800">📅 Ngày [date]</button>
+                        <button onClick={() => insertToken('[page]')} className="px-3 py-1 bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 text-xs font-bold rounded shadow-sm hover:bg-sky-200 border border-sky-200 dark:border-sky-800">{t('preprocess.stickTextNumber:so_trang_page')}</button>
+                        <button onClick={() => insertToken('[total]')} className="px-3 py-1 bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 text-xs font-bold rounded shadow-sm hover:bg-emerald-200 border border-emerald-200 dark:border-emerald-800">{t('preprocess.stickTextNumber:tong_trang_total')}</button>
+                        <button onClick={() => insertToken('[date]')} className="px-3 py-1 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-xs font-bold rounded shadow-sm hover:bg-amber-200 border border-amber-200 dark:border-amber-800">{t('preprocess.stickTextNumber:ngay_date')}</button>
                     </div>
 
                     <div className="grid grid-cols-3 gap-2">
-                        {renderFieldInput("Header Trái", "topLeft")}
-                        {renderFieldInput("Header Giữa", "topCenter")}
-                        {renderFieldInput("Header Phải", "topRight")}
+                        {renderFieldInput(t('preprocess.stickTextNumber:header_trai'), "topLeft")}
+                        {renderFieldInput(t('preprocess.stickTextNumber:header_giua'), "topCenter")}
+                        {renderFieldInput(t('preprocess.stickTextNumber:header_phai'), "topRight")}
                     </div>
                     
                     <div className="grid grid-cols-3 gap-2 mt-2">
-                        {renderFieldInput("Footer Trái", "bottomLeft")}
-                        {renderFieldInput("Footer Giữa", "bottomCenter")}
-                        {renderFieldInput("Footer Phải", "bottomRight")}
+                        {renderFieldInput(t('preprocess.stickTextNumber:footer_trai'), "bottomLeft")}
+                        {renderFieldInput(t('preprocess.stickTextNumber:footer_giua'), "bottomCenter")}
+                        {renderFieldInput(t('preprocess.stickTextNumber:footer_phai'), "bottomRight")}
                     </div>
                 </div>
 
                 {/* Numbering logic settings */}
                 <div className="border-t border-slate-200 dark:border-zinc-800 pt-3">
-                    <span className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-2 block">Cài đặt số nhảy [page]</span>
+                    <span className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-2 block">{t('preprocess.stickTextNumber:cai_dat_so_nhay_page')}</span>
                     <div className="grid grid-cols-3 gap-2">
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase">Số bắt đầu</label>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.stickTextNumber:so_bat_dau')}</label>
                             <input type="number" value={startNumber} onChange={e => setStartNumber(Number(e.target.value))} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded dark:bg-zinc-900 text-sm" />
                         </div>
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase">Bước nhảy</label>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.stickTextNumber:buoc_nhay')}</label>
                             <input type="number" value={increment} onChange={e => setIncrement(Number(e.target.value))} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded dark:bg-zinc-900 text-sm" />
                         </div>
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase">Độ dài số</label>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.stickTextNumber:do_dai_so')}</label>
                             <input type="number" min={1} max={10} value={padLength} onChange={e => setPadLength(Number(e.target.value))} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded dark:bg-zinc-900 text-sm" />
                         </div>
                     </div>
                     <div className="flex flex-col gap-1 mt-2">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase">Kiểu số</label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.stickTextNumber:kieu_so')}</label>
                         <select value={numberStyle} onChange={e => setNumberStyle(e.target.value as NumberStyle)} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm outline-none">
                             {NUMBER_STYLES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                         </select>
@@ -317,7 +319,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
 
                 {/* Margins */}
                 <div className="border-t border-slate-200 dark:border-zinc-800 pt-3">
-                    <span className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-2 block">Margin - Lề (mm)</span>
+                    <span className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-2 block">{t('preprocess.stickTextNumber:margin_le_mm')}</span>
                     <div className="grid grid-cols-4 gap-2">
                         <div className="flex flex-col gap-1">
                             <label className="text-[10px] font-bold text-slate-500 uppercase">Top</label>
@@ -343,25 +345,25 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                             {mirrorMargins && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg>}
                         </div>
                         <div className="flex-1">
-                            <span className="font-semibold block">Lề gương 2 mặt (đóng cuốn)</span>
-                            <span className="text-[10px] text-slate-500 dark:text-zinc-400 block leading-snug mt-0.5">Tự hoán đổi lề Trái/Phải ở trang chẵn để lề trong luôn nằm phía gáy.</span>
+                            <span className="font-semibold block">{t('preprocess.stickTextNumber:le_guong_2_mat_dong_cuon')}</span>
+                            <span className="text-[10px] text-slate-500 dark:text-zinc-400 block leading-snug mt-0.5">{t('preprocess.stickTextNumber:tu_hoan_doi_le_trai_phai_o_trang_chan')}</span>
                         </div>
                     </button>
                 </div>
 
                 {/* Appearance */}
                 <div className="border-t border-slate-200 dark:border-zinc-800 pt-3">
-                    <span className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-2 block">Font chữ</span>
+                    <span className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-2 block">{t('preprocess.stickTextNumber:font_chu')}</span>
                     <div className="grid grid-cols-2 gap-3">
                         <div className="flex flex-col gap-1 col-span-2">
                             <FontSelector value={fontName} fontFile={fontFile} onChange={(name, file) => { setFontName(name); setFontFile(file); }} />
                         </div>
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-medium text-slate-500">Cỡ chữ (pt)</label>
+                            <label className="text-[10px] font-medium text-slate-500">{t('preprocess.stickTextNumber:co_chu_pt')}</label>
                             <input type="number" min="1" value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded dark:bg-zinc-900 text-sm" />
                         </div>
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-medium text-slate-500">Màu chữ</label>
+                            <label className="text-[10px] font-medium text-slate-500">{t('preprocess.stickTextNumber:mau_chu')}</label>
                             <div className="flex items-center gap-2">
                                 <input type="color" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0" />
                                 <span className="text-[11px] font-mono text-slate-500">{fontColor.toUpperCase()}</span>
@@ -373,30 +375,30 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                 {/* Rotate & Pages */}
                 <div className="border-t border-slate-200 dark:border-zinc-800 pt-3 grid grid-cols-2 gap-3">
                     <div className="flex flex-col gap-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase">Góc xoay</label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.stickTextNumber:goc_xoay')}</label>
                         <select value={rotation} onChange={(e) => setRotation(Number(e.target.value))} className="bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded h-8 px-2 text-sm outline-none">
-                            <option value="0">0 độ</option>
-                            <option value="90">90 độ</option>
-                            <option value="180">180 độ</option>
-                            <option value="270">270 độ</option>
+                            <option value="0">{t('preprocess.stickTextNumber:0_do')}</option>
+                            <option value="90">{t('preprocess.stickTextNumber:90_do')}</option>
+                            <option value="180">{t('preprocess.stickTextNumber:180_do')}</option>
+                            <option value="270">{t('preprocess.stickTextNumber:270_do')}</option>
                         </select>
                     </div>
                     <div className="flex flex-col gap-1">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase">Phạm vi trang</label>
+                        <label className="text-[10px] font-bold text-slate-500 uppercase">{t('preprocess.stickTextNumber:pham_vi_trang')}</label>
                         <select value={targetType} onChange={(e) => setTargetType(e.target.value as any)} className="bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded h-8 px-2 text-sm outline-none">
-                            <option value="all">Tất cả trang</option>
-                            <option value="even">Chỉ trang chẵn</option>
-                            <option value="odd">Chỉ trang lẻ</option>
-                            <option value="range">Tùy chọn...</option>
+                            <option value="all">{t('preprocess.stickTextNumber:tat_ca_trang')}</option>
+                            <option value="even">{t('preprocess.stickTextNumber:chi_trang_chan')}</option>
+                            <option value="odd">{t('preprocess.stickTextNumber:chi_trang_le')}</option>
+                            <option value="range">{t('preprocess.stickTextNumber:tuy_chon')}</option>
                         </select>
                     </div>
                 </div>
 
                 {targetType === 'range' && (
                     <div className="flex items-center gap-2 text-sm bg-slate-50 dark:bg-zinc-800 p-2 rounded border border-slate-200 dark:border-zinc-700">
-                        <span className="text-xs">Từ:</span>
+                        <span className="text-xs">{t('preprocess.stickTextNumber:tu')}</span>
                         <input type="number" min={1} value={rangeStart} onChange={e => setRangeStart(Number(e.target.value))} className="w-16 h-7 px-1 border border-slate-300 dark:border-white/10 rounded dark:bg-zinc-900" />
-                        <span className="text-xs">Đến:</span>
+                        <span className="text-xs">{t('preprocess.stickTextNumber:den')}</span>
                         <input type="number" min={1} value={rangeEnd} onChange={e => setRangeEnd(Number(e.target.value))} className="w-16 h-7 px-1 border border-slate-300 dark:border-white/10 rounded dark:bg-zinc-900" />
                     </div>
                 )}
@@ -413,7 +415,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                             : 'bg-sky-600 hover:bg-sky-700 text-white shadow-md'
                     }`}
                 >
-                    {isProcessing ? '⏳ Đang xử lý...' : 'Áp dụng Thay đổi'}
+                    {isProcessing ? t('preprocess.stickTextNumber:dang_xu_ly') : t('preprocess.stickTextNumber:ap_dung_thay_doi')}
                 </button>
             ) : (
                 <div className="mt-4 bg-white dark:bg-zinc-800 p-4 rounded-xl shadow-sm border border-emerald-200 dark:border-emerald-800/50 animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -422,12 +424,12 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
                             <span className="text-sm">✅</span>
                         </div>
                         <div className="flex flex-col">
-                            <h3 className="text-[13px] font-bold text-emerald-700 dark:text-emerald-400">Đóng dấu thành công!</h3>
-                            <p className="text-[10px] text-slate-500 leading-tight">File PDF đã được xử lý hoàn tất.</p>
+                            <h3 className="text-[13px] font-bold text-emerald-700 dark:text-emerald-400">{t('preprocess.stickTextNumber:dong_dau_thanh_cong')}</h3>
+                            <p className="text-[10px] text-slate-500 leading-tight">{t('preprocess.stickTextNumber:file_pdf_da_duoc_xu_ly_hoan_tat')}</p>
                         </div>
                     </div>
                     <button onClick={() => setIsSuccess(false)} className="mt-4 w-full text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 py-1 transition-colors">
-                        Tiếp tục với file khác
+                        {t('preprocess.stickTextNumber:tiep_tuc_voi_file_khac')}
                     </button>
                 </div>
             )}

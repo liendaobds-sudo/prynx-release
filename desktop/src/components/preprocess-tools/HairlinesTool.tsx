@@ -3,6 +3,7 @@ import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
+import { useTranslation } from 'react-i18next';
 
 const I = {
   Scan: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" x2="17" y1="12" y2="12"/></svg>,
@@ -23,6 +24,7 @@ const PRESETS = [
 ];
 
 export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
+  const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
   const [threshold, setThreshold] = useState(0.1);
   const [replaceWith, setReplaceWith] = useState(0.25);
@@ -37,7 +39,7 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
   const getWorkingFile = useWorkingPdf();
   const ensureUploaded = useCallback(async (): Promise<string> => {
     if (fileId) return fileId;
-    if (!pdfFile) throw new Error('Chưa có file PDF');
+    if (!pdfFile) throw new Error(t('preprocess.hairlines:chua_co_file_pdf'));
     const r = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(r.id);
     return r.id;
@@ -65,12 +67,12 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else { recipeRecorder.discardPending(); setError(data.error || data.detail || 'Thất bại'); }
+      } else { recipeRecorder.discardPending(); setError(data.error || data.detail || t('preprocess.hairlines:that_bai')); }
     } catch (e: any) { recipeRecorder.discardPending(); setError(e.message); }
     setRunning(false);
   };
 
-  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">Vui lòng mở file PDF trước</div>;
+  if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.hairlines:vui_long_mo_file_pdf_truoc')}</div>;
 
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
@@ -80,7 +82,7 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
         <div className="flex items-center justify-between mb-3">
           <button onClick={() => setIsSettingsOpen(!isSettingsOpen)} className="flex items-center gap-2 group">
             <span className="text-[11px] font-bold text-slate-600 tracking-wide group-hover:text-slate-800 dark:group-hover:text-zinc-300 transition-colors">
-              ✏️ CẤU HÌNH NÉT MẢNH
+              {t('preprocess.hairlines:cau_hinh_net_manh')}
             </span>
             <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform duration-200 ${isSettingsOpen ? 'rotate-180' : ''}`} />
           </button>
@@ -106,10 +108,10 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
 
             {/* Fine-tune inputs */}
             <div className="mt-3 p-3 bg-white dark:bg-zinc-800/50 rounded-lg border border-black/5 dark:border-white/5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2">Tinh chỉnh thủ công</span>
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-2">{t('preprocess.hairlines:tinh_chinh_thu_cong')}</span>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <span className="text-[9px] text-slate-400 block mb-0.5">Ngưỡng phát hiện</span>
+                  <span className="text-[9px] text-slate-400 block mb-0.5">{t('preprocess.hairlines:nguong_phat_hien')}</span>
                   <div className="flex items-center gap-1">
                     <input type="number" step="0.01" value={threshold}
                       onChange={e => { setThreshold(Number(e.target.value)); setSelectedPreset(''); }}
@@ -118,7 +120,7 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
                   </div>
                 </div>
                 <div>
-                  <span className="text-[9px] text-slate-400 block mb-0.5">Thay thế bằng</span>
+                  <span className="text-[9px] text-slate-400 block mb-0.5">{t('preprocess.hairlines:thay_the_bang')}</span>
                   <div className="flex items-center gap-1">
                     <input type="number" step="0.01" value={replaceWith}
                       onChange={e => { setReplaceWith(Number(e.target.value)); setSelectedPreset(''); }}
@@ -137,18 +139,18 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
       <div>
         <button onClick={run} disabled={running}
           className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
-          {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang quét & sửa...</>) : (<>🚀 Quét & Sửa nét mảnh</>)}
+          {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.hairlines:dang_quet_sua')}</>) : (<>{t('preprocess.hairlines:quet_sua_net_manh')}</>)}
         </button>
       </div>
 
       {/* ═══ RESULT ═══ */}
       {result && (
         <div className="p-3 rounded-lg border bg-emerald-500/10 border-emerald-500/20">
-          <h4 className="text-[11px] font-bold mb-1 text-emerald-600">✅ Thành công!</h4>
+          <h4 className="text-[11px] font-bold mb-1 text-emerald-600">{t('preprocess.hairlines:thanh_cong')}</h4>
           {result.log?.map((l: any, i: number) => (
             <p key={i} className="text-[10px] text-slate-600 dark:text-zinc-300">✅ {l.message} ({l.duration_ms}ms)</p>
           ))}
-          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">✅ File đã được cập nhật trên Viewer.</p>
+          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">{t('preprocess.hairlines:file_da_duoc_cap_nhat_tren_viewer')}</p>
         </div>
       )}
 

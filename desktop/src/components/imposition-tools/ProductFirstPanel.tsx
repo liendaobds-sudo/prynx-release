@@ -14,6 +14,7 @@ import {
     type RecommendationOption,
 } from '../../lib/imposerEngine/ProductAdvisor';
 import { PREDEFINED_SIZES } from './types';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
     /** Số trang nguồn (từ file). */
@@ -38,6 +39,7 @@ const PRODUCTS: { value: InNhanhBinding; label: string; desc: string }[] = [
 export default function ProductFirstPanel({
     pageCount, finishedWidthMm, finishedHeightMm, onOpenAdvanced, onApplied,
 }: Props) {
+  const { t } = useTranslation();
     const store = useContext(ImposerSettingsContext);
 
     const [binding, setBinding] = useState<InNhanhBinding>('saddle');
@@ -57,7 +59,7 @@ export default function ProductFirstPanel({
 
     const result = useMemo(() => {
         const sheet = PREDEFINED_SIZES[sheetKey];
-        if (!sheet) return { options: [], errors: ['Hãy chọn khổ giấy in nhanh.'] };
+        if (!sheet) return { options: [], errors: [t('imposition.productFirst:hay_chon_kho_giay_in_nhanh')] };
         return recommendInNhanh({
             printMethod: 'in_nhanh',
             binding,
@@ -84,7 +86,7 @@ export default function ProductFirstPanel({
     return (
         <div className="flex flex-col gap-4 p-3 text-slate-800 dark:text-zinc-200">
             <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">Sản phẩm (In nhanh)</div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">{t('imposition.productFirst:san_pham_in_nhanh')}</div>
                 <div className="grid grid-cols-1 gap-1.5">
                     {PRODUCTS.map(p => (
                         <button
@@ -103,19 +105,19 @@ export default function ProductFirstPanel({
 
             <div className="grid grid-cols-2 gap-3">
                 <label className="flex flex-col gap-1 text-[11px] text-slate-500">
-                    Khổ thành phẩm (mm)
+                    {t('imposition.productFirst:kho_thanh_pham_mm')}
                     <span className="flex items-center gap-1">
-                        <input type="number" className={numCls} value={finW || ''} onChange={e => setFinW(Number(e.target.value))} placeholder="rộng" />
+                        <input type="number" className={numCls} value={finW || ''} onChange={e => setFinW(Number(e.target.value))} placeholder={t('imposition.productFirst:rong')} />
                         <span>×</span>
                         <input type="number" className={numCls} value={finH || ''} onChange={e => setFinH(Number(e.target.value))} placeholder="cao" />
                     </span>
                 </label>
                 <label className="flex flex-col gap-1 text-[11px] text-slate-500">
-                    Số trang
+                    {t('imposition.productFirst:so_trang')}
                     <input type="number" className={numCls} value={pc || ''} onChange={e => setPc(Number(e.target.value))} />
                 </label>
                 <label className="flex flex-col gap-1 text-[11px] text-slate-500">
-                    Khổ giấy in nhanh
+                    {t('imposition.productFirst:kho_giay_in_nhanh')}
                     <select className="h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm" value={sheetKey} onChange={e => setSheetKey(e.target.value)}>
                         {sheetOptions.map(([k, v]) => (
                             <option key={k} value={k}>{k} ({v.w}×{v.h})</option>
@@ -123,12 +125,12 @@ export default function ProductFirstPanel({
                     </select>
                 </label>
                 <label className="flex flex-col gap-1 text-[11px] text-slate-500">
-                    Số lượng (cuốn)
+                    {t('imposition.productFirst:so_luong_cuon')}
                     <input type="number" className={numCls} value={quantity || ''} onChange={e => setQuantity(Number(e.target.value))} />
                 </label>
                 {binding === 'thread' && (
                     <label className="flex flex-col gap-1 text-[11px] text-slate-500">
-                        Trang/tép (bội 4)
+                        {t('imposition.productFirst:trang_tep_boi_4')}
                         <input type="number" step={4} min={4} className={numCls} value={foliosize}
                             onChange={e => setFoliosize(Math.max(4, Math.round(Number(e.target.value) / 4) * 4))} />
                     </label>
@@ -146,7 +148,7 @@ export default function ProductFirstPanel({
                     <div key={opt.id} className="rounded-lg border border-slate-200 dark:border-white/10 p-3">
                         <div className="flex items-center justify-between gap-2">
                             <div className="text-[13px] font-bold text-indigo-700 dark:text-indigo-400">
-                                {opt.strategy === 'multi_up' ? `${opt.copiesPerSheet} cuốn / tờ` : opt.strategy === 'cut_stack' ? 'Cắt-ráp-xấp' : '1 cuốn / tờ'}
+                                {opt.strategy === 'multi_up' ? `${opt.copiesPerSheet} cuốn / tờ` : opt.strategy === 'cut_stack' ? t('imposition.productFirst:cat_rap_xap') : t('imposition.productFirst:1_cuon_to')}
                             </div>
                             <div className="text-[11px] text-slate-400">hao ~{opt.wastePercent}%</div>
                         </div>
@@ -160,7 +162,7 @@ export default function ProductFirstPanel({
                                 ? 'bg-emerald-600 text-white'
                                 : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}
                         >
-                            {appliedId === opt.id ? '✓ Đã áp dụng' : 'Dùng thiết lập này'}
+                            {appliedId === opt.id ? t('imposition.productFirst:da_ap_dung') : t('imposition.productFirst:dung_thiet_lap_nay')}
                         </button>
                     </div>
                 ))}
@@ -168,7 +170,7 @@ export default function ProductFirstPanel({
 
             {onOpenAdvanced && (
                 <button onClick={onOpenAdvanced} className="text-[12px] text-indigo-600 hover:underline self-start">
-                    Chỉnh nâng cao →
+                    {t('imposition.productFirst:chinh_nang_cao')}
                 </button>
             )}
         </div>

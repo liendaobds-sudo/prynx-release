@@ -6,6 +6,7 @@ import { normalizeAndAddFiles, openFilePicker, saveBatch } from './imageBatch/he
 import { ImageBatchPreview } from './imageBatch/ImageBatchPreview';
 import { toast } from '../ui/Toast';
 import { RotateCcw } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 interface Props {
@@ -101,6 +102,7 @@ async function handleSave(tabId: string) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function UpscaleTool({ tabId, pdfFile }: Props) {
+  const { t } = useTranslation();
     const tabState = useUpscaleStore(state => state.tabs[tabId] || useUpscaleStore.getState().getTab(tabId));
     const storeActions = useUpscaleStore.getState();
     const { batchItems, selectedId, options, isProcessing, progress, error } = tabState;
@@ -168,14 +170,14 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
 
             {/* Options */}
             <div>
-                <ToolSectionLabel>Mức độ phóng to (Upscale Factor)</ToolSectionLabel>
+                <ToolSectionLabel>{t('preprocess.upscale:muc_do_phong_to_upscale_factor')}</ToolSectionLabel>
                 <select
                     value={options.scaleFactor}
                     onChange={(e) => setOption('scaleFactor', parseInt(e.target.value) as 2 | 4)}
                     className="w-full h-10 mt-1 bg-white dark:bg-[#27272a] border border-slate-200 dark:border-white/10 rounded-lg px-3 text-[13px] font-medium text-slate-700 dark:text-zinc-200 outline-none"
                 >
-                    <option value={2}>Gấp 2 lần (2x)</option>
-                    <option value={4}>Gấp 4 lần (4x)</option>
+                    <option value={2}>{t('preprocess.upscale:gap_2_lan_2x')}</option>
+                    <option value={4}>{t('preprocess.upscale:gap_4_lan_4x')}</option>
                 </select>
             </div>
 
@@ -185,7 +187,7 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
                         isProcessing || !hasPending
                         ? 'bg-slate-300 text-slate-500 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-400'
                         : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>
-                    {isProcessing ? '⏳ Đang xử lý...' : '🚀 Bắt Đầu Phóng To Ảnh'}
+                    {isProcessing ? t('preprocess.upscale:dang_xu_ly') : t('preprocess.upscale:bat_dau_phong_to_anh')}
                 </button>
                 {hasSuccess && (
                     <div className="flex gap-2">
@@ -194,9 +196,9 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
                             💾 Lưu tất cả ({batchItems.filter(i => i.status === 'success').length})
                         </button>
                         {batchItems.find(i => i.id === selectedId)?.status === 'success' && (
-                            <button onClick={() => selectedId && storeActions.undoItem(tabId, selectedId)} title="Hoàn tác để chỉnh sửa lại"
+                            <button onClick={() => selectedId && storeActions.undoItem(tabId, selectedId)} title={t('preprocess.upscale:hoan_tac_de_chinh_sua_lai')}
                                 className="px-4 h-11 rounded-xl text-[13px] font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-sm flex items-center justify-center gap-1.5 transition-all">
-                                <RotateCcw className="w-4 h-4" /> Hoàn tác
+                                <RotateCcw className="w-4 h-4" /> {t('preprocess.upscale:hoan_tac')}
                             </button>
                         )}
                     </div>
@@ -223,17 +225,18 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export function UpscalePreview({ tabId }: { tabId: string }) {
+  const { t } = useTranslation();
     return (
         <ImageBatchPreview
             tabId={tabId}
             store={useUpscaleStore}
             labels={{
-                resultBadge: '🪄 ĐÃ PHÓNG TO',
-                originalBadge: '👁 ẢNH GỐC',
-                emptyTitle: 'Phóng to ảnh AI',
-                emptyHint: <>Kéo thả ảnh vào đây hoặc bấm để chọn file.<br/>Hỗ trợ JPG, PNG, TIFF, WebP, BMP.</>,
+                resultBadge: t('preprocess.upscale:da_phong_to'),
+                originalBadge: t('preprocess.upscale:anh_goc'),
+                emptyTitle: t('preprocess.upscale:phong_to_anh_ai'),
+                emptyHint: <>{t('preprocess.upscale:keo_tha_anh_vao_day_hoac_bam_de_chon')}<br/>{t('preprocess.upscale:ho_tro_jpg_png_tiff_webp_bmp')}</>,
                 emptyIcon: '🪄',
-                processingText: 'Đang phóng to ảnh...',
+                processingText: t('preprocess.upscale:dang_phong_to_anh'),
             }}
         />
     );

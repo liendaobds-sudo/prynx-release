@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { ToolHelp } from '../lib/toolHelp';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   help: ToolHelp;
@@ -13,6 +14,7 @@ interface Props {
  * Dùng chung cho mọi tool; nội dung lấy từ lib/toolHelp.
  */
 export default function ToolHelpModal({ help, icon, onClose }: Props) {
+  const { t } = useTranslation();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
@@ -42,7 +44,7 @@ export default function ToolHelpModal({ help, icon, onClose }: Props) {
           <button
             type="button"
             onClick={onClose}
-            title="Đóng (Esc)"
+            title={t('misc.toolHelp:dong_esc')}
             className="shrink-0 text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
           >
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>

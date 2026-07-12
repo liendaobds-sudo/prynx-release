@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { getToolHelp } from '../../lib/toolHelp';
 import ToolHelpModal from '../ToolHelpModal';
+import { useTranslation } from 'react-i18next';
 
 // ==================== RichSelect (Custom Dropdown) ====================
 export const RichSelect = ({ value, onChange, options, compact = false }: { value: string, onChange: (v: string) => void, options: {value: string, title: string, desc?: string}[], compact?: boolean }) => {
@@ -114,6 +115,7 @@ export const DisabledItem = ({ label }: { label: string }) => (
 
 // ==================== ToolItem ====================
 export const ToolItem = ({ icon, label, desc, info, helpKey, onClick, hoverColor, active, isFavorite, onToggleFavorite }: { icon: string, label: string, desc?: string, info?: string, helpKey?: string, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void }) => {
+  const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const help = getToolHelp(helpKey);
     const hasHelp = !!help;
@@ -138,7 +140,7 @@ export const ToolItem = ({ icon, label, desc, info, helpKey, onClick, hoverColor
                     <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
-                        title={isFavorite ? 'Bỏ khỏi Yêu thích' : 'Thêm vào Yêu thích'}
+                        title={isFavorite ? t('imposition.sharedUI:bo_khoi_yeu_thich') : t('imposition.sharedUI:them_vao_yeu_thich')}
                         className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-full transition-colors ${isFavorite ? 'text-amber-400' : 'text-slate-300 dark:text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-400'}`}
                     >
                         <svg className="w-4 h-4" fill={isFavorite ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.5a.56.56 0 011.04 0l2.12 4.3 4.75.69c.46.07.64.63.31.95l-3.44 3.35.81 4.73c.08.46-.4.81-.81.59L12 16.98l-4.25 2.23c-.41.22-.89-.13-.81-.59l.81-4.73-3.44-3.35a.56.56 0 01.31-.95l4.75-.69 2.12-4.3z" /></svg>
@@ -148,7 +150,7 @@ export const ToolItem = ({ icon, label, desc, info, helpKey, onClick, hoverColor
                     <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
-                        title="Giới thiệu công cụ"
+                        title={t('imposition.sharedUI:gioi_thieu_cong_cu')}
                         className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
                     >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>

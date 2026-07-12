@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useRecentFiles } from '../lib/useRecentFiles';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 import RecentFilesGrid from './RecentFiles/RecentFilesGrid';
+import { useTranslation } from 'react-i18next';
 
 interface Props {
   onOpenApp: (appId: AppToolId, payload?: any) => void;
@@ -35,6 +36,7 @@ interface ToolItemProps {
 }
 
 function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onToggleFavorite }: ToolItemProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   if (isMiniMode) {
@@ -81,7 +83,7 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); onToggleFavorite(toolKey(tool)); }}
-          title={isFavorite ? 'Bỏ khỏi Yêu thích' : 'Thêm vào Yêu thích'}
+          title={isFavorite ? t('tabs.home:bo_khoi_yeu_thich') : t('tabs.home:them_vao_yeu_thich')}
           className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-full transition-colors ${isFavorite ? 'text-amber-400' : 'text-slate-300 dark:text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-400'}`}
         >
           <svg className="w-4 h-4" fill={isFavorite ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.5a.56.56 0 011.04 0l2.12 4.3 4.75.69c.46.07.64.63.31.95l-3.44 3.35.81 4.73c.08.46-.4.81-.81.59L12 16.98l-4.25 2.23c-.41.22-.89-.13-.81-.59l.81-4.73-3.44-3.35a.56.56 0 01.31-.95l4.75-.69 2.12-4.3z" /></svg>
@@ -89,7 +91,7 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
-          title="Giới thiệu công cụ"
+          title={t('tabs.home:gioi_thieu_cong_cu')}
           className="shrink-0 w-6 h-6 flex items-center justify-center rounded-full text-slate-400 hover:text-indigo-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
@@ -109,6 +111,7 @@ function ToolItem({ tool, isFavorite, isMiniMode, isCompactMode, onOpenApp, onTo
 }
 
 function DisabledItem({ tool, isMiniMode, isCompactMode }: { tool: ToolDefinition; isMiniMode: boolean; isCompactMode: boolean }) {
+  const { t } = useTranslation();
   if (isCompactMode) {
     return (
       <div className="w-full h-9 rounded-lg flex items-center shrink-0 justify-start px-2 opacity-50 cursor-not-allowed grayscale" title={`${tool.title} (Sắp ra)`}>
@@ -125,7 +128,7 @@ function DisabledItem({ tool, isMiniMode, isCompactMode }: { tool: ToolDefinitio
           <div className="flex-1">
             <div className="font-bold text-[14px] text-slate-500 dark:text-zinc-400 leading-tight">{tool.title}</div>
           </div>
-          <div className="text-[11px] text-slate-400 dark:text-zinc-600 font-medium whitespace-nowrap">(sắp ra)</div>
+          <div className="text-[11px] text-slate-400 dark:text-zinc-600 font-medium whitespace-nowrap">{t('tabs.home:sap_ra')}</div>
         </>
       )}
     </div>
@@ -155,6 +158,7 @@ function SectionHeader({ id, title, isCollapsed, isMiniMode, isCompactMode, onTo
 }
 
 export default function HomeTab({ onOpenApp, isActive = true }: Props) {
+  const { t } = useTranslation();
     const rightPanelWidth = useAppSettingsStore(state => state.homeToolMenuWidth);
     const setRightPanelWidth = useAppSettingsStore(state => state.setHomeToolMenuWidth);
     const collapsedSections = useAppSettingsStore(state => state.collapsedSections);
@@ -238,7 +242,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                                 try {
                                     const selected = await open({
                                         multiple: false,
-                                        filters: [{ name: 'Tài liệu & Hình ảnh', extensions: ['pdf', 'png', 'jpg', 'jpeg'] }]
+                                        filters: [{ name: t('tabs.home:tai_lieu_hinh_anh'), extensions: ['pdf', 'png', 'jpg', 'jpeg'] }]
                                     });
                                     if (selected && typeof selected === 'string') {
                                         const { stat } = await import('@tauri-apps/plugin-fs');
@@ -277,12 +281,12 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                         </div>
                         {/* TEXT */}
                         <div className="text-center xl:text-left flex-1 min-w-0">
-                            <h2 className={`font-black text-slate-800 dark:text-white tracking-tight ${hasRecentFiles ? 'text-2xl mb-1' : 'text-2xl md:text-3xl mb-2 md:mb-3'}`}>Mở File PDF</h2>
-                            <p className="text-slate-500 dark:text-zinc-400 font-medium text-[13px] md:text-[14px] leading-relaxed w-full">Click chọn hoặc kéo thả File PDF vào vùng này để bắt đầu.</p>
+                            <h2 className={`font-black text-slate-800 dark:text-white tracking-tight ${hasRecentFiles ? 'text-2xl mb-1' : 'text-2xl md:text-3xl mb-2 md:mb-3'}`}>{t('tabs.home:mo_file_pdf')}</h2>
+                            <p className="text-slate-500 dark:text-zinc-400 font-medium text-[13px] md:text-[14px] leading-relaxed w-full">{t('tabs.home:click_chon_hoac_keo_tha_file_pdf_vao')}</p>
                             <p className="mt-2 text-[12px] md:text-[13px] text-slate-400 dark:text-zinc-500 font-medium flex items-center gap-1.5 justify-center xl:justify-start">
-                                <span>Nhấn</span>
+                                <span>{t('tabs.home:nhan')}</span>
                                 <kbd className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-white/15 text-[11px] font-semibold text-slate-600 dark:text-zinc-300">Ctrl + N</kbd>
-                                <span>để tạo trang trắng mới.</span>
+                                <span>{t('tabs.home:de_tao_trang_trang_moi')}</span>
                             </p>
                         </div>
                     </div>
@@ -315,12 +319,12 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                             <input
                                 value={toolQuery}
                                 onChange={e => setToolQuery(e.target.value)}
-                                placeholder="Tìm công cụ..."
-                                aria-label="Tìm công cụ"
+                                placeholder={t('tabs.home:tim_cong_cu')}
+                                aria-label={t('tabs.home:tim_cong_cu_2')}
                                 className="w-full h-9 pl-8 pr-7 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-zinc-900 text-[13px] focus:outline-none focus:border-indigo-400"
                             />
                             {toolQuery && (
-                                <button onClick={() => setToolQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title="Xoá tìm kiếm">
+                                <button onClick={() => setToolQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" title={t('tabs.home:xoa_tim_kiem')}>
                                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                                 </button>
                             )}
@@ -339,7 +343,7 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                             <React.Fragment key="favorites">
                                 <SectionHeader
                                     id="favorites"
-                                    title={isCompactMode ? "⭐ YÊU THÍCH" : "⭐ CÔNG CỤ YÊU THÍCH"}
+                                    title={isCompactMode ? t('tabs.home:yeu_thich') : t('tabs.home:cong_cu_yeu_thich')}
                                     isCollapsed={isCollapsed}
                                     isMiniMode={isMiniMode}
                                     isCompactMode={isCompactMode}

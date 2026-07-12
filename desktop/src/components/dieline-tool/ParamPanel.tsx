@@ -7,6 +7,7 @@ import React from 'react';
 import { useBoxStore } from '../../store/useBoxStore';
 import { BoxParams } from '../../lib/dieline/types';
 import MockupArtworkPanel from './MockupArtworkPanel';
+import { useTranslation } from 'react-i18next';
 
 
 /** Only numeric params for sliders */
@@ -37,6 +38,7 @@ const ADVANCED_PARAMS: ParamConfig[] = [
 
 
 export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
+  const { t } = useTranslation();
     const { params, setParam, setParams, dieline, clampVersion } = useBoxStore();
     const [showAdvanced, setShowAdvanced] = React.useState(false);
     const [showExtra, setShowExtra] = React.useState(false);
@@ -67,12 +69,12 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             {/* Box Type Selector */}
             <div className="dt-box-type-section">
                 <label className="dt-section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>Loại khuôn</span>
+                    <span>{t('dieline.param:loai_khuon')}</span>
                     {onBack && (
                         <button
                             type="button"
                             onClick={onBack}
-                            title="Chọn lại loại hộp"
+                            title={t('dieline.param:chon_lai_loai_hop')}
                             style={{
                                 background: 'transparent', border: 'none', cursor: 'pointer',
                                 color: 'var(--dt-accent)', fontSize: '18px', lineHeight: 1, padding: '0 2px',
@@ -87,14 +89,14 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     value={params.boxType}
                     onChange={(e) => setParam('boxType', e.target.value as BoxParams['boxType'])}
                 >
-                    <option value="rte">📦 Hộp nắp cài sole</option>
-                    <option value="slb">🔒 Hộp đáy gài</option>
-                    <option value="gable">🏠 Hộp quai xách</option>
-                    <option value="paper_bag">🛍️ Túi giấy</option>
-                    <option value="cup_sleeve">🥤 Bọc ly</option>
-                    <option value="pizza">🍕 Hộp pizza</option>
-                    <option value="envelope">✉️ Bì thư</option>
-                    <option value="tray">🗃️ Hộp diêm / Khay</option>
+                    <option value="rte">{t('dieline.param:hop_nap_cai_sole')}</option>
+                    <option value="slb">{t('dieline.param:hop_day_gai')}</option>
+                    <option value="gable">{t('dieline.param:hop_quai_xach')}</option>
+                    <option value="paper_bag">{t('dieline.param:tui_giay')}</option>
+                    <option value="cup_sleeve">{t('dieline.param:boc_ly')}</option>
+                    <option value="pizza">{t('dieline.param:hop_pizza')}</option>
+                    <option value="envelope">{t('dieline.param:bi_thu')}</option>
+                    <option value="tray">{t('dieline.param:hop_diem_khay')}</option>
                 </select>
             </div>
 
@@ -109,23 +111,23 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             {(isBox || isPaperBag) && !isCupSleeve && !isPizza && !isEnvelope && !isTray && (
                 <div className="dt-param-slider">
                     <div className="dt-param-header">
-                        <label className="dt-param-label">Vị trí tai dán (G)</label>
+                        <label className="dt-param-label">{t('dieline.param:vi_tri_tai_dan_g')}</label>
                     </div>
                     <div className="dt-glue-side-toggle">
                         <button
                             className={`dt-glue-side-btn ${params.glueSide === 'left' ? 'active' : ''}`}
                             onClick={() => setParam('glueSide', 'left')}
                         >
-                            ◀ Trái
+                            {t('dieline.param:trai')}
                         </button>
                         <button
                             className={`dt-glue-side-btn ${params.glueSide === 'right' ? 'active' : ''}`}
                             onClick={() => setParam('glueSide', 'right')}
                         >
-                            Phải ▶
+                            {t('dieline.param:phai')}
                         </button>
                     </div>
-                    <p className="dt-param-desc">Tai dán keo nằm bên trái hoặc phải khuôn</p>
+                    <p className="dt-param-desc">{t('dieline.param:tai_dan_keo_nam_ben_trai_hoac_phai')}</p>
                 </div>
             )}
 
@@ -133,7 +135,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             {(isBox || isPaperBag) && !isCupSleeve && !isPizza && !isEnvelope && !isTray && (<>
                 <div className="dt-param-slider">
                     <div className="dt-param-header">
-                        <label className="dt-param-label">Thứ tự mặt</label>
+                        <label className="dt-param-label">{t('dieline.param:thu_tu_mat')}</label>
                     </div>
                     <div className="dt-glue-side-toggle">
                         <button
@@ -149,20 +151,20 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             L•W•L•W
                         </button>
                     </div>
-                    <p className="dt-param-desc">Hông trước (WLWL) hay Mặt chính trước (LWLW)</p>
+                    <p className="dt-param-desc">{t('dieline.param:hong_truoc_wlwl_hay_mat_chinh_truoc')}</p>
                 </div>
             </>)}
 
             {/* ─── Cup Sleeve Params ─── */}
             {isCupSleeve && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">Thông số ly</label>
+                    <label className="dt-section-label">{t('dieline.param:thong_so_ly')}</label>
                     <div className="dt-param-grid">
                         {[
-                            { key: 'cupD1' as const, label: '⌀ Đáy (D1)', min: 30, max: 200, step: 1 },
-                            { key: 'cupD2' as const, label: '⌀ Miệng (D2)', min: 40, max: 250, step: 1 },
+                            { key: 'cupD1' as const, label: t('dieline.param:day_d1'), min: 30, max: 200, step: 1 },
+                            { key: 'cupD2' as const, label: t('dieline.param:mieng_d2'), min: 40, max: 250, step: 1 },
                             { key: 'cupH' as const, label: 'Cao (H)', min: 20, max: 300, step: 1 },
-                            { key: 'G' as const, label: 'Mí dán (G)', min: 0, max: 30, step: 1 },
+                            { key: 'G' as const, label: t('dieline.param:mi_dan_g'), min: 0, max: 30, step: 1 },
                         ].map((cfg) => (
                             <div key={cfg.key} className="dt-param-cell">
                                 <label className="dt-param-cell-label">{cfg.label}</label>
@@ -193,7 +195,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     </div>
                     <div className="dt-param-grid" style={{ marginTop: '0.25rem' }}>
                         <div className="dt-param-cell">
-                            <label className="dt-param-cell-label">% Bao phủ</label>
+                            <label className="dt-param-cell-label">{t('dieline.param:bao_phu')}</label>
                             <input
                                 type="number"
                                 defaultValue={params.cupCoverage}
@@ -220,45 +222,45 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     </div>
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-header">
-                            <label className="dt-param-label">Loại chiều cao</label>
+                            <label className="dt-param-label">{t('dieline.param:loai_chieu_cao')}</label>
                         </div>
                         <div className="dt-glue-side-toggle">
                             <button
                                 className={`dt-glue-side-btn ${params.cupHeightType === 'slant' ? 'active' : ''}`}
                                 onClick={() => setParam('cupHeightType', 'slant')}
                             >
-                                Chiều nghiêng
+                                {t('dieline.param:chieu_nghieng')}
                             </button>
                             <button
                                 className={`dt-glue-side-btn ${params.cupHeightType === 'vertical' ? 'active' : ''}`}
                                 onClick={() => setParam('cupHeightType', 'vertical')}
                             >
-                                Chiều thẳng đứng
+                                {t('dieline.param:chieu_thang_dung')}
                             </button>
                         </div>
                     </div>
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-header">
-                            <label className="dt-param-label">Vị trí vạt dán</label>
+                            <label className="dt-param-label">{t('dieline.param:vi_tri_vat_dan')}</label>
                         </div>
                         <div className="dt-glue-side-toggle">
                             <button
                                 className={`dt-glue-side-btn ${params.cupFlapPosition === 'right' ? 'active' : ''}`}
                                 onClick={() => setParam('cupFlapPosition', 'right')}
                             >
-                                Bên phải
+                                {t('dieline.param:ben_phai')}
                             </button>
                             <button
                                 className={`dt-glue-side-btn ${params.cupFlapPosition === 'left' ? 'active' : ''}`}
                                 onClick={() => setParam('cupFlapPosition', 'left')}
                             >
-                                Bên trái
+                                {t('dieline.param:ben_trai')}
                             </button>
                             <button
                                 className={`dt-glue-side-btn ${params.cupFlapPosition === 'none' ? 'active' : ''}`}
                                 onClick={() => setParam('cupFlapPosition', 'none')}
                             >
-                                Không có
+                                {t('dieline.param:khong_co')}
                             </button>
                         </div>
                     </div>
@@ -268,16 +270,16 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             {/* ─── Envelope Params ─── */}
             {isEnvelope && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">Kích thước có sẵn</label>
+                    <label className="dt-section-label">{t('dieline.param:kich_thuoc_co_san')}</label>
                     <select
                         className="dt-param-select"
                         style={{ marginBottom: '0.75rem' }}
                         value={
                             [
-                                { label: '12×22 (nắp 30)', w: 220, h: 120, fh: 30, style: 'wallet' as const },
-                                { label: '16×23 (nắp 30)', w: 230, h: 160, fh: 30, style: 'wallet' as const },
-                                { label: '11×19 (nắp 25)', w: 190, h: 110, fh: 25, style: 'wallet' as const },
-                                { label: '25×34 (nắp 30)', w: 340, h: 250, fh: 30, style: 'pocket' as const },
+                                { label: t('dieline.param:12_22_nap_30'), w: 220, h: 120, fh: 30, style: 'wallet' as const },
+                                { label: t('dieline.param:16_23_nap_30'), w: 230, h: 160, fh: 30, style: 'wallet' as const },
+                                { label: t('dieline.param:11_19_nap_25'), w: 190, h: 110, fh: 25, style: 'wallet' as const },
+                                { label: t('dieline.param:25_34_nap_30'), w: 340, h: 250, fh: 30, style: 'pocket' as const },
                             ].findIndex(p => p.w === params.envW && p.h === params.envH && p.style === params.envStyle)
                         }
                         onChange={(e) => {
@@ -298,25 +300,25 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             }
                         }}
                     >
-                        <option value={-1}>Tùy chỉnh</option>
-                        <option value={0}>12×22 cm — nắp 3cm (Ngang)</option>
-                        <option value={1}>16×23 cm — nắp 3cm (Ngang)</option>
-                        <option value={2}>11×19 cm — nắp 2.5cm (Ngang)</option>
-                        <option value={3}>25×34 cm — nắp 3cm (Dọc)</option>
+                        <option value={-1}>{t('dieline.param:tuy_chinh')}</option>
+                        <option value={0}>{t('dieline.param:12_22_cm_nap_3cm_ngang')}</option>
+                        <option value={1}>{t('dieline.param:16_23_cm_nap_3cm_ngang')}</option>
+                        <option value={2}>{t('dieline.param:11_19_cm_nap_2_5cm_ngang')}</option>
+                        <option value={3}>{t('dieline.param:25_34_cm_nap_3cm_doc')}</option>
                     </select>
 
-                    <label className="dt-section-label">Kích thước tùy chỉnh</label>
+                    <label className="dt-section-label">{t('dieline.param:kich_thuoc_tuy_chinh')}</label>
                     <div className="dt-param-grid">
                         {(() => {
                             const flapRef = params.envH; // Cả ngang lẫn dọc đều dùng envH làm flapRef
                             const autoFH = params.envFlapShape === 'straight' ? 30 : Math.round(flapRef * 0.45);
                             const autoSF = Math.max(10, Math.min(15, Math.round(flapRef * 0.12)));
                             return [
-                                { key: 'envW' as const, label: 'Rộng (W)', min: 80, max: 500, step: 1 },
+                                { key: 'envW' as const, label: t('dieline.param:rong_w'), min: 80, max: 500, step: 1 },
                                 { key: 'envH' as const, label: 'Cao (H)', min: 50, max: 400, step: 1 },
-                                { key: 'envFH' as const, label: 'Nắp dán (FH)', min: 0, max: 200, step: 1 },
-                                { key: 'envSF' as const, label: 'Tai hông (SF)', min: 0, max: 100, step: 1 },
-                                { key: 'T' as const, label: 'Dày (T)', min: 0.2, max: 3, step: 0.05 },
+                                { key: 'envFH' as const, label: t('dieline.param:nap_dan_fh'), min: 0, max: 200, step: 1 },
+                                { key: 'envSF' as const, label: t('dieline.param:tai_hong_sf'), min: 0, max: 100, step: 1 },
+                                { key: 'T' as const, label: t('dieline.param:day_t'), min: 0.2, max: 3, step: 0.05 },
                             ].map((cfg) => {
                                 const rawVal = params[cfg.key] as number;
                                 const isAuto = (cfg.key === 'envFH' || cfg.key === 'envSF') && rawVal === 0;
@@ -359,26 +361,26 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     {/* Flap Shape */}
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-header">
-                            <label className="dt-param-label">Dạng nắp dán</label>
+                            <label className="dt-param-label">{t('dieline.param:dang_nap_dan')}</label>
                         </div>
                         <div className="dt-glue-side-toggle">
                             <button
                                 className={`dt-glue-side-btn ${params.envFlapShape === 'pointed' ? 'active' : ''}`}
                                 onClick={() => setParam('envFlapShape', 'pointed')}
                             >
-                                △ Nhọn
+                                {t('dieline.param:nhon')}
                             </button>
                             <button
                                 className={`dt-glue-side-btn ${params.envFlapShape === 'rounded' ? 'active' : ''}`}
                                 onClick={() => setParam('envFlapShape', 'rounded')}
                             >
-                                ◠ Tròn
+                                {t('dieline.param:tron')}
                             </button>
                             <button
                                 className={`dt-glue-side-btn ${params.envFlapShape === 'straight' ? 'active' : ''}`}
                                 onClick={() => setParam('envFlapShape', 'straight')}
                             >
-                                ▭ Thẳng
+                                {t('dieline.param:thang')}
                             </button>
                         </div>
                     </div>
@@ -386,7 +388,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     {/* Envelope Style */}
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-header">
-                            <label className="dt-param-label">Kiểu bì thư</label>
+                            <label className="dt-param-label">{t('dieline.param:kieu_bi_thu')}</label>
                         </div>
                         <div className="dt-glue-side-toggle">
                             <button
@@ -399,16 +401,16 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 className={`dt-glue-side-btn ${params.envStyle === 'pocket' ? 'active' : ''}`}
                                 onClick={() => setParam('envStyle', 'pocket')}
                             >
-                                Dọc
+                                {t('dieline.param:doc')}
                             </button>
                         </div>
-                        <p className="dt-param-desc">Ngang (phổ biến) hoặc Dọc (mặt trước/sau trái-phải)</p>
+                        <p className="dt-param-desc">{t('dieline.param:ngang_pho_bien_hoac_doc_mat_truoc_sau')}</p>
                     </div>
 
                     {/* Window Toggle */}
                     <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
                         <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('envWindow', !params.envWindow)}>
-                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Cửa sổ trong suốt</label>
+                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:cua_so_trong_suot')}</label>
                             <input type="checkbox" checked={params.envWindow as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                         </div>
                     </div>
@@ -418,10 +420,10 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         params.envWindow && (
                             <div className="dt-param-grid" style={{ marginTop: '0.25rem' }}>
                                 {[
-                                    { key: 'envWindowW' as const, label: 'Rộng cửa sổ', min: 10, max: 300 },
-                                    { key: 'envWindowH' as const, label: 'Cao cửa sổ', min: 10, max: 200 },
-                                    { key: 'envWindowX' as const, label: 'Cách trái (X)', min: 5, max: 400 },
-                                    { key: 'envWindowY' as const, label: 'Cách dưới (Y)', min: 5, max: 300 },
+                                    { key: 'envWindowW' as const, label: t('dieline.param:rong_cua_so'), min: 10, max: 300 },
+                                    { key: 'envWindowH' as const, label: t('dieline.param:cao_cua_so'), min: 10, max: 200 },
+                                    { key: 'envWindowX' as const, label: t('dieline.param:cach_trai_x'), min: 5, max: 400 },
+                                    { key: 'envWindowY' as const, label: t('dieline.param:cach_duoi_y'), min: 5, max: 300 },
                                 ].map((cfg) => (
                                     <div key={cfg.key} className="dt-param-cell">
                                         <label className="dt-param-cell-label">{cfg.label}</label>
@@ -458,19 +460,19 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             {/* ─── Tray Params ─── L, W, D, T + G (dầm) + TH (mí gập) */}
             {isTray && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">Kích thước chính</label>
+                    <label className="dt-section-label">{t('dieline.param:kich_thuoc_chinh')}</label>
                     <p className="dt-param-desc" style={{ marginBottom: '0.5rem', opacity: 0.7 }}>
-                        L = Dài · W = Rộng · D = Cao vách · G = Dầm · TH = Mí gập · Mí vỏ = Mí dán vỏ bao
+                        {t('dieline.param:l_dai_w_rong_d_cao_vach_g_dam_th_mi_gap')}
                     </p>
                     <div className="dt-param-grid">
                         {[
-                            { key: 'L' as const, label: 'Dài (L)', min: 30, max: 500, step: 1 },
-                            { key: 'W' as const, label: 'Rộng (W)', min: 20, max: 400, step: 1 },
-                            { key: 'D' as const, label: 'Cao vách (D)', min: 10, max: 200, step: 1 },
-                            { key: 'T' as const, label: 'Dày giấy (T)', min: 0.2, max: 3, step: 0.05 },
-                            { key: 'G' as const, label: 'Dầm (G)', min: 3, max: 30, step: 1 },
-                            { key: 'TH' as const, label: 'Mí gập (TH)', min: 5, max: 40, step: 1 },
-                            { key: 'sleeveGlue' as const, label: 'Mí dán vỏ', min: 5, max: 30, step: 1 },
+                            { key: 'L' as const, label: t('dieline.param:dai_l'), min: 30, max: 500, step: 1 },
+                            { key: 'W' as const, label: t('dieline.param:rong_w'), min: 20, max: 400, step: 1 },
+                            { key: 'D' as const, label: t('dieline.param:cao_vach_d'), min: 10, max: 200, step: 1 },
+                            { key: 'T' as const, label: t('dieline.param:day_giay_t'), min: 0.2, max: 3, step: 0.05 },
+                            { key: 'G' as const, label: t('dieline.param:dam_g'), min: 3, max: 30, step: 1 },
+                            { key: 'TH' as const, label: t('dieline.param:mi_gap_th'), min: 5, max: 40, step: 1 },
+                            { key: 'sleeveGlue' as const, label: t('dieline.param:mi_dan_vo'), min: 5, max: 30, step: 1 },
                         ].map((cfg) => (
                             <div key={cfg.key} className="dt-param-cell">
                                 <label className="dt-param-cell-label">{cfg.label}</label>
@@ -505,9 +507,9 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             {/* Main Params — 2×2 grid (box/bag types only) */}
             {!isCupSleeve && !isEnvelope && !isTray && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">Kích thước chính</label>
+                    <label className="dt-section-label">{t('dieline.param:kich_thuoc_chinh')}</label>
                     <p className="dt-param-desc" style={{ marginBottom: '0.5rem', opacity: 0.7 }}>
-                        {isPaperBag ? 'L = Rộng mặt · W = Rộng hông · D = Cao thân túi' : 'L = Dài · W = Rộng · D = Cao'}
+                        {isPaperBag ? t('dieline.param:l_rong_mat_w_rong_hong_d_cao_than_tui') : t('dieline.param:l_dai_w_rong_d_cao')}
                     </p>
                     <div className="dt-param-grid">
                         {MAIN_PARAMS.map((cfg) => (
@@ -546,18 +548,18 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 const gh1 = Math.round(params.W / 2);
                 const gh2 = Math.round(0.9 * gh1);
                 const designNums: { key: 'HFH' | 'HW' | 'HHL'; label: string; defVal: number; min: number; max: number }[] = [
-                    { key: 'HFH', label: 'Cao tay cầm', defVal: gh2, min: 0, max: 100 },
-                    { key: 'HW', label: 'Rộng lỗ quai', defVal: Math.round(2 / 5 * params.L), min: 0, max: Math.max(20, params.L - 20) },
-                    { key: 'HHL', label: 'Cao lỗ quai', defVal: Math.round(gh2 / 2), min: 0, max: 60 },
+                    { key: 'HFH', label: t('dieline.param:cao_tay_cam'), defVal: gh2, min: 0, max: 100 },
+                    { key: 'HW', label: t('dieline.param:rong_lo_quai'), defVal: Math.round(2 / 5 * params.L), min: 0, max: Math.max(20, params.L - 20) },
+                    { key: 'HHL', label: t('dieline.param:cao_lo_quai'), defVal: Math.round(gh2 / 2), min: 0, max: 60 },
                 ];
                 return (
                     <div className="dt-params-section">
-                        <label className="dt-section-label">Kiểu nắp & quai xách</label>
+                        <label className="dt-section-label">{t('dieline.param:kieu_nap_quai_xach')}</label>
                         <div className="dt-param-slider">
-                            <div className="dt-param-header"><label className="dt-param-label">Kiểu mái</label></div>
+                            <div className="dt-param-header"><label className="dt-param-label">{t('dieline.param:kieu_mai')}</label></div>
                             <div className="dt-glue-side-toggle">
-                                <button className={`dt-glue-side-btn ${params.gableStyle === 'flat' ? 'active' : ''}`} onClick={() => setParam('gableStyle', 'flat')}>Mái bằng</button>
-                                <button className={`dt-glue-side-btn ${params.gableStyle === 'pitched' ? 'active' : ''}`} onClick={() => setParam('gableStyle', 'pitched')}>Mái dốc</button>
+                                <button className={`dt-glue-side-btn ${params.gableStyle === 'flat' ? 'active' : ''}`} onClick={() => setParam('gableStyle', 'flat')}>{t('dieline.param:mai_bang')}</button>
+                                <button className={`dt-glue-side-btn ${params.gableStyle === 'pitched' ? 'active' : ''}`} onClick={() => setParam('gableStyle', 'pitched')}>{t('dieline.param:mai_doc')}</button>
                             </div>
                         </div>
                         <div className="dt-param-grid" style={{ marginTop: '0.5rem' }}>
@@ -578,17 +580,17 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             ))}
                         </div>
                         <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
-                            <div className="dt-param-header"><label className="dt-param-label">Dạng lỗ quai</label></div>
+                            <div className="dt-param-header"><label className="dt-param-label">{t('dieline.param:dang_lo_quai')}</label></div>
                             <div className="dt-glue-side-toggle">
                                 <button className={`dt-glue-side-btn ${params.handleShape === 'oval' ? 'active' : ''}`} onClick={() => setParam('handleShape', 'oval')}>⬭ Oval</button>
-                                <button className={`dt-glue-side-btn ${params.handleShape === 'roundRect' ? 'active' : ''}`} onClick={() => setParam('handleShape', 'roundRect')}>▢ Bo tròn</button>
+                                <button className={`dt-glue-side-btn ${params.handleShape === 'roundRect' ? 'active' : ''}`} onClick={() => setParam('handleShape', 'roundRect')}>{t('dieline.param:bo_tron')}</button>
                             </div>
                         </div>
                         <div className="dt-param-slider" style={{ marginTop: '0.5rem' }}>
-                            <div className="dt-param-header"><label className="dt-param-label">Vị trí lỗ</label></div>
+                            <div className="dt-param-header"><label className="dt-param-label">{t('dieline.param:vi_tri_lo')}</label></div>
                             <div className="dt-glue-side-toggle">
-                                <button className={`dt-glue-side-btn ${params.handleY === 'bottom' ? 'active' : ''}`} onClick={() => setParam('handleY', 'bottom')}>Sát đáy</button>
-                                <button className={`dt-glue-side-btn ${params.handleY === 'center' ? 'active' : ''}`} onClick={() => setParam('handleY', 'center')}>Giữa</button>
+                                <button className={`dt-glue-side-btn ${params.handleY === 'bottom' ? 'active' : ''}`} onClick={() => setParam('handleY', 'bottom')}>{t('dieline.param:sat_day')}</button>
+                                <button className={`dt-glue-side-btn ${params.handleY === 'center' ? 'active' : ''}`} onClick={() => setParam('handleY', 'center')}>{t('dieline.param:giua')}</button>
                             </div>
                         </div>
                     </div>
@@ -598,15 +600,15 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             {/* ─── Pizza: tính năng riêng (luôn hiện khi chọn hộp pizza) ─── */}
             {isPizza && (
                 <div className="dt-params-section">
-                    <label className="dt-section-label">Tính năng hộp pizza</label>
+                    <label className="dt-section-label">{t('dieline.param:tinh_nang_hop_pizza')}</label>
                     <div className="dt-param-grid">
                         <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaVent', !params.pizzaVent)}>
-                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Lỗ thông hơi</label>
+                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:lo_thong_hoi')}</label>
                             <input type="checkbox" checked={params.pizzaVent as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                         </div>
                         {params.pizzaVent && (
                             <div className="dt-param-cell">
-                                <label className="dt-param-cell-label">⌀ Lỗ thông hơi</label>
+                                <label className="dt-param-cell-label">{t('dieline.param:lo_thong_hoi_2')}</label>
                                 <input
                                     type="number"
                                     defaultValue={params.pizzaVentD === 0 ? 6 : params.pizzaVentD}
@@ -620,11 +622,11 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             </div>
                         )}
                         <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaFrontLock', !params.pizzaFrontLock)}>
-                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Lưỡi gài khóa nắp</label>
+                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:luoi_gai_khoa_nap')}</label>
                             <input type="checkbox" checked={params.pizzaFrontLock as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                         </div>
                         <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('pizzaCornerLock', !params.pizzaCornerLock)}>
-                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Khóa góc xếp chồng</label>
+                            <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:khoa_goc_xep_chong')}</label>
                             <input type="checkbox" checked={params.pizzaCornerLock as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                         </div>
                     </div>
@@ -647,8 +649,8 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         {(isPaperBag
                             ? [
                                 { key: 'C' as const, label: 'Dung sai (C)', min: 0.2, max: 2, step: 0.1, unit: 'mm' },
-                                { key: 'G' as const, label: 'Mép keo (G)', min: 8, max: 25, step: 1, unit: 'mm' },
-                                { key: 'TH' as const, label: 'Mí gập miệng', min: 0, max: 80, step: 1, unit: 'mm' },
+                                { key: 'G' as const, label: t('dieline.param:mep_keo_g'), min: 8, max: 25, step: 1, unit: 'mm' },
+                                { key: 'TH' as const, label: t('dieline.param:mi_gap_mieng'), min: 0, max: 80, step: 1, unit: 'mm' },
                             ]
                             : isGable
                                 ? ADVANCED_PARAMS.filter(p => p.key !== 'TH') // Gable không có tai đút
@@ -688,7 +690,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         return (
                             <div className="dt-param-grid" style={{ marginTop: '0.25rem' }}>
                                 <div className="dt-param-cell">
-                                    <label className="dt-param-cell-label">Cao tai bụi (DFH)</label>
+                                    <label className="dt-param-cell-label">{t('dieline.param:cao_tai_bui_dfh')}</label>
                                     <input
                                         type="number"
                                         defaultValue={params.DFH === 0 ? defDFH : params.DFH}
@@ -723,7 +725,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     className="dt-advanced-toggle"
                     onClick={() => setShowExtra(!showExtra)}
                 >
-                    {showExtra ? '▼' : '▶'} {isGable ? 'Tinh chỉnh khóa & ngàm (nâng cao)' : 'Thông số đáy & nắp'}
+                    {showExtra ? '▼' : '▶'} {isGable ? t('dieline.param:tinh_chinh_khoa_ngam_nang_cao') : t('dieline.param:thong_so_day_nap')}
                 </button>
 
                 {showExtra && (
@@ -731,7 +733,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         <div className="dt-param-grid">
                             {/* SLP Input */}
                             <div className="dt-param-cell">
-                                <label className="dt-param-cell-label">Số cặp đáy</label>
+                                <label className="dt-param-cell-label">{t('dieline.param:so_cap_day')}</label>
                                 <input
                                     type="number"
                                     defaultValue={params.SLP}
@@ -759,14 +761,14 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             {/* Lock Tab Toggle + Params — chỉ SLB */}
                             {isSLB && (
                                 <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('lockTab', !params.lockTab)}>
-                                    <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Lưỡi khóa nắp</label>
+                                    <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:luoi_khoa_nap')}</label>
                                     <input type="checkbox" checked={params.lockTab as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                                 </div>
                             )}
                             {isSLB && params.lockTab && (() => {
                                 const lockParams: { key: 'LTW' | 'LTH'; label: string; min: number; max: number }[] = [
-                                    { key: 'LTW', label: 'Rộng lưỡi khóa', min: 5, max: 40 },
-                                    { key: 'LTH', label: 'Cao lưỡi khóa', min: 5, max: 40 },
+                                    { key: 'LTW', label: t('dieline.param:rong_luoi_khoa'), min: 5, max: 40 },
+                                    { key: 'LTH', label: t('dieline.param:cao_luoi_khoa'), min: 5, max: 40 },
                                 ];
                                 return lockParams.map((lp) => (
                                     <div key={lp.key} className="dt-param-cell">
@@ -803,10 +805,10 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 const h2 = Math.round(0.9 * h1);
                                 const defHH = h1 + h2;
                                 const gableParams: { key: 'HH' | 'SLW' | 'SLH' | 'TRW'; label: string; defVal: number; min: number; max: number }[] = [
-                                    { key: 'HH', label: 'Cao tai hộp', defVal: defHH, min: 0, max: 120 },
-                                    { key: 'TRW', label: 'Rộng ngàm', defVal: Math.round(params.L / 9), min: 0, max: Math.round(params.L / 4) },
-                                    { key: 'SLH', label: 'Sâu rãnh (%)', defVal: 85, min: 50, max: 100 },
-                                    { key: 'SLW', label: 'Rộng rãnh', defVal: 3, min: 1, max: 10 },
+                                    { key: 'HH', label: t('dieline.param:cao_tai_hop'), defVal: defHH, min: 0, max: 120 },
+                                    { key: 'TRW', label: t('dieline.param:rong_ngam'), defVal: Math.round(params.L / 9), min: 0, max: Math.round(params.L / 4) },
+                                    { key: 'SLH', label: t('dieline.param:sau_ranh'), defVal: 85, min: 50, max: 100 },
+                                    { key: 'SLW', label: t('dieline.param:rong_ranh'), defVal: 3, min: 1, max: 10 },
                                 ];
                                 return gableParams.map((gp) => (
                                     <div key={gp.key} className="dt-param-cell">
@@ -858,13 +860,13 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         <div className="dt-param-grid">
                             {/* Handle Holes Toggle */}
                             <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('handleHoles', !params.handleHoles)}>
-                                <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>Lỗ xỏ dây</label>
+                                <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:lo_xo_day')}</label>
                                 <input type="checkbox" checked={params.handleHoles as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                             </div>
 
                             {/* BF */}
                             <div className="dt-param-cell">
-                                <label className="dt-param-cell-label">Cao đáy (BF)</label>
+                                <label className="dt-param-cell-label">{t('dieline.param:cao_day_bf')}</label>
                                 <input
                                     type="number"
                                     defaultValue={params.BF === 0 ? Math.round(params.W * 0.85) : params.BF}
@@ -892,7 +894,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                             {/* Handle Hole Params — only if handleHoles is on */}
                             {params.handleHoles && (<>
                                 <div className="dt-param-cell">
-                                    <label className="dt-param-cell-label">⌀ Lỗ quai (HR)</label>
+                                    <label className="dt-param-cell-label">{t('dieline.param:lo_quai_hr')}</label>
                                     <input
                                         type="number"
                                         defaultValue={params.HR === 0 ? 2.5 : params.HR}
@@ -917,7 +919,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                     <span className="dt-param-cell-unit">mm</span>
                                 </div>
                                 <div className="dt-param-cell">
-                                    <label className="dt-param-cell-label">Cách mép trên (HM)</label>
+                                    <label className="dt-param-cell-label">{t('dieline.param:cach_mep_tren_hm')}</label>
                                     <input
                                         type="number"
                                         defaultValue={params.HM === 0 ? 25 : params.HM}
@@ -942,7 +944,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                     <span className="dt-param-cell-unit">mm</span>
                                 </div>
                                 <div className="dt-param-cell">
-                                    <label className="dt-param-cell-label">K/c 2 lỗ (HS)</label>
+                                    <label className="dt-param-cell-label">{t('dieline.param:k_c_2_lo_hs')}</label>
                                     <input
                                         type="number"
                                         defaultValue={params.HS === 0 ? Math.round(params.L * 0.35) : params.HS}
@@ -974,7 +976,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
 
             {/* ─── 3D Mockup Settings — GỘP 1 NƠI: tải ảnh + chỉnh transform/mask ─── */}
             <div className="dt-params-section" style={{ marginTop: '1rem', borderTop: '1px dashed var(--dt-border)', paddingTop: '1rem' }}>
-                <label className="dt-section-label">🎨 Thiết kế 3D (Mockup)</label>
+                <label className="dt-section-label">{t('dieline.param:thiet_ke_3d_mockup')}</label>
                 <p className="dt-param-desc" style={{ marginBottom: '0.5rem' }}>
                     Tải ảnh thiết kế (JPEG/PNG) dán lên mặt ngoài hộp, kèm chỉnh tỉ lệ,
                     vị trí, xoay, ảnh mặt trong và mặt nạ gia công.

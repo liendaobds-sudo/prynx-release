@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { authenticatedFetch, getApiUrl } from '../lib/api';
 import { useWorkspaceStore } from '../stores/useWorkspaceStore';
+import { useTranslation } from 'react-i18next';
 
 interface IccProfile {
     id: string;
@@ -10,6 +11,7 @@ interface IccProfile {
 }
 
 export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string }) {
+  const { t } = useTranslation();
     const {
         viewerActivePage: activePage, viewerNumPages: numPages,
         softProofActive, setSoftProofActive,
@@ -39,7 +41,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
 
     const doSoftProof = useCallback(async () => {
         if (!fileId) {
-            setWarning('Chưa có file. Hãy mở một file PDF trước.');
+            setWarning(t('misc.softProof:chua_co_file_hay_mo_mot_file_pdf_truoc'));
             return;
         }
         setLoading(true);
@@ -77,7 +79,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
             setProfileName(data.profile_name || '');
             if (data.warning) setWarning(data.warning);
         } catch (err: any) {
-            setWarning(err.message || 'Lỗi khi tạo Soft-Proof');
+            setWarning(err.message || t('misc.softProof:loi_khi_tao_soft_proof'));
         } finally {
             setLoading(false);
         }
@@ -102,7 +104,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
         <div className="flex flex-col gap-3" style={{ padding: '12px 0' }}>
             {/* Profile Selection */}
             <div>
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest block mb-1">ICC Profile đầu ra</label>
+                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-widest block mb-1">{t('misc.softProof:icc_profile_dau_ra')}</label>
                 <select
                     value={selectedProfile}
                     onChange={(e) => setSelectedProfile(e.target.value)}
@@ -110,11 +112,11 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
                 >
                     {profiles.map(p => (
                         <option key={p.id} value={p.id} disabled={!p.available}>
-                            {p.name} {!p.available ? '(chưa cài)' : ''}
+                            {p.name} {!p.available ? t('misc.softProof:chua_cai') : ''}
                         </option>
                     ))}
                     {profiles.length === 0 && (
-                        <option value="fogra39">FOGRA39 (đang tải...)</option>
+                        <option value="fogra39">{t('misc.softProof:fogra39_dang_tai')}</option>
                     )}
                 </select>
                 {profiles.find(p => p.id === selectedProfile) && (
@@ -146,7 +148,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
                     onChange={(e) => setShowGamut(e.target.checked)}
                     className="w-3.5 h-3.5 rounded border-slate-300 text-emerald-500 focus:ring-emerald-500 cursor-pointer"
                 />
-                <span className="text-[12px] text-slate-600 dark:text-zinc-300">Hiện cảnh báo Gamut</span>
+                <span className="text-[12px] text-slate-600 dark:text-zinc-300">{t('misc.softProof:hien_canh_bao_gamut')}</span>
                 <div className="w-3 h-3 rounded-sm bg-[#00FF00] ring-1 ring-black/10 ml-auto"></div>
             </label>
 
@@ -158,7 +160,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
                     className="flex-1 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                     {loading ? (
-                        <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang xử lý...</>
+                        <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('misc.softProof:dang_xu_ly')}</>
                     ) : (
                         <>🔍 Soft-Proof</>
                     )}
@@ -168,7 +170,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
                         onClick={clearSoftProof}
                         className="px-3 py-2 bg-slate-200 hover:bg-slate-300 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 rounded-lg text-[12px] font-bold transition-colors"
                     >
-                        Tắt
+                        {t('misc.softProof:tat')}
                     </button>
                 )}
             </div>
@@ -186,7 +188,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
                     </div>
                     {showGamut && (
                         <div className="flex items-center justify-between">
-                            <span className="text-[11px] text-slate-500">Ngoài gamut:</span>
+                            <span className="text-[11px] text-slate-500">{t('misc.softProof:ngoai_gamut')}</span>
                             <span className={`text-[11px] font-bold ${outOfGamutPct > 5 ? 'text-red-500' : outOfGamutPct > 1 ? 'text-amber-500' : 'text-emerald-500'}`}>
                                 {outOfGamutPct}%
                             </span>
@@ -204,7 +206,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
 
             {/* Help */}
             <div className="text-[10px] text-slate-400 leading-tight mt-1">
-                Soft-Proof mô phỏng cách file sẽ trông khi in. Gamut Warning highlight vùng có màu ngoài phạm vi in (xanh neon).
+                {t('misc.softProof:soft_proof_mo_phong_cach_file_se_trong')}
             </div>
         </div>
     );

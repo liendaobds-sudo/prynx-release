@@ -18,6 +18,7 @@ import {
   importPresetFromFile 
 } from '../../lib/presetManager';
 import { toast } from '../ui/Toast';
+import { useTranslation } from 'react-i18next';
 
 // Hiển thị read-only 1 nhóm thiết lập (paper/marks/booklet/nup).
 function DetailSection({ title, obj }: { title: string; obj?: Record<string, any> }) {
@@ -40,13 +41,14 @@ function DetailSection({ title, obj }: { title: string; obj?: Record<string, any
 }
 
 function PresetDetails({ preset }: { preset: ImpositionPreset }) {
+  const { t } = useTranslation();
   return (
     <div className="mt-2 p-2.5 rounded-lg bg-slate-50 dark:bg-zinc-900/60 border border-slate-200 dark:border-white/10">
-      <div className="text-[11px] mb-2"><span className="text-slate-400">Chế độ: </span>
-        <span className="font-semibold text-slate-700 dark:text-zinc-200">{preset.taskMode === 'booklet' ? 'Bình sách (Booklet)' : 'Bình N-Up'}</span>
+      <div className="text-[11px] mb-2"><span className="text-slate-400">{t('imposition.presetSelector:che_do')} </span>
+        <span className="font-semibold text-slate-700 dark:text-zinc-200">{preset.taskMode === 'booklet' ? t('imposition.presetSelector:binh_sach_booklet') : t('imposition.presetSelector:binh_n_up')}</span>
       </div>
-      <DetailSection title="Giấy" obj={preset.paper} />
-      <DetailSection title="Dấu cắt" obj={preset.marks} />
+      <DetailSection title={t('imposition.presetSelector:giay')} obj={preset.paper} />
+      <DetailSection title={t('imposition.presetSelector:dau_cat')} obj={preset.marks} />
       {preset.taskMode === 'booklet' && <DetailSection title="Booklet" obj={preset.booklet} />}
       {preset.taskMode === 'nup' && <DetailSection title="N-Up" obj={preset.nup} />}
     </div>
@@ -61,6 +63,7 @@ interface Props {
 }
 
 export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCurrentSettings }: Props) {
+  const { t } = useTranslation();
   const [presets, setPresets] = useState<ImpositionPreset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [mode, setMode] = useState<'list' | 'save'>('list');
@@ -164,7 +167,7 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
         {/* ── Header ── */}
         <div className="flex items-center justify-between shrink-0">
           <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <span className="text-xl">💾</span> Preset Sản phẩm
+            <span className="text-xl">💾</span> {t('imposition.presetSelector:preset_san_pham')}
           </h3>
           <button onClick={onClose} className="p-1.5 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-700 transition-colors">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
@@ -178,22 +181,22 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
             /* ── SAVE MODE ── */
             <div className="space-y-4">
               <div>
-                <label className={labelCls}>Tên Preset *</label>
+                <label className={labelCls}>{t('imposition.presetSelector:ten_preset')}</label>
                 <input 
                   ref={nameInputRef}
                   value={newName} 
                   onChange={e => setNewName(e.target.value)}
-                  placeholder="VD: Catalog A5 - Ghim 2 dây"
+                  placeholder={t('imposition.presetSelector:vd_catalog_a5_ghim_2_day')}
                   className={inputCls}
                   onKeyDown={e => { if (e.key === 'Enter') handleSaveNew(); }}
                 />
               </div>
               <div>
-                <label className={labelCls}>Ghi chú (tuỳ chọn)</label>
+                <label className={labelCls}>{t('imposition.presetSelector:ghi_chu_tuy_chon')}</label>
                 <input 
                   value={newDesc} 
                   onChange={e => setNewDesc(e.target.value)}
-                  placeholder="VD: In offset SRA3, ghim 2 dây"
+                  placeholder={t('imposition.presetSelector:vd_in_offset_sra3_ghim_2_day')}
                   className={inputCls}
                   onKeyDown={e => { if (e.key === 'Enter') handleSaveNew(); }}
                 />
@@ -208,7 +211,7 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
             ) : presets.length === 0 ? (
               <div className="text-center py-12 text-slate-400">
                 <div className="text-4xl mb-3">📋</div>
-                <div className="text-sm font-semibold text-slate-500">Chưa có preset nào</div>
+                <div className="text-sm font-semibold text-slate-500">{t('imposition.presetSelector:chua_co_preset_nao')}</div>
                 <div className="text-[12px] mt-1.5">Bấm "Lưu thiết lập hiện tại" để tạo mới</div>
               </div>
             ) : (
@@ -247,7 +250,7 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
                             {preset.description && <div className="text-[12px] text-slate-500 truncate mt-0.5">{preset.description}</div>}
                             <div className="flex items-center gap-2.5 mt-2">
                               <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-zinc-700 text-slate-500 dark:text-zinc-400">
-                                {preset.taskMode === 'booklet' ? '📚 Sách' : '🎴 N-Up'}
+                                {preset.taskMode === 'booklet' ? t('imposition.presetSelector:sach') : '🎴 N-Up'}
                               </span>
                               <span className="text-[11px] text-slate-500">{preset.paper.formsize} • {preset.paper.bleed}mm bleed</span>
                             </div>
@@ -260,44 +263,44 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
                         <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
                           <button
                             onClick={() => setExpandedId(expandedId === preset.id ? null : preset.id)}
-                            className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-indigo-600 transition-colors" title={expandedId === preset.id ? 'Thu gọn' : 'Xem chi tiết thiết lập'}
+                            className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-indigo-600 transition-colors" title={expandedId === preset.id ? t('imposition.presetSelector:thu_gon') : t('imposition.presetSelector:xem_chi_tiet_thiet_lap')}
                           >
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={`transition-transform ${expandedId === preset.id ? 'rotate-90' : ''}`}><polyline points="9 18 15 12 9 6"/></svg>
                           </button>
                           <button 
                             onClick={() => { setEditingId(preset.id); setEditName(preset.name); }}
-                            className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-blue-600 transition-colors" title="Đổi tên"
+                            className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-blue-600 transition-colors" title={t('imposition.presetSelector:doi_ten')}
                           >
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                           </button>
                           {confirmUpdateId === preset.id ? (
                             <div className="flex items-center gap-1.5 ml-1">
-                              <button onClick={() => handleUpdateFromCurrent(preset)} className="px-2 py-1 text-[11px] font-bold bg-indigo-600 text-white rounded-md whitespace-nowrap">Ghi đè</button>
-                              <button onClick={() => setConfirmUpdateId(null)} className="px-2 py-1 text-[11px] font-medium bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300 rounded-md">Huỷ</button>
+                              <button onClick={() => handleUpdateFromCurrent(preset)} className="px-2 py-1 text-[11px] font-bold bg-indigo-600 text-white rounded-md whitespace-nowrap">{t('imposition.presetSelector:ghi_de')}</button>
+                              <button onClick={() => setConfirmUpdateId(null)} className="px-2 py-1 text-[11px] font-medium bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300 rounded-md">{t('imposition.presetSelector:huy')}</button>
                             </div>
                           ) : (
                             <button
                               onClick={() => setConfirmUpdateId(preset.id)}
-                              className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-indigo-600 transition-colors" title="Cập nhật preset bằng thiết lập hiện tại"
+                              className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-indigo-600 transition-colors" title={t('imposition.presetSelector:cap_nhat_preset_bang_thiet_lap_hien_tai')}
                             >
                               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
                             </button>
                           )}
                           <button 
                             onClick={() => exportPresetAsFile(preset)}
-                            className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-emerald-600 transition-colors" title="Xuất file JSON"
+                            className="w-7 h-7 rounded-md hover:bg-slate-200 dark:hover:bg-zinc-600 flex items-center justify-center text-slate-500 hover:text-emerald-600 transition-colors" title={t('imposition.presetSelector:xuat_file_json')}
                           >
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                           </button>
                           {confirmDeleteId === preset.id ? (
                             <div className="flex items-center gap-1.5 ml-1">
-                              <button onClick={() => handleDelete(preset.id)} className="px-2 py-1 text-[11px] font-bold bg-red-500 text-white rounded-md">Xóa</button>
-                              <button onClick={() => setConfirmDeleteId(null)} className="px-2 py-1 text-[11px] font-medium bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300 rounded-md">Huỷ</button>
+                              <button onClick={() => handleDelete(preset.id)} className="px-2 py-1 text-[11px] font-bold bg-red-500 text-white rounded-md">{t('imposition.presetSelector:xoa')}</button>
+                              <button onClick={() => setConfirmDeleteId(null)} className="px-2 py-1 text-[11px] font-medium bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300 rounded-md">{t('imposition.presetSelector:huy')}</button>
                             </div>
                           ) : (
                             <button 
                               onClick={() => setConfirmDeleteId(preset.id)}
-                              className="w-7 h-7 rounded-md hover:bg-red-100 dark:hover:bg-red-500/20 flex items-center justify-center text-slate-500 hover:text-red-500 transition-colors" title="Xóa"
+                              className="w-7 h-7 rounded-md hover:bg-red-100 dark:hover:bg-red-500/20 flex items-center justify-center text-slate-500 hover:text-red-500 transition-colors" title={t('imposition.presetSelector:xoa')}
                             >
                               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                             </button>
@@ -322,8 +325,8 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
           {mode === 'save' ? (
             <>
               <div className="flex-1" />
-              <Button variant="secondary" onClick={() => setMode('list')}>Huỷ</Button>
-              <Button variant="primary" onClick={handleSaveNew} disabled={!newName.trim()}>Lưu Preset</Button>
+              <Button variant="secondary" onClick={() => setMode('list')}>{t('imposition.presetSelector:huy')}</Button>
+              <Button variant="primary" onClick={handleSaveNew} disabled={!newName.trim()}>{t('imposition.presetSelector:luu_preset')}</Button>
             </>
           ) : (
             <>
@@ -332,12 +335,12 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
                 className="text-[13px] font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-zinc-700 px-3 py-2 rounded-lg transition-colors flex items-center gap-2" 
                 onClick={() => importInputRef.current?.click()}
               >
-                📥 Nhập file JSON
+                {t('imposition.presetSelector:nhap_file_json')}
               </button>
               <div className="flex-1" />
-              <Button variant="secondary" onClick={onClose}>Đóng</Button>
+              <Button variant="secondary" onClick={onClose}>{t('imposition.presetSelector:dong')}</Button>
               <Button variant="primary" onClick={() => setMode('save')} className="whitespace-nowrap">
-                <span className="mr-1.5">+</span> Lưu thiết lập
+                <span className="mr-1.5">+</span> {t('imposition.presetSelector:luu_thiet_lap')}
               </Button>
             </>
           )}

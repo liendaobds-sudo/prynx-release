@@ -30,6 +30,7 @@ import UpscaleTool from '../../preprocess-tools/UpscaleTool';
 
 import PageToolsPanel from '../../preprocess-tools/PageToolsPanel';
 import { PREPROCESS_ROUTER_TOOLS } from './preprocessRouterTools';
+import { useTranslation } from 'react-i18next';
 
 // ─── Tool Header Definitions ────────────────────────────────────────────────
 const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }> = {
@@ -78,6 +79,7 @@ export default function PreprocessingRouter({
     onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
     onIssueSelect, onOpenOutputPreview, onFileFixed,
 }: PreprocessingRouterProps) {
+  const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
         spawnNewTabByTool: state.spawnNewTabByTool, setSpawnNewTab: state.setSpawnNewTab,
         shuffleSettings: state.shuffleSettings, setShuffleSettings: state.setShuffleSettings,
@@ -111,14 +113,14 @@ export default function PreprocessingRouter({
                 <div>
                     <ShuffleTool settings={s.shuffleSettings} onChange={s.setShuffleSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label={t('imposition.preprocessingRouter:mo_ket_qua_sang_tab_moi')} />
                     </div>
                     <button 
                         onClick={() => onStartShuffle && onStartShuffle({ ...s.shuffleSettings, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
-                        {isProcessing ? 'Đang áp dụng...' : 'Thực Thi Xáo Trộn'}
+                        {isProcessing ? t('imposition.preprocessingRouter:dang_ap_dung') : t('imposition.preprocessingRouter:thuc_thi_xao_tron')}
                     </button>
                 </div>
             )}
@@ -127,14 +129,14 @@ export default function PreprocessingRouter({
                 <div>
                     <PageResizerTool settings={s.resizeSettings} onChange={s.setResizeSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label={t('imposition.preprocessingRouter:mo_ket_qua_sang_tab_moi')} />
                     </div>
                     <button 
                         onClick={() => onStartResize && onStartResize({ ...s.resizeSettings, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
-                        {isProcessing ? 'Đang áp dụng...' : 'Thực Thi Đổi Khổ'}
+                        {isProcessing ? t('imposition.preprocessingRouter:dang_ap_dung') : t('imposition.preprocessingRouter:thuc_thi_doi_kho')}
                     </button>
                 </div>
             )}
@@ -143,14 +145,14 @@ export default function PreprocessingRouter({
                 <div>
                     <TrimShiftTool settings={s.trimShiftSettings} onChange={s.setTrimShiftSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label={t('imposition.preprocessingRouter:mo_ket_qua_sang_tab_moi')} />
                     </div>
                     <button
                         onClick={() => onStartTrimShift && onStartTrimShift({ ...s.trimShiftSettings, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true })}
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
-                        {isProcessing ? 'Đang áp dụng...' : 'Thực Thi Trim & Shift'}
+                        {isProcessing ? t('imposition.preprocessingRouter:dang_ap_dung') : t('imposition.preprocessingRouter:thuc_thi_trim_shift')}
                     </button>
                 </div>
             )}
@@ -159,14 +161,14 @@ export default function PreprocessingRouter({
                 <div>
                     <SplitTool settings={s.splitSettings} onChange={s.setSplitSettings} />
                     <div className="mt-4 mb-2">
-                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label="Mở kết quả sang Tab mới" />
+                        <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label={t('imposition.preprocessingRouter:mo_ket_qua_sang_tab_moi')} />
                     </div>
                     <button 
                         onClick={() => onStartSplit && onStartSplit({ ...s.splitSettings, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true })} 
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold transition-colors disabled:opacity-50"
                     >
-                        {isProcessing ? 'Đang áp dụng...' : 'Thực Thi Tách File'}
+                        {isProcessing ? t('imposition.preprocessingRouter:dang_ap_dung') : t('imposition.preprocessingRouter:thuc_thi_tach_file')}
                     </button>
                 </div>
             )}

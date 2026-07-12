@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../Button';
+import { useTranslation } from 'react-i18next';
 
 export type PaperUsage = 'in_nhanh' | 'offset' | 'diecut' | 'nup';
 
@@ -87,6 +88,7 @@ export function PaperSettingsDialog({
     onDeletePreset: (id: string) => void;
     currentFormsize: string;
 }) {
+  const { t } = useTranslation();
     const [presetName, setPresetName] = useState("");
     const [w, setW] = useState(width);
     const [h, setH] = useState(height);
@@ -157,7 +159,7 @@ export function PaperSettingsDialog({
                 
                 <div className="flex items-center justify-between">
                     <h3 className="text-lg font-bold text-slate-900 dark:text-white">
-                        {isEditing ? 'Cập nhật Khổ Giấy' : 'Tùy chỉnh Khổ Giấy'}
+                        {isEditing ? t('imposition.paperSettingsUI:cap_nhat_kho_giay') : t('imposition.paperSettingsUI:tuy_chinh_kho_giay')}
                     </h3>
                     <button onClick={onClose} className="p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-700 transition-colors">
                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
@@ -168,38 +170,38 @@ export function PaperSettingsDialog({
                     {/* Hàng 0: Mục đích sử dụng (đa lựa chọn) */}
                     <div className="flex gap-4 p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-lg border border-slate-200 dark:border-white/10">
                         <div className="flex-1">
-                            <label className={labelCls}>Mục đích In (chọn nhiều)</label>
+                            <label className={labelCls}>{t('imposition.paperSettingsUI:muc_dich_in_chon_nhieu')}</label>
                             <div className="flex flex-wrap gap-x-4 gap-y-2 mt-2">
                                 <label className="flex items-center gap-2 cursor-pointer group">
                                     <input type="checkbox" checked={usages.includes('in_nhanh')} onChange={() => toggleUsage('in_nhanh')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
-                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Bình Sách – In Nhanh (Digital)</span>
+                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:binh_sach_in_nhanh_digital')}</span>
                                 </label>
                                 <label className="flex items-center gap-2 cursor-pointer group">
                                     <input type="checkbox" checked={usages.includes('offset')} onChange={() => toggleUsage('offset')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
-                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Bình Sách – In Offset</span>
+                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:binh_sach_in_offset')}</span>
                                 </label>
                                 <label className="flex items-center gap-2 cursor-pointer group">
                                     <input type="checkbox" checked={usages.includes('diecut')} onChange={() => toggleUsage('diecut')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
-                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Bế tem / Die-cut</span>
+                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:be_tem_die_cut')}</span>
                                 </label>
                                 <label className="flex items-center gap-2 cursor-pointer group">
                                     <input type="checkbox" checked={usages.includes('nup')} onChange={() => toggleUsage('nup')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
-                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Bình bài xén / N-Up</span>
+                                    <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:binh_bai_xen_n_up')}</span>
                                 </label>
                             </div>
                             {usages.length === 0 && (
-                                <p className="text-[11px] text-red-500 mt-2">Chọn ít nhất một mục đích in để lưu.</p>
+                                <p className="text-[11px] text-red-500 mt-2">{t('imposition.paperSettingsUI:chon_it_nhat_mot_muc_dich_in_de_luu')}</p>
                             )}
                         </div>
                     </div>
 
                     {/* Hàng 1: Tên khổ giấy */}
                     <div>
-                        <label className={labelCls}>Tên Khổ Giấy {isEditing ? '' : '(Để trống nếu không muốn lưu Preset)'}</label>
+                        <label className={labelCls}>Tên Khổ Giấy {isEditing ? '' : t('imposition.paperSettingsUI:de_trong_neu_khong_muon_luu_preset')}</label>
                         <input 
                             type="text" 
                             value={presetName} onChange={e => setPresetName(e.target.value)} 
-                            placeholder={isEditing ? "Nhập tên khổ giấy..." : "VD: Decal Đế Vàng 32x43..."}
+                            placeholder={isEditing ? t('imposition.paperSettingsUI:nhap_ten_kho_giay') : t('imposition.paperSettingsUI:vd_decal_de_vang_32x43')}
                             className={inputCls}
                             autoFocus={!isEditing}
                         />
@@ -207,14 +209,14 @@ export function PaperSettingsDialog({
 
                     {/* Hàng 2: Kích thước */}
                     <div>
-                        <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2 mb-3">Kích Thước Khổ Giấy (mm)</h4>
+                        <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2 mb-3">{t('imposition.paperSettingsUI:kich_thuoc_kho_giay_mm')}</h4>
                         <div className="grid grid-cols-2 gap-4">
                             <div>
-                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">Chiều Rộng (W)</label>
+                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:chieu_rong_w')}</label>
                                 <input type="number" step="0.5" value={w} onChange={e => setW(Number(e.target.value))} className={inputCls} />
                             </div>
                             <div>
-                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">Chiều Cao (H)</label>
+                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:chieu_cao_h')}</label>
                                 <input type="number" step="0.5" value={h} onChange={e => setH(Number(e.target.value))} className={inputCls} />
                             </div>
                         </div>
@@ -222,15 +224,15 @@ export function PaperSettingsDialog({
 
                     {/* Hàng 3: Vùng lề */}
                     <div>
-                        <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2 mb-3">Vùng An Toàn / Vùng In (Lề mm)</h4>
+                        <h4 className="text-sm font-semibold text-slate-700 dark:text-zinc-300 border-b border-slate-100 dark:border-zinc-700 pb-2 mb-3">{t('imposition.paperSettingsUI:vung_an_toan_vung_in_le_mm')}</h4>
                         {usages.includes('offset') ? (
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Nhíp máy in (Gripper)</label>
+                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:nhip_may_in_gripper')}</label>
                                     <input type="number" step="1" value={gripper} onChange={e => setGripper(Number(e.target.value))} className={inputCls} />
                                 </div>
                                 <div>
-                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Các lề còn lại (Top/Left/Right)</label>
+                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:cac_le_con_lai_top_left_right')}</label>
                                     <input type="number" step="0.5" value={mT} onChange={e => {
                                         const v = Number(e.target.value);
                                         setMT(v); setML(v); setMR(v); setMB(v); // Store the same value across all margins as asked
@@ -240,19 +242,19 @@ export function PaperSettingsDialog({
                         ) : (
                             <div className="grid grid-cols-4 gap-3">
                                 <div>
-                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Trên (Top)</label>
+                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:tren_top')}</label>
                                     <input type="number" step="0.5" value={mT} onChange={e => setMT(Number(e.target.value))} className={inputCls} />
                                 </div>
                                 <div>
-                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Dưới (Bottom)</label>
+                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:duoi_bottom')}</label>
                                     <input type="number" step="0.5" value={mB} onChange={e => setMB(Number(e.target.value))} className={inputCls} />
                                 </div>
                                 <div>
-                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Trái (Left)</label>
+                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:trai_left')}</label>
                                     <input type="number" step="0.5" value={mL} onChange={e => setML(Number(e.target.value))} className={inputCls} />
                                 </div>
                                 <div>
-                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">Phải (Right)</label>
+                                    <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.paperSettingsUI:phai_right')}</label>
                                     <input type="number" step="0.5" value={mR} onChange={e => setMR(Number(e.target.value))} className={inputCls} />
                                 </div>
                             </div>
@@ -263,15 +265,15 @@ export function PaperSettingsDialog({
 
                     {/* Hàng 4: Tùy chọn margin mode */}
                     <div className="bg-slate-50 dark:bg-zinc-800/50 rounded-lg p-4 border border-slate-200 dark:border-white/10 mt-1">
-                        <label className="text-[11px] font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wide block mb-3">Cách tính Lề (Margin Behavior)</label>
+                        <label className="text-[11px] font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wide block mb-3">{t('imposition.paperSettingsUI:cach_tinh_le_margin_behavior')}</label>
                         <div className="flex flex-col gap-2.5">
                             <label className="flex items-center gap-2 cursor-pointer group">
                                 <input type="radio" checked={mMode === 'labels_only'} onChange={() => setMMode('labels_only')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
-                                <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Lề chỉ bao vùng tem (Dấu xén sẽ bắn ra ngoài lề)</span>
+                                <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:le_chi_bao_vung_tem_dau_xen_se_ban_ra')}</span>
                             </label>
                             <label className="flex items-center gap-2 cursor-pointer group">
                                 <input type="radio" checked={mMode === 'include_marks'} onChange={() => setMMode('include_marks')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
-                                <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">Lề bao gồm cả Dấu xén (Thu hẹp vùng xếp tem lại)</span>
+                                <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:le_bao_gom_ca_dau_xen_thu_hep_vung_xep')}</span>
                             </label>
                         </div>
                     </div>
@@ -283,13 +285,13 @@ export function PaperSettingsDialog({
                             onClick={() => onDeletePreset(currentFormsize)}
                             className="text-sm px-3 py-2 rounded text-red-500 hover:text-red-700 hover:bg-red-50 transition-colors font-medium mr-auto"
                         >
-                            Xóa Preset
+                            {t('imposition.paperSettingsUI:xoa_preset')}
                         </button>
                     )}
                     
                     {!isEditing && <div className="flex-1" />}
                     
-                    <Button variant="secondary" onClick={onClose}>Hủy</Button>
+                    <Button variant="secondary" onClick={onClose}>{t('imposition.paperSettingsUI:huy')}</Button>
                     <Button 
                         variant="primary" 
                         disabled={usages.length === 0}
@@ -307,7 +309,7 @@ export function PaperSettingsDialog({
                             onClose(); 
                         }}
                     >
-                        {isEditing ? 'Lưu' : (presetName.trim() ? 'Lưu Khổ Giấy Mới' : 'Áp dụng')}
+                        {isEditing ? t('imposition.paperSettingsUI:luu') : (presetName.trim() ? t('imposition.paperSettingsUI:luu_kho_giay_moi') : t('imposition.paperSettingsUI:ap_dung'))}
                     </Button>
                 </div>
             </div>
