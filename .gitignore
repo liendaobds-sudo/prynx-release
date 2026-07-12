@@ -53,6 +53,7 @@ backend/ocr_*.txt
 desktop/test_*.pdf
 desktop/*.py
 desktop/*.js
+!desktop/eslint.config.js
 desktop/*.txt
 backend/temp/
 
