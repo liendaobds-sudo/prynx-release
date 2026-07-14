@@ -206,6 +206,7 @@ if (-not $SkipNuitka) {
         --include-package=openpyxl `
         --include-package=serial `
         --include-data-dir=app/assets=app/assets `
+        --include-data-dir=app/workers/cut_export/profiles=app/workers/cut_export/profiles `
         $PDFIUM_FLAG `
         $DML_FLAG `
         $UPSCALE_MODELS_FLAG `
