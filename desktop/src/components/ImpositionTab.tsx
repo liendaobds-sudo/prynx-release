@@ -928,7 +928,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
 
 
-    const sidebarDragRef = useRef({ startX: 0, startWidth: 0, lastWidth: 0 });
+    const sidebarDragRef = useRef({ startX: 0, startWidth: 0, lastWidth: 0, startOpen: false });
 
     useEffect(() => {
         if (!isDraggingSidebar) return;
@@ -937,11 +937,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             const newWidth = sidebarDragRef.current.startWidth + deltaX;
             
             if (activeDashboardTool !== 'none') {
-                if (newWidth >= 280) {
-                    setIsSidebarOpen(true);
-                    setSidebarWidth(Math.min(newWidth, 800));
+                // Panel ĐÃ mở khi bắt đầu kéo → kéo = resize panel (giữ hành vi cũ).
+                // Panel ĐANG đóng khi bắt đầu kéo → kéo CHỈ toggle mini icon↔nhãn,
+                // KHÔNG tự bung panel cấu hình (tránh "kéo rộng thì mở tool").
+                if (sidebarDragRef.current.startOpen) {
+                    if (newWidth >= 280) {
+                        setIsSidebarOpen(true);
+                        setSidebarWidth(Math.min(newWidth, 800));
+                    } else {
+                        setIsSidebarOpen(false);
+                    }
                 } else {
-                    setIsSidebarOpen(false);
+                    setIsMiniToolbarExpanded(newWidth >= 120);
                 }
             } else {
                 const clampedWidth = Math.min(Math.max(newWidth, 48), 800);
@@ -2061,7 +2068,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                 sidebarDragRef.current = {
                                                     startX: e.clientX,
                                                     startWidth: initialWidth,
-                                                    lastWidth: initialWidth
+                                                    lastWidth: initialWidth,
+                                                    startOpen: isSidebarOpen
                                                 };
                                                 setIsDraggingSidebar(true);
                                             }}
