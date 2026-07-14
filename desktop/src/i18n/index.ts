@@ -48,15 +48,38 @@ i18n.use(initReactI18next).init({
 //
 // Một chuỗi VN có thể trùng ở nhiều ns; data tool nằm ở 'catalog' nên ưu tiên nó.
 const VI_TO_KEY = new Map<string, string>();
+// Map phụ theo namespace: chuỗi VN → key, để tv(str, ns) tự chỉ định ngữ cảnh khi
+// một chuỗi trùng ở nhiều ns nhưng cần bản dịch KHÁC nhau (vd 'Có'→'Yes' vs 'There are').
+const VI_TO_KEY_BY_NS = new Map<string, Map<string, string>>();
 {
   const dict = vi as Record<string, Record<string, string>>;
+  const enDict = en as Record<string, Record<string, string>>;
   const nsOrder = Object.keys(dict).sort((a, b) =>
     (a === 'catalog' ? -1 : 0) - (b === 'catalog' ? -1 : 0)
   );
   for (const ns of nsOrder) {
+    const nsMap = new Map<string, string>();
+    VI_TO_KEY_BY_NS.set(ns, nsMap);
     for (const [key, val] of Object.entries(dict[ns])) {
-      if (typeof val === 'string' && val && !VI_TO_KEY.has(val)) {
-        VI_TO_KEY.set(val, `${ns}:${key}`);
+      if (typeof val === 'string' && val) {
+        if (!nsMap.has(val)) nsMap.set(val, key);
+        const existing = VI_TO_KEY.get(val);
+        if (!existing) {
+          VI_TO_KEY.set(val, `${ns}:${key}`);
+        } else if (import.meta.env?.DEV) {
+          // Va chạm: chuỗi VN đã map ở ns khác. Chỉ cảnh báo nếu bản EN KHÁC nhau
+          // (divergent) — đó là "mìn ngủ": tv() match-đầu-tiên sẽ trả sai ngữ cảnh.
+          // Trùng nhưng EN giống nhau (Đóng→Close ở 16 ns) thì vô hại, im lặng.
+          const [exNs, exKey] = existing.split(/:(.*)/);
+          const enWin = enDict[exNs]?.[exKey];
+          const enThis = enDict[ns]?.[key];
+          if (enWin && enThis && enWin !== enThis) {
+            console.warn(
+              `[tv] Va chạm divergent cho "${val}": thắng ${existing}→"${enWin}", ` +
+              `bỏ qua ${ns}:${key}→"${enThis}". Nếu cần bản này, gọi tv("${val}", "${ns}").`
+            );
+          }
+        }
       }
     }
   }
@@ -65,9 +88,17 @@ const VI_TO_KEY = new Map<string, string>();
 /**
  * Dịch một chuỗi VN gốc (data hằng) sang ngôn ngữ hiện tại. Không tìm thấy → trả
  * nguyên chuỗi. Gọi trong render site đã có useTranslation để re-render khi đổi ngữ.
+ *
+ * @param ns  (tùy chọn) Ép tra trong đúng namespace này — dùng khi chuỗi trùng ở
+ *            nhiều ns với bản dịch khác nhau (vd tv('Có', 'tabs.outputPreview')→'Yes').
+ *            Không truyền → dùng map toàn cục (match-đầu-tiên theo nsOrder).
  */
-export function tv(viStr: string | undefined | null): string {
+export function tv(viStr: string | undefined | null, ns?: string): string {
   if (!viStr) return viStr ?? '';
+  if (ns) {
+    const key = VI_TO_KEY_BY_NS.get(ns)?.get(viStr);
+    if (key) return i18n.t(`${ns}:${key}`);
+  }
   const keyRef = VI_TO_KEY.get(viStr);
   return keyRef ? i18n.t(keyRef) : viStr;
 }

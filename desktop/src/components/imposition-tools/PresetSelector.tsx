@@ -143,7 +143,7 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
     await savePreset(updated);
     setPresets(await loadPresets());
     setConfirmUpdateId(null);
-    toast.success(`Đã cập nhật preset "${preset.name}" bằng thiết lập hiện tại.`);
+    toast.success(t('imposition.presetSelector:da_cap_nhat_preset_x_bang_thiet_lap_hien_tai', { name: preset.name }));
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {

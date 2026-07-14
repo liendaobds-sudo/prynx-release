@@ -128,12 +128,12 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
       });
       const data = await res.json();
       if (data.success) {
-        setStatus(`✅ Đã xuất ${standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4'} thành công`);
+        setStatus(`✅ ${t('preprocess.savePdfx:da_xuat_x_thanh_cong', { x: standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4' })}`);
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || 'Lỗi xuất PDF/X'}`); }
+      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || t('preprocess.savePdfx:loi_xuat_pdf_x')}`); }
     } catch (e: any) { recipeRecorder.discardPending(); setStatus(`❌ ${e.message}`); }
     setExporting(false);
   };
@@ -196,9 +196,9 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
                 <tbody className="text-slate-600 dark:text-zinc-300">
                   {COMPARE.map(row => (
                     <tr key={row.feat} className="border-b border-slate-50 dark:border-white/5 last:border-0">
-                      <td className="py-1 pr-2 font-medium">{row.feat}</td>
-                      <td className="py-1 px-2 text-center">{row.x1a}</td>
-                      <td className="py-1 pl-2 text-center">{row.x4}</td>
+                      <td className="py-1 pr-2 font-medium">{tv(row.feat)}</td>
+                      <td className="py-1 px-2 text-center">{tv(row.x1a)}</td>
+                      <td className="py-1 pl-2 text-center">{tv(row.x4)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -250,10 +250,10 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
             return (
               <div className={`text-center py-2 text-[12px] font-bold ${compliance.passed ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
                 {compliance.passed
-                  ? `✅ File đạt chuẩn ${compliance.standard_label}!`
+                  ? `✅ ${t('preprocess.savePdfx:file_dat_chuan_x', { x: compliance.standard_label })}`
                   : allAutoFixable
-                    ? `⚠️ ${compliance.passed_checks}/${compliance.total_checks} đạt — Xuất PDF/X sẽ tự động sửa`
-                    : `⚠️ ${compliance.passed_checks}/${compliance.total_checks} đạt — Cần xử lý thủ công trước: ${manualFixes.map(c => c.label).join(', ')} (bấm ? để xem cách). Các mục còn lại sẽ tự sửa khi xuất.`
+                    ? `⚠️ ${t('preprocess.savePdfx:x_dat_xuat_pdfx_se_tu_dong_sua', { p: compliance.passed_checks, tot: compliance.total_checks })}`
+                    : `⚠️ ${t('preprocess.savePdfx:x_dat_can_xu_ly_thu_cong_truoc', { p: compliance.passed_checks, tot: compliance.total_checks, list: manualFixes.map(c => c.label).join(', ') })}`
                 }
               </div>
             );
@@ -265,7 +265,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
       <div className="h-px w-full bg-slate-200 dark:bg-zinc-700" />
       <button onClick={exportPdfx} disabled={exporting}
         className="w-full px-2.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-teal-700">
-        {exporting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.savePdfx:dang_xuat')}</>) : (<>🚀 Xuất {standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4'}</>)}
+        {exporting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.savePdfx:dang_xuat')}</>) : (<>🚀 {t('preprocess.savePdfx:xuat_x', { x: standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4' })}</>)}
       </button>
 
       {/* ═══ STATUS ═══ */}
@@ -292,15 +292,15 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
             <div className="p-4 space-y-3 text-[12px] leading-relaxed text-slate-600 dark:text-zinc-300">
               <div>
                 <h4 className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.savePdfx:kiem_tra_gi')}</h4>
-                <p>{CHECK_HELP[helpFor.id].what}</p>
+                <p>{tv(CHECK_HELP[helpFor.id].what)}</p>
               </div>
               <div>
                 <h4 className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.savePdfx:vi_sao_quan_trong')}</h4>
-                <p>{CHECK_HELP[helpFor.id].why}</p>
+                <p>{tv(CHECK_HELP[helpFor.id].why)}</p>
               </div>
               <div className="rounded-lg bg-teal-50 dark:bg-teal-500/10 border border-teal-100 dark:border-teal-500/20 p-3">
                 <h4 className="font-bold text-teal-700 dark:text-teal-300 mb-1">{t('preprocess.savePdfx:cach_khac_phuc')}</h4>
-                <p className="text-teal-800 dark:text-teal-200">{CHECK_HELP[helpFor.id].fix}</p>
+                <p className="text-teal-800 dark:text-teal-200">{tv(CHECK_HELP[helpFor.id].fix)}</p>
               </div>
             </div>
           </div>

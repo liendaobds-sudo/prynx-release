@@ -13,7 +13,7 @@ import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd } fr
 import { resizePages } from '../lib/preprocessEngine/PageResizer';
 import { splitPdf, parseRanges } from '../lib/preprocessEngine/PdfSplitter';
 import { mergePdf } from '../lib/preprocessEngine/PdfMerger';
-import { tv } from '../i18n';
+import i18n, { tv } from '../i18n';
 
 // ─── Shared context type for all handlers ───
 export interface ProcessContext {
@@ -44,7 +44,7 @@ export async function runProcessEngine(
 
     setError('');
     setIsProcessing(true);
-    setProcessStatus('Đang chuẩn bị dữ liệu...');
+    setProcessStatus(i18n.t('lib.processHandlers:dang_chuan_bi_du_lieu'));
 
     try {
         const srcPageCount = ctx.viewerNumPages || 0;
@@ -133,7 +133,7 @@ export async function runProcessEngine(
                 cncDuplexMarks: isCnc ? (settings as any).cncDuplexMarks : undefined,
             };
 
-            const jobName = (settings as any).layoutType === 'repeat' ? 'Nhân bản (S&R)' : 'N-Up';
+            const jobName = (settings as any).layoutType === 'repeat' ? i18n.t('lib.processHandlers:nhan_ban_s_r') : 'N-Up';
 
             const jobId = await startNupJobBackend(serverPath, backendSettings);
 
@@ -144,7 +144,7 @@ export async function runProcessEngine(
 
                 if (status.status === 'completed') {
                     done = true;
-                    setProcessStatus('Đang tải file kết quả về...');
+                    setProcessStatus(i18n.t('lib.processHandlers:dang_tai_file_ket_qua_ve'));
                     const blob = await downloadNupJob(jobId);
                     const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
 
@@ -160,7 +160,7 @@ export async function runProcessEngine(
                     const sp = (settings as any).savePrintConfig;
                     if ((settings as any).autoSavePrint && sp?.folder) {
                         try {
-                            setProcessStatus('🖨️ Đang tự động lưu file in...');
+                            setProcessStatus(i18n.t('lib.processHandlers:dang_tu_dong_luu_file_in'));
                             const { savePrintFilesToFolder, pagesPerTypeFor } = await import('../lib/savePrintFiles');
                             const cncMode = settings.imposerMode === 'cnc';
                             const cncTwoSided = !!(settings as any).cncTwoSided;
@@ -173,25 +173,25 @@ export async function runProcessEngine(
                                 pagesPerType: pagesPerTypeFor({ cncMode, cncTwoSided, separateCut }),
                                 labelName: sp.labelName,
                             });
-                            setReportMsg(`🖨️ Đã tự động lưu ${ok} file in vào: ${sp.folder}`);
+                            setReportMsg(i18n.t('lib.processHandlers:da_tu_dong_luu_ok_file_in_vao_sp_folder', { ok, folder: sp.folder }));
                         } catch (e: any) {
-                            setError('Bình xong nhưng tự động lưu file in lỗi: ' + (e?.message || e));
+                            setError(i18n.t('lib.processHandlers:binh_xong_nhung_tu_dong_luu_file_in_loi') + ' ' + (e?.message || e));
                         }
                     }
                 } else if (status.status === 'failed') {
-                    throw new Error(status.error || 'Lỗi xử lý hệ thống');
+                    throw new Error(status.error || i18n.t('lib.processHandlers:loi_xu_ly_he_thong'));
                 } else {
                     const prog = status.progress || '';
                     // Only update display for numeric progress (e.g. "3/10"), ignore backend stage messages
                     if (prog.includes('/')) {
-                        setProcessStatus(`⚡ Đang xử lý: ${prog} trang đã bình...`);
+                        setProcessStatus(i18n.t('lib.processHandlers:dang_xu_ly_prog_trang_da_binh', { prog }));
                     }
                 }
             }
         } else if (settings.impositionMode === ImpositionMode.Booklet || settings.impositionMode === ImpositionMode.NUp) {
             // P2-T01: Prefer backend (imposition_core + pikepdf) for imposition to keep client as dumb assembler.
             // Sticker and other modes may use activeDashboardTool or separate paths.
-            setProcessStatus('Đang xử lý dữ liệu qua backend (unified engine)...');
+            setProcessStatus(i18n.t('lib.processHandlers:dang_xu_ly_du_lieu_qua_backend_unified'));
             const { uploadFileForNup } = await import('../lib/api');
             const { imposePdfViaBackend } = await import('../lib/pdfImposer');
             const serverPath = await uploadFileForNup(file);
@@ -207,7 +207,7 @@ export async function runProcessEngine(
                     if (result.report) setReportMsg(result.report);
                 }
             } else {
-                setReportMsg(`✅ File đã được lưu trên server: ${result.outputPath}\n${result.report}`);
+                setReportMsg(i18n.t('lib.processHandlers:file_da_duoc_luu_tren_server_result', { outputPath: result.outputPath, report: result.report }));
             }
         } else {
             const imposedOut = await imposePdf(file, settings, setProcessStatus);
@@ -226,7 +226,7 @@ export async function runProcessEngine(
             // Silently abort, user cancelled
             return;
         }
-        setError(e.message || 'Lỗi hệ thống khi xử lý Bình trang.');
+        setError(e.message || i18n.t('lib.processHandlers:loi_he_thong_khi_xu_ly_binh_trang'));
     } finally {
         setIsProcessing(false);
     }
@@ -245,16 +245,16 @@ export async function runCatalogPlan(
 
     setError('');
     setIsProcessing(true);
-    setProcessStatus('Đang phân tích cấu trúc Catalog...');
+    setProcessStatus(i18n.t('lib.processHandlers:dang_phan_tich_cau_truc_catalog'));
 
     try {
         const planResult = planCatalog({ ...planConfig, sourceFileName: file.name });
         const verifyErrors = verifyCatalogPlan(planConfig, planResult);
         if (verifyErrors.length > 0) {
-            throw new Error(`Lỗi phân tích: ${verifyErrors.join('; ')}`);
+            throw new Error(i18n.t('lib.processHandlers:loi_phan_tich_verifyerrors_join', { errors: verifyErrors.join('; ') }));
         }
 
-        setProcessStatus(`Đang bình ${planResult.jobs.length} tấm kẽm...`);
+        setProcessStatus(i18n.t('lib.processHandlers:dang_binh_planresult_jobs_length_tam', { count: planResult.jobs.length }));
 
         // Tuân thủ kết quả cuối cùng: bình catalog trên file đã áp dụng sửa đổi trang.
         const workingBytes = await ctx.getWorkingBytes();
@@ -283,7 +283,9 @@ export async function runCatalogPlan(
                 rawStr = rawStr.replace(/^\(|\)$/g, '');
                 try {
                     const decoded = decodeURIComponent(rawStr);
-                    const renumbered = decoded.replace(/^Kẽm \d+/, `Kẽm ${globalPlateNum}`);
+                    // Nhãn kẽm có thể là "Kẽm N" (vi) hoặc "Plate N" (en) tuỳ ngôn ngữ lúc bình.
+                    // Giữ nguyên tiền tố đã bồi, chỉ đánh lại SỐ để merge nhiều bài không vỡ.
+                    const renumbered = decoded.replace(/^(Kẽm|Plate) \d+/, `$1 ${globalPlateNum}`);
                     pg.node.set(PDFName.of('PlateInfoURI'), PDFString.of(encodeURIComponent(renumbered)));
                 } catch (e) { console.warn('Failed to decode PlateInfoURI', e); }
             } else {
@@ -291,7 +293,7 @@ export async function runCatalogPlan(
                 if (existing) {
                     globalPlateNum++;
                     const oldStr = (existing as any).decodeText?.() || (existing as any).value || String(existing);
-                    const renumbered = oldStr.replace(/^Kẽm \d+/, `Kẽm ${globalPlateNum}`);
+                    const renumbered = oldStr.replace(/^(Kẽm|Plate) \d+/, `$1 ${globalPlateNum}`);
                     pg.node.set(PDFName.of('PlateInfo'), PDFString.of(renumbered));
                 }
             }
@@ -315,7 +317,7 @@ export async function runCatalogPlan(
             commitWorkingFile(mergedBlob, mergedFileName);
         }
     } catch (e: any) {
-        setError(e.message || 'Lỗi khi xử lý Catalog Auto Plan.');
+        setError(e.message || i18n.t('lib.processHandlers:loi_khi_xu_ly_catalog_auto_plan'));
     } finally {
         setIsProcessing(false);
         setProcessStatus('');
@@ -328,14 +330,14 @@ export async function runCatalogPlan(
 
 export async function runShuffle(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus('Đang xáo trộn trang...');
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang'));
     try {
         const inputBytes = await getWorkingBytes();
         const srcPdf = await PDFDocument.load(inputBytes);
         const totalPages = srcPdf.getPageCount();
 
         if ((totalPages > 1000 || file.size > 300 * 1024 * 1024) && settings.specialAction !== 'split_odd_even') {
-            setProcessStatus('Đang xáo trộn trang...');
+            setProcessStatus(i18n.t('lib.processHandlers:dang_xao_tron_trang'));
             const { backendShufflePages } = await import('../lib/api');
             let action = 'reverse'; let mapping: number[] = [];
             if (settings.presetId === 'special') {
@@ -391,13 +393,13 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
             else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
-    } catch (err: any) { setError('Lỗi xáo trộn trang: ' + err.message); }
+    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_xao_tron_trang') + ' ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
 export async function runResize(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus('Đang đổi khổ trang...');
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_doi_kho_trang'));
     try {
         const inputBytes = await getWorkingBytes();
 
@@ -466,13 +468,13 @@ export async function runResize(ctx: ProcessContext, settings: any) {
             console.warn('[resize] pdf-lib thất bại, fallback backend:', feErr);
             await emit(await runBackend());
         }
-    } catch (err: any) { setError('Lỗi đổi khổ: ' + err.message); }
+    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_doi_kho') + ' ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
 export async function runTrimShift(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus('Đang cắt xén & dời nội dung...');
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_cat_xen_doi_noi_dung'));
     try {
         const inputBytes = await getWorkingBytes();
         const { backendTrimShift } = await import('../lib/api');
@@ -501,13 +503,13 @@ export async function runTrimShift(ctx: ProcessContext, settings: any) {
         const newFileName = `TrimShift_${file.name}`;
         if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
         else { commitWorkingFile(blob, newFileName); }
-    } catch (err: any) { setError('Lỗi cắt xén & dời: ' + err.message); }
+    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_cat_xen_doi') + ' ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
 export async function runSplit(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, setReportMsg, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus('Đang tách PDF...');
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_tach_pdf'));
     try {
         // Tuân thủ kết quả cuối cùng: tách trên file đã áp dụng sửa đổi trang.
         const inputBytes = await getWorkingBytes();
@@ -527,26 +529,26 @@ export async function runSplit(ctx: ProcessContext, settings: any) {
             const newFileName = `Split_${file.name}`;
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: blob.type })); }
             else { await commitWorkingFile(blob, newFileName); }
-            setReportMsg('Đã tách file thành công.');
+            setReportMsg(i18n.t('lib.processHandlers:da_tach_file_thanh_cong'));
         } else {
             const results = await splitPdf(inputBytes, settings.mode, { ranges: settings.ranges, pagesPerFile: settings.pagesPerFile, pageList }, file.name.replace('.pdf', ''));
             if (results.length === 0) throw new Error(tv("Thao tác tách không tạo ra file nào."));
             if (settings.spawnNewTab && onSpawnTab) {
                 for (const r of results) { onSpawnTab(new File([new Blob([r.bytes as any])], r.filename, { type: 'application/pdf' })); }
-                setReportMsg(`Đã tạo ${results.length} tab mới.`);
+                setReportMsg(i18n.t('lib.processHandlers:da_tao_results_length_tab_moi', { count: results.length }));
             } else {
                 const first = results[0];
                 commitWorkingFile(new Blob([first.bytes as any], { type: 'application/pdf' }), first.filename);
-                setReportMsg(`Đã tách thành ${results.length} file.`);
+                setReportMsg(i18n.t('lib.processHandlers:da_tach_thanh_results_length_file', { count: results.length }));
             }
         }
-    } catch (err: any) { setError('Lỗi tách PDF: ' + err.message); }
+    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_tach_pdf') + ' ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }
 
 export async function runMerge(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
-    setError(''); setIsProcessing(true); setProcessStatus('Đang ghép PDF...');
+    setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_ghep_pdf'));
     try {
         // Tuân thủ kết quả cuối cùng: file nền (tab hiện tại) dùng bản đã áp dụng sửa đổi trang.
         const workingBaseFile = file
@@ -589,6 +591,6 @@ export async function runMerge(ctx: ProcessContext, settings: any) {
             if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
             else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
         }
-    } catch (err: any) { setError('Lỗi ghép PDF: ' + err.message); }
+    } catch (err: any) { setError(i18n.t('lib.processHandlers:loi_ghep_pdf') + ' ' + err.message); }
     finally { setIsProcessing(false); setProcessStatus(''); }
 }

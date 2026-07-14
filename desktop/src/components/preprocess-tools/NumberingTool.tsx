@@ -263,7 +263,7 @@ export default function NumberingTool({
             
             if (!pdfFile) throw new Error(t('preprocess.numbering:chua_co_file_pdf_goc'));
             
-            setStatusMessage(`Đang đẩy dữ liệu lên máy chủ (${csvData.length} trang)...`);
+            setStatusMessage(t('preprocess.numbering:dang_day_du_lieu_len_may_chu', { n: csvData.length }));
             // Tuân thủ kết quả cuối cùng: dùng file đã áp dụng sửa đổi trang làm template.
             const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
             const jobId = await startVdpJobBackend(templateFile, vdpFields, csvData);
@@ -285,7 +285,7 @@ export default function NumberingTool({
         } catch (error: any) {
             if (error?.name === 'AbortError') return;
             console.error(error);
-            setStatusMessage(`Lỗi: ${error.message}`);
+            setStatusMessage(t('preprocess.numbering:loi_msg', { msg: error.message }));
         } finally {
             setIsGenerating(false);
         }
@@ -304,7 +304,7 @@ export default function NumberingTool({
             const maxPreviewPages = Math.min(totalPages, 3);
             
             for (let p = 0; p < maxPreviewPages; p++) {
-                let pageStr = `Trang ${p + 1}: `;
+                let pageStr = `${t('preprocess.numbering:trang', { n: p + 1 })} `;
                 let itemsAdded = 0;
                 for (let s = 0; s < numSlots; s++) {
                     let indexInSequence = applyStyle === 'linear' ? (p * numSlots + s) : (s * totalPages + p);
@@ -433,7 +433,7 @@ export default function NumberingTool({
                             <div className="flex flex-col gap-1">
                                 <label className="text-[10px] font-medium text-slate-500">{t('preprocess.numbering:cau_truc_hien_thi')}</label>
                                 <input type="text" value={formatTemplate} onChange={e => setFormatTemplate(e.target.value)} placeholder="{%b}-{%t}" className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded font-mono" />
-                                <span className="text-[9px] text-slate-400">Dùng {'{%b}'} cho Bộ và {'{%t}'} cho Số thứ tự.</span>
+                                <span className="text-[9px] text-slate-400">{t('preprocess.numbering:dung_b_cho_bo_va_t_cho_stt', { b: '{%b}', t: '{%t}' })}</span>
                             </div>
                         </div>
                     )}
@@ -540,7 +540,7 @@ export default function NumberingTool({
                 <div className="shrink-0 space-y-3 pt-3 border-t border-slate-200 dark:border-zinc-700">
                     <div className="flex items-center justify-between">
                         <span className="text-[12px] font-bold text-slate-700 dark:text-zinc-300">
-                            Định dạng {selectedFieldIds.length > 1 ? `${selectedFieldIds.length} trường` : vdpFields.find(f=>f.id===selectedFieldIds[0])?.name}
+                            {t('preprocess.numbering:dinh_dang')} {selectedFieldIds.length > 1 ? t('preprocess.numbering:n_truong', { n: selectedFieldIds.length }) : vdpFields.find(f=>f.id===selectedFieldIds[0])?.name}
                         </span>
                         {selectedFieldIds.length > 1 && (
                             <button onClick={handleGroupFields} className="text-[10px] bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 px-2 py-1 rounded text-slate-600 dark:text-zinc-300 font-medium">
@@ -633,7 +633,7 @@ export default function NumberingTool({
             <div className="shrink-0 space-y-2 mt-2">
                 <span className="text-[12px] font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-2">
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                    Xem trước kết quả ({vdpFields.length} Slots)
+                    {t('preprocess.numbering:xem_truoc_ket_qua_slots', { n: vdpFields.length })}
                 </span>
                 <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-md p-2.5 min-h-[60px] font-mono text-[10px] text-slate-600 dark:text-zinc-400 whitespace-pre-wrap leading-relaxed shadow-inner">
                     {previewLines.join('\n')}
@@ -672,7 +672,7 @@ export default function NumberingTool({
                             {t('preprocess.numbering:dang_xu_ly')}
                         </>
                     ) : (
-                        <>Tạo file Nhảy số ({vdpFields.length} Slots)</>
+                        <>{t('preprocess.numbering:tao_file_nhay_so_slots', { n: vdpFields.length })}</>
                     )}
                 </button>
             </div>

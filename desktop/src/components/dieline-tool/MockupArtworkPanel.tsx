@@ -146,7 +146,7 @@ function TransformControls(props: {
                 onChange={(v) => onChange({ ...transform, offsetYPct: v })}
             />
             <SliderRow
-                label="Xoay" value={transform.rotationDeg ?? 0} min={ROTATION_MIN_DEG} max={ROTATION_MAX_DEG}
+                label={t('dieline.mockupArtwork:xoay')} value={transform.rotationDeg ?? 0} min={ROTATION_MIN_DEG} max={ROTATION_MAX_DEG}
                 step={1} unit="°" title={t('dieline.mockupArtwork:xoay_anh_quanh_tam')}
                 onChange={(v) => onChange({ ...transform, rotationDeg: v })}
             />
@@ -165,7 +165,7 @@ function TransformControls(props: {
                 </button>
                 <button type="button" className={`dt-mini-btn ${transform.flipH ? 'active' : ''}`} title={t('dieline.mockupArtwork:lat_ngang_anh')}
                     onClick={() => onChange({ ...transform, flipH: !transform.flipH })}>
-                    ⇋ Ngang
+                    {t('dieline.mockupArtwork:ngang')}
                 </button>
                 <button type="button" className={`dt-mini-btn ${transform.flipV ? 'active' : ''}`} title={t('dieline.mockupArtwork:lat_doc_anh')}
                     onClick={() => onChange({ ...transform, flipV: !transform.flipV })}>
@@ -204,7 +204,7 @@ function ArtworkUploader(props: {
                     const f = e.dataTransfer.files?.[0];
                     if (f) onFile(f);
                 }}
-                title={`${label}: kéo-thả ảnh vào đây hoặc bấm để chọn`}
+                title={t('dieline.mockupArtwork:label_keo_tha_anh_vao_day', { label })}
             >
                 {url ? (
                     <img className="dt-thumb" src={url} alt={label} />
@@ -212,7 +212,7 @@ function ArtworkUploader(props: {
                     <span className="dt-dropzone-icon" aria-hidden>🖼️</span>
                 )}
                 <span className="dt-dropzone-text">
-                    {url ? (fileName ?? t('dieline.mockupArtwork:anh_da_tai')) : `Kéo-thả hoặc bấm để tải ${label.toLowerCase()}`}
+                    {url ? (fileName ?? t('dieline.mockupArtwork:anh_da_tai')) : t('dieline.mockupArtwork:keo_tha_bam_de_tai', { label: label.toLowerCase() })}
                 </span>
                 <input
                     type="file"
@@ -231,7 +231,7 @@ function ArtworkUploader(props: {
                     className="dt-glue-side-btn"
                     onClick={onClear}
                     style={{ marginTop: '0.4rem', color: 'var(--dt-danger)' }}
-                    title={`Xoá ${label.toLowerCase()}`}
+                    title={t('dieline.mockupArtwork:xoa_label', { label: label.toLowerCase() })}
                 >
                     {t('dieline.mockupArtwork:xoa_anh')}
                 </button>
@@ -343,7 +343,7 @@ export default function MockupArtworkPanel() {
         setMaskUrl(info.url);
         // Lệch kích thước → KHÔNG chặn, chỉ thông báo sẽ co giãn theo bề mặt.
         if (info.width !== surface.width || info.height !== surface.height) {
-            setMaskError(`Mặt nạ ${info.width}×${info.height}px sẽ được co giãn về bề mặt ${surface.width}×${surface.height}px.`);
+            setMaskError(t('dieline.mockupArtwork:mat_na_se_duoc_co_gian', { iw: info.width, ih: info.height, sw: surface.width, sh: surface.height }));
         }
     }
 
@@ -499,7 +499,7 @@ export default function MockupArtworkPanel() {
             <CollapsibleSection title={t('dieline.mockupArtwork:mat_na_gia_cong')}>
                 <p className="dt-param-desc">
                     {surface
-                        ? `Kích thước mặt nạ phải khớp bề mặt ${surface.width}×${surface.height} px.`
+                        ? t('dieline.mockupArtwork:kich_thuoc_mat_na_phai_khop', { w: surface.width, h: surface.height })
                         : t('dieline.mockupArtwork:can_co_khuon_be_de_xac_dinh_kich_thuoc')}
                 </p>
 

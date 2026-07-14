@@ -116,10 +116,10 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
                 hints: sourcePageCount ? { sourcePageCount } : undefined,
             });
             await saveRecipe(recipe);
-            toast.success(`Đã lưu quy trình "${trimmed}" (${steps.length} bước).`);
+            toast.success(t('recipe.recipe:da_luu_quy_trinh', { name: trimmed, count: steps.length }));
             onClose();
         } catch (e: any) {
-            toast.error('Lưu thất bại: ' + (e?.message || e));
+            toast.error(t('recipe.recipe:luu_that_bai', { msg: e?.message || e }));
         } finally {
             setSaving(false);
         }

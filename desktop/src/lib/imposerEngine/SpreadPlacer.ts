@@ -7,6 +7,7 @@ import { SpreadFoldPattern } from './FoldPatterns';
 import { OffsetSettings } from './SettingsTypes';
 import { drawRegistrationMarks, drawColorBar, drawPlateLabel, drawCenterMarks, drawCollationMark, drawStarTarget, drawSideIndicator, drawFolioMarks } from './MarksRenderer';
 import { MM_TO_POINTS } from '../pdfImposer';
+import i18n from '../../i18n';
 
 interface SpreadDetail {
     width: number;
@@ -383,10 +384,17 @@ export async function placeSpreadsByFoldPattern(
 
             // ─── PROFESSIONAL PRESS MARKS ───
             // Build plate label text
-            const baseLabel = settings.isCover ? 'Bìa' : `${pattern.pagesPerSig} trang`;
+            const baseLabel = settings.isCover
+                ? i18n.t('lib.spreadPlacer:base_cover')
+                : i18n.t('lib.spreadPlacer:base_pages', { n: pattern.pagesPerSig });
             const plateInfoStr = plateSides.length > 1
-                ? `Kẽm ${plateCount} - Tay ${sig + 1}${plateSide === 'front' ? 'A' : 'B'} (${plateSide === 'front' ? 'Trước' : 'Sau'}) - Bài A-B`
-                : `Kẽm ${plateCount} - ${baseLabel} - Tự Trở`;
+                ? i18n.t('lib.spreadPlacer:plate_label_ab', {
+                    plate: plateCount,
+                    sig: sig + 1,
+                    ab: plateSide === 'front' ? 'A' : 'B',
+                    side: plateSide === 'front' ? i18n.t('lib.spreadPlacer:side_front') : i18n.t('lib.spreadPlacer:side_back'),
+                  })
+                : i18n.t('lib.spreadPlacer:plate_label_self', { plate: plateCount, base: baseLabel });
             const now = new Date();
             const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
             const fullLabel = `${plateInfoStr}  |  ${wsLabel}  |  ${dateStr}  |  Process CMYK`;

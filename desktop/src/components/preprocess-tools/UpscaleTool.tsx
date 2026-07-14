@@ -54,7 +54,7 @@ async function processBatch(tabId: string) {
     for (let i = 0; i < items.length; i++) {
         if (items[i].status === 'success') continue;
         processed++;
-        store.setProgress(tabId, `Đang phóng to ${processed} / ${items.length}...`);
+        store.setProgress(tabId, `${tv('Đang phóng to')} ${processed} / ${items.length}...`);
         items[i] = { ...items[i], status: 'processing', error: undefined };
         store.setBatchItems(tabId, [...items]);
         try {
@@ -74,7 +74,7 @@ async function processBatch(tabId: string) {
             if (!res.ok) {
                 const errorText = await res.text();
                 console.error('[Upscale] Server error:', errorText);
-                throw new Error(`Lỗi Server (${res.status}): ${errorText}`);
+                throw new Error(`${tv('Lỗi Server')} (${res.status}): ${errorText}`);
             }
             let outBlob = await res.blob();
             if (options.scaleFactor === 2) {
@@ -95,7 +95,7 @@ async function processBatch(tabId: string) {
 async function handleSave(tabId: string) {
     const { saved, ok } = await saveBatch(tabId, useUpscaleStore, 'upscaled');
     if (!ok) toast.error(tv('Lỗi khi lưu file.'));
-    else if (saved > 0) toast.success(`✅ Đã lưu thành công ${saved} ảnh!`);
+    else if (saved > 0) toast.success(`✅ ${tv('Đã lưu thành công')} ${saved} ${tv('ảnh!')}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -194,7 +194,7 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
                     <div className="flex gap-2">
                         <button onClick={() => handleSave(tabId)}
                             className="flex-1 h-11 rounded-xl text-[13px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm flex items-center justify-center gap-2 transition-all">
-                            💾 Lưu tất cả ({batchItems.filter(i => i.status === 'success').length})
+                            💾 {t('preprocess.upscale:luu_tat_ca')} ({batchItems.filter(i => i.status === 'success').length})
                         </button>
                         {batchItems.find(i => i.id === selectedId)?.status === 'success' && (
                             <button onClick={() => selectedId && storeActions.undoItem(tabId, selectedId)} title={t('preprocess.upscale:hoan_tac_de_chinh_sua_lai')}

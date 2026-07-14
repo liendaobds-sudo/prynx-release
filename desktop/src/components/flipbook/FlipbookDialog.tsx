@@ -100,9 +100,9 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
             );
             const signatureIndex = sheet ? sheet.signatureIndex : 1;
             
-            const sigInfoStr = bindingMode === 'thread' 
-                ? `Trang ${logical1Based} | Tép ${signatureIndex}` 
-                : `Trang ${logical1Based}`;
+            const sigInfoStr = bindingMode === 'thread'
+                ? t('misc.flipbookDialog:trang_tep', { trang: logical1Based, tep: signatureIndex })
+                : t('misc.flipbookDialog:trang_n', { n: logical1Based });
 
             const srcIndex = logical1Based <= effectivePageCount ? logical1Based - 1 : null;
             const originalIndex = srcIndex !== null ? pageOrder[srcIndex] : -1;
@@ -234,7 +234,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                 </div>
 
             <div className="text-white text-xl font-serif mb-4 flex items-center gap-4">
-                📖 Xem Trước Thành Phẩm
+                {t('misc.flipbookDialog:xem_truoc_thanh_pham')}
                 {isLoading && <span className="text-sm bg-indigo-500/20 text-indigo-300 px-2 py-1 rounded">{t('misc.flipbookDialog:dang_nap_du_lieu')}</span>}
             </div>
 

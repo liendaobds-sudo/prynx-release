@@ -44,7 +44,7 @@ export default function AiQcTab() {
       });
 
       if (!response.ok) {
-        throw new Error(`Lỗi máy chủ (${response.status})`);
+        throw new Error(t('tabs.aiQc:loi_may_chu', { status: response.status }));
       }
 
       const result = await response.json();
@@ -78,7 +78,7 @@ export default function AiQcTab() {
          toast.info(t('tabs.aiQc:khong_tim_thay_ky_tu_nao_trong_file_nay'));
       }
     } catch (e: any) {
-      toast.error(`Lỗi trích xuất: ${e.message}`);
+      toast.error(t('tabs.aiQc:loi_trich_xuat', { msg: e.message }));
     } finally {
       setIsExtracting(false);
     }

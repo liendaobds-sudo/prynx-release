@@ -37,7 +37,7 @@ export default function NupSettingsSection({ activeTool }: { activeTool: string 
                             }}
                             options={[
                                 { value: 'sequential', title: t('imposition.nupSettings:xep_lan_luot'), desc: t('imposition.nupSettings:1_mat_trang_1_2_3_lien_tiep_theo_sl_2') },
-                                { value: 'cut_stacks', title: t('imposition.nupSettings:xep_chong'), desc: 'Xén cọc rồi úp đúng thứ tự trang (1 mặt). Không dùng với 2 mặt.' },
+                                { value: 'cut_stacks', title: t('imposition.nupSettings:xep_chong'), desc: t('imposition.nupSettings:xen_coc_roi_up_dung_thu_tu_trang_1_mat') },
                                 { value: 'ratio_stack', title: t('imposition.nupSettings:chia_ty_le_xep_chong'), desc: t('imposition.nupSettings:nhieu_mau_cung_co_sl_khac_nhau_moi_to') }
                             ]}
                         />

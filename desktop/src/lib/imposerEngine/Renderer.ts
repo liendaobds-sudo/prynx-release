@@ -6,6 +6,7 @@ export type BookletSettings = GuillotineSettings | OffsetSettings;
 import { GeometricContext, solvePageTransform } from './GeometricSolver';
 import { ProcessingSettings } from '../pdfImposer';
 import { drawRegistrationMarks } from './MarksRenderer';
+import i18n from '../../i18n';
 
 const MM_TO_POINTS = 2.83465;
 
@@ -150,7 +151,8 @@ export const renderBooklet = async (
         currentRenderIndex++;
         const { sheetIndex, isFront, slots, sheet } = surface;
         
-        setStatus(`Đang Render mặt ${isFront ? 'Trước' : 'Sau'} tờ ${sheetIndex + 1} (${currentRenderIndex}/${surfaces.length})...`);
+        const sideLabel = isFront ? i18n.t('lib.renderer:mat_truoc') : i18n.t('lib.renderer:mat_sau');
+        setStatus(i18n.t('lib.renderer:dang_render_mat_isfront_truoc_sau_to', { side: sideLabel, sheet: sheetIndex + 1, current: currentRenderIndex, total: surfaces.length }));
         
         const outputPage = outputPdf.addPage([context.finalSheetWidth, context.finalSheetHeight]);
 

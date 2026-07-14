@@ -86,6 +86,15 @@ $pkg = Get-Content $pkgPath -Raw
 $pkg = [regex]::Replace($pkg, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
 [System.IO.File]::WriteAllText($pkgPath, $pkg.TrimStart([char]0xFEFF), $utf8NoBom)
 
+# Cargo.toml: dong bo version cho file properties cua PrynX.exe (Windows resource).
+# Cargo chap nhan SemVer prerelease truc tiep (1.0.0-beta.9). Replace lan-dau CHI trung
+# [package] version (dong dau), KHONG dung version cua tauri-build dependency ben duoi.
+$cargoPath = "$ROOT\desktop\src-tauri\Cargo.toml"
+$cargo = Get-Content $cargoPath -Raw
+$cargo = [regex]::Replace($cargo, '(?m)^(version\s*=\s*")[^"]*(")', "`${1}$Version`${2}", 1)
+[System.IO.File]::WriteAllText($cargoPath, $cargo.TrimStart([char]0xFEFF), $utf8NoBom)
+Write-Host "  [OK] Da dat version=$Version trong package.json + Cargo.toml." -ForegroundColor Green
+
 # ---- 3. Build day du + ky updater ----
 if ($SkipNuitka) {
     Write-Host "  [..] Build (BO QUA Nuitka, dung lai sidecar cu) + frontend + tauri + KY updater..." -ForegroundColor Yellow

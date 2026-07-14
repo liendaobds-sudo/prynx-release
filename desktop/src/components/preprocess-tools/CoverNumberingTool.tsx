@@ -9,6 +9,7 @@ import {
 import { planCoverLayout, resolveCoverPageIndices, type Cluster } from '@/lib/coverNumberingPlanner';
 import { useNumberingJobStore, DEFAULT_SHARED_JOB, type SharedJob } from '@/stores/useNumberingJobStore';
 import { useTranslation } from 'react-i18next';
+import { tv } from '@/i18n';
 
 interface Props {
     pdfFile: File | null;
@@ -110,11 +111,10 @@ export default function CoverNumberingTool({
         if (derived.error === 'bad_range') return t('preprocess.coverNumbering:dai_so_hoac_so_cuon_khong_hop_le');
         if (derived.error === 'too_large') return t('preprocess.coverNumbering:dai_so_qua_lon_vuot_gioi_han_an_toan');
         if (derived.error === 'not_divisible')
-            return `⚠️ ${derived.totalNumbers} số không chia hết cho ${v.bookletCount} cuốn. ` +
-                `Gợi ý: dùng ${derived.suggestion} cuốn (chia hết).`;
+            return t('preprocess.coverNumbering:so_khong_chia_het_goi_y', { total: derived.totalNumbers, count: v.bookletCount, suggestion: derived.suggestion });
         const first = preview[0], last = preview[preview.length - 1];
-        return `✅ ${derived.totalNumbers} số ÷ ${v.bookletCount} cuốn = ${derived.perBooklet} liên/cuốn.` +
-            (first && last ? ` Cuốn 1: ${first.Y}–${first.Z} · Cuốn ${v.bookletCount}: ${last.Y}–${last.Z}.` : '');
+        return t('preprocess.coverNumbering:so_chia_lien_cuon', { total: derived.totalNumbers, count: v.bookletCount, per: derived.perBooklet }) +
+            (first && last ? t('preprocess.coverNumbering:dai_cuon_dau_cuoi', { firstY: first.Y, firstZ: first.Z, count: v.bookletCount, lastY: last.Y, lastZ: last.Z }) : '');
     }, [derived, preview, v.bookletCount]);
 
     const handleGenerate = async () => {
@@ -182,7 +182,7 @@ export default function CoverNumberingTool({
                 template = new File([outBytes as any], `cover_${pdfFile.name}`, { type: 'application/pdf' });
             }
 
-            setStatus(`Đang đẩy lên máy chủ (${csvData.length} tờ in)...`);
+            setStatus(t('preprocess.coverNumbering:dang_day_len_may_chu_to_in', { n: csvData.length }));
             const jobId = await startVdpJobBackend(template, cloned, csvData);
             pollAbortRef.current = new AbortController();
             const result = await pollVdpJob(jobId, setStatus, true, pollAbortRef.current.signal);
@@ -191,7 +191,7 @@ export default function CoverNumberingTool({
             if (spawnNewTab && onSpawnTab) { onSpawnTab(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh_da_tao_tab_moi')); }
             else if (onApplyResult) { onApplyResult(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh')); }
         } catch (e: any) {
-            setStatus('Lỗi: ' + (e?.message || String(e)));
+            setStatus(t('preprocess.coverNumbering:loi') + ' ' + (e?.message || String(e)));
         } finally {
             setBusy(false);
         }
@@ -226,11 +226,11 @@ export default function CoverNumberingTool({
                 </div>
                 <div className="p-3 border border-slate-200 dark:border-zinc-700 rounded-lg space-y-3 bg-slate-50/50 dark:bg-zinc-800/20">
                     <div className="grid grid-cols-2 gap-2">
-                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">Số ruột bắt đầu{numInput(v.startNum, n => setV({ startNum: n }))}</label>
-                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">Số ruột kết thúc{numInput(v.endNum, n => setV({ endNum: n }))}</label>
-                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">Tổng số cuốn{numInput(v.bookletCount, n => setV({ bookletCount: n }), 1)}</label>
-                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">Số cuốn bắt đầu (→{'{X}'}){numInput(v.bookletOffset, n => setV({ bookletOffset: n }))}</label>
-                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">Đệm 0 (độ dài){numInput(v.padding, n => setV({ padding: n }), 0)}</label>
+                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">{t('preprocess.coverNumbering:so_ruot_bat_dau')}{numInput(v.startNum, n => setV({ startNum: n }))}</label>
+                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">{t('preprocess.coverNumbering:so_ruot_ket_thuc')}{numInput(v.endNum, n => setV({ endNum: n }))}</label>
+                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">{t('preprocess.coverNumbering:tong_so_cuon')}{numInput(v.bookletCount, n => setV({ bookletCount: n }), 1)}</label>
+                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">{t('preprocess.coverNumbering:so_cuon_bat_dau', { x: '{X}' })}{numInput(v.bookletOffset, n => setV({ bookletOffset: n }))}</label>
+                        <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">{t('preprocess.coverNumbering:dem_0_do_dai')}{numInput(v.padding, n => setV({ padding: n }), 0)}</label>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                         <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">{t('preprocess.coverNumbering:kieu_danh_ruot')}
@@ -247,7 +247,7 @@ export default function CoverNumberingTool({
                         </label>
                         <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">{t('preprocess.coverNumbering:kieu_xep')}
                             <select value={v.sortMethod} onChange={e => setV({ sortMethod: e.target.value as SortMethod })} className="h-8 px-1 text-xs border border-slate-300 dark:border-zinc-600 rounded">
-                                {(Object.keys(SORT_LABELS) as SortMethod[]).map(m => <option key={m} value={m}>{SORT_LABELS[m]}</option>)}
+                                {(Object.keys(SORT_LABELS) as SortMethod[]).map(m => <option key={m} value={m}>{tv(SORT_LABELS[m])}</option>)}
                             </select>
                         </label>
                     </div>
@@ -262,12 +262,12 @@ export default function CoverNumberingTool({
                 <span className="text-sm font-bold text-slate-800 dark:text-zinc-200">{t('preprocess.coverNumbering:2_keo_truong_vao_mau_bia')}</span>
                 <p className="text-[11px] text-slate-500">{t('preprocess.coverNumbering:keo_3_truong_vao_moi_o_bia_roi_group')}</p>
                 <div className="grid grid-cols-3 gap-2">
-                    <div onPointerDown={e => startVdpDrag(e, 'text', t('preprocess.coverNumbering:x_so_cuon'), '{X}')} className="bg-indigo-50 border-2 border-indigo-200 dark:bg-indigo-900/20 dark:border-indigo-800 p-2 rounded cursor-grab text-center text-xs font-bold text-indigo-700 dark:text-indigo-300">{'{X}'} Số cuốn</div>
-                    <div onPointerDown={e => startVdpDrag(e, 'text', t('preprocess.coverNumbering:y_ruot_dau'), '{Y}')} className="bg-sky-50 border-2 border-sky-200 dark:bg-sky-900/20 dark:border-sky-800 p-2 rounded cursor-grab text-center text-xs font-bold text-sky-700 dark:text-sky-300">{'{Y}'} Ruột đầu</div>
-                    <div onPointerDown={e => startVdpDrag(e, 'text', t('preprocess.coverNumbering:z_ruot_cuoi'), '{Z}')} className="bg-rose-50 border-2 border-rose-200 dark:bg-rose-900/20 dark:border-rose-800 p-2 rounded cursor-grab text-center text-xs font-bold text-rose-700 dark:text-rose-300">{'{Z}'} Ruột cuối</div>
+                    <div onPointerDown={e => startVdpDrag(e, 'text', t('preprocess.coverNumbering:x_so_cuon'), '{X}')} className="bg-indigo-50 border-2 border-indigo-200 dark:bg-indigo-900/20 dark:border-indigo-800 p-2 rounded cursor-grab text-center text-xs font-bold text-indigo-700 dark:text-indigo-300">{'{X}'} {t('preprocess.coverNumbering:so_cuon')}</div>
+                    <div onPointerDown={e => startVdpDrag(e, 'text', t('preprocess.coverNumbering:y_ruot_dau'), '{Y}')} className="bg-sky-50 border-2 border-sky-200 dark:bg-sky-900/20 dark:border-sky-800 p-2 rounded cursor-grab text-center text-xs font-bold text-sky-700 dark:text-sky-300">{'{Y}'} {t('preprocess.coverNumbering:ruot_dau')}</div>
+                    <div onPointerDown={e => startVdpDrag(e, 'text', t('preprocess.coverNumbering:z_ruot_cuoi'), '{Z}')} className="bg-rose-50 border-2 border-rose-200 dark:bg-rose-900/20 dark:border-rose-800 p-2 rounded cursor-grab text-center text-xs font-bold text-rose-700 dark:text-rose-300">{'{Z}'} {t('preprocess.coverNumbering:ruot_cuoi')}</div>
                 </div>
                 <div className="flex gap-2 items-center text-[11px]">
-                    <span className="text-slate-500">{clusters.length} cụm · {vdpFields.length} trường</span>
+                    <span className="text-slate-500">{t('preprocess.coverNumbering:n_cum_n_truong', { clusters: clusters.length, fields: vdpFields.length })}</span>
                     {selectedFieldIds.length > 1 && <button onClick={handleGroupFields} className="bg-slate-100 dark:bg-zinc-800 px-2 py-1 rounded font-medium">Group</button>}
                     {selectedFieldIds.length > 0 && <button onClick={handleUngroupFields} className="bg-slate-100 dark:bg-zinc-800 px-2 py-1 rounded text-red-500 font-medium">Ungroup</button>}
                     {selectedFieldIds.length > 0 && <button onClick={deleteSelectedField} className="text-red-500 px-2 py-1 rounded bg-red-50 dark:bg-red-500/10">{t('preprocess.coverNumbering:xoa')}</button>}
@@ -284,15 +284,15 @@ export default function CoverNumberingTool({
                 {singleFileMode && (
                     <div className="p-2 border border-slate-200 dark:border-zinc-700 rounded-lg space-y-1 bg-slate-50/50 dark:bg-zinc-800/20">
                         <label className="flex flex-col gap-1 text-[10px] font-medium text-slate-500">
-                            Trang bìa (tờ đã bình){' '}
+                            {t('preprocess.coverNumbering:trang_bia_to_da_binh')}{' '}
                             <input type="text" value={coverPagesStr} onChange={e => setCoverPagesStr(e.target.value)}
                                 placeholder={t('preprocess.coverNumbering:vd_1_hoac_1_2')}
                                 className="w-full h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded" />
                         </label>
                         <p className={`text-[10px] ${coverPageIdx.length ? 'text-slate-500' : 'text-amber-600 dark:text-amber-400'}`}>
-                            {totalPages > 0 ? `File có ${totalPages} trang. ` : ''}
+                            {totalPages > 0 ? t('preprocess.coverNumbering:file_co_n_trang', { n: totalPages }) + ' ' : ''}
                             {coverPageIdx.length
-                                ? `Sẽ dùng ${coverPageIdx.length} trang bìa: ${coverPageIdx.map(i => i + 1).join(', ')}. Trang còn lại là ruột (dùng Mẹc Số).`
+                                ? t('preprocess.coverNumbering:se_dung_n_trang_bia', { n: coverPageIdx.length, list: coverPageIdx.map(i => i + 1).join(', ') })
                                 : t('preprocess.coverNumbering:chua_chon_trang_bia_hop_le')}
                         </p>
                     </div>
@@ -305,7 +305,7 @@ export default function CoverNumberingTool({
                 </label>
                 <button onClick={handleGenerate} disabled={busy || !derived.valid || clusters.length === 0 || (singleFileMode && coverPageIdx.length === 0)}
                     className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold rounded-lg">
-                    {busy ? t('preprocess.coverNumbering:dang_xu_ly') : `Tạo bìa (${derived.valid ? v.bookletCount : 0} cuốn)`}
+                    {busy ? t('preprocess.coverNumbering:dang_xu_ly') : t('preprocess.coverNumbering:tao_bia_n_cuon', { n: derived.valid ? v.bookletCount : 0 })}
                 </button>
                 {status && <p className="text-[11px] text-slate-500 text-center">{status}</p>}
             </div>

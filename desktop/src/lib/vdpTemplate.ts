@@ -6,6 +6,8 @@
 // JSON để dùng lại — dùng chung cho Trộn VDP, Chạy số, Chạy bìa.
 // ─────────────────────────────────────────────────────────────────────────
 
+import i18n from '../i18n';
+
 const FILTERS = [{ name: 'PrynX VDP Template', extensions: ['json'] }];
 
 /** Lưu danh sách field VDP ra file .json (hỏi vị trí lưu). */
@@ -15,7 +17,7 @@ export async function saveVdpTemplate(
     setStatus: (s: string) => void,
 ): Promise<void> {
     if (!fields || fields.length === 0) {
-        setStatus('Chưa có trường VDP nào để lưu mẫu.');
+        setStatus(i18n.t('lib.vdpTemplate:chua_co_truong_vdp_nao_de_luu_mau'));
         return;
     }
     const payload = JSON.stringify({
@@ -29,10 +31,10 @@ export async function saveVdpTemplate(
         if ((window as any).__TAURI_INTERNALS__) {
             const { save } = await import('@tauri-apps/plugin-dialog');
             const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-            const path = await save({ defaultPath: defaultName, filters: FILTERS, title: 'Lưu mẫu bố cục VDP' });
+            const path = await save({ defaultPath: defaultName, filters: FILTERS, title: i18n.t('lib.vdpTemplate:luu_mau_bo_cuc_vdp') });
             if (path) {
                 await writeTextFile(path, payload);
-                setStatus(`Đã lưu mẫu: ${path.split(/[\\/]/).pop()}`);
+                setStatus(i18n.t('lib.vdpTemplate:da_luu_mau_path_split_pop', { name: path.split(/[\\/]/).pop() }));
             }
         } else {
             const blob = new Blob([payload], { type: 'application/json' });
@@ -41,10 +43,10 @@ export async function saveVdpTemplate(
             a.href = url; a.download = defaultName;
             document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
-            setStatus('Đã tải mẫu xuống.');
+            setStatus(i18n.t('lib.vdpTemplate:da_tai_mau_xuong'));
         }
     } catch (e: any) {
-        setStatus('Lỗi lưu mẫu: ' + (e?.message || e));
+        setStatus(i18n.t('lib.vdpTemplate:loi_luu_mau') + ' ' + (e?.message || e));
     }
 }
 
@@ -57,7 +59,7 @@ export async function loadVdpTemplate(
         if ((window as any).__TAURI_INTERNALS__) {
             const { open } = await import('@tauri-apps/plugin-dialog');
             const { readTextFile } = await import('@tauri-apps/plugin-fs');
-            const path = await open({ multiple: false, filters: FILTERS, title: 'Tải mẫu bố cục VDP' });
+            const path = await open({ multiple: false, filters: FILTERS, title: i18n.t('lib.vdpTemplate:tai_mau_bo_cuc_vdp') });
             if (!path || typeof path !== 'string') return null;
             text = await readTextFile(path);
         } else {
@@ -78,7 +80,7 @@ export async function loadVdpTemplate(
         const data = JSON.parse(text);
         const fields = Array.isArray(data) ? data : data?.fields;
         if (!Array.isArray(fields) || fields.length === 0) {
-            setStatus('File mẫu không hợp lệ hoặc rỗng.');
+            setStatus(i18n.t('lib.vdpTemplate:file_mau_khong_hop_le_hoac_rong'));
             return null;
         }
         // Gán ID mới (tránh trùng với field hiện có / phiên trước). Giữ NGUYÊN
@@ -88,10 +90,10 @@ export async function loadVdpTemplate(
             ...f,
             id: `field_${stamp}_${i}_${Math.random().toString(36).slice(2, 6)}`,
         }));
-        setStatus(`Đã tải mẫu: ${remapped.length} trường.`);
+        setStatus(i18n.t('lib.vdpTemplate:da_tai_mau_remapped_length_truong', { count: remapped.length }));
         return remapped;
     } catch (e: any) {
-        setStatus('Lỗi tải mẫu: ' + (e?.message || e));
+        setStatus(i18n.t('lib.vdpTemplate:loi_tai_mau') + ' ' + (e?.message || e));
         return null;
     }
 }

@@ -3,7 +3,7 @@ import { PDFDocument, cmyk, pushGraphicsState, popGraphicsState, rectangle, clip
 import { MM_TO_POINTS, ProcessingSettings } from '../pdfImposer';
 import { solveOptimalNupLayout } from './NupGridSolver';
 import { drawMarksNup } from './MarksRenderer';
-import { tv } from '../../i18n';
+import i18n, { tv } from '../../i18n';
 
 
 export const renderNup = async (
@@ -19,8 +19,8 @@ export const renderNup = async (
     setStatus: (msg: string) => void
 ) => {
     const settings = _settings as any;
-    const jobName = settings.layoutType === 'repeat' ? 'Nhân bản' : 'N-Up';
-    setStatus(`Đang phân tích cấu trúc ma trận ${jobName}...`);
+    const jobName = settings.layoutType === 'repeat' ? i18n.t('lib.nupRenderer:nhan_ban') : 'N-Up';
+    setStatus(i18n.t('lib.nupRenderer:dang_phan_tich_cau_truc_ma_tran_jobname', { jobName }));
         
     const bleedPt = settings.bleed * MM_TO_POINTS;
     const trimWidth = maxSrcPageWidth - 2 * bleedPt;
@@ -132,7 +132,10 @@ export const renderNup = async (
     const duplexFlow = settings.duplexFlow || 'normal';
     const sheetsToRender: RenderSheet[] = [];
 
-    setStatus(`Khởi tạo lưới ${jobName} (${cols} cột x ${rows} dòng) - Chế độ: ${layoutType === 'cut_stacks' ? 'Cắt xếp chồng' : (layoutType === 'repeat' ? 'Nhân bản' : 'Trải tuần tự')}...`);
+    const modeLabel = layoutType === 'cut_stacks'
+        ? i18n.t('lib.nupRenderer:che_do_cat_xep_chong')
+        : (layoutType === 'repeat' ? i18n.t('lib.nupRenderer:nhan_ban') : i18n.t('lib.nupRenderer:che_do_trai_tuan_tu'));
+    setStatus(i18n.t('lib.nupRenderer:khoi_tao_luoi_jobname_cols_cot_x_rows', { jobName, cols, rows, mode: modeLabel }));
 
     const isDouble = duplexFlow === 'double';
     
@@ -309,7 +312,7 @@ export const renderNup = async (
         const renderItem = sheetsToRender[s];
         if (renderItem.cells.every(c => c.srcIndex === null)) continue; // Skip empty sheets
 
-        setStatus(`Đang xuất mâm in tờ ${s + 1}/${sheetsToRender.length}...`);
+        setStatus(i18n.t('lib.nupRenderer:dang_xuat_mam_in_to_s_1_sheetstorender', { current: s + 1, total: sheetsToRender.length }));
         const outputPage = outputPdf.addPage([finalSheetWidth, finalSheetHeight]);
 
         // Find active bounds for this sheet to collapse empty rows/cols if manual

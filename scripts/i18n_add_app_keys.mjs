@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+const VI='desktop/src/i18n/locales/vi.json', EN='desktop/src/i18n/locales/en.json';
+const vi=JSON.parse(fs.readFileSync(VI,'utf8')), en=JSON.parse(fs.readFileSync(EN,'utf8'));
+const add=(ns,k,v,e)=>{ vi[ns]=vi[ns]||{}; en[ns]=en[ns]||{}; vi[ns][k]=v; en[ns][k]=e; };
+add('shell','cong_cu_khong_tim_thay','Công cụ không tìm thấy','Tool not found');
+add('shell','khoi_phuc_phien_chua_luu','🛟 Khôi phục phiên chưa lưu?','🛟 Restore unsaved session?');
+add('shell','phat_hien','Phát hiện','Detected');
+add('shell','tai_lieu_chua_luu_tu_lan_chay_truoc','tài liệu\n              chưa lưu từ lần chạy trước (có thể do tắt đột ngột / mất điện). Khôi phục lại các thao tác đang sửa?','unsaved document(s)\n              from the last run (possibly due to a sudden shutdown / power loss). Restore your in-progress edits?');
+add('shell','bo_qua','Bỏ qua','Skip');
+add('shell','khoi_phuc','Khôi phục','Restore');
+fs.writeFileSync(VI,JSON.stringify(vi,null,2)+'\n','utf8');
+fs.writeFileSync(EN,JSON.stringify(en,null,2)+'\n','utf8');
+console.log('added shell keys');

@@ -798,6 +798,140 @@ def map_object(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> OpSpan | None:
     return best_span
 
 
+def map_object_spans(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> list[OpSpan]:
+    """
+    Như `map_object` nhưng trả về TẤT CẢ span thuộc cùng MỘT object khi object đó
+    được vẽ bằng NHIỀU painting-op có CÙNG hình (bbox trùng khít trong tolerance).
+
+    VÌ SAO CẦN: Illustrator/InDesign thường vẽ một hình bằng 2+ lượt liên tiếp trên
+    CÙNG một path — vd `q cm …path… f Q` (tô) rồi `q cm …path… S Q` (viền). PDFium
+    gộp các lượt này thành MỘT page-object (một bbox), nhưng `build_op_spans` tạo
+    NHIỀU span (mỗi painting-op một span) có bbox trùng nhau. `map_object` coi đây là
+    "đa nghĩa" và trả None → thao tác bị hủy (409) dù thực chất KHÔNG mơ hồ: mọi
+    ứng viên là cùng một hình, chỉ khác lượt tô/viền, và phải biến đổi CÙNG NHAU.
+
+    HÀNH VI:
+      - 1 ứng viên            → trả [span] (như map_object).
+      - Nhiều ứng viên trùng bbox lẫn nhau (fill+stroke cùng path) → trả HẾT các span
+        đó (đã sort theo thứ tự xuất hiện) để caller biến đổi đồng thời.
+      - Nhiều ứng viên bbox KHÁC nhau (chồng lấp thật / mơ hồ) → giữ nguyên an toàn:
+        thử phân giải DUY NHẤT qua map_object; nếu map_object trả span → [span];
+        nếu None → [] (caller HỦY, bảo toàn màu — Yêu cầu 4.7).
+
+    Chỉ áp cho image/vector. Text đi đường riêng (map_text_show_op / _resolve_text_move_span).
+    """
+    obj_type = _meta_field(obj_meta, "type")
+    obj_bbox = _meta_field(obj_meta, "bbox")
+
+    if obj_type is None or obj_bbox is None or len(obj_bbox) != 4:
+        return []
+    if obj_type == "text":
+        # Text không dùng gộp fill+stroke; giữ hành vi map_object đơn.
+        span = map_object(page, obj_meta, pdf=pdf)
+        return [span] if span is not None else []
+
+    # CỔNG DIỆN TÍCH (chặn TRƯỚC MỌI nhánh gom): object siêu nhỏ (mark li ti box
+    # ~0pt²) — tolerance 1pt LỚN HƠN cả mark nên nhiều span kề nhau đều "trùng box"
+    # → nhánh all_same gom nhầm span của mark bên cạnh (đã đo: 63 span bị >1 object
+    # nhận). Với object nhỏ hơn ngưỡng, KHÔNG gom: về thẳng map_object (single span,
+    # hành vi gốc an toàn — 409 nếu thật sự đa nghĩa). Chỉ hình đủ lớn mới gom.
+    if _bbox_area(normalize_bbox(list(obj_bbox))) < _IOU_MIN_OBJ_AREA_PT2:
+        span = map_object(page, obj_meta, pdf=pdf)
+        return [span] if span is not None else []
+
+    spans = build_op_spans(page, pdf=pdf)
+    candidates: list[OpSpan] = []
+    for span in spans:
+        if span.kind != obj_type:
+            continue
+        if bbox_within_tolerance(span.bbox, list(obj_bbox), BBOX_TOLERANCE_PT):
+            candidates.append(span)
+
+    # 0 ứng viên tolerance: lớp B điển hình — stroke-object box NỞ theo nửa nét vẽ
+    # nên lệch >1pt so với MỌI span (tọa độ path thuần). Thử khớp theo IoU.
+    if not candidates:
+        return _map_spans_by_iou(spans, obj_type, normalize_bbox(list(obj_bbox)))
+    if len(candidates) == 1:
+        return candidates
+
+    # Nhiều ứng viên: fill+stroke cùng path ⇔ MỌI ứng viên trùng bbox lẫn nhau.
+    first = candidates[0]
+    all_same = all(
+        bbox_within_tolerance(c.bbox, first.bbox, BBOX_TOLERANCE_PT) for c in candidates
+    )
+    if all_same:
+        # Cùng một hình vẽ nhiều lượt → biến đổi tất cả cùng nhau (theo thứ tự vẽ).
+        return sorted(candidates, key=lambda s: s.start)
+
+    # bbox khác nhau thật trong nhóm tolerance → nhờ map_object phân giải duy nhất.
+    span = map_object(page, obj_meta, pdf=pdf)
+    if span is not None:
+        return [span]
+
+    # ── FALLBACK IoU (lớp B): stroke-object có box PDFium NỞ theo nửa nét vẽ nên
+    # lệch >1pt so với box span (tọa độ path thuần) → tolerance 1pt trượt HẾT.
+    # Khớp theo độ chồng lấp (IoU) thay vì cạnh-theo-cạnh: gom mọi span chồng CAO
+    # với object; CHỈ nhận khi các span đó cùng thuộc MỘT hình (chồng khít lẫn
+    # nhau) — fill+stroke của cùng path. Nếu ứng viên tách thành nhiều cụm rời
+    # (hình khác nhau / mơ hồ thật) → HỦY (trả []), giữ nguyên bảo toàn màu.
+    return _map_spans_by_iou(spans, obj_type, normalize_bbox(list(obj_bbox)))
+
+
+def _iou(a: list[float], b: list[float]) -> float:
+    """IoU (intersection-over-union) của hai bbox đã normalize; 0 nếu rời nhau."""
+    inter = _bbox_intersection_area(a, b)
+    if inter <= 0:
+        return 0.0
+    union = _bbox_area(a) + _bbox_area(b) - inter
+    return inter / union if union > 0 else 0.0
+
+
+# Ngưỡng IoU tối thiểu để coi một span là "cùng hình" với object (fallback lớp B).
+# 0.5 đủ chặt để loại span bao trùm cả nhóm (object nhỏ trong span lớn → IoU thấp)
+# nhưng đủ lỏng cho lệch nửa-nét-vẽ giữa fill-span và stroke-object (~0.9 thực tế).
+_IOU_SAME_SHAPE: float = 0.5
+
+# Diện tích object tối thiểu (pt²) để CHO PHÉP IoU-fallback. Dưới ngưỡng này (mark
+# li ti box ~0pt²) IoU nhiễu ở mức pixel → gom nhầm span mark kề bên. Đặt giữa mark
+# (~0pt²) và hình thật nhỏ nhất đo được (~16000pt²) — 100pt² rất an toàn cho cả hai.
+_IOU_MIN_OBJ_AREA_PT2: float = 100.0
+
+
+def _map_spans_by_iou(spans, obj_type: str, obj_bbox: list[float]) -> list[OpSpan]:
+    """
+    Khớp object→span theo IoU khi tolerance cạnh-theo-cạnh thất bại (lớp B:
+    stroke-object box nở theo nét vẽ). Trả HẾT span cùng một hình, hoặc [] nếu mơ hồ.
+
+    An toàn màu: chỉ trả khi MỌI span ứng viên (IoU ≥ ngưỡng với object) đều chồng
+    khít LẪN NHAU (cùng path fill+stroke). Nếu ứng viên phân thành ≥2 cụm rời rạc
+    (nhiều hình khác nhau chồng vùng) → mơ hồ → [] (HỦY).
+
+    CỔNG DIỆN TÍCH: chỉ áp IoU-fallback cho object đủ LỚN. Mark siêu nhỏ (box ~0pt²,
+    vd dấu chấm/nét li ti) có IoU nhiễu ở mức pixel → dễ gom nhầm span của mark kề
+    bên (đã đo: 83 lần span bị >1 mark cùng nhận). Object nhỏ hơn ngưỡng → KHÔNG dùng
+    IoU (giữ HỦY an toàn như hành vi gốc), tránh move-1-kéo-nhiều phá nội dung.
+    """
+    if _bbox_area(obj_bbox) < _IOU_MIN_OBJ_AREA_PT2:
+        return []
+    cands = [
+        s for s in spans
+        if s.kind == obj_type and _iou(normalize_bbox(list(s.bbox)), obj_bbox) >= _IOU_SAME_SHAPE
+    ]
+    if not cands:
+        return []
+    if len(cands) == 1:
+        return cands
+
+    # Mọi ứng viên phải chồng khít LẪN NHAU (cùng hình). Nếu có cặp IoU thấp →
+    # chúng là hình khác nhau → mơ hồ → HỦY.
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            if _iou(normalize_bbox(list(cands[i].bbox)),
+                    normalize_bbox(list(cands[j].bbox))) < _IOU_SAME_SHAPE:
+                return []
+    return sorted(cands, key=lambda s: s.start)
+
+
 # ── Task fix: ánh xạ GRANULAR cho XÓA text (1 show-op, không cả khối BT…ET) ───
 #
 # VÌ SAO CẦN: `segment_ops` gộp cả khối `BT…ET` thành MỘT span text (vì các phép

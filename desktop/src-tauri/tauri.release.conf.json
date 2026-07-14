@@ -1,4 +1,7 @@
 {
+  "build": {
+    "beforeBuildCommand": ""
+  },
   "bundle": {
     "externalBin": ["binaries/pdf-inspector-backend"],
     "createUpdaterArtifacts": true

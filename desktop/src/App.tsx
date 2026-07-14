@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useLayoutEffect, useRef, Suspense } f
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import HomeTab from './components/HomeTab';
 import { ThemeToggle } from './components/ThemeToggle';
+import { LanguageToggle } from './components/LanguageToggle';
 import SettingsModal from './components/SettingsModal';
 import NewDocumentModal from './components/NewDocumentModal';
 import { createBlankPdfFile } from './lib/createBlankPdf';
@@ -80,6 +81,7 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
           </button>
           <ThemeToggle />
+          <LanguageToggle />
           <div className="w-px h-4 bg-black/10 dark:bg-white/10 mx-1"></div>
         </div>
 
@@ -488,7 +490,7 @@ function AppInner() {
           });
         } catch {
           // Phương án A: file gốc không còn trên đĩa → không dựng lại được.
-          toast.error(`Không khôi phục được "${snap.title}": file gốc không còn.`);
+          toast.error(t('shell:khong_khoi_phuc_duoc', { title: snap.title }));
         }
       }
     } finally {
@@ -797,29 +799,29 @@ function AppInner() {
     {
       label: 'File',
       items: [
-        { label: 'Tài liệu mới', shortcut: 'Ctrl+N', onClick: () => setIsNewDocOpen(true) },
-        { label: 'Mở file…', shortcut: 'Ctrl+O', onClick: handleOpenFile },
-        { label: 'Mở gần đây', disabled: recentFiles.length === 0,
+        { label: tv('Tài liệu mới'), shortcut: 'Ctrl+N', onClick: () => setIsNewDocOpen(true) },
+        { label: tv('Mở file…'), shortcut: 'Ctrl+O', onClick: handleOpenFile },
+        { label: tv('Mở gần đây'), disabled: recentFiles.length === 0,
           submenu: recentFiles.slice(0, 12).map((rf) => ({ label: rf.name, onClick: () => openRecentFile(rf) })) },
         { separator: true },
-        { label: 'Lưu', shortcut: 'Ctrl+S', disabled: !isToolActive,
+        { label: tv('Lưu'), shortcut: 'Ctrl+S', disabled: !isToolActive,
           onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: false } })) },
-        { label: 'Lưu thành…', shortcut: 'Ctrl+Shift+S', disabled: !isToolActive,
+        { label: tv('Lưu thành…'), shortcut: 'Ctrl+Shift+S', disabled: !isToolActive,
           onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: true } })) },
         { separator: true },
-        { label: 'Đóng tab', shortcut: 'Ctrl+W', disabled: !isToolActive, onClick: () => handleCloseTab(activeTabId) },
-        { label: 'Thoát', shortcut: 'Alt+F4', onClick: () => window.dispatchEvent(new CustomEvent('prynx-request-quit')) },
+        { label: tv('Đóng tab'), shortcut: 'Ctrl+W', disabled: !isToolActive, onClick: () => handleCloseTab(activeTabId) },
+        { label: tv('Thoát'), shortcut: 'Alt+F4', onClick: () => window.dispatchEvent(new CustomEvent('prynx-request-quit')) },
       ],
     },
     {
       label: 'Edit',
       items: [
-        { label: 'Hoàn tác', shortcut: 'Ctrl+Z', disabled: !isToolActive, onClick: () => viewerCmd('undo') },
-        { label: 'Làm lại', shortcut: 'Ctrl+Y', disabled: !isToolActive, onClick: () => viewerCmd('redo') },
+        { label: tv('Hoàn tác'), shortcut: 'Ctrl+Z', disabled: !isToolActive, onClick: () => viewerCmd('undo') },
+        { label: tv('Làm lại'), shortcut: 'Ctrl+Y', disabled: !isToolActive, onClick: () => viewerCmd('redo') },
         { separator: true },
-        { label: 'Chỉnh sửa đối tượng', disabled: !isToolActive, onClick: () => viewerCmd('toggle-object-edit') },
-        { label: 'Cắt khổ (Crop)', disabled: !isToolActive, onClick: () => viewerCmd('crop') },
-        { label: 'Xóa trang…', disabled: !isToolActive, onClick: () => viewerCmd('delete-pages') },
+        { label: tv('Chỉnh sửa đối tượng'), disabled: !isToolActive, onClick: () => viewerCmd('toggle-object-edit') },
+        { label: tv('Cắt khổ (Crop)'), disabled: !isToolActive, onClick: () => viewerCmd('crop') },
+        { label: tv('Xóa trang…'), disabled: !isToolActive, onClick: () => viewerCmd('delete-pages') },
       ],
     },
     {
@@ -827,18 +829,18 @@ function AppInner() {
       items: [
         { label: t('shell:phong_to'), shortcut: 'Ctrl++', icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
         { label: t('shell:thu_nho'), shortcut: 'Ctrl+-', icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
-        { label: 'Về 100%', icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
+        { label: tv('Về 100%'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
         { separator: true },
-        { label: 'Vừa chiều ngang', icon: <MoveHorizontal className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },
-        { label: 'Vừa trọn trang', icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-page') },
+        { label: tv('Vừa chiều ngang'), icon: <MoveHorizontal className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },
+        { label: tv('Vừa trọn trang'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-page') },
         { separator: true },
-        { label: 'Xem một trang', icon: <FileText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-fit') },
-        { label: 'Cuộn trang dọc', icon: <ScrollText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-scroll') },
-        { label: 'Xem hai trang', icon: <Columns2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-fit') },
-        { label: 'Cuộn hai trang', icon: <Rows2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-scroll') },
+        { label: tv('Xem một trang'), icon: <FileText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-fit') },
+        { label: tv('Cuộn trang dọc'), icon: <ScrollText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-scroll') },
+        { label: tv('Xem hai trang'), icon: <Columns2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-fit') },
+        { label: tv('Cuộn hai trang'), icon: <Rows2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-scroll') },
         { separator: true },
-        { label: 'Thước đo (Rulers)', icon: <Ruler className="w-3.5 h-3.5" />, checked: showRulers, disabled: !isToolActive, onClick: () => viewerCmd('toggle-rulers') },
-        { label: 'Giao diện Tối', icon: <Moon className="w-3.5 h-3.5" />, checked: theme === 'dark', onClick: toggleTheme },
+        { label: tv('Thước đo (Rulers)'), icon: <Ruler className="w-3.5 h-3.5" />, checked: showRulers, disabled: !isToolActive, onClick: () => viewerCmd('toggle-rulers') },
+        { label: tv('Giao diện Tối'), icon: <Moon className="w-3.5 h-3.5" />, checked: theme === 'dark', onClick: toggleTheme },
       ],
     },
     {
@@ -865,23 +867,23 @@ function AppInner() {
             checked: t.id === activeTabId,
             onClick: () => setActiveTabId(t.id),
           }))
-        : [{ label: 'Chỉ có tab Home', disabled: true }],
+        : [{ label: tv('Chỉ có tab Home'), disabled: true }],
     },
     {
       label: 'Help',
       items: [
-        { label: 'Cài đặt & Cấu hình', shortcut: 'Ctrl+K', onClick: () => { setSettingsInitialTab('tools'); setIsGlobalSettingsOpen(true); } },
-        { label: 'Phím tắt', onClick: () => { setSettingsInitialTab('shortcuts'); setIsGlobalSettingsOpen(true); } },
+        { label: tv('Cài đặt & Cấu hình'), shortcut: 'Ctrl+K', onClick: () => { setSettingsInitialTab('tools'); setIsGlobalSettingsOpen(true); } },
+        { label: tv('Phím tắt'), onClick: () => { setSettingsInitialTab('shortcuts'); setIsGlobalSettingsOpen(true); } },
         { separator: true },
-        { label: 'Trang chủ PrintSolutions.vn', onClick: () => openExternal(SUPPORT.website) },
-        { label: 'Liên hệ hỗ trợ', submenu: [
+        { label: tv('Trang chủ PrintSolutions.vn'), onClick: () => openExternal(SUPPORT.website) },
+        { label: tv('Liên hệ hỗ trợ'), submenu: [
           { label: `Email: ${SUPPORT.email}`, onClick: () => openExternal(`mailto:${SUPPORT.email}`) },
           { label: `Điện thoại: ${SUPPORT.phone}`, onClick: () => openExternal(`tel:${SUPPORT.phone}`) },
           { label: `Zalo: ${SUPPORT.phone}`, onClick: () => openExternal(SUPPORT.zalo) },
         ] },
-        { label: 'Kiểm tra cập nhật', onClick: () => { setAboutAutoCheck(true); setIsAboutOpen(true); } },
+        { label: tv('Kiểm tra cập nhật'), onClick: () => { setAboutAutoCheck(true); setIsAboutOpen(true); } },
         { separator: true },
-        { label: 'Giới thiệu PrynX', onClick: () => { setAboutAutoCheck(false); setIsAboutOpen(true); } },
+        { label: tv('Giới thiệu PrynX'), onClick: () => { setAboutAutoCheck(false); setIsAboutOpen(true); } },
       ],
     },
   ];

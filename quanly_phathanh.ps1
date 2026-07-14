@@ -85,10 +85,18 @@ $btnList = New-Object System.Windows.Forms.Button
 $btnList.Text = "Xem bản đã phát hành"; $btnList.Location = New-Object System.Drawing.Point(335, 226); $btnList.Width = 170
 $form.Controls.Add($btnList)
 
+# ---- Nut build NOI BO (khong upload) ----
+$btnLocal = New-Object System.Windows.Forms.Button
+$btnLocal.Text = "Build NỘI BỘ  (test trước, không upload)"
+$btnLocal.Location = New-Object System.Drawing.Point(15, 264); $btnLocal.Width = 290; $btnLocal.Height = 42
+$btnLocal.BackColor = [System.Drawing.Color]::FromArgb(39, 39, 42); $btnLocal.ForeColor = [System.Drawing.Color]::White
+$btnLocal.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$form.Controls.Add($btnLocal)
+
 # ---- Nut phat hanh chinh ----
 $btnPublish = New-Object System.Windows.Forms.Button
-$btnPublish.Text = "PHÁT HÀNH  (build + ký + đăng lên GitHub)"
-$btnPublish.Location = New-Object System.Drawing.Point(15, 264); $btnPublish.Width = 595; $btnPublish.Height = 42
+$btnPublish.Text = "PHÁT HÀNH  (build + ký + lên GitHub)"
+$btnPublish.Location = New-Object System.Drawing.Point(320, 264); $btnPublish.Width = 290; $btnPublish.Height = 42
 $btnPublish.BackColor = [System.Drawing.Color]::FromArgb(79, 70, 229); $btnPublish.ForeColor = [System.Drawing.Color]::White
 $btnPublish.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $form.Controls.Add($btnPublish)
@@ -131,6 +139,19 @@ $btnList.Add_Click({
     if ([string]::IsNullOrWhiteSpace($out)) { Log "(chua co ban nao / hoac chua dang nhap)" } else { Log $out.Trim() }
 })
 
+$btnLocal.Add_Click({
+    $ok = [System.Windows.Forms.MessageBox]::Show(
+        "Build NOI BO (test truoc, KHONG upload)?`r`nTao file cai dat trong  Ban_Phat_Hanh\`r`nQua trinh co the mat 10-20 phut (chay trong cua so rieng).",
+        "Xac nhan build noi bo", [System.Windows.Forms.MessageBoxButtons]::YesNo)
+    if ($ok -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    $buildScript = Join-Path $ROOT "build_production.ps1"
+    $skipArg = if ($chkSkipNuitka.Checked) { " -SkipNuitka" } else { "" }
+    # KHONG -Release: build installer local, khong ky updater, khong upload.
+    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$buildScript`"$skipArg"
+    Start-Process powershell -ArgumentList $argList
+    Log "Da khoi chay build NOI BO trong cua so rieng. File cai dat se nam trong Ban_Phat_Hanh\."
+})
+
 $btnPublish.Add_Click({
     if (-not $txtVer.Text) { [System.Windows.Forms.MessageBox]::Show("Nhap phien ban truoc.", "Thieu thong tin"); return }
     if (-not $txtRepo.Text) { [System.Windows.Forms.MessageBox]::Show("Nhap repo phat hanh truoc.", "Thieu thong tin"); return }
@@ -150,4 +171,12 @@ $btnPublish.Add_Click({
     Log "Da khoi chay build+phat hanh trong cua so rieng. Theo doi tien do o cua so do."
 })
 
+# Ep form noi len foreground khi hien (neu khong, no co the bi cua so khac che
+# -- console goi bang -WindowStyle Hidden nen form khong tu gianh foreground).
+$form.Add_Shown({
+    $form.TopMost = $true
+    $form.Activate()
+    $form.BringToFront()
+    $form.TopMost = $false
+})
 [void]$form.ShowDialog()

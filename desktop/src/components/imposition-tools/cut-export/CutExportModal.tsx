@@ -269,16 +269,16 @@ export default function CutExportModal(props: CutExportModalProps) {
     const total = pagesToSend.length;
     for (let k = 0; k < total; k++) {
       const p = pagesToSend[k];
-      setBatchMsg(`Đang gửi tờ ${k + 1}/${total}...`);
+      setBatchMsg(t('imposition.cutExport:dang_gui_to_k_total', { k: k + 1, total }));
       try {
         const r = await cutExportFromFile(fileReqFor(p, `_t${k + 1}`));
         if (r.ok) okCount += 1;
-        else if (!firstErr) firstErr = r.error || r.detail || `Tờ ${k + 1} lỗi`;
+        else if (!firstErr) firstErr = r.error || r.detail || t('imposition.cutExport:to_k_loi', { k: k + 1 });
       } catch (e: unknown) {
         if (!firstErr) firstErr = String(e);
       }
     }
-    setBatchMsg(`Xong: ${okCount}/${total} tờ.`);
+    setBatchMsg(t('imposition.cutExport:xong_ok_total_to', { ok: okCount, total }));
     if (firstErr) setError(firstErr);
     setBusy(false);
   };
@@ -306,7 +306,7 @@ export default function CutExportModal(props: CutExportModalProps) {
           {useFileSource && (
             <p className="text-[13px] text-slate-500 dark:text-zinc-400 truncate">
               {t('imposition.cutExport:nguon')} <span className="font-medium text-slate-700 dark:text-zinc-200">{sourceName || t('imposition.cutExport:file_da_binh')}</span>
-              {hasCutPages ? ` — ${sheetCount} trang khuôn` : ""}
+              {hasCutPages ? t('imposition.cutExport:n_trang_khuon_suffix', { n: sheetCount }) : ""}
             </p>
           )}
 
@@ -328,7 +328,7 @@ export default function CutExportModal(props: CutExportModalProps) {
               {t('imposition.cutExport:chon_lop_cat_thu_cong')}
               <select className={`${selStyle} border-amber-400`} value={forceLayer} onChange={(e) => setForceLayer(e.target.value)}>
                 <option value="">{t('imposition.cutExport:chon_lop_spot_color')}</option>
-                {preview.candidates.layers.map((l) => <option key={"L:" + l} value={l}>Lớp: {l}</option>)}
+                {preview.candidates.layers.map((l) => <option key={"L:" + l} value={l}>{t('imposition.cutExport:lop', { l })}</option>)}
                 {preview.candidates.spots.map((s) => <option key={"S:" + s} value={s}>Spot: {s}</option>)}
               </select>
             </label>
@@ -347,7 +347,7 @@ export default function CutExportModal(props: CutExportModalProps) {
               <span className="text-[13px] text-slate-600 dark:text-zinc-300">{t('imposition.cutExport:trang_khuon')}</span>
               <div className="flex items-center gap-2">
                 <button className="w-8 h-8 rounded border border-slate-300 dark:border-white/20 disabled:opacity-40" disabled={cutPos <= 0} onClick={() => goToSheet(cutPos - 1)}>‹</button>
-                <span className="text-[13px] font-semibold min-w-[64px] text-center">Tờ {cutPos + 1} / {sheetCount}</span>
+                <span className="text-[13px] font-semibold min-w-[64px] text-center">{t('imposition.cutExport:to_x_y', { x: cutPos + 1, y: sheetCount })}</span>
                 <button className="w-8 h-8 rounded border border-slate-300 dark:border-white/20 disabled:opacity-40" disabled={cutPos >= sheetCount - 1} onClick={() => goToSheet(cutPos + 1)}>›</button>
               </div>
             </div>
@@ -374,8 +374,8 @@ export default function CutExportModal(props: CutExportModalProps) {
 
           {useFileSource && preview?.ok && (
             <p className="text-[13px] text-slate-500 dark:text-zinc-400">
-              {t('imposition.cutExport:tong')} <span className="font-semibold text-slate-700 dark:text-zinc-200">{(preview.total_items || 0) * Math.max(1, copies || 1)}</span> con
-              {" "}({preview.total_items} con/tờ × {Math.max(1, copies || 1)} tờ)
+              {t('imposition.cutExport:tong')} <span className="font-semibold text-slate-700 dark:text-zinc-200">{(preview.total_items || 0) * Math.max(1, copies || 1)}</span> {t('imposition.cutExport:con')}
+              {" "}{t('imposition.cutExport:con_to_x_to', { perSheet: preview.total_items, sheets: Math.max(1, copies || 1) })}
             </p>
           )}
 
@@ -424,7 +424,7 @@ export default function CutExportModal(props: CutExportModalProps) {
           {error && <p className="text-[13px] text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded p-2">{error}</p>}
           {result && result.ok && (
             <p className="text-[13px] text-emerald-600 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/40 rounded p-2 break-all">
-              Đã gửi: {result.detail} ({result.bytes_sent} bytes)
+              {t('imposition.cutExport:da_gui_detail_bytes', { detail: result.detail, bytes: result.bytes_sent })}
             </p>
           )}
         </div>
@@ -433,7 +433,7 @@ export default function CutExportModal(props: CutExportModalProps) {
           <button onClick={onClose} disabled={busy} className="h-10 px-4 rounded-lg border border-slate-300 dark:border-white/20 text-slate-700 dark:text-zinc-200 text-sm font-medium hover:bg-slate-50 dark:hover:bg-white/5 disabled:opacity-50">{t('imposition.cutExport:dong')}</button>
           {useFileSource && sheetCount > 1 && (
             <button onClick={handleSendAll} disabled={busy || !canSend} className="h-10 px-4 rounded-lg border border-emerald-600 text-emerald-700 dark:text-emerald-400 text-sm font-semibold hover:bg-emerald-50 dark:hover:bg-emerald-900/20 disabled:opacity-50">
-              Gửi tất cả ({sheetCount})
+              {t('imposition.cutExport:gui_tat_ca_n', { n: sheetCount })}
             </button>
           )}
           <button onClick={handleSend} disabled={busy || !canSend} className="h-10 px-5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold disabled:opacity-50">

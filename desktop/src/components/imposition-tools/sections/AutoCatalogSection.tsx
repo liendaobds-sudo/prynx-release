@@ -43,7 +43,7 @@ export default function AutoCatalogSection() {
                             : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 hover:bg-slate-200/50 dark:hover:bg-zinc-700/50'
                     }`}
                 >
-                    ⚡ In Nhanh (Digital)
+                    {t('imposition.autoCatalog:in_nhanh_digital')}
                 </button>
                 <button
                     onClick={() => {
@@ -56,7 +56,7 @@ export default function AutoCatalogSection() {
                             : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 hover:bg-slate-200/50 dark:hover:bg-zinc-700/50'
                     }`}
                 >
-                    🏭 In Offset
+                    {t('imposition.autoCatalog:in_offset')}
                 </button>
             </div>
 
@@ -117,7 +117,7 @@ export default function AutoCatalogSection() {
                                     ))}
                                     {s.optimalData.recommended ? (
                                         <div className="font-bold text-emerald-600 dark:text-emerald-400">
-                                            ✓ Tay tối ưu: {s.optimalData.recommended.label} (Hiệu suất: {s.optimalData.recommended.sheetUtilization}%)
+                                            {t('imposition.autoCatalog:tay_toi_uu_hieu_suat', { label: s.optimalData.recommended.label, pct: s.optimalData.recommended.sheetUtilization })}
                                         </div>
                                     ) : (
                                         <div className="text-red-500 font-bold">{t('imposition.autoCatalog:khong_tim_thay_tay_in_phu_hop_voi_kho')}</div>

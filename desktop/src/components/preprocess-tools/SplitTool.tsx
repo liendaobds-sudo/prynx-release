@@ -64,7 +64,7 @@ export default function SplitTool({ settings, onChange }: Props) {
                         />
                         <div className="text-[10px] text-slate-500 mt-2 leading-relaxed">
                             {t('preprocess.split:moi_dai_phan_cach_boi_dau_phay_tuong')}<br/>
-                            VD: "1-4, 5-8" → Tạo ra 2 file (file chứa tr1-tr4, file chứa tr5-tr8).
+                            {t('preprocess.split:vd_dai_trang_tao_ra_2_file')}
                         </div>
                     </div>
                 )}

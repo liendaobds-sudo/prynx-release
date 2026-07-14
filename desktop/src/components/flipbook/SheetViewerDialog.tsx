@@ -11,6 +11,7 @@ import { generateBindingMap, type VirtualSheet, type PageSlot } from '../../lib/
 import { SPREAD_FOLD_REGISTRY, getPatternForPageCount } from '../../lib/imposerEngine/FoldPatterns';
 import { computeSpreadGrid } from '../../lib/imposerEngine/InstructionSerializer';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 const MM_TO_PT = 2.83465;
 
@@ -92,7 +93,7 @@ const PageSlotView: React.FC<{
                         </div>
                     )}
                     <img
-                        src={imageUrl} alt={`Trang ${slot.logicalIndex}`}
+                        src={imageUrl} alt={t('misc.sheetViewerDialog:trang_n', { n: slot.logicalIndex })}
                         className={`max-w-full max-h-full object-contain transition-opacity duration-200 ${loaded ? 'opacity-100' : 'opacity-0'}`}
                         onLoad={() => setLoaded(true)} draggable={false}
                     />
@@ -111,7 +112,7 @@ const PageSlotView: React.FC<{
                     </span>
                 )}
                 <span className="bg-white/80 dark:bg-zinc-800/80 text-slate-800 dark:text-white text-[11px] font-medium px-2.5 py-1 rounded shadow-sm whitespace-nowrap backdrop-blur-sm border border-slate-200 dark:border-white/10 max-w-full overflow-hidden text-ellipsis text-center">
-                    {isBlankPage ? t('misc.sheetViewerDialog:trong') : `Trang ${slot.logicalIndex}`}
+                    {isBlankPage ? t('misc.sheetViewerDialog:trong') : t('misc.sheetViewerDialog:trang_n', { n: slot.logicalIndex })}
                 </span>
             </div>
         </div>
@@ -181,7 +182,7 @@ const BlueprintCell: React.FC<{
                 <div className="flex flex-col items-center gap-1">
                     <span className="text-slate-800 dark:text-white font-bold text-2xl">{logicalIndex}</span>
                     {coverLabel ? (
-                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded shadow-sm" style={{ color: coverStyle!.text, background: coverStyle!.bg, border: `1px solid ${coverStyle!.border}` }}>{coverLabel}</span>
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded shadow-sm" style={{ color: coverStyle!.text, background: coverStyle!.bg, border: `1px solid ${coverStyle!.border}` }}>{tv(coverLabel)}</span>
                     ) : (isSameMaterialCover || currentJob) ? (
                         <span className="text-slate-500 dark:text-zinc-400 text-[10px]">{t('misc.sheetViewerDialog:ruot')}</span>
                     ) : null}
@@ -269,9 +270,9 @@ const BlueprintGrid: React.FC<{
                 </div>
             </div>
             {(gripperMargin && gripperMargin > 0) ? (
-                <div className="w-full h-3 mt-1 bg-red-100/80 dark:bg-red-500/20 border-t border-red-300 dark:border-red-500/50 flex items-center justify-center rounded-b-md relative shrink-0 overflow-visible z-10 shadow-sm" title={`Nhíp in: ${gripperMargin}mm`}>
+                <div className="w-full h-3 mt-1 bg-red-100/80 dark:bg-red-500/20 border-t border-red-300 dark:border-red-500/50 flex items-center justify-center rounded-b-md relative shrink-0 overflow-visible z-10 shadow-sm" title={t('misc.sheetViewerDialog:nhip_in_mm', { n: gripperMargin })}>
                     <span className="text-[9px] font-bold text-red-500/90 dark:text-red-400 whitespace-nowrap px-1 bg-white/60 dark:bg-zinc-800/60 rounded">
-                        Cắn nhíp ({gripperMargin}mm)
+                        {t('misc.sheetViewerDialog:can_nhip_mm', { n: gripperMargin })}
                     </span>
                 </div>
             ) : null}
@@ -543,7 +544,7 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                 <div className="flex items-center gap-3">
                     <Layers className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
                     <span className="text-slate-900 dark:text-white text-[15px] font-bold tracking-wide whitespace-nowrap">{t('misc.sheetViewerDialog:xem_bai_in')}</span>
-                    <span className="text-slate-500 dark:text-zinc-300 text-[13px] font-medium whitespace-nowrap">• {BINDING_LABELS[bindingMode]}</span>
+                    <span className="text-slate-500 dark:text-zinc-300 text-[13px] font-medium whitespace-nowrap">• {tv(BINDING_LABELS[bindingMode])}</span>
                 </div>
                 <div className="flex items-center gap-3">
                     {activeFoldPattern && bindingMode !== 'continuous' && !isDigital && (
@@ -585,13 +586,13 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                     <div className="shrink-0 flex items-center justify-between px-5 py-3">
                         <div className="flex items-center gap-3">
                             <span className="text-slate-800 dark:text-white text-sm font-bold">
-                                Tờ {currentSheetIdx + 1}/{sheets.length}
+                                {t('misc.sheetViewerDialog:to_x_y', { x: currentSheetIdx + 1, y: sheets.length })}
                             </span>
                             {bindingMode === 'thread' && cg && (
                                 <>
                                     <span className="text-slate-400 dark:text-zinc-600 text-sm">•</span>
                                     <span className="text-sm font-medium" style={{ color: sc.text }}>
-                                        {t('misc.sheetViewerDialog:tep_2')} {sig} — Tờ {cg.sheets.indexOf(cs) + 1}/{cg.sheets.length}
+                                        {t('misc.sheetViewerDialog:tep_sig_to_x_y', { sig, x: cg.sheets.indexOf(cs) + 1, y: cg.sheets.length })}
                                     </span>
                                 </>
                             )}
@@ -729,11 +730,11 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                                 {signatureGroups.map((g) => {
                                     const isAct = g.sigIndex === sig;
                                     const job = jobMap?.get(g.sheets[0]);
-                                    let label = `Tép ${g.sigIndex}`;
+                                    let label = t('misc.sheetViewerDialog:tep_sig', { n: g.sigIndex });
                                     if (job && job.label) {
                                         label = job.label.replace('Kẽm ', 'Tờ in ').replace('Tay ', '').replace(' — Tép ', ' Tép ').replace(/— Trang lẻ.*/, t('misc.sheetViewerDialog:le')).replace(/\(Tự Trở.*\)/, '').trim();
                                     } else if (job) {
-                                        label = job.isCover ? t('misc.sheetViewerDialog:to_bia') : `Tờ in ${job.sortOrder || g.sigIndex}`;
+                                        label = job.isCover ? t('misc.sheetViewerDialog:to_bia') : t('misc.sheetViewerDialog:to_in_n', { n: job.sortOrder || g.sigIndex });
                                     }
                                     return (
                                         <button key={g.sigIndex}

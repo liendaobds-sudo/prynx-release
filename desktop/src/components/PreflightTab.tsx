@@ -261,7 +261,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
             <p className="text-teal-300 font-medium text-lg">
               {isInspecting ? t('preflight.preflight:he_thong_dang_phan_tich_cau_truc_pdf') :
                 fixingAction === 'PIPELINE' ? t('preflight.preflight:dang_chay_pipeline_sua_loi') :
-                  `Hệ thống xử lý: ${ACTIONS.find(a => a.id === fixingAction)?.title || fixingAction}...`}
+                  t('preflight.preflight:he_thong_xu_ly', { name: ACTIONS.find(a => a.id === fixingAction)?.title || fixingAction })}
             </p>
             <p className="text-slate-400 mt-4 text-sm">{t('preflight.preflight:xu_ly_tren_server_noi_bo')}</p>
           </div>
@@ -341,7 +341,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                             </div>
 
                             <Button variant="primary" className="w-full h-10 text-sm font-bold shadow-lg" onClick={runInspect} disabled={isInspecting || selectedRules.size === 0}>
-                              🔍 Chạy Preflight ({selectedRules.size} rules)
+                              {t('preflight.preflight:chay_preflight_rules', { n: selectedRules.size })}
                             </Button>
                           </div>
                         )}
@@ -360,18 +360,18 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                                 [report.color_summary.has_cmyk && 'CMYK', report.color_summary.has_rgb && '⚠️RGB', report.color_summary.has_spot && 'Spot'].filter(Boolean).join(', ') || t('preflight.preflight:khong_ro_vector')
                               } />
                               <MiniCard icon="🔤" label="Font" value={
-                                report.font_summary.not_embedded > 0 ? `❌ ${report.font_summary.not_embedded}/${report.font_summary.total} chưa nhúng` : `✅ ${report.font_summary.total} đã nhúng`
+                                report.font_summary.not_embedded > 0 ? t('preflight.preflight:font_chua_nhung', { n: report.font_summary.not_embedded, total: report.font_summary.total }) : t('preflight.preflight:font_da_nhung', { total: report.font_summary.total })
                               } />
                               <MiniCard icon="🖼️" label={t('preflight.preflight:anh')} value={
                                 report.image_summary.total === 0 ? t('preflight.preflight:khong_co') :
-                                  report.image_summary.low_res > 0 ? `⚠️ ${report.image_summary.low_res}/${report.image_summary.total} low-res` :
-                                    `✅ ${report.image_summary.total} ảnh OK (min ${report.image_summary.min_dpi} DPI)`
+                                  report.image_summary.low_res > 0 ? t('preflight.preflight:anh_low_res', { n: report.image_summary.low_res, total: report.image_summary.total }) :
+                                    t('preflight.preflight:anh_ok_min_dpi', { total: report.image_summary.total, dpi: report.image_summary.min_dpi })
                               } />
                             </div>
 
                             {/* Issues */}
                             <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-2">
-                              Vấn đề ({report.issues.length})
+                              {t('preflight.preflight:van_de_n', { n: report.issues.length })}
                             </h3>
                             {report.issues.length === 0 ? (
                               <div className="text-center py-6 text-slate-400">
@@ -389,7 +389,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                                         <span className="text-[10px]">{s.icon}</span>
                                         <span className={`text-[10px] font-bold ${s.text}`}>{tv(s.label)}</span>
                                         <span className="text-[9px] font-mono text-slate-400">{issue.rule_id}</span>
-                                        {issue.page && <span className="text-[9px] text-slate-400 ml-auto">Tr.{issue.page}</span>}
+                                        {issue.page && <span className="text-[9px] text-slate-400 ml-auto">{t('preflight.preflight:tr_page', { page: issue.page })}</span>}
                                       </div>
                                       <p className={`text-[11px] font-medium ${s.text} leading-snug`}>{issue.description}</p>
                                       {issue.auto_fixable && (
@@ -441,7 +441,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
                               </div>
                               <Button variant="primary" className="w-full h-10 text-sm font-bold" onClick={runPipeline}
                                 disabled={selectedActions.size === 0 || !!fixingAction}>
-                                🚀 Thực thi ({selectedActions.size})
+                                {t('preflight.preflight:thuc_thi_n', { n: selectedActions.size })}
                               </Button>
                             </div>
 

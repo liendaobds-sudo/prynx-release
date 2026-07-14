@@ -15,6 +15,7 @@ import {
 } from '../../lib/imposerEngine/ProductAdvisor';
 import { PREDEFINED_SIZES } from './types';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface Props {
     /** Số trang nguồn (từ file). */
@@ -96,8 +97,8 @@ export default function ProductFirstPanel({
                                 ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10'
                                 : 'border-slate-200 dark:border-white/10 hover:border-indigo-300'}`}
                         >
-                            <div className="text-[13px] font-semibold">{p.label}</div>
-                            <div className="text-[11px] text-slate-500">{p.desc}</div>
+                            <div className="text-[13px] font-semibold">{tv(p.label)}</div>
+                            <div className="text-[11px] text-slate-500">{tv(p.desc)}</div>
                         </button>
                     ))}
                 </div>
@@ -109,7 +110,7 @@ export default function ProductFirstPanel({
                     <span className="flex items-center gap-1">
                         <input type="number" className={numCls} value={finW || ''} onChange={e => setFinW(Number(e.target.value))} placeholder={t('imposition.productFirst:rong')} />
                         <span>×</span>
-                        <input type="number" className={numCls} value={finH || ''} onChange={e => setFinH(Number(e.target.value))} placeholder="cao" />
+                        <input type="number" className={numCls} value={finH || ''} onChange={e => setFinH(Number(e.target.value))} placeholder={t('imposition.productFirst:cao')} />
                     </span>
                 </label>
                 <label className="flex flex-col gap-1 text-[11px] text-slate-500">

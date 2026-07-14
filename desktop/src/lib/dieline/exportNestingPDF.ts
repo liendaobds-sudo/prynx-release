@@ -12,7 +12,7 @@ import { NestingResult, NestingConfig } from './nestingTypes';
 import { jsPDF } from 'jspdf';
 import 'svg2pdf.js';
 import { toast } from 'sonner';
-import { tv } from '../../i18n';
+import i18n, { tv } from '../../i18n';
 
 /** Tolerance cho so sánh điểm (0.01mm) */
 function ptEq(a: Point2D, b: Point2D): boolean {
@@ -147,7 +147,7 @@ function buildNestingSvg(
     });
 
     // Sheet annotation elements
-    const infoText = `${result.countPerSheet} khuôn / tờ — ${result.label} — ${result.utilization}%`;
+    const infoText = i18n.t('lib.exportNestingPDF:result_countpersheet_khuon_to_result', { countPerSheet: result.countPerSheet, label: result.label, utilization: result.utilization });
 
     return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
      width="${actualSheet.width}mm" height="${actualSheet.height}mm"
@@ -161,7 +161,7 @@ ${templateDef}
 
   <!-- Vùng cắn nhíp — phía DƯỚI -->
   <rect x="0" y="${actualSheet.height - config.gripperMargin}" width="${actualSheet.width}" height="${config.gripperMargin}" fill="#fff0f0" stroke="#ffaaaa" stroke-width="0.3"/>
-  <text x="${actualSheet.width / 2}" y="${actualSheet.height - config.gripperMargin / 2 + 2}" text-anchor="middle" font-size="4" fill="#ff6666">Cắn nhíp (${config.gripperMargin}mm)</text>
+  <text x="${actualSheet.width / 2}" y="${actualSheet.height - config.gripperMargin / 2 + 2}" text-anchor="middle" font-size="4" fill="#ff6666">${i18n.t('lib.exportNestingPDF:can_nhip_config_grippermargin_mm', { gripperMargin: config.gripperMargin })}</text>
 
   <!-- Vùng in hợp lệ -->
   <rect x="${config.margin.left}" y="${config.margin.top}"
@@ -193,17 +193,17 @@ function buildSpecBlock(model: DielineModel, result: NestingResult, config: Nest
     const lines: string[] = [];
     lines.push(`${name} — ${standardCode}`);
     lines.push(`L×W×D: ${params.L} × ${params.W} × ${params.D} mm`);
-    if (params.T) lines.push(`Dày giấy (T): ${params.T} mm`);
+    if (params.T) lines.push(i18n.t('lib.exportNestingPDF:day_giay_t_params_t_mm', { T: params.T }));
     if (params.boxType === 'tray') {
-        if (params.G) lines.push(`Dầm (G): ${params.G} mm`);
-        if (params.sleeveGlue) lines.push(`Mí dán vỏ: ${params.sleeveGlue} mm`);
+        if (params.G) lines.push(i18n.t('lib.exportNestingPDF:dam_g_params_g_mm', { G: params.G }));
+        if (params.sleeveGlue) lines.push(i18n.t('lib.exportNestingPDF:mi_dan_vo_params_sleeveglue_mm', { sleeveGlue: params.sleeveGlue }));
     }
-    if (params.TH) lines.push(`Mí gập (TH): ${params.TH} mm`);
+    if (params.TH) lines.push(i18n.t('lib.exportNestingPDF:mi_gap_th_params_th_mm', { TH: params.TH }));
     lines.push('');
-    lines.push(`Tờ: ${actualSheet.width}×${actualSheet.height} mm`);
-    lines.push(`Khuôn/tờ: ${result.countPerSheet} (${result.cols}×${result.rows})`);
-    lines.push(`Sử dụng: ${result.utilization}%`);
-    lines.push(`Hở dao bế: ${config.gutter || config.dieGap} mm`);
+    lines.push(i18n.t('lib.exportNestingPDF:to_actualsheet_width_actualsheet_height', { width: actualSheet.width, height: actualSheet.height }));
+    lines.push(i18n.t('lib.exportNestingPDF:khuon_to_result_countpersheet_result', { count: result.countPerSheet, cols: result.cols, rows: result.rows }));
+    lines.push(i18n.t('lib.exportNestingPDF:su_dung_result_utilization', { utilization: result.utilization }));
+    lines.push(i18n.t('lib.exportNestingPDF:ho_dao_be_config_gutter_config_diegap', { gutter: config.gutter || config.dieGap }));
 
     const blockH = lines.length * lineH + 6;
 
@@ -261,18 +261,18 @@ export async function downloadNestingPDF(
 
         const { params } = model;
         doc.setProperties({
-            title: `Nesting ${model.name} - ${params.L}x${params.W}x${params.D} - ${result.countPerSheet} khuôn/tờ`,
-            subject: `Bình bản ${result.label} — ${result.utilization}%`,
+            title: i18n.t('lib.exportNestingPDF:nesting_model_name_params_l_x_params_w', { name: model.name, L: params.L, W: params.W, D: params.D, count: result.countPerSheet }),
+            subject: i18n.t('lib.exportNestingPDF:binh_ban_result_label_result', { label: result.label, utilization: result.utilization }),
             creator: 'PrintSolutions Dieline Generator',
         });
 
         const name = filename || `nesting_${model.standardCode}_${params.L}x${params.W}x${params.D}_${result.countPerSheet}up.pdf`;
         doc.save(name);
         toast.dismiss(toastId);
-        toast.success(`Đã xuất PDF xếp khuôn (${result.countPerSheet} khuôn/tờ)`);
+        toast.success(i18n.t('lib.exportNestingPDF:da_xuat_pdf_xep_khuon_result', { count: result.countPerSheet }));
     } catch (err) {
         console.error('Nesting PDF Export Error:', err);
         toast.dismiss(toastId);
-        toast.error('Lỗi khi tạo PDF: ' + (err instanceof Error ? err.message : 'Unknown error'));
+        toast.error(i18n.t('lib.exportNestingPDF:loi_khi_tao_pdf') + ' ' + (err instanceof Error ? err.message : 'Unknown error'));
     }
 }

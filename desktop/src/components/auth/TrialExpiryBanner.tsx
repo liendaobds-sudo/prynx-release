@@ -21,7 +21,7 @@ export default function TrialExpiryBanner() {
 
   const urgent = remainingDays <= FORCE_SHOW_DAYS;
   const dayText =
-    remainingDays <= 0 ? t('misc.trialExpiryBanner:hom_nay') : `còn ${remainingDays} ngày`;
+    remainingDays <= 0 ? t('misc.trialExpiryBanner:hom_nay') : t('misc.trialExpiryBanner:con_n_ngay', { n: remainingDays });
 
   const openRenew = async () => {
     const url = 'https://printsolutions.vn/product/prynx';
@@ -52,7 +52,7 @@ export default function TrialExpiryBanner() {
       boxShadow: '0 2px 10px rgba(0,0,0,0.25)',
     }}>
       <span>
-        {urgent ? '⚠️' : '⏳'} Bản quyền của bạn sắp hết hạn ({dayText}). Gia hạn sớm để không gián đoạn công việc.
+        {urgent ? '⚠️' : '⏳'} {t('misc.trialExpiryBanner:sap_het_han', { dayText })}
       </span>
       <button
         onClick={openRenew}

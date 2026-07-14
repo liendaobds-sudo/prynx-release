@@ -4,6 +4,7 @@ import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput, ToolInfo } from './ToolUI';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface Props {
     pdfFile: File | null;
@@ -75,7 +76,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
 
             if (!response.ok) {
                 const errData = await response.json().catch(() => null);
-                throw new Error(errData?.detail || `Lỗi server (${response.status})`);
+                throw new Error(errData?.detail || t('preprocess.optimize:loi_server', { status: response.status }));
             }
 
             const blob = await response.blob();
@@ -111,8 +112,8 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
                     {PRESETS.map(opt => (
                         <ToolCardOption
                             key={opt.id}
-                            label={opt.label}
-                            desc={opt.desc}
+                            label={tv(opt.label)}
+                            desc={tv(opt.desc)}
                             selected={preset === opt.id}
                             onClick={() => setPreset(opt.id)}
                         />
@@ -156,8 +157,8 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
             {/* Info */}
             <ToolInfo desc={
                 <>
-                    <strong>Optimize PDF</strong> — Giảm dung lượng file bằng cách nén ảnh, subset font, gỡ rác. 
-                    Chất lượng in {selectedPreset?.id === 'screen' ? t('preprocess.optimize:giam_dang_ke') : selectedPreset?.id === 'ebook' ? t('preprocess.optimize:giam_nhe') : t('preprocess.optimize:giu_nguyen')}.
+                    <strong>Optimize PDF</strong> {t('preprocess.optimize:giam_dung_luong_file_bang_cach_nen')}{' '}
+                    {t('preprocess.optimize:chat_luong_in')} {selectedPreset?.id === 'screen' ? t('preprocess.optimize:giam_dang_ke') : selectedPreset?.id === 'ebook' ? t('preprocess.optimize:giam_nhe') : t('preprocess.optimize:giu_nguyen')}.
                     {pdfFile && <> {t('preprocess.optimize:file_hien_tai')} <strong>{formatSize(pdfFile.size)}</strong></>}
                 </>
             } />
@@ -209,7 +210,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
                             </svg>
                         </div>
                         <div className="flex-1 text-center">
-                            <div className="text-[10px] text-slate-500 mb-1">Sau</div>
+                            <div className="text-[10px] text-slate-500 mb-1">{t('preprocess.optimize:sau')}</div>
                             <div className="text-lg font-black text-emerald-600 dark:text-emerald-300">{formatSize(result.outputSize)}</div>
                         </div>
                     </div>

@@ -97,7 +97,7 @@ export default function CutterMachinesPanel() {
   };
 
   const remove = async (id: string) => {
-    if (!(await confirmDialog({ title: t('imposition.cutterMachines:xoa_may_be'), message: `Xóa máy "${id}"?`, danger: true }))) return;
+    if (!(await confirmDialog({ title: t('imposition.cutterMachines:xoa_may_be'), message: t('imposition.cutterMachines:xoa_may_x', { id }), danger: true }))) return;
     const r = await deleteCutProfile(id);
     if (!r.ok) {
       setError(r.error || t('imposition.cutterMachines:xoa_that_bai'));
@@ -118,8 +118,7 @@ export default function CutterMachinesPanel() {
         </button>
       </div>
       <p className="text-sm text-slate-500 dark:text-zinc-400 mb-6 leading-relaxed shrink-0">
-        Cấu hình kết nối (kênh gửi / IP / thư mục) cho từng máy. Thêm máy mới cho các dòng máy
-        khác nhau (Trung Quốc, HPGL...). Khi bấm "Gửi Máy Bế", chọn máy là tự dùng cấu hình ở đây.
+        {t('imposition.cutterMachines:cau_hinh_ket_noi_kenh_gui_ip_thu_muc_cho_tung_may')}
       </p>
 
       {error && (
@@ -131,7 +130,7 @@ export default function CutterMachinesPanel() {
       {editing && (
         <div className="mb-5 bg-pink-50/60 dark:bg-pink-900/10 border border-pink-200 dark:border-pink-800/40 rounded-xl p-5">
           <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">
-            {isNew ? t('imposition.cutterMachines:them_may_be_moi') : `Sửa máy: ${editing.model}`}
+            {isNew ? t('imposition.cutterMachines:them_may_be_moi') : t('imposition.cutterMachines:sua_may', { model: editing.model })}
           </h4>
           <div className="grid grid-cols-2 gap-3">
             {isNew && (

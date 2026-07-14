@@ -1,5 +1,6 @@
 // @ts-nocheck
 import bwipjs from 'bwip-js';
+import i18n from '../../i18n';
 
 // ─── Barcode Types ───────────────────────────────────────
 export type BarcodeType =
@@ -245,7 +246,7 @@ export async function generateBarcodeToCanvas(
 
     bwipjs.toCanvas(canvas, bwipOpts as any);
   } catch (e: any) {
-    throw new Error(`Lỗi tạo mã vạch: ${e.message || e}`);
+    throw new Error(i18n.t('misc.barcodeEngine:loi_tao_ma_vach_e_message_e', { msg: e.message || e }));
   }
 }
 

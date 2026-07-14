@@ -703,7 +703,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 }
             }
         } catch (err: any) {
-            setError(err.message || `Lỗi tải object trang ${pageNum}`);
+            setError(err.message || t('tabs.imposition:loi_tai_object_trang_n', { n: pageNum }));
         }
     }, [file, setError, setPdfObjectsVersion, store]);
 
@@ -826,7 +826,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 const base = getApiUrl().replace(/\/api\/?$/, '');
                 const fullUrl = outputUrl.startsWith('http') ? outputUrl : `${base}${outputUrl}`;
                 const res = await authenticatedFetch(fullUrl);
-                if (!res.ok) throw new Error(`Tải Working_File mới thất bại (HTTP ${res.status})`);
+                if (!res.ok) throw new Error(t('tabs.imposition:tai_working_file_moi_that_bai_http', { status: res.status }));
                 const blob = await res.blob();
                 newFile = new File([blob as any], displayName, { type: 'application/pdf' });
                 newPdfUrl = URL.createObjectURL(blob);
@@ -1187,14 +1187,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }) as any,
             runners: RECIPE_RUNNERS,
             requestExternalInput,
-            onProgress: ({ index, total, step }) => setProcessStatus(`Phát lại ${index + 1}/${total}: ${step.label}`),
+            onProgress: ({ index, total, step }) => setProcessStatus(t('tabs.imposition:phat_lai_progress_step', { cur: index + 1, total, step: step.label })),
         });
         setProcessStatus('');
 
         if (res.ok) {
-            toast.success(`Phát lại xong: ${res.completed} bước${res.skipped ? `, bỏ qua ${res.skipped}` : ''}.`);
+            toast.success(t('tabs.imposition:phat_lai_xong', { n: res.completed }) + (res.skipped ? t('tabs.imposition:bo_qua_n_suffix', { n: res.skipped }) : '') + '.');
         } else {
-            toast.error(`Dừng ở bước ${(res.failedStep?.index ?? 0) + 1}: ${res.failedStep?.error || 'lỗi'}`);
+            toast.error(t('tabs.imposition:dung_o_buoc_n', { n: (res.failedStep?.index ?? 0) + 1, err: res.failedStep?.error || t('tabs.imposition:loi') }));
         }
     }, [file, buildProcessContext, commitWorkingFile]);
 
@@ -1603,7 +1603,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     didBake = true;
                 }
             } catch (err: any) {
-                setError('Lỗi khi áp dụng sửa đổi: ' + err.message);
+                setError(t('tabs.imposition:loi_khi_ap_dung_sua_doi') + err.message);
                 return;
             } finally {
                 setIsProcessing(false);
@@ -1736,7 +1736,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 onTitleChange?.(targetName);
             }
         } catch (e: any) {
-            setError('Không thể lưu file: ' + e);
+            setError(t('tabs.imposition:khong_the_luu_file') + e);
         }
     }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange, editSession, store, isObjectEditMode]);
 
@@ -1836,8 +1836,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         <PDFUploader
                             label={toolInfo ? t('tabs.imposition:tai_file_len_de_tiep_tuc') : t('tabs.imposition:keo_tha_pdf_ban_thao_single_pages')}
                             sublabel={
-                                toolInfo ? 
-                                `Bạn đang mở công cụ: ${toolInfo.title}. Vui lòng chọn một file PDF để bắt đầu.`
+                                toolInfo ?
+                                t('tabs.imposition:ban_dang_mo_cong_cu_chon_file_pdf', { tool: toolInfo.title })
                                 : t('tabs.imposition:catalog_tap_chi_sach_truyen_can_long')
                             }
                             onFileSelected={handleFileSelected}
@@ -1874,17 +1874,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 </div>
                                 <div className="p-6">
                                     <p className="text-slate-700 dark:text-zinc-300 mb-4 text-[15px]">
-                                        {t('tabs.imposition:file_pdf_goc_gom')} <strong>{confirmBookletSettings.totalPages} trang</strong>.
+                                        {t('tabs.imposition:file_pdf_goc_gom')} <strong>{confirmBookletSettings.totalPages} {t('tabs.imposition:trang')}</strong>.
                                         {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as any).bindingMode !== 'flush_mount' && (
                                             <span className="text-emerald-600 dark:text-emerald-400 font-medium ml-1">
-                                                (Cần thêm {confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages} trang trắng để làm tròn thành {confirmBookletSettings.paddedPages} trang chẵn theo quy tắc gấp tay sách).
+                                                {t('tabs.imposition:can_them_n_trang_trang_lam_tron', { add: confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages, total: confirmBookletSettings.paddedPages })}
                                             </span>
                                         )}
                                     </p>
                                     {confirmBookletSettings.totalPages > 0 && confirmBookletSettings.totalPages !== confirmBookletSettings.paddedPages && (confirmBookletSettings.settings as any).bindingMode !== 'flush_mount' && (
                                         <div className="mb-5">
                                             <label className="text-[12px] text-slate-500 font-medium block mb-2">
-                                                Đặt {confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages} trang trắng ở đâu?
+                                                {t('tabs.imposition:dat_n_trang_trang_o_dau', { n: confirmBookletSettings.paddedPages - confirmBookletSettings.totalPages })}
                                             </label>
                                             <div className="grid grid-cols-2 gap-2">
                                                 {(([['end', t('tabs.imposition:cuoi_sach'), t('tabs.imposition:don_vao_cuoi_bia_sau_mac_dinh')], ['center', t('tabs.imposition:giua_sach'), t('tabs.imposition:nhet_vao_ruot_trong_cung_bia_trang_dau')]]) as const).map(([val, title, desc]) => (
@@ -2084,7 +2084,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             </button>
                                                         ) : (
                                                             <>
-                                                                <span>🛠️</span> THÔNG SỐ
+                                                                <span>🛠️</span> {t('tabs.imposition:thong_so')}
                                                                 {fileSizeStr && <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono normal-case tracking-normal ml-1 border pl-1.5 pr-1.5 py-0.5 rounded-full border-black/5 dark:border-white/5">{fileSizeStr}</span>}
                                                             </>
                                                         )}

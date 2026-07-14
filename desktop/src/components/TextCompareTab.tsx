@@ -114,7 +114,7 @@ export default function TextCompareTab() {
           <button onClick={() => { setMode('line'); setDifferences(null); }} className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${mode === 'line' ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400'}`}>{t('tabs.textCompare:so_theo_dong')}</button>
         </div>
         {isBig && (
-          <span className="text-[12px] text-amber-600 dark:text-amber-400">⚠️ Văn bản lớn (~{Math.round(totalLen / 1000)}K ký tự) — nên chọn "So theo Dòng" cho nhanh.</span>
+          <span className="text-[12px] text-amber-600 dark:text-amber-400">{t('tabs.textCompare:van_ban_lon_ky_tu_nen_chon_so_theo_dong', { n: Math.round(totalLen / 1000) })}</span>
         )}
       </div>
 
@@ -199,7 +199,7 @@ export default function TextCompareTab() {
             </div>
           ) : !differences ? (
             <div className="h-full flex items-center justify-center text-slate-400 italic">
-               Vui lòng nhấn "Tiến hành so sánh Text" để hiển thị kết quả...
+               {t('tabs.textCompare:vui_long_nhan_tien_hanh_so_sanh_text')}
             </div>
           ) : (
             differences.map((part, index) => {

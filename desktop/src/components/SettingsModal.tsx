@@ -28,8 +28,7 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
     autoRenameFormat, setAutoRenameFormat,
     measurementUnit, setMeasurementUnit,
     previewQuality, setPreviewQuality,
-    showMenuBar, setShowMenuBar,
-    language, setLanguage
+    showMenuBar, setShowMenuBar
   } = useAppSettingsStore();
 
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
@@ -206,26 +205,6 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                 </p>
 
                 <div className="space-y-6 flex-1 pr-4">
-                  <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
-                    <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-200 mb-4">Ngôn ngữ / Language</h4>
-                    <div className="flex gap-4">
-                      {([['vi', 'Tiếng Việt'], ['en', 'English']] as const).map(([code, label]) => (
-                        <label
-                          key={code}
-                          className="flex items-center gap-2 cursor-pointer group"
-                          onClick={() => setLanguage(code)}
-                        >
-                          <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${language === code ? 'border-emerald-500' : 'border-slate-300 dark:border-zinc-600 group-hover:border-emerald-400'}`}>
-                            {language === code && <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />}
-                          </div>
-                          <span className={`text-sm font-medium ${language === code ? 'text-slate-900 dark:text-white' : 'text-slate-600 dark:text-zinc-400'}`}>
-                            {label}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-
                   <div className="bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/10 rounded-xl p-5">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">

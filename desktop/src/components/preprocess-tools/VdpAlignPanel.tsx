@@ -98,7 +98,7 @@ export function VdpAlignPanel({ vdpFields, setVdpFields, selectedFieldIds, pageD
         <div className="flex flex-col mb-3 pb-3 border-b border-slate-200 dark:border-white/10">
             <button onClick={() => setOpen(o => !o)} className="flex items-center justify-between w-full mb-2">
                 <span className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">
-                    Căn chỉnh {single ? (canPageAlign ? '(theo trang)' : '') : `(${selectedFieldIds.length} đối tượng)`}
+                    {t('preprocess.vdpAlign:can_chinh')} {single ? (canPageAlign ? t('preprocess.vdpAlign:theo_trang') : '') : t('preprocess.vdpAlign:n_doi_tuong', { n: selectedFieldIds.length })}
                 </span>
                 <svg className={`w-3.5 h-3.5 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />

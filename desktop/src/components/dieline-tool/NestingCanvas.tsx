@@ -473,14 +473,14 @@ export default function NestingCanvas() {
                 <div className="dt-canvas-toolbar">
                     <span className="dt-zoom-info">🔍 {Math.round(transform.scale * 100)}%</span>
                     <span className="dt-sheet-size">
-                        Tờ giấy: {actualSheet.width} × {actualSheet.height} mm
+                        {t('dieline.nestingCanvas:to_giay')} {actualSheet.width} × {actualSheet.height} mm
                     </span>
                     <span className="dt-nesting-info" style={{
                         background: 'var(--dt-accent, #f97316)',
                         color: '#fff', padding: '2px 8px', borderRadius: '4px',
                         fontSize: '0.75rem', fontWeight: 600,
                     }}>
-                        Khay: {nestingResult.countPerSheet} · Vỏ: {sleeveNestingResult.countPerSheet}
+                        {t('dieline.nestingCanvas:khay_vo', { khay: nestingResult.countPerSheet, vo: sleeveNestingResult.countPerSheet })}
                     </span>
                 </div>
 
@@ -582,7 +582,7 @@ export default function NestingCanvas() {
                         color: '#fff', padding: '2px 8px', borderRadius: '4px',
                         fontSize: '0.75rem', fontWeight: 600,
                     }}>
-                        Khay: {nestingResult.countPerSheet} · Vỏ: {sleeveNestingResult.countPerSheet}
+                        {t('dieline.nestingCanvas:khay_vo', { khay: nestingResult.countPerSheet, vo: sleeveNestingResult.countPerSheet })}
                     </span>
                 </div>
 
@@ -646,7 +646,7 @@ export default function NestingCanvas() {
                             ))}
                             <text x={traySheet.width / 2} y={-8 / transform.scale} textAnchor="middle"
                                 fill="rgba(255,200,100,0.7)" fontSize={11 / transform.scale} fontFamily="system-ui">
-                                🧱 Khay · {traySheet.width}×{traySheet.height}
+                                {t('dieline.nestingCanvas:khay_kich_thuoc', { w: traySheet.width, h: traySheet.height })}
                             </text>
                         </g>
 
@@ -675,7 +675,7 @@ export default function NestingCanvas() {
                             ))}
                             <text x={sleeveSheet.width / 2} y={-8 / transform.scale} textAnchor="middle"
                                 fill="rgba(200,150,255,0.7)" fontSize={11 / transform.scale} fontFamily="system-ui">
-                                📦 Vỏ bao · {sleeveSheet.width}×{sleeveSheet.height}
+                                {t('dieline.nestingCanvas:vo_bao_kich_thuoc', { w: sleeveSheet.width, h: sleeveSheet.height })}
                             </text>
                         </g>
                     </g>
@@ -691,7 +691,7 @@ export default function NestingCanvas() {
             <div className="dt-canvas-toolbar">
                 <span className="dt-zoom-info">🔍 {Math.round(transform.scale * 100)}%</span>
                 <span className="dt-sheet-size">
-                    Tờ giấy: {actualSheet.width} × {actualSheet.height} mm
+                    {t('dieline.nestingCanvas:to_giay_kich_thuoc', { w: actualSheet.width, h: actualSheet.height })}
                 </span>
                 <span className="dt-nesting-info" style={{
                     background: 'var(--dt-accent, #f97316)',
@@ -701,7 +701,7 @@ export default function NestingCanvas() {
                     fontSize: '0.75rem',
                     fontWeight: 600,
                 }}>
-                    {nestingResult.countPerSheet} khuôn / tờ · {nestingResult.utilization}%
+                    {t('dieline.nestingCanvas:khuon_to_su_dung', { n: nestingResult.countPerSheet, u: nestingResult.utilization })}
                 </span>
             </div>
 
@@ -758,7 +758,7 @@ export default function NestingCanvas() {
                             textAnchor="middle" fill="rgba(255,80,80,0.7)"
                             fontSize={8 / transform.scale} fontFamily="system-ui"
                         >
-                            Cắn nhíp ({gripperMargin}mm)
+                            {t('dieline.nestingCanvas:can_nhip_mm', { n: gripperMargin })}
                         </text>
                     </>)}
 

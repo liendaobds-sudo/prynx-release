@@ -35,6 +35,31 @@ $VENV_PYTHON = "$ROOT\backend\venv\Scripts\python.exe"
 $SIDECAR_DIR = "$ROOT\desktop\src-tauri\binaries"
 $SIDECAR_NAME = "pdf-inspector-backend"
 
+# ---- Derive version from tauri.conf.json (single source of truth) ----
+# tauri.conf.json giu SemVer (co the kem prerelease: 1.0.0-beta.9). Nhung Windows
+# version resource (Nuitka --file-version/--product-version) BAT BUOC numeric 4 phan
+# X.X.X.X -- chuoi "1.0.0-beta.9" se lam Nuitka bao loi. Anh xa so prerelease sang
+# phan thu 4: 1.0.0-beta.9 -> 1.0.0.9 ; khong prerelease -> .0. Nho vay file .exe
+# hien dung phien ban thay vi ket "1.0.0" nhu truoc (build_production.ps1 hardcode).
+$TAURI_CONF = "$ROOT\desktop\src-tauri\tauri.conf.json"
+$APP_VERSION = "1.0.0"
+$NUMERIC_VERSION = "1.0.0.0"
+if (Test-Path $TAURI_CONF) {
+    try {
+        $confJson = Get-Content $TAURI_CONF -Raw | ConvertFrom-Json
+        if ($confJson.version) {
+            $APP_VERSION = [string]$confJson.version
+            if ($APP_VERSION -match '^(\d+)\.(\d+)\.(\d+)(?:-[A-Za-z0-9]+\.?(\d+))?') {
+                $p4 = if ($Matches[4]) { $Matches[4] } else { "0" }
+                $NUMERIC_VERSION = "$($Matches[1]).$($Matches[2]).$($Matches[3]).$p4"
+            }
+        }
+    } catch {
+        Write-Host "  WARNING: Cannot parse version from tauri.conf.json, using $APP_VERSION" -ForegroundColor Yellow
+    }
+}
+Write-Host "  App version: $APP_VERSION (Windows resource: $NUMERIC_VERSION)" -ForegroundColor DarkGray
+
 # Validate venv exists
 if (-not (Test-Path $VENV_PYTHON)) {
     Write-Host "ERROR: Python venv not found at $VENV_PYTHON" -ForegroundColor Red
@@ -199,8 +224,8 @@ if (-not $SkipNuitka) {
         --assume-yes-for-downloads `
         --company-name="PrynX" `
         --product-name="PrynX Backend" `
-        --file-version="1.0.0" `
-        --product-version="1.0.0" `
+        --file-version="$NUMERIC_VERSION" `
+        --product-version="$NUMERIC_VERSION" `
         --file-description="PrynX PDF Processing Engine" `
         app\main.py
 
@@ -237,9 +262,25 @@ if (Test-Path $SIDECAR_SRC) {
 }
 
 # Copy Ghostscript
-$GS_SRC = "C:\Program Files\gs\gs10.04.0"
+# Auto-detect: quet C:\Program Files\gs\gs* va chon ban CAO NHAT thay vi hardcode
+# mot version. Doi may build / nang cap GS khong con lam build fail oan.
+$GS_SRC = ""
+$gsRoot = "C:\Program Files\gs"
+if (Test-Path $gsRoot) {
+    $gsDir = Get-ChildItem -Path $gsRoot -Directory -Filter "gs*" -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName "bin") } |
+        Sort-Object {
+            # Sort theo so version thuc (10.04.0) chu khong theo chuoi (tranh gs9 > gs10)
+            if ($_.Name -match 'gs(\d+)\.(\d+)\.?(\d+)?') {
+                $micro = if ($Matches[3]) { $Matches[3] } else { "0" }
+                [version]("{0}.{1}.{2}" -f $Matches[1], $Matches[2], $micro)
+            } else { [version]"0.0.0" }
+        } -Descending | Select-Object -First 1
+    if ($gsDir) { $GS_SRC = $gsDir.FullName }
+}
 $GS_DEST = "$SIDECAR_DIR\gs"
-if (Test-Path $GS_SRC) {
+if ($GS_SRC -and (Test-Path $GS_SRC)) {
+    Write-Host "  Ghostscript detected: $GS_SRC" -ForegroundColor DarkGray
     Write-Host "  Copying Ghostscript..." -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $GS_DEST | Out-Null
     Copy-Item -Recurse -Force "$GS_SRC\*" $GS_DEST

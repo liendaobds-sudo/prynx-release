@@ -4,6 +4,7 @@ import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 const I = {
   Scan: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" x2="17" y1="12" y2="12"/></svg>,
@@ -99,7 +100,7 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
                     className={`text-left px-3 py-2 rounded-lg border text-[12px] transition-all flex flex-col items-center gap-1
                       ${sel ? 'border-teal-500 bg-teal-500/10 font-semibold text-teal-700 dark:text-teal-300' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
                     <span className="text-sm shrink-0">{p.icon}</span>
-                    <span className="truncate">{p.label}</span>
+                    <span className="truncate">{tv(p.label)}</span>
                     <span className="text-[9px] text-slate-400 font-mono">{p.desc}</span>
                   </button>
                 );

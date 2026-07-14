@@ -83,7 +83,7 @@ export default function UpdateChecker() {
 
             {status === 'downloading' && (
                 <div className="mt-3">
-                    <div className="text-xs text-slate-500 dark:text-zinc-400 mb-1">Đang tải bản cập nhật... {percent}%</div>
+                    <div className="text-xs text-slate-500 dark:text-zinc-400 mb-1">{t('misc.updateChecker:dang_tai_ban_cap_nhat', { percent })}</div>
                     <div className="h-2 w-full bg-slate-200 dark:bg-zinc-700 rounded overflow-hidden">
                         <div className="h-full bg-indigo-600 transition-all" style={{ width: `${percent}%` }} />
                     </div>

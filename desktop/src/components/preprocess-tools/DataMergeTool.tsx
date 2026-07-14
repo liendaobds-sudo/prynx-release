@@ -12,6 +12,7 @@ import { sortFieldsGeometrically, buildMultiUpJobInput } from '@/lib/vdpUtils';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useTranslation } from 'react-i18next';
+import { tv } from '@/i18n';
 
 // ─── CMYK ↔ Hex Conversion Helpers ──────────────────────
 function hexToCmyk(hex: string): { c: number; m: number; y: number; k: number } {
@@ -251,8 +252,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                         </div>
                         <div className="p-4 space-y-4 text-[12px] text-slate-600 dark:text-zinc-300 leading-relaxed">
                             <p>
-                                {t('preprocess.dataMerge:ban_in')} <b>{t('preprocess.dataMerge:nhieu_ban_tu_mot_bang_du_lieu')}</b> (mỗi dòng = một tem/thẻ/vé).
-                                Bình thường mọi bản giống khuôn, chỉ khác chữ điền vào. Phần này dùng khi
+                                {t('preprocess.dataMerge:ban_in')} <b>{t('preprocess.dataMerge:nhieu_ban_tu_mot_bang_du_lieu')}</b> {t('preprocess.dataMerge:moi_dong_mot_tem_binh_thuong_giong_khuon')}
                                 <b> {t('preprocess.dataMerge:mot_so_ban_can_khac_nhau_tuy_dong')}</b>.
                             </p>
 
@@ -260,8 +260,8 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                 <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.dataMerge:dieu_kien_an_hien')}</div>
                                 <div className="mb-1">{t('preprocess.dataMerge:quyet_dinh')} <b>{t('preprocess.dataMerge:co_in_chi_tiet_nay_hay_khong')}</b>.</div>
                                 <div className="text-slate-500 dark:text-zinc-400">
-                                    Ví dụ: vẽ sẵn dấu "VIP" lên thẻ → đặt <i>{t('preprocess.dataMerge:hien_neu')}</i> {t('preprocess.dataMerge:cot')} <code>{t('preprocess.dataMerge:hang')}</code> <i>{t('preprocess.dataMerge:bang')}</i> <code>VIP</code>.
-                                    Chỉ khách VIP mới in dấu; khách khác bỏ trống.
+                                    {t('preprocess.dataMerge:vi_du_ve_san_dau_vip')} <i>{t('preprocess.dataMerge:hien_neu')}</i> {t('preprocess.dataMerge:cot')} <code>{t('preprocess.dataMerge:hang')}</code> <i>{t('preprocess.dataMerge:bang')}</i> <code>VIP</code>.
+                                    {t('preprocess.dataMerge:chi_khach_vip_moi_in_dau')}
                                 </div>
                             </div>
 
@@ -272,13 +272,12 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                     {t('preprocess.dataMerge:vi_du_anh_cot')} <code>{t('preprocess.dataMerge:nuoc')}</code> <i>{t('preprocess.dataMerge:bang')}</i> <code>VN</code> → <code>co_vn.png</code>;
                                     <code>US</code> → <code>co_us.png</code>{t('preprocess.dataMerge:moi_ban_tu_lay_dung_co')}
                                     <br />
-                                    {t('preprocess.dataMerge:vi_du_chu_cot')} <code>{t('preprocess.dataMerge:diem')}</code> <i>{t('preprocess.dataMerge:chua')}</i> ... → in "Vàng" / "Bạc".
+                                    {t('preprocess.dataMerge:vi_du_chu_cot')} <code>{t('preprocess.dataMerge:diem')}</code> <i>{t('preprocess.dataMerge:chua')}</i> {t('preprocess.dataMerge:in_vang_bac')}
                                 </div>
                             </div>
 
                             <div className="text-[11px] text-slate-500 dark:text-zinc-400">
-                                <b>{t('preprocess.dataMerge:phan_biet_nhanh')}</b> Ẩn/hiện = "có in không?" · Rule = "in cái gì vào?".
-                                Không cần thì cứ để trống — field in bình thường.
+                                <b>{t('preprocess.dataMerge:phan_biet_nhanh')}</b> {t('preprocess.dataMerge:an_hien_co_in_khong_rule_in_cai_gi')}
                             </div>
                         </div>
                         <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-700 text-right">
@@ -355,7 +354,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                         onChange={(e) => updateCondition(i, { operator: e.target.value as VdpOperator })}
                                         className={selectClass + " w-28 shrink-0"}
                                     >
-                                        {VDP_OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+                                        {VDP_OPERATORS.map(op => <option key={op.value} value={op.value}>{tv(op.label)}</option>)}
                                     </select>
                                     <input
                                         type="text"
@@ -422,7 +421,7 @@ function VdpLogicPanel({ field, csvHeaders, onChange }: {
                                         onChange={(e) => updateRule(i, { operator: e.target.value as VdpOperator })}
                                         className={selectClass + " w-28 shrink-0"}
                                     >
-                                        {VDP_OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+                                        {VDP_OPERATORS.map(op => <option key={op.value} value={op.value}>{tv(op.label)}</option>)}
                                     </select>
                                     <input
                                         type="text"
@@ -549,8 +548,8 @@ export default function DataMergeTool({
             if (data.length > 0) {
                 setCsvHeaders(headers);
                 setCsvData(data);
-                if (duplicated.length > 0) setStatusMessage(`Đã tải ${data.length} dòng. Lưu ý: cột trùng tên (${duplicated.join(', ')}) đã tự đổi tên.`);
-                else setStatusMessage(`Đã tải ${data.length} dòng dữ liệu.`);
+                if (duplicated.length > 0) setStatusMessage(t('preprocess.dataMerge:da_tai_n_dong_cot_trung_ten', { n: data.length, cols: duplicated.join(', ') }));
+                else setStatusMessage(t('preprocess.dataMerge:da_tai_n_dong_du_lieu', { n: data.length }));
             } else {
                 setCsvHeaders([]); setCsvData([]);
                 setStatusMessage(t('preprocess.dataMerge:file_csv_rong_hoac_loi_dinh_dang'));
@@ -566,7 +565,7 @@ export default function DataMergeTool({
         lastCsvFileRef.current = files[0];
         loadCsvIntoState(files[0], csvHasHeader);
         if (files.length > 1) {
-            setStatusMessage(`Đã chọn ${files.length} file. Map trường với cột rồi bấm "Chạy ${files.length} file".`);
+            setStatusMessage(t('preprocess.dataMerge:da_chon_n_file_map_truong', { n: files.length }));
         }
     };
 
@@ -583,9 +582,9 @@ export default function DataMergeTool({
         setCsvData(result.preview_rows);
         setSourceRecordCount(result.record_count);
         if (result.record_count === 0) {
-            setStatusMessage(`${label}: nguồn rỗng (0 bản ghi).`);
+            setStatusMessage(`${label}: ${t('preprocess.dataMerge:nguon_rong_0_ban_ghi')}`);
         } else {
-            setStatusMessage(`${label}: ${result.record_count} bản ghi, ${result.columns.length} cột.`);
+            setStatusMessage(`${label}: ${t('preprocess.dataMerge:n_ban_ghi_m_cot', { n: result.record_count, m: result.columns.length })}`);
         }
     };
 
@@ -599,7 +598,7 @@ export default function DataMergeTool({
     const loadXlsxSheet = async (file: File, sheet: string) => {
         setSourceLoading(true);
         setSourceError('');
-        setStatusMessage(`Đang đọc sheet "${sheet}"...`);
+        setStatusMessage(t('preprocess.dataMerge:dang_doc_sheet_x', { x: sheet }));
         try {
             const result = await readVdpDatasource({ kind: 'xlsx', file, sheet, hasHeader: csvHasHeader });
             applySourceResult(result, `Excel · ${sheet}`);
@@ -682,7 +681,7 @@ export default function DataMergeTool({
         }
         setCsvHeaders([col]);
         setCsvData(lines.map(l => ({ [col]: l })));
-        setStatusMessage(`Nhập tay: ${lines.length} bản ghi (cột "${col}").`);
+        setStatusMessage(t('preprocess.dataMerge:nhap_tay_x_ban_ghi_cot_y', { x: lines.length, y: col }));
     };
 
     const updateSelectedField = (changes: any) => {
@@ -910,12 +909,12 @@ export default function DataMergeTool({
                 const csvFile = files[i];
                 const tag = `(${i + 1}/${files.length}) ${csvFile.name}`;
                 try {
-                    setStatusMessage(`${tag}: đang đọc...`);
+                    setStatusMessage(`${tag}: ${t('preprocess.dataMerge:dang_doc')}`);
                     const data = (await parseCsv(csvFile, csvHasHeader)).data;
-                    if (data.length === 0) { setStatusMessage(`${tag}: rỗng, bỏ qua.`); continue; }
+                    if (data.length === 0) { setStatusMessage(`${tag}: ${t('preprocess.dataMerge:rong_bo_qua')}`); continue; }
 
                     // Gating validate cho từng file trước khi sinh (Req 5.8/5.9/5.10).
-                    setStatusMessage(`${tag}: đang kiểm tra dữ liệu...`);
+                    setStatusMessage(`${tag}: ${t('preprocess.dataMerge:dang_kiem_tra_du_lieu_2')}`);
                     try {
                         const vres = await validateVdp({
                             fields: vdpFields,
@@ -925,25 +924,25 @@ export default function DataMergeTool({
                         });
                         if (vres.gating === 'block') {
                             const errCount = vres.issues.filter(i => i.severity === 'error').length;
-                            setStatusMessage(`${tag}: có ${errCount} lỗi chặn — bỏ qua file này.`);
+                            setStatusMessage(`${tag}: ${t('preprocess.dataMerge:co_n_loi_chan_bo_qua_file', { n: errCount })}`);
                             continue;
                         }
                         if (vres.gating === 'needs_confirmation') {
                             const warnCount = vres.issues.filter(i => i.severity === 'warning').length;
-                            const ok = window.confirm(`${csvFile.name}: ${warnCount} cảnh báo (vd ảnh thiếu).\nVẫn tiếp tục sinh file này?`);
-                            if (!ok) { setStatusMessage(`${tag}: đã bỏ qua do còn cảnh báo.`); continue; }
+                            const ok = window.confirm(`${csvFile.name}: ${t('preprocess.dataMerge:n_canh_bao_vd_anh_thieu_van_tiep_tuc', { n: warnCount })}`);
+                            if (!ok) { setStatusMessage(`${tag}: ${t('preprocess.dataMerge:da_bo_qua_do_con_canh_bao')}`); continue; }
                         }
                     } catch (vErr: any) {
-                        setStatusMessage(`${tag}: lỗi kiểm tra dữ liệu — ${vErr?.message || vErr}. Bỏ qua.`);
+                        setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_kiem_tra_du_lieu_bo_qua', { e: vErr?.message || vErr })}`);
                         continue;
                     }
 
                     const { fields, data: jobData } = buildJobInput(data);
-                    setStatusMessage(`${tag}: đang sinh ${data.length} bản ghi...`);
+                    setStatusMessage(`${tag}: ${t('preprocess.dataMerge:dang_sinh_n_ban_ghi', { n: data.length })}`);
                     const jobId = await startVdpJobBackend(templateFile, fields, jobData);
                     pollAbortRef.current = new AbortController();
                     const result = await pollVdpJob(jobId, (m) => setStatusMessage(`${tag}: ${m}`), true, pollAbortRef.current.signal);
-                    if (!result.blob) { setStatusMessage(`${tag}: lỗi không có kết quả.`); continue; }
+                    if (!result.blob) { setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_khong_co_ket_qua')}`); continue; }
                     const baseName = csvFile.name.replace(/\.[^/.]+$/, '') || `VDP_${i + 1}`;
                     onSpawnTab(result.blob, `${baseName}.pdf`, result.path ?? undefined);
                     ok++;
@@ -951,13 +950,13 @@ export default function DataMergeTool({
                     await new Promise(r => setTimeout(r, 50));
                 } catch (err: any) {
                     if (err?.name === 'AbortError') return;
-                    setStatusMessage(`${tag}: lỗi ${err.message}`);
+                    setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_x', { e: err.message })}`);
                 }
             }
-            setStatusMessage(`Hoàn thành ${ok}/${files.length} file CSV.`);
+            setStatusMessage(t('preprocess.dataMerge:hoan_thanh_ok_tren_tong_file_csv', { ok, total: files.length }));
         } catch (e: any) {
             if (e?.name === 'AbortError') return;
-            setStatusMessage(`Lỗi xử lý hàng loạt: ${e.message}`);
+            setStatusMessage(t('preprocess.dataMerge:loi_xu_ly_hang_loat', { e: e.message }));
         } finally {
             setIsGenerating(false);
         }
@@ -1135,10 +1134,10 @@ export default function DataMergeTool({
             const errCount = result.issues.filter(i => i.severity === 'error').length;
             const warnCount = result.issues.filter(i => i.severity === 'warning').length;
             if (result.gating === 'allow') setStatusMessage(t('preprocess.dataMerge:kiem_tra_xong_khong_co_loi_san_sang'));
-            else if (result.gating === 'needs_confirmation') setStatusMessage(`Kiểm tra xong: ${warnCount} cảnh báo — cần xác nhận trước khi sinh lô.`);
-            else setStatusMessage(`Kiểm tra xong: ${errCount} lỗi chặn — phải khắc phục trước khi sinh lô.`);
+            else if (result.gating === 'needs_confirmation') setStatusMessage(t('preprocess.dataMerge:kiem_tra_xong_n_canh_bao_can_xac_nhan', { n: warnCount }));
+            else setStatusMessage(t('preprocess.dataMerge:kiem_tra_xong_n_loi_chan_phai_khac_phuc', { n: errCount }));
         } catch (err: any) {
-            setStatusMessage(`Lỗi kiểm tra dữ liệu: ${err?.message || err}`);
+            setStatusMessage(t('preprocess.dataMerge:loi_kiem_tra_du_lieu_x', { x: err?.message || err }));
         } finally {
             setValidating(false);
         }
@@ -1156,12 +1155,12 @@ export default function DataMergeTool({
             const warnCount = result.issues.filter(i => i.severity === 'warning').length;
 
             if (result.gating === 'block') {
-                setStatusMessage(`Có ${errCount} lỗi chặn — không thể sinh lô. Mở mục "Kiểm tra trước khi chạy" để xem chi tiết.`);
+                setStatusMessage(t('preprocess.dataMerge:co_n_loi_chan_khong_the_sinh_lo', { n: errCount }));
                 return false;
             }
             if (result.gating === 'needs_confirmation') {
                 const ok = window.confirm(
-                    `Phát hiện ${warnCount} cảnh báo (ví dụ: ảnh biến đổi thiếu file).\n\n` +
+                    t('preprocess.dataMerge:phat_hien_n_canh_bao_vi_du_anh_thieu', { n: warnCount }) + '\n\n' +
                     t('preprocess.dataMerge:cac_record_lien_quan_co_the_bi_thieu')
                 );
                 if (!ok) {
@@ -1172,7 +1171,7 @@ export default function DataMergeTool({
             }
             return true; // allow
         } catch (err: any) {
-            setStatusMessage(`Lỗi kiểm tra dữ liệu: ${err?.message || err}`);
+            setStatusMessage(t('preprocess.dataMerge:loi_kiem_tra_du_lieu_x', { x: err?.message || err }));
             return false;
         } finally {
             setValidating(false);
@@ -1197,7 +1196,7 @@ export default function DataMergeTool({
             }
             setStatusMessage(t('preprocess.dataMerge:da_xuat_bao_cao_loi_csv'));
         } catch (err: any) {
-            setStatusMessage(`Lỗi xuất báo cáo lỗi: ${err?.message || err}`);
+            setStatusMessage(t('preprocess.dataMerge:loi_xuat_bao_cao_loi_x', { x: err?.message || err }));
         } finally {
             setReportLoading(false);
         }
@@ -1246,7 +1245,7 @@ export default function DataMergeTool({
             const outName = `VDP_${originalName}_${fullData.length || 1}records.pdf`;
             
             if (spawnNewTab && onSpawnTab) {
-                setStatusMessage(`Đang mở file kết quả (${fullData.length} bản ghi)...`);
+                setStatusMessage(t('preprocess.dataMerge:dang_mo_file_ket_qua_n_ban_ghi', { n: fullData.length }));
                 // Small delay so the UI updates with the message before the heavy tab creation
                 await new Promise(r => setTimeout(r, 100));
                 onSpawnTab(blob, outName, path ?? undefined);
@@ -1260,7 +1259,7 @@ export default function DataMergeTool({
         } catch (error: any) {
             if (error?.name === 'AbortError') return;
             console.error("PDF Generation Error:", error);
-            setStatusMessage(`Lỗi sinh file PDF: ${error.message}`);
+            setStatusMessage(t('preprocess.dataMerge:loi_sinh_file_pdf_x', { x: error.message }));
         } finally {
             setIsGenerating(false);
         }
@@ -1323,14 +1322,14 @@ export default function DataMergeTool({
                         <textarea
                             value={manualText}
                             onChange={(e) => { setManualText(e.target.value); applyManualData(e.target.value, manualColName); }}
-                            placeholder={'Mỗi dòng = 1 bản ghi.\nVí dụ:\nĐây là sản phẩm chính hãng của thương hiệu CCK\nMã 002\nMã 003'}
+                            placeholder={t('preprocess.dataMerge:placeholder_nhap_tay_moi_dong_1_ban_ghi')}
                             rows={5}
                             className="w-full p-2 text-[12px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-blue-500 resize-y leading-relaxed"
                         />
                         <p className="text-[10px] text-slate-400 leading-snug">
-                            {t('preprocess.dataMerge:moi_dong_la_1_ban_ghi')} <b>{t('preprocess.dataMerge:1_dong_1_trang')}</b>, nhiều dòng → nhiều trang.
-                            Field cần dùng thì gán vào cột <b>"{manualColName || 'Noidung'}"</b>.
-                            (Muốn cùng 1 nội dung cố định trên mọi trang thì gõ thẳng nội dung vào ô text của field.)
+                            {t('preprocess.dataMerge:moi_dong_la_1_ban_ghi')} <b>{t('preprocess.dataMerge:1_dong_1_trang')}</b>{t('preprocess.dataMerge:nhieu_dong_nhieu_trang')}
+                            {t('preprocess.dataMerge:field_can_dung_thi_gan_vao_cot')} <b>"{manualColName || 'Noidung'}"</b>.
+                            {t('preprocess.dataMerge:muon_cung_1_noi_dung_co_dinh')}
                         </p>
                     </div>
                 ) : dataMode === 'csv' ? (
@@ -1374,7 +1373,7 @@ export default function DataMergeTool({
             )}
             {sheetList.length > 0 && (
                 <div className="mt-2 flex flex-col gap-1">
-                    <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">Chọn sheet ({sheetList.length})</span>
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">{t('preprocess.dataMerge:chon_sheet_n', { n: sheetList.length })}</span>
                     <select
                         value={selectedSheet}
                         onChange={(e) => handleSheetChange(e.target.value)}
@@ -1428,7 +1427,7 @@ export default function DataMergeTool({
                     {sourceLoading ? t('preprocess.dataMerge:dang_tai') : t('preprocess.dataMerge:lay_du_lieu')}
                 </button>
                 <p className="text-[10px] text-slate-400 leading-snug">
-                    Sheet phải được chia sẻ ở chế độ "Bất kỳ ai có đường liên kết". Dữ liệu được lấy qua đường export CSV của Google.
+                    {t('preprocess.dataMerge:sheet_phai_duoc_chia_se_cong_khai')}
                 </p>
             </div>
         </>
@@ -1457,7 +1456,7 @@ export default function DataMergeTool({
                 </div>
                 )}
                 <div className="flex items-center justify-between">
-                    <span>Các cột ({csvHeaders.length}):</span>
+                    <span>{t('preprocess.dataMerge:cac_cot_n', { n: csvHeaders.length })}</span>
                     {!csvHasHeader && <span className="text-[10px] text-amber-600 dark:text-amber-400">{t('preprocess.dataMerge:ten_theo_vi_tri')}</span>}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -1487,7 +1486,7 @@ export default function DataMergeTool({
                         {t('preprocess.dataMerge:bo_chon')}
                     </button>
                 </div>
-            <p className="text-[10px] text-slate-400 mt-1.5 leading-snug">Cột lấy từ file đầu để map. Map xong bấm nút "Chạy {batchFiles.length} file" ở dưới — mỗi file ra 1 tab đặt tên theo tên file CSV.</p>
+            <p className="text-[10px] text-slate-400 mt-1.5 leading-snug">{t('preprocess.dataMerge:cot_lay_tu_file_dau_de_map', { n: batchFiles.length })}</p>
         </div>
         )}
             </VdpSection>
@@ -1601,8 +1600,8 @@ export default function DataMergeTool({
                                 ))}
                             </select>
                             <span className="text-[10px] text-blue-600/80 mt-1 italic">
-                                Giá trị cột này sẽ được in vào ô (mỗi bản in lấy theo dòng của nó).
-                                {selectedField.type === 'text' && <> Hoặc gõ thẳng {t('preprocess.dataMerge:ten_cot_2')} vào vùng Nội dung bên dưới.</>}
+                                {t('preprocess.dataMerge:gia_tri_cot_nay_se_duoc_in_vao_o')}
+                                {selectedField.type === 'text' && <> {t('preprocess.dataMerge:hoac_go_thang')} {t('preprocess.dataMerge:ten_cot_2')} {t('preprocess.dataMerge:vao_vung_noi_dung_ben_duoi')}</>}
                             </span>
                         </div>
                     
@@ -2345,7 +2344,7 @@ export default function DataMergeTool({
                 <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setShowBatchInfo(false)} onKeyDown={e => { if (e.key === 'Escape') setShowBatchInfo(false); }} tabIndex={-1} ref={el => el?.focus()}>
                     <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-2xl w-full max-w-md max-h-[40vh] flex flex-col border border-slate-200 dark:border-zinc-700" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700">
-                            <h3 className="text-sm font-bold text-slate-800 dark:text-white">Danh sách file CSV ({batchFiles.length})</h3>
+                            <h3 className="text-sm font-bold text-slate-800 dark:text-white">{t('preprocess.dataMerge:danh_sach_file_csv', { n: batchFiles.length })}</h3>
                             <button onClick={() => setShowBatchInfo(false)} className="p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-700 text-slate-500">
                                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
@@ -2354,7 +2353,7 @@ export default function DataMergeTool({
                             {batchInfoLoading ? (
                                 <div className="flex items-center justify-center gap-2 py-8 text-slate-500 text-sm">
                                     <div className="w-5 h-5 border-2 border-slate-300 border-t-indigo-500 rounded-full animate-spin" />
-                                    Đang đọc {batchFiles.length} file…
+                                    {t('preprocess.dataMerge:dang_doc_n_file', { n: batchFiles.length })}
                                 </div>
                             ) : (
                                 <table className="w-full text-[12px]">
@@ -2380,7 +2379,7 @@ export default function DataMergeTool({
                         {!batchInfoLoading && batchInfo.length > 0 && (
                             <div className="px-4 py-2.5 border-t border-slate-200 dark:border-zinc-700 flex items-center justify-between text-[12px]">
                                 <span className="text-slate-500">{t('preprocess.dataMerge:tong_cong')}</span>
-                                <span className="font-bold text-slate-800 dark:text-white">{batchInfo.reduce((s, it) => s + (it.records > 0 ? it.records : 0), 0).toLocaleString('vi-VN')} bản ghi</span>
+                                <span className="font-bold text-slate-800 dark:text-white">{batchInfo.reduce((s, it) => s + (it.records > 0 ? it.records : 0), 0).toLocaleString('vi-VN')} {t('preprocess.dataMerge:ban_ghi_2')}</span>
                             </div>
                         )}
                     </div>

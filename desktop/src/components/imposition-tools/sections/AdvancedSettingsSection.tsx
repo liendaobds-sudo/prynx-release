@@ -7,6 +7,7 @@ import { SectionLabel, Divider, inputCls, Checkbox, RichSelect } from '../Shared
 import { DEFAULT_MATERIALS, LAMINATION_OPTIONS, PREDEFINED_SIZES, type ReportFieldKey } from '../types';
 import { buildReportPreview } from '../../../lib/reportPreview';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../../i18n';
 
 const REPORT_FIELD_LABELS: Record<string, string> = {
     orderCode: 'Mã đơn hàng', identifier: 'Mẫu/Trang', gangCount: 'Số mẫu ghép',
@@ -195,7 +196,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             />
                             {s.duplexFlow === 'double' && sourceTotalPages > 0 && sourceTotalPages % 2 !== 0 && (
                                 <div className="text-[11px] text-red-600 dark:text-red-400">
-                                    ⚠️ File có {sourceTotalPages} trang (lẻ) — bình 2 mặt cần số trang CHẴN.
+                                    {t('imposition.advancedSettings:file_co_n_trang_le_binh_2_mat_can_so_trang_chan', { n: sourceTotalPages })}
                                 </div>
                             )}
                             {s.duplexFlow === 'double' && (
@@ -455,7 +456,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                         key={flag}
                                                         checked={(s.reportDisplay as any)[flag]}
                                                         onChange={(v) => s.setReportDisplay(prev => ({ ...prev, [flag]: v }))}
-                                                        label={REPORT_FIELD_LABELS[key]}
+                                                        label={tv(REPORT_FIELD_LABELS[key])}
                                                     />
                                                 ))}
                                             </div>
@@ -536,7 +537,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                             const posLabel = { top: t('imposition.advancedSettings:mep_tren_2'), bottom: t('imposition.advancedSettings:mep_duoi_2'), left: t('imposition.advancedSettings:mep_trai_2'), right: t('imposition.advancedSettings:mep_phai_2') }[s.reportDisplay.position] || t('imposition.advancedSettings:mep_tren_2');
                                             return (
                                                 <div className="rounded-md border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50/60 dark:bg-indigo-500/10 px-2.5 py-1.5 mt-1">
-                                                    <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-300 mb-0.5">📋 Xem trước — sẽ in ở {posLabel}</div>
+                                                    <div className="text-[10px] font-bold uppercase tracking-wide text-indigo-600 dark:text-indigo-300 mb-0.5">{t('imposition.advancedSettings:xem_truoc_se_in_o', { pos: posLabel })}</div>
                                                     <div className="text-[11px] text-slate-700 dark:text-zinc-200 leading-snug break-words">{previewStr || t('imposition.advancedSettings:chua_co_noi_dung_hay_tick_cac_truong_o')}</div>
                                                 </div>
                                             );
@@ -922,7 +923,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     nên không có nút phân bổ; chỉ hiện dòng nhắc cho rõ. */}
                                 {s.clusterMode !== 'none' && s.layoutType === 'ratio_stack' && (
                                     <div className="mt-1.5 text-[11px] text-slate-500 dark:text-zinc-400 leading-snug">
-                                        Mỗi loại nằm 1 cọc riêng, cọc rộng hẹp theo số lượng, có bộ dấu xén riêng.
+                                        {t('imposition.advancedSettings:moi_loai_nam_1_coc_rieng_coc_rong_hep')}
                                     </div>
                                 )}
                             </div>
@@ -1028,7 +1029,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         </div>
                         <div className="px-5 py-4 bg-slate-50 dark:bg-zinc-800/50 border-t border-slate-200 dark:border-white/10 flex justify-end">
                             <button onClick={() => setShowClusterModal(false)} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">
-                                Xong
+                                {t('imposition.advancedSettings:xong')}
                             </button>
                         </div>
                     </div>

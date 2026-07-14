@@ -63,12 +63,12 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
       });
       const data = await res.json();
       if (data.success) {
-        setStatus(`✅ Đã chuyển ${spotName || 'tất cả Spot'} → CMYK`);
+        setStatus(`✅ ${t('preprocess.inkManager:da_chuyen_x_cmyk', { x: spotName || t('preprocess.inkManager:tat_ca_spot') })}`);
         if (data.output_filename && onFileFixed) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || 'Lỗi'}`); }
+      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.detail || t('preprocess.inkManager:loi')}`); }
     } catch (e: any) { recipeRecorder.discardPending(); setStatus(`❌ ${e.message}`); }
     setConverting(false);
   };
@@ -141,7 +141,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
                     </div>
                     <button onClick={() => convertSpot(ink.name)} disabled={converting}
                       className="text-[10px] px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded font-bold disabled:opacity-50 transition-colors shrink-0"
-                      title={`Chuyển ${ink.name} → CMYK`}>
+                      title={t('preprocess.inkManager:chuyen_x_cmyk', { x: ink.name })}>
                       →CMYK
                     </button>
                   </div>

@@ -262,24 +262,24 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
             {/* Toolbar */}
             <div className="dt-canvas-toolbar">
                 <button onClick={() => setShowDimensions(!showDimensions)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:hien_thi_kich_thuoc')}>
-                    📏 {showDimensions ? t('dieline.dielineCanvas2D:an') : t('dieline.dielineCanvas2D:hien')} kích thước
+                    📏 {showDimensions ? t('dieline.dielineCanvas2D:an') : t('dieline.dielineCanvas2D:hien')} {t('dieline.dielineCanvas2D:kich_thuoc')}
                 </button>
                 {IS_DEV && (
                     <>
                         <button onClick={() => setShowPanelLabels(!showPanelLabels)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:dev_hien_thi_ten_cac_mat')}>
-                            {showPanelLabels ? '👁️' : '🚫'} Tên mặt
+                            {showPanelLabels ? '👁️' : '🚫'} {t('dieline.dielineCanvas2D:ten_mat')}
                         </button>
                         <button onClick={() => setShowSegmentLabels(!showSegmentLabels)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:dev_hien_thi_ten_tung_doan_cat')}>
-                            {showSegmentLabels ? '👁️' : '🚫'} Đoạn cắt
+                            {showSegmentLabels ? '👁️' : '🚫'} {t('dieline.dielineCanvas2D:doan_cat')}
                         </button>
                         <button onClick={() => setShowAnnotations(!showAnnotations)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:dev_hien_thi_chu_thich_diem')}>
-                            {showAnnotations ? '👁️' : '🚫'} Chú thích điểm
+                            {showAnnotations ? '👁️' : '🚫'} {t('dieline.dielineCanvas2D:chu_thich_diem')}
                         </button>
                     </>
                 )}
                 <span className="dt-zoom-info">🔍 {Math.round(transform.scale * 100)}%</span>
                 <span className="dt-sheet-size">
-                    Khổ trải: {dieline.boundingBox.width.toFixed(1)} × {dieline.boundingBox.height.toFixed(1)} mm
+                    {t('dieline.dielineCanvas2D:kho_trai')} {dieline.boundingBox.width.toFixed(1)} × {dieline.boundingBox.height.toFixed(1)} mm
                 </span>
                 {/* Legend — chỉ hiển thị tag thực sự có trong file (phương án B) */}
                 <div className="dt-legend">
@@ -304,7 +304,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                 {artworkUrl && (
                     <>
                         <button onClick={() => setShowArtwork((v) => !v)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:an_hien_anh_in')}>
-                            {showArtwork ? '👁️' : '🚫'} Ảnh
+                            {showArtwork ? '👁️' : '🚫'} {t('dieline.dielineCanvas2D:anh')}
                         </button>
                         <label className="dt-art-ctl" title={t('dieline.dielineCanvas2D:ti_le_anh')}>
                             ⤢

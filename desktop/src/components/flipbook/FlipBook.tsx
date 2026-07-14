@@ -36,7 +36,7 @@ const Page = forwardRef<HTMLDivElement, { page: BookPage; number: number }>(
                             )}
                             <img
                                 src={page.imageUrl || undefined}
-                                alt={`Trang ${number}`}
+                                alt={`${tv('Trang')} ${number}`}
                                 className={`w-full h-full object-fill transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
                                 onLoad={() => setLoaded(true)}
                                 draggable={false}
@@ -72,7 +72,7 @@ const CoverPage = forwardRef<HTMLDivElement, { page: BookPage; isFront?: boolean
                             )}
                             <img
                                 src={page.imageUrl || undefined}
-                                alt={`Trang bìa`}
+                                alt={tv('Trang bìa')}
                                 className={`w-full h-full object-fill transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
                                 onLoad={() => setLoaded(true)}
                                 draggable={false}

@@ -1458,13 +1458,13 @@ export default function GridPreview(props: GridPreviewProps) {
           {/* Stats */}
           <div className="flex items-center gap-4 text-[13px] font-medium flex-wrap justify-center">
             <div className="text-slate-600 dark:text-zinc-400">
-              Sức chứa:{" "}
+              {t('imposition.gridPreview:suc_chua')}{" "}
               <span className="font-bold text-slate-800 dark:text-zinc-200">
                 {_showCount < layoutResult.totalItems
                   ? `${_showCount} / ${layoutResult.totalItems}`
                   : layoutResult.totalItems}
               </span>{" "}
-              tem/tờ
+              {t('imposition.gridPreview:tem_to')}
             </div>
             {(Number(targetQuantity) > 0 ||
               _isRatioStack ||
@@ -1472,14 +1472,14 @@ export default function GridPreview(props: GridPreviewProps) {
               <>
                 <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700"></div>
                 <div className="text-slate-600 dark:text-zinc-400">
-                  Cần in:{" "}
+                  {t('imposition.gridPreview:can_in')}{" "}
                   <span className="font-bold text-indigo-600 dark:text-indigo-400">
                     {totalSheets}
                   </span>{" "}
-                  tờ
+                  {t('imposition.gridPreview:to')}
                   {_isRatioStack && (
                     <span className="text-[11px] text-slate-400 ml-1">
-                      (1 tờ mẫu × {totalSheets} bản)
+                      {t('imposition.gridPreview:1_to_mau_x_ban', { n: totalSheets })}
                     </span>
                   )}
                 </div>
@@ -1498,18 +1498,17 @@ export default function GridPreview(props: GridPreviewProps) {
                 .filter((p) => typeof p === "number"),
             ).size;
             if (_isClusterType && _nTypes > 0) {
-              const _dir = clusterMode === "row" ? "hàng ngang" : "cột dọc";
+              const _dir = clusterMode === "row" ? t('imposition.gridPreview:hang_ngang') : t('imposition.gridPreview:cot_doc');
               return (
                 <div className="text-[12px] text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded px-2 py-1 w-full text-center">
-                  {_nTypes} loại · mỗi loại 1 cọc riêng ({_dir}, bề rộng theo số
-                  lượng) · in {totalSheets} tờ
+                  {t('imposition.gridPreview:n_loai_moi_loai_1_coc_rieng_in_to', { n: _nTypes, dir: _dir, sheets: totalSheets })}
                 </div>
               );
             }
             if (_isRatioStack && _nTypes > 0) {
               return (
                 <div className="text-[12px] text-slate-500 dark:text-zinc-400 text-center w-full">
-                  {_nTypes} loại trộn theo tỷ lệ số lượng · in {totalSheets} tờ
+                  {t('imposition.gridPreview:n_loai_tron_theo_ty_le_in_to', { n: _nTypes, sheets: totalSheets })}
                 </div>
               );
             }
@@ -1519,9 +1518,7 @@ export default function GridPreview(props: GridPreviewProps) {
             Array.isArray(layoutResult.ratioUnplaced) &&
             layoutResult.ratioUnplaced.length > 0 && (
               <div className="text-[12px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded px-2 py-1 w-full text-center">
-                Không đủ chỗ trên tờ cho trang{" "}
-                {layoutResult.ratioUnplaced.map((i) => i + 1).join(", ")} — nên
-                tách sang bài in khác.
+                {t('imposition.gridPreview:khong_du_cho_tren_to_cho_trang_tach', { pages: layoutResult.ratioUnplaced.map((i) => i + 1).join(", ") })}
               </div>
             )}
 

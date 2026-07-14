@@ -514,7 +514,7 @@ export default function EditLayersPanel({
                     </div>
                     {editAddMode && (
                         <div className="shrink-0 text-[11px] text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 px-2 py-1 rounded">
-                            Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : t('misc.selectionLayers:anh_2')}…
+                            {t('misc.selectionLayers:bam_len_trang_de_dat', { obj: editAddMode === 'text' ? 'text' : t('misc.selectionLayers:anh_2') })}
                         </div>
                     )}
 
@@ -645,7 +645,7 @@ export default function EditLayersPanel({
                                 }
                             }}
                         >
-                            <Trash2 className="w-4 h-4" /> Xóa {selectedObjectIds.length} Thành phần Đã Chọn
+                            <Trash2 className="w-4 h-4" /> {t('misc.selectionLayers:xoa_n_thanh_phan_da_chon', { n: selectedObjectIds.length })}
                         </Button>
                     </div>
 

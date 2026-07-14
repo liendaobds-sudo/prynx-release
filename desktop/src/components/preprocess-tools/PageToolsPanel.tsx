@@ -68,7 +68,7 @@ export default function PageToolsPanel() {
             <div className="flex flex-col gap-2 text-sm">
                 <label className="flex items-center gap-2 cursor-pointer">
                     <input type="radio" checked={targetType === 'current'} onChange={() => setTargetType('current')} className="text-blue-600 focus:ring-blue-500" />
-                    <span>Trang hiện tại ({activePage})</span>
+                    <span>{t('preprocess.pageTools:trang_hien_tai', { n: activePage })}</span>
                 </label>
                 {showAll && (
                     <label className="flex items-center gap-2 cursor-pointer">

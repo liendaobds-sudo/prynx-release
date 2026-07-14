@@ -13,19 +13,18 @@
 // ============================================================
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 
 export interface WebGLFallbackProps {
     /** Thông báo tuỳ biến; mặc định nêu trình duyệt không hỗ trợ WebGL. */
     message?: string;
 }
 
-const DEFAULT_MESSAGE =
-    'Trình duyệt của bạn không hỗ trợ WebGL nên không thể hiển thị mô phỏng 3D.';
-
 /**
  * Khối UI fallback hiển thị khi `useWebGLSupport().supported === false`.
  */
 export default function WebGLFallback({ message }: WebGLFallbackProps) {
+    const { t } = useTranslation();
     return (
         <div
             className="dt-scene-loading"
@@ -33,10 +32,9 @@ export default function WebGLFallback({ message }: WebGLFallbackProps) {
             style={{ flexDirection: 'column', gap: '0.5rem', textAlign: 'center', padding: '1.5rem' }}
         >
             <span style={{ fontSize: '2rem' }} aria-hidden="true">🚫</span>
-            <p>{message ?? DEFAULT_MESSAGE}</p>
+            <p>{message ?? t('dieline.webGLFallback:trinh_duyet_cua_ban_khong_ho_tro_webgl')}</p>
             <p style={{ fontSize: '0.75rem', opacity: 0.6, maxWidth: '32ch' }}>
-                Hãy thử bật tăng tốc phần cứng, cập nhật trình duyệt, hoặc dùng
-                tab “Bản vẽ 2D” để tiếp tục làm việc.
+                {t('dieline.webGLFallback:hay_thu_bat_tang_toc_phan_cung_cap_nhat')}
             </p>
         </div>
     );

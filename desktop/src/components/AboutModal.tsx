@@ -153,7 +153,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
             <div className="flex items-center gap-3">
               <div className="flex-1 min-w-0">
                 <div className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400">
-                  Có bản mới{upd.version ? ` ${upd.version}` : ''}
+                  {t('misc.about:co_ban_moi')}{upd.version ? ` ${upd.version}` : ''}
                 </div>
                 <div className="text-[11px] text-slate-500 dark:text-zinc-400">{t('misc.about:cai_dat_roi_khoi_dong_lai')}</div>
               </div>
@@ -166,7 +166,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
             </div>
           ) : upd.kind === 'downloading' ? (
             <div className="space-y-1.5">
-              <div className="text-[13px] font-medium text-slate-700 dark:text-zinc-200">Đang tải & cài đặt… {upd.percent}%</div>
+              <div className="text-[13px] font-medium text-slate-700 dark:text-zinc-200">{t('misc.about:dang_tai_cai_dat', { percent: upd.percent })}</div>
               <div className="h-1.5 rounded-full bg-slate-200 dark:bg-zinc-700 overflow-hidden">
                 <div className="h-full bg-emerald-500 transition-all duration-200" style={{ width: `${upd.percent}%` }} />
               </div>
@@ -176,7 +176,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
               <div className="flex-1 min-w-0 text-[13px]">
                 {upd.kind === 'checking' && <span className="text-slate-500 dark:text-zinc-400">{t('misc.about:dang_kiem_tra_cap_nhat')}</span>}
                 {upd.kind === 'latest' && <span className="text-emerald-600 dark:text-emerald-400 font-medium">{t('misc.about:ban_dang_dung_ban_moi_nhat')}</span>}
-                {upd.kind === 'error' && <span className="text-rose-500">Lỗi: {upd.message}</span>}
+                {upd.kind === 'error' && <span className="text-rose-500">{t('misc.about:loi_msg', { msg: upd.message })}</span>}
                 {upd.kind === 'idle' && <span className="text-slate-500 dark:text-zinc-400">{t('misc.about:kiem_tra_phien_ban_moi_nhat')}</span>}
               </div>
               <button

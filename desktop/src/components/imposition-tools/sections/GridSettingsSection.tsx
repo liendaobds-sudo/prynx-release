@@ -154,7 +154,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
       obj[idx] = q;
     });
     setTargetQuantitiesByPage(obj);
-    setPasteStatus({ ok: true, msg: `Đã điền ${parsed.quantities.length} trang.` });
+    setPasteStatus({ ok: true, msg: t('imposition.gridSettings:da_dien_n_trang', { n: parsed.quantities.length }) });
   };
 
   React.useEffect(() => {
@@ -198,9 +198,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                             {t('imposition.gridSettings:binh_trang_s_r')}
                           </h4>
                           <p className="text-slate-600 dark:text-zinc-300">
-                            Nhân bản một mẫu thiết kế lặp lại nhiều lần trên
-                            cùng một tờ in (VD: in 1 loại tem, 1 loại card visit
-                            lấp đầy tờ in).
+                            {t('imposition.gridSettings:nhan_ban_mot_mau_thiet_ke_lap_lai')}
                           </p>
                         </div>
                         <div className="space-y-1">
@@ -208,9 +206,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                             {t('imposition.gridSettings:dan_nhieu_mau_n_up')}
                           </h4>
                           <p className="text-slate-600 dark:text-zinc-300">
-                            Ghép nhiều mẫu thiết kế hoặc nhiều trang tài liệu
-                            khác nhau vào cùng một tờ in (VD: in ghép nhiều loại
-                            card visit của nhiều người khác nhau).
+                            {t('imposition.gridSettings:ghep_nhieu_mau_thiet_ke_hoac_nhieu_trang')}
                           </p>
                         </div>
                       </div>
@@ -271,13 +267,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                               {t('imposition.gridSettings:xep_lan_luot')}
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
-                              <strong>{t('imposition.gridSettings:1_mat')}</strong> trang 1, 2, 3… liên tiếp theo SL (hết loại này mới sang loại kia).
-                              Trống = lấp đầy 1 tờ.
+                              <strong>{t('imposition.gridSettings:1_mat')}</strong> {t('imposition.gridSettings:trang_1_2_3_lien_tiep_theo_sl_het_loai')}
                             </p>
                             <p className="text-slate-600 dark:text-zinc-300">
-                              <strong>{t('imposition.gridSettings:2_mat')}</strong> mỗi sản phẩm = cặp trang (1–2, 3–4…).
-                              Cùng một ô: mặt trước tờ chẵn, mặt sau tờ lẻ (lật gương).
-                              File nên có số trang <strong>{t('imposition.gridSettings:chan')}</strong>.
+                              <strong>{t('imposition.gridSettings:2_mat')}</strong> {t('imposition.gridSettings:moi_san_pham_cap_trang_cung_o_mat_truoc')} <strong>{t('imposition.gridSettings:chan')}</strong>.
                             </p>
                           </div>
                           <div className="space-y-1">
@@ -285,8 +278,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                               {t('imposition.gridSettings:xep_chong_up_xap_dung_thu_tu')}
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
-                              Bố trí cut-stack: cùng một vị trí ô trên mọi tờ tạo một cọc.
-                              Xén rời cọc rồi úp chồng → đúng thứ tự trang 1, 2, 3… (collation sách/sổ).
+                              {t('imposition.gridSettings:bo_tri_cut_stack_cung_mot_vi_tri_o_tren')}
                             </p>
                             <p className="text-amber-600 dark:text-amber-400 text-[12px]">
                               {t('imposition.gridSettings:khac_voi')} <strong>{t('imposition.gridSettings:chia_coc_xen')}</strong> {t('imposition.gridSettings:o_thiet_lap_mo_rong_cai_do_chia_to')}
@@ -297,8 +289,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                               {t('imposition.gridSettings:chia_ty_le_xep_chong')}
                             </h4>
                             <p className="text-slate-600 dark:text-zinc-300">
-                              Nhiều mẫu cùng cỡ, số lượng khác nhau: mỗi mẫu chiếm số ô theo tỷ lệ số lượng.
-                              Mọi tờ giống hệt nhau → xén cả chồng ra mỗi loại một xấp sạch. File xuất 1 tờ mẫu; in đúng số tờ hiển thị.
+                              {t('imposition.gridSettings:nhieu_mau_cung_co_so_luong_khac_nhau_moi')}
                             </p>
                           </div>
                         </div>
@@ -329,7 +320,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
             <div className="flex items-center gap-3">
               <label
                 className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]"
-                title={`Trang hiện tại: ${viewerActivePage}`}
+                title={t('imposition.gridSettings:trang_hien_tai', { n: viewerActivePage })}
               >
                 {t('imposition.gridSettings:hinh_dang_tem')}
               </label>
@@ -364,13 +355,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                       content: (
                         <div className="space-y-4">
                           <p className="text-slate-600 dark:text-zinc-300">
-                            Tool sẽ tự động nhận diện đa số các loại hình dạng
-                            tem từ file thiết kế PDF của bạn.
+                            {t('imposition.gridSettings:tool_se_tu_dong_nhan_dien_da_so_cac_loai')}
                           </p>
                           <p className="text-slate-600 dark:text-zinc-300">
-                            Nếu thấy hình dạng tự nhận diện chưa chính xác, bạn
-                            có thể tự chọn lại trong danh sách này để quá trình
-                            bình trang hoạt động chính xác nhất.
+                            {t('imposition.gridSettings:neu_thay_hinh_dang_tu_nhan_dien_chua')}
                           </p>
                         </div>
                       ),
@@ -588,8 +576,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
               </div>
               {duplexFlow === "double" && sourceTotalPages > 0 && sourceTotalPages % 2 !== 0 && (
                 <div className="text-[11px] text-red-600 dark:text-red-400 pl-[107px] leading-snug">
-                  {t('imposition.gridSettings:binh_2_mat_bat_buoc_so_trang')} <strong>{t('imposition.gridSettings:chan')}</strong>. File hiện{" "}
-                  {sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.
+                  {t('imposition.gridSettings:binh_2_mat_bat_buoc_so_trang')} <strong>{t('imposition.gridSettings:chan')}</strong>. {t('imposition.gridSettings:file_hien_n_trang_le_them_xoa_1_trang', { n: sourceTotalPages })}
                 </div>
               )}
               {duplexFlow === "double" &&
@@ -669,7 +656,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                     value={pasteText}
                     onChange={(e) => setPasteText(e.target.value)}
                     rows={3}
-                    placeholder={"Bôi cột số lượng trong Excel → Ctrl+C → dán vào đây\n(mỗi dòng 1 số, theo đúng thứ tự trang)"}
+                    placeholder={t('imposition.gridSettings:boi_cot_so_luong_trong_excel_ctrlc_dan_vao_day')}
                     className={`${inputCls} h-auto py-1.5 resize-y font-mono text-[11px] leading-snug`}
                   />
                   <div className="flex items-center gap-2">
@@ -695,7 +682,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 </div>
 
                 <div className="text-[10px] text-slate-500 mb-2 italic">
-                  Để trống để dùng chung số lượng (
+                  {t('imposition.gridSettings:de_trong_de_dung_chung_so_luong')} (
                   {targetQuantity === 0 ? t('imposition.gridSettings:mac_dinh') : targetQuantity})
                 </div>
 
@@ -703,7 +690,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 {taskMode === "nup" ? (
                   <div className="grid grid-cols-[60px_1fr] gap-2 mb-1 border-b border-slate-200 dark:border-white/10 pb-1">
                     <div className="text-[10px] font-bold text-slate-500 uppercase">
-                      Trang
+                      {t('imposition.gridSettings:trang')}
                     </div>
                     <div className="text-[10px] font-bold text-slate-500 uppercase">
                       {t('imposition.gridSettings:so_luong_2')}
@@ -712,7 +699,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 ) : (
                   <div className={`grid ${_isCnc ? "grid-cols-[52px_1fr_34px_30px_60px]" : "grid-cols-[60px_1fr_40px_40px]"} gap-2 mb-1 border-b border-slate-200 dark:border-white/10 pb-1`}>
                     <div className="text-[10px] font-bold text-slate-500 uppercase">
-                      Trang
+                      {t('imposition.gridSettings:trang')}
                     </div>
                     <div className="text-[10px] font-bold text-slate-500 uppercase">
                       {t('imposition.gridSettings:so_luong_2')}
@@ -742,8 +729,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   const idx = twoSided ? productIdx * 2 : productIdx;
 
                   const label = twoSided
-                      ? (idx + 1 === sourceTotalPages ? `SP ${productIdx + 1} (trang ${idx + 1})` : `SP ${productIdx + 1} (mặt ${idx + 1}–${idx + 2})`)
-                      : `Trang ${idx + 1}`;
+                      ? (idx + 1 === sourceTotalPages ? t('imposition.gridSettings:sp_n_trang_m', { n: productIdx + 1, m: idx + 1 }) : t('imposition.gridSettings:sp_n_mat_a_b', { n: productIdx + 1, a: idx + 1, b: idx + 2 }))
+                      : t('imposition.gridSettings:trang_n', { n: idx + 1 });
 
                   const rawQty = targetQuantitiesByPage[idx];
                   const qty = rawQty !== undefined ? rawQty : targetQuantity;

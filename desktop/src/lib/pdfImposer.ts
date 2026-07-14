@@ -16,6 +16,7 @@ export const MM_TO_POINTS = 2.83465;
 import { ImpositionMode } from './imposerEngine/SettingsTypes';
 import type { ProcessingSettings, BaseSettings, GuillotineSettings, DieCutSettings, OffsetSettings } from './imposerEngine/SettingsTypes';
 import { tv } from '../i18n';
+import i18n from '../i18n';
 export type { ProcessingSettings, BaseSettings, GuillotineSettings, DieCutSettings, OffsetSettings };
 export { ImpositionMode };
 
@@ -34,7 +35,7 @@ export const imposePdf = async (
     // Client should be dumb assembler only. Prefer viaBackend for imposition modes.
     // See PR Plan prynx-imposition-unification-v1.
     console.warn('[DEPRECATED] Local imposePdf used for imposition - migrate to viaBackend for unified engine.');
-    setStatus('Đang phân tích và nạp tệp PDF...');
+    setStatus(i18n.t('lib.pdfImposer:dang_phan_tich_va_nap_tep_pdf'));
     const arrayBuffer = await getFileArrayBuffer(pdfFile);
     let reportMsg = '';
 
@@ -112,8 +113,8 @@ export const imposePdf = async (
             sizeMap.set(key, (sizeMap.get(key) || 0) + 1);
         }
         if (sizeMap.size > 1) {
-            const sizeList = Array.from(sizeMap.entries()).map(([size, count]) => `  • ${size} (${count} trang)`).join('\n');
-            reportMsg += `⚠ Trang không đồng kích thước:\n${sizeList}\nBình sách sẽ dùng kích thước lớn nhất.\n`;
+            const sizeList = Array.from(sizeMap.entries()).map(([size, count]) => `  • ${size} ${i18n.t('lib.pdfImposer:count_trang_paren', { count })}`).join('\n');
+            reportMsg += i18n.t('lib.pdfImposer:trang_khong_dong_kich_thuoc_n_sizelist', { sizeList });
         }
 
         let thicknessInput = sanitizeNumber(settings.paperThickness);
@@ -148,19 +149,19 @@ export const imposePdf = async (
                 const backCover = orderedIndices.slice(-half);
                 coverIndices = [...frontCover, ...backCover];
                 bodyOrderedIndices = orderedIndices.slice(half, orderedIndices.length - half);
-                reportMsg += `Tách bìa: ${coverIndices.length} trang bìa sẽ xuất riêng cuối file. Ruột: ${bodyOrderedIndices.length} trang.\n`;
+                reportMsg += i18n.t('lib.pdfImposer:tach_bia_coverindices_length_trang_bia', { coverCount: coverIndices.length, bodyCount: bodyOrderedIndices.length });
             } else if (wantSeparateCover) {
-                reportMsg += `⚠ Đã bỏ qua "Tách bìa riêng": sách cần tối thiểu ${coverCount + 4} trang để tách ${coverCount} trang bìa (hiện có ${orderedIndices.length}).\n`;
+                reportMsg += i18n.t('lib.pdfImposer:da_bo_qua_tach_bia_rieng_sach_can_toi', { coverCount, minPages: coverCount + 4, curPages: orderedIndices.length });
             }
 
-            setStatus('Giai đoạn 1: Đang thiết lập sơ đồ trang...');
+            setStatus(i18n.t('lib.pdfImposer:giai_doan_1_dang_thiet_lap_so_do_trang'));
             const bMode = (settings as any).bindingMode || 'saddle';
             const orderedLen = bodyOrderedIndices.length;
             const mapResult = generateBindingMap(orderedLen, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
             const virtualMap = mapResult.sheets;
             if (mapResult.report) reportMsg += (reportMsg ? '\n' : '') + mapResult.report;
 
-            setStatus('Giai đoạn 2: Đang tính toán kích thước tự động...');
+            setStatus(i18n.t('lib.pdfImposer:giai_doan_2_dang_tinh_toan_kich_thuoc'));
             const pseudoSettings = {
                 formsize: (reqSheetW === 0 || (settings as any).chainNup) ? 'auto_100' : 'custom',
                 customSheetWidth: reqSheetW,
@@ -174,16 +175,16 @@ export const imposePdf = async (
             // Cảnh báo tràn khổ: khổ giấy chọn nhỏ hơn khổ trải trang → nội dung sẽ bị cắt mép.
             if (geoContext.needsScaleDown) {
                 const pct = Math.round(geoContext.suggestedScaleFactor * 100);
-                reportMsg += (reportMsg ? '\n' : '') + `⚠ Khổ giấy nhỏ hơn khổ trải trang: nội dung sẽ bị tràn/cắt ở mép. Hãy chọn khổ lớn hơn hoặc thu nhỏ file còn ~${pct}%.`;
+                reportMsg += (reportMsg ? '\n' : '') + i18n.t('lib.pdfImposer:kho_giay_nho_hon_kho_trai_trang_noi', { pct });
             }
 
             const isSaddleOrThread = bMode === 'saddle' || bMode === 'thread';
             
             if ((settings as any).chainNup) {
-                setStatus('Giai đoạn 3: Đang sắp xếp dữ liệu...');
+                setStatus(i18n.t('lib.pdfImposer:giai_doan_3_dang_sap_xep_du_lieu'));
                 const tempPdf = await PDFDocument.create();
-                
-                setStatus('Đang tải dữ liệu hình ảnh...');
+
+                setStatus(i18n.t('lib.pdfImposer:dang_tai_du_lieu_hinh_anh'));
                 const tempEmbeddedPages = [];
                 for (let i = 0; i < orderedIndices.length; i++) {
                     const pOriginalIndex = orderedIndices[i];
@@ -205,13 +206,13 @@ export const imposePdf = async (
                     bleed, 0, isSaddleOrThread, 'none', settings.interleave || 'normal', setStatus, settings as any, gutterPt
                 );
                 
-                setStatus('Giai đoạn 4: Đang xử lý hình ảnh và đồ hoạ...');
+                setStatus(i18n.t('lib.pdfImposer:giai_doan_4_dang_xu_ly_hinh_anh_va_do'));
                 const tempBytes = await tempPdf.save();
                 const tempSrcPdf = await PDFDocument.load(tempBytes, { ignoreEncryption: true });
                 const tempPages = tempSrcPdf.getPages();
                 
                 const chainEmbeddedPages = [];
-                setStatus('Giai đoạn 5: Đang nạp trang vào khuôn...');
+                setStatus(i18n.t('lib.pdfImposer:giai_doan_5_dang_nap_trang_vao_khuon'));
                 for (let i=0; i<tempPages.length; i++) {
                     const ep = await outputPdf.embedPage(tempPages[i]);
                     chainEmbeddedPages.push(ep);
@@ -233,14 +234,14 @@ export const imposePdf = async (
                     const pagesPerSig = firstSigSheets * 4;
                     foldPattern = getPatternForPageCount(pagesPerSig) ?? null;
                     if (foldPattern) {
-                        setStatus(`Auto-detect: Chọn sơ đồ ${foldPattern.name} (${pagesPerSig} trang/tay)`);
+                        setStatus(i18n.t('lib.pdfImposer:auto_detect_chon_so_do_foldpattern_name', { name: foldPattern.name, pagesPerSig }));
                         if (foldPattern.pagesPerSig !== pagesPerSig) {
-                            reportMsg += (reportMsg ? '\n' : '') + `⚠ Tay sách ${pagesPerSig} trang không có sơ đồ gấp khớp; tạm dùng "${foldPattern.name}" (${foldPattern.pagesPerSig} trang). Hãy chia tép theo bội số 4/8/16 để khớp sơ đồ.`;
+                            reportMsg += (reportMsg ? '\n' : '') + i18n.t('lib.pdfImposer:tay_sach_pagespersig_trang_khong_co_so', { pagesPerSig, name: foldPattern.name, patternPages: foldPattern.pagesPerSig });
                         }
                     }
                 }
                 if (foldPattern) {
-                    setStatus('Giai đoạn 6: Đang xếp trang lên khổ in theo sơ đồ...');
+                    setStatus(i18n.t('lib.pdfImposer:giai_doan_6_dang_xep_trang_len_kho_in'));
                     const spreadDetails = chainEmbeddedPages.map(ep => ({ width: ep.width, height: ep.height }));
                     const spreadReport = await placeSpreadsByFoldPattern(
                         chainEmbeddedPages, spreadDetails, foldPattern,
@@ -259,8 +260,8 @@ export const imposePdf = async (
                         duplexFlow: (settings as any).cutStack ? 'double' : 'normal',
                     } as any;
                     setStatus((settings as any).cutStack
-                        ? 'Giai đoạn 6: Đang ghép tờ booklet (Xén Chồng)...'
-                        : 'Giai đoạn 6: Đang nhân bản trang in (Step & Repeat)...'
+                        ? i18n.t('lib.pdfImposer:giai_doan_6_dang_ghep_to_booklet_xen')
+                        : i18n.t('lib.pdfImposer:giai_doan_6_dang_nhan_ban_trang_in_step')
                     );
                     await renderNup(
                         tempPages.length, chainEmbeddedPages, chainSourceDetails, cw, ch,
@@ -277,7 +278,7 @@ export const imposePdf = async (
 
             // Append cover pages as raw pages at end of output
             if (coverIndices.length > 0) {
-                setStatus(`Đang thêm ${coverIndices.length} trang bìa vào cuối file...`);
+                setStatus(i18n.t('lib.pdfImposer:dang_them_coverindices_length_trang_bia', { count: coverIndices.length }));
                 for (const idx of coverIndices) {
                     if (idx === -1) continue;
                     const [copiedPage] = await outputPdf.copyPages(srcPdf, [idx]);
@@ -286,7 +287,7 @@ export const imposePdf = async (
             }
         }
 
-        setStatus('Dọn dẹp bộ nhớ và Đóng tệp PDF...');
+        setStatus(i18n.t('lib.pdfImposer:don_dep_bo_nho_va_dong_tep_pdf'));
         const pdfBytes = await outputPdf.save(); // THIS is where lazy flate decoding fails!
         return { 
             blob: new Blob([pdfBytes as any], { type: 'application/pdf' }), 
@@ -295,7 +296,7 @@ export const imposePdf = async (
     };
 
     const decryptPdfViaBackend = async (buffer: ArrayBuffer, setStatus: (msg: string) => void): Promise<ArrayBuffer> => {
-        setStatus('Phát hiện PDF bị khóa - Đang giải mã tập tin...');
+        setStatus(i18n.t('lib.pdfImposer:phat_hien_pdf_bi_khoa_dang_giai_ma_tap'));
         const formData = new FormData();
         const blob = new Blob([buffer], { type: 'application/pdf' });
         formData.append('file', blob, 'encrypted.pdf');
@@ -314,21 +315,21 @@ export const imposePdf = async (
 
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(`Lỗi từ Backend: ${response.status} - ${errorText}`);
+                throw new Error(i18n.t('lib.pdfImposer:loi_tu_backend_response_status', { status: response.status, errorText }));
             }
 
-            setStatus('Giải mã thành công. Đang nạp lại tài liệu...');
+            setStatus(i18n.t('lib.pdfImposer:giai_ma_thanh_cong_dang_nap_lai_tai'));
             return await response.arrayBuffer();
         } catch (e: any) {
             if (e.name === 'AbortError') {
                 throw new Error(tv('Hệ thống giải mã không phản hồi sau 30 giây (Vui lòng thử lại sau).'));
             }
-            throw new Error(`Xử lý tập tin thất bại: ${e.message}`);
+            throw new Error(i18n.t('lib.pdfImposer:xu_ly_tap_tin_that_bai_e_message', { message: e.message }));
         }
     };
 
     try {
-        setStatus('Đang tải và xử lý khung PDF vào pipeline...');
+        setStatus(i18n.t('lib.pdfImposer:dang_tai_va_xu_ly_khung_pdf_vao'));
         return await runPipeline(arrayBuffer);
     } catch (err: any) {
         console.error("Pipeline failed:", err);
@@ -338,10 +339,10 @@ export const imposePdf = async (
                 return await runPipeline(cleanBuffer);
             } catch (decryptErr: any) {
                 console.error("Backend Decryption failed:", decryptErr);
-                throw new Error("Lỗi giải mã: " + (decryptErr.message || decryptErr));
+                throw new Error(i18n.t('lib.pdfImposer:loi_giai_ma') + ' ' + (decryptErr.message || decryptErr));
             }
         } else {
-            throw new Error("Lỗi bóc tách PDF: " + (err.message || err));
+            throw new Error(i18n.t('lib.pdfImposer:loi_boc_tach_pdf') + ' ' + (err.message || err));
         }
     }
 };
@@ -370,11 +371,11 @@ export const imposeCatalogBatch = async (
     const srcBuffer = await getFileArrayBuffer(pdfFile);
     const srcPdf = await PDFDocument.load(srcBuffer, { ignoreEncryption: true });
     
-    setStatus(`Bắt đầu xử lý ${jobs.length} tấm kẽm...`);
+    setStatus(i18n.t('lib.pdfImposer:bat_dau_xu_ly_jobs_length_tam_kem', { count: jobs.length }));
 
     for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
-        setStatus(`Đang xử lý kẽm ${i + 1}/${jobs.length}: ${job.label}...`);
+        setStatus(i18n.t('lib.pdfImposer:dang_xu_ly_kem_i_1_jobs_length_job', { current: i + 1, total: jobs.length, label: job.label }));
 
         // Bước 1: Tạo sub-PDF chỉ chứa các trang của job này
         const subPdf = await PDFDocument.create();
@@ -435,7 +436,7 @@ export const imposeCatalogBatch = async (
         // Bước 3: Chạy pipeline
         try {
             const result = await imposePdf(subFile, jobSettings, (msg) => {
-                setStatus(`[Kẽm ${i + 1}/${jobs.length}] ${msg}`);
+                setStatus(i18n.t('lib.pdfImposer:kem_i_1_jobs_length_msg', { current: i + 1, total: jobs.length, msg }));
             });
 
             results.push({
@@ -450,14 +451,15 @@ export const imposeCatalogBatch = async (
             results.push({
                 blob: new Blob(),
                 filename: job.filename,
-                label: `❌ ${job.label} (Lỗi: ${err.message})`,
-                report: `Lỗi: ${err.message}`,
+                label: i18n.t('lib.pdfImposer:job_label_loi_err_message', { label: job.label, message: err.message }),
+                report: i18n.t('lib.pdfImposer:loi_err_message', { message: err.message }),
                 jobId: job.id,
             });
         }
     }
 
-    setStatus(`Hoàn tất: ${results.filter(r => r.blob.size > 0).length}/${jobs.length} kẽm thành công.`);
+    const successCount = results.filter(r => r.blob.size > 0).length;
+    setStatus(i18n.t('lib.pdfImposer:hoan_tat_results_filter_r_r_blob_size_0', { done: successCount, total: jobs.length }));
     return results;
 };
 
@@ -503,7 +505,7 @@ export const imposePdfViaBackend = async (
     outputDir?: string,
 ): Promise<{ outputPath: string; report: string; blob: Blob }> => {
 
-    setStatus('Đang tính toán sơ đồ bình trang...');
+    setStatus(i18n.t('lib.pdfImposer:dang_tinh_toan_so_do_binh_trang'));
 
     // ──── STEP 1: Đọc metadata cơ bản từ file (chỉ lấy số trang + kích thước) ────
     // Gọi Backend API để lấy thông tin file mà không cần nạp file vào Webview
@@ -532,7 +534,7 @@ export const imposePdfViaBackend = async (
         }
     } else {
         // Fallback: nạp nhẹ bằng pdf-lib chỉ để lấy metadata (không embed)
-        setStatus('Đang trích xuất dữ liệu tập tin...');
+        setStatus(i18n.t('lib.pdfImposer:dang_trich_xuat_du_lieu_tap_tin'));
         const buffer = await (await fetch(sourcePdfPath)).arrayBuffer();
         const srcPdf = await PDFDocument.load(buffer, { ignoreEncryption: true });
         pageCount = srcPdf.getPageCount();
@@ -555,7 +557,7 @@ export const imposePdfViaBackend = async (
     }
 
     // ──── STEP 2: Chạy Planner modules (thuần toán, 0 byte PDF trong RAM) ────
-    setStatus('Đang thiết lập sơ đồ trang...');
+    setStatus(i18n.t('lib.pdfImposer:dang_thiet_lap_so_do_trang'));
             const bMode = (settings as any).bindingMode || 'saddle';
     // pageOrder (thứ tự trang do người dùng sắp trong viewer, 1-based; -1 = trang trắng
     // đã chèn) là NGUỒN SỰ THẬT — GIỐNG HỆT "Xem Bài In" (SheetViewer dùng pageOrder.length).
@@ -583,7 +585,7 @@ export const imposePdfViaBackend = async (
     }
     let report = mapResult.report;
 
-    setStatus('Đang tính toán kích thước tự động...');
+    setStatus(i18n.t('lib.pdfImposer:dang_tinh_toan_kich_thuoc_tu_dong'));
     let reqSheetW = sanitizeNumber(settings.sheetWidth);
     let reqSheetH = sanitizeNumber(settings.sheetHeight);
 
@@ -617,7 +619,7 @@ export const imposePdfViaBackend = async (
             if (_scaleMode === 'fit') {
                 if (scaleRot > scaleAsIs) { const t = reqSheetW; reqSheetW = reqSheetH; reqSheetH = t; } // chọn hướng ít phải co hơn
             } else {
-                const warn = `⚠ Trang trải ${Math.round(spreadWmm)}×${Math.round(spreadHmm)}mm KHÔNG vừa khổ ${Math.round(reqSheetW)}×${Math.round(reqSheetH)}mm ở 100% (dù đã xoay khổ). Hãy chọn khổ lớn hơn, hoặc dùng "1 cuốn/tờ (bóp vừa khổ)" để thu nội dung cho vừa. Hệ thống KHÔNG tự co ở chế độ 100%.`;
+                const warn = i18n.t('lib.pdfImposer:trang_trai_khong_vua_kho_100', { spreadW: Math.round(spreadWmm), spreadH: Math.round(spreadHmm), sheetW: Math.round(reqSheetW), sheetH: Math.round(reqSheetH) });
                 report = report ? `${report}\n${warn}` : warn;
             }
         }
@@ -653,7 +655,7 @@ export const imposePdfViaBackend = async (
     const bleedPt = sanitizeNumber(settings.bleed) * MM_TO_POINTS;
 
     // ──── STEP 3: Serialize thành JSON Instruction Set (~5KB) ────
-    setStatus('Đang xuất thông số kỹ thuật...');
+    setStatus(i18n.t('lib.pdfImposer:dang_xuat_thong_so_ky_thuat'));
     const instructionSet = serializeBookletPlan(
         virtualMap,
         srcPageDetails,
@@ -671,7 +673,7 @@ export const imposePdfViaBackend = async (
 
 
     // ──── STEP 4: Gửi JSON cho Backend Python thực thi ────
-    setStatus('Đang gửi kế hoạch xử lý...');
+    setStatus(i18n.t('lib.pdfImposer:dang_gui_ke_hoach_xu_ly'));
     const response = await fetch(`${BACKEND_API}/api/imposition/execute-plan-json`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -683,7 +685,7 @@ export const imposePdfViaBackend = async (
 
     if (!response.ok) {
         const errText = await response.text();
-        throw new Error(`Hệ thống xử lý thất bại: ${response.status} - ${errText}`);
+        throw new Error(i18n.t('lib.pdfImposer:he_thong_xu_ly_that_bai_response_status', { status: response.status, errText }));
     }
 
     // ──── STEP 5: Nhận file output ────
@@ -693,7 +695,7 @@ export const imposePdfViaBackend = async (
     // thông tin (output_dir). Caller hiện dùng blob/report, không đọc lại theo path.
     const outputPath = instructionSet.output_dir || 'results';
 
-    setStatus('✅ Hoàn tất! File kẽm đã được xuất thành công.');
+    setStatus(i18n.t('lib.pdfImposer:hoan_tat_file_kem_da_duoc_xuat_thanh'));
     return { outputPath, report, blob: outputBlob };
 };
 
@@ -713,12 +715,12 @@ export const imposeCatalogBatchViaBackend = async (
 ): Promise<CatalogBatchResult[]> => {
     const results: CatalogBatchResult[] = [];
 
-    setStatus(`Bắt đầu xử lý ${jobs.length} tấm kẽm...`);
+    setStatus(i18n.t('lib.pdfImposer:bat_dau_xu_ly_jobs_length_tam_kem', { count: jobs.length }));
 
     for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
         const sheetSettings = { ...baseSettings } as any;
-        setStatus(`[Kẽm ${i + 1}/${jobs.length}] ${job.label}...`);
+        setStatus(i18n.t('lib.pdfImposer:kem_i_1_jobs_length_job_label', { current: i + 1, total: jobs.length, label: job.label }));
 
         const jobSettings: ProcessingSettings = {
             impositionMode: ImpositionMode.Booklet,
@@ -754,7 +756,7 @@ export const imposeCatalogBatchViaBackend = async (
             const result = await imposePdfViaBackend(
                 sourcePdfPath,
                 jobSettings,
-                (msg) => setStatus(`[Kẽm ${i + 1}/${jobs.length}] ${msg}`),
+                (msg) => setStatus(i18n.t('lib.pdfImposer:kem_i_1_jobs_length_msg', { current: i + 1, total: jobs.length, msg })),
                 outputDir,
             );
 
@@ -770,13 +772,13 @@ export const imposeCatalogBatchViaBackend = async (
             results.push({
                 blob: new Blob(),
                 filename: job.filename,
-                label: `❌ ${job.label} (Lỗi: ${err.message})`,
-                report: `Lỗi: ${err.message}`,
+                label: i18n.t('lib.pdfImposer:job_label_loi_err_message', { label: job.label, message: err.message }),
+                report: i18n.t('lib.pdfImposer:loi_err_message', { message: err.message }),
                 jobId: job.id,
             });
         }
     }
 
-    setStatus(`✅ Hoàn tất: ${results.filter(r => !r.label.startsWith('❌')).length}/${jobs.length} kẽm thành công.`);
+    setStatus(i18n.t('lib.pdfImposer:hoan_tat_results_filter_r_r_label', { done: results.filter(r => !r.label.startsWith('❌')).length, total: jobs.length }));
     return results;
 };

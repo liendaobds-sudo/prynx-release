@@ -197,7 +197,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
 
         if (!response.ok) {
             const errData = await response.json().catch(() => null);
-            throw new Error(errData?.detail || `Lỗi server (${response.status})`);
+            throw new Error(errData?.detail || t('preprocess.sticker:loi_server', { status: response.status }));
         }
         
         if (productType === 'sticker') {

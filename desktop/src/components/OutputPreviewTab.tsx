@@ -284,7 +284,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             });
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
-                toast.error(`Lỗi chuyển Spot → CMYK: ${errData.detail || res.statusText}`);
+                toast.error(t('tabs.outputPreview:loi_chuyen_spot_cmyk', { msg: errData.detail || res.statusText }));
                 setConvertingSpot('');
                 return;
             }
@@ -293,11 +293,11 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
                 onFileFixed(await dl.blob(), data.output_filename);
             } else if (!data.success) {
-                toast.error(`Chuyển Spot → CMYK không thành công: ${data.error || 'Unknown'}`);
+                toast.error(t('tabs.outputPreview:chuyen_spot_cmyk_khong_thanh_cong', { msg: data.error || 'Unknown' }));
             }
         } catch (e: any) {
             console.error('Convert spot failed:', e);
-            toast.error(`Lỗi: ${e.message || 'Không kết nối được backend'}`);
+            toast.error(t('tabs.outputPreview:loi_msg', { msg: e.message || 'Không kết nối được backend' }));
         }
         setConvertingSpot('');
     }, [fileId, onFileFixed]);

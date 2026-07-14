@@ -346,7 +346,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                 {fixingAction ? (
                   <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.preflight:dang_sua')}</>
                 ) : (
-                  <>🚀 Thực thi ({selectedActions.size})</>
+                  <>🚀 {t('preprocess.preflight:thuc_thi')} ({selectedActions.size})</>
                 )}
               </button>
             )}

@@ -3,6 +3,7 @@
 // cut_export đăng ký sau — task 11.2, phần chạm file có sẵn cần duyệt).
 
 import { authenticatedFetch, getApiUrl } from "../../../lib/api";
+import i18n from "../../../i18n";
 
 export interface CutProfileInfo {
   id: string;
@@ -60,7 +61,7 @@ export interface CutExportResult {
 
 export async function listCutProfiles(): Promise<CutProfileInfo[]> {
   const res = await authenticatedFetch(`${getApiUrl()}/imposition/cut-profiles`);
-  if (!res.ok) throw new Error(`Không tải được danh sách máy bế (${res.status})`);
+  if (!res.ok) throw new Error(i18n.t('cutExport:khong_tai_duoc_danh_sach_may_be', { status: res.status }));
   const data = await res.json();
   return (data.profiles ?? []) as CutProfileInfo[];
 }
@@ -73,7 +74,7 @@ export async function cutExport(req: CutExportRequest): Promise<CutExportResult>
   });
   if (!res.ok) {
     const text = await res.text();
-    return { ok: false, error: `Lỗi máy chủ (${res.status}): ${text}` };
+    return { ok: false, error: i18n.t('cutExport:loi_may_chu_res_status_text', { status: res.status, text }) };
   }
   return (await res.json()) as CutExportResult;
 }
@@ -108,7 +109,7 @@ export async function cutExportFromFile(
   );
   if (!res.ok) {
     const text = await res.text();
-    return { ok: false, error: `Lỗi máy chủ (${res.status}): ${text}` };
+    return { ok: false, error: i18n.t('cutExport:loi_may_chu_res_status_text', { status: res.status, text }) };
   }
   return (await res.json()) as CutExportResult;
 }
@@ -147,7 +148,7 @@ export async function cutPreviewFromFile(
   );
   if (!res.ok) {
     const text = await res.text();
-    return { ok: false, error: `Lỗi máy chủ (${res.status}): ${text}` };
+    return { ok: false, error: i18n.t('cutExport:loi_may_chu_res_status_text', { status: res.status, text }) };
   }
   return (await res.json()) as CutPreviewResult;
 }
@@ -182,7 +183,7 @@ export async function getCutProfile(
   const res = await authenticatedFetch(
     `${getApiUrl()}/imposition/cut-profile?id=${encodeURIComponent(id)}`,
   );
-  if (!res.ok) return { ok: false, error: `Lỗi máy chủ (${res.status})` };
+  if (!res.ok) return { ok: false, error: i18n.t('cutExport:loi_may_chu_res_status', { status: res.status }) };
   return (await res.json()) as { ok: boolean; profile?: CutMachineProfile; builtin?: boolean };
 }
 
@@ -197,7 +198,7 @@ export async function saveCutProfile(
   });
   if (!res.ok) {
     const text = await res.text();
-    return { ok: false, error: `Lỗi máy chủ (${res.status}): ${text}` };
+    return { ok: false, error: i18n.t('cutExport:loi_may_chu_res_status_text', { status: res.status, text }) };
   }
   return (await res.json()) as { ok: boolean; id?: string; error?: string };
 }
@@ -209,6 +210,6 @@ export async function deleteCutProfile(id: string): Promise<{ ok: boolean; error
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id }),
   });
-  if (!res.ok) return { ok: false, error: `Lỗi máy chủ (${res.status})` };
+  if (!res.ok) return { ok: false, error: i18n.t('cutExport:loi_may_chu_res_status', { status: res.status }) };
   return (await res.json()) as { ok: boolean; error?: string };
 }

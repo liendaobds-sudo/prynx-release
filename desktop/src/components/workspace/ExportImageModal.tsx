@@ -83,7 +83,7 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
             const dir = await openDialog({ directory: true, multiple: false, title: t('misc.exportImage:chon_thu_muc_luu_anh') });
             if (typeof dir === 'string') setOutputDir(dir);
         } catch (e) {
-            toast.error('Không mở được hộp thoại chọn thư mục: ' + ((e as any)?.message || e));
+            toast.error(t('misc.exportImage:khong_mo_duoc_hop_thoai_chon_thu_muc', { msg: (e as any)?.message || e }));
         }
     };
 
@@ -99,10 +99,10 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
                 pages, multipageTiff: format === 'tiff' && multipageTiff,
                 jpegQuality, baseName,
             });
-            toast.success(`Đã xuất ${res.count} file ảnh vào:\n${res.output_dir}`);
+            toast.success(t('misc.exportImage:da_xuat_file_anh_vao', { count: res.count, dir: res.output_dir }));
             onClose();
         } catch (e) {
-            toast.error('Lỗi xuất ảnh: ' + ((e as any)?.message || e));
+            toast.error(t('misc.exportImage:loi_xuat_anh', { msg: (e as any)?.message || e }));
         } finally {
             setBusy(false);
         }
@@ -178,8 +178,8 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
                     <div>
                         <label className="text-[11px] font-bold text-slate-600 dark:text-zinc-400 uppercase">Trang</label>
                         <div className="flex gap-4 mt-1">
-                            <label className={radioRow}><input type="radio" name="range" checked={rangeMode === 'all'} onChange={() => setRangeMode('all')} />Tất cả ({numPages})</label>
-                            <label className={radioRow}><input type="radio" name="range" checked={rangeMode === 'current'} onChange={() => setRangeMode('current')} />Trang hiện tại ({currentPage})</label>
+                            <label className={radioRow}><input type="radio" name="range" checked={rangeMode === 'all'} onChange={() => setRangeMode('all')} />{t('misc.exportImage:tat_ca_n', { n: numPages })}</label>
+                            <label className={radioRow}><input type="radio" name="range" checked={rangeMode === 'current'} onChange={() => setRangeMode('current')} />{t('misc.exportImage:trang_hien_tai_n', { n: currentPage })}</label>
                             <label className={radioRow}><input type="radio" name="range" checked={rangeMode === 'custom'} onChange={() => setRangeMode('custom')} />{t('misc.exportImage:tuy_chon')}</label>
                         </div>
                         {rangeMode === 'custom' && (
@@ -201,7 +201,7 @@ export default function ExportImageModal({ open, onClose, fileId, filePath, numP
 
                 <div className="flex items-center justify-between gap-2 px-5 py-3 border-t border-slate-200 dark:border-white/10">
                     <span className="text-[12px] text-slate-500 dark:text-zinc-400">
-                        {format === 'tiff' && multipageTiff ? `1 file TIFF (${pageCount} trang)` : `${pageCount} file ảnh`}
+                        {format === 'tiff' && multipageTiff ? t('misc.exportImage:1_file_tiff_n_trang', { n: pageCount }) : t('misc.exportImage:n_file_anh', { n: pageCount })}
                     </span>
                     <div className="flex gap-2">
                         <button onClick={onClose} className="px-4 h-9 rounded border border-slate-300 dark:border-white/20 text-sm">{t('misc.exportImage:huy')}</button>

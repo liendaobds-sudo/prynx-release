@@ -1596,7 +1596,7 @@ export const LivePageFrame = (props: any) => {
             if (msg.includes('409') || msg.includes('ánh xạ') || msg.includes('map')) {
                 setEditNotice(t('misc.livePageFrame:doi_tuong_qua_phuc_tap_clip_xobject'));
             } else {
-                setEditNotice(`Di chuyển thất bại: ${msg.slice(0, 120)}`);
+                setEditNotice(t('misc.livePageFrame:di_chuyen_that_bai', { msg: msg.slice(0, 120) }));
             }
             setTimeout(() => setEditNotice(null), 7000);
             hideEditGhost(); // Commit lỗi → bỏ ghost giữ (tránh kẹt ở vị trí thả).
@@ -1629,7 +1629,7 @@ export const LivePageFrame = (props: any) => {
             if (/HTTP 422/.test(msg)) {
                 // Thiếu glyph (font đã chọn không có ký tự cần) — thường do nội dung
                 // gốc đọc không chuẩn hoặc font thiếu dấu tiếng Việt.
-                friendly = 'Không đổi được: font đã chọn THIẾU GLYPH cho một số ký tự. '
+                friendly = t('misc.livePageFrame:khong_doi_duoc_font_thieu_glyph')
                     + t('misc.livePageFrame:hay_go_lai_dung_noi_dung_hoac_chon_font');
             } else if (/HTTP 409/.test(msg)) {
                 friendly = t('misc.livePageFrame:khong_sua_duoc_khong_xac_dinh_duoc_doi');
@@ -2434,7 +2434,7 @@ export const LivePageFrame = (props: any) => {
              {isObjectEditMode && !isVdpMode && editAddMode && (
                  <div className="absolute top-1 left-1 z-[60] pointer-events-none">
                      <span className="px-1.5 py-0.5 text-[11px] rounded bg-black/70 text-white">
-                         Bấm lên trang để đặt {editAddMode === 'text' ? 'text' : t('misc.livePageFrame:anh')}…
+                         {t('misc.livePageFrame:bam_len_trang_de_dat', { what: editAddMode === 'text' ? 'text' : t('misc.livePageFrame:anh') })}
                      </span>
                  </div>
              )}
@@ -3016,7 +3016,7 @@ export const LivePageFrame = (props: any) => {
                          onClick={(e) => e.stopPropagation()}
                          onContextMenu={(e) => e.preventDefault()}
                      >
-                         <div className="px-3 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Xoay khung</div>
+                         <div className="px-3 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">{t('misc.livePageFrame:xoay_khung')}</div>
                          {items.map((it) => (
                              <button
                                  key={it.label}

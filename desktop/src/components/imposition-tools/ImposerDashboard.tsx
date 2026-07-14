@@ -605,7 +605,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 }
                 if (sourceTotalPages > 0 && sourceTotalPages % 2 !== 0) {
                     toast.error(
-                        `Bình 2 mặt bắt buộc số trang chẵn. File hiện ${sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.`,
+                        t('imposition.imposerDashboard:binh_2_mat_bat_buoc_so_trang_chan_file_hien_le', { n: sourceTotalPages }),
                     );
                     return;
                 }

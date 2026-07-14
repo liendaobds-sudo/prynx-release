@@ -270,7 +270,7 @@ export default function ShuffleTool({ settings, onChange }: Props) {
                                                             updateRules(newRules);
                                                         }}
                                                         className={`transition-colors ${rule.rotation !== 0 ? 'text-indigo-500' : 'text-slate-400 hover:text-indigo-500'}`}
-                                                        title="Xoay"
+                                                        title={t('preprocess.shuffle:xoay')}
                                                     ><RotateCw size={10} /></button>
                                                 </div>
                                                 
@@ -372,7 +372,7 @@ export default function ShuffleTool({ settings, onChange }: Props) {
                     {previewStr}
                 </div>
                 <div className="text-[9px] text-indigo-400/80 mt-1.5 italic">
-                    * Mô phỏng cho tài liệu mẫu có {Math.max(16, Math.ceil((settings.groupSize || 16) / 4) * 4)} trang.
+                    {t('preprocess.shuffle:mo_phong_cho_tai_lieu_mau_n_trang', { n: Math.max(16, Math.ceil((settings.groupSize || 16) / 4) * 4) })}
                 </div>
             </div>
             

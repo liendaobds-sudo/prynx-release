@@ -240,7 +240,13 @@
     "ti_le_anh": "Tỉ lệ ảnh",
     "tran_le": "Tràn lề",
     "tui_giay_sos": "Túi Giấy SOS",
-    "xoay_anh": "Xoay ảnh"
+    "xoay_anh": "Xoay ảnh",
+    "kich_thuoc": "kích thước",
+    "kho_trai": "Khổ trải:",
+    "anh": "Ảnh",
+    "ten_mat": "Tên mặt",
+    "doan_cat": "Đoạn cắt",
+    "chu_thich_diem": "Chú thích điểm"
   },
   "dieline.dielineGallery": {
     "boc_ly": "Bọc Ly",
@@ -374,7 +380,14 @@
     "xoa_mask_emboss": "Xoá mask emboss",
     "xoa_mask_spot_uv": "Xoá mask spot-UV",
     "xoay_anh_quanh_tam": "Xoay ảnh quanh tâm",
-    "xoay_them_90": "Xoay thêm 90°"
+    "xoay_them_90": "Xoay thêm 90°",
+    "xoay": "Xoay",
+    "ngang": "⇋ Ngang",
+    "label_keo_tha_anh_vao_day": "{{label}}: kéo-thả ảnh vào đây hoặc bấm để chọn",
+    "keo_tha_bam_de_tai": "Kéo-thả hoặc bấm để tải {{label}}",
+    "xoa_label": "Xoá {{label}}",
+    "mat_na_se_duoc_co_gian": "Mặt nạ {{iw}}×{{ih}}px sẽ được co giãn về bề mặt {{sw}}×{{sh}}px.",
+    "kich_thuoc_mat_na_phai_khop": "Kích thước mặt nạ phải khớp bề mặt {{w}}×{{h}} px."
   },
   "dieline.mockupCanvas": {
     "dang_kiem_tra_ho_tro_do_hoa": "Đang kiểm tra hỗ trợ đồ hoạ…"
@@ -417,10 +430,24 @@
     "tuy_chinh": "✏️ Tùy chỉnh...",
     "uoc_luong_don_hang": "🧮 Ước lượng đơn hàng",
     "vo_to": "vỏ / tờ",
-    "xep_toi_uu": "✨ Xếp tối ưu"
+    "xep_toi_uu": "✨ Xếp tối ưu",
+    "cao": "Cao",
+    "xoay_90": "↰ Xoay 90°",
+    "ngang": "▭ Ngang",
+    "khay": "Khay",
+    "vo_bao_kich_thuoc": "📊 Vỏ bao ({{w}}×{{h}})",
+    "to_2": "{{n}} tờ",
+    "du_thua_hop": "+{{n}} hộp ({{pct}}%)"
   },
   "dieline.nestingCanvas": {
-    "nhap_thong_so_de_xem_xep_khuon": "Nhập thông số để xem xếp khuôn"
+    "nhap_thong_so_de_xem_xep_khuon": "Nhập thông số để xem xếp khuôn",
+    "to_giay": "Tờ giấy:",
+    "khay_vo": "Khay: {{khay}} · Vỏ: {{vo}}",
+    "khay_kich_thuoc": "🧱 Khay · {{w}}×{{h}}",
+    "vo_bao_kich_thuoc": "📦 Vỏ bao · {{w}}×{{h}}",
+    "to_giay_kich_thuoc": "Tờ giấy: {{w}} × {{h}} mm",
+    "khuon_to_su_dung": "{{n}} khuôn / tờ · {{u}}%",
+    "can_nhip_mm": "Cắn nhíp ({{n}}mm)"
   },
   "dieline.param": {
     "11_19_cm_nap_2_5cm_ngang": "11×19 cm — nắp 2.5cm (Ngang)",
@@ -532,7 +559,10 @@
     "tuy_chinh": "Tùy chỉnh",
     "vi_tri_lo": "Vị trí lỗ",
     "vi_tri_tai_dan_g": "Vị trí tai dán (G)",
-    "vi_tri_vat_dan": "Vị trí vạt dán"
+    "vi_tri_vat_dan": "Vị trí vạt dán",
+    "ngang": "Ngang",
+    "thong_so_nang_cao": "Thông số nâng cao",
+    "thong_so_tui_giay": "Thông số túi giấy"
   },
   "dieline.shadowFloor": {
     "nen_am": "Nền Ấm",
@@ -757,7 +787,11 @@
     "xuat_luu_file": "💾 Xuất & Lưu file",
     "chia_coc_xen_title": "Chia cọc xén",
     "tu_dong_tach_to_in_thanh_cac_coc_rieng": "Tự động tách tờ in thành các cọc riêng biệt, chừa sẵn rãnh dao giữa các cọc để máy xén chém an toàn mà không phạm vào thiết kế.",
-    "so_coc_label": "Số cọc"
+    "so_coc_label": "Số cọc",
+    "file_co_n_trang_le_binh_2_mat_can_so_trang_chan": "⚠️ File có {{n}} trang (lẻ) — bình 2 mặt cần số trang CHẴN.",
+    "moi_loai_nam_1_coc_rieng_coc_rong_hep": "Mỗi loại nằm 1 cọc riêng, cọc rộng hẹp theo số lượng, có bộ dấu xén riêng.",
+    "xem_truoc_se_in_o": "📋 Xem trước — sẽ in ở {{pos}}",
+    "xong": "Xong"
   },
   "imposition.api": {
     "khong_tai_duoc_danh_sach_may_be_res": "Không tải được danh sách máy bế (${res.status})",
@@ -777,7 +811,10 @@
     "tay_bu_nhet_loi_sat_kim_luoc": "Tay bù nhét lõi (Sát kim lược)",
     "tu_dong_chia_kem_auto_catalog": "📋 Tự động chia kẽm (Auto Catalog)",
     "tu_dong_toi_uu_de_xuat": "Tự động tối ưu (Đề xuất)",
-    "vi_tri_tay_du_ghep_long": "Vị trí tay dư (Ghép lồng)"
+    "vi_tri_tay_du_ghep_long": "Vị trí tay dư (Ghép lồng)",
+    "in_nhanh_digital": "⚡ In Nhanh (Digital)",
+    "in_offset": "🏭 In Offset",
+    "tay_toi_uu_hieu_suat": "✓ Tay tối ưu: {{label}} (Hiệu suất: {{pct}}%)"
   },
   "imposition.bookletSettings": {
     "1_cuon_to_100": "1 cuốn / tờ (100%)",
@@ -876,7 +913,17 @@
     "tong": "Tổng:",
     "trang_khuon": "Trang khuôn:",
     "tuy_chon_nang_cao_dinh_dang_kenh_luu": "▸ Tùy chọn nâng cao (định dạng, kênh, lưu)",
-    "xong_okcount_total_to": "Xong: ${okCount}/${total} tờ."
+    "xong_okcount_total_to": "Xong: ${okCount}/${total} tờ.",
+    "con": "con",
+    "con_to_x_to": "({{perSheet}} con/tờ × {{sheets}} tờ)",
+    "da_gui_detail_bytes": "Đã gửi: {{detail}} ({{bytes}} bytes)",
+    "dang_gui_to_k_total": "Đang gửi tờ {{k}}/{{total}}...",
+    "gui_tat_ca_n": "Gửi tất cả ({{n}})",
+    "lop": "Lớp: {{l}}",
+    "n_trang_khuon_suffix": " — {{n}} trang khuôn",
+    "to_k_loi": "Tờ {{k}} lỗi",
+    "to_x_y": "Tờ {{x}} / {{y}}",
+    "xong_ok_total_to": "Xong: {{ok}}/{{total}} tờ."
   },
   "imposition.cutterMachines": {
     "chon": "Chọn",
@@ -922,7 +969,10 @@
     "xoa": "Xóa",
     "xoa_may_be": "Xóa máy bế",
     "xoa_may_id": "Xóa máy \"${id}\"?",
-    "xoa_that_bai": "Xóa thất bại."
+    "xoa_that_bai": "Xóa thất bại.",
+    "cau_hinh_ket_noi_kenh_gui_ip_thu_muc_cho_tung_may": "Cấu hình kết nối (kênh gửi / IP / thư mục) cho từng máy. Thêm máy mới cho các dòng máy khác nhau (Trung Quốc, HPGL...). Khi bấm \"Gửi Máy Bế\", chọn máy là tự dùng cấu hình ở đây.",
+    "sua_may": "Sửa máy: {{model}}",
+    "xoa_may_x": "Xóa máy \"{{id}}\"?"
   },
   "imposition.gridPreview": {
     "chua_co_du_lieu_bo_cuc": "Chưa có dữ liệu bố cục",
@@ -934,7 +984,17 @@
     "phong_to": "⊕ Phóng to",
     "phong_to_xem_chi_tiet": "Phóng to xem chi tiết",
     "thu_gon": "Thu gọn",
-    "thu_gon_2": "⊖ Thu gọn"
+    "thu_gon_2": "⊖ Thu gọn",
+    "suc_chua": "Sức chứa:",
+    "tem_to": "tem/tờ",
+    "can_in": "Cần in:",
+    "to": "tờ",
+    "1_to_mau_x_ban": "(1 tờ mẫu × {{n}} bản)",
+    "hang_ngang": "hàng ngang",
+    "cot_doc": "cột dọc",
+    "n_loai_moi_loai_1_coc_rieng_in_to": "{{n}} loại · mỗi loại 1 cọc riêng ({{dir}}, bề rộng theo số lượng) · in {{sheets}} tờ",
+    "n_loai_tron_theo_ty_le_in_to": "{{n}} loại trộn theo tỷ lệ số lượng · in {{sheets}} tờ",
+    "khong_du_cho_tren_to_cho_trang_tach": "Không đủ chỗ trên tờ cho trang {{pages}} — nên tách sang bài in khác."
   },
   "imposition.gridSettings": {
     "0_xep_toi_da_tren_1_to": "0 = Xếp tối đa trên 1 tờ",
@@ -946,7 +1006,7 @@
     "binh_2_mat_bat_buoc_so_trang": "⚠️ Bình 2 mặt bắt buộc số trang",
     "binh_hanh": "Bình hành",
     "binh_trang_s_r": "Bình trang (S&R)",
-    "bo_tri_cut_stack_cung_mot_vi_tri_o_tren": "Bố trí cut-stack: cùng một vị trí ô trên mọi tờ tạo một cọc.\n                              Xén rời cọc rồi úp chồng → đúng thứ tự trang 1, 2, 3… (collation sách/sổ).",
+    "bo_tri_cut_stack_cung_mot_vi_tri_o_tren": "Bố trí cut-stack: cùng một vị trí ô trên mọi tờ tạo một cọc. Xén rời cọc rồi úp chồng → đúng thứ tự trang 1, 2, 3… (collation sách/sổ).",
     "boi_cot_so_luong_trong_excel_ctrl_c_dan": "Bôi cột số lượng trong Excel → Ctrl+C → dán vào đây\\n(mỗi dòng 1 số, theo đúng thứ tự trang)",
     "bua": "Búa",
     "cach_thuc_rap": "CÁCH THỨC RÁP",
@@ -978,7 +1038,7 @@
     "mac_dinh": "Mặc định",
     "moi_san_pham_cap_trang_1_2_3_4_cung_mot": "mỗi sản phẩm = cặp trang (1–2, 3–4…).\n                              Cùng một ô: mặt trước tờ chẵn, mặt sau tờ lẻ (lật gương).\n                              File nên có số trang",
     "mui_ten": "Mũi tên",
-    "neu_thay_hinh_dang_tu_nhan_dien_chua": "Nếu thấy hình dạng tự nhận diện chưa chính xác, bạn\n                            có thể tự chọn lại trong danh sách này để quá trình\n                            bình trang hoạt động chính xác nhất.",
+    "neu_thay_hinh_dang_tu_nhan_dien_chua": "Nếu thấy hình dạng tự nhận diện chưa chính xác, bạn có thể tự chọn lại trong danh sách này để quá trình bình trang hoạt động chính xác nhất.",
     "ngu_giac": "Ngũ giác",
     "nhan_ban_mot_mau_thiet_ke_lap_lai_nhieu": "Nhân bản một mẫu thiết kế lặp lại nhiều lần trên\n                            cùng một tờ in (VD: in 1 loại tem, 1 loại card visit\n                            lấp đầy tờ in).",
     "nhieu_mau_cung_co_so_luong_khac_nhau": "Nhiều mẫu cùng cỡ, số lượng khác nhau: mỗi mẫu chiếm số ô theo tỷ lệ số lượng.\n                              Mọi tờ giống hệt nhau → xén cả chồng ra mỗi loại một xấp sạch. File xuất 1 tờ mẫu; in đúng số tờ hiển thị.",
@@ -1000,7 +1060,7 @@
     "tem_to": "Tem/tờ",
     "tong_so_to_du_kien": "TỔNG SỐ TỜ DỰ KIẾN:",
     "tool_se_tu_dong_nhan_dien_da_so_cac": "Tool sẽ tự động nhận diện đa số các loại hình dạng\n                            tem từ file thiết kế PDF của bạn.",
-    "trang_1_2_3_lien_tiep_theo_sl_het_loai": "trang 1, 2, 3… liên tiếp theo SL (hết loại này mới sang loại kia).\n                              Trống = lấp đầy 1 tờ.",
+    "trang_1_2_3_lien_tiep_theo_sl_het_loai": "trang 1, 2, 3… liên tiếp theo SL (hết loại này mới sang loại kia). Trống = lấp đầy 1 tờ.",
     "trang_hien_tai_vieweractivepage": "Trang hiện tại: ${viewerActivePage}",
     "tron_elip": "Tròn / Elip",
     "trong_tu_dong_lap_day_1_to": "Trống = Tự động lấp đầy 1 tờ",
@@ -1015,7 +1075,21 @@
     "xep_toi_uu": "Xếp tối ưu",
     "xep_chong_chua_ho_tro_2_mat_chon": "⚠️ «Xếp chồng» chưa hỗ trợ 2 mặt — chọn",
     "hoac_doi_sang": ", hoặc đổi sang",
-    "chia_ty_le": "Chia tỷ lệ"
+    "chia_ty_le": "Chia tỷ lệ",
+    "da_dien_n_trang": "Đã điền {{n}} trang.",
+    "trang_hien_tai": "Trang hiện tại: {{n}}",
+    "nhan_ban_mot_mau_thiet_ke_lap_lai": "Nhân bản một mẫu thiết kế lặp lại nhiều lần trên cùng một tờ in (VD: in 1 loại tem, 1 loại card visit lấp đầy tờ in).",
+    "ghep_nhieu_mau_thiet_ke_hoac_nhieu_trang": "Ghép nhiều mẫu thiết kế hoặc nhiều trang tài liệu khác nhau vào cùng một tờ in (VD: in ghép nhiều loại card visit của nhiều người khác nhau).",
+    "moi_san_pham_cap_trang_cung_o_mat_truoc": "mỗi sản phẩm = cặp trang (1–2, 3–4…). Cùng một ô: mặt trước tờ chẵn, mặt sau tờ lẻ (lật gương). File nên có số trang",
+    "nhieu_mau_cung_co_so_luong_khac_nhau_moi": "Nhiều mẫu cùng cỡ, số lượng khác nhau: mỗi mẫu chiếm số ô theo tỷ lệ số lượng. Mọi tờ giống hệt nhau → xén cả chồng ra mỗi loại một xấp sạch. File xuất 1 tờ mẫu; in đúng số tờ hiển thị.",
+    "tool_se_tu_dong_nhan_dien_da_so_cac_loai": "Tool sẽ tự động nhận diện đa số các loại hình dạng tem từ file thiết kế PDF của bạn.",
+    "file_hien_n_trang_le_them_xoa_1_trang": ". File hiện {{n}} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.",
+    "boi_cot_so_luong_trong_excel_ctrlc_dan_vao_day": "Bôi cột số lượng trong Excel → Ctrl+C → dán vào đây\n(mỗi dòng 1 số, theo đúng thứ tự trang)",
+    "de_trong_de_dung_chung_so_luong": "Để trống để dùng chung số lượng",
+    "trang": "Trang",
+    "sp_n_trang_m": "SP {{n}} (trang {{m}})",
+    "sp_n_mat_a_b": "SP {{n}} (mặt {{a}}–{{b}})",
+    "trang_n": "Trang {{n}}"
   },
   "imposition.imposerDashboard": {
     "binh_2_mat_bat_buoc_so_trang_chan_file": "Bình 2 mặt bắt buộc số trang chẵn. File hiện ${sourceTotalPages} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt.",
@@ -1061,7 +1135,8 @@
     "thuc_thi_ghep_file": "Thực Thi Ghép File",
     "thuc_thi_nhan_ban_step_repeat": "Thực thi Nhân bản (Step & Repeat)",
     "xem_bai_in": "🖨️ Xem Bài In",
-    "xem_thanh_pham": "📖 Xem Thành Phẩm"
+    "xem_thanh_pham": "📖 Xem Thành Phẩm",
+    "binh_2_mat_bat_buoc_so_trang_chan_file_hien_le": "Bình 2 mặt bắt buộc số trang chẵn. File hiện {{n}} trang (lẻ) — thêm/xóa 1 trang ở thumbnail, hoặc chọn 1 Mặt."
   },
   "imposition.marksSettingsDialog": {
     "ap_dung": "Áp dụng",
@@ -1087,7 +1162,8 @@
     "nhieu_mau_cung_co_sl_khac_nhau_moi_to": "Nhiều mẫu cùng cỡ, SL khác nhau; mọi tờ giống hệt. 1 mặt: 1 tờ mẫu. 2 mặt: mỗi mẫu = cặp trang trước/sau (SL theo trang lẻ 1,3,5…), số trang chẵn.",
     "so_mat": "SỐ MẶT",
     "xep_chong": "Xếp chồng",
-    "xep_lan_luot": "Xếp lần lượt"
+    "xep_lan_luot": "Xếp lần lượt",
+    "xen_coc_roi_up_dung_thu_tu_trang_1_mat": "Xén cọc rồi úp đúng thứ tự trang (1 mặt). Không dùng với 2 mặt."
   },
   "imposition.outputSettings": {
     "duong_cat": "ĐƯỜNG CẮT",
@@ -1124,7 +1200,8 @@
     "tuy_chinh_kho_giay": "Tùy chỉnh Khổ Giấy",
     "vd_decal_de_vang_32x43": "VD: Decal Đế Vàng 32x43...",
     "vung_an_toan_vung_in_le_mm": "Vùng An Toàn / Vùng In (Lề mm)",
-    "xoa_preset": "Xóa Preset"
+    "xoa_preset": "Xóa Preset",
+    "ten_kho_giay_label": "Tên Khổ Giấy"
   },
   "imposition.pontSettingsDialog": {
     "boong_may_graphtec": "Boong Máy Graphtec",
@@ -1243,7 +1320,8 @@
     "xem_chi_tiet_thiet_lap": "Xem chi tiết thiết lập",
     "xoa": "Xóa",
     "xuat_file_json": "Xuất file JSON",
-    "bam_luu_thiet_lap_hien_tai_de_tao_moi": "Bấm \"Lưu thiết lập hiện tại\" để tạo mới"
+    "bam_luu_thiet_lap_hien_tai_de_tao_moi": "Bấm \"Lưu thiết lập hiện tại\" để tạo mới",
+    "da_cap_nhat_preset_x_bang_thiet_lap_hien_tai": "Đã cập nhật preset \"{{name}}\" bằng thiết lập hiện tại."
   },
   "imposition.productFirst": {
     "1_cuon_to": "1 cuốn / tờ",
@@ -1268,7 +1346,8 @@
     "so_trang": "Số trang",
     "trang_tep_boi_4": "Trang/tép (bội 4)",
     "trang_tuan_tu_cat_phay_gay": "Trang tuần tự, cắt phay gáy",
-    "ve_voucher_so_so_nhay": "Vé / voucher / sổ số nhảy"
+    "ve_voucher_so_so_nhay": "Vé / voucher / sổ số nhảy",
+    "cao": "cao"
   },
   "imposition.sharedUI": {
     "bo_khoi_yeu_thich": "Bỏ khỏi Yêu thích",
@@ -1323,10 +1402,7 @@
   "lib.arbitraries": {
     "arbboxparams_boxtype_khong_ho_tro": "arbBoxParams: boxType không hỗ trợ: ${_exhaustive}"
   },
-  "lib.catalogPlanner": {
-    "concentric_rings_vong_loi_kem_1": "(concentric rings):\n *   - Vòng lõi (kẽm 1):   masterSig trang ở trung tâm sách\n *   - Vòng ôm 1 (kẽm 2):  masterSig trang tiếp theo bọc quanh lõi\n *   - ...\n *   - Vòng ngoài cùng:    trang dư (gần bìa nhất) → kẽm phụ\n * \n * Mỗi PlateJob chứa pageIndices tuần tự (theo thứ tự logic của vùng đó).\n * VirtualMap sẽ nhận pageIndices này và tự áp công thức saddle nội bộ.\n */\nfunction routeSaddleBinding(\n    bodyPageIndices: number[],\n    masterSig: number,\n    remainderPlacement: 'outside' | 'inside' = 'outside'\n): { mainJobs: { pageIndices: number[]; sigSize: number }[]; remainderJobs: { pageIndices: number[]; sigSize: number }[] } {\n    const P = bodyPageIndices.length;\n    const P_padded = padTo4(P);\n\n    // Tính số kẽm chính và phần dư\n    const mainSigCount = Math.floor(P_padded / masterSig);\n    const remainder = P_padded % masterSig;\n\n    const mainJobs: { pageIndices: number[]; sigSize: number }[] = [];\n    const remainderJobs: { pageIndices: number[]; sigSize: number }[] = [];\n\n    // Bước 1: Tạo mảng padded (thêm -1 cho trang trắng)\n    const paddedIndices: number[] = [];\n    for (let i = 0; i < P_padded; i++) {\n        paddedIndices.push(i < P ? bodyPageIndices[i] : -1);\n    }\n\n    // Bước 2: Thiết lập 2 con trỏ Đầu (front) và Cuối (back)\n    let front = 0;\n    let back = P_padded - 1;\n\n    function grabSymmetricIndices(n: number) {\n        const half = n / 2;\n        const frontPages: number[] = [];\n        const backPages: number[] = [];\n        \n        for (let i = 0; i < half; i++) {\n            frontPages.push(paddedIndices[front++]);\n        }\n        for (let i = 0; i < half; i++) {\n            backPages.unshift(paddedIndices[back--]);\n        }\n        \n        return [...frontPages, ...backPages];\n    }\n\n    const grabRemainder = () => {\n        if (remainder > 0) {\n            if (remainder <= 8) {\n                remainderJobs.push({ pageIndices: grabSymmetricIndices(remainder), sigSize: remainder });\n            } else {\n                remainderJobs.push({ pageIndices: grabSymmetricIndices(4), sigSize: 4 });\n                remainderJobs.push({ pageIndices: grabSymmetricIndices(8), sigSize: 8 });\n            }\n        }\n    };\n\n    if (remainderPlacement === 'outside') {\n        // Tay bù ở ngoài: Xử lý vét số trước, nên tay bù lấy các trang sát bìa\n        grabRemainder();\n        for (let g = 0; g < mainSigCount; g++) {\n            mainJobs.push({ pageIndices: grabSymmetricIndices(masterSig), sigSize: masterSig });\n        }\n    } else {\n        // Tay bù nhét lõi: Xử lý thuật vét vét các tay chính trước (bọc ngoài)\n        for (let g = 0; g < mainSigCount; g++) {\n            mainJobs.push({ pageIndices: grabSymmetricIndices(masterSig), sigSize: masterSig });\n        }\n        // Cuối cùng mới lấy tay bù, nên tay bù lấy đúng phần lõi trung tâm\n        grabRemainder();\n    }\n\n    // Theo chuẩn gia công, Tay 1 luôn là Lõi (rớt xuống máy bắt lồng đầu tiên).\n    // Do đó đảo mảng các tay chính để tay được vét cuối cùng (sâu nhất) thành Tay 1.\n    mainJobs.reverse();\n\n    return { mainJobs, remainderJobs };\n}\n\n// ==================== MAIN PLANNER ====================\n\nexport function planCatalog(config: PlanConfig): PlanResult {\n    const { totalPages, bindingMode, hasSeparateCover, masterSig, sourceFileName } = config;\n    const baseName = getBaseName(sourceFileName);\n    const jobs: PlateJob[] = [];\n    let reportLines: string[] = [];\n    let sortOrder = 0;\n\n    // ---- Bước 1: Xử lý Bìa ----\n    let coverPageIndices: number[] = [];\n    let bodyPageIndices: number[] = [];\n\n    if (hasSeparateCover && totalPages >= 8) {\n        // Bìa riêng chất liệu: trước(0), trước-trong(1), sau-trong(N-2), sau(N-1)\n        coverPageIndices = [0, 1, totalPages - 2, totalPages - 1];\n        // Ruột: toàn bộ trang giữa\n        for (let i = 2; i < totalPages - 2; i++) {\n            bodyPageIndices.push(i);\n        }\n        reportLines.push(`Bìa: [trước, 01, ${totalPages - 2}, sau] → Tay riêng Tự Trở.`);\n        reportLines.push(`Ruột: ${bodyPageIndices.length} trang (02 → ${totalPages - 3}).`);\n    } else {\n        // Bìa chung: toàn bộ đi vào ruột\n        for (let i = 0; i < totalPages; i++) {\n            bodyPageIndices.push(i);\n        }\n        reportLines.push(`Bìa chung chất liệu: Toàn bộ ${totalPages} trang xử lý chung.`);\n    }\n\n    const P = bodyPageIndices.length;\n    const P_padded = padTo4(P);\n    \n    if (P_padded !== P) {\n        reportLines.push(`Padding: Thêm ${P_padded - P} trang trắng (${P} → ${P_padded}) để chia hết cho 4.`);\n    }\n\n    // ---- Bước 2: Route trang theo kiểu gáy ----\n    let plan: { mainJobs: { pageIndices: number[]; sigSize: number }[]; remainderJobs: { pageIndices: number[]; sigSize: number }[] } = { mainJobs: [], remainderJobs: [] };\n\n    if (bindingMode === 'saddle') {\n        plan = routeSaddleBinding(bodyPageIndices, masterSig, config.remainderPlacement || 'outside');\n    } else {\n        plan = routePerfectBinding(bodyPageIndices, masterSig);\n    }\n    const { mainJobs, remainderJobs } = plan;\n\n    // ---- Bước 3: Tạo PlateJob cho kẽm chính ----\n    const mainSigLabel = `Tay${masterSig}`;\n\n    for (let i = 0; i < mainJobs.length; i++) {\n        const job = mainJobs[i];\n        const tepNum = i + 1;\n        const realPages = job.pageIndices.filter(idx => idx !== -1);\n        const ws = masterSig === 16 ? 'sheetwise' : 'work_and_turn';\n        \n        jobs.push({\n            id: `main_${tepNum}`,\n            label: `Tay in ${mainSigLabel} — Tép ${tepNum}`,\n            filename: `${baseName}_TayIn${tepNum}_${mainSigLabel}_Tep${tepNum}.pdf`,\n            foldPatternId: getFoldPatternId(job.sigSize, masterSig),\n            bindingMode: bindingMode === 'perfect' ? 'thread' : 'saddle',\n            pageIndices: job.pageIndices,\n            actualPageCount: realPages.length,\n            isCover: false,\n            workStyle: ws,\n            color: PLATE_COLORS[(sortOrder) % PLATE_COLORS.length],\n            sortOrder: sortOrder++,\n        });\n    }\n\n    if (mainJobs.length > 0) {\n        const wsLabel = masterSig === 16 ? 'Sheetwise — 2 mặt/tay' : 'Tự Trở — 1 mặt/tay';\n        reportLines.push(`Tay in chính: ${mainJobs.length} × ${mainSigLabel} (${wsLabel}).`);\n    }\n\n    // ---- Bước 4: Tạo PlateJob cho kẽm phụ (trang dư) ----\n    let remainderKemIndex = mainJobs.length + 1;\n    for (const rem of remainderJobs) {\n        const sigLabel = rem.sigSize === 8 ? 'Tay8' : 'Tay4';\n        const realPages = rem.pageIndices.filter(idx => idx !== -1);\n\n        jobs.push({\n            id: `remainder_${rem.sigSize}_${remainderKemIndex}`,\n            label: `Tay in ${sigLabel} — Trang lẻ (Tự Trở ${rem.sigSize === 8 ? 'Lật Nhíp' : 'Lật Ngang'})`,\n            filename: `${baseName}_TayIn${remainderKemIndex}_${sigLabel}_TuTro.pdf`,\n            foldPatternId: getFoldPatternId(rem.sigSize, masterSig),\n            bindingMode: bindingMode === 'perfect' ? 'thread' : 'saddle',\n            pageIndices: rem.pageIndices,\n            actualPageCount: realPages.length,\n            isCover: false,\n            workStyle: 'work_and_turn',\n            color: PLATE_COLORS[(sortOrder) % PLATE_COLORS.length],\n            sortOrder: sortOrder++,\n        });\n        remainderKemIndex++;\n    }\n\n    if (remainderJobs.length > 0) {\n        const remDetail = remainderJobs.map(r => `${r.sigSize} trang`).join(' + ');\n        reportLines.push(`Tay phụ (trang dư): ${remainderJobs.length} tay (${remDetail}) — Tự Trở.`);\n    }\n\n    // ---- Bước 5: Tạo PlateJob cho kẽm bìa ----\n    if (coverPageIndices.length > 0) {\n        jobs.push({\n            id: 'cover',\n            label: 'Tay in Bìa (Tự Trở Lật Ngang)',\n            filename: `${baseName}_Bia_TuTro.pdf`,\n            foldPatternId: getFoldPatternId(4, masterSig),\n            bindingMode: 'saddle',\n            pageIndices: coverPageIndices,\n            actualPageCount: 4,\n            isCover: true,\n            workStyle: 'work_and_turn',\n            color: COVER_COLOR,\n            sortOrder: sortOrder++,\n        });\n        reportLines.push(`Tay in bìa: 1 × Tay 4 (Tự Trở) — Chất liệu riêng.`);\n    }\n\n    // ---- Báo cáo tổng kết ----\n    const totalAllocated = jobs.reduce((sum, j) => sum + j.pageIndices.length, 0);\n    const totalRealPages = jobs.reduce((sum, j) => sum + j.actualPageCount, 0);\n    \n    const bindingLabel = bindingMode === 'perfect' ? 'Bóc tép vô keo' : 'Ghim lồng (Saddle Stitch)';\n    reportLines.unshift(`📋 Phân tích bài bình: ${totalPages} trang | ${bindingLabel} | Master: Tay ${masterSig}`);\n    reportLines.push(`──────────────────`);\n    reportLines.push(`Tổng: ${jobs.length} tay in | ${totalRealPages} trang thực + ${totalAllocated - totalRealPages} trang padding.`);\n\n    return {\n        jobs,\n        report: reportLines.join('\\n'),\n        totalAllocated,\n    };\n}\n\n// ==================== VERIFICATION HELPER ====================\n\n/**\n * Hàm kiểm chứng nhanh: đảm bảo không sót trang, không trùng trang.\n * Gọi sau planCatalog() để validate kết quả.\n */\nexport function verifyCatalogPlan(config: PlanConfig, result: PlanResult): string[] {\n    const errors: string[] = [];\n    const allRealIndices: number[] = [];\n\n    for (const job of result.jobs) {\n        for (const idx of job.pageIndices) {\n            if (idx !== -1) {\n                allRealIndices.push(idx);\n            }\n        }\n    }\n\n    // Kiểm tra trùng\n    const seen = new Set<number>();\n    for (const idx of allRealIndices) {\n        if (seen.has(idx)) {\n            errors.push(`TRÙNG: Trang ${idx + 1} xuất hiện trên nhiều kẽm!`);\n        }\n        seen.add(idx);\n    }\n\n    // Kiểm tra sót\n    for (let i = 0; i < config.totalPages; i++) {\n        if (!seen.has(i)) {\n            errors.push(`SÓT: Trang ${i + 1} không nằm trên kẽm nào!`);\n        }\n    }\n\n    // Kiểm tra trang ngoài phạm vi\n    for (const idx of allRealIndices) {\n        if (idx < 0 || idx >= config.totalPages) {\n            errors.push(`NGOÀI PHẠM VI: Index ${idx} vượt khỏi [0, ${config.totalPages - 1}]!`);\n        }\n    }\n\n    return errors;\n}",
-    "g_trim_output_pad_so_trang_len_boi_4": "/\\\\|?*]/g, '_').trim() || 'Output';\n}\n\n/** Pad số trang lên bội 4 gần nhất */\nfunction padTo4(n: number): number {\n    return Math.ceil(n / 4) * 4;\n}\n\n/** Map fold pattern ID theo số trang và masterSig để tránh tràn kẽm */\nfunction getFoldPatternId(sigSize: number, masterSig: number = 8) {\n    if (sigSize === 16) return 'sig_16p';\n    if (sigSize === 8) return 'sig_8p';\n    if (sigSize === 4) return masterSig === 4 ? 'sig_4p_1up' : 'sig_4p_2up';\n    return masterSig === 4 ? 'sig_4p_1up' : 'sig_4p_2up';\n}\n\n// ==================== CORE: PAGE ROUTING ====================\n\n/**\n * Routing cho Bóc Tép (Perfect Binding / Thread Binding).\n * Trang gán tuần tự: Kẽm 1 lấy trang [startPage ... startPage + sigSize - 1]\n */\nfunction routePerfectBinding(\n    bodyPageIndices: number[],\n    masterSig: number\n): { mainJobs: { pageIndices: number[]; sigSize: number }[]; remainderJobs: { pageIndices: number[]; sigSize: number }[] } {\n    const P = bodyPageIndices.length;\n    const P_padded = padTo4(P);\n    const mainSigCount = Math.floor(P_padded / masterSig);\n    const remainder = P_padded % masterSig;\n\n    const mainJobs: { pageIndices: number[]; sigSize: number }[] = [];\n    const remainderJobs: { pageIndices: number[]; sigSize: number }[] = [];\n\n    // Kẽm chính — tuần tự\n    let cursor = 0;\n    for (let i = 0; i < mainSigCount; i++) {\n        const indices: number[] = [];\n        for (let j = 0; j < masterSig; j++) {\n            const idx = cursor + j;\n            // idx có thể vượt quá P (padding) → push -1 (trang trắng)\n            indices.push(idx < P ? bodyPageIndices[idx] : -1);\n        }\n        mainJobs.push({ pageIndices: indices, sigSize: masterSig });\n        cursor += masterSig;\n    }\n\n    // Kẽm phụ — xử lý phần dư\n    if (remainder > 0) {\n        if (remainder <= 8) {\n            // Dư ≤ 8 → 1 tay (4 hoặc 8)\n            const indices: number[] = [];\n            for (let j = 0; j < remainder; j++) {\n                const idx = cursor + j;\n                indices.push(idx < P ? bodyPageIndices[idx] : -1);\n            }\n            remainderJobs.push({ pageIndices: indices, sigSize: remainder });\n        } else {\n            // Dư = 12 → Tay 8 + Tay 4\n            const indices8: number[] = [];\n            for (let j = 0; j < 8; j++) {\n                const idx = cursor + j;\n                indices8.push(idx < P ? bodyPageIndices[idx] : -1);\n            }\n            remainderJobs.push({ pageIndices: indices8, sigSize: 8 });\n\n            const indices4: number[] = [];\n            for (let j = 0; j < 4; j++) {\n                const idx = cursor + 8 + j;\n                indices4.push(idx < P ? bodyPageIndices[idx] : -1);\n            }\n            remainderJobs.push({ pageIndices: indices4, sigSize: 4 });\n        }\n    }\n\n    return { mainJobs, remainderJobs };\n}\n\n/**\n * Routing cho Ghim Lồng (Saddle Stitch).\n * \n * Nguyên lý: Toàn bộ ruột là 1 cuốn sách saddle lớn. Khi gấp lồng, các trang\n * ở chính giữa sách (vd: trang 40-41 của cuốn 80 trang) nằm ở lõi trong cùng,\n * còn các trang ở đầu/cuối sách (vd: trang 3-4 và 77-78) nằm ngoài cùng.\n * \n * Phân vùng trang theo"
-  },
+  "lib.catalogPlanner": {},
   "lib.cupSleeve": {
     "khuon_boc_ly_giay_hinh_quat_cung": "Khuôn bọc ly giấy — Hình quạt cung",
     "mi_dan_keo": "Mí dán keo",
@@ -1346,21 +1422,22 @@
     "tai_hong_trai": "Tai hông trái"
   },
   "lib.exportNestingPDF": {
-    "binh_ban_result_label_result": "Bình bản ${result.label} — ${result.utilization}%",
-    "da_xuat_pdf_xep_khuon_result": "Đã xuất PDF xếp khuôn (${result.countPerSheet} khuôn/tờ)",
-    "dam_g_params_g_mm": "Dầm (G): ${params.G} mm",
+    "binh_ban_result_label_result": "Bình bản {{label}} — {{utilization}}%",
+    "da_xuat_pdf_xep_khuon_result": "Đã xuất PDF xếp khuôn ({{count}} khuôn/tờ)",
+    "dam_g_params_g_mm": "Dầm (G): {{value}} mm",
     "dang_tao_pdf_xep_khuon": "Đang tạo PDF xếp khuôn...",
-    "day_giay_t_params_t_mm": "Dày giấy (T): ${params.T} mm",
-    "ho_dao_be_config_gutter_config_diegap": "Hở dao bế: ${config.gutter || config.dieGap} mm",
-    "khuon_to_result_countpersheet_result": "Khuôn/tờ: ${result.countPerSheet} (${result.cols}×${result.rows})",
+    "day_giay_t_params_t_mm": "Dày giấy (T): {{value}} mm",
+    "ho_dao_be_config_gutter_config_diegap": "Hở dao bế: {{value}} mm",
+    "khuon_to_result_countpersheet_result": "Khuôn/tờ: {{count}} ({{cols}}×{{rows}})",
     "loi_khi_tao_pdf": "Lỗi khi tạo PDF:",
-    "mi_dan_vo_params_sleeveglue_mm": "Mí dán vỏ: ${params.sleeveGlue} mm",
-    "mi_gap_th_params_th_mm": "Mí gập (TH): ${params.TH} mm",
-    "nesting_model_name_params_l_x_params_w": "Nesting ${model.name} - ${params.L}x${params.W}x${params.D} - ${result.countPerSheet} khuôn/tờ",
-    "result_countpersheet_khuon_to_result": "${result.countPerSheet} khuôn / tờ — ${result.label} — ${result.utilization}%",
-    "su_dung_result_utilization": "Sử dụng: ${result.utilization}%",
+    "mi_dan_vo_params_sleeveglue_mm": "Mí dán vỏ: {{value}} mm",
+    "mi_gap_th_params_th_mm": "Mí gập (TH): {{value}} mm",
+    "nesting_model_name_params_l_x_params_w": "Nesting {{name}} - {{L}}x{{W}}x{{D}} - {{count}} khuôn/tờ",
+    "result_countpersheet_khuon_to_result": "{{count}} khuôn / tờ — {{label}} — {{utilization}}%",
+    "su_dung_result_utilization": "Sử dụng: {{utilization}}%",
     "svg_xmlns_http_www_w3_org_2000_svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n     width=\"${actualSheet.width}mm\" height=\"${actualSheet.height}mm\"\n     viewBox=\"0 0 ${actualSheet.width} ${actualSheet.height}\">\n  <defs>\n${templateDef}\n  </defs>\n\n  <!-- Tờ giấy -->\n  <rect x=\"0\" y=\"0\" width=\"${actualSheet.width}\" height=\"${actualSheet.height}\" fill=\"white\" stroke=\"#ccc\" stroke-width=\"0.5\"/>\n\n  <!-- Vùng cắn nhíp — phía DƯỚI -->\n  <rect x=\"0\" y=\"${actualSheet.height - config.gripperMargin}\" width=\"${actualSheet.width}\" height=\"${config.gripperMargin}\" fill=\"#fff0f0\" stroke=\"#ffaaaa\" stroke-width=\"0.3\"/>\n  <text x=\"${actualSheet.width / 2}\" y=\"${actualSheet.height - config.gripperMargin / 2 + 2}\" text-anchor=\"middle\" font-size=\"4\" fill=\"#ff6666\">Cắn nhíp (${config.gripperMargin}mm)</text>\n\n  <!-- Vùng in hợp lệ -->\n  <rect x=\"${config.margin.left}\" y=\"${config.margin.top}\"\n        width=\"${actualSheet.width - config.margin.left - config.margin.right}\"\n        height=\"${actualSheet.height - config.margin.top - effectiveBottom}\"\n        fill=\"none\" stroke=\"#88bbff\" stroke-width=\"0.3\" stroke-dasharray=\"3,2\"/>\n\n  <!-- Các khuôn bế -->\n${placedElements}\n  <!-- Info bottom -->\n  <text x=\"${actualSheet.width / 2}\" y=\"${actualSheet.height - 3}\" text-anchor=\"middle\" font-size=\"4\" fill=\"#666\">${infoText}</text>\n\n  <!-- ĐẶC TẢ KHUÔN — Góc phải trên -->\n  ${buildSpecBlock(model, result, config)}\n</svg>",
-    "to_actualsheet_width_actualsheet_height": "Tờ: ${actualSheet.width}×${actualSheet.height} mm"
+    "to_actualsheet_width_actualsheet_height": "Tờ: {{width}}×{{height}} mm",
+    "can_nhip_config_grippermargin_mm": "Cắn nhíp ({{gripper}}mm)"
   },
   "lib.exportPDF": {
     "da_xuat_file_pdf": "Đã xuất file PDF",
@@ -1491,11 +1568,13 @@
     "xen_ke_khoang_trong_math_round_overlapy": "Xen kẽ khoảng trống (−${Math.round(overlapY)}mm/hàng)"
   },
   "lib.nupRenderer": {
-    "dang_phan_tich_cau_truc_ma_tran_jobname": "Đang phân tích cấu trúc ma trận ${jobName}...",
-    "dang_xuat_mam_in_to_s_1_sheetstorender": "Đang xuất mâm in tờ ${s + 1}/${sheetsToRender.length}...",
+    "dang_phan_tich_cau_truc_ma_tran_jobname": "Đang phân tích cấu trúc ma trận {{jobName}}...",
+    "dang_xuat_mam_in_to_s_1_sheetstorender": "Đang xuất mâm in tờ {{current}}/{{total}}...",
     "kho_giay_hoac_cum_chia_qua_nho_so_luong": "Khổ giấy hoặc Cụm chia quá nhỏ. Số lượng tính toán <= 0. Vui lòng kiểm tra lại kích thước giấy, lề, hoặc Khoảng cách Cụm.",
-    "khoi_tao_luoi_jobname_cols_cot_x_rows": "Khởi tạo lưới ${jobName} (${cols} cột x ${rows} dòng) - Chế độ: ${layoutType === 'cut_stacks' ? 'Cắt xếp chồng' : (layoutType === 'repeat' ? 'Nhân bản' : 'Trải tuần tự')}...",
-    "nhan_ban": "Nhân bản"
+    "khoi_tao_luoi_jobname_cols_cot_x_rows": "Khởi tạo lưới {{jobName}} ({{cols}} cột x {{rows}} dòng) - Chế độ: {{mode}}...",
+    "nhan_ban": "Nhân bản",
+    "che_do_cat_xep_chong": "Cắt xếp chồng",
+    "che_do_trai_tuan_tu": "Trải tuần tự"
   },
   "lib.paperBag": {
     "day_mi_dan": "Đáy mí dán",
@@ -1517,19 +1596,19 @@
     "dong_lineno_co_nhieu_cot_chi_boi_cot_so": "Dòng ${lineNo} có nhiều cột — chỉ bôi CỘT SỐ LƯỢNG trong Excel rồi dán lại."
   },
   "lib.pdfImposer": {
-    "auto_detect_chon_so_do_foldpattern_name": "Auto-detect: Chọn sơ đồ ${foldPattern.name} (${pagesPerSig} trang/tay)",
-    "bat_dau_xu_ly_jobs_length_tam_kem": "Bắt đầu xử lý ${jobs.length} tấm kẽm...",
-    "da_bo_qua_tach_bia_rieng_sach_can_toi": "⚠ Đã bỏ qua \"Tách bìa riêng\": sách cần tối thiểu ${coverCount + 4} trang để tách ${coverCount} trang bìa (hiện có ${orderedIndices.length}).\\n",
+    "auto_detect_chon_so_do_foldpattern_name": "Auto-detect: Chọn sơ đồ {{name}} ({{pagesPerSig}} trang/tay)",
+    "bat_dau_xu_ly_jobs_length_tam_kem": "Bắt đầu xử lý {{count}} tấm kẽm...",
+    "da_bo_qua_tach_bia_rieng_sach_can_toi": "⚠ Đã bỏ qua \"Tách bìa riêng\": sách cần tối thiểu {{minPages}} trang để tách {{coverCount}} trang bìa (hiện có {{current}}).\n",
     "dang_gui_ke_hoach_xu_ly": "Đang gửi kế hoạch xử lý...",
     "dang_phan_tich_va_nap_tep_pdf": "Đang phân tích và nạp tệp PDF...",
     "dang_tai_du_lieu_hinh_anh": "Đang tải dữ liệu hình ảnh...",
     "dang_tai_va_xu_ly_khung_pdf_vao": "Đang tải và xử lý khung PDF vào pipeline...",
-    "dang_them_coverindices_length_trang_bia": "Đang thêm ${coverIndices.length} trang bìa vào cuối file...",
+    "dang_them_coverindices_length_trang_bia": "Đang thêm {{count}} trang bìa vào cuối file...",
     "dang_thiet_lap_so_do_trang": "Đang thiết lập sơ đồ trang...",
     "dang_tinh_toan_kich_thuoc_tu_dong": "Đang tính toán kích thước tự động...",
     "dang_tinh_toan_so_do_binh_trang": "Đang tính toán sơ đồ bình trang...",
     "dang_trich_xuat_du_lieu_tap_tin": "Đang trích xuất dữ liệu tập tin...",
-    "dang_xu_ly_kem_i_1_jobs_length_job": "Đang xử lý kẽm ${i + 1}/${jobs.length}: ${job.label}...",
+    "dang_xu_ly_kem_i_1_jobs_length_job": "Đang xử lý kẽm {{current}}/{{total}}: {{label}}...",
     "dang_xuat_thong_so_ky_thuat": "Đang xuất thông số kỹ thuật...",
     "don_dep_bo_nho_va_dong_tep_pdf": "Dọn dẹp bộ nhớ và Đóng tệp PDF...",
     "file_pdf_khong_co_trang_nao": "File PDF không có trang nào.",
@@ -1543,24 +1622,26 @@
     "giai_doan_6_dang_xep_trang_len_kho_in": "Giai đoạn 6: Đang xếp trang lên khổ in theo sơ đồ...",
     "giai_ma_thanh_cong_dang_nap_lai_tai": "Giải mã thành công. Đang nạp lại tài liệu...",
     "he_thong_giai_ma_khong_phan_hoi_sau_30": "Hệ thống giải mã không phản hồi sau 30 giây (Vui lòng thử lại sau).",
-    "he_thong_xu_ly_that_bai_response_status": "Hệ thống xử lý thất bại: ${response.status} - ${errText}",
+    "he_thong_xu_ly_that_bai_response_status": "Hệ thống xử lý thất bại: {{status}} - {{errText}}",
     "hoan_tat_file_kem_da_duoc_xuat_thanh": "✅ Hoàn tất! File kẽm đã được xuất thành công.",
-    "hoan_tat_results_filter_r_r_blob_size_0": "Hoàn tất: ${results.filter(r => r.blob.size > 0).length}/${jobs.length} kẽm thành công.",
-    "hoan_tat_results_filter_r_r_label": "✅ Hoàn tất: ${results.filter(r => !r.label.startsWith('❌')).length}/${jobs.length} kẽm thành công.",
-    "job_label_loi_err_message": "❌ ${job.label} (Lỗi: ${err.message})",
-    "kem_i_1_jobs_length_job_label": "[Kẽm ${i + 1}/${jobs.length}] ${job.label}...",
-    "kem_i_1_jobs_length_msg": "[Kẽm ${i + 1}/${jobs.length}] ${msg}",
-    "kho_giay_nho_hon_kho_trai_trang_noi": "⚠ Khổ giấy nhỏ hơn khổ trải trang: nội dung sẽ bị tràn/cắt ở mép. Hãy chọn khổ lớn hơn hoặc thu nhỏ file còn ~${pct}%.",
+    "hoan_tat_results_filter_r_r_blob_size_0": "Hoàn tất: {{done}}/{{total}} kẽm thành công.",
+    "hoan_tat_results_filter_r_r_label": "✅ Hoàn tất: {{done}}/{{total}} kẽm thành công.",
+    "job_label_loi_err_message": "❌ {{label}} (Lỗi: {{message}})",
+    "kem_i_1_jobs_length_job_label": "[Kẽm {{current}}/{{total}}] {{label}}...",
+    "kem_i_1_jobs_length_msg": "[Kẽm {{current}}/{{total}}] {{msg}}",
+    "kho_giay_nho_hon_kho_trai_trang_noi": "⚠ Khổ giấy nhỏ hơn khổ trải trang: nội dung sẽ bị tràn/cắt ở mép. Hãy chọn khổ lớn hơn hoặc thu nhỏ file còn ~{{pct}}%.",
     "loi_boc_tach_pdf": "Lỗi bóc tách PDF:",
-    "loi_err_message": "Lỗi: ${err.message}",
+    "loi_err_message": "Lỗi: {{message}}",
     "loi_giai_ma": "Lỗi giải mã:",
-    "loi_tu_backend_response_status": "Lỗi từ Backend: ${response.status} - ${errorText}",
+    "loi_tu_backend_response_status": "Lỗi từ Backend: {{status}} - {{errorText}}",
     "phat_hien_pdf_bi_khoa_dang_giai_ma_tap": "Phát hiện PDF bị khóa - Đang giải mã tập tin...",
-    "tach_bia_coverindices_length_trang_bia": "Tách bìa: ${coverIndices.length} trang bìa sẽ xuất riêng cuối file. Ruột: ${bodyOrderedIndices.length} trang.\\n",
-    "tay_sach_pagespersig_trang_khong_co_so": "⚠ Tay sách ${pagesPerSig} trang không có sơ đồ gấp khớp; tạm dùng \"${foldPattern.name}\" (${foldPattern.pagesPerSig} trang). Hãy chia tép theo bội số 4/8/16 để khớp sơ đồ.",
-    "trang_khong_dong_kich_thuoc_n_sizelist": "⚠ Trang không đồng kích thước:\\n${sizeList}\\nBình sách sẽ dùng kích thước lớn nhất.\\n",
+    "tach_bia_coverindices_length_trang_bia": "Tách bìa: {{coverCount}} trang bìa sẽ xuất riêng cuối file. Ruột: {{bodyCount}} trang.\n",
+    "tay_sach_pagespersig_trang_khong_co_so": "⚠ Tay sách {{pagesPerSig}} trang không có sơ đồ gấp khớp; tạm dùng \"{{name}}\" ({{patternPages}} trang). Hãy chia tép theo bội số 4/8/16 để khớp sơ đồ.",
+    "trang_khong_dong_kich_thuoc_n_sizelist": "⚠ Trang không đồng kích thước:\n{{sizeList}}\nBình sách sẽ dùng kích thước lớn nhất.\n",
     "trang_trai_math_round_spreadwmm_math": "⚠ Trang trải ${Math.round(spreadWmm)}×${Math.round(spreadHmm)}mm KHÔNG vừa khổ ${Math.round(reqSheetW)}×${Math.round(reqSheetH)}mm ở 100% (dù đã xoay khổ). Hãy chọn khổ lớn hơn, hoặc dùng \"1 cuốn/tờ (bóp vừa khổ)\" để thu nội dung cho vừa. Hệ thống KHÔNG tự co ở chế độ 100%.",
-    "xu_ly_tap_tin_that_bai_e_message": "Xử lý tập tin thất bại: ${e.message}"
+    "xu_ly_tap_tin_that_bai_e_message": "Xử lý tập tin thất bại: {{message}}",
+    "count_trang_paren": "({{count}} trang)",
+    "trang_trai_khong_vua_kho_100": "⚠ Trang trải {{spreadW}}×{{spreadH}}mm KHÔNG vừa khổ {{sheetW}}×{{sheetH}}mm ở 100% (dù đã xoay khổ). Hãy chọn khổ lớn hơn, hoặc dùng \"1 cuốn/tờ (bóp vừa khổ)\" để thu nội dung cho vừa. Hệ thống KHÔNG tự co ở chế độ 100%."
   },
   "lib.pdfMerger": {
     "dai_trang_chen_khong_hop_le_hoac_file": "Dải trang chèn không hợp lệ hoặc file rỗng.",
@@ -1595,17 +1676,14 @@
   "lib.presetManager": {
     "preset_khong_doc_duoc_thu_muc_preset": "[preset] Không đọc được thư mục preset, fallback localStorage:"
   },
-  "lib.printFileNaming": {
-    "g_lam_sach_ky_tu_khong_hop_le_cho_ten": "<>|]/g;\n\n/** Làm sạch ký tự không hợp lệ cho tên file/thư mục Windows. */\nexport function sanitizeFilename(name: string): string {\n    if (!name) return '';\n    let s = name.replace(ILLEGAL_RE, '-');\n    s = s.replace(/\\s+/g, ' ').trim();\n    s = s.replace(/\\s*-\\s*-\\s*/g, ' - ');\n    return s.replace(/^[\\s-]+|[\\s-]+$/g, '');\n}\n\nexport type NameMode = 'report' | 'number' | 'original';\nexport type FolderMode = 'per_order' | 'flat';\n\nexport interface SaveTypeInfo {\n    /** Nhãn/tên loại tem (labelName hoặc",
-    "label_string_so_to_can_in_cua_loai_nay": "). */\n    label: string;\n    /** Số tờ cần in của loại này. */\n    sheetCount: number;\n}\n\nexport interface SavePlanConfig {\n    nameMode: NameMode;\n    folderMode: FolderMode;\n    separateCut: boolean;\n    includeOrderCode: boolean;\n    includeDate: boolean;\n    orderCode?: string;\n    originalName?: string;   // tên file gốc (cho nameMode='original')\n    dateStr?: string;        // ngày (YYYY-MM-DD); nếu rỗng dùng hôm nay\n    /** Bình Bế Rớt CNC: bố cục bộ 3 trang (Trước/Sau/Khuôn) — spec: binh-be-rot-cnc. */\n    cncMode?: boolean;\n    /** CNC in 2 mặt → mỗi đơn vị 3 trang [Trước, Sau, Khuôn]; tắt → 2 trang [Trước, Khuôn]. */\n    cncTwoSided?: boolean;\n}\n\nexport interface SavePlanItem {\n    kind: 'print' | 'cut' | 'front' | 'back';\n    folder: string;          // đường dẫn con tương đối ('' = gốc)\n    filename: string;        // có đuôi .pdf\n    pageIndex: number;       // chỉ số trang trong PDF kết quả\n}\n\nfunction todayStr(): string {\n    const d = new Date();\n    const p = (n: number) => String(n).padStart(2, '0');\n    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;\n}\n\n/** Dựng tên cơ sở (chưa .pdf) cho 1 loại theo cấu hình. */\nfunction buildBaseName(idx: number, t: SaveTypeInfo, cfg: SavePlanConfig): string {\n    const seq = idx + 1;\n    if (cfg.nameMode === 'number') return String(seq);\n    if (cfg.nameMode === 'original') {\n        const base = (cfg.originalName || 'output').replace(/\\.pdf$/i, '');\n        return `${seq} - ${base}`;\n    }\n    // 'report'\n    const parts: string[] = [];\n    if (cfg.includeOrderCode && cfg.orderCode) parts.push(cfg.orderCode);\n    if (cfg.includeDate) parts.push(cfg.dateStr || todayStr());\n    parts.push(t.label || `Trang ${seq}`);\n    if (t.sheetCount > 0) parts.push(`${t.sheetCount} tờ`);\n    return `${seq} - ${parts.join(' - ')}`;\n}\n\n/**\n * Dựng kế hoạch lưu: danh sách file (in + bế) kèm thư mục & chỉ số trang.\n *\n * Bố cục trang PDF kết quả:\n *   - separateCut=false: [in_0, in_1, ...]          (1 trang/loại)\n *   - separateCut=true : [in_0, bế_0, in_1, bế_1...] (2 trang/loại)\n */\nexport function buildSavePlan(types: SaveTypeInfo[], cfg: SavePlanConfig): SavePlanItem[] {\n    const items: SavePlanItem[] = [];\n    const orderFolder = cfg.folderMode === 'per_order'\n        ? sanitizeFilename(cfg.orderCode || 'DonHang')\n        : '';\n    const join = (...p: string[]) => p.filter(Boolean).join('/');\n\n    // ── Bố cục CNC: mỗi đơn vị 3 trang [Trước, Sau, Khuôn] (2 mặt) hoặc 2 trang [Trước, Khuôn] ──\n    if (cfg.cncMode) {\n        const pagesPer = cfg.cncTwoSided ? 3 : 2;\n        const perOrder = cfg.folderMode === 'per_order';\n        const frontSub = perOrder ? 'MatTruoc' : '';\n        const backSub = perOrder ? 'MatSau' : '';\n        const cutSub = perOrder ? 'Khuon' : '';\n        types.forEach((t, i) => {\n            const base = sanitizeFilename(buildBaseName(i, t, cfg));\n            const p0 = i * pagesPer;\n            items.push({ kind: 'front', folder: join(orderFolder, frontSub), filename: `${base} (front).pdf`, pageIndex: p0 });\n            if (cfg.cncTwoSided) {\n                items.push({ kind: 'back', folder: join(orderFolder, backSub), filename: `${base} (back).pdf`, pageIndex: p0 + 1 });\n            }\n            items.push({ kind: 'cut', folder: join(orderFolder, cutSub), filename: `${base} (cut).pdf`, pageIndex: p0 + (cfg.cncTwoSided ? 2 : 1) });\n        });\n        return items;\n    }\n\n    const printSub = cfg.folderMode === 'per_order' && cfg.separateCut ? 'In' : '';\n    const cutSub = cfg.folderMode === 'per_order' && cfg.separateCut ? 'Bế' : '';\n\n    types.forEach((t, i) => {\n        const base = sanitizeFilename(buildBaseName(i, t, cfg));\n        const printPage = cfg.separateCut ? i * 2 : i;\n        items.push({\n            kind: 'print',\n            folder: join(orderFolder, printSub),\n            filename: `${base}.pdf`,\n            pageIndex: printPage,\n        });\n        if (cfg.separateCut) {\n            items.push({\n                kind: 'cut',\n                folder: join(orderFolder, cutSub),\n                filename: `${base} (cut).pdf`,\n                pageIndex: printPage + 1,\n            });\n        }\n    });\n    return items;\n}"
-  },
+  "lib.printFileNaming": {},
   "lib.processHandlers": {
     "binh_xong_nhung_tu_dong_luu_file_in_loi": "Bình xong nhưng tự động lưu file in lỗi:",
     "da_tach_file_thanh_cong": "Đã tách file thành công.",
-    "da_tach_thanh_results_length_file": "Đã tách thành ${results.length} file.",
-    "da_tao_results_length_tab_moi": "Đã tạo ${results.length} tab mới.",
-    "da_tu_dong_luu_ok_file_in_vao_sp_folder": "🖨️ Đã tự động lưu ${ok} file in vào: ${sp.folder}",
-    "dang_binh_planresult_jobs_length_tam": "Đang bình ${planResult.jobs.length} tấm kẽm...",
+    "da_tach_thanh_results_length_file": "Đã tách thành {{count}} file.",
+    "da_tao_results_length_tab_moi": "Đã tạo {{count}} tab mới.",
+    "da_tu_dong_luu_ok_file_in_vao_sp_folder": "🖨️ Đã tự động lưu {{ok}} file in vào: {{folder}}",
+    "dang_binh_planresult_jobs_length_tam": "Đang bình {{count}} tấm kẽm...",
     "dang_cat_xen_doi_noi_dung": "Đang cắt xén & dời nội dung...",
     "dang_chuan_bi_du_lieu": "Đang chuẩn bị dữ liệu...",
     "dang_doi_kho_trang": "Đang đổi khổ trang...",
@@ -1616,15 +1694,15 @@
     "dang_tu_dong_luu_file_in": "🖨️ Đang tự động lưu file in...",
     "dang_xao_tron_trang": "Đang xáo trộn trang...",
     "dang_xu_ly_du_lieu_qua_backend_unified": "Đang xử lý dữ liệu qua backend (unified engine)...",
-    "dang_xu_ly_prog_trang_da_binh": "⚡ Đang xử lý: ${prog} trang đã bình...",
-    "file_da_duoc_luu_tren_server_result": "✅ File đã được lưu trên server: ${result.outputPath}\\n${result.report}",
+    "dang_xu_ly_prog_trang_da_binh": "⚡ Đang xử lý: {{prog}} trang đã bình...",
+    "file_da_duoc_luu_tren_server_result": "✅ File đã được lưu trên server: {{outputPath}}\n{{report}}",
     "kem_globalplatenum": "Kẽm ${globalPlateNum}",
     "loi_cat_xen_doi": "Lỗi cắt xén & dời:",
     "loi_doi_kho": "Lỗi đổi khổ:",
     "loi_ghep_pdf": "Lỗi ghép PDF:",
     "loi_he_thong_khi_xu_ly_binh_trang": "Lỗi hệ thống khi xử lý Bình trang.",
     "loi_khi_xu_ly_catalog_auto_plan": "Lỗi khi xử lý Catalog Auto Plan.",
-    "loi_phan_tich_verifyerrors_join": "Lỗi phân tích: ${verifyErrors.join('; ')}",
+    "loi_phan_tich_verifyerrors_join": "Lỗi phân tích: {{errors}}",
     "loi_tach_pdf": "Lỗi tách PDF:",
     "loi_xao_tron_trang": "Lỗi xáo trộn trang:",
     "loi_xu_ly_he_thong": "Lỗi xử lý hệ thống",
@@ -1648,7 +1726,9 @@
     "xoay_kho_de_fit": "(xoay khổ để fit)"
   },
   "lib.renderer": {
-    "dang_render_mat_isfront_truoc_sau_to": "Đang Render mặt ${isFront ? 'Trước' : 'Sau'} tờ ${sheetIndex + 1} (${currentRenderIndex}/${surfaces.length})..."
+    "dang_render_mat_isfront_truoc_sau_to": "Đang Render mặt {{side}} tờ {{sheet}} ({{current}}/{{total}})...",
+    "mat_truoc": "Trước",
+    "mat_sau": "Sau"
   },
   "lib.reportPreview": {
     "data_gangcount_mau": "${data.gangCount} mẫu",
@@ -1722,7 +1802,12 @@
   "lib.spreadPlacer": {
     "bia": "Bìa",
     "kem_platecount_baselabel_tu_tro": "Kẽm ${plateCount} - ${baseLabel} - Tự Trở",
-    "kem_platecount_tay_sig_1_plateside": "Kẽm ${plateCount} - Tay ${sig + 1}${plateSide === 'front' ? 'A' : 'B'} (${plateSide === 'front' ? 'Trước' : 'Sau'}) - Bài A-B"
+    "base_cover": "Bìa",
+    "base_pages": "{{n}} trang",
+    "plate_label_ab": "Kẽm {{plate}} - Tay {{sig}}{{ab}} ({{side}}) - Bài A-B",
+    "plate_label_self": "Kẽm {{plate}} - {{base}} - Tự Trở",
+    "side_front": "Trước",
+    "side_back": "Sau"
   },
   "lib.stampFormat": {
     "chu_hoa_a_b": "Chữ hoa (A, B)",
@@ -1753,8 +1838,8 @@
   },
   "lib.vdpTemplate": {
     "chua_co_truong_vdp_nao_de_luu_mau": "Chưa có trường VDP nào để lưu mẫu.",
-    "da_luu_mau_path_split_pop": "Đã lưu mẫu: ${path.split(/[\\\\/]/).pop()}",
-    "da_tai_mau_remapped_length_truong": "Đã tải mẫu: ${remapped.length} trường.",
+    "da_luu_mau_path_split_pop": "Đã lưu mẫu: {{name}}",
+    "da_tai_mau_remapped_length_truong": "Đã tải mẫu: {{count}} trường.",
     "da_tai_mau_xuong": "Đã tải mẫu xuống.",
     "file_mau_khong_hop_le_hoac_rong": "File mẫu không hợp lệ hoặc rỗng.",
     "loi_luu_mau": "Lỗi lưu mẫu:",
@@ -1784,7 +1869,10 @@
     "lien_he_ho_tro": "Liên hệ hỗ trợ",
     "phien_ban_version": "Phiên bản ${version} ·",
     "tai_khoan": "Tài khoản",
-    "trang_chu": "Trang chủ"
+    "trang_chu": "Trang chủ",
+    "co_ban_moi": "Có bản mới",
+    "dang_tai_cai_dat": "Đang tải & cài đặt… {{percent}}%",
+    "loi_msg": "Lỗi: {{msg}}"
   },
   "misc.acrobatModals": {
     "ban_co_chac_chan_muon_xoa": "Bạn có chắc chắn muốn xóa",
@@ -1852,10 +1940,10 @@
     "vua_tron_trang": "Vừa trọn trang",
     "xem_mot_trang": "Xem một trang",
     "xoa_trang": "Xóa Trang",
-    "xoa_trang_quick_delete": "Xóa Trang (Quick Delete)"
+    "xoa_trang_quick_delete": "Xóa Trang (Quick Delete)",
+    "xem_hai_trang": "Xem hai trang"
   },
   "misc.acrobatViewer": {
-    "acro_scroll_webkit_scrollbar_width_14px": ".acro-scroll::-webkit-scrollbar { width: 14px; height: 14px; }\n                .acro-scroll::-webkit-scrollbar-track { background: transparent; }\n                .acro-scroll::-webkit-scrollbar-thumb { background: #888888; border: 4px solid #525659; border-radius: 8px; }\n                .acro-scroll::-webkit-scrollbar-thumb:hover { background: #aaaaaa; }\n                /* Đặt trước chỗ cho scrollbar ở cả 2 cạnh → bật/tắt scrollbar không làm co vùng\n                   nội dung, tránh hiện tượng \"dueling scrollbars\" gây nhảy/giật khi zoom. */\n                .acro-scroll { scrollbar-gutter: stable both-edges; }\n                .acro-thumb-scroll::-webkit-scrollbar { width: 12px; }\n                .acro-thumb-scroll::-webkit-scrollbar-track { background: transparent; }\n                .acro-thumb-scroll::-webkit-scrollbar-thumb { background: #cccccc; border: 3px solid #f8fafc; border-radius: 6px; }\n                .dark .acro-thumb-scroll::-webkit-scrollbar-thumb { background: #555; border: 3px solid #1f2937; }",
     "chua_co_file_de_cat_kho": "Chưa có file để cắt khổ",
     "chua_co_file_de_xuat_anh": "Chưa có file để xuất ảnh.",
     "dang_sao_chep_trang": "Đang sao chép trang...",
@@ -1872,7 +1960,7 @@
     "chi_duoc_nhap_so": "Chỉ được nhập số",
     "chi_ho_tro_a_z_0_9_space": "Chỉ hỗ trợ: A-Z, 0-9, - . $ / + % SPACE",
     "du_lieu_khong_hop_le": "Dữ liệu không hợp lệ",
-    "loi_tao_ma_vach_e_message_e": "Lỗi tạo mã vạch: ${e.message || e}",
+    "loi_tao_ma_vach_e_message_e": "Lỗi tạo mã vạch: {{msg}}",
     "ma_vach_ban_le_my_canada_12_chu_so": "Mã vạch bán lẻ Mỹ/Canada (12 chữ số)",
     "ma_vach_ban_le_quoc_te_13_chu_so": "Mã vạch bán lẻ quốc tế (13 chữ số)",
     "ma_vach_cong_nghiep_chu_in_hoa_so": "Mã vạch công nghiệp, chữ in hoa & số",
@@ -1923,7 +2011,10 @@
     "trimbox_thanh_pham": "TrimBox (thành phẩm)",
     "tu": "Từ",
     "vung_cat_khong_hop_le_valerr": "Vùng cắt không hợp lệ: ${valErr}",
-    "xentimet_cm": "Xentimét (cm)"
+    "xentimet_cm": "Xentimét (cm)",
+    "khong_doc_duoc_kho_trang_http": "Không đọc được khổ trang (HTTP {{status}})",
+    "khong_doc_duoc_kho_trang": "Không đọc được khổ trang: {{msg}}",
+    "vung_cat_khong_hop_le": "Vùng cắt không hợp lệ: {{err}}"
   },
   "misc.diffSidebar": {
     "canh_bao_chinh_ta_ai": "Cảnh báo Chính tả AI",
@@ -1962,24 +2053,33 @@
     "dong": "Đóng",
     "gop_tat_ca_trang_vao_1_file_tiff": "Gộp tất cả trang vào 1 file TIFF",
     "huy": "Hủy",
-    "khong_mo_duoc_hop_thoai_chon_thu_muc": "Không mở được hộp thoại chọn thư mục:",
-    "loi_xuat_anh": "Lỗi xuất ảnh:",
+    "khong_mo_duoc_hop_thoai_chon_thu_muc": "Không mở được hộp thoại chọn thư mục: {{msg}}",
+    "loi_xuat_anh": "Lỗi xuất ảnh: {{msg}}",
     "mau": "Màu",
     "pagecount_file_anh": "${pageCount} file ảnh",
     "thu_muc_dich": "Thư mục đích",
     "tuy_chon": "Tùy chọn",
     "vi_du_1_3_5_8_10": "Ví dụ: 1-3, 5, 8-10",
     "vui_long_chon_thu_muc_dich": "Vui lòng chọn thư mục đích.",
-    "xuat_anh": "Xuất ảnh"
+    "xuat_anh": "Xuất ảnh",
+    "da_xuat_file_anh_vao": "Đã xuất {{count}} file ảnh vào:\n{{dir}}",
+    "tat_ca_n": "Tất cả ({{n}})",
+    "trang_hien_tai_n": "Trang hiện tại ({{n}})",
+    "1_file_tiff_n_trang": "1 file TIFF ({{n}} trang)",
+    "n_file_anh": "{{n}} file ảnh"
   },
   "misc.flipBook": {
     "trang_bia": "Trang bìa",
-    "trang_trong": "Trang trống"
+    "trang_trong": "Trang trống",
+    "trang": "Trang"
   },
   "misc.flipbookDialog": {
     "dang_nap_du_lieu": "Đang nạp dữ liệu...",
     "dong_esc": "Đóng (ESC)",
-    "trang_logical1based_tep_signatureindex": "Trang ${logical1Based} | Tép ${signatureIndex}"
+    "trang_logical1based_tep_signatureindex": "Trang ${logical1Based} | Tép ${signatureIndex}",
+    "xem_truoc_thanh_pham": "📖 Xem Trước Thành Phẩm",
+    "trang_tep": "Trang {{trang}} | Tép {{tep}}",
+    "trang_n": "Trang {{n}}"
   },
   "misc.layer": {
     "an_doi_tuong": "Ẩn đối tượng",
@@ -2044,7 +2144,12 @@
     "phoi_pdf": "Phôi PDF",
     "thao_tac_chinh_sua_that_bai_thu_lai": "Thao tác chỉnh sửa thất bại. Thử lại hoặc chọn font/nội dung khác.",
     "xoay_90_nguoc_chieu_kim_dong_ho": "Xoay 90° ngược chiều kim đồng hồ",
-    "xoay_90_theo_chieu_kim_dong_ho": "Xoay 90° theo chiều kim đồng hồ"
+    "xoay_90_theo_chieu_kim_dong_ho": "Xoay 90° theo chiều kim đồng hồ",
+    "di_chuyen_that_bai": "Di chuyển thất bại: {{msg}}",
+    "khong_doi_duoc_font_thieu_glyph": "Không đổi được: font đã chọn THIẾU GLYPH cho một số ký tự. ",
+    "da_khoa_obj": "🔒 ĐÃ KHÓA — {{type}}: {{id}}",
+    "bam_len_trang_de_dat": "Bấm lên trang để đặt {{what}}…",
+    "xoay_khung": "Xoay khung"
   },
   "misc.login": {
     "dang_xuat": "Đăng xuất",
@@ -2053,7 +2158,7 @@
     "khong_lay_duoc_url_dang_nhap": "Không lấy được URL đăng nhập",
     "loi_dang_nhap_google": "Lỗi đăng nhập Google",
     "loi_xac_thuc_ban_quyen": "Lỗi xác thực bản quyền.",
-    "loi_xu_ly_dang_nhap_tu_trinh_duyet": "Lỗi xử lý đăng nhập từ trình duyệt:",
+    "loi_xu_ly_dang_nhap_tu_trinh_duyet": "Lỗi xử lý đăng nhập từ trình duyệt: {{msg}}",
     "nguoi_dung": "Người dùng",
     "nhap_ma_ban_quyen": "Nhập mã bản quyền...",
     "tiep_tuc_voi_google": "Tiếp tục với Google",
@@ -2175,7 +2280,8 @@
     "ten_file": "Tên file",
     "thoi_gian_mo": "Thời gian mở",
     "xoa_da_chon": "Xóa đã chọn",
-    "xoa_lich_su_giu_lai_sao": "Xóa lịch sử (giữ lại sao)"
+    "xoa_lich_su_giu_lai_sao": "Xóa lịch sử (giữ lại sao)",
+    "da_chon_n_muc": "Đã chọn {{n}} mục"
   },
   "misc.report": {
     "ban_sao_bi_loi": "Bản sao bị lỗi",
@@ -2213,13 +2319,16 @@
     "noi_luu": "NƠI LƯU",
     "them_vi_tri_luu": "Thêm vị trí lưu",
     "trinh_duyet_se_tu_dong_xa_nhieu_file": "Trình duyệt sẽ tự động xả nhiều file PDF riêng lẻ vào thư mục Downloads của bạn.",
-    "xuat_nhieu_kho_kem_auto_catalog": "🔥 XUẤT NHIỀU KHỔ KẼM (AUTO CATALOG)"
+    "xuat_nhieu_kho_kem_auto_catalog": "🔥 XUẤT NHIỀU KHỔ KẼM (AUTO CATALOG)",
+    "giu_nguyen_dinh_dang_gop_tam_kem": "Giữ nguyên định dạng gộp {{n}} tấm kẽm để dễ gửi khách duyệt.",
+    "da_gui_lenh_tai_roi_nhieu_file": "📥 Đã gửi lệnh tải rời nhiều file thành công!",
+    "tai_roi_tung_kem_download_files": "Tải rời từng kẽm (Download {{n}} files)"
   },
   "misc.savePrintFiles": {
     "chon": "Chọn...",
     "chon_thu_muc_luu_file_in": "Chọn thư mục lưu file in",
     "chua_chon": "Chưa chọn...",
-    "da_ghi_done_total_file": "Đã ghi ${done}/${total} file...",
+    "da_ghi_done_total_file": "Đã ghi {{done}}/{{total}} file...",
     "da_luu_ok_file_vao_folder": "✅ Đã lưu ${ok} file vào: ${folder}",
     "dang_luu": "Đang lưu...",
     "dang_tach_ghi_file": "Đang tách & ghi file...",
@@ -2234,8 +2343,8 @@
     "kem_ma_dh": "Kèm mã ĐH",
     "kem_ngay": "Kèm ngày",
     "khong_co_file_ket_qua": "Không có file kết quả.",
-    "khong_mo_duoc_hop_thoai_chon_thu_muc": "Không mở được hộp thoại chọn thư mục:",
-    "loi_khi_luu": "Lỗi khi lưu:",
+    "khong_mo_duoc_hop_thoai_chon_thu_muc": "Không mở được hộp thoại chọn thư mục: {{msg}}",
+    "loi_khi_luu": "Lỗi khi lưu: {{msg}}",
     "luu_file_in": "Lưu file in",
     "luu_file_in_2": "🖨️ Lưu file in",
     "luu_tat_ca": "Lưu tất cả",
@@ -2249,7 +2358,10 @@
     "thu_muc_goc": "(thư mục gốc)",
     "vui_long_chon_thu_muc_dich": "Vui lòng chọn thư mục đích.",
     "xem_truoc": "Xem trước",
-    "de_tach_file_be_rieng_bat_tach_trang": "Để tách file bế riêng, bật \"Tách trang khuôn bế\" ở thiết lập bình bài trước khi chạy."
+    "de_tach_file_be_rieng_bat_tach_trang": "Để tách file bế riêng, bật \"Tách trang khuôn bế\" ở thiết lập bình bài trước khi chạy.",
+    "da_luu_ok_file_vao": "✅ Đã lưu {{ok}} file vào: {{folder}}",
+    "cnc_moi_don_vi_tach_ra_file_rieng": "CNC: mỗi đơn vị tách {{mode}} ra file riêng.",
+    "n_loai_tong_to_file": "⇒ {{types}} loại · tổng {{sheets}} tờ · {{files}} file"
   },
   "misc.selectionLayers": {
     "2x_click_doi_ten": "2x Click = Đổi tên",
@@ -2280,7 +2392,9 @@
     "mo_rong_nhom_lop": "Mở rộng nhóm lớp",
     "thu_gon_nhom_lop": "Thu gọn nhóm lớp",
     "tim_thanh_phan": "Tìm thành phần...",
-    "xoa_lop": "Xóa lớp"
+    "xoa_lop": "Xóa lớp",
+    "bam_len_trang_de_dat": "Bấm lên trang để đặt {{obj}}…",
+    "xoa_n_thanh_phan_da_chon": "Xóa {{n}} Thành phần Đã Chọn"
   },
   "misc.sheetViewerDialog": {
     "bam_ghim": "Bấm Ghim",
@@ -2317,7 +2431,14 @@
     "trong_bia_sau": "Trong Bìa Sau",
     "trong_bia_truoc": "Trong Bìa Trước",
     "tu_tro_1_kem": "Tự Trở (1 kẽm)",
-    "xem_bai_in": "Xem Bài In"
+    "xem_bai_in": "Xem Bài In",
+    "nhip_in_mm": "Nhíp in: {{n}}mm",
+    "can_nhip_mm": "Cắn nhíp ({{n}}mm)",
+    "to_x_y": "Tờ {{x}}/{{y}}",
+    "tep_sig_to_x_y": "Tép {{sig}} — Tờ {{x}}/{{y}}",
+    "tep_sig": "Tép {{n}}",
+    "to_in_n": "Tờ in {{n}}",
+    "trang_n": "Trang {{n}}"
   },
   "misc.softProof": {
     "chua_cai": "(chưa cài)",
@@ -2352,7 +2473,9 @@
     "trang_trong_2": "TRANG TRỐNG",
     "xoa_trang_delete": "Xóa trang (Delete)",
     "xoay_phai_rotate_cw": "Xoay phải (Rotate CW)",
-    "xoay_trai_rotate_ccw": "Xoay trái (Rotate CCW)"
+    "xoay_trai_rotate_ccw": "Xoay trái (Rotate CCW)",
+    "trang_kich_thuoc_tooltip": "Trang {{page}}\nKích thước: {{w}} x {{h}} mm",
+    "dang_an_n_thumbnails_con_lai": "Đang ẩn {{n}} thumbnails còn lại để tránh treo máy."
   },
   "misc.toast": {
     "dong": "Đóng",
@@ -2365,14 +2488,17 @@
     "con_remainingdays_ngay": "còn ${remainingDays} ngày",
     "de_sau": "Để sau",
     "gia_han_ngay": "Gia hạn ngay",
-    "hom_nay": "hôm nay"
+    "hom_nay": "hôm nay",
+    "con_n_ngay": "còn {{n}} ngày",
+    "sap_het_han": "Bản quyền của bạn sắp hết hạn ({{dayText}}). Gia hạn sớm để không gián đoạn công việc."
   },
   "misc.updateChecker": {
     "cap_nhat_khoi_dong_lai": "Cập nhật & khởi động lại",
     "cap_nhat_that_bai_thu_lai_sau_hoac_tai": "Cập nhật thất bại. Thử lại sau hoặc tải bản mới thủ công.",
     "da_tai_xong_dang_khoi_dong_lai": "Đã tải xong, đang khởi động lại...",
     "de_sau": "Để sau",
-    "dong": "Đóng"
+    "dong": "Đóng",
+    "dang_tai_ban_cap_nhat": "Đang tải bản cập nhật... {{percent}}%"
   },
   "misc.useAuthStore": {
     "ban_quyen_da_bi_thu_hoi_vui_long_lien": "Bản quyền đã bị thu hồi. Vui lòng liên hệ để được hỗ trợ.",
@@ -2475,7 +2601,16 @@
     "upload_that_bai": "Upload thất bại",
     "xoa_bong_do_cho_ctp": "Xóa bóng đổ cho CTP",
     "xoa_metadata_nhay_cam": "Xóa metadata nhạy cảm",
-    "xu_ly_tren_server_noi_bo": "* Xử lý trên server nội bộ *"
+    "xu_ly_tren_server_noi_bo": "* Xử lý trên server nội bộ *",
+    "he_thong_xu_ly": "Hệ thống xử lý: {{name}}...",
+    "chay_preflight_rules": "🔍 Chạy Preflight ({{n}} rules)",
+    "font_chua_nhung": "❌ {{n}}/{{total}} chưa nhúng",
+    "font_da_nhung": "✅ {{total}} đã nhúng",
+    "anh_low_res": "⚠️ {{n}}/{{total}} low-res",
+    "anh_ok_min_dpi": "✅ {{total}} ảnh OK (min {{dpi}} DPI)",
+    "van_de_n": "Vấn đề ({{n}})",
+    "tr_page": "Tr.{{page}}",
+    "thuc_thi_n": "🚀 Thực thi ({{n}})"
   },
   "preprocess.bgRemover": {
     "anh_goc": "👁 ẢNH GỐC",
@@ -2492,7 +2627,12 @@
     "khong_tim_thay_file_goc": "Không tìm thấy file gốc",
     "loi_khi_luu_file": "Lỗi khi lưu file.",
     "loi_server_res_status_errortext": "Lỗi Server (${res.status}): ${errorText}",
-    "tach_nen_ai": "Tách nền AI"
+    "tach_nen_ai": "Tách nền AI",
+    "luu_tat_ca": "Lưu tất cả",
+    "__tv_dang_tach_nen": "Đang tách nền",
+    "__tv_loi_server": "Lỗi Server",
+    "__tv_da_luu_thanh_cong": "Đã lưu thành công",
+    "__tv_anh": "ảnh!"
   },
   "preprocess.bgRemoverOptions": {
     "chat_luong_cao_khuyen_dung": "Chất lượng cao (Khuyên dùng)",
@@ -2585,7 +2725,24 @@
     "x_so_cuon": "{X} Số cuốn",
     "xoa": "Xóa",
     "y_ruot_dau": "{Y} Ruột đầu",
-    "z_ruot_cuoi": "{Z} Ruột cuối"
+    "z_ruot_cuoi": "{Z} Ruột cuối",
+    "so_khong_chia_het_goi_y": "⚠️ {{total}} số không chia hết cho {{count}} cuốn. Gợi ý: dùng {{suggestion}} cuốn (chia hết).",
+    "so_chia_lien_cuon": "✅ {{total}} số ÷ {{count}} cuốn = {{per}} liên/cuốn.",
+    "dai_cuon_dau_cuoi": " Cuốn 1: {{firstY}}–{{firstZ}} · Cuốn {{count}}: {{lastY}}–{{lastZ}}.",
+    "dang_day_len_may_chu_to_in": "Đang đẩy lên máy chủ ({{n}} tờ in)...",
+    "so_ruot_bat_dau": "Số ruột bắt đầu",
+    "so_ruot_ket_thuc": "Số ruột kết thúc",
+    "tong_so_cuon": "Tổng số cuốn",
+    "so_cuon_bat_dau": "Số cuốn bắt đầu (→{{x}})",
+    "dem_0_do_dai": "Đệm 0 (độ dài)",
+    "so_cuon": "Số cuốn",
+    "ruot_dau": "Ruột đầu",
+    "ruot_cuoi": "Ruột cuối",
+    "n_cum_n_truong": "{{clusters}} cụm · {{fields}} trường",
+    "trang_bia_to_da_binh": "Trang bìa (tờ đã bình)",
+    "file_co_n_trang": "File có {{n}} trang.",
+    "se_dung_n_trang_bia": "Sẽ dùng {{n}} trang bìa: {{list}}. Trang còn lại là ruột (dùng Mẹc Số).",
+    "tao_bia_n_cuon": "Tạo bìa ({{n}} cuốn)"
   },
   "preprocess.dataMerge": {
     "1_chon_cot": "1. Chọn cột",
@@ -2891,7 +3048,6 @@
     "vi_du_anh_cot": "Ví dụ ảnh: cột",
     "vi_du_chu_cot": "Ví dụ chữ: cột",
     "vi_du_hien_neu": "Ví dụ: Hiện nếu",
-    "vi_du_selectedfield_type_qrcode_https": "Ví dụ: ${selectedField.type === 'qrcode' ? 'https://example.com/?id=' : 'Mã '}{${selectedField.name || 'Cột'}}",
     "viet_hoa_dau_tu": "Viết Hoa Đầu Từ",
     "viet_hoa_so": "VIẾT HOA · số",
     "vua_khung_cat_phan_thua_cover": "Vừa khung, cắt phần thừa (Cover)",
@@ -2907,7 +3063,53 @@
     "xuat_bao_cao_loi_csv": "Xuất báo cáo lỗi (CSV)",
     "bo_chon_neu_file_khong_co_dong_tieu_de": "Bỏ chọn nếu file không có dòng tiêu đề — cột sẽ tự đặt tên \"Cột 1\", \"Cột 2\"…",
     "ten_cot_trong_nhu_du_lieu_file_co_the": "Tên cột trông như dữ liệu? File có thể KHÔNG có dòng tiêu đề — hãy bỏ chọn \"Hàng đầu là tiêu đề cột\" ở trên.",
-    "b4_bam_chen": "4. Bấm \"Chèn\""
+    "b4_bam_chen": "4. Bấm \"Chèn\"",
+    "da_tai_n_dong_cot_trung_ten": "Đã tải {{n}} dòng. Lưu ý: cột trùng tên ({{cols}}) đã tự đổi tên.",
+    "da_tai_n_dong_du_lieu": "Đã tải {{n}} dòng dữ liệu.",
+    "da_chon_n_file_map_truong": "Đã chọn {{n}} file. Map trường với cột rồi bấm \"Chạy {{n}} file\".",
+    "nguon_rong_0_ban_ghi": "nguồn rỗng (0 bản ghi).",
+    "n_ban_ghi_m_cot": "{{n}} bản ghi, {{m}} cột.",
+    "dang_doc_sheet_x": "Đang đọc sheet \"{{x}}\"...",
+    "nhap_tay_x_ban_ghi_cot_y": "Nhập tay: {{x}} bản ghi (cột \"{{y}}\").",
+    "dang_doc": "đang đọc...",
+    "rong_bo_qua": "rỗng, bỏ qua.",
+    "dang_kiem_tra_du_lieu_2": "đang kiểm tra dữ liệu...",
+    "co_n_loi_chan_bo_qua_file": "có {{n}} lỗi chặn — bỏ qua file này.",
+    "n_canh_bao_vd_anh_thieu_van_tiep_tuc": "{{n}} cảnh báo (vd ảnh thiếu).\nVẫn tiếp tục sinh file này?",
+    "da_bo_qua_do_con_canh_bao": "đã bỏ qua do còn cảnh báo.",
+    "loi_kiem_tra_du_lieu_bo_qua": "lỗi kiểm tra dữ liệu — {{e}}. Bỏ qua.",
+    "dang_sinh_n_ban_ghi": "đang sinh {{n}} bản ghi...",
+    "loi_khong_co_ket_qua": "lỗi không có kết quả.",
+    "loi_x": "lỗi {{e}}",
+    "hoan_thanh_ok_tren_tong_file_csv": "Hoàn thành {{ok}}/{{total}} file CSV.",
+    "loi_xu_ly_hang_loat": "Lỗi xử lý hàng loạt: {{e}}",
+    "kiem_tra_xong_n_canh_bao_can_xac_nhan": "Kiểm tra xong: {{n}} cảnh báo — cần xác nhận trước khi sinh lô.",
+    "kiem_tra_xong_n_loi_chan_phai_khac_phuc": "Kiểm tra xong: {{n}} lỗi chặn — phải khắc phục trước khi sinh lô.",
+    "loi_kiem_tra_du_lieu_x": "Lỗi kiểm tra dữ liệu: {{x}}",
+    "co_n_loi_chan_khong_the_sinh_lo": "Có {{n}} lỗi chặn — không thể sinh lô. Mở mục \"Kiểm tra trước khi chạy\" để xem chi tiết.",
+    "phat_hien_n_canh_bao_vi_du_anh_thieu": "Phát hiện {{n}} cảnh báo (ví dụ: ảnh biến đổi thiếu file).",
+    "loi_xuat_bao_cao_loi_x": "Lỗi xuất báo cáo lỗi: {{x}}",
+    "dang_mo_file_ket_qua_n_ban_ghi": "Đang mở file kết quả ({{n}} bản ghi)...",
+    "loi_sinh_file_pdf_x": "Lỗi sinh file PDF: {{x}}",
+    "placeholder_nhap_tay_moi_dong_1_ban_ghi": "Mỗi dòng = 1 bản ghi.\nVí dụ:\nĐây là sản phẩm chính hãng của thương hiệu CCK\nMã 002\nMã 003",
+    "nhieu_dong_nhieu_trang": ", nhiều dòng → nhiều trang.",
+    "field_can_dung_thi_gan_vao_cot": "Field cần dùng thì gán vào cột",
+    "muon_cung_1_noi_dung_co_dinh": "(Muốn cùng 1 nội dung cố định trên mọi trang thì gõ thẳng nội dung vào ô text của field.)",
+    "chon_sheet_n": "Chọn sheet ({{n}})",
+    "sheet_phai_duoc_chia_se_cong_khai": "Sheet phải được chia sẻ ở chế độ \"Bất kỳ ai có đường liên kết\". Dữ liệu được lấy qua đường export CSV của Google.",
+    "cac_cot_n": "Các cột ({{n}}):",
+    "cot_lay_tu_file_dau_de_map": "Cột lấy từ file đầu để map. Map xong bấm nút \"Chạy {{n}} file\" ở dưới — mỗi file ra 1 tab đặt tên theo tên file CSV.",
+    "moi_dong_mot_tem_binh_thuong_giong_khuon": "(mỗi dòng = một tem/thẻ/vé). Bình thường mọi bản giống khuôn, chỉ khác chữ điền vào. Phần này dùng khi",
+    "vi_du_ve_san_dau_vip": "Ví dụ: vẽ sẵn dấu \"VIP\" lên thẻ → đặt",
+    "chi_khach_vip_moi_in_dau": "Chỉ khách VIP mới in dấu; khách khác bỏ trống.",
+    "in_vang_bac": "... → in \"Vàng\" / \"Bạc\".",
+    "an_hien_co_in_khong_rule_in_cai_gi": "Ẩn/hiện = \"có in không?\" · Rule = \"in cái gì vào?\". Không cần thì cứ để trống — field in bình thường.",
+    "gia_tri_cot_nay_se_duoc_in_vao_o": "Giá trị cột này sẽ được in vào ô (mỗi bản in lấy theo dòng của nó).",
+    "hoac_go_thang": "Hoặc gõ thẳng",
+    "vao_vung_noi_dung_ben_duoi": "vào vùng Nội dung bên dưới.",
+    "danh_sach_file_csv": "Danh sách file CSV ({{n}})",
+    "dang_doc_n_file": "Đang đọc {{n}} file…",
+    "ban_ghi_2": "bản ghi"
   },
   "preprocess.fontSelector": {
     "go_de_tim_font": "Gõ để tìm Font...",
@@ -2942,14 +3144,16 @@
     "chua_co_file_pdf": "Chưa có file PDF",
     "chuyen_ink_name_cmyk": "Chuyển ${ink.name} → CMYK",
     "chuyen_tat_ca_spot_cmyk": "🚀 Chuyển tất cả Spot → CMYK",
-    "da_chuyen_spotname_tat_ca_spot_cmyk": "✅ Đã chuyển ${spotName || 'tất cả Spot'} → CMYK",
     "dang_chuyen_doi": "Đang chuyển đổi...",
-    "data_detail_loi": "❌ ${data.detail || 'Lỗi'}",
     "file_chi_chua_mau_process_cmyk_khong_co": "✅ File chỉ chứa màu Process (CMYK) — Không có Spot Color",
     "file_da_duoc_cap_nhat_tren_viewer": "✅ File đã được cập nhật trên Viewer.",
     "kenh_muc_ink_channels": "🎨 KÊNH MỰC (INK CHANNELS)",
     "quet_lai": "↻ Quét lại",
-    "vui_long_mo_file_pdf_truoc": "Vui lòng mở file PDF trước"
+    "vui_long_mo_file_pdf_truoc": "Vui lòng mở file PDF trước",
+    "da_chuyen_x_cmyk": "Đã chuyển {{x}} → CMYK",
+    "tat_ca_spot": "tất cả Spot",
+    "loi": "Lỗi",
+    "chuyen_x_cmyk": "Chuyển {{x}} → CMYK"
   },
   "preprocess.merge": {
     "cach_lap_lai_how_to_repeat": "Cách lặp lại (How to repeat)",
@@ -3049,7 +3253,15 @@
     "vui_long_keo_it_nhat_1_truong_nhay_so": "Vui lòng kéo ít nhất 1 trường Nhảy số vào PDF.",
     "xao_tron_ngau_nhien_lam_ve_boc_tham": "Xáo trộn ngẫu nhiên (Làm vé bốc thăm)",
     "xep_chong_stacked": "Xếp chồng (Stacked)",
-    "xoa_truong_nay": "Xóa trường này"
+    "xoa_truong_nay": "Xóa trường này",
+    "dang_day_du_lieu_len_may_chu": "Đang đẩy dữ liệu lên máy chủ ({{n}} trang)...",
+    "trang": "Trang {{n}}:",
+    "dung_b_cho_bo_va_t_cho_stt": "Dùng {{b}} cho Bộ và {{t}} cho Số thứ tự.",
+    "dinh_dang": "Định dạng",
+    "n_truong": "{{n}} trường",
+    "xem_truoc_ket_qua_slots": "Xem trước kết quả ({{n}} Slots)",
+    "tao_file_nhay_so_slots": "Tạo file Nhảy số ({{n}} Slots)",
+    "loi_msg": "Lỗi: {{msg}}"
   },
   "preprocess.ocr": {
     "bat_cho_file_scan_tu_giay_tat_neu_file": "Bật cho file scan từ giấy. Tắt nếu file đã sạch (export từ Photoshop/AI).",
@@ -3083,7 +3295,8 @@
     "trang_co_chu": "Trang có chữ",
     "trung_gian_the_anh": "Trung giản thể + Anh",
     "trung_phon_the_anh": "Trung phồn thể + Anh",
-    "tu_da_nhung": "Từ đã nhúng"
+    "tu_da_nhung": "Từ đã nhúng",
+    "__tv_khmer_anh": "Khmer + Anh"
   },
   "preprocess.optimize": {
     "150_dpi_can_bang_chat_luong_dung_luong": "150 DPI — Cân bằng chất lượng & dung lượng",
@@ -3115,7 +3328,11 @@
     "tu_chon_dpi_va_thong_so": "Tự chọn DPI và thông số",
     "tuy_chinh": "⚙️ Tùy chỉnh",
     "tuy_chon": "Tùy chọn",
-    "xoa_metadata_thua": "Xóa metadata thừa"
+    "xoa_metadata_thua": "Xóa metadata thừa",
+    "giam_dung_luong_file_bang_cach_nen": "— Giảm dung lượng file bằng cách nén ảnh, subset font, gỡ rác.",
+    "chat_luong_in": "Chất lượng in",
+    "sau": "Sau",
+    "loi_server": "Lỗi server ({{status}})"
   },
   "preprocess.pageResizer": {
     "1_kich_thuoc_trang_dich": "1. Kích thước trang đích",
@@ -3199,7 +3416,8 @@
     "tu_trang": "Từ trang",
     "xoa_cac_trang_nay_khoi_tai_lieu_sau_khi": "Xóa các trang này khỏi tài liệu sau khi trích xuất",
     "xoa_trang": "Xóa trang",
-    "xoa_trang_2": "Xóa Trang"
+    "xoa_trang_2": "Xóa Trang",
+    "trang_hien_tai": "Trang hiện tại ({{n}})"
   },
   "preprocess.preflight": {
     "anh_chua_embed_mat_link": "Ảnh chưa Embed (Mất Link)",
@@ -3259,7 +3477,8 @@
     "toi_uu_hoa_dung_luong_bang_cach_giam_do": "Tối ưu hóa dung lượng bằng cách giảm độ phân giải (Downsample) của hình ảnh thừa chi tiết (>600 DPI) xuống chuẩn in ấn 300 DPI. Giúp file nhẹ và RIP nhanh hơn.",
     "tu_dong_chuyen_doi_toan_bo_doi_tuong": "Tự động chuyển đổi toàn bộ đối tượng RGB/Lab sang hệ màu CMYK chuẩn in ấn. Sử dụng ICC Profile FOGRA39 (Coated) để đảm bảo độ chuẩn xác màu sắc cao nhất.",
     "xem_truoc_ban_in": "👁️ Xem trước bản in",
-    "xoa_bo_cac_du_lieu_an_metadata_thua": "Xóa bỏ các dữ liệu ẩn, metadata thừa, comments, form, hoặc các thẻ XML không cần thiết trong cấu trúc PDF. Giúp làm sạch file và ngăn ngừa lỗi tương thích."
+    "xoa_bo_cac_du_lieu_an_metadata_thua": "Xóa bỏ các dữ liệu ẩn, metadata thừa, comments, form, hoặc các thẻ XML không cần thiết trong cấu trúc PDF. Giúp làm sạch file và ngăn ngừa lỗi tương thích.",
+    "thuc_thi": "Thực thi"
   },
   "preprocess.savePdfx": {
     "cach_khac_phuc": "Cách khắc phục",
@@ -3271,7 +3490,6 @@
     "dang_kiem_tra": "Đang kiểm tra...",
     "dang_xuat": "Đang xuất...",
     "dat_trimbox_truoc_bang_cong_cu_set_page": "Đặt TrimBox trước bằng công cụ \"Set Page Boxes\" trong Preflight. Xuất PDF/X không tự tạo TrimBox nếu file gốc chưa có.",
-    "data_detail_loi_xuat_pdf_x": "❌ ${data.detail || 'Lỗi xuất PDF/X'}",
     "file_da_duoc_cap_nhat_tren_viewer": "✅ File đã được cập nhật trên Viewer.",
     "file_dat_chuan_compliance_standard": "✅ File đạt chuẩn ${compliance.standard_label}!",
     "giai_thich_loi_nay": "Giải thích lỗi này",
@@ -3303,7 +3521,13 @@
     "tuong_thich": "Tương thích",
     "tuong_thich_cao_cmyk_only_flatten": "Tương thích cao, CMYK only, flatten transparency. Phù hợp hầu hết nhà in.",
     "vi_sao_quan_trong": "Vì sao quan trọng?",
-    "vui_long_mo_file_pdf_truoc": "Vui lòng mở file PDF trước"
+    "vui_long_mo_file_pdf_truoc": "Vui lòng mở file PDF trước",
+    "da_xuat_x_thanh_cong": "Đã xuất {{x}} thành công",
+    "loi_xuat_pdf_x": "Lỗi xuất PDF/X",
+    "file_dat_chuan_x": "File đạt chuẩn {{x}}!",
+    "x_dat_xuat_pdfx_se_tu_dong_sua": "{{p}}/{{tot}} đạt — Xuất PDF/X sẽ tự động sửa",
+    "x_dat_can_xu_ly_thu_cong_truoc": "{{p}}/{{tot}} đạt — Cần xử lý thủ công trước: {{list}} (bấm ? để xem cách). Các mục còn lại sẽ tự sửa khi xuất.",
+    "xuat_x": "Xuất {{x}}"
   },
   "preprocess.setPageBoxesUtils": {
     "gia_tri_nhap_khong_phai_so_hop_le": "Giá trị nhập không phải số hợp lệ",
@@ -3347,7 +3571,9 @@
     "trong": "Trống",
     "tuy_chinh": "Tùy chỉnh",
     "vui_long_nhap_chuoi_quy_tac_hop_le": "Vui lòng nhập chuỗi quy tắc hợp lệ.",
-    "xoa": "Xóa"
+    "xoa": "Xóa",
+    "xoay": "Xoay",
+    "mo_phong_cho_tai_lieu_mau_n_trang": "* Mô phỏng cho tài liệu mẫu có {{n}} trang."
   },
   "preprocess.split": {
     "1_che_do_tach": "1. Chế độ tách",
@@ -3364,7 +3590,8 @@
     "tach_theo_dai_trang": "Tách theo Dải trang",
     "trang_can_trich_xuat": "Trang cần trích xuất",
     "trich_xuat_cac_trang_duoc_chi_dinh_ra": "Trích xuất các trang được chỉ định ra thành 1 file duy nhất.",
-    "trich_xuat_trang": "Trích xuất trang"
+    "trich_xuat_trang": "Trích xuất trang",
+    "vd_dai_trang_tao_ra_2_file": "VD: \"1-4, 5-8\" → Tạo ra 2 file (file chứa tr1-tr4, file chứa tr5-tr8)."
   },
   "preprocess.stickTextNumber": {
     "0_do": "0 độ",
@@ -3481,7 +3708,8 @@
     "xoa_le_trang_thua": "✅ Xóa lề trắng thừa",
     "xoa_le_trang_thua_2": "Xóa lề trắng thừa",
     "ra_vung_bu_xen_vd_chu_n_m": "ra vùng bù xén (vd chữ \"n\" → \"m\"). Nếu xén lệch vào trim, phần soi gương có thể lộ ra gây",
-    "keo_gian_mep_anh_quoted": "\"Kéo giãn mép ảnh\""
+    "keo_gian_mep_anh_quoted": "\"Kéo giãn mép ảnh\"",
+    "loi_server": "Lỗi server ({{status}})"
   },
   "preprocess.trapPresets": {
     "ap_dung_overprint_den": "🚀 Áp dụng Overprint đen",
@@ -3493,13 +3721,13 @@
     "cong_cu_nay_bat": "Công cụ này bật",
     "da_ap_dung_overprint_den": "✅ Đã áp dụng Overprint đen",
     "dang_ap_dung": "Đang áp dụng...",
-    "data_error_loi": "❌ ${data.error || 'Lỗi'}",
     "file_da_duoc_cap_nhat_tren_viewer": "✅ File đã được cập nhật trên Viewer.",
     "giu_overprint_hien_co": "Giữ overprint hiện có",
     "khong_tat_cac_thiet_lap_overprint_da_co": "Không tắt các thiết lập overprint đã có sẵn trong file; chỉ bổ sung cho object đen chưa set.",
     "overprint_text_net_den_k_95": "Overprint text/nét đen (K>95%)",
     "pham_vi_cong_cu": "Phạm vi công cụ",
-    "vui_long_mo_file_pdf_truoc": "Vui lòng mở file PDF trước"
+    "vui_long_mo_file_pdf_truoc": "Vui lòng mở file PDF trước",
+    "loi_x": "❌ {{msg}}"
   },
   "preprocess.trimShift": {
     "ap_dung_cho": "Áp dụng cho",
@@ -3565,7 +3793,9 @@
     "loi_khi_luu_file": "Lỗi khi lưu file.",
     "loi_server_res_status_errortext": "Lỗi Server (${res.status}): ${errorText}",
     "muc_do_phong_to_upscale_factor": "Mức độ phóng to (Upscale Factor)",
-    "phong_to_anh_ai": "Phóng to ảnh AI"
+    "phong_to_anh_ai": "Phóng to ảnh AI",
+    "luu_tat_ca": "Lưu tất cả",
+    "__tv_dang_phong_to": "Đang phóng to"
   },
   "preprocess.vdpAlign": {
     "can_doi_tuong": "Căn đối tượng",
@@ -3580,7 +3810,10 @@
     "dan_deu_theo_chieu_doc": "Dàn đều theo chiều dọc",
     "dan_deu_theo_chieu_ngang": "Dàn đều theo chiều ngang",
     "phan_bo_deu": "Phân bố đều",
-    "selectedfieldids_length_doi_tuong": "(${selectedFieldIds.length} đối tượng)"
+    "selectedfieldids_length_doi_tuong": "(${selectedFieldIds.length} đối tượng)",
+    "can_chinh": "Căn chỉnh",
+    "theo_trang": "(theo trang)",
+    "n_doi_tuong": "({{n}} đối tượng)"
   },
   "preprocess.watermark": {
     "1_chi_trang_le": "1️⃣ Chỉ trang lẻ",
@@ -3593,7 +3826,7 @@
     "canh_trai": "⬅️ Cạnh trái",
     "canh_tren": "⬆️ Cạnh trên",
     "che_do_scale": "Chế độ Scale",
-    "chen_hinh_nen_file_pdf_anh_ben_duoi": "Chèn hình nền (File PDF/Ảnh) bên dưới hoặc đóng dấu văn bản/logo đè lên trên trang PDF.\n                        Xử lý trực tiếp trên trình duyệt, bảo mật 100%.",
+    "chen_hinh_nen_file_pdf_anh_ben_duoi": "Chèn hình nền (File PDF/Ảnh) bên dưới hoặc đóng dấu văn bản/logo đè lên trên trang PDF.",
     "chen_nen_dong_dau_background_watermark": "Chèn Nền & Đóng Dấu (Background/Watermark)",
     "chen_thanh_cong": "Chèn thành công!",
     "chinh_giua": "↔️ Chính giữa",
@@ -3635,7 +3868,8 @@
     "ty_le_kich_thuoc": "Tỷ lệ kích thước",
     "vd_ban_nhap_khong_in": "VD: BẢN NHÁP - KHÔNG IN",
     "vua_khit_trang_giu_ty_le": "🖼️ Vừa khít trang (Giữ tỷ lệ)",
-    "xu_ly_mot_file_khac": "Xử lý một file khác"
+    "xu_ly_mot_file_khac": "Xử lý một file khác",
+    "xu_ly_truc_tiep_tren_trinh_duyet_bao_mat": "Xử lý trực tiếp trên trình duyệt, bảo mật 100%."
   },
   "recipe.recipe": {
     "an_mep_mm": "Ăn mép (mm)",
@@ -3713,7 +3947,10 @@
     "xoa_quy_trinh_r_name": "Xóa quy trình \"${r.name}\"?",
     "xuat_file": "Xuất file",
     "xuong": "Xuống",
-    "y_do_tai_tao_mau": "Ý đồ tái tạo màu"
+    "y_do_tai_tao_mau": "Ý đồ tái tạo màu",
+    "da_nhap_quy_trinh": "Đã nhập quy trình \"{{name}}\".",
+    "da_luu_quy_trinh": "Đã lưu quy trình \"{{name}}\" ({{count}} bước).",
+    "luu_that_bai": "Lưu thất bại: {{msg}}"
   },
   "recipe.recipeOps": {
     "be_tem": "Bế tem",
@@ -3776,11 +4013,11 @@
     "loi_binh_tem_phat_lai": "Lỗi bình tem (phát lại):",
     "loi_nen_pdf": "Lỗi nén PDF:",
     "loi_prepress": "Lỗi prepress:",
-    "loi_server_response_status": "Lỗi server (${response.status})",
+    "loi_server_response_status": "Lỗi server ({{status}})",
     "loi_tao_bu_xen_vector": "Lỗi tạo bù xén Vector",
     "loi_tao_duong_cat": "Lỗi tạo đường cắt:",
     "loi_xoa_le_trang": "Lỗi xóa lề trắng",
-    "nen_pdf_that_bai_res_status": "Nén PDF thất bại (${res.status})"
+    "nen_pdf_that_bai_res_status": "Nén PDF thất bại ({{status}})"
   },
   "recipe.recipeStore": {
     "recipe_khong_doc_duoc_thu_muc_recipe": "[recipe] Không đọc được thư mục recipe, fallback localStorage:"
@@ -3832,36 +4069,10 @@
   },
   "shell": {
     "cai_dat_he_thong_cau_hinh_api_mo_hinh": "Cài đặt hệ thống & Cấu hình API mô hình ngôn ngữ (⚙️)",
-    "chi_tab_active_xu_ly_lenh_app_level_goi": "//    (chỉ tab active xử lý); lệnh app-level gọi handler trực tiếp. ─────────────\n  const recentFiles = useRecentFiles((s) => s.files);\n  const viewerCmd = useCallback((cmd: string) => {\n    window.dispatchEvent(new CustomEvent(",
-    "cleanup_if_d_moved_justdraggedref": ", cleanup);\n    };\n\n    if (d.moved) {\n      justDraggedRef.current = true;\n      setTimeout(() => { justDraggedRef.current = false; }, 0);\n      const from = d.d;\n      const to = d.targetIndex;\n      if (from !== to) {\n        // FLIP: ghi vị trí con trỏ hiện tại rồi commit thứ tự; useLayoutEffect sẽ\n        // cho tab trượt từ đây về ô đích.\n        settleRef.current = { id: d.id, oldLeft: dragged.getBoundingClientRect().left };\n        dragged.style.transition =",
-    "const_filectx_usefilecontext_const": ");\n  const fileCtx = useFileContext();\n  const { showMenuBar, showRulers, hiddenTools } = useAppSettingsStore();\n  const { theme, toggleTheme } = useTheme();\n\n  // Warm-up pdfjs worker lúc app rảnh để loại bỏ cold-start vài giây ở lần\n  // mở/tạo PDF đầu tiên (qua pdfjs). Chạy nền, không chặn UI.\n  useEffect(() => {\n    const cancel = scheduleWarmupPdfjs();\n    return cancel;\n  }, []);\n\n  // ── CRASH RECOVERY: quét snapshot còn sót lúc khởi động (chỉ có nếu lần trước\n  //    CRASH — thoát sạch đã xóa hết). Có → hỏi user khôi phục. ──────────────────\n  useEffect(() => {\n    if (!(window as any).__TAURI_INTERNALS__) return;\n    let cancelled = false;\n    (async () => {\n      try {\n        const snaps = await listSnapshots();\n        if (!cancelled && snaps.length > 0) setRecoverySnaps(snaps);\n      } catch { /* bỏ qua nếu lỗi */ }\n    })();\n    return () => { cancelled = true; };\n  }, []);\n  \n  // Drag hover to switch tab logic\n  const tabHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);\n\n  const handleTabDragOver = useCallback((e: React.DragEvent, id: string) => {\n    e.preventDefault(); // Necessary to allow dropping over the tab\n    if (activeTabIdRef.current !== id) {\n      if (!tabHoverTimeoutRef.current) {\n        tabHoverTimeoutRef.current = setTimeout(() => {\n          setActiveTabId(id);\n        }, 500); // 500ms delay to switch tab\n      }\n    }\n  }, []);\n\n  const handleTabDragLeave = useCallback(() => {\n    if (tabHoverTimeoutRef.current) {\n      clearTimeout(tabHoverTimeoutRef.current);\n      tabHoverTimeoutRef.current = null;\n    }\n  }, []);\n\n  // ── Kéo-thả sắp xếp lại tab (mượt như Chrome) ──────────────────────────────\n  // KHÔNG dùng HTML5 draggable (Tauri dragDropEnabled nuốt sự kiện). Dùng pointer\n  // events + thao tác DOM TRỰC TIẾP để đạt 60fps: tab đang kéo bám con trỏ, các tab\n  // khác TRƯỢT nhường chỗ bằng CSS transition, chỉ commit lại thứ tự mảng khi thả.\n  const TAB_GAP = 6; // khớp gap-1.5 của thanh tab\n  const dragRef = useRef<null | {\n    id: string;\n    pointerStartX: number;\n    draggedEl: HTMLElement;\n    els: { id: string; el: HTMLElement; center: number }[];\n    d: number;          // vị trí gốc của tab kéo trong danh sách tab tool\n    unit: number;       // bề rộng tab kéo + gap = quãng dịch của tab nhường chỗ\n    targetIndex: number;\n    moved: boolean;\n  }>(null);\n  const justDraggedRef = useRef(false);\n  // FLIP: tab vừa thả sẽ trượt từ vị trí con trỏ về đúng ô của nó.\n  const settleRef = useRef<null | { id: string; oldLeft: number }>(null);\n  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);\n\n  const onTabPointerMove = useCallback((e: PointerEvent) => {\n    const d = dragRef.current;\n    if (!d) return;\n    const dx = e.clientX - d.pointerStartX;\n    if (!d.moved && Math.abs(dx) < 5) return; // ngưỡng tránh nhầm click\n    if (!d.moved) {\n      d.moved = true;\n      setDraggingTabId(d.id);\n      for (const o of d.els) {\n        o.el.style.transition = o.id === d.id ?",
-    "const_moved_tools_splice_from_1_tools": ");\n          const [moved] = tools.splice(from, 1);\n          tools.splice(to, 0, moved);\n          return [...home, ...tools];\n        });\n      } else {\n        // Thả tại chỗ: trượt tab kéo về 0 thay vì snap.\n        settleBack();\n      }\n    } else {\n      dragged.style.transition =",
-    "const_tooldef_tool_registry_find_t_t_id": "&& (() => {\n              const toolDef = TOOL_REGISTRY.find(t => t.id === tab.type && t.isEnabled);\n              if (!toolDef) return <div className=\"flex items-center justify-center h-full text-slate-400\">Công cụ không tìm thấy</div>;\n              const ToolComponent = toolDef.component;\n              // Các tab dùng ImpositionTab (bình bài + N-Up/Tem bế/CNC khoá-mode) đều\n              // cần ĐỦ props: tabId + onDirtyChange (theo dõi CHƯA LƯU → cảnh báo khi\n              // đóng tab/app) + lockedMode + initialFile. Trước đây chỉ type===",
     "dong_alt_f4": "Đóng (Alt+F4)",
     "dong_cua_so": "Đóng cửa sổ",
-    "dragref_current_null_setdraggingtabid": ";\n    }\n    dragRef.current = null;\n    setDraggingTabId(null);\n  }, [onTabPointerMove]);\n\n  const handleTabPointerDown = useCallback((e: React.PointerEvent, id: string) => {\n    if (e.button !== 0) return; // chỉ chuột trái\n    const nodes = Array.from(document.querySelectorAll<HTMLElement>(",
-    "duoc_props_nup_diecut_cnc_roi_nhanh_mac": "// được props; nup/diecut/cnc rơi nhánh mặc định (KHÔNG onDirtyChange) →\n              // đóng tab/app mất dữ liệu không cảnh báo (audit an toàn dữ liệu).\n              const IMPOSITION_FAMILY = [",
-    "file_extrapayload_onspawncombinetabs": ", { file, ...extraPayload })}\n                      onSpawnCombineTabs={(results: { file: File; title: string }[]) => {\n                        // Mỗi nhóm kích thước → 1 tab Combine riêng (file đã ghép).\n                        // Stagger timestamp nhẹ để id tab không trùng trong cùng ms.\n                        results.forEach((r, i) => {\n                          setTimeout(() => {\n                            handleOpenApp(",
-    "file_fileobj_initialrecovery_snap": ", {\n            file: fileObj,\n            initialRecovery: snap,\n            lockedMode: snap.lockedMode,\n            focusFeature: snap.feature,\n          });\n        } catch {\n          // Phương án A: file gốc không còn trên đĩa → không dựng lại được.\n          toast.error(`Không khôi phục được \"${snap.title}\": file gốc không còn.`);\n        }\n      }\n    } finally {\n      // Tab khôi phục đang-sửa sẽ tự ghi snapshot MỚI → xóa snapshot cũ cho sạch.\n      await clearAllSnapshots();\n    }\n  }, [handleOpenApp]);\n\n  const dismissRecovery = useCallback(async () => {\n    setRecoverySnaps(null);\n    await clearAllSnapshots();\n  }, []);\n\n  // Sync refs safely\n  tabsRef.current = tabs;\n  activeTabIdRef.current = activeTabId;\n\n  const commitCloseTab = useCallback((id: string) => {\n    // Release all blob URLs associated with this tab\n    fileCtx.releaseTab(id);\n    // Đóng tab CHỦ ĐỘNG (có xác nhận nếu dirty) = thoát sạch tab này → xóa snapshot\n    // recovery để lần mở sau không hỏi khôi phục nhầm.\n    void deleteSnapshot(id);\n\n    setTabs(prev => {\n      const idx = prev.findIndex(t => t.id === id);\n      if (idx === -1) return prev;\n      const nextTabs = prev.filter(t => t.id !== id);\n      if (activeTabIdRef.current === id && nextTabs.length > 0) {\n        const nextActiveIdx = Math.max(0, idx - 1);\n        setActiveTabId(nextTabs[nextActiveIdx].id);\n      }\n      return nextTabs;\n    });\n    setTabToConfirmClose(null);\n  }, [fileCtx]);\n\n  const handleCloseTab = useCallback((id: string, e?: React.MouseEvent) => {\n    if (e) e.stopPropagation();\n\n    const tabToClose = tabsRef.current.find(t => t.id === id);\n    if (!tabToClose) return;\n\n    const isSpawnedOrOutput = isOutputFile(tabToClose.title);\n\n    // Chỉ dựa vào trạng thái dirty THẬT của tab (ImpositionTab đã tôn trọng việc đã lưu).\n    // Không ép dirty theo tên file output nữa — nếu không, file đã lưu mà tên còn \"VDP_\"\n    // vẫn bị báo \"chưa lưu\".\n    const effectivelyDirty = tabToClose.isDirty;\n    void isSpawnedOrOutput;\n\n    if (effectivelyDirty) {\n      setTabToConfirmClose(id);\n      return;\n    }\n\n    commitCloseTab(id);\n  }, [commitCloseTab]);\n\n  const updateTabTitle = useCallback((id: string, title: string) => {\n    setTabs(prev => {\n      const hasChange = prev.some(t => t.id === id && t.title !== title);\n      if (!hasChange) return prev;\n      return prev.map(t => t.id === id ? { ...t, title } : t);\n    });\n  }, []);\n\n  const updateTabDirty = useCallback((id: string, isDirty: boolean) => {\n    setTabs(prev => {\n      const hasChange = prev.some(t => t.id === id && t.isDirty !== isDirty);\n      if (!hasChange) return prev;\n      return prev.map(t => t.id === id ? { ...t, isDirty } : t);\n    });\n  }, []);\n  useEffect(() => {\n    const preventNavigation = (e: DragEvent) => {\n      // Allow default behavior only for actual file inputs\n      if (e.target instanceof HTMLInputElement && e.target.type ===",
-    "h3_p_classname_text_sm_text_slate_600": "}</h3>\n        <p className=\"text-sm text-slate-600 dark:text-zinc-300 mb-6 font-medium\">\n          {body || (<>\n          File <span className=\"text-rose-500 font-bold px-1 break-all\">{fileName}</span> chưa được lưu vào máy. Nếu đóng, bạn sẽ mất thành quả file này.\n          <br /><br />\n          Bạn có chắc chắn muốn đóng tab này không?\n          </>)}\n        </p>\n        <div className=\"flex justify-end gap-3\">\n          <button\n            onClick={onCancel}\n            className=\"px-6 py-2.5 min-w-[100px] text-[15px] font-semibold rounded bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 transition-colors focus:outline-none\"\n          >\n            Hủy bỏ\n          </button>\n          <button\n            onClick={onConfirm}\n            className=\"px-6 py-2.5 min-w-[100px] text-[15px] font-bold rounded bg-rose-500 hover:bg-rose-600 text-white transition-colors shadow-sm focus:outline-none\"\n          >\n            {confirmText ||",
-    "handlebeforeunload_chan_dong_cua_so": ", handleBeforeUnload);\n  }, []);\n\n  // CHẶN ĐÓNG CỬA SỔ TAURI khi còn tab CHƯA LƯU. beforeunload KHÔNG bắt được nút X\n  // native (Tauri đóng cửa sổ qua sự kiện riêng `close-requested`, không qua DOM\n  // unload) → trước đây bấm X = mất sạch dữ liệu chưa lưu, KHÔNG cảnh báo. Đăng ký\n  // onCloseRequested: nếu có tab dirty → preventDefault + hiện popup xác nhận. Bao\n  // trùm cả nút X (gọi close()), Alt+F4, và đóng từ taskbar (đều phát close-requested).\n  useEffect(() => {\n    if (!(window as any).__TAURI_INTERNALS__) return;  // chỉ áp cho desktop Tauri\n    let unlisten: (() => void) | undefined;\n    let disposed = false;\n    getCurrentWindow()\n      .onCloseRequested((event) => {\n        if (forceCloseRef.current) return;            // đã xác nhận thoát → cho đóng\n        if (tabsRef.current.some(t => t.isDirty)) {\n          event.preventDefault();          // giữ cửa sổ lại\n          setShowAppCloseConfirm(true);    // hiện popup xác nhận\n        }\n        // không dirty → để Tauri đóng bình thường\n      })\n      .then((fn) => {\n        if (disposed) fn(); else unlisten = fn;\n      })\n      .catch(() => {});\n    return () => { disposed = true; if (unlisten) unlisten(); };\n  }, []);\n\n  // Nút X (title bar) phát",
-    "handlekeydown_handleclosetab": ", handleKeyDown);\n  }, [handleCloseTab, handleOpenApp, handleOpenFile]);\n\n  const accumulatedFiles = useRef<File[]>([]);\n  const sysTimeoutRef = useRef<any>(null);\n\n  useEffect(() => {\n    const handleSystemFiles = (e: any) => {\n      if (e.detail && e.detail.files && e.detail.files.length > 0) {\n        accumulatedFiles.current = [...accumulatedFiles.current, ...e.detail.files];\n\n        if (sysTimeoutRef.current) clearTimeout(sysTimeoutRef.current);\n        sysTimeoutRef.current = setTimeout(() => {\n          const filesToProcess = [...accumulatedFiles.current];\n          accumulatedFiles.current = [];\n          // Sắp theo SỐ dẫn đầu tên file (numeric): \"10_\" SAU \"2_\" (kiểu số, không\n          // phải chữ cái). Quy ước người dùng đặt tên \"1_...\",\"2_...\" để định thứ tự\n          // trang → CombineTab gộp trang theo đúng thứ tự này → khớp cột số lượng\n          // Excel khi dán. File không có số đầu vẫn sắp ổn định theo tên.\n          if (filesToProcess.length > 1) {\n            filesToProcess.sort((a, b) =>\n              a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity:",
-    "handlesystemfiles_handleopenapp_menu": ", handleSystemFiles);\n  }, [handleOpenApp]);\n\n  // ── MENU BAR (kiểu Acrobat) — lệnh viewer đi qua sự kiện",
-    "handletabhoverleaveevent_const": ", handleTabHoverLeaveEvent);\n    }\n  }, []);\n\n  const handleOpenApp = useCallback((appId: AppToolId, payload?: any) => {\n    // Check single-instance tools\n    const existingId = getExistingInstance(appId, tabs);\n    if (existingId) {\n      setActiveTabId(existingId);\n      return;\n    }\n\n    // payload.title: tab Combine theo nhóm kích thước, recovery, v.v.\n    const title = (payload && typeof payload.title ===",
-    "kiem_tra_tab_chua_luu_o_day_roi_dong": "→ kiểm tra tab chưa lưu ở đây rồi\n  // đóng bằng destroy() (đáng tin như min/max; close() không tự đóng WebView2 khi có\n  // listener close-requested). Có tab dirty → hiện dialog xác nhận thay vì đóng thẳng.\n  useEffect(() => {\n    const onQuit = () => {\n      if (!(window as any).__TAURI_INTERNALS__) return;\n      if (!forceCloseRef.current && tabsRef.current.some(t => t.isDirty)) {\n        setShowAppCloseConfirm(true);\n        return;\n      }\n      getCurrentWindow().destroy().catch((e: any) => toast.error(\"Close Error: \" + (e.message || e)));\n    };\n    window.addEventListener(",
-    "math_random_tostring_36_substring_2_5": "+ Math.random().toString(36).substring(2, 5);\n\n    // Automatically mark spawned imposition files as dirty\n    const isSpawnedDirty = payload && payload.file && payload.file.name && isOutputFile(payload.file.name);\n\n    // Save to recent files history if it has a physical path.\n    // Bỏ qua file kết quả chưa lưu (VDP_, Imposed_...): chúng trỏ tới file tạm\n    // trên server (dung lượng ~0, sẽ bị dọn) nên xuất hiện dạng 0MB/\"Missing\".\n    if (payload && payload.file && (payload.file as any).path && !isOutputFile(payload.file.name ||",
-    "moi_category_1_muc_cha_co_re_chuot_xo": ",\n      // Mỗi category = 1 mục cha có ▶, rê chuột xổ ra tool con (tránh đổ hết ~25 tool ra 1 cột).\n      items: TOOL_CATEGORIES.flatMap((cat) => {\n        const tools = getToolsByCategory(cat.id).filter((t) => t.isEnabled && !hiddenTools.includes(getToolUniqueKey(t)));\n        if (tools.length === 0) return [];\n        return [{\n          label: cat.title,\n          submenu: tools.map((t) => ({\n            label: t.title,\n            icon: t.icon,\n            onClick: () => handleOpenApp(t.id, t.defaultPayload),\n          })),\n        }];\n      }),\n    },\n    {\n      label:",
-    "onclick_setaboutautocheck_false": ", onClick: () => { setAboutAutoCheck(false); setIsAboutOpen(true); } },\n      ],\n    },\n  ];\n\n  return (\n    <div className=\"flex flex-col h-screen overflow-hidden bg-[#e6e8eb] dark:bg-[#1a1a1a] select-none text-slate-800 dark:text-zinc-200 relative\">\n      <SystemIntegrations />\n      <UpdateChecker />\n\n      <TitleBar onOpenSettings={() => setIsGlobalSettingsOpen(true)} />\n\n      {/* MENU BAR (kiểu Acrobat) — bật/tắt trong Cài đặt > Không gian làm việc */}\n      {showMenuBar && (\n        <div className=\"h-7 w-full shrink-0 bg-[#f0f0f0] dark:bg-[#121212] border-b border-black/10 dark:border-white/10 flex items-center pl-4 z-[100] relative\">\n          <MenuBar menus={menus} />\n        </div>\n      )}\n\n      {/* ACROBAT MDI TAB BAR */}\n      <div className=\"flex items-end min-h-[34px] bg-[#f0f0f0] dark:bg-[#121212] shrink-0 overflow-x-auto overflow-y-hidden border-b border-black/10 dark:border-white/10 pl-6 pr-4 pt-1 gap-1.5 focus:outline-none [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]\">\n\n        {/* Pinned Home Tab */}\n        {tabs.filter(t => t.id ===",
-    "onconfirm_if_tabtoconfirmclose": "}\n        onConfirm={() => {\n          if (tabToConfirmClose) commitCloseTab(tabToConfirmClose);\n        }}\n        onCancel={() => setTabToConfirmClose(null)}\n      />\n\n      <ConfirmCloseModal\n        isOpen={showAppCloseConfirm}\n        fileName=\"\"\n        title=\"Thoát ứng dụng?\"\n        confirmText=\"Vẫn thoát\"\n        body={(() => {\n          const dirty = tabs.filter(t => t.isDirty);\n          return (<>\n            Có <span className=\"text-rose-500 font-bold px-1\">{dirty.length}</span>\n            tài liệu CHƯA LƯU{dirty.length ?",
-    "onquit_mo_file_pdf_anh_dung_chung_cho": ", onQuit);\n  }, []);\n\n  // Mở file (PDF/ảnh) — dùng chung cho phím tắt Ctrl+O và menu File > Mở.\n  const handleOpenFile = useCallback(() => {\n    if ((window as any).__TAURI_INTERNALS__) {\n      import(",
-    "ontabpointermove_const_d_dragref": ", onTabPointerMove);\n    const d = dragRef.current;\n    if (!d) { return; }\n\n    // Các tab nhường chỗ: xoá tức thì (sau khi commit, vị trí mới trùng vị trí đã dịch\n    // nên không bị nhảy). Tab kéo xử lý riêng bên dưới để trượt mượt.\n    for (const o of d.els) {\n      if (o.id === d.id) continue;\n      o.el.style.transition =",
-    "ontabpointerup_once_true": ", onTabPointerUp, { once: true });\n  }, [onTabPointerMove, onTabPointerUp]);\n\n  // FLIP sau khi commit thứ tự: tab vừa thả trượt mượt từ vị trí con trỏ về ô đích.\n  useLayoutEffect(() => {\n    const s = settleRef.current;\n    if (!s) return;\n    settleRef.current = null;\n    const el = document.querySelector<HTMLElement>(`[data-tab-id=\"${s.id}\"]`);\n    if (!el) return;\n    const newLeft = el.getBoundingClientRect().left;\n    const delta = s.oldLeft - newLeft;\n    if (Math.abs(delta) < 0.5) return;\n    el.style.transition =",
     "phong_to": "Phóng to",
     "phong_to_cua_so": "Phóng to cửa sổ",
-    "span_br_br_neu_thoat_ban_se_mat_toan_bo": ")}\n            </span>.\n            <br /><br />\n            Nếu thoát, bạn sẽ mất toàn bộ thành quả chưa lưu. Bạn có chắc chắn muốn thoát?\n          </>);\n        })()}\n        onConfirm={() => {\n          setShowAppCloseConfirm(false);\n          // Thoát SẠCH (user xác nhận) → xóa hết snapshot recovery rồi mới đóng, để\n          // lần mở sau KHÔNG hỏi khôi phục (snapshot còn sót chỉ khi CRASH).\n          forceCloseRef.current = true;\n          clearAllSnapshots().finally(() => {\n            getCurrentWindow().destroy().catch((e: any) => toast.error(\"Close Error: \" + (e.message || e)));\n          });\n        }}\n        onCancel={() => setShowAppCloseConfirm(false)}\n      />\n\n      {recoverySnaps && recoverySnaps.length > 0 && (\n        <div className=\"fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm\">\n          <div className=\"bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-md w-full mx-4 border border-amber-500/40\">\n            <h3 className=\"text-lg font-bold text-slate-900 dark:text-white mb-2\">🛟 Khôi phục phiên chưa lưu?</h3>\n            <p className=\"text-sm text-slate-600 dark:text-zinc-300 mb-3 font-medium\">\n              Phát hiện <span className=\"text-amber-600 font-bold\">{recoverySnaps.length}</span> tài liệu\n              chưa lưu từ lần chạy trước (có thể do tắt đột ngột / mất điện). Khôi phục lại các thao tác đang sửa?\n            </p>\n            <ul className=\"text-[12px] text-slate-600 dark:text-zinc-300 mb-5 max-h-40 overflow-auto list-disc pl-5 space-y-0.5\">\n              {recoverySnaps.map((s) => (\n                <li key={s.tabId} className=\"break-all\">\n                  <span className=\"font-semibold\">{s.title}</span>\n                  <span className=\"text-slate-400\"> — {new Date(s.savedAt).toLocaleString()}</span>\n                </li>\n              ))}\n            </ul>\n            <div className=\"flex justify-end gap-3\">\n              <button\n                onClick={() => { void dismissRecovery(); }}\n                className=\"px-5 py-2.5 min-w-[100px] text-[14px] font-semibold rounded bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 transition-colors\"\n              >\n                Bỏ qua\n              </button>\n              <button\n                onClick={() => { void restoreSnapshots(recoverySnaps); }}\n                className=\"px-5 py-2.5 min-w-[100px] text-[14px] font-bold rounded bg-amber-500 hover:bg-amber-600 text-white transition-colors shadow-sm\"\n              >\n                Khôi phục\n              </button>\n            </div>\n          </div>\n        </div>\n      )}\n\n      {isGlobalSettingsOpen && (\n        <SettingsModal initialTab={settingsInitialTab} onClose={() => setIsGlobalSettingsOpen(false)} />\n      )}\n\n      {isAboutOpen && (\n        <AboutModal autoCheck={aboutAutoCheck} onClose={() => setIsAboutOpen(false)} />\n      )}\n\n      <NewDocumentModal\n        isOpen={isNewDocOpen}\n        onClose={() => setIsNewDocOpen(false)}\n        onCreate={async (widthMm, heightMm, pageCount, name) => {\n          try {\n            const file = await createBlankPdfFile({ widthMm, heightMm, pageCount, name });\n            handleOpenApp(",
-    "submenu_label_email_support_email": ", submenu: [\n          { label: `Email: ${SUPPORT.email}`, onClick: () => openExternal(`mailto:${SUPPORT.email}`) },\n          { label: `Điện thoại: ${SUPPORT.phone}`, onClick: () => openExternal(`tel:${SUPPORT.phone}`) },\n          { label: `Zalo: ${SUPPORT.phone}`, onClick: () => openExternal(SUPPORT.zalo) },\n        ] },\n        { label:",
-    "tab_keo_bam_con_tro_d_draggedel_style": ";\n    }\n    // Tab kéo bám con trỏ\n    d.draggedEl.style.transform = `translateX(${dx}px)`;\n\n    // Chỉ số đích = số tab (khác tab kéo) có tâm nằm trước tâm tab kéo hiện tại\n    const draggedCenter = d.els[d.d].center + dx;\n    let t = 0;\n    for (let i = 0; i < d.els.length; i++) {\n      if (i === d.d) continue;\n      if (draggedCenter > d.els[i].center) t++;\n    }\n    d.targetIndex = t;\n\n    // Dịch các tab nhường chỗ (move d → t kiểu mảng)\n    for (let i = 0; i < d.els.length; i++) {\n      if (i === d.d) continue;\n      let shift = 0;\n      if (d.d < t && i > d.d && i <= t) shift = -d.unit;\n      else if (d.d > t && i >= t && i < d.d) shift = d.unit;\n      d.els[i].el.style.transform = `translateX(${shift}px)`;\n    }\n  }, []);\n\n  const onTabPointerUp = useCallback(() => {\n    window.removeEventListener(",
-    "then_userecentfiles_userecentfiles": ").then(({ useRecentFiles }) => {\n        useRecentFiles.getState().addFile({\n          path: (payload.file as any).path,\n          name: payload.file.name,\n          size: payload.file.size || 0\n        });\n      });\n    }\n\n    setTabs(prev => [...prev, { id: newId, type: appId, title, isClosable: true, payload, isDirty: !!isSpawnedDirty }]);\n    setActiveTabId(newId);\n  }, [tabs]);\n\n  const tabsRef = useRef(tabs);\n  const activeTabIdRef = useRef(activeTabId);\n  const forceCloseRef = useRef(false);  // true sau khi user xác nhận thoát app → cho phép đóng\n\n  // Khôi phục các phiên chưa lưu từ snapshot (mở lại tab + áp thao tác sửa lên file gốc).\n  const restoreSnapshots = useCallback(async (snaps: RecoverySnapshot[]) => {\n    setRecoverySnaps(null);\n    try {\n      const { stat } = await import(",
     "thu_nho": "Thu nhỏ",
     "thu_nho_cua_so": "Thu nhỏ cửa sổ",
     "cong_cu_khong_tim_thay": "Công cụ không tìm thấy",
@@ -3880,7 +4091,24 @@
     "file_chua_duoc_luu_vao_may_neu_dong": "chưa được lưu vào máy. Nếu đóng, bạn sẽ mất thành quả file này.",
     "ban_co_chac_chan_muon_dong_tab_nay": "Bạn có chắc chắn muốn đóng tab này không?",
     "van_dong": "Vẫn Đóng",
-    "file_label": "File"
+    "file_label": "File",
+    "tai_lieu_moi": "Tài liệu mới",
+    "mo_file": "Mở file…",
+    "luu_thanh": "Lưu thành…",
+    "dong_tab": "Đóng tab",
+    "thoat": "Thoát",
+    "lam_lai": "Làm lại",
+    "cat_kho_crop": "Cắt khổ (Crop)",
+    "xoa_trang": "Xóa trang…",
+    "ve_100": "Về 100%",
+    "thuoc_do_rulers": "Thước đo (Rulers)",
+    "giao_dien_toi": "Giao diện Tối",
+    "chi_co_tab_home": "Chỉ có tab Home",
+    "cai_dat_cau_hinh": "Cài đặt & Cấu hình",
+    "phim_tat": "Phím tắt",
+    "trang_chu_printsolutions": "Trang chủ PrintSolutions.vn",
+    "xem_hai_trang": "Xem hai trang",
+    "khong_khoi_phuc_duoc": "Không khôi phục được \"{{title}}\": file gốc không còn."
   },
   "tabs.aiQc": {
     "bao_cao_cua_ai_proofreader_se_hien_thi": "Báo cáo của AI Proofreader sẽ hiển thị tại đây.",
@@ -3907,7 +4135,9 @@
     "van_ban_dau_vao_text_pdf_image": "Văn bản Đầu vào (Text / PDF / Image)",
     "vui_long_chon_mot_mo_hinh_ai_gemini": "Vui lòng chọn một Mô hình AI (Gemini/OpenAI/Ollama) trong danh sách cấu hình.",
     "vui_long_nhap_api_key_cho_cloud_ai_da": "Vui lòng nhập API Key cho Cloud AI đã chọn.",
-    "vui_long_nhap_van_ban_can_soat_loi": "Vui lòng nhập văn bản cần soát lỗi."
+    "vui_long_nhap_van_ban_can_soat_loi": "Vui lòng nhập văn bản cần soát lỗi.",
+    "loi_may_chu": "Lỗi máy chủ ({{status}})",
+    "loi_trich_xuat": "Lỗi trích xuất: {{msg}}"
   },
   "tabs.combine": {
     "chia_nhom_theo_kich_thuoc": "Chia nhóm theo kích thước",
@@ -3932,10 +4162,10 @@
     "giu_nguyen_goc_khong_ep_kho": "Giữ nguyên gốc (Không ép khổ)",
     "khong_co_du_lieu_hop_le_de_dan_xen": "Không có dữ liệu hợp lệ để đan xen.",
     "khong_co_trang_hop_le_de_ghep": "Không có trang hợp lệ để ghép.",
-    "khong_do_duoc_kich_thuoc": "Không đo được kích thước:",
+    "khong_do_duoc_kich_thuoc": "Không đo được kích thước: {{msg}}",
     "kich_thuoc_trang": "Kích thước trang:",
-    "loi_khi_dan_xen": "Lỗi khi đan xen:",
-    "loi_khi_ghep_file": "Lỗi khi ghép file:",
+    "loi_khi_dan_xen": "Lỗi khi đan xen: {{msg}}",
+    "loi_khi_ghep_file": "Lỗi khi ghép file: {{msg}}",
     "nhom_pcount_trang": "Nhóm ${pCount} trang",
     "statusprefix_dang_dong_bo_kho_giay": "${statusPrefix}Đang đồng bộ khổ giấy...",
     "thu_lai_collapse": "Thu lại (Collapse)",
@@ -3944,7 +4174,14 @@
     "tron_dan_xen": "Trộn đan xen",
     "tron_xen_ke_tung_trang_cua_tat_ca_cac": "Trộn xen kẽ từng trang của tất cả các file trong danh sách",
     "xo_ra_expand_pages": "Xổ ra (Expand pages)",
-    "bam_add_files_de_them_pdf_hoac_anh": "Bấm \"Add Files...\" để thêm PDF hoặc Ảnh vào danh sách ghép."
+    "bam_add_files_de_them_pdf_hoac_anh": "Bấm \"Add Files...\" để thêm PDF hoặc Ảnh vào danh sách ghép.",
+    "da_chia_nhom_tren_view_bam_combine": "Đã chia {{n}} nhóm trên view — bấm Combine để ghép từng nhóm",
+    "dang_ghep_label_progress": "Đang ghép {{label}} ({{cur}}/{{total}})...",
+    "ghep_label_n_trang": "Ghép {{label}} ({{n}} trang)",
+    "da_ghep_label": "Đã ghép {{label}}",
+    "da_ghep_n_nhom_tab_combine": "Đã ghép {{n}} nhóm → tab này + {{rest}} tab Combine",
+    "nhom_n_trang": "Nhóm {{n}} trang",
+    "xoay_90_rotate": "Xoay 90° (Rotate)"
   },
   "tabs.compare": {
     "300_dpi_chinh_xac": "300 DPI — Chính xác",
@@ -3954,8 +4191,8 @@
     "cai_dat_khoi_chay": "⚙️ Cài đặt & Khởi chạy",
     "chuan_bi": "Chuẩn bị...",
     "co_loi_xay_ra_khi_so_sanh": "Có lỗi xảy ra khi so sánh",
-    "dang_so_sanh_trang_job_current_page_job": "Đang so sánh trang ${job.current_page}/${job.total_pages}",
-    "dang_xu_ly_job_progress": "Đang xử lý... (${job.progress}%)",
+    "dang_so_sanh_trang_job_current_page_job": "Đang so sánh trang {{cur}}/{{total}}",
+    "dang_xu_ly_job_progress": "Đang xử lý... ({{pct}}%)",
     "do_chinh_xac": "Độ chính xác",
     "do_phan_giai": "Độ phân giải",
     "dong_esc": "Đóng (Esc)",
@@ -4016,7 +4253,6 @@
     "dong_file_chua_luu": "Đóng file chưa lưu?",
     "dong_khong_luu": "Đóng không lưu",
     "dong_y_khoi_chay": "Đồng ý & Khởi chạy",
-    "dung_o_buoc_res_failedstep_index_0_1": "Dừng ở bước ${(res.failedStep?.index ?? 0) + 1}: ${res.failedStep?.error || 'lỗi'}",
     "file_nay_da_bi_thay_doi_nhung_chua_duoc": "File này đã bị thay đổi nhưng chưa được lưu. Bạn có chắc chắn muốn đóng và mất các thay đổi không?",
     "file_pdf_goc_gom": "File pdf gốc gồm",
     "giua_sach": "Giữa sách",
@@ -4032,12 +4268,12 @@
     "khong_co_file": "Không có file",
     "khong_luu_duoc_thay_doi_chinh_sua_vao": "Không lưu được thay đổi chỉnh sửa vào file — thử lại.",
     "khong_mo_duoc_phien_chinh_sua_backend": "Không mở được phiên chỉnh sửa (backend không phản hồi hoặc phiên hết hạn) — hãy mở lại file để chỉnh sửa.",
-    "khong_the_luu_file": "Không thể lưu file:",
+    "khong_the_luu_file": "Không thể lưu file: ",
     "khong_the_tai_danh_sach_objects": "Không thể tải danh sách objects",
     "loi_cap_nhat_sau_chinh_sua": "Lỗi cập nhật sau chỉnh sửa",
     "loi_chua_co_object_nao_duoc_chon": "Lỗi: Chưa có object nào được chọn!",
     "loi_he_thong_khi_trich_xuat": "Lỗi hệ thống khi trích xuất.",
-    "loi_khi_ap_dung_sua_doi": "Lỗi khi áp dụng sửa đổi:",
+    "loi_khi_ap_dung_sua_doi": "Lỗi khi áp dụng sửa đổi: ",
     "loi_khong_tim_thay_selectionfileid_co": "Lỗi: Không tìm thấy selectionFileId! (Có thể file chưa tải xong)",
     "loi_tai_file_moi": "Lỗi tải file mới",
     "loi_tai_object_trang_pagenum": "Lỗi tải object trang ${pageNum}",
@@ -4071,7 +4307,19 @@
     "xac_nhan_binh_sach": "Xác nhận Bình Sách",
     "xao_tron_trang": "Xáo trộn trang",
     "xoa_that_bai": "Xóa thất bại",
-    "yeu_thich": "Yêu Thích"
+    "yeu_thich": "Yêu Thích",
+    "loi_tai_object_trang_n": "Lỗi tải object trang {{n}}",
+    "tai_working_file_moi_that_bai_http": "Tải Working_File mới thất bại (HTTP {{status}})",
+    "phat_lai_progress_step": "Phát lại {{cur}}/{{total}}: {{step}}",
+    "phat_lai_xong": "Phát lại xong: {{n}} bước",
+    "bo_qua_n_suffix": ", bỏ qua {{n}}",
+    "dung_o_buoc_n": "Dừng ở bước {{n}}: {{err}}",
+    "loi": "lỗi",
+    "ban_dang_mo_cong_cu_chon_file_pdf": "Bạn đang mở công cụ: {{tool}}. Vui lòng chọn một file PDF để bắt đầu.",
+    "trang": "trang",
+    "can_them_n_trang_trang_lam_tron": "(Cần thêm {{add}} trang trắng để làm tròn thành {{total}} trang chẵn theo quy tắc gấp tay sách).",
+    "dat_n_trang_trang_o_dau": "Đặt {{n}} trang trắng ở đâu?",
+    "thong_so": "THÔNG SỐ"
   },
   "tabs.outputPreview": {
     "ban_kem": "Bản kẽm",
@@ -4099,7 +4347,6 @@
     "khong_co_su_khac_biet_file_khong_bi_anh": "✅ Không có sự khác biệt — file không bị ảnh hưởng bởi Overprint",
     "khong_the_phan_tach_kem": "Không thể phân tách kẽm",
     "loi_chuyen_spot_cmyk_errdata_detail_res": "Lỗi chuyển Spot → CMYK: ${errData.detail || res.statusText}",
-    "loi_e_message_khong_ket_noi_duoc": "Lỗi: ${e.message || 'Không kết nối được backend'}",
     "loi_khong_xac_dinh": "Lỗi không xác định",
     "mac_dinh": "Mặc định:",
     "mau_spot": "Màu Spot:",
@@ -4112,7 +4359,10 @@
     "tong_phu_muc_tac": "Tổng phủ mực (TAC)",
     "trong_suot": "Trong suốt:",
     "xem_rieng_plate_plate_name": "Xem riêng plate ${plate.name}",
-    "xem_truoc_ban_in": "Xem trước bản in"
+    "xem_truoc_ban_in": "Xem trước bản in",
+    "loi_chuyen_spot_cmyk": "Lỗi chuyển Spot → CMYK: {{msg}}",
+    "chuyen_spot_cmyk_khong_thanh_cong": "Chuyển Spot → CMYK không thành công: {{msg}}",
+    "loi_msg": "Lỗi: {{msg}}"
   },
   "tabs.textCompare": {
     "ban_da_sua_text_2": "Bản Đã Sửa (Text 2)",
@@ -4134,6 +4384,17 @@
     "so_theo_dong": "So theo Dòng",
     "so_theo_tu": "So theo Từ",
     "tien_hanh_so_sanh_text": "🚀 Tiến hành so sánh Text",
-    "tien_hanh_so_sanh_text_2": "Tiến hành so sánh Text"
+    "tien_hanh_so_sanh_text_2": "Tiến hành so sánh Text",
+    "van_ban_lon_ky_tu_nen_chon_so_theo_dong": "⚠️ Văn bản lớn (~{{n}}K ký tự) — nên chọn \"So theo Dòng\" cho nhanh.",
+    "vui_long_nhan_tien_hanh_so_sanh_text": "Vui lòng nhấn \"Tiến hành so sánh Text\" để hiển thị kết quả..."
+  },
+  "cutExport": {
+    "khong_tai_duoc_danh_sach_may_be": "Không tải được danh sách máy bế ({{status}})",
+    "loi_may_chu_res_status_text": "Lỗi máy chủ ({{status}}): {{text}}",
+    "loi_may_chu_res_status": "Lỗi máy chủ ({{status}})"
+  },
+  "misc.languageToggle": {
+    "chuyen_sang_tieng_viet": "Chuyển sang Tiếng Việt",
+    "chuyen_sang_english": "Chuyển sang English"
   }
 }

@@ -43,6 +43,7 @@ from app.core.object_mapper import (
     contents_coalesce,
     inverse_matrix,
     map_object,
+    map_object_spans,
     map_text_show_op,
     mult_matrix,
     parse_page_ops,
@@ -273,16 +274,26 @@ def delete_objects(page, obj_metas, pdf: pikepdf.Pdf) -> DeleteResult:
         # BT…ET ("xóa 1 mất mấy"). image/vector giữ map_object (span chính xác).
         if meta_type == "text":
             span = map_text_show_op(pg, meta, pdf=pdf)
+            if span is None:
+                meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
+                raise ObjectMapError(
+                    f"Không thể ánh xạ object '{meta_id}' sang dải operator duy nhất "
+                    f"(đa nghĩa/clip/Form XObject/inline image). HỦY thao tác để bảo "
+                    f"toàn màu (Yêu cầu 4.7) — KHÔNG ghi kết quả."
+                )
+            spans.append(span)
         else:
-            span = map_object(pg, meta, pdf=pdf)
-        if span is None:
-            meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
-            raise ObjectMapError(
-                f"Không thể ánh xạ object '{meta_id}' sang dải operator duy nhất "
-                f"(đa nghĩa/clip/Form XObject/inline image). HỦY thao tác để bảo "
-                f"toàn màu (Yêu cầu 4.7) — KHÔNG ghi kết quả."
-            )
-        spans.append(span)
+            # Gộp fill+stroke: xóa 1 object (vẽ nhiều lượt cùng path) phải xóa HẾT
+            # các span của nó. map_object_spans trả mọi span cùng bbox; rỗng → HỦY.
+            obj_spans = map_object_spans(pg, meta, pdf=pdf)
+            if not obj_spans:
+                meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
+                raise ObjectMapError(
+                    f"Không thể ánh xạ object '{meta_id}' sang dải operator duy nhất "
+                    f"(đa nghĩa/clip/Form XObject/inline image). HỦY thao tác để bảo "
+                    f"toàn màu (Yêu cầu 4.7) — KHÔNG ghi kết quả."
+                )
+            spans.extend(obj_spans)
 
     # ── Parse lại một lần để khớp index với span đã map ─────────────────────
     instructions = parse_page_ops(pg)
@@ -799,15 +810,19 @@ def move_objects(
         meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
         if meta_type == "text":
             span = _resolve_text_move_span(pg, meta, pdf, instructions)
+            wrap_spans.append(span)
         else:
-            span = map_object(pg, meta, pdf=pdf)
-            if span is None:
+            # Gộp fill+stroke: 1 object vẽ nhiều lượt (cùng path) → nhiều span cùng
+            # bbox, đều phải dịch CÙNG (dx,dy). map_object_spans trả HẾT span đó;
+            # rỗng = không map được duy nhất → HỦY (bảo toàn màu, Yêu cầu 4.7).
+            obj_spans = map_object_spans(pg, meta, pdf=pdf)
+            if not obj_spans:
                 raise ObjectMapError(
                     f"Không thể ánh xạ object '{meta_id}' sang dải operator duy nhất "
                     f"(đa nghĩa/clip/Form XObject/inline image). HỦY thao tác để bảo "
                     f"toàn màu (Yêu cầu 4.7) — KHÔNG ghi kết quả."
                 )
-        wrap_spans.append(span)
+            wrap_spans.extend(obj_spans)
 
     # Gộp span trùng (nhiều text object PDFium cùng 1 BT…ET / cùng clip group)
     # để không bọc q/cm/Q lồng nhiều lần cùng vùng.
@@ -1000,17 +1015,20 @@ def resize_objects(
         logger.warning("contents_coalesce thất bại, tiếp tục parse trực tiếp: %s", exc)
 
     # ── Map từng target → OpSpan; bất kỳ None nào → HỦY (Yêu cầu 4.7) ───────
+    # Gộp fill+stroke: 1 object vẽ nhiều lượt cùng path → nhiều span cùng bbox.
+    # Anchor tính từ span.bbox nên các span cùng object có CÙNG điểm neo → resize
+    # quanh cùng gốc, kết quả nhất quán. map_object_spans rỗng = HỦY (bảo toàn màu).
     spans: list[OpSpan] = []
     for meta in obj_metas:
-        span = map_object(pg, meta, pdf=pdf)
-        if span is None:
+        obj_spans = map_object_spans(pg, meta, pdf=pdf)
+        if not obj_spans:
             meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
             raise ObjectMapError(
                 f"Không thể ánh xạ object '{meta_id}' sang dải operator duy nhất "
                 f"(đa nghĩa/clip/Form XObject/inline image). HỦY thao tác để bảo "
                 f"toàn màu (Yêu cầu 4.7) — KHÔNG ghi kết quả."
             )
-        spans.append(span)
+        spans.extend(obj_spans)
 
     # ── Parse lại một lần để khớp index với span đã map ─────────────────────
     instructions = parse_page_ops(pg)
@@ -1171,15 +1189,18 @@ def rotate_objects(
                                         ctm=[1.0, 0.0, 0.0, 1.0, 0.0, 0.0], bbox=[0, 0, 0, 0],
                                         resource_name=None))
         else:
-            span = map_object(pg, meta, pdf=pdf)
-            if span is None:
+            # Gộp fill+stroke: 1 object vẽ nhiều lượt (cùng path) → nhiều span cùng
+            # bbox, đều xoay quanh CÙNG tâm bbox. map_object_spans trả HẾT span đó;
+            # rỗng = không map được duy nhất → HỦY (bảo toàn màu, Yêu cầu 4.7).
+            obj_spans = map_object_spans(pg, meta, pdf=pdf)
+            if not obj_spans:
                 raise ObjectMapError(
                     f"Không thể ánh xạ object '{meta_id}' sang dải operator duy nhất "
                     f"(đa nghĩa/clip/Form XObject/inline image). HỦY thao tác để bảo "
                     f"toàn màu (Yêu cầu 4.7) — KHÔNG ghi kết quả."
                 )
-            nontext_spans.append(span)
-            rotated_spans.append(span)
+            nontext_spans.extend(obj_spans)
+            rotated_spans.extend(obj_spans)
 
     # ── Parse lại một lần để khớp index với span/show-op đã map ─────────────
     instructions = parse_page_ops(pg)

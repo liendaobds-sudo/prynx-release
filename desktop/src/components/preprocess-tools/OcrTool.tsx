@@ -3,6 +3,7 @@ import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/a
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolInfo } from './ToolUI';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface Props {
     pdfFile: File | null;
@@ -65,7 +66,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
 
             if (!response.ok) {
                 const errData = await response.json().catch(() => null);
-                throw new Error(errData?.detail || `Lỗi server (${response.status})`);
+                throw new Error(errData?.detail || `${tv('Lỗi Server')} (${response.status})`);
             }
 
             const blob = await response.blob();
@@ -100,8 +101,8 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
                     {LANG_OPTIONS.map(opt => (
                         <ToolCardOption
                             key={opt.id}
-                            label={opt.label}
-                            desc={opt.desc}
+                            label={tv(opt.label)}
+                            desc={tv(opt.desc)}
                             selected={lang === opt.id}
                             onClick={() => setLang(opt.id)}
                         />
@@ -117,7 +118,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
                         <ToolCardOption
                             key={opt.id}
                             label={opt.label}
-                            desc={opt.desc}
+                            desc={tv(opt.desc)}
                             selected={dpi === opt.id}
                             onClick={() => setDpi(opt.id)}
                         />

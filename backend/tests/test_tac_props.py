@@ -13,7 +13,9 @@ _chan = lambda shape: hnp.arrays(np.uint8, shape, elements=st.integers(0, 255))
 
 
 # Feature: preflight-depth-upgrade, Property 7: TAC bằng tổng kênh và đơn điệu không-giảm theo phủ mực
-@settings(max_examples=100)
+# deadline=None: lần chạy nguội đầu (warmup numpy) đo ~370ms > deadline 200ms mặc định
+# gây flaky (Hypothesis tự báo unreliable timings); property thuần numpy nên bỏ deadline.
+@settings(max_examples=100, deadline=None)
 @given(data=st.data(), shape=_shape, n=st.integers(1, 5))
 def test_tac_sum_and_monotonic(data, shape, n):
     plates = [data.draw(_chan(shape)) for _ in range(n)]
@@ -30,7 +32,7 @@ def test_tac_sum_and_monotonic(data, shape, n):
 
 
 # Feature: preflight-depth-upgrade, Property 8: Phân loại ngưỡng TAC và nội dung báo cáo
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)
 @given(data=st.data(), shape=_shape, n=st.integers(1, 4),
        threshold=st.integers(100, 400))
 def test_tac_threshold_classification(data, shape, n, threshold):

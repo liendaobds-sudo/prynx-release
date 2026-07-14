@@ -5,6 +5,7 @@ import {
     toMm, fromMm, roundMm2, validateRectUnit, resolvePages,
 } from '../preprocess-tools/setPageBoxesUtils';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 interface BoxMm { x0: number; y0: number; x1: number; y1: number; width: number; height: number; }
 interface PageBoxesResponse {
@@ -65,7 +66,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                 const data: PageBoxesResponse = await res.json();
                 // Backend trả 500 → data = {detail:...} (không có cropbox). Phải báo lỗi thay vì set rồi crash.
                 if (!res.ok || !data || !data.cropbox) {
-                    throw new Error((data as any)?.detail || `Không đọc được khổ trang (HTTP ${res.status})`);
+                    throw new Error((data as any)?.detail || t('misc.cropDialog:khong_doc_duoc_kho_trang_http', { status: res.status }));
                 }
                 setBoxes(data);
                 // Lề (mm) từ fractions × kích thước CropBox hiện tại (vùng hiển thị = CropBox).
@@ -89,7 +90,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                     if (imgData?.preview_b64) setPageImg(imgData.preview_b64);
                 } catch { /* ảnh preview không bắt buộc */ }
             } catch (err: any) {
-                setError(`Không đọc được khổ trang: ${err?.message || err}`);
+                setError(t('misc.cropDialog:khong_doc_duoc_kho_trang', { msg: err?.message || err }));
             } finally {
                 setBusy(false);
             }
@@ -134,7 +135,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
     const handleApply = async () => {
         if (!boxes || !rectMm) return;
         const valErr = validateRectUnit(rectMm);
-        if (valErr) { setError(`Vùng cắt không hợp lệ: ${valErr}`); return; }
+        if (valErr) { setError(t('misc.cropDialog:vung_cat_khong_hop_le', { err: valErr })); return; }
         const pr = resolvePages(scope, rangeStart, rangeEnd, boxes.total_pages);
         if ('error' in pr) { setError(pr.error); return; }
         setBusy(true);
@@ -186,14 +187,14 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                             <label className="text-[12px] w-20 text-slate-500">{t('misc.cropDialog:don_vi')}</label>
                             <select value={unit} onChange={(e) => changeUnit(e.target.value as Unit)}
                                 className="flex-1 h-8 px-2 text-[12px] border border-black/15 dark:border-white/15 rounded bg-white dark:bg-zinc-900">
-                                {(Object.keys(UNIT_LABELS) as Unit[]).map(u => <option key={u} value={u}>{UNIT_LABELS[u]}</option>)}
+                                {(Object.keys(UNIT_LABELS) as Unit[]).map(u => <option key={u} value={u}>{tv(UNIT_LABELS[u])}</option>)}
                             </select>
                         </div>
                         <div className="flex items-center gap-2">
                             <label className="text-[12px] w-20 text-slate-500">{t('misc.cropDialog:ap_dung_cho')}</label>
                             <select value={applyTo} onChange={(e) => setApplyTo(e.target.value as BoxType)}
                                 className="flex-1 h-8 px-2 text-[12px] border border-black/15 dark:border-white/15 rounded bg-white dark:bg-zinc-900">
-                                {(Object.keys(BOX_LABELS) as BoxType[]).map(b => <option key={b} value={b}>{BOX_LABELS[b]}</option>)}
+                                {(Object.keys(BOX_LABELS) as BoxType[]).map(b => <option key={b} value={b}>{tv(BOX_LABELS[b])}</option>)}
                             </select>
                         </div>
 

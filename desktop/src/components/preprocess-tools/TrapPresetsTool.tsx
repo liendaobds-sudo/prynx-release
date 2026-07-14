@@ -56,8 +56,8 @@ export default function TrapPresetsTool({ pdfFile, onFileFixed }: Props) {
           const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
           onFileFixed(await dl.blob(), data.output_filename);
         }
-      } else { recipeRecorder.discardPending(); setStatus(`❌ ${data.error || 'Lỗi'}`); }
-    } catch (e: any) { recipeRecorder.discardPending(); setStatus(`❌ ${e.message}`); }
+      } else { recipeRecorder.discardPending(); setStatus(t('preprocess.trapPresets:loi_x', { msg: data.error || 'Lỗi' })); }
+    } catch (e: any) { recipeRecorder.discardPending(); setStatus(t('preprocess.trapPresets:loi_x', { msg: e.message })); }
     setRunning(false);
   };
 

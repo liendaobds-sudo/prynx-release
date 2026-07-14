@@ -349,8 +349,8 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                 <ToolSectionLabel>{t('preprocess.watermark:chen_nen_dong_dau_background_watermark')}</ToolSectionLabel>
                 <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50 mt-2">
                     <p className="text-xs text-slate-600 dark:text-zinc-400">
-                        Chèn hình nền (File PDF/Ảnh) bên dưới hoặc đóng dấu văn bản/logo đè lên trên trang PDF.
-                        Xử lý trực tiếp trên trình duyệt, bảo mật 100%.
+                        {t('preprocess.watermark:chen_hinh_nen_file_pdf_anh_ben_duoi')}
+                        {' '}{t('preprocess.watermark:xu_ly_truc_tiep_tren_trinh_duyet_bao_mat')}
                     </p>
                 </div>
             </div>

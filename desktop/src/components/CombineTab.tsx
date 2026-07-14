@@ -535,7 +535,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       if (onSpawnTab) onSpawnTab(finalFile);
 
     } catch (e: any) {
-      toast.error("Lỗi khi đan xen: " + (e?.message || e));
+      toast.error(t('tabs.combine:loi_khi_dan_xen', { msg: e?.message || e }));
     } finally {
       setIsProcessing(false);
       setStatusMsg('');
@@ -613,7 +613,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     let finalBytes = await finalDoc.save();
 
     if (scaleMode !== 'keep') {
-      setStatusMsg(`${statusPrefix}Đang đồng bộ khổ giấy...`);
+      setStatusMsg(`${statusPrefix}${t('tabs.combine:dang_dong_bo_kho_giay')}`);
       const targetSize = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
       const targetW = targetSize[0] / 2.83465;
       const targetH = targetSize[1] / 2.83465;
@@ -683,10 +683,10 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       setSelectedIndices(new Set());
       const nGroups = new Set(next.map(n => n.sizeKey).filter(Boolean)).size;
       if (opts?.toast && nGroups > 0) {
-        toast.success(`Đã chia ${nGroups} nhóm trên view — bấm Combine để ghép từng nhóm`);
+        toast.success(t('tabs.combine:da_chia_nhom_tren_view_bam_combine', { n: nGroups }));
       }
     } catch (e: any) {
-      toast.error('Không đo được kích thước: ' + (e?.message || e));
+      toast.error(t('tabs.combine:khong_do_duoc_kich_thuoc', { msg: e?.message || e }));
     } finally {
       setIsGrouping(false);
       setStatusMsg('');
@@ -774,7 +774,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       for (const [key, groupNodes] of groups) {
         gi++;
         const label = sizeKeyLabel(key);
-        setStatusMsg(`Đang ghép ${label} (${gi}/${groups.size})...`);
+        setStatusMsg(t('tabs.combine:dang_ghep_label_progress', { label, cur: gi, total: groups.size }));
         const bytes = await combineFlatNodes(groupNodes, loadedDocs, `[${label}] `);
         const safeName = key.replace(/[^\d.x×]/gi, '_');
         const file = new File(
@@ -784,7 +784,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         );
         results.push({
           file,
-          title: `Ghép ${label} (${groupNodes.length} trang)`,
+          title: t('tabs.combine:ghep_label_n_trang', { label, n: groupNodes.length }),
           sizeKey: key,
         });
       }
@@ -812,12 +812,12 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
 
       toast.success(
         results.length === 1
-          ? `Đã ghép ${sizeKeyLabel(first.sizeKey)}`
-          : `Đã ghép ${results.length} nhóm → tab này + ${rest.length} tab Combine`,
+          ? t('tabs.combine:da_ghep_label', { label: sizeKeyLabel(first.sizeKey) })
+          : t('tabs.combine:da_ghep_n_nhom_tab_combine', { n: results.length, rest: rest.length }),
       );
 
     } catch (e: any) {
-      toast.error("Lỗi khi ghép file: " + (e?.message || e));
+      toast.error(t('tabs.combine:loi_khi_ghep_file', { msg: e?.message || e }));
     } finally {
       setIsProcessing(false);
       setStatusMsg('');
@@ -967,7 +967,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
           </div>
           <div className="text-xs text-slate-500 dark:text-zinc-400 mt-0.5 font-medium">
             {node.type === 'single' && !node.groupId && node.file && ` ${(node.file.size / 1024 / 1024).toFixed(2)} MB `}
-            {node.type === 'collapsed_group' && ` Nhóm ${pCount} trang `}
+            {node.type === 'collapsed_group' && ` ${t('tabs.combine:nhom_n_trang', { n: pCount })} `}
           </div>
         </div>
 
@@ -999,7 +999,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
           <button 
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleRotateNode(index); }}
             className="w-8 h-8 flex items-center justify-center text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-zinc-700 rounded transition-colors" 
-            title="Xoay 90° (Rotate)"
+            title={t('tabs.combine:xoay_90_rotate')}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>

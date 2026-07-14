@@ -74,7 +74,7 @@ export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProp
                                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0f52ba" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                                         <div className="flex flex-col">
                                             <span className="text-[15px] text-[#0f52ba] dark:text-[#6e9fff] font-bold">{t('misc.save:luu_thanh_1_file_gop')}</span>
-                                            <span className="text-[12px] text-gray-500 line-clamp-1">Giữ nguyên định dạng gộp {batchOutput.docs.length} tấm kẽm để dễ gửi khách duyệt.</span>
+                                            <span className="text-[12px] text-gray-500 line-clamp-1">{t('misc.save:giu_nguyen_dinh_dang_gop_tam_kem', { n: batchOutput.docs.length })}</span>
                                         </div>
                                     </button>
 
@@ -91,13 +91,13 @@ export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProp
                                                     URL.revokeObjectURL(url);
                                                 }, idx * 500);
                                             });
-                                            setReportMsg(prev => prev + '\n\n📥 Đã gửi lệnh tải rời nhiều file thành công!');
+                                            setReportMsg(prev => prev + '\n\n' + t('misc.save:da_gui_lenh_tai_roi_nhieu_file'));
                                         }}
                                         className="flex gap-4 items-center p-3 border border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 rounded focus:outline-none text-left hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors mt-2"
                                     >
                                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                                         <div className="flex flex-col">
-                                            <span className="text-[15px] text-emerald-700 dark:text-emerald-400 font-bold">Tải rời từng kẽm (Download {batchOutput.docs.length} files)</span>
+                                            <span className="text-[15px] text-emerald-700 dark:text-emerald-400 font-bold">{t('misc.save:tai_roi_tung_kem_download_files', { n: batchOutput.docs.length })}</span>
                                             <span className="text-[12px] text-gray-500 line-clamp-1">{t('misc.save:trinh_duyet_se_tu_dong_xa_nhieu_file')}</span>
                                         </div>
                                     </button>

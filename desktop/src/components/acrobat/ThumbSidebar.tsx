@@ -52,6 +52,7 @@ const MemoThumbItem = React.memo((props: any) => {
         pdfUrl, file, isLoadable, registerRef,
         handleThumbClick, handlePointerDown, onContextMenu
     } = props;
+    const { t } = useTranslation();
     const isBlankDoc = !!(file as any)?.isBlank;
 
     const exactRatio = localDim ? localDim.h / localDim.w : 1.414;
@@ -82,7 +83,7 @@ const MemoThumbItem = React.memo((props: any) => {
 
     const dimW = localDim ? (localDim.w * 25.4 / 72).toFixed(1) : 0;
     const dimH = localDim ? (localDim.h * 25.4 / 72).toFixed(1) : 0;
-    const tooltipText = originalPageNum !== -1 ? `Trang ${logicalPageLabel}\nKích thước: ${dimW} x ${dimH} mm` : `Trang Trống`;
+    const tooltipText = originalPageNum !== -1 ? t('misc.thumbSidebar:trang_kich_thuoc_tooltip', { page: logicalPageLabel, w: dimW, h: dimH }) : t('misc.thumbSidebar:trang_trong');
 
     // FIX release: protocol tile.localhost (img/new Image/fetch) đều KHÔNG hiển thị ở release.
     // Lấy bytes JPEG qua IPC invoke('render_pdf_page') (đáng tin, giống tách nền) → blob: → img.
@@ -456,7 +457,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                             })}
                             {pageOrder.length > 1000 && (
                                 <div className="w-full text-center py-6 px-4 text-slate-500 dark:text-zinc-400 text-xs italic bg-slate-100 dark:bg-zinc-800/50 rounded-lg mx-2 border border-dashed border-slate-300 dark:border-zinc-700">
-                                    Đang ẩn {pageOrder.length - 1000} thumbnails còn lại để tránh treo máy.<br/>
+                                    {t('misc.thumbSidebar:dang_an_n_thumbnails_con_lai', { n: pageOrder.length - 1000 })}<br/>
                                     {t('misc.thumbSidebar:su_dung_o_nhap_so_trang_o_thanh_tren')}
                                 </div>
                             )}

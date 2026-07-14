@@ -193,7 +193,7 @@ export default function RecipePanel({ open, onClose, onPlay, sourcePageCount, ha
         e.target.value = '';
         if (!file) return;
         const imported = await importRecipeFromFile(file);
-        if (imported) { toast.success(`Đã nhập quy trình "${imported.name}".`); refresh(); }
+        if (imported) { toast.success(t('recipe.recipe:da_nhap_quy_trinh', { name: imported.name })); refresh(); }
         else toast.error(t('recipe.recipe:file_quy_trinh_khong_hop_le'));
     };
 

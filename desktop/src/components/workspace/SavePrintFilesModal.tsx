@@ -54,10 +54,10 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                 const count = Math.floor(pageCount / pagesPerType);
                 if (!active) return;
                 setDerivedTypes(Array.from({ length: Math.max(1, count) }, (_, i) => ({
-                    label: labelNameText || `Trang ${i + 1}`,
+                    label: labelNameText || t('misc.savePrintFiles:trang_n', { n: i + 1 }),
                     sheetCount: 0,
                 })));
-            } catch { if (active) setDerivedTypes([{ label: labelNameText || 'Trang 1', sheetCount: 0 }]); }
+            } catch { if (active) setDerivedTypes([{ label: labelNameText || t('misc.savePrintFiles:trang_1'), sheetCount: 0 }]); }
         })();
         return () => { active = false; };
     }, [open, resultBlob, separateCut, cncMode, cncTwoSided, typesProp, labelNameText]);
@@ -95,7 +95,7 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
             const dir = await openDialog({ directory: true, multiple: false, title: t('misc.savePrintFiles:chon_thu_muc_luu_file_in') });
             if (typeof dir === 'string') { setFolder(dir); setSavePrint({ lastFolder: dir }); }
         } catch (e) {
-            setStatus('Không mở được hộp thoại chọn thư mục: ' + (e as any)?.message);
+            setStatus(t('misc.savePrintFiles:khong_mo_duoc_hop_thoai_chon_thu_muc', { msg: (e as any)?.message }));
         }
     };
 
@@ -109,11 +109,11 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                 types: (typesProp && typesProp.length) ? typesProp : undefined,
                 pagesPerType: pagesPerTypeFor({ cncMode, cncTwoSided, separateCut }),
                 labelName: labelNameText,
-                onProgress: (done, total) => setStatus(`Đã ghi ${done}/${total} file...`),
+                onProgress: (done, total) => setStatus(t('misc.savePrintFiles:da_ghi_done_total_file', { done, total })),
             });
-            setStatus(`✅ Đã lưu ${ok} file vào: ${folder}`);
+            setStatus(t('misc.savePrintFiles:da_luu_ok_file_vao', { ok, folder }));
         } catch (e) {
-            setStatus('Lỗi khi lưu: ' + ((e as any)?.message || e));
+            setStatus(t('misc.savePrintFiles:loi_khi_luu', { msg: (e as any)?.message || e }));
         } finally {
             setBusy(false);
         }
@@ -171,7 +171,7 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                             <label className="flex items-center gap-1.5 cursor-pointer" title={t('misc.savePrintFiles:tao_mot_thu_muc_mang_ten_don_hang_ben')}><input type="radio" name="folderMode" checked={savePrint.folderMode === 'per_order'} onChange={() => setSavePrint({ folderMode: 'per_order' })} />{t('misc.savePrintFiles:gom_theo_don_hang')}</label>
                             <label className="flex items-center gap-1.5 cursor-pointer" title={t('misc.savePrintFiles:tat_ca_file_nam_thang_trong_thu_muc_da')}><input type="radio" name="folderMode" checked={savePrint.folderMode === 'flat'} onChange={() => setSavePrint({ folderMode: 'flat' })} />{t('misc.savePrintFiles:de_chung_mot_cho')}</label>
                         </div>
-                        {cncMode && <p className="text-[11px] text-slate-400 mt-1">CNC: mỗi đơn vị tách {cncTwoSided ? t('misc.savePrintFiles:mat_truoc_mat_sau_khuon') : t('misc.savePrintFiles:mat_truoc_khuon')} ra file riêng.</p>}
+                        {cncMode && <p className="text-[11px] text-slate-400 mt-1">{t('misc.savePrintFiles:cnc_moi_don_vi_tach_ra_file_rieng', { mode: cncTwoSided ? t('misc.savePrintFiles:mat_truoc_mat_sau_khuon') : t('misc.savePrintFiles:mat_truoc_khuon') })}</p>}
                         {!cncMode && separateCut && <p className="text-[11px] text-slate-400 mt-1">{t('misc.savePrintFiles:file_in_file_be_se_tach_rieng_in_trang')}</p>}
                         {!cncMode && !separateCut && <p className="text-[11px] text-amber-500 mt-1">{t('misc.savePrintFiles:de_tach_file_be_rieng_bat_tach_trang')}</p>}
                     </div>
@@ -186,7 +186,7 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                                     {files.map((f, i) => <div key={i} className="pl-4 text-slate-700 dark:text-zinc-300">📄 {f}</div>)}
                                 </div>
                             ))}
-                            <div className="mt-2 text-slate-500">⇒ {types.length} loại · tổng {totalSheets} tờ · {plan.length} file</div>
+                            <div className="mt-2 text-slate-500">{t('misc.savePrintFiles:n_loai_tong_to_file', { types: types.length, sheets: totalSheets, files: plan.length })}</div>
                         </div>
                     </div>
 

@@ -40,7 +40,7 @@ export default function LoginScreen() {
               }
             } catch (err: any) {
               console.error('Deep link auth error:', err);
-              setErrorMsg('Lỗi xử lý đăng nhập từ trình duyệt: ' + err.message);
+              setErrorMsg(t('misc.login:loi_xu_ly_dang_nhap_tu_trinh_duyet', { msg: err.message }));
             } finally {
               setLoading(false);
             }

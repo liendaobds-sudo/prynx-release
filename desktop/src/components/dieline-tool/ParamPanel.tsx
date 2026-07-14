@@ -396,7 +396,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                 className={`dt-glue-side-btn ${params.envStyle === 'wallet' ? 'active' : ''}`}
                                 onClick={() => setParam('envStyle', 'wallet')}
                             >
-                                Ngang
+                                {t('dieline.param:ngang')}
                             </button>
                             <button
                                 className={`dt-glue-side-btn ${params.envStyle === 'pocket' ? 'active' : ''}`}
@@ -640,7 +640,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     className="dt-advanced-toggle"
                     onClick={() => setShowAdvanced(!showAdvanced)}
                 >
-                    {showAdvanced ? '▼' : '▶'} Thông số nâng cao
+                    {showAdvanced ? '▼' : '▶'} {t('dieline.param:thong_so_nang_cao')}
                 </button>
             )}
 
@@ -853,7 +853,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                     className="dt-advanced-toggle"
                     onClick={() => setShowExtra(!showExtra)}
                 >
-                    {showExtra ? '▼' : '▶'} Thông số túi giấy
+                    {showExtra ? '▼' : '▶'} {t('dieline.param:thong_so_tui_giay')}
                 </button>
 
                 {showExtra && (
@@ -979,8 +979,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             <div className="dt-params-section" style={{ marginTop: '1rem', borderTop: '1px dashed var(--dt-border)', paddingTop: '1rem' }}>
                 <label className="dt-section-label">{t('dieline.param:thiet_ke_3d_mockup')}</label>
                 <p className="dt-param-desc" style={{ marginBottom: '0.5rem' }}>
-                    Tải ảnh thiết kế (JPEG/PNG) dán lên mặt ngoài hộp, kèm chỉnh tỉ lệ,
-                    vị trí, xoay, ảnh mặt trong và mặt nạ gia công.
+                    {t('dieline.param:tai_anh_thiet_ke_jpeg_png_dan_len_mat')}
                 </p>
                 <MockupArtworkPanel />
             </div>

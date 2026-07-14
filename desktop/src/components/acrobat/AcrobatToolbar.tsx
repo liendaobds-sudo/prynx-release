@@ -256,7 +256,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('two_fit'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'two_fit' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 
                                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-slate-500 dark:text-zinc-400"><rect x="2" y="4" width="9" height="16" rx="2" /><rect x="13" y="4" width="9" height="16" rx="2" /></svg>
-                                    <span>Xem hai trang</span>
+                                    <span>{t('misc.acrobatToolbar:xem_hai_trang')}</span>
                                 </button>
                                 <button className="w-full text-left px-4 py-2 hover:bg-black/5 dark:hover:bg-white/10 flex items-center gap-3 transition-colors" onClick={() => {setPageDisplayMode('two_scroll'); setIsDisplayMenuOpen(false);}}>
                                     {pageDisplayMode === 'two_scroll' ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-500"><polyline points="20 6 9 17 4 12"></polyline></svg> : <span className="w-[14px]" />} 

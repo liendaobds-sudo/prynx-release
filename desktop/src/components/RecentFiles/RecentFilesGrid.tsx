@@ -92,7 +92,7 @@ export default function RecentFilesGrid({ onOpenFile, active = true }: Props) {
         <div className="flex items-center justify-between mb-6 px-4 py-3 bg-indigo-50 dark:bg-indigo-950/30 rounded-xl border border-indigo-100 dark:border-indigo-900/50">
           <div className="flex items-center gap-4">
             <span className="text-sm font-bold text-indigo-700 dark:text-indigo-400">
-              Đã chọn {selectedPaths.size} mục
+              {t('misc.recentFilesGrid:da_chon_n_muc', { n: selectedPaths.size })}
             </span>
             <button onClick={handleSelectAll} className="text-sm font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300 transition-colors">
               {selectedPaths.size === displayFiles.length ? t('misc.recentFilesGrid:bo_chon_tat_ca') : t('misc.recentFilesGrid:chon_tat_ca')}

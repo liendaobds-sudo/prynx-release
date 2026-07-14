@@ -197,7 +197,7 @@ export function PaperSettingsDialog({
 
                     {/* Hàng 1: Tên khổ giấy */}
                     <div>
-                        <label className={labelCls}>Tên Khổ Giấy {isEditing ? '' : t('imposition.paperSettingsUI:de_trong_neu_khong_muon_luu_preset')}</label>
+                        <label className={labelCls}>{t('imposition.paperSettingsUI:ten_kho_giay_label')} {isEditing ? '' : t('imposition.paperSettingsUI:de_trong_neu_khong_muon_luu_preset')}</label>
                         <input 
                             type="text" 
                             value={presetName} onChange={e => setPresetName(e.target.value)} 

@@ -116,8 +116,8 @@ export default function CompareTab() {
           let message = t('tabs.compare:chuan_bi');
           if (job.status === 'processing') {
             if (job.status_message) message = job.status_message;
-            else if (job.current_page && job.total_pages) message = `Đang so sánh trang ${job.current_page}/${job.total_pages}`;
-            else if (job.progress > 0) message = `Đang xử lý... (${job.progress}%)`;
+            else if (job.current_page && job.total_pages) message = t('tabs.compare:dang_so_sanh_trang_job_current_page_job', { cur: job.current_page, total: job.total_pages });
+            else if (job.progress > 0) message = t('tabs.compare:dang_xu_ly_job_progress', { pct: job.progress });
           }
 
           store.setProgress(job.progress || 0, job.current_page || undefined, job.total_pages || undefined, message);

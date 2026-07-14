@@ -4,6 +4,7 @@ import {
     ToolCheckboxOption, ToolNumberInput,
 } from './ToolUI';
 import { useTranslation } from 'react-i18next';
+import { tv } from '../../i18n';
 
 const inputCls = "w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500";
 const selectCls = "w-full h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm font-medium focus:outline-none focus:border-indigo-500";
@@ -79,7 +80,7 @@ export default function PageResizerTool({ settings, onChange }: Props) {
                 >
                     {COMMON_SIZES.map(p => (
                         <option key={p.id} value={p.id}>
-                            {p.id === 'custom' ? p.name : `${p.name} — ${p.desc}`}
+                            {p.id === 'custom' ? tv(p.name) : `${p.name} — ${p.desc}`}
                         </option>
                     ))}
                 </select>
