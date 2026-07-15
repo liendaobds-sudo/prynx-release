@@ -706,16 +706,23 @@ function AppInner() {
 
   const accumulatedFiles = useRef<File[]>([]);
   const sysTimeoutRef = useRef<any>(null);
+  const sysActionRef = useRef<string>(''); // ý định từ menu chuột phải (vd 'convert')
 
   useEffect(() => {
     const handleSystemFiles = (e: any) => {
       if (e.detail && e.detail.files && e.detail.files.length > 0) {
         accumulatedFiles.current = [...accumulatedFiles.current, ...e.detail.files];
+        // Giữ ý định menu (vd 'convert'). Menu gọi 1 tiến trình/file nên nhiều event
+        // dồn vào cùng đợt debounce — chỉ cần 1 event mang cờ là đủ, không cho ''
+        // ghi đè cờ đã bắt.
+        if (e.detail.action) sysActionRef.current = e.detail.action;
 
         if (sysTimeoutRef.current) clearTimeout(sysTimeoutRef.current);
         sysTimeoutRef.current = setTimeout(() => {
           const filesToProcess = [...accumulatedFiles.current];
           accumulatedFiles.current = [];
+          const intent = sysActionRef.current;
+          sysActionRef.current = '';
           // Sắp theo SỐ dẫn đầu tên file (numeric): "10_" SAU "2_" (kiểu số, không
           // phải chữ cái). Quy ước người dùng đặt tên "1_...","2_..." để định thứ tự
           // trang → CombineTab gộp trang theo đúng thứ tự này → khớp cột số lượng
@@ -726,7 +733,12 @@ function AppInner() {
             );
           }
           if (filesToProcess.length > 0) {
-            if (filesToProcess.length > 1) {
+            if (intent === 'convert') {
+              // Menu "Convert to PDF" (chỉ ảnh): mở tab Ghép để nhúng ảnh→PDF —
+              // KỂ CẢ 1 file (khác luồng mặc định đẩy 1 file vào imposition).
+              // CombineTab đã có sẵn logic ảnh→trang PDF; convert = combine 1 ảnh.
+              handleOpenApp('combine_pdf' as AppToolId, { files: filesToProcess });
+            } else if (filesToProcess.length > 1) {
               if ((window as any).__isBgRemoverActive) {
                   // If BgRemover is active, intercept the drop and send directly to the tool
                   window.dispatchEvent(new CustomEvent('prynx-bgremover-add-files', { detail: { files: filesToProcess } }));

@@ -57,6 +57,9 @@ const VI_TO_KEY_BY_NS = new Map<string, Map<string, string>>();
   const nsOrder = Object.keys(dict).sort((a, b) =>
     (a === 'catalog' ? -1 : 0) - (b === 'catalog' ? -1 : 0)
   );
+  // Gom va chạm divergent vào 1 chỗ → in GỌN (1 dòng tóm tắt), không spam console
+  // mỗi va chạm 1 dòng (che mất log thật). Bật chi tiết: localStorage.tvDebug = '1'.
+  const _divergent: string[] = [];
   for (const ns of nsOrder) {
     const nsMap = new Map<string, string>();
     VI_TO_KEY_BY_NS.set(ns, nsMap);
@@ -67,20 +70,34 @@ const VI_TO_KEY_BY_NS = new Map<string, Map<string, string>>();
         if (!existing) {
           VI_TO_KEY.set(val, `${ns}:${key}`);
         } else if (import.meta.env?.DEV) {
-          // Va chạm: chuỗi VN đã map ở ns khác. Chỉ cảnh báo nếu bản EN KHÁC nhau
+          // Va chạm: chuỗi VN đã map ở ns khác. Chỉ ghi nhận nếu bản EN KHÁC nhau
           // (divergent) — đó là "mìn ngủ": tv() match-đầu-tiên sẽ trả sai ngữ cảnh.
           // Trùng nhưng EN giống nhau (Đóng→Close ở 16 ns) thì vô hại, im lặng.
           const [exNs, exKey] = existing.split(/:(.*)/);
           const enWin = enDict[exNs]?.[exKey];
           const enThis = enDict[ns]?.[key];
           if (enWin && enThis && enWin !== enThis) {
-            console.warn(
-              `[tv] Va chạm divergent cho "${val}": thắng ${existing}→"${enWin}", ` +
-              `bỏ qua ${ns}:${key}→"${enThis}". Nếu cần bản này, gọi tv("${val}", "${ns}").`
+            _divergent.push(
+              `  "${val}": thắng ${existing}→"${enWin}", bỏ qua ${ns}:${key}→"${enThis}" ` +
+              `(cần bản này: tv("${val}", "${ns}"))`
             );
           }
         }
       }
+    }
+  }
+  if (import.meta.env?.DEV && _divergent.length > 0) {
+    let _tvDebug = false;
+    try { _tvDebug = localStorage.getItem('tvDebug') === '1'; } catch { /* SSR / no storage */ }
+    if (_tvDebug) {
+      console.groupCollapsed(`[tv] ${_divergent.length} va chạm divergent (chi tiết)`);
+      console.warn(_divergent.join('\n'));
+      console.groupEnd();
+    } else {
+      console.info(
+        `[tv] ${_divergent.length} chuỗi VN trùng có bản EN khác nhau giữa namespace ` +
+        `(vô hại — tv() match-đầu-tiên). Xem chi tiết: localStorage.tvDebug='1' rồi reload.`
+      );
     }
   }
 }

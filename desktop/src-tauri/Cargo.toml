@@ -1,6 +1,6 @@
 [package]
 name = "pdf-inspector"
-version = "1.0.0-beta.9"
+version = "1.0.0-beta.11"
 description = "PDF comparison tool for print industry"
 authors = ["PrintSolutions"]
 license = "MIT"
@@ -40,12 +40,12 @@ imposition_core = { path = "../../imposition_core" }
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
-# F2: verify token license ký Ed25519 ngay trong Rust (lớp gate thứ 2, độc lập sidecar).
+# F2: verify token license kÃƒÂ½ Ed25519 ngay trong Rust (lÃ¡Â»â€ºp gate thÃ¡Â»Â© 2, Ã„â€˜Ã¡Â»â„¢c lÃ¡ÂºÂ­p sidecar).
 ed25519-dalek = "2"
 
-# webview2-com: cần cho block tắt DevTools release-only (lib.rs `use webview2_com::...`).
-# Pin đúng version mà tauri/wry resolve (xem Cargo.lock) để kiểu ICoreWebView2Controller
-# trả về từ `with_webview().controller()` khớp với các interface ta gọi.
+# webview2-com: cÃ¡ÂºÂ§n cho block tÃ¡ÂºÂ¯t DevTools release-only (lib.rs `use webview2_com::...`).
+# Pin Ã„â€˜ÃƒÂºng version mÃƒÂ  tauri/wry resolve (xem Cargo.lock) Ã„â€˜Ã¡Â»Æ’ kiÃ¡Â»Æ’u ICoreWebView2Controller
+# trÃ¡ÂºÂ£ vÃ¡Â»Â tÃ¡Â»Â« `with_webview().controller()` khÃ¡Â»â€ºp vÃ¡Â»â€ºi cÃƒÂ¡c interface ta gÃ¡Â»Âi.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"
 

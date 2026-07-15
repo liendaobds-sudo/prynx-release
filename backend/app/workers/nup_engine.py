@@ -1677,6 +1677,37 @@ def run_nup_engine(
 
         if strategy == 'manual' and cols_manual > 0 and rows_manual > 0:
             layout = solve_manual(trim_w, trim_h, gap_x, gap_y, cols_manual, rows_manual)
+        elif _is_cluster_type_early:
+            # CHIA CỌC theo loại: dao guillotine cần đường xén THẲNG xuyên tờ → ép lưới
+            # ĐỀU (simple_auto). optimal_auto (L-fill) dựng khối chính+phụ lệch nhau, ô
+            # khối phụ giữ c/r từ sub-grid 0-based → gán loại theo _c['c'] SAI (cột phải
+            # nhận loại dải trái) → xén lẫn lộn. Lưới đều: c/r == cột/hàng vật lý.
+            #
+            # BUG-2 FIX: TRỪ gutter (giữa các cọc) khỏi usable TRƯỚC khi solve. Nếu không,
+            # lưới lấp kín usable rồi mới chèn (n_band-1)*cluster_gap → super-grid > usable
+            # → cọc ngoài đè lề/lọt mép. Số band tối đa = số loại có SL>0 (mỗi loại 1 cọc,
+            # min-1 dòng). Trừ theo số đó → super-grid luôn ≤ usable (band thực ≤ ước tính
+            # → an toàn, không bao giờ tràn). Tính _qtys_ct/_duplex_ct SỚM ở đây; nhánh
+            # precalc dưới (Python không block-scope) tái dùng — cùng giá trị, idempotent.
+            _duplex_ct = (settings.get('duplexFlow', 'single') == 'double'
+                          and page_count >= 2 and page_count % 2 == 0)
+            _n_units_ct = (page_count // 2) if _duplex_ct else page_count
+            _qtys_ct = []
+            for _u in range(_n_units_ct):
+                _pg_key = (_u * 2) if _duplex_ct else _u
+                _q = target_quantities_by_page.get(str(_pg_key), target_quantities_by_page.get(_pg_key, target_quantity))
+                try:
+                    _q = int(_q)
+                except (TypeError, ValueError):
+                    _q = 0
+                _qtys_ct.append(max(0, _q))
+            _n_bands_est = sum(1 for _q in _qtys_ct if _q > 0) or _n_units_ct
+            _gutter_total = max(0, _n_bands_est - 1) * cluster_gap
+            _uw_ct = (usable_w - _gutter_total) if cluster_mode == 'column' else usable_w
+            _uh_ct = (usable_h - _gutter_total) if cluster_mode == 'row' else usable_h
+            _uw_ct = max(trim_w, _uw_ct)
+            _uh_ct = max(trim_h, _uh_ct)
+            layout = solve_optimal_layout(_uw_ct, _uh_ct, trim_w, trim_h, gap_x, gap_y, 'simple_auto', secondary_gap)
         else:
             layout = solve_optimal_layout(usable_w, usable_h, trim_w, trim_h, gap_x, gap_y, strategy, secondary_gap)
 
@@ -2544,7 +2575,18 @@ def run_nup_engine(
                 if is_die_cut and precalculated_placements:
                     _g_n = max(precalculated_placements.keys()) + 1 if precalculated_placements else _g_n
                     _g_cap = max((len(v) for v in precalculated_placements.values()), default=_g_cap)
-                for _gs in range(max(1, _g_n)):
+                # Cắt xén 2 mặt: tờ CHẴN = mặt trước, tờ LẺ = mặt sau (sequential dựng
+                # precalc 2s/2s+1). Report CHỈ đóng mặt TRƯỚC → chỉ set key chẵn, và số
+                # tờ VẬT LÝ = total_sheets/2 (2 mặt = 1 tờ giấy). Không lọc → report
+                # rơi cả mặt sau (bug: user thấy report lặp ở mặt sau).
+                _g_duplex = (
+                    not is_die_cut
+                    and settings.get('duplexFlow', 'single') == 'double'
+                    and _g_n >= 2
+                    and _g_n % 2 == 0
+                )
+                _g_phys = (_g_n // 2) if _g_duplex else _g_n
+                for _gs in range(max(1, _g_phys)):
                     _gd = _nrg.compute_report_data(
                         label_name=_g_label, paper_size=_g_paper,
                         items_per_sheet=_g_cap, requested_qty=0,
@@ -2553,10 +2595,11 @@ def run_nup_engine(
                         lamination_sides=settings.get('reportLaminationSides', 1) or 1,
                         mode_label=_g_mode,
                         order_code=settings.get('reportOrderCode', '') or '',
-                        identifier=f"Tờ {_gs + 1}/{max(1, _g_n)}",
-                        sheet_count_override=max(1, _g_n),
+                        identifier=f"Tờ {_gs + 1}/{max(1, _g_phys)}",
+                        sheet_count_override=max(1, _g_phys),
                     )
-                    _reports_by_sheet[_gs] = _nrg.build_report_string(_gcfg, _gd)
+                    # Duplex: key = tờ mặt trước (chẵn) = _gs*2; 1 mặt: key = _gs.
+                    _reports_by_sheet[(_gs * 2) if _g_duplex else _gs] = _nrg.build_report_string(_gcfg, _gd)
         except Exception as _ge:
             logger.warning(f"[REPORT] fallback dựng report lỗi: {_ge}")
 

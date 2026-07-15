@@ -12,6 +12,7 @@ import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '
 import { Button } from './Button';
 import { Scissors, Settings, Star } from 'lucide-react';
 import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
+import { normalizeImageToPngBytes } from '../lib/imageNormalizer';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import { PREDEFINED_SIZES, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
@@ -103,6 +104,27 @@ export function isEphemeralBackendPath(p?: string | null): boolean {
     if (/\/(uploads|results|temp)\//.test(norm)) return true;
     if (/\/[0-9a-f]{32}\.pdf$/.test(norm)) return true;
     return false;
+}
+
+/**
+ * Ảnh (JPG/PNG) → File PDF 1 trang (kích thước = px ảnh). App cho mở ảnh nhưng MỌI
+ * công cụ (đổi khổ, bình bài, VDP…) giả định PDF (PDFDocument.load / backend parse)
+ * → ảnh không có header %PDF → nổ "No PDF header found". Convert NGAY khi mở để mọi
+ * luồng sau chỉ còn PDF. normalizeImageToPngBytes lo cả CMYK JPEG → RGB PNG.
+ * Trả về File PDF nếu là ảnh; ngược lại trả nguyên file. Ném lỗi nếu ảnh hỏng.
+ */
+async function imageFileToPdfIfNeeded(f: File): Promise<File> {
+    const _nm = (f.name || '').toLowerCase();
+    if (!(_nm.endsWith('.jpg') || _nm.endsWith('.jpeg') || _nm.endsWith('.png'))) return f;
+    const _imgBytes = await getFileArrayBuffer(f);
+    const _normBytes = await normalizeImageToPngBytes(_imgBytes);
+    const _doc = await PDFDocument.create();
+    const _img = await _doc.embedPng(_normBytes);
+    const _pg = _doc.addPage([_img.width, _img.height]);
+    _pg.drawImage(_img, { x: 0, y: 0, width: _img.width, height: _img.height });
+    const _pdfBytes = await _doc.save();
+    const _pdfName = (f.name || 'image').replace(/\.(jpe?g|png)$/i, '.pdf');
+    return new File([_pdfBytes as any], _pdfName, { type: 'application/pdf' });
 }
 
 function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, initialRecovery, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
@@ -300,35 +322,52 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
     }, [file]);
     // Handle initial file passed from App.tsx (if spawned via multi-file drop)
+    // ĐƯỜNG MỞ FILE THỨ 2 (recent files / spawn tab / App-level) — KHÔNG qua
+    // handleFileSelected. Ảnh cũng phải convert → PDF ở đây, nếu không đổi khổ/bình
+    // bài nổ "No PDF header found" (bug: chỉ sửa handleFileSelected là bỏ sót đường này).
     useEffect(() => {
         if (initialFile && !file) {
-            if (pdfUrl) URL.revokeObjectURL(pdfUrl);
-            let objUrl = '';
-            if ((window as any).__TAURI_INTERNALS__ && (initialFile as any).path) {
-                objUrl = convertFileSrc((initialFile as any).path);
-            } else {
-                objUrl = URL.createObjectURL(initialFile);
-            }
-            setFile(initialFile);
-            setOriginalFileName(initialFile.name);
-            setFileSizeStr((initialFile.size / (1024 * 1024)).toFixed(2) + ' MB');
-            setPdfUrl(objUrl);
-            setPhase('workspace');
-            onTitleChange?.(initialFile.name);
-            
-            // Defer: chỉ cập nhật tiêu đề (RGB/CMYK), không cấp thiết khi mở → tránh
-            // gọi Python tranh chấp với meta + render trang đầu.
-            const _csTimer = setTimeout(() => {
-                detectColorSpace(initialFile).then(cs => {
-                    if (cs) {
-                        onTitleChange?.(`${initialFile.name} (${cs})`);
-                    }
-                });
-            }, 2500);
+            let _cancelled = false;
+            (async () => {
+                let _f = initialFile;
+                try {
+                    _f = await imageFileToPdfIfNeeded(initialFile);
+                } catch (e) {
+                    console.error('[initialFile] convert ảnh → PDF lỗi:', e);
+                    setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
+                    return;
+                }
+                if (_cancelled) return;
+                // Ảnh đã convert → File PDF mới KHÔNG có .path trên đĩa → dùng blob URL.
+                if (pdfUrl) URL.revokeObjectURL(pdfUrl);
+                let objUrl = '';
+                if ((window as any).__TAURI_INTERNALS__ && (_f as any).path) {
+                    objUrl = convertFileSrc((_f as any).path);
+                } else {
+                    objUrl = URL.createObjectURL(_f);
+                }
+                setFile(_f);
+                setOriginalFileName(_f.name);
+                setFileSizeStr((_f.size / (1024 * 1024)).toFixed(2) + ' MB');
+                setPdfUrl(objUrl);
+                setPhase('workspace');
+                onTitleChange?.(_f.name);
 
-            if (initialBatchOutput) {
-                setBatchOutput(initialBatchOutput);
-            }
+                // Defer: chỉ cập nhật tiêu đề (RGB/CMYK), không cấp thiết khi mở → tránh
+                // gọi Python tranh chấp với meta + render trang đầu.
+                setTimeout(() => {
+                    detectColorSpace(_f).then(cs => {
+                        if (cs) {
+                            onTitleChange?.(`${_f.name} (${cs})`);
+                        }
+                    });
+                }, 2500);
+
+                if (initialBatchOutput) {
+                    setBatchOutput(initialBatchOutput);
+                }
+            })();
+            return () => { _cancelled = true; };
         }
     }, [initialFile, initialBatchOutput]);
 
@@ -985,6 +1024,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const formatSize = (bytes: number) => (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 
     const handleFileSelected = useCallback(async (selectedFile: File, allFiles?: File[]) => {
+        // Ảnh → PDF NGAY khi mở (xem imageFileToPdfIfNeeded) để mọi công cụ sau chỉ
+        // còn thấy PDF, tránh "No PDF header found" ở bước ngẫu nhiên.
+        try {
+            selectedFile = await imageFileToPdfIfNeeded(selectedFile);
+        } catch (e) {
+            console.error('[handleFileSelected] convert ảnh → PDF lỗi:', e);
+            setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
+            return;
+        }
         setFile(selectedFile);
         setOriginalFileName(selectedFile.name);
         setSelectionFileId(''); // Reset — will be re-uploaded by the useEffect above

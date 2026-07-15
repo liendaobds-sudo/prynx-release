@@ -1572,18 +1572,9 @@ async def preview_layout(req: PreviewLayoutRequest):
                 _bleed_ct = req.bleed or 0
                 _trim_w_ct = max(req.item_w - 2 * _bleed_ct, 1.0)
                 _trim_h_ct = max(req.item_h - 2 * _bleed_ct, 1.0)
-                # Lưới ĐẦY ĐỦ tờ (KHÔNG chia usable — khớp guard _is_cluster_type_early).
-                if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
-                    _lay_ct = _sm_ct(_trim_w_ct, _trim_h_ct, req.gap_x, req.gap_y, req.cols, req.rows)
-                else:
-                    _lay_ct = _sol_ct(
-                        usable_w=req.usable_w, usable_h=req.usable_h,
-                        orig_w=_trim_w_ct, orig_h=_trim_h_ct,
-                        gap_x=req.gap_x, gap_y=req.gap_y,
-                        strategy=req.strategy, secondary_gap=getattr(req, 'split_gap', None),
-                    )
-                _cells_ct = _lay_ct.get('cells', [])
-                _cap_ct = len(_cells_ct)
+                # Nguồn số loại + SL từng loại — CẦN TÍNH TRƯỚC solve để ước tính số band
+                # (BUG-2). _nsrc_ct = số trang viewer (khớp execute page_count sau khi
+                # xóa/thêm thumbnail); _qtys_ct = SL mỗi đơn vị (cặp trang nếu 2 mặt).
                 _tp_ct = int(getattr(req, 'total_pages', 0) or 0)
                 _dn_ct = int(doc.page_count or 0)
                 _nsrc_ct = (_tp_ct if not (_dn_ct > 0 and _dn_ct < _tp_ct) else _dn_ct) if _tp_ct > 0 else _dn_ct
@@ -1602,6 +1593,28 @@ async def preview_layout(req: PreviewLayoutRequest):
                            and _nsrc_ct >= 2 and _nsrc_ct % 2 == 0)
                 _nu_ct = (_nsrc_ct // 2) if _dup_ct else _nsrc_ct
                 _qtys_ct = [_qty_ct((_u * 2) if _dup_ct else _u) for _u in range(_nu_ct)]
+
+                # Lưới ĐẦY ĐỦ tờ (KHÔNG chia usable đều). CHIA CỌC: ép simple_auto (lưới
+                # ĐỀU) — khớp execute (nup_engine). Dao guillotine cần đường xén thẳng;
+                # optimal_auto (L-fill) làm ô khối phụ giữ c/r sub-grid 0-based → map
+                # _c['c']→loại SAI → xén lẫn lộn.
+                # BUG-2 FIX: TRỪ gutter (n_band-1)*cluster_gap khỏi usable TRƯỚC solve để
+                # super-grid ≤ usable (không tràn lề). Band tối đa = số loại SL>0.
+                _n_bands_est = sum(1 for _q in _qtys_ct if _q > 0) or _nu_ct
+                _gutter_total = max(0, _n_bands_est - 1) * _cgap_ct
+                _uw_ct = max(_trim_w_ct, req.usable_w - _gutter_total) if cluster_mode == 'column' else req.usable_w
+                _uh_ct = max(_trim_h_ct, req.usable_h - _gutter_total) if cluster_mode == 'row' else req.usable_h
+                if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
+                    _lay_ct = _sm_ct(_trim_w_ct, _trim_h_ct, req.gap_x, req.gap_y, req.cols, req.rows)
+                else:
+                    _lay_ct = _sol_ct(
+                        usable_w=_uw_ct, usable_h=_uh_ct,
+                        orig_w=_trim_w_ct, orig_h=_trim_h_ct,
+                        gap_x=req.gap_x, gap_y=req.gap_y,
+                        strategy='simple_auto', secondary_gap=getattr(req, 'split_gap', None),
+                    )
+                _cells_ct = _lay_ct.get('cells', [])
+                _cap_ct = len(_cells_ct)
 
                 if _cap_ct > 0 and _qtys_ct:
                     # Kích thước lưới: số cột × hàng. 'column' chia CỘT, 'row' chia HÀNG.
@@ -1703,6 +1716,110 @@ async def preview_layout(req: PreviewLayoutRequest):
                         "ratioUnplaced": _alloc_ct.get('unplaced', []),
                         "placedByPage": _pbp_ct,
                         "clusterTypeMode": True,
+                    }
+
+            # ── STEP_REPEAT (nhân bản) + CHIA CỌC "CHIA ĐỀU" PREVIEW ──
+            # repeat: mọi cọc CÙNG 1 loại, cluster_count cọc CÙNG kích thước (KHÁC
+            # cluster_type chia theo tỷ lệ SL). Output đi nup_engine→chunk: chia usable
+            # theo cluster_count rồi nhân cọc + gutter (visual_cy). Preview trước đây bỏ
+            # qua 'repeat' → rơi single-page → vẽ lưới đều 1 cọc KHÔNG khe → khác output.
+            # Nay dựng đa cọc tuyệt đối KHỚP công thức output (mirror nup_process_chunk).
+            _cmode_ce = (getattr(req, 'cluster_mode', None) or 'none')
+            _ccount_ce = int(getattr(req, 'cluster_count', 2) or 2)
+            if (not getattr(req, 'is_die_cut', False)
+                    and _lt == 'repeat'
+                    and _cmode_ce in ('row', 'column')
+                    and _ccount_ce >= 2
+                    and _tm in ('nup', 'step_repeat', 'booklet')):
+                from app.workers.nup_layout_solver import (
+                    solve_optimal_layout as _sol_ce, solve_manual as _sm_ce,
+                )
+                _bleed_ce = req.bleed or 0
+                _trim_w_ce = max(req.item_w - 2 * _bleed_ce, 1.0)
+                _trim_h_ce = max(req.item_h - 2 * _bleed_ce, 1.0)
+                _cgap_ce = float(getattr(req, 'cluster_gap', 0) or 0)
+                # Số cọc theo trục chia (mirror nup_engine 388-396 + chunk fix tràn mép).
+                _cx_ce = _ccount_ce if _cmode_ce == 'column' else 1
+                _cy_ce = _ccount_ce if _cmode_ce == 'row' else 1
+                # CHIA usable theo số cọc TRƯỚC solve (mỗi cọc chỉ chiếm usable đã chia,
+                # KHÔNG cả tờ) — nếu không super-grid vượt khổ → tràn (bug đã sửa ở chunk).
+                _uw_ce = req.usable_w
+                _uh_ce = req.usable_h
+                if _cx_ce >= 2:
+                    _uw_ce = (req.usable_w - _cgap_ce * (_cx_ce - 1)) / _cx_ce
+                if _cy_ce >= 2:
+                    _uh_ce = (req.usable_h - _cgap_ce * (_cy_ce - 1)) / _cy_ce
+                _uw_ce = max(_trim_w_ce, _uw_ce)
+                _uh_ce = max(_trim_h_ce, _uh_ce)
+                if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
+                    _lay_ce = _sm_ce(_trim_w_ce, _trim_h_ce, req.gap_x, req.gap_y, req.cols, req.rows)
+                else:
+                    _lay_ce = _sol_ce(
+                        usable_w=_uw_ce, usable_h=_uh_ce,
+                        orig_w=_trim_w_ce, orig_h=_trim_h_ce,
+                        gap_x=req.gap_x, gap_y=req.gap_y,
+                        strategy=req.strategy, secondary_gap=getattr(req, 'split_gap', None),
+                    )
+                _cells_ce = _lay_ce.get('cells', [])
+                if _cells_ce:
+                    _agw_ce = _lay_ce.get('overallWidth', 0) or max((c['x'] + c['width'] for c in _cells_ce), default=0.0)
+                    _agh_ce = _lay_ce.get('overallHeight', 0) or max((c['y'] + c['height'] for c in _cells_ce), default=0.0)
+                    _supw_ce = _cx_ce * _agw_ce + max(0, _cx_ce - 1) * _cgap_ce
+                    _suph_ce = _cy_ce * _agh_ce + max(0, _cy_ce - 1) * _cgap_ce
+                    _al_ce = (getattr(req, 'align', None) or 'center')
+                    if not isinstance(_al_ce, str):
+                        _al_ce = 'center'
+                    _ml_ce = getattr(req, 'margin_left', 0) or 0
+                    _mb_ce = getattr(req, 'margin_bottom', 0) or 0
+                    _mr_ce = getattr(req, 'margin_right', 0) or 0
+                    _mt_ce = getattr(req, 'margin_top', 0) or 0
+                    _shw_ce = getattr(req, 'sheet_w', 0) or 0
+                    _shh_ce = getattr(req, 'sheet_h', 0) or 0
+                    # Căn super-grid (mirror nup_engine super_base_x/y; usable = đầy đủ tờ).
+                    if 'left' in _al_ce:
+                        _sbx_ce = _ml_ce
+                    elif 'right' in _al_ce and _shw_ce > 0:
+                        _sbx_ce = _shw_ce - _mr_ce - _supw_ce
+                    else:
+                        _sbx_ce = _ml_ce + (req.usable_w - _supw_ce) / 2
+                    if 'top' in _al_ce and _shh_ce > 0:
+                        _sby_ce = _shh_ce - _mt_ce - _suph_ce
+                    elif 'bottom' in _al_ce:
+                        _sby_ce = _mb_ce
+                    else:
+                        _sby_ce = _mb_ce + (req.usable_h - _suph_ce) / 2
+                    # Nhân cọc: cx theo X, cy theo Y (visual_cy — cọc hàng đầu ở ĐỈNH,
+                    # khớp output). Mỗi cọc = 1 band (màu riêng để mắt thấy đường xén).
+                    _items_ce = []
+                    _ow_ce = _oh_ce = 0.0
+                    for _cy in range(_cy_ce):
+                        _visual_cy = _cy_ce - 1 - _cy
+                        for _cx in range(_cx_ce):
+                            _base_x = _sbx_ce + _cx * (_agw_ce + _cgap_ce)
+                            _base_y = _sby_ce + _visual_cy * (_agh_ce + _cgap_ce)
+                            _band = _cy * _cx_ce + _cx
+                            for _c in _cells_ce:
+                                _ax = _base_x + _c['x']
+                                _ay = _base_y + (_agh_ce - _c['y'] - _c['height'])
+                                _items_ce.append({
+                                    'x': _c['x'], 'y': _c['y'],
+                                    'absX': _ax, 'absY': _ay,
+                                    'width': _c['width'], 'height': _c['height'],
+                                    'isRotated': bool(_c.get('isRotated', False)),
+                                    'isRotated180': False,
+                                    'blockId': _band,
+                                })
+                                _ow_ce = max(_ow_ce, _ax + _c['width'])
+                                _oh_ce = max(_oh_ce, _ay + _c['height'])
+                    doc.close()
+                    return {
+                        "success": True,
+                        "cells": _items_ce,
+                        "overallWidth": _ow_ce,
+                        "overallHeight": _oh_ce,
+                        "totalItems": len(_items_ce),
+                        "strategyUsed": 'cluster_even_repeat',
+                        "absPlacement": True,
                     }
 
             # ── MULTI-PAGE N-Up guillotine PREVIEW: sequential | cut_stacks | ratio_stack ──
@@ -2270,63 +2387,174 @@ async def preview_layout(req: PreviewLayoutRequest):
 
 
 from typing import List
+import json as _json_batch
+from collections import OrderedDict as _OrderedDict_batch
+
+# Cache capacity per-type cho batch endpoint — nesting shape-aware (parse vector +
+# NFP Shapely) ĐẮT. LRU cap để không phình RAM. Key gồm file+mtime+page+params.
+json = _json_batch
+_BATCH_CAP_CACHE: "_OrderedDict_batch[tuple, int]" = _OrderedDict_batch()
+_BATCH_CAP_CACHE_MAX = 512
 
 class PreviewLayoutBatchRequest(BaseModel):
+    """Tính SỐ TEM/TỜ cho MỌI trang trong 1 lần — cột "Tem/tờ" bảng nhập SL.
+
+    Mỗi loại tem tính RIÊNG (đầy 1 tờ của loại đó), độc lập số lượng → dùng CHÍNH
+    hàm export (compute_sticker_layout_for_page) để con số KHỚP output. Live preview
+    chỉ chạy 1 trang đang xem; endpoint này lấp phần còn lại.
+    """
     model_config = ConfigDict(extra='forbid')
-    
+
     usable_w: float
     usable_h: float
     gap_x: float
     gap_y: float
-    strategy: str
+    strategy: str = "optimal_auto"
+    # Mỗi phần tử: {page_idx:int, shape_type?:str, shape_props?:dict, item_w?:float, item_h?:float}
     pages: List[Dict[str, Any]]
-    pont_config: Optional[Dict[str, Any]] = None
-    sheet_w: Optional[float] = None
-    sheet_h: Optional[float] = None
-    margin_left: Optional[float] = None
-    margin_bottom: Optional[float] = None
-    task_mode: Optional[str] = None
+    file_id: Optional[str] = None
+    path: Optional[str] = None
+    bleed: float = 0.0
+    task_mode: Optional[str] = "sticker_imposer"
+    is_die_cut: Optional[bool] = False
+    imposer_mode: Optional[str] = None
+    # secondary_gap — PHẢI khớp _resolve_preview_secondary_gap (single preview + export).
+    cut_type: Optional[str] = "default"
+    fill_block_gap: Optional[float] = 0
+    split_gap: Optional[float] = 0
+    # cluster_tile: kích thước ô cụm (compute_w/h) — mirror single preview.
+    grouping_strategy: str = "none"
+    cluster_sizing_mode: str = "dims"
+    cluster_cols: int = 2
+    cluster_rows: int = 2
+    cluster_w: float = 0
+    cluster_h: float = 0
+    tile_gap_x: float = 0
+    tile_gap_y: float = 0
 
 @router.post("/preview-layouts-batch")
 async def preview_layouts_batch(req: PreviewLayoutBatchRequest):
-    results = {}
-    for p in req.pages:
-        page_idx = p.get("page_idx")
-        bleed_pt = getattr(req, "bleed", 0) or 0
-        item_w = p.get("item_w", 0)
-        item_h = p.get("item_h", 0)
-        trim_w = max(item_w - 2 * bleed_pt, 1.0)
-        trim_h = max(item_h - 2 * bleed_pt, 1.0)
-        
-        if req.task_mode in ('nup', 'step_repeat', 'booklet'):
-            from app.workers.nup_layout_solver import solve_optimal_layout
-            res = solve_optimal_layout(
-                usable_w=req.usable_w,
-                usable_h=req.usable_h,
-                orig_w=trim_w,
-                orig_h=trim_h,
-                gap_x=req.gap_x,
-                gap_y=req.gap_y,
-                strategy=req.strategy,
-                secondary_gap=getattr(req, 'split_gap', None)
-            )
-            items = res.get('cells', [])
+    from app.workers import pdf_wrapper as pdf_lib
+    from app.database import SessionLocal
+    from app.models.job import UploadedFile as UploadedFileModel
+
+    # ── Resolve file (desktop: path trực tiếp; web: file_id → DB) ──
+    if req.path:
+        file_path = _validate_file_path(req.path)
+    elif req.file_id:
+        db = SessionLocal()
+        try:
+            db_file = db.query(UploadedFileModel).filter(UploadedFileModel.id == req.file_id).first()
+            file_path = db_file.file_path if db_file else None
+        finally:
+            db.close()
+    else:
+        file_path = None
+
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail=f"File not found: {req.file_id or req.path}")
+
+    bleed_pt = req.bleed or 0
+
+    # ── cluster_tile: kích thước ô cụm dùng để nesting (mirror single preview 1922-1947) ──
+    is_cluster = (req.grouping_strategy == 'cluster_tile') and bool(req.is_die_cut)
+    compute_w = req.usable_w
+    compute_h = req.usable_h
+    if is_cluster:
+        if req.cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
+            if req.cluster_sizing_mode == 'split_cols':
+                c_cols, c_rows = max(1, req.cluster_cols or 2), 1
+            elif req.cluster_sizing_mode == 'split_rows':
+                c_cols, c_rows = 1, max(1, req.cluster_rows or 2)
+            else:
+                c_cols, c_rows = max(1, req.cluster_cols or 2), max(1, req.cluster_rows or 2)
+            cw = (req.usable_w - (c_cols - 1) * (req.tile_gap_x or 0)) / c_cols
+            ch = (req.usable_h - (c_rows - 1) * (req.tile_gap_y or 0)) / c_rows
         else:
-            from app.workers.sticker_imposer import solve_optimal_sticker_layout
-            res = solve_optimal_sticker_layout(
-                usable_w=req.usable_w,
-                usable_h=req.usable_h,
-                item_w=trim_w,
-                item_h=trim_h,
-                gap_x=req.gap_x,
-                gap_y=req.gap_y,
-                shape_type=p.get("shape_type", "CUSTOM"),
-                shape_props=p.get("shape_props", {}),
-                strategy=req.strategy
+            cw = req.cluster_w
+            ch = req.cluster_h
+        if not cw or not ch:
+            cw, ch = 148.0 * 2.83465, 210.0 * 2.83465
+        compute_w, compute_h = cw, ch
+
+    _secondary_gap = _resolve_preview_secondary_gap(req)
+    _use_sticker = bool(req.is_die_cut) or req.task_mode not in ('nup', 'step_repeat', 'booklet')
+
+    # ── Cache: nesting shape-aware (parse vector + NFP Shapely) ĐẮT → cache theo
+    # (file+mtime, page_idx, params layout). Đổi trang xem / nhập SL (không đổi params)
+    # → hit ngay, không re-parse 17 trang die-cut mỗi debounce. Key gồm MỌI tham số
+    # ảnh hưởng số ô/tờ để không trả cache cũ khi user đổi lề/gap/bleed/khổ.
+    try:
+        _mtime = os.path.getmtime(file_path)
+    except OSError:
+        _mtime = 0.0
+
+    results = {}
+    doc = pdf_lib.open(file_path)
+    try:
+        for p in req.pages:
+            page_idx = p.get("page_idx")
+            if page_idx is None or page_idx < 0 or page_idx >= doc.page_count:
+                continue
+            _shape = p.get("shape_type")
+            shape_override = _shape if (_shape and _shape != 'CUSTOM') else ('CUSTOM' if _shape == 'CUSTOM' else None)
+            _ck = (
+                file_path, _mtime, page_idx, _use_sticker,
+                round(compute_w, 3), round(compute_h, 3),
+                round(req.gap_x, 3), round(req.gap_y, 3),
+                req.strategy, shape_override,
+                json.dumps(p.get("shape_props") or {}, sort_keys=True),
+                round(bleed_pt, 3),
+                round(_secondary_gap, 3) if _secondary_gap is not None else None,
+                round(p.get("item_w", 0) or 0, 3), round(p.get("item_h", 0) or 0, 3),
             )
-            items = res.get("items", [])
-            
-        items = apply_preview_collisions(items, item_w, item_h, req, res.get("widthUsed", res.get('overallWidth', 0)), res.get("heightUsed", res.get('overallHeight', 0)))
-        results[page_idx] = len(items)
-        
+            _cached = _BATCH_CAP_CACHE.get(_ck)
+            if _cached is not None:
+                _BATCH_CAP_CACHE.move_to_end(_ck)
+                results[page_idx] = _cached
+                continue
+            try:
+                if _use_sticker:
+                    # Die-cut / CNC / sticker: shape-aware, ĐỌC đường bế THẬT từ trang →
+                    # con số KHỚP export (nup_engine dùng cùng hàm dựng full_layouts).
+                    from app.workers.nup_sticker import compute_sticker_layout_for_page
+                    result = compute_sticker_layout_for_page(
+                        page=doc[page_idx],
+                        sheet_usable_w=compute_w,
+                        sheet_usable_h=compute_h,
+                        gap_x=req.gap_x,
+                        gap_y=req.gap_y,
+                        strategy=req.strategy,
+                        shape_type_override=shape_override,
+                        shape_props_override=(p.get("shape_props") or None),
+                        bleed_pt=bleed_pt,
+                        secondary_gap=_secondary_gap,
+                    )
+                    _cap = len(result.get("items", []))
+                else:
+                    # N-Up xén (không die-cut): lưới đều, kích thước tem = item_w/item_h (trim).
+                    from app.workers.nup_layout_solver import solve_optimal_layout
+                    trim_w = max((p.get("item_w", 0) or 0) - 2 * bleed_pt, 1.0)
+                    trim_h = max((p.get("item_h", 0) or 0) - 2 * bleed_pt, 1.0)
+                    res = solve_optimal_layout(
+                        usable_w=compute_w,
+                        usable_h=compute_h,
+                        orig_w=trim_w,
+                        orig_h=trim_h,
+                        gap_x=req.gap_x,
+                        gap_y=req.gap_y,
+                        strategy=req.strategy,
+                        secondary_gap=_secondary_gap,
+                    )
+                    _cap = len(res.get('cells', []))
+                results[page_idx] = _cap
+                _BATCH_CAP_CACHE[_ck] = _cap
+                if len(_BATCH_CAP_CACHE) > _BATCH_CAP_CACHE_MAX:
+                    _BATCH_CAP_CACHE.popitem(last=False)
+            except Exception as e:
+                logger.warning("[BATCH CAPACITY] page %s failed: %s", page_idx, e)
+                results[page_idx] = 0
+    finally:
+        doc.close()
+
     return {"success": True, "capacities": results}

@@ -12,6 +12,7 @@ import { NestingResult, NestingConfig } from './nestingTypes';
 import { jsPDF } from 'jspdf';
 import 'svg2pdf.js';
 import { toast } from 'sonner';
+import { saveJsPdfDoc } from './saveJsPdfDoc';
 import i18n, { tv } from '../../i18n';
 
 /** Tolerance cho so sánh điểm (0.01mm) */
@@ -267,9 +268,11 @@ export async function downloadNestingPDF(
         });
 
         const name = filename || `nesting_${model.standardCode}_${params.L}x${params.W}x${params.D}_${result.countPerSheet}up.pdf`;
-        doc.save(name);
+        const saveResult = await saveJsPdfDoc(doc, name);
         toast.dismiss(toastId);
-        toast.success(i18n.t('lib.exportNestingPDF:da_xuat_pdf_xep_khuon_result', { count: result.countPerSheet }));
+        if (saveResult.kind === 'saved') {
+            toast.success(i18n.t('lib.exportNestingPDF:da_xuat_pdf_xep_khuon_result', { count: result.countPerSheet }));
+        }
     } catch (err) {
         console.error('Nesting PDF Export Error:', err);
         toast.dismiss(toastId);

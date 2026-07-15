@@ -213,23 +213,34 @@ def resize_pages(source_path: str, output_path: str,
                 except Exception:
                     src_w, src_h = 595.28, 841.89
 
+                # 4 mode PHẢI khớp frontend PageResizer.ts (đường không-downsample):
+                #  - fit: scale ĐỀU nhỏ nhất, vừa khít, có viền → KHÔNG cắt.
+                #  - fill: scale ĐỀU lớn nhất, lấp đầy → CẮT phần thừa.
+                #  - stretch (Ép bóp méo): scale X/Y RIÊNG → méo hình, KHÔNG cắt.
+                #  - center_no_scale (Giữ nguyên ở giữa): scale=1, canh giữa.
+                # Bug cũ: chỉ có fit + else(=fill) → stretch & center_no_scale RƠI vào
+                # fill → phóng to giữ tỉ lệ + cắt mất hình (user báo "ép bóp méo mà lại
+                # thu khung cắt hình").
                 if scale_mode == 'fit':
+                    scale = min(target_w / src_w, target_h / src_h)
+                    scale_x = scale_y = scale
+                elif scale_mode == 'stretch':
                     scale_x = target_w / src_w
                     scale_y = target_h / src_h
-                    scale = min(scale_x, scale_y)
+                elif scale_mode == 'center_no_scale':
+                    scale_x = scale_y = 1.0
                 else:
-                    # crop/fill
-                    scale_x = target_w / src_w
-                    scale_y = target_h / src_h
-                    scale = max(scale_x, scale_y)
-                
-                new_w = src_w * scale
-                new_h = src_h * scale
+                    # fill/crop
+                    scale = max(target_w / src_w, target_h / src_h)
+                    scale_x = scale_y = scale
+
+                new_w = src_w * scale_x
+                new_h = src_h * scale_y
                 offset_x = (target_w - new_w) / 2
                 offset_y = (target_h - new_h) / 2
-                
-                # Inject Matrix drawing command
-                content = f"q {scale:.4f} 0 0 {scale:.4f} {offset_x:.4f} {offset_y:.4f} cm {xobj_name_str} Do Q"
+
+                # Inject Matrix drawing command (a=scale_x, d=scale_y — stretch méo hình).
+                content = f"q {scale_x:.4f} 0 0 {scale_y:.4f} {offset_x:.4f} {offset_y:.4f} cm {xobj_name_str} Do Q"
                 new_page.contents_add(pikepdf.Stream(out_doc, content.encode('ascii')))
 
                 # Mang TrimBox/BleedBox/ArtBox sang trang mới, biến đổi theo ĐÚNG cm
@@ -238,10 +249,10 @@ def resize_pages(source_path: str, output_path: str,
                 # bleed như trước). Kẹp trong MediaBox mới để box không thò ra ngoài.
                 def _tx_box(box):
                     x0, y0, x1, y1 = box
-                    nx0 = x0 * scale + offset_x
-                    ny0 = y0 * scale + offset_y
-                    nx1 = x1 * scale + offset_x
-                    ny1 = y1 * scale + offset_y
+                    nx0 = x0 * scale_x + offset_x
+                    ny0 = y0 * scale_y + offset_y
+                    nx1 = x1 * scale_x + offset_x
+                    ny1 = y1 * scale_y + offset_y
                     nx0, nx1 = max(0.0, min(nx0, nx1)), min(target_w, max(nx0, nx1))
                     ny0, ny1 = max(0.0, min(ny0, ny1)), min(target_h, max(ny0, ny1))
                     return [round(nx0, 3), round(ny0, 3), round(nx1, 3), round(ny1, 3)]
@@ -406,14 +417,32 @@ def _raster_resize(source_path: str, output_path: str,
             sw, sh = page.get_size()  # points
             if sw <= 0 or sh <= 0:
                 sw, sh = tw_pt, th_pt
-            if scale_mode == "fit":
-                fit = min(tw_pt / sw, th_pt / sh)
-            else:  # fill/crop
-                fit = max(tw_pt / sw, th_pt / sh)
-            render_scale = (target_dpi / 72.0) * fit
-            # Chặn scale phi lý (trang lỗi) → tránh OOM.
-            render_scale = max(0.01, min(render_scale, target_dpi / 72.0 * 8))
-            bmp = page.render(scale=render_scale).to_pil().convert("RGB")
+            # 4 mode PHẢI khớp resize_pages (vector) + frontend PageResizer.ts:
+            #  - fit: scale ĐỀU nhỏ nhất, có viền, KHÔNG cắt.
+            #  - fill/crop: scale ĐỀU lớn nhất, lấp đầy, CẮT phần thừa.
+            #  - stretch (Ép bóp méo): kéo X/Y RIÊNG lấp đầy canvas → méo, KHÔNG cắt.
+            #  - center_no_scale (Giữ nguyên ở giữa): scale=1, canh giữa.
+            # Bug cũ: chỉ fit + else(=fill) → stretch & center_no_scale rơi vào fill
+            # → phóng to giữ tỉ lệ + cắt mất hình (user báo "ép bóp méo mà lại cắt").
+            if scale_mode == "stretch":
+                # Render native theo DPI rồi kéo bitmap khít px_w×px_h (méo).
+                _rs = max(0.01, min(target_dpi / 72.0, target_dpi / 72.0 * 8))
+                bmp = page.render(scale=_rs).to_pil().convert("RGB")
+                canvas = bmp.resize((px_w, px_h), Image.LANCZOS)
+                pages_img.append(canvas)
+                continue
+            if scale_mode == "center_no_scale":
+                _rs = max(0.01, min(target_dpi / 72.0, target_dpi / 72.0 * 8))
+                bmp = page.render(scale=_rs).to_pil().convert("RGB")
+            else:
+                if scale_mode == "fit":
+                    fit = min(tw_pt / sw, th_pt / sh)
+                else:  # fill/crop
+                    fit = max(tw_pt / sw, th_pt / sh)
+                render_scale = (target_dpi / 72.0) * fit
+                # Chặn scale phi lý (trang lỗi) → tránh OOM.
+                render_scale = max(0.01, min(render_scale, target_dpi / 72.0 * 8))
+                bmp = page.render(scale=render_scale).to_pil().convert("RGB")
             canvas = Image.new("RGB", (px_w, px_h), "white")
             off_x = (px_w - bmp.width) // 2
             off_y = (px_h - bmp.height) // 2

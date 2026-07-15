@@ -19,6 +19,7 @@ import {
     OpenContourWarning,
     ContourValidationResult,
 } from './contourValidator';
+import { saveJsPdfDoc } from './saveJsPdfDoc';
 import { tv } from '../../i18n';
 
 /**
@@ -351,7 +352,11 @@ export async function downloadPDF(
         });
 
         const name = filename || `${model.standardCode}_${model.params.L}x${model.params.W}x${model.params.D}.pdf`;
-        doc.save(name);
+        const result = await saveJsPdfDoc(doc, name);
+        if (result.kind === 'cancelled') {
+            toast.dismiss(toastId);
+            return;
+        }
         toast.success(tv('Đã xuất file PDF'), { id: toastId });
     } catch (err) {
         console.error('PDF Export Error:', err);

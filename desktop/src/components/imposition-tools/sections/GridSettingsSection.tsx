@@ -734,6 +734,9 @@ export default function GridSettingsSection(props: GridSettingsProps) {
 
                   const rawQty = targetQuantitiesByPage[idx];
                   const qty = rawQty !== undefined ? rawQty : targetQuantity;
+                  // TEM/TỜ = capacity RIÊNG của loại này khi in đầy 1 tờ (khớp export
+                  // items_per_sheet_type). CNC dùng số ĐÃ XẾP trên tờ trộn (mixedPlacedByPage).
+                  // previewCapacities điền cho MỌI trang qua batch (không chỉ trang đang xem).
                   const cap = (_isCnc ? (mixedPlacedByPage[idx] || 0) : 0) || previewCapacities[idx] || previewCapacity || 0;
                   const sheets = _isCnc
                     ? cncGlobalSheets

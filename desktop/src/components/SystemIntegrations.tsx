@@ -7,6 +7,15 @@ export default function SystemIntegrations() {
   const { t } = useTranslation();
 
     const processPaths = async (paths: string[]) => {
+        // Cờ ý định từ menu chuột phải (vd "--prynx-action=convert"). Menu gọi 1
+        // tiến trình/file nên cờ lặp lại theo mỗi file; chỉ cần thấy 1 lần là đủ.
+        // BẮT cờ TRƯỚC bộ lọc bên dưới — nếu không nó bị loại (không phải path file).
+        let action = '';
+        for (const p of paths) {
+            const m = p.match(/^--prynx-action=(\w+)/);
+            if (m) { action = m[1]; break; }
+        }
+
         const validPaths = paths.filter(p => {
             if (p.includes('prynx://auth/callback')) {
                 window.dispatchEvent(new CustomEvent('auth-url-received', { detail: { url: p } }));
@@ -50,7 +59,7 @@ export default function SystemIntegrations() {
         }
 
         if (files.length > 0) {
-            window.dispatchEvent(new CustomEvent('system-files-received', { detail: { files } }));
+            window.dispatchEvent(new CustomEvent('system-files-received', { detail: { files, action } }));
         }
     };
 

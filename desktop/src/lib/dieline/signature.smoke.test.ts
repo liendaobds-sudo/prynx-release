@@ -45,8 +45,8 @@ import {
 } from './nestingTypes';
 
 // ── Mock PDF pipeline (jsPDF / svg2pdf.js) ──
-const { saveMock, svgMock, setPropertiesMock } = vi.hoisted(() => ({
-    saveMock: vi.fn(),
+const { outputMock, svgMock, setPropertiesMock } = vi.hoisted(() => ({
+    outputMock: vi.fn(() => new ArrayBuffer(8)),
     svgMock: vi.fn().mockResolvedValue(undefined),
     setPropertiesMock: vi.fn(),
 }));
@@ -55,11 +55,16 @@ vi.mock('jspdf', () => ({
     jsPDF: class {
         svg = svgMock;
         setProperties = setPropertiesMock;
-        save = saveMock;
+        output = outputMock;
     },
 }));
 
 vi.mock('svg2pdf.js', () => ({}));
+
+// Ghi file ra đĩa tách sang helper `saveJsPdfDoc` — mock để không đụng Tauri fs.
+vi.mock('./saveJsPdfDoc', () => ({
+    saveJsPdfDoc: vi.fn().mockResolvedValue({ kind: 'saved' }),
+}));
 
 // ── Mock toast (sonner) ──
 const { toastMock } = vi.hoisted(() => ({

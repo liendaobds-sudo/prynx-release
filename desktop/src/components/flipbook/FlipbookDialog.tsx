@@ -4,6 +4,7 @@ import { pdfjs } from 'react-pdf';
 import { FlipBook } from './FlipBook';
 import { BookData, BookPage } from './types';
 import { generateBindingMap } from '../../lib/imposerEngine/VirtualMap';
+import { buildTileUrl, trimmedAspectRatio } from './tileUrl';
 
 // Ensure worker is set up
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -18,10 +19,12 @@ interface FlipbookDialogProps {
     pageOrder: number[]; // 1-based indices from thumbnails, -1 for blank
     bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks';
     foliosize: number;
+    /** Bleed mỗi cạnh (mm) — cắt khỏi tile để xem trước ĐÚNG khổ thành phẩm. */
+    bleed?: number;
 }
 
-export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({ 
-    isOpen, onClose, pdfUrl, pdfFile, pageOrder, bindingMode, foliosize 
+export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
+    isOpen, onClose, pdfUrl, pdfFile, pageOrder, bindingMode, foliosize, bleed = 0
 }) => {
   const { t } = useTranslation();
     const [bookData, setBookData] = useState<BookData>({ pages: [] });
@@ -29,6 +32,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
     const [isLoading, setIsLoading] = useState(false);
     const [pageAspectRatio, setPageAspectRatio] = useState<number>(0.707); // Default A4
     const pdfRef = useRef<any>(null);
+    const metaRef = useRef<any>(null); // meta.allDims (pdfium): khổ trang/pt để tính clip trừ bleed
 
     // Load PDF Document when URL changes
     useEffect(() => {
@@ -47,6 +51,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                     const meta = await invoke<any>('get_pdf_metadata', { filePath: (pdfFile as any).path });
                     if (!cancelled) {
                         pdfRef.current = null;
+                        metaRef.current = meta;
                         initBookData(null, meta);
                     }
                 } else {
@@ -126,7 +131,9 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                     const dim = meta.allDims?.[String(firstValidIndex)];
                     const w = dim?.widthPt ?? meta.widthPt;
                     const h = dim?.heightPt ?? meta.heightPt;
-                    if (w > 0 && h > 0) setPageAspectRatio(w / h);
+                    // Tỉ lệ khung theo khổ SAU xén (trừ bleed) để layout không kéo giãn
+                    // ảnh đã clip — pages dùng object-fill.
+                    if (w > 0 && h > 0) setPageAspectRatio(trimmedAspectRatio(w, h, bleed));
                 } else {
                     const page = await doc.getPage(firstValidIndex);
                     const viewport = page.getViewport({ scale: 1.0 });
@@ -149,11 +156,20 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
 
         // --- NATIVE TAURI RENDER PIPELINE (ZERO LATENCY) ---
         if ((window as any).__TAURI_INTERNALS__ && pdfFile && (pdfFile as any).path) {
-            const encodedPath = encodeURIComponent((pdfFile as any).path);
             const scale = 1.0; // Optimized scale for Flipbook (fast native fetch)
             const rot = 0; // Page rotation handled by Flipbook
+            // Clip bleed theo khổ trang nguồn (allDims[trang]) → xem trước ĐÚNG thành phẩm.
+            const dim = metaRef.current?.allDims?.[String(originalIndex)];
             // Return the Native tile.localhost URL instantly! The browser will fetch it asynchronously.
-            return `http://tile.localhost/${encodedPath}/${originalIndex}/${scale}/${rot}/0/0/0/0`;
+            return buildTileUrl({
+                path: (pdfFile as any).path,
+                page: originalIndex,
+                scale,
+                rot,
+                pageWpt: dim?.widthPt,
+                pageHpt: dim?.heightPt,
+                bleedMm: bleed,
+            });
         }
 
         try {

@@ -287,3 +287,148 @@ def test_vector_downsample_shrinks(tmp_path):
     assert sizes == [(148, 210)], sizes
     # Ảnh A1 nhiễu độ phân giải cao đặt trên A5 → downsample 150 DPI phải nhỏ hơn hẳn.
     assert os.path.getsize(out) < src_size, (os.path.getsize(out), src_size)
+
+
+# ══ scale_mode parity: stretch & center_no_scale (regression bug "ép bóp méo cắt") ══
+#
+# Bug gốc: backend chỉ có fit + else(=fill). stretch & center_no_scale rơi vào fill
+# → phóng to giữ tỉ lệ + CẮT phần thừa. Các test dưới chứng minh hành vi ĐÚNG bằng
+# cách đo pixel, và sẽ ĐỎ nếu ai đó vô tình đưa 2 mode này về fill lần nữa.
+#
+# Fixture: khổ vuông nền ĐỎ + 4 ô vuông XANH LÁ ở 4 góc (mỗi ô = 20% cạnh). Marker góc
+# là "kim chỉ nam": stretch/fit giữ trọn nội dung → 4 góc output còn xanh; fill CẮT
+# 2 mép theo trục dài → góc mất xanh.
+
+_GREEN_FRAC = 0.20  # ô góc = 20% mỗi cạnh
+
+
+def _corner_marker_vector_pdf(path: str, size: float = 200.0):
+    """PDF vector 1 trang: nền đỏ phủ kín + 4 ô xanh lá ở 4 góc."""
+    m = size * _GREEN_FRAC
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(size, size))
+    stream = (
+        f"1 0 0 rg 0 0 {size} {size} re f\n"
+        f"0 1 0 rg 0 0 {m} {m} re f\n"
+        f"0 1 0 rg {size - m} 0 {m} {m} re f\n"
+        f"0 1 0 rg 0 {size - m} {m} {m} re f\n"
+        f"0 1 0 rg {size - m} {size - m} {m} {m} re f\n"
+    ).encode("ascii")
+    page.Contents = pdf.make_stream(stream)
+    page.MediaBox = [0, 0, size, size]
+    pdf.save(path)
+
+
+def _corner_marker_image_pdf(path: str, px: int = 600, res: float = 150.0):
+    """PDF THUẦN ẢNH (không /Font) nền đỏ + 4 góc xanh — để 'auto' chọn raster
+    (mô phỏng đúng ca người dùng: mở ẢNH → convert PDF → đổi khổ 'Tự động')."""
+    from PIL import Image
+    arr = np.zeros((px, px, 3), dtype=np.uint8)
+    arr[..., 0] = 255  # nền đỏ
+    m = int(px * _GREEN_FRAC)
+    for ys in (slice(0, m), slice(px - m, px)):
+        for xs in (slice(0, m), slice(px - m, px)):
+            arr[ys, xs] = (0, 255, 0)
+    Image.fromarray(arr, "RGB").save(path, format="PDF", resolution=res)
+
+
+def _render_rgb(path: str, scale: float = 1.0):
+    import pypdfium2 as pdfium
+    d = pdfium.PdfDocument(path)
+    try:
+        return np.array(d[0].render(scale=scale).to_pil().convert("RGB")).astype(int)
+    finally:
+        d.close()
+
+
+def _at(img, fx: float, fy: float):
+    """Lấy pixel tại tọa độ chuẩn hoá (0..1) — (0,0)=góc trên-trái."""
+    h, w = img.shape[:2]
+    x = min(w - 1, max(0, int(fx * w)))
+    y = min(h - 1, max(0, int(fy * h)))
+    return img[y, x]
+
+
+def _is_green(c) -> bool:
+    return c[0] < 90 and c[1] > 170 and c[2] < 90
+
+
+def _is_white(c) -> bool:
+    return c[0] > 200 and c[1] > 200 and c[2] > 200
+
+
+def _out_aspect(path: str):
+    w, h = _page_sizes_mm(path)[0]
+    return w, h
+
+
+# Target khổ rất khác tỉ lệ nguồn (vuông) để phân biệt rõ các mode.
+_TALL_W, _TALL_H = 60.0, 180.0   # mm — hẹp & cao
+
+
+@pytest.mark.parametrize("mode,dpi", [("xobject", 0), ("raster", 150)])
+def test_stretch_fills_and_keeps_corners(tmp_path, mode, dpi):
+    """stretch (Ép bóp méo): kéo X/Y riêng LẤP ĐẦY khổ mới, KHÔNG cắt.
+    → 4 góc output vẫn XANH (nội dung góc còn nguyên) và KHÔNG có viền trắng."""
+    src = str(tmp_path / "src.pdf")
+    out = str(tmp_path / "out.pdf")
+    if mode == "raster":
+        _corner_marker_image_pdf(src)
+    else:
+        _corner_marker_vector_pdf(src)
+    resize_pages_smart(src, out, _TALL_W, _TALL_H, "stretch", "all", target_dpi=dpi, mode=mode)
+
+    # Khổ đích đúng tỉ lệ hẹp-cao (không bị ép về vuông).
+    w, h = _out_aspect(out)
+    assert abs(w - _TALL_W) <= 2 and abs(h - _TALL_H) <= 2, (w, h)
+
+    img = _render_rgb(out)
+    for name, (fx, fy) in {
+        "TL": (0.08, 0.05), "TR": (0.92, 0.05),
+        "BL": (0.08, 0.95), "BR": (0.92, 0.95),
+    }.items():
+        c = _at(img, fx, fy)
+        assert _is_green(c), f"góc {name}={list(c)} không xanh → stretch bị cắt (rơi về fill?)"
+    # Không có letterbox trắng (đã lấp đầy).
+    assert not _is_white(_at(img, 0.5, 0.5)), "giữa trang trắng → không lấp đầy"
+
+
+@pytest.mark.parametrize("mode,dpi", [("xobject", 0), ("raster", 150)])
+def test_center_no_scale_letterboxes(tmp_path, mode, dpi):
+    """center_no_scale (Giữ nguyên ở giữa): scale=1, canh giữa. Khổ đích LỚN hơn
+    nguồn → phải có VIỀN TRẮNG quanh (không phóng to lấp đầy như fill)."""
+    src = str(tmp_path / "src.pdf")
+    out = str(tmp_path / "out.pdf")
+    if mode == "raster":
+        _corner_marker_image_pdf(src, px=300, res=150.0)  # nguồn ~50mm
+    else:
+        _corner_marker_vector_pdf(src, size=140.0)         # nguồn ~49mm
+    # Khổ đích lớn hơn hẳn nguồn theo cả 2 chiều.
+    resize_pages_smart(src, out, 120.0, 200.0, "center_no_scale", "all", target_dpi=dpi, mode=mode)
+
+    img = _render_rgb(out)
+    # Góc ngoài cùng phải TRẮNG (nội dung không được phóng to ra tới mép).
+    for name, (fx, fy) in {
+        "TL": (0.03, 0.02), "TR": (0.97, 0.02),
+        "BL": (0.03, 0.98), "BR": (0.97, 0.98),
+    }.items():
+        c = _at(img, fx, fy)
+        assert _is_white(c), f"góc {name}={list(c)} không trắng → center_no_scale bị phóng to (rơi về fill?)"
+    # Giữa trang vẫn có nội dung (đỏ hoặc xanh), không trắng.
+    assert not _is_white(_at(img, 0.5, 0.5)), "giữa trang trắng → mất nội dung"
+
+
+def test_fill_crops_corners_baseline(tmp_path):
+    """Đối chứng: fill ĐÚNG là phải CẮT (mất góc theo trục dài). Bảo đảm ta không
+    vô tình biến fill thành stretch khi sửa."""
+    src = str(tmp_path / "src.pdf")
+    out = str(tmp_path / "out.pdf")
+    _corner_marker_vector_pdf(src, size=200.0)
+    resize_pages_smart(src, out, _TALL_W, _TALL_H, "fill", "all", target_dpi=0, mode="xobject")
+    img = _render_rgb(out)
+    # Khổ hẹp-cao + fill (scale theo chiều cao) → 2 mép trái/phải tràn ra, bị cắt →
+    # góc trái/phải KHÔNG còn xanh (đã bị crop ra ngoài).
+    tl = _at(img, 0.08, 0.05)
+    tr = _at(img, 0.92, 0.05)
+    assert not (_is_green(tl) and _is_green(tr)), \
+        f"fill lẽ ra cắt góc trái/phải nhưng vẫn xanh TL={list(tl)} TR={list(tr)} → fill hoá stretch?"

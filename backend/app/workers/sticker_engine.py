@@ -112,6 +112,26 @@ def _inpaint_color_fill(sub_img, sub_csm, sub_bleed, max_dim: int = 4000):
     return out
 
 
+def _rgb_to_cmyk(rgb):
+    """Chuyển ảnh RGB (H,W,3) uint8 → CMYK (H,W,4) uint8, K=0 (không sinh đen).
+
+    Dùng cho vành bù xén (bleed): màu bleed lấy từ ảnh pdfium render (RGB), nhưng
+    artwork gốc + đầu ra in là CMYK. Ghi bleed ở DeviceRGB → RIP nong RGB→CMYK bằng
+    phép KHÁC lúc raster → lệch màu ở mép nối bleed↔artwork. Nghịch đảo đơn giản
+    C=255−R, M=255−G, Y=255−B, K=0 giữ ĐÚNG mặt CMY (không chèn đen vào màu nhạt như
+    nền kem) → mép khớp màu. K=0 vì nền tem thường không có thành phần đen; đen/rich-
+    black ở mép (hiếm với tem bế) sẽ thành CMY nặng nhưng vành bleed bị cắt bỏ nên
+    không hại. Byte layout (C,M,Y,K straight, 0=không mực) khớp nhánh solid-CMYK.
+    """
+    h, w = rgb.shape[:2]
+    cmyk = np.empty((h, w, 4), dtype=np.uint8)
+    cmyk[:, :, 0] = 255 - rgb[:, :, 0]
+    cmyk[:, :, 1] = 255 - rgb[:, :, 1]
+    cmyk[:, :, 2] = 255 - rgb[:, :, 2]
+    cmyk[:, :, 3] = 0
+    return cmyk
+
+
 def _band_tiles(band, band_radius: int, tile: int = 1024):
     """Sinh (crop_slice, core_slice) cho MỖI ô tile×tile GIAO với band.
 
@@ -420,10 +440,15 @@ class StickerEngine:
                     else:
                         if remove_white_bg:
                             hsv = cv2.cvtColor(img[:,:,:3], cv2.COLOR_RGB2HSV)
-                            # Ngưỡng nới nhẹ (V>=185, S<=40) so với cũ (200/30) để bắt cả nền
-                            # kem/ngà/xám rất nhạt (trước lọt vì V<200 hoặc S>30 → vẫn dò ra khối nền).
-                            lower_white = np.array([0, 0, 185])
-                            upper_white = np.array([180, 40, 255])
+                            # Ngưỡng SIẾT MẠNH: chỉ coi là "trắng nền" khi RẤT sáng
+                            # (V>=200) VÀ GẦN NHƯ VÔ SẮC TUYỆT ĐỐI (S<=8 ≈ 3%). Lý do:
+                            # nền kem/ngà CMYK rất nhạt (vd C4 M5 Y10 → RGB≈(243,237,227),
+                            # S≈17 ≈ 6.6%) LÀ NỘI DUNG của nhãn, phải GIỮ. Ngưỡng cũ S<=25
+                            # ăn nhầm cả nền kem đó (bóc mất nửa nhãn). Chỉ trắng gần tuyệt
+                            # đối (S<3%) mới bị bóc; mọi ám màu nhẹ đều được giữ.
+                            # ĐÁNH ĐỔI: nền trắng-JPEG có ám vàng nhẹ sẽ KHÔNG còn bị bóc.
+                            lower_white = np.array([0, 0, 200])
+                            upper_white = np.array([180, 8, 255])
                             white_mask = cv2.inRange(hsv, lower_white, upper_white)
                             # CHỈ bỏ vùng trắng NỐI với biên ảnh (nền thật) — dùng connected-components,
                             # giữ lại các mảng trắng chạm mép. Chi tiết sáng/pastel/xám nhạt NẰM GIỮA
@@ -539,7 +564,15 @@ class StickerEngine:
                         # Chỉ làm mượt khi góc TRÒN. Với góc nhọn/vuông (miter),
                         # smoothing sẽ bo mềm các góc đáng lẽ phải sắc → sai kiểu góc.
                         if corner_style == "round" and len(contour_pts) >= 10:
-                            window = min(200, max(15, len(contour_pts) // 30))
+                            # Window gắn theo ĐỘ DÀI VẬT LÝ cố định (~1mm chu vi), KHÔNG
+                            # theo số điểm. Bản cũ (n_pts/30) tỉ lệ độ phân giải: nhãn to +
+                            # scale cao (3901 điểm) đẩy window lên 130 điểm ≈ 11mm → trung
+                            # bình trượt 11mm bo góc nhãn thành cung bán kính vài mm (đường
+                            # cắt không bám viền). 1mm đủ khử răng cưa marching-square mà
+                            # KHÔNG bo góc thấy được, độc lập scale/kích thước nhãn.
+                            SMOOTH_MM = 1.0
+                            window = int(round(SMOOTH_MM * mm_to_pts * self.scale))
+                            window = max(3, min(window, len(contour_pts) // 4))
                             padded = np.pad(contour_pts, ((window, window), (0, 0)), mode='wrap')
                             kernel = np.ones(window) / window
                             sm_x = np.convolve(padded[:, 0], kernel, mode='same')
@@ -829,7 +862,17 @@ class StickerEngine:
                         # bleed trắng: 255↔0 = xám). bleed_colors đã có màu LIÊN TỤC toàn ROI
                         # (nearest/inpaint/solid fill) → dùng trực tiếp, cạnh chỉ còn màu↔màu.
                         bleed_rgb = bleed_colors
-                        
+
+                        # Đồng bộ HỆ MÀU với artwork gốc (CMYK): màu bleed image/inpaint
+                        # lấy từ ảnh pdfium render (RGB). Ghi ở DeviceRGB → RIP nong RGB→CMYK
+                        # bằng phép KHÁC lúc raster → lệch màu ở mép nối bleed↔artwork. Chuyển
+                        # sang CMYK (K=0) để mép khớp: nghịch đảo C=255−R… tái tạo gần đúng CMY
+                        # gốc (vd nền kem RGB(243,237,227) → C5 M7 Y11 K0 ≈ C4 M5 Y10 gốc).
+                        # Nhánh solid-CMYK (4 kênh) đã là CMYK; chỉ chuyển khi còn 3 kênh.
+                        if not is_bleed_cmyk and bleed_rgb.ndim == 3 and bleed_rgb.shape[2] == 3:
+                            bleed_rgb = _rgb_to_cmyk(bleed_rgb)
+                            is_bleed_cmyk = True
+
                         # LOSSLESS (zlib/FlateDecode) cho CẢ RGB lẫn CMYK. TRƯỚC đây RGB
                         # lưu JPEG q90 → ringing (Gibbs) ở mọi ranh giới tương phản cao:
                         # dải pixel bị kéo về trung tính = VIỀN XÁM nhạt ở biên hình↔bleed,

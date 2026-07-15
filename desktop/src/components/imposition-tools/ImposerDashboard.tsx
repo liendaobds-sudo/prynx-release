@@ -54,7 +54,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const {
         isProcessing, error: globalError, file: pdfFile, viewerPageOrder, viewerPageRotations,
         setHighlightedIssue: onIssueSelect, setShowOutputPreview,
-        detectedShapeType, detectedShapeParams, setDetectedShapeType,
+        detectedShapeType, detectedShapeParams, setDetectedShapeType, setDetectedShapeParams,
         detectedShapesByPage, setDetectedShapesByPage,
         detectedDimensionsByPage, setDetectedDimensionsByPage,
         detectedShapeParamsByPage, setDetectedShapeParamsByPage, viewerActivePage, pdfUrl,
@@ -62,7 +62,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     } = useWorkspaceStore(useShallow(state => ({
         isProcessing: state.isProcessing, error: state.error, file: state.file, viewerPageOrder: state.viewerPageOrder, viewerPageRotations: state.viewerPageRotations,
         setHighlightedIssue: state.setHighlightedIssue, setShowOutputPreview: state.setShowOutputPreview,
-        detectedShapeType: state.detectedShapeType, detectedShapeParams: state.detectedShapeParams, setDetectedShapeType: state.setDetectedShapeType,
+        detectedShapeType: state.detectedShapeType, detectedShapeParams: state.detectedShapeParams, setDetectedShapeType: state.setDetectedShapeType, setDetectedShapeParams: state.setDetectedShapeParams,
         detectedShapesByPage: state.detectedShapesByPage, setDetectedShapesByPage: state.setDetectedShapesByPage,
         detectedDimensionsByPage: state.detectedDimensionsByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage,
         detectedShapeParamsByPage: state.detectedShapeParamsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage, viewerActivePage: state.viewerActivePage, pdfUrl: state.pdfUrl,
@@ -528,7 +528,159 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     useEffect(() => {
         s.setPreviewCapacities({});
         s.setFetchEpoch(e => e + 1);
-    }, [s.formsize, s.customSheetWidth, s.customSheetHeight, s.marginLeft, s.marginRight, s.marginTop, s.marginBottom, s.gapX, s.gapY, s.gridStrategy, activeTool, detectedDimensionsByPage, detectedShapesByPage, s.pontType]);
+    }, [s.formsize, s.customSheetWidth, s.customSheetHeight, s.marginLeft, s.marginRight, s.marginTop, s.marginBottom, s.gapX, s.gapY, s.gridStrategy, activeTool, detectedDimensionsByPage, detectedShapesByPage, detectedShapeParamsByPage, s.pontType,
+        // Ảnh hưởng SỐ ô/tờ per-type (secondary_gap / bleed / cụm) → phải tính lại capacity.
+        s.bleed, s.cutType, s.fillBlockGap, s.splitGap, s.marginMode, s.markType, s.groupingStrategy,
+        s.clusterSizingMode, s.clusterCols, s.clusterRows, s.clusterTileW, s.clusterTileH, s.tileGapX, s.tileGapY,
+        pdfFile, sourceTotalPages]);
+
+    // ═══ BATCH CAPACITY: SỐ TEM/TỜ cho MỌI trang (cột "Tem/tờ" bảng nhập SL) ═══
+    // Live preview (GridPreview) chỉ chạy 1 trang đang xem → previewCapacities chỉ có
+    // key trang đó, các trang khác rơi về previewCapacity chung ("chọn loại nào thì số
+    // đó áp cho hết"). Effect này gọi /preview-layouts-batch (dùng CHÍNH hàm export
+    // compute_sticker_layout_for_page) để điền SỐ RIÊNG của TỪNG loại (đầy 1 tờ loại đó),
+    // KHỚP output. Key theo cùng chỉ số trang single-preview dùng (previewCapacities[X]).
+    const batchCapAbortRef = useRef<AbortController | null>(null);
+    useEffect(() => {
+        const isStickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
+        const isNupLike = s.taskMode === 'nup' || s.taskMode === 'step_repeat';
+        if ((!isStickerLike && !isNupLike) || sourceTotalPages <= 1 || !pdfFile) return;
+
+        let cancelled = false;
+        const MM_TO_PT = 2.83465;
+        const timer = setTimeout(async () => {
+            try {
+                // ── Nguồn file: working file (bake sửa viewer) — .path khi không sửa (Tauri). ──
+                const isTauri = !!(window as any).__TAURI_INTERNALS__;
+                let srcPath: string | undefined;
+                let srcFileId: string | undefined;
+                try {
+                    const wf = await getWorkingFile();
+                    if (isTauri && (wf as any)?.path) {
+                        srcPath = (wf as any).path;
+                    } else {
+                        const bytes = new Uint8Array(await wf.arrayBuffer());
+                        if (isTauri) {
+                            const { tempDir, join } = await import('@tauri-apps/api/path');
+                            const { writeFile } = await import('@tauri-apps/plugin-fs');
+                            const tPath = await join(await tempDir(), `prynx_batchcap_${Date.now()}.pdf`);
+                            await writeFile(tPath, bytes);
+                            srcPath = tPath;
+                        } else {
+                            const up = await uploadPDF(new File([bytes], 'batchcap.pdf', { type: 'application/pdf' }));
+                            if (up?.id) srcFileId = up.id;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[BatchCapacity] resolve source failed:', e);
+                    return;
+                }
+                if (cancelled || (!srcPath && !srcFileId)) return;
+
+                // ── Lề hiệu dụng (mirror khối GridPreview 972-991) ──
+                let effMarginTop = s.marginTop || 0;
+                let effMarginBottom = s.marginBottom || 0;
+                let effMarginLeft = s.marginLeft || 0;
+                let effMarginRight = s.marginRight || 0;
+                if (s.gripperMargin && s.gripperMargin > 0 && s.taskMode !== 'booklet') {
+                    effMarginBottom += s.gripperMargin;
+                }
+                const effMarginMode = isStickerLike ? 'labels_only' : s.marginMode;
+                if (effMarginMode === 'include_marks' && s.markType && s.markType !== 'none') {
+                    const markSpace = (s.marksConfig?.length ?? 5.0) + (s.marksConfig?.distance ?? 3.0);
+                    effMarginTop += markSpace; effMarginBottom += markSpace;
+                    effMarginLeft += markSpace; effMarginRight += markSpace;
+                }
+
+                // ── splitGap (mirror GridPreview 995-1006) ──
+                let splitGapMm: number;
+                if (isStickerLike) {
+                    splitGapMm = Math.max(s.gapX || 0, s.gapY || 0);
+                } else {
+                    splitGapMm = s.clusterGap && s.clusterGap > 0 ? s.clusterGap : Math.max(s.gapX || 0, s.gapY || 0, 5);
+                    if ((s.markType === 'guillotine' || s.markType === 'corners') && (!s.clusterGap || s.clusterGapMode === 'mark')) {
+                        const mc = (s.marksConfig?.length ?? 5.0) + (s.marksConfig?.distance ?? 3.0);
+                        splitGapMm = 2 * mc;
+                    }
+                }
+
+                const press = resolvePressSheetDims();
+                const usableWmm = Math.max(0, press.w - effMarginLeft - effMarginRight);
+                const usableHmm = Math.max(0, press.h - effMarginTop - effMarginBottom);
+                if (usableWmm <= 0 || usableHmm <= 0) return;
+
+                // ── pages: mỗi trang gửi shape/props/dims đã nhận diện (key theo CHỈ SỐ
+                // TRANG GỐC — GIỐNG single preview safePageIdx). Populate MỌI trang. ──
+                const pages = [];
+                for (let X = 0; X < sourceTotalPages; X++) {
+                    const dim = detectedDimensionsByPage[X];
+                    pages.push({
+                        page_idx: X,
+                        shape_type: (isStickerLike ? (detectedShapesByPage[X] || 'CUSTOM') : 'RECTANGLE'),
+                        shape_props: detectedShapeParamsByPage[X] || {},
+                        // item_w/h (points) chỉ dùng cho nhánh N-Up xén (không đọc die từ trang).
+                        item_w: (typeof dim?.w === 'number' ? dim.w : (s.sourcePageDim?.w || 0)),
+                        item_h: (typeof dim?.h === 'number' ? dim.h : (s.sourcePageDim?.h || 0)),
+                    });
+                }
+
+                const body = {
+                    usable_w: usableWmm * MM_TO_PT,
+                    usable_h: usableHmm * MM_TO_PT,
+                    gap_x: (s.gapX || 0) * MM_TO_PT,
+                    gap_y: (s.gapY || 0) * MM_TO_PT,
+                    strategy: s.gridStrategy || 'optimal_auto',
+                    pages,
+                    ...(srcPath ? { path: srcPath } : { file_id: srcFileId }),
+                    bleed: (s.bleed || 0) * MM_TO_PT,
+                    task_mode: s.taskMode,
+                    is_die_cut: isStickerLike,
+                    imposer_mode: activeTool === 'cnc_imposer' ? 'cnc' : undefined,
+                    cut_type: s.cutType || 'default',
+                    fill_block_gap: s.fillBlockGap ?? 0,
+                    split_gap: splitGapMm * MM_TO_PT,
+                    grouping_strategy: s.groupingStrategy,
+                    cluster_sizing_mode: s.clusterSizingMode,
+                    cluster_cols: s.clusterCols,
+                    cluster_rows: s.clusterRows,
+                    cluster_w: s.clusterTileW ? s.clusterTileW * MM_TO_PT : 0,
+                    cluster_h: s.clusterTileH ? s.clusterTileH * MM_TO_PT : 0,
+                    tile_gap_x: (s.tileGapX || 0) * MM_TO_PT,
+                    tile_gap_y: (s.tileGapY || 0) * MM_TO_PT,
+                };
+
+                if (batchCapAbortRef.current) batchCapAbortRef.current.abort();
+                const controller = new AbortController();
+                batchCapAbortRef.current = controller;
+
+                const res = await authenticatedFetch(`${getApiUrl()}/imposition/preview-layouts-batch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                    signal: controller.signal,
+                });
+                if (cancelled || !res.ok) return;
+                const data = await res.json();
+                if (cancelled || !data?.success || !data.capacities) return;
+
+                // Merge (không đè key trang đang xem do single preview vừa ghi — cùng hàm
+                // nên KHỚP; merge để không mất số đã có nếu batch trang nào lỗi = 0).
+                const caps: Record<number, number> = {};
+                Object.keys(data.capacities).forEach((k) => {
+                    const v = Number(data.capacities[k]) || 0;
+                    if (v > 0) caps[Number(k)] = v;
+                });
+                if (Object.keys(caps).length > 0) {
+                    s.setPreviewCapacities({ ...s.previewCapacities, ...caps });
+                }
+            } catch (e: any) {
+                if (e?.name !== 'AbortError') console.warn('[BatchCapacity] fetch failed:', e);
+            }
+        }, 350);
+
+        return () => { cancelled = true; clearTimeout(timer); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [s.fetchEpoch]);
 
     // System merge files
     useEffect(() => {
@@ -1092,7 +1244,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             <MarksSettingsDialog isOpen={s.showMarksModal} onClose={() => s.setShowMarksModal(false)} config={s.marksConfig} onSave={(cfg) => { s.setMarksConfig(cfg); }} />
             <PontSettingsDialog isOpen={s.showPontModal} onClose={() => s.setShowPontModal(false)} config={s.pontConfig} onSave={(cfg) => { s.setPontConfig(cfg); }} />
             <PresetSelector isOpen={s.isPresetOpen} onClose={() => s.setIsPresetOpen(false)} onLoadPreset={handleLoadPreset} onGetCurrentSettings={getCurrentSettings} />
-            <FlipbookDialog isOpen={s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} bindingMode={s.signatureMode} foliosize={s.foliosize} />
+            <FlipbookDialog isOpen={s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} bindingMode={s.signatureMode} foliosize={s.foliosize} bleed={s.bleed} />
             <SheetViewerDialog isOpen={s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.foldPattern} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.gripperMargin} pageWpt={s.sourcePageDim?.w} pageHpt={s.sourcePageDim?.h} bleed={s.bleed} gapX={s.gapX} gapY={s.gapY} marginLeft={s.marginLeft} marginRight={s.marginRight} marginTop={s.marginTop} />
         </div>
     );

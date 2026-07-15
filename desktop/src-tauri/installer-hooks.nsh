@@ -20,3 +20,67 @@
   ; Chờ ngắn cho OS nhả handle file trước khi NSIS bắt đầu ghi.
   Sleep 800
 !macroend
+
+; ─── Context menu "Ghép trong PrynX" (chuột phải PDF/JPG/PNG) ───
+; Trước đây CHỈ run_dev.bat đăng ký verb này (trỏ target\debug\pdf-inspector.exe) →
+; chỉ máy dev có menu, KHÁCH cài bản release KHÔNG có. Chuyển sang installer hook để
+; khách cũng có, trỏ đúng exe đã cài ($INSTDIR) và tự gỡ khi uninstall.
+;
+; Install mode = currentUser (RequestExecutionLevel user) → ghi HKCU (không cần admin),
+; đúng nhánh SystemFileAssociations\<ext>\shell mà Explorer đọc cho menu chuột phải.
+; MultiSelectModel=Player: cho chọn NHIỀU file → Windows gọi 1 tiến trình/file, app
+; gom lại bằng single-instance (get_pending_system_files) → mở tab Ghép với đủ file.
+
+!define CTXVERB "pdf-inspector-combine"
+!define CTXLABEL "Combine in PrynX"
+
+; Verb "Convert to PDF" — CHỈ cho ảnh (jpg/jpeg/png), KHÔNG cho .pdf (pdf→pdf vô nghĩa).
+; Truyền cờ --prynx-action=convert để app phân biệt với Combine (cả 2 verb đều gọi cùng
+; exe): app đọc cờ qua get_startup_args → 1 ảnh + convert đi thẳng tab Ghép (xuất PDF)
+; thay vì tab Bình bài. Combine KHÔNG mang cờ → giữ nguyên luồng cũ đã chạy tốt.
+!define CVTVERB "pdf-inspector-convert"
+!define CVTLABEL "Convert to PDF (PrynX)"
+
+; Đăng ký verb cho 1 phần mở rộng. %1 là literal trong NSIS (khác batch, không cần %%).
+!macro REGISTER_COMBINE_VERB EXT
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}" "" "${CTXLABEL}"
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}" "Icon" '"$INSTDIR\pdf-inspector.exe",0'
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}" "MultiSelectModel" "Player"
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}\command" "" '"$INSTDIR\pdf-inspector.exe" "%1"'
+!macroend
+
+!macro REGISTER_CONVERT_VERB EXT
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CVTVERB}" "" "${CVTLABEL}"
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CVTVERB}" "Icon" '"$INSTDIR\pdf-inspector.exe",0'
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CVTVERB}" "MultiSelectModel" "Player"
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CVTVERB}\command" "" '"$INSTDIR\pdf-inspector.exe" --prynx-action=convert "%1"'
+!macroend
+
+!macro UNREGISTER_COMBINE_VERB EXT
+  DeleteRegKey HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CTXVERB}"
+!macroend
+
+!macro UNREGISTER_CONVERT_VERB EXT
+  DeleteRegKey HKCU "Software\Classes\SystemFileAssociations\${EXT}\shell\${CVTVERB}"
+!macroend
+
+!macro NSIS_HOOK_POSTINSTALL
+  !insertmacro REGISTER_COMBINE_VERB ".pdf"
+  !insertmacro REGISTER_COMBINE_VERB ".jpg"
+  !insertmacro REGISTER_COMBINE_VERB ".jpeg"
+  !insertmacro REGISTER_COMBINE_VERB ".png"
+  ; Convert CHỈ cho ảnh.
+  !insertmacro REGISTER_CONVERT_VERB ".jpg"
+  !insertmacro REGISTER_CONVERT_VERB ".jpeg"
+  !insertmacro REGISTER_CONVERT_VERB ".png"
+!macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  !insertmacro UNREGISTER_COMBINE_VERB ".pdf"
+  !insertmacro UNREGISTER_COMBINE_VERB ".jpg"
+  !insertmacro UNREGISTER_COMBINE_VERB ".jpeg"
+  !insertmacro UNREGISTER_COMBINE_VERB ".png"
+  !insertmacro UNREGISTER_CONVERT_VERB ".jpg"
+  !insertmacro UNREGISTER_CONVERT_VERB ".jpeg"
+  !insertmacro UNREGISTER_CONVERT_VERB ".png"
+!macroend

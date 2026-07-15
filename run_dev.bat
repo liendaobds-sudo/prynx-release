@@ -53,22 +53,32 @@ set "EXE_PATH=%ROOT_DIR%\desktop\src-tauri\target\debug\pdf-inspector.exe"
 set "REG_BASE=HKCU\Software\Classes\SystemFileAssociations"
 
 :: PDF
-reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine" /ve /d "Combine in PDF Compare" /f >nul
+reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine" /ve /d "Combine in PrynX" /f >nul
 reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine" /v "Icon" /d "\"%EXE_PATH%\",0" /f >nul
 reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine" /v "MultiSelectModel" /d "Player" /f >nul
 reg add "%REG_BASE%\.pdf\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" \"%%1\"" /f >nul
 
 :: JPG
-reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine" /ve /d "Combine in PDF Compare" /f >nul
+reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine" /ve /d "Combine in PrynX" /f >nul
 reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine" /v "Icon" /d "\"%EXE_PATH%\",0" /f >nul
 reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine" /v "MultiSelectModel" /d "Player" /f >nul
 reg add "%REG_BASE%\.jpg\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" \"%%1\"" /f >nul
 
 :: PNG
-reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /ve /d "Combine in PDF Compare" /f >nul
+reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /ve /d "Combine in PrynX" /f >nul
 reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /v "Icon" /d "\"%EXE_PATH%\",0" /f >nul
 reg add "%REG_BASE%\.png\shell\pdf-inspector-combine" /v "MultiSelectModel" /d "Player" /f >nul
 reg add "%REG_BASE%\.png\shell\pdf-inspector-combine\command" /ve /d "\"%EXE_PATH%\" \"%%1\"" /f >nul
+
+:: ─── Convert to PDF (CHI anh: 1 anh -> 1 PDF). Co --prynx-action=convert de
+::     App.tsx dinh tuyen 1 file vao tab Ghep (xuat PDF) thay vi Binh bai. ───
+set "CONVERB=pdf-inspector-convert"
+for %%E in (.jpg .jpeg .png) do (
+    reg add "%REG_BASE%\%%E\shell\%CONVERB%" /ve /d "Convert to PDF in PrynX" /f >nul
+    reg add "%REG_BASE%\%%E\shell\%CONVERB%" /v "Icon" /d "\"%EXE_PATH%\",0" /f >nul
+    reg add "%REG_BASE%\%%E\shell\%CONVERB%" /v "MultiSelectModel" /d "Player" /f >nul
+    reg add "%REG_BASE%\%%E\shell\%CONVERB%\command" /ve /d "\"%EXE_PATH%\" --prynx-action=convert \"%%1\"" /f >nul
+)
 
 echo - Context Menu OK.
 

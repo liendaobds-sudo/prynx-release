@@ -1022,8 +1022,13 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         <option value="mark">{t('imposition.advancedSettings:dau_xen_ngoai')}</option>
                                     </select>
                                 </div>
-                                <div className="hidden">
-                                    {/* Khoảng cách hở moved to PaperSettingsUI */}
+                                <div>
+                                    <label className="text-xs font-bold text-slate-600 dark:text-zinc-400 uppercase tracking-wide block mb-1.5">{t('imposition.advancedSettings:khoang_cach_giua_2_cum_mm')}</label>
+                                    <input
+                                        type="number" min="0" step="0.5" value={s.clusterGap}
+                                        onChange={e => s.setClusterGap(Math.max(0, parseFloat(e.target.value) || 0))}
+                                        className="w-full h-9 px-2 border border-slate-300 dark:border-white/20 rounded-lg bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                    />
                                 </div>
                             </div>
                         </div>

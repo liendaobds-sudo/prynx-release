@@ -12,6 +12,7 @@ import { SPREAD_FOLD_REGISTRY, getPatternForPageCount } from '../../lib/imposerE
 import { computeSpreadGrid } from '../../lib/imposerEngine/InstructionSerializer';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import { buildTileUrl } from './tileUrl';
 
 const MM_TO_PT = 2.83465;
 
@@ -58,7 +59,8 @@ interface SheetViewerDialogProps {
 // ─── Single page image ───
 const PageSlotView: React.FC<{
     slot: PageSlot; pageOrder: number[]; pdfFile?: any;
-}> = ({ slot, pageOrder, pdfFile }) => {
+    pageWpt?: number; pageHpt?: number; bleed?: number;
+}> = ({ slot, pageOrder, pdfFile, pageWpt, pageHpt, bleed }) => {
   const { t } = useTranslation();
     const [loaded, setLoaded] = useState(false);
     const isBlank = slot.srcIndex === null || slot.srcIndex >= pageOrder.length;
@@ -77,7 +79,7 @@ const PageSlotView: React.FC<{
     const imageUrl = useMemo(() => {
         if (isBlankPage || !pdfFile?.path) return '';
         return `http://tile.localhost/${encodeURIComponent(pdfFile.path)}/${pdfPageNum}/1.0/0/0/0/0/0`;
-    }, [isBlankPage, pdfPageNum, pdfFile]);
+    }, [isBlankPage, pdfPageNum, pdfFile, pageWpt, pageHpt, bleed]);
 
     return (
         <div className="relative flex flex-col items-center justify-center w-full h-full min-w-0 min-h-0">
@@ -643,11 +645,11 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                                 </div>
                                 <div className="flex justify-center bg-white dark:bg-zinc-800 rounded-lg border border-slate-200 dark:border-zinc-700 shadow-lg overflow-hidden min-h-0 min-w-0">
                                     <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                                        <PageSlotView slot={cs.front.left} pageOrder={pageOrder} pdfFile={pdfFile} />
+                                        <PageSlotView slot={cs.front.left} pageOrder={pageOrder} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
                                     </div>
                                     <div className="shrink-0 w-px bg-red-400/60 z-10" />
                                     <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                                        <PageSlotView slot={cs.front.right} pageOrder={pageOrder} pdfFile={pdfFile} />
+                                        <PageSlotView slot={cs.front.right} pageOrder={pageOrder} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
                                     </div>
                                 </div>
                             </div>
@@ -659,11 +661,11 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                                 </div>
                                 <div className="flex justify-center bg-white dark:bg-zinc-800 rounded-lg border border-slate-200 dark:border-zinc-700 shadow-lg overflow-hidden min-h-0 min-w-0">
                                     <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                                        <PageSlotView slot={cs.back.left} pageOrder={pageOrder} pdfFile={pdfFile} />
+                                        <PageSlotView slot={cs.back.left} pageOrder={pageOrder} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
                                     </div>
                                     <div className="shrink-0 w-px bg-red-400/60 z-10" />
                                     <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                                        <PageSlotView slot={cs.back.right} pageOrder={pageOrder} pdfFile={pdfFile} />
+                                        <PageSlotView slot={cs.back.right} pageOrder={pageOrder} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
                                     </div>
                                 </div>
                             </div>

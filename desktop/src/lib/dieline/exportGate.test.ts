@@ -22,9 +22,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DielineModel, PathSegment, Point2D, DEFAULT_PARAMS } from './types';
 
-// ── Mock PDF pipeline: spy trên save/svg/setProperties ──
-const { saveMock, svgMock, setPropertiesMock } = vi.hoisted(() => ({
-    saveMock: vi.fn(),
+// ── Mock PDF pipeline: spy trên svg/setProperties/output ──
+const { outputMock, svgMock, setPropertiesMock } = vi.hoisted(() => ({
+    outputMock: vi.fn(() => new ArrayBuffer(8)),
     svgMock: vi.fn().mockResolvedValue(undefined),
     setPropertiesMock: vi.fn(),
 }));
@@ -33,12 +33,21 @@ vi.mock('jspdf', () => ({
     jsPDF: class {
         svg = svgMock;
         setProperties = setPropertiesMock;
-        save = saveMock;
+        output = outputMock;
     },
 }));
 
 // svg2pdf.js chỉ được import side-effect → mock rỗng.
 vi.mock('svg2pdf.js', () => ({}));
+
+// Ghi file ra đĩa được tách sang helper `saveJsPdfDoc` (Tauri fs / browser
+// download). Mock nó để việc "ghi file" quan sát được qua spy `saveMock`,
+// độc lập với môi trường Tauri. Mặc định: ghi thành công.
+const { saveMock } = vi.hoisted(() => ({
+    saveMock: vi.fn().mockResolvedValue({ kind: 'saved' }),
+}));
+
+vi.mock('./saveJsPdfDoc', () => ({ saveJsPdfDoc: saveMock }));
 
 // ── Mock toast (sonner) ──
 const { toastMock } = vi.hoisted(() => ({
@@ -121,7 +130,7 @@ describe('downloadPDF — cổng xác nhận xuất file', () => {
 
         expect(confirm).not.toHaveBeenCalled();
         expect(saveMock).toHaveBeenCalledTimes(1);
-        expect(saveMock).toHaveBeenCalledWith('closed.pdf');
+        expect(saveMock).toHaveBeenCalledWith(expect.anything(), 'closed.pdf');
         // Không cảnh báo vì không có biên hở.
         expect(toastMock.warning).not.toHaveBeenCalled();
     });
@@ -154,7 +163,7 @@ describe('downloadPDF — cổng xác nhận xuất file', () => {
 
         expect(toastMock.warning).toHaveBeenCalledTimes(1);
         expect(saveMock).toHaveBeenCalledTimes(1);
-        expect(saveMock).toHaveBeenCalledWith('open.pdf');
+        expect(saveMock).toHaveBeenCalledWith(expect.anything(), 'open.pdf');
     });
 
     it('biên hở + KHÔNG có callback xác nhận → KHÔNG ghi file (Req 1.4)', async () => {
@@ -255,6 +264,6 @@ describe('downloadPDF — không ghi file một phần khi cổng cancelled (Req
         await downloadPDF(makeModel(openSegments()), 'confirmed.pdf', confirm);
 
         expect(saveMock).toHaveBeenCalledTimes(1);
-        expect(saveMock).toHaveBeenCalledWith('confirmed.pdf');
+        expect(saveMock).toHaveBeenCalledWith(expect.anything(), 'confirmed.pdf');
     });
 });

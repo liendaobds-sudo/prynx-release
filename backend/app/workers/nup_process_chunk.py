@@ -329,7 +329,17 @@ def process_chunk(args):
 
                 else:
 
-                    cur_layout = solve_optimal_layout(sheet_usable_w, sheet_usable_h, cur_trim_w, cur_trim_h, gap_x, gap_y, strategy, main_secondary_gap)
+                    # CHIA CỌC (chia đều): mỗi cọc chỉ chiếm usable ĐÃ CHIA theo cx/cy,
+                    # KHÔNG phải cả tờ. Mirror nup_engine (usable_w/h chia trước solve).
+                    # Trước đây solve bằng sheet_usable (đầy đủ) → mỗi cọc cao/rộng bằng
+                    # cả tờ, nhân cx/cy → super_grid vượt khổ → tràn mép (super_base âm).
+                    _uw_solve = sheet_usable_w
+                    _uh_solve = sheet_usable_h
+                    if cx_count >= 2:
+                        _uw_solve = (sheet_usable_w - cluster_gap * (cx_count - 1)) / cx_count
+                    if cy_count >= 2:
+                        _uh_solve = (sheet_usable_h - cluster_gap * (cy_count - 1)) / cy_count
+                    cur_layout = solve_optimal_layout(_uw_solve, _uh_solve, cur_trim_w, cur_trim_h, gap_x, gap_y, strategy, main_secondary_gap)
 
                     cur_cells = cur_layout['cells']
 

@@ -381,7 +381,7 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
         cos_a = math.cos(rad)
         sin_a = math.sin(rad)
         stream_str = (
-            f"q\n{clip_prefix}{mirror_prefix}"
+            f"q\n{mirror_prefix}{clip_prefix}"
             f"1 0 0 1 {cx:.4f} {cy:.4f} cm\n"
             f"{cos_a:.6f} {sin_a:.6f} {-sin_a:.6f} {cos_a:.6f} 0 0 cm\n"
             f"1 0 0 1 {-cx:.4f} {-cy:.4f} cm\n"
@@ -390,7 +390,7 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
         )
     else:
         stream_str = (
-            f"q\n{clip_prefix}{mirror_prefix}"
+            f"q\n{mirror_prefix}{clip_prefix}"
             f"{scale_x:.6f} 0 0 {scale_y:.6f} {e:.4f} {f:.4f} cm\n"
             f"{xobj_name_str} Do\nQ\n"
         )

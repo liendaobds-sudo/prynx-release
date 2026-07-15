@@ -37,7 +37,20 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
       // lưới recnt nhiều file lớn = đơ cả app (đã đo Network: nhiều plugin:fs|read_file
       // 100-323MB). Thay bằng protocol tile:// — Rust render trang 1 ở DPI nhỏ (~chục KB,
       // có disk cache), KHÔNG nạp full file. Ảnh/file non-PDF dùng convertFileSrc (lazy).
-      import('@tauri-apps/api/core').then(({ convertFileSrc }) => {
+      //
+      // Kiểm tra file CÒN TỒN TẠI trước khi request tile: recent file user đã xóa/di
+      // chuyển vẫn nằm trong danh sách → nếu request tile sẽ nổ 500 (FS read error) spam
+      // console. stat() throw → hiện "Missing" luôn, KHÔNG request tile.
+      (async () => {
+        try {
+          const { stat } = await import('@tauri-apps/plugin-fs');
+          await stat(path);
+        } catch {
+          if (isActive) setFileExists(false);
+          return;
+        }
+        if (!isActive) return;
+        const { convertFileSrc } = await import('@tauri-apps/api/core');
         if (!isActive) return;
         if (isPdf) {
           const enc = encodeURIComponent(path);
@@ -48,7 +61,7 @@ const ThumbnailView = React.memo(({ path, name, active = true }: Props) => {
           setSrc(convertFileSrc(path));
           setFileExists(true);
         }
-      });
+      })();
     }
     return () => {
       isActive = false;
