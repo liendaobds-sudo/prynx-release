@@ -12,7 +12,7 @@ import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '
 import { Button } from './Button';
 import { Scissors, Settings, Star } from 'lucide-react';
 import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
-import { normalizeImageToPngBytes } from '../lib/imageNormalizer';
+import { imageBytesToPdfDoc } from '../lib/imageNormalizer';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import { PREDEFINED_SIZES, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
@@ -108,21 +108,17 @@ export function isEphemeralBackendPath(p?: string | null): boolean {
 }
 
 /**
- * Ảnh (JPG/PNG) → File PDF 1 trang (kích thước = px ảnh). App cho mở ảnh nhưng MỌI
- * công cụ (đổi khổ, bình bài, VDP…) giả định PDF (PDFDocument.load / backend parse)
- * → ảnh không có header %PDF → nổ "No PDF header found". Convert NGAY khi mở để mọi
- * luồng sau chỉ còn PDF. normalizeImageToPngBytes lo cả CMYK JPEG → RGB PNG.
+ * Ảnh (JPG/PNG) → File PDF 1 trang. App cho mở ảnh nhưng MỌI công cụ (đổi khổ, bình
+ * bài, VDP…) giả định PDF (PDFDocument.load / backend parse) → ảnh không có header %PDF
+ * → nổ "No PDF header found". Convert NGAY khi mở để mọi luồng sau chỉ còn PDF.
+ * imageBytesToPdfDoc lo phần giữ nén gốc (JPEG DCT / PNG Flate) + khổ trang theo DPI.
  * Trả về File PDF nếu là ảnh; ngược lại trả nguyên file. Ném lỗi nếu ảnh hỏng.
  */
 async function imageFileToPdfIfNeeded(f: File): Promise<File> {
     const _nm = (f.name || '').toLowerCase();
     if (!(_nm.endsWith('.jpg') || _nm.endsWith('.jpeg') || _nm.endsWith('.png'))) return f;
     const _imgBytes = await getFileArrayBuffer(f);
-    const _normBytes = await normalizeImageToPngBytes(_imgBytes);
-    const _doc = await PDFDocument.create();
-    const _img = await _doc.embedPng(_normBytes);
-    const _pg = _doc.addPage([_img.width, _img.height]);
-    _pg.drawImage(_img, { x: 0, y: 0, width: _img.width, height: _img.height });
+    const _doc = await imageBytesToPdfDoc(_imgBytes, f.name || 'image');
     const _pdfBytes = await _doc.save();
     const _pdfName = (f.name || 'image').replace(/\.(jpe?g|png)$/i, '.pdf');
     return new File([_pdfBytes as any], _pdfName, { type: 'application/pdf' });
@@ -325,6 +321,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             return () => clearTimeout(timer);
         }
     }, [file]);
+    // Khi mở từ App (Ctrl+O / recent / drop) với initialFile: Ảnh phải convert → PDF
+    // (async). Trước đây phase='upload' hiện màn kéo-thả rồi mới vào workspace → "nháy"
+    // màn Bình Bài. Giữ cờ opening để hiện loading thay vì màn upload trống.
+    const [isOpeningFile, setIsOpeningFile] = useState(() => !!initialFile);
+
     // Handle initial file passed from App.tsx (if spawned via multi-file drop)
     // ĐƯỜNG MỞ FILE THỨ 2 (recent files / spawn tab / App-level) — KHÔNG qua
     // handleFileSelected. Ảnh cũng phải convert → PDF ở đây, nếu không đổi khổ/bình
@@ -332,13 +333,17 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         if (initialFile && !file) {
             let _cancelled = false;
+            setIsOpeningFile(true);
             (async () => {
                 let _f = initialFile;
                 try {
                     _f = await imageFileToPdfIfNeeded(initialFile);
                 } catch (e) {
                     console.error('[initialFile] convert ảnh → PDF lỗi:', e);
-                    setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
+                    if (!_cancelled) {
+                        setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
+                        setIsOpeningFile(false);
+                    }
                     return;
                 }
                 if (_cancelled) return;
@@ -355,6 +360,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 setFileSizeStr((_f.size / (1024 * 1024)).toFixed(2) + ' MB');
                 setPdfUrl(objUrl);
                 setPhase('workspace');
+                setIsOpeningFile(false);
                 onTitleChange?.(_f.name);
 
                 // Defer: chỉ cập nhật tiêu đề (RGB/CMYK), không cấp thiết khi mở → tránh
@@ -373,6 +379,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             })();
             return () => { _cancelled = true; };
         }
+        if (!initialFile) setIsOpeningFile(false);
     }, [initialFile, initialBatchOutput]);
 
     // Áp lockedMode của công cụ vào taskMode, NHƯNG giữ nguyên khi người dùng đang ở
@@ -1030,11 +1037,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const handleFileSelected = useCallback(async (selectedFile: File, allFiles?: File[]) => {
         // Ảnh → PDF NGAY khi mở (xem imageFileToPdfIfNeeded) để mọi công cụ sau chỉ
         // còn thấy PDF, tránh "No PDF header found" ở bước ngẫu nhiên.
+        // Hiện loading (không giữ màn kéo-thả) trong lúc convert ảnh.
+        setIsOpeningFile(true);
+        setError('');
         try {
             selectedFile = await imageFileToPdfIfNeeded(selectedFile);
         } catch (e) {
             console.error('[handleFileSelected] convert ảnh → PDF lỗi:', e);
             setError(t('tabs.imposition:khong_doc_duoc_file_anh'));
+            setIsOpeningFile(false);
             return;
         }
         setFile(selectedFile);
@@ -1051,8 +1062,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         }
         setPdfUrl(objUrl);
         setPhase('workspace');
+        setIsOpeningFile(false);
         
-        setError('');
         setHistory([]);
         // Reset undo/redo edit-object khi đổi file (tránh khôi phục file cũ).
         store?.getState().setObjectEditPast([]);
@@ -1961,7 +1972,24 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     //#region Render
     return (
         <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
-            {phase === 'upload' && (
+            {phase === 'upload' && isOpeningFile && (
+                <div className="flex-1 flex flex-col items-center justify-center py-12 px-6 animate-fade-in">
+                    <div className="w-12 h-12 border-[3px] border-indigo-400 border-t-transparent rounded-full animate-spin mb-5" />
+                    <p className="text-base font-semibold text-slate-800 dark:text-zinc-100">
+                        {t('tabs.imposition:dang_mo_file')}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-500 dark:text-zinc-400 max-w-sm text-center">
+                        {t('tabs.imposition:dang_chuyen_anh_sang_pdf')}
+                    </p>
+                    {initialFile?.name && (
+                        <p className="mt-3 text-xs text-slate-400 dark:text-zinc-500 truncate max-w-md">
+                            {initialFile.name}
+                        </p>
+                    )}
+                </div>
+            )}
+
+            {phase === 'upload' && !isOpeningFile && (
                 <div className="flex-1 flex flex-col items-center justify-center py-12 px-6">
                     <div className="text-center mb-10 animate-fade-in">
                         <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 transition-colors">

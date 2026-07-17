@@ -1,6 +1,6 @@
 import { PDFDocument } from 'pdf-lib';
 import { MergeSettings } from '../../components/preprocess-tools/MergeTool';
-import { normalizeImageToPngBytes } from '../imageNormalizer';
+import { imageBytesToPdfDoc, addImagePageToDoc } from '../imageNormalizer';
 import { tv } from '../../i18n';
 
 export async function mergePdf(
@@ -28,10 +28,7 @@ export async function mergePdf(
                 const name = file.name.toLowerCase();
                 
                 if (name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png')) {
-                    const normBytes = await normalizeImageToPngBytes(bytes);
-                    const img = await newPdf.embedPng(normBytes);
-                    const page = newPdf.addPage([img.width, img.height]);
-                    page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+                    await addImagePageToDoc(newPdf, bytes, file.name);
                 } else {
                     const srcPdf = await PDFDocument.load(bytes);
                     const copied = await newPdf.copyPages(srcPdf, srcPdf.getPageIndices());
@@ -51,12 +48,7 @@ export async function mergePdf(
         const loadOrConvert = async (file: File, bytes: ArrayBuffer) => {
             const name = file.name.toLowerCase();
             if (name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png')) {
-                const tempPdf = await PDFDocument.create();
-                const normBytes = await normalizeImageToPngBytes(bytes);
-                const img = await tempPdf.embedPng(normBytes);
-                const page = tempPdf.addPage([img.width, img.height]);
-                page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
-                return tempPdf;
+                return await imageBytesToPdfDoc(bytes, file.name);
             }
             return await PDFDocument.load(bytes);
         };
@@ -88,11 +80,7 @@ export async function mergePdf(
         const insertBytes = await settings.insertFile.arrayBuffer();
         
         if (insertName.endsWith('.jpg') || insertName.endsWith('.jpeg') || insertName.endsWith('.png')) {
-            insertPdf = await PDFDocument.create();
-            const normBytes = await normalizeImageToPngBytes(insertBytes);
-            const img = await insertPdf.embedPng(normBytes);
-            const page = insertPdf.addPage([img.width, img.height]);
-            page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+            insertPdf = await imageBytesToPdfDoc(insertBytes, settings.insertFile.name);
         } else {
             insertPdf = await PDFDocument.load(insertBytes);
         }

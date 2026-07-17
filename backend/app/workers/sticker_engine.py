@@ -27,6 +27,25 @@ from app.workers.cutline_geometry import (  # noqa: E402
 )
 
 
+def compute_cut_bleed_offsets(cut_mode: str, bleed_pts: float, offset_pts: float) -> tuple:
+    """Vị trí đường cắt và mép ngoài bù xén (pts, offset từ viền artwork).
+
+    Trả (total_offset, bleed_outer_offset):
+      - original: cut = offset; outer = offset + bleed (bù xén ngoài đường cắt)
+      - bleed:    cut = outer = bleed + offset (cắt bao lề; vành đúng 1×bleed)
+      - khác:     giống original
+
+    REGRESSION: cut_mode=bleed KHÔNG được outer = cut + bleed (gấp đôi vành,
+    đường cắt nằm giữa nền bù xén).
+    """
+    if cut_mode == "bleed" and bleed_pts > 0:
+        total = bleed_pts + offset_pts
+        return total, total
+    total = offset_pts
+    outer = total + bleed_pts if bleed_pts > 0 else total
+    return total, outer
+
+
 def _bleed_roi_bbox(mask, margin: int = 8):
     """Bounding box (y0, y1, x0, x1) của vùng mask>0, nới thêm `margin` px và
     kẹp trong biên ảnh. Trả None nếu mask rỗng.
@@ -49,6 +68,97 @@ def _downscale_factor(h: int, w: int, max_dim: int = 1000) -> int:
     """Hệ số hạ mẫu để cạnh dài ≲ max_dim (1 = không hạ)."""
     longest = max(h, w)
     return int(math.ceil(longest / max_dim)) if longest > max_dim else 1
+
+
+def _near_white_mask_rgb(img: np.ndarray, *, min_luma: int = 248, max_chroma: int = 18) -> np.ndarray:
+    """Pixel gần trắng / AA trộn nền (RGB uint8 HxWx3).
+
+    Dùng để LOẠI khỏi nguồn màu viền: pixel mép render thường bị trộn trắng →
+    nearest kéo nhạt ra bleed. Chroma = max−min kênh; luma ≈ max kênh.
+    """
+    if img is None or img.ndim != 3 or img.shape[2] < 3:
+        return np.zeros(img.shape[:2], dtype=bool) if img is not None else np.zeros((0, 0), dtype=bool)
+    rgb = img[:, :, :3]
+    mx = rgb.max(axis=2)
+    mn = rgb.min(axis=2)
+    chroma = mx.astype(np.int16) - mn.astype(np.int16)
+    return (mx >= min_luma) & (chroma <= max_chroma)
+
+
+def _erode_px(mask: np.ndarray, px: int, kernel_type: int = cv2.MORPH_ELLIPSE) -> np.ndarray:
+    """Erode mask `px` pixels (kernel ellipse/rect 2*px+1). px<=0 → copy."""
+    if px is None or px <= 0:
+        return mask.copy()
+    k = max(1, int(px))
+    ker = cv2.getStructuringElement(kernel_type, (k * 2 + 1, k * 2 + 1))
+    return cv2.erode(mask, ker)
+
+
+def _build_edge_color_source_mask(
+    silhouette: np.ndarray,
+    img: np.ndarray,
+    *,
+    band_px: int,
+    peel_px: int = 1,
+    edge_bite_px: int = 0,
+    kernel_type: int = cv2.MORPH_ELLIPSE,
+) -> np.ndarray:
+    """Nguồn màu bleed = dải VIỀN tem gốc (shell), không hút cả ruột.
+
+    Mục tiêu: 'Lấy theo màu viền tem' phải lấy đúng màu dọc chu vi tem, không
+    lấy màu lõi (khi viền mỏng + erode sâu) và không lấy pixel AA trắng mép.
+
+    Pipeline:
+      1) edge_bite: co silhouette (bỏ dải trắng mép khi file không tràn lề).
+      2) peel: bỏ vài px ngoài cùng (AA trộn nền).
+      3) band: dải dày `band_px` ngay sau peel = nguồn nearest/inpaint.
+      4) Loại pixel near-white trong dải.
+      5) Fallback dần nếu dải rỗng (tem mảnh / viền trắng dày).
+    """
+    if silhouette is None or np.count_nonzero(silhouette) == 0:
+        return np.zeros_like(silhouette) if silhouette is not None else np.zeros((0, 0), dtype=np.uint8)
+
+    base = silhouette
+    if edge_bite_px and edge_bite_px > 0:
+        bitten = _erode_px(silhouette, edge_bite_px, kernel_type)
+        if np.count_nonzero(bitten) > 0:
+            base = bitten
+
+    peel = max(0, int(peel_px))
+    band = max(1, int(band_px))
+
+    def _shell(src: np.ndarray, peel_n: int, band_n: int) -> np.ndarray:
+        outer = _erode_px(src, peel_n, kernel_type)
+        inner = _erode_px(src, peel_n + band_n, kernel_type)
+        return cv2.subtract(outer, inner)
+
+    def _strip_white(shell: np.ndarray) -> np.ndarray:
+        if np.count_nonzero(shell) == 0 or img is None or img.ndim != 3:
+            return shell
+        cleaned = shell.copy()
+        cleaned[_near_white_mask_rgb(img)] = 0
+        return cleaned if np.count_nonzero(cleaned) > 0 else shell
+
+    shell = _strip_white(_shell(base, peel, band))
+    if np.count_nonzero(shell) > 0:
+        return shell
+
+    # Fallback 1: bỏ peel, band dày hơn (bám sát viền hình học).
+    shell = _strip_white(_shell(base, 0, max(band, 2)))
+    if np.count_nonzero(shell) > 0:
+        return shell
+
+    # Fallback 2: không lọc trắng — thà lấy AA còn hơn rỗng (tránh bleed padding).
+    shell = _shell(base, 0, max(band, 2))
+    if np.count_nonzero(shell) > 0:
+        return shell
+
+    # Fallback 3: mọi pixel silhouette (sau bite) — hành vi cũ an toàn.
+    if np.count_nonzero(base) > 0:
+        cleaned = _strip_white(base)
+        return cleaned if np.count_nonzero(cleaned) > 0 else base
+
+    return silhouette.copy()
 
 
 def _nearest_color_fill(sub_src, sub_img, max_dim: int = 4000):
@@ -268,6 +378,7 @@ def _process_sticker_chunk(args: dict):
         rectangle_mode=args["rectangle_mode"],
         edge_bite_mm=args["edge_bite_mm"],
         cut_first_page_only=args["cut_first_page_only"],
+        shape_mode=args.get("shape_mode", "auto_safe"),
         _page_subset=args["page_indices"],
     )
     # result = (bytes, metas, pages_no_dieline, any_dieline)
@@ -299,6 +410,7 @@ class StickerEngine:
         rectangle_mode: bool = False,
         edge_bite_mm: float = 0.0,
         cut_first_page_only: bool = False,
+        shape_mode: str = "auto_safe",
         _page_subset: list = None,
     ) -> tuple:
         # _page_subset: khi != None, CHỈ xử lý các trang có index trong list (theo
@@ -331,6 +443,7 @@ class StickerEngine:
                     solid_bleed_color=solid_bleed_color, draw_cut_contour=draw_cut_contour,
                     rectangle_mode=rectangle_mode, edge_bite_mm=edge_bite_mm,
                     cut_first_page_only=cut_first_page_only,
+                    shape_mode=shape_mode,
                 )
 
             debug_step = "Create Output PDF"
@@ -485,13 +598,18 @@ class StickerEngine:
                 page_in_width = float(page_in_pike.cropbox[2]) - crop_x0
                 page_in_height = float(page_in_pike.cropbox[3]) - crop_y0
                 
+                # Pad trang theo mép NGOÀI cùng (cut hoặc bleed), KHÔNG cộng bleed 2 lần.
+                # - original: cut = offset, outer = offset + bleed
+                # - bleed:    cut = outer = bleed + offset  (cắt bao lề bù xén)
+                # - none:     chỉ tràn màu bleed
                 if cut_mode == "none":
-                    max_expansion_pts = bleed_pts
+                    max_expansion_pts = abs(bleed_pts) + 50
+                elif cut_mode == "bleed":
+                    _outer = (bleed_pts + offset_pts) if bleed_pts > 0 else offset_pts
+                    max_expansion_pts = max(abs(offset_pts), abs(_outer), abs(bleed_pts)) + 50
                 else:
-                    # bleed extends bleed_pts beyond the cut line (cut = bleed+offset from artwork)
-                    cut_line_offset = bleed_pts + offset_pts if bleed_pts > 0 else offset_pts
-                    bleed_outer_extent = abs(cut_line_offset) + bleed_pts if bleed_pts > 0 else abs(offset_pts)
-                    max_expansion_pts = max(abs(offset_pts), bleed_outer_extent, bleed_pts) + 50
+                    _outer = offset_pts + bleed_pts if bleed_pts > 0 else offset_pts
+                    max_expansion_pts = max(abs(offset_pts), abs(_outer), abs(bleed_pts)) + 50
                 new_width = page_in_width + 2 * max_expansion_pts
                 new_height = page_in_height + 2 * max_expansion_pts
                 
@@ -513,6 +631,8 @@ class StickerEngine:
                 dieline_polygons = []
                 total_offset = 0
                 bleed_outer_offset = 0
+                recon_meta = {"shape_mode": shape_mode, "reconstructed": False}
+                cut_draw_style = corner_style
                 
                 # ── RECTANGLE MODE: dùng page bbox làm shape, skip contour detection ──
                 if rectangle_mode:
@@ -589,16 +709,47 @@ class StickerEngine:
                         if not fill_holes:
                             for h in holes:
                                 base_dieline = base_dieline.difference(h)
-                        
-                        # Save artwork shape for clipping (expanded to avoid clipping artwork edges)
-                        
-                        if cut_mode in ("bleed", "none") and bleed_pts > 0:
-                            total_offset = bleed_pts + offset_pts  # Cut line position
+
+                        # Reconstruct hình học chuẩn (auto_safe / force_*).
+                        # Tem tròn khuyết / CUSTOM → reject → giữ contour.
+                        recon_meta = {"shape_mode": shape_mode, "reconstructed": False}
+                        cut_draw_style = corner_style
+                        try:
+                            from app.workers.sticker_cut_reconstruct import (
+                                reconstruct_cut_coords,
+                                coords_to_shapely_polygon,
+                            )
+                            _probe = base_dieline
+                            if getattr(_probe, "geom_type", None) == "Polygon" and not _probe.is_empty:
+                                _coords, recon_meta = reconstruct_cut_coords(
+                                    list(_probe.exterior.coords), shape_mode, px_per_mm
+                                )
+                                if _coords is not None:
+                                    _fitted = coords_to_shapely_polygon(_coords)
+                                    if _fitted is not None and not _fitted.is_empty:
+                                        base_dieline = _fitted
+                                        if recon_meta.get("kind") in ("rect", "triangle"):
+                                            cut_draw_style = "miter"
+                        except Exception as _recon_err:
+                            logger.warning("shape reconstruct skip: %s", _recon_err)
+                            recon_meta = {
+                                "shape_mode": shape_mode,
+                                "reconstructed": False,
+                                "error": str(_recon_err),
+                            }
+
+                        # Vị trí đường cắt + mép ngoài bù xén — xem compute_cut_bleed_offsets.
+                        total_offset, bleed_outer_offset = compute_cut_bleed_offsets(
+                            cut_mode, bleed_pts, offset_pts
+                        )
+
+                        if recon_meta.get("reconstructed") and recon_meta.get("kind") in ("circle", "ellipse", "rounded_rect"):
+                            join_style = 1
+                        elif recon_meta.get("reconstructed") and recon_meta.get("kind") in ("rect", "triangle"):
+                            join_style = 2
                         else:
-                            total_offset = offset_pts
-                            
-                        join_style = 1 if corner_style == "round" else 2
-                        
+                            join_style = 1 if corner_style == "round" else 2
+
                         # dieline_poly = CUT LINE position
                         if total_offset != 0:
                             dieline_poly = base_dieline.buffer(total_offset, join_style=join_style)
@@ -606,15 +757,13 @@ class StickerEngine:
                                 dieline_poly = dieline_poly.buffer(0.01, join_style=join_style)
                         else:
                             dieline_poly = base_dieline
-                        
-                        # bleed_outer_poly = bleed extends bleed_pts OUTWARD from cut line
-                        # So bleed is ALWAYS outside the cut line, even with negative offset
-                        bleed_outer_offset = total_offset + bleed_pts
+
+                        # bleed_outer_poly = mép ngoài vùng màu bù xén
                         if bleed_outer_offset != 0:
                             bleed_outer_poly = base_dieline.buffer(bleed_outer_offset, join_style=join_style)
                         else:
                             bleed_outer_poly = base_dieline
-                        
+
                         if fill_holes:
                             if dieline_poly.geom_type == 'MultiPolygon':
                                 dieline_poly = MultiPolygon([Polygon(p.exterior) for p in dieline_poly.geoms])
@@ -625,15 +774,12 @@ class StickerEngine:
                             elif bleed_outer_poly.geom_type == 'Polygon':
                                 bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
 
-                        # cut_poly = dieline_poly nhưng đã được nén (1.0 pt) để dọn dẹp điểm thừa mà vẫn giữ form cong chuẩn.
-                        # simplify(preserve_topology=False) trên 1 Polygon CÓ THỂ trả MultiPolygon
-                        # (hình mảnh/eo hẹp bị đứt) → nếu nhồi thẳng vào MultiPolygon([...]) sẽ
-                        # crash "'MultiPolygon' object is not subscriptable" (constructor tưởng
-                        # phần tử là spec (shell, holes) rồi index nó). Gom PHẲNG mọi Polygon con.
+                        # Reconstruct → nén nhẹ; contour → 1.0 pt (giữ hành vi cũ).
+                        _cut_simplify = 0.05 if recon_meta.get("reconstructed") else 1.0
                         if isinstance(dieline_poly, MultiPolygon):
                             _cut_parts = []
                             for p in dieline_poly.geoms:
-                                _s = p.simplify(1.0, preserve_topology=False)
+                                _s = p.simplify(_cut_simplify, preserve_topology=False)
                                 if _s.is_empty:
                                     continue
                                 if isinstance(_s, MultiPolygon):
@@ -642,7 +788,7 @@ class StickerEngine:
                                     _cut_parts.append(_s)
                             cut_poly = MultiPolygon(_cut_parts) if _cut_parts else dieline_poly
                         else:
-                            cut_poly = dieline_poly.simplify(1.0, preserve_topology=False)
+                            cut_poly = dieline_poly.simplify(_cut_simplify, preserve_topology=False)
 
                 # ============================================================
                 # STEP B: Generate bleed using dieline_poly for perfect alignment
@@ -681,28 +827,26 @@ class StickerEngine:
                         else:
                             padded_img = np.pad(img_native, pad_width=((pad_b, pad_b), (pad_b, pad_b), (0, 0)), mode='constant', constant_values=255)
                         
-                        inset_px = int(0.15 * px_per_mm)
-                        if inset_px < 1: inset_px = 1
-                        # "Lẹm mép": hút màu sâu vào trong thêm edge_bite_mm để bỏ qua viền
-                        # trắng mảnh ở mép nguồn (file khách không tràn lề). Nearest/inpaint
-                        # sẽ kéo màu SÂU bên trong (đỏ) phủ ra cả viền trắng lẫn vùng bleed.
+                        # Nguồn màu = dải VIỀN tem gốc (shell), không erode cả ruột.
+                        # - peel ~0.08mm: bỏ 1 lớp AA trộn nền ở mép render.
+                        # - band ~0.25mm: lấy màu thật ngay sau peel (đúng "màu viền tem").
+                        # - edge_bite: co silhouette trước (doa viền trắng file không tràn lề).
+                        # Fallback trong _build_edge_color_source_mask nếu shell rỗng.
                         edge_bite_px = max(0, int(edge_bite_mm * px_per_mm))
-                        inset_px += edge_bite_px
-                        inset_kernel = cv2.getStructuringElement(kernel_type, (inset_px*2+1, inset_px*2+1))
-                        color_source_mask = cv2.erode(padded_original_mask, inset_kernel)
-                        # FALLBACK viền-trắng: chi tiết mảnh hơn 2×inset_px bị erode ăn SẠCH →
-                        # color_source_mask rỗng → nearest/inpaint không có nguồn màu, distance
-                        # transform trả pixel góc ROI = padding TRẮNG → vành bù xén ra trắng
-                        # (trái mục tiêu). Nếu rỗng: thử co nhẹ dần; vẫn rỗng thì dùng mask gốc
-                        # (chưa erode) — thà lấy màu gồm cả mép còn hơn ra trắng.
-                        if np.count_nonzero(color_source_mask) == 0:
-                            for _shrink_px in (max(1, inset_px // 2), 1):
-                                _k = cv2.getStructuringElement(kernel_type, (_shrink_px*2+1, _shrink_px*2+1))
-                                color_source_mask = cv2.erode(padded_original_mask, _k)
-                                if np.count_nonzero(color_source_mask) > 0:
-                                    break
-                            if np.count_nonzero(color_source_mask) == 0:
-                                color_source_mask = padded_original_mask.copy()
+                        peel_px = max(1, int(0.08 * px_per_mm))
+                        edge_band_px = max(2, int(0.25 * px_per_mm))
+                        # depth dùng cho band_r (halo nearest): xa nhất nguồn có thể lùi vào trong.
+                        source_depth_px = edge_bite_px + peel_px + edge_band_px
+                        color_source_mask = _build_edge_color_source_mask(
+                            padded_original_mask,
+                            padded_img,
+                            band_px=edge_band_px,
+                            peel_px=peel_px,
+                            edge_bite_px=edge_bite_px,
+                            kernel_type=kernel_type,
+                        )
+                        # Giữ tên inset_px cho log/công thức band cũ (tương đương depth nguồn).
+                        inset_px = max(1, source_depth_px)
 
                         # Generate bleed_mask from bleed_outer_poly (extends BEYOND cut line)
                         if bleed_outer_poly is not None and not getattr(bleed_outer_poly, 'is_empty', True):
@@ -771,10 +915,10 @@ class StickerEngine:
                         # "Lẹm mép" (doa nền kiểu Photoshop): co footprint vào trong edge_bite_px.
                         # Artwork (layer trên) bị clip theo footprint → co vào để lộ dải bleed bên
                         # dưới ở đúng viền trắng mảnh của file nguồn. bleed_ring = bleed_mask − footprint
-                        # nên footprint co lại thì ring TỰ lan vào trong phủ viền trắng đó. Kết hợp với
-                        # color_source_mask đã co thêm edge_bite (ở trên) → màu hút từ SÂU bên trong
-                        # (bỏ qua viền trắng) rồi kéo phủ ra. CẢNH BÁO: lẹm quá tay ăn vào nội dung
-                        # sát mép — mặc định nhỏ, cho khách chỉnh/tắt (0).
+                        # nên footprint co lại thì ring TỰ lan vào trong phủ viền trắng đó. Nguồn màu
+                        # (_build_edge_color_source_mask) cũng bite cùng lượng → lấy màu viền sau khi
+                        # đã bỏ dải trắng, kéo phủ ra. Lẹm quá tay ăn nội dung sát mép — mặc định
+                        # nhỏ / 0 khi tem đã tràn lề.
                         if edge_bite_px > 0:
                             bite_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (edge_bite_px*2+1, edge_bite_px*2+1))
                             sticker_footprint = cv2.erode(sticker_footprint, bite_kernel)
@@ -787,10 +931,8 @@ class StickerEngine:
                         _fp_inner = cv2.erode(sticker_footprint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_tuck_px*2+1, _tuck_px*2+1)))
                         bleed_ring = cv2.subtract(bleed_mask, _fp_inner)
                         
-                        # Band = dải quanh ring, đủ rộng để chứa nguồn màu gần nhất của MỌI
-                        # pixel ring (bleed_px ngoài + inset_px trong + tuck + slack). Chỉ tính
-                        # fill trong band thay vì cả trang → nhanh 5-8x mà pixel HIỂN THỊ (ring)
-                        # giống hệt. edge_bite_px ĐÃ nằm trong inset_px (dòng ~570) → KHÔNG cộng lại.
+                        # Band = dải quanh ring, đủ rộng để chứa nguồn màu viền (source_depth)
+                        # + bleed ngoài + tuck. Nguồn là shell mép, không còn full-interior.
                         _SAFETY = 4
                         band_r = int(bleed_px + inset_px + _tuck_px + 1 + _SAFETY)
                         band_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (band_r*2+1, band_r*2+1))
@@ -997,11 +1139,15 @@ class StickerEngine:
                     for p in geoms:
                         coords = list(p.exterior.coords)
                         if coords:
-                            page_content_stream.extend(build_contour_path_stream(coords, page_in_height, corner_style))
+                            page_content_stream.extend(
+                                build_contour_path_stream(coords, page_in_height, cut_draw_style)
+                            )
                         for inter in p.interiors:
                             icoords = list(inter.coords)
                             if icoords:
-                                page_content_stream.extend(build_contour_path_stream(icoords, page_in_height, corner_style))
+                                page_content_stream.extend(
+                                    build_contour_path_stream(icoords, page_in_height, cut_draw_style)
+                                )
 
                     page_content_stream.append("S")
                     page_content_stream.append("Q")
@@ -1015,7 +1161,7 @@ class StickerEngine:
                     page_out.Resources.ColorSpace = pikepdf.Dictionary()
                 page_out.Resources.ColorSpace.CutContour = cs_arr
                 
-                page_meta = {}
+                page_meta = {"recon": recon_meta}
                 if dieline_poly is not None and not getattr(dieline_poly, 'is_empty', True):
                     any_dieline_found = True
                     minx, miny, maxx, maxy = dieline_poly.bounds
@@ -1085,12 +1231,23 @@ class StickerEngine:
                             "h_mm": round(p_h_pt * 25.4 / 72.0, 2)
                         })
                     
+                    # Hình học đường cắt đã reconstruct (auto_safe): kind + độ tin cậy.
+                    # kind None / reconstructed=False → giữ contour (die phức tạp).
+                    _rk = recon_meta.get("kind") if recon_meta.get("reconstructed") else None
+                    _res = recon_meta.get("residual_mm")
+                    # confidence từ residual: 0mm→1.0, ≥0.35mm→~0.0 (tuyến tính, clamp).
+                    if _rk and isinstance(_res, (int, float)):
+                        _conf = max(0.0, min(1.0, 1.0 - _res / 0.35))
+                    else:
+                        _conf = None
                     page_meta = {
                         "width_mm": round(width_mm, 2),
                         "height_mm": round(height_mm, 2),
                         "boxes": boxes,
                         "shape_type": shape_type_str,
-                        "shape_params": shape_params_str
+                        "shape_params": shape_params_str,
+                        "cut_kind": _rk,
+                        "cut_confidence": round(_conf, 2) if _conf is not None else None,
                     }
                 elif cut_mode != "none":
                     # Yêu cầu tạo đường cắt nhưng không dò được hình trên trang này.
@@ -1216,6 +1373,7 @@ class StickerEngine:
                 "rectangle_mode": kw["rectangle_mode"],
                 "edge_bite_mm": kw["edge_bite_mm"],
                 "cut_first_page_only": kw["cut_first_page_only"],
+                "shape_mode": kw.get("shape_mode", "auto_safe"),
             })
 
         # 1 chunk → chạy tại chỗ (không spawn). Nhiều chunk → pool. pool.map giữ thứ tự.

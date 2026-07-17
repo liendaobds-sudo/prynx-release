@@ -549,6 +549,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     do_rectangle_mode = rectangle_mode_raw.lower() in ("true", "1", "yes")
     cut_first_page_only_raw = form.get("cut_first_page_only", "false")
     do_cut_first_page_only = cut_first_page_only_raw.lower() in ("true", "1", "yes")
+    # auto_safe | contour | force_circle | force_ellipse | force_rect | force_triangle
+    shape_mode = (form.get("shape_mode") or "auto_safe").strip().lower()
     try:
         edge_bite_mm = float(form.get("edge_bite_mm", 0.0))
     except (ValueError, TypeError):
@@ -596,7 +598,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             draw_cut_contour=do_draw_cut_contour,
             rectangle_mode=do_rectangle_mode,
             edge_bite_mm=edge_bite_mm,
-            cut_first_page_only=do_cut_first_page_only
+            cut_first_page_only=do_cut_first_page_only,
+            shape_mode=shape_mode,
         )
         if not success or not os.path.exists(output_path):
             # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
@@ -618,6 +621,12 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 headers["X-Sticker-Shape-Type"] = meta["shape_type"]
             if "shape_params" in meta:
                 headers["X-Sticker-Shape-Params"] = meta["shape_params"]
+            # Hình học đường cắt tự nhận (auto_safe) + độ tin cậy → frontend hiện tên
+            # hình đã nhận làm van an toàn thay cho dropdown shape_mode đã ẩn.
+            if meta.get("cut_kind"):
+                headers["X-Sticker-Cut-Kind"] = str(meta["cut_kind"])
+            if meta.get("cut_confidence") is not None:
+                headers["X-Sticker-Cut-Confidence"] = str(meta["cut_confidence"])
             if "pages" in meta:
                 import json
                 headers["X-Sticker-Pages"] = json.dumps(meta["pages"])

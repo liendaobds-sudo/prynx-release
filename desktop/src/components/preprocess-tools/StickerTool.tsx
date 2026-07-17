@@ -16,7 +16,7 @@ interface Props {
 
 const CUT_MODES_RICH = [
     { value: 'original', title: '✂️ Theo hình gốc', desc: 'Cắt bám theo viền ảnh hoặc vector.' },
-    { value: 'bleed', title: '🩸 Theo mép tràn lề', desc: 'Cắt bao luôn phần lề bù xén (nếu có).' },
+    { value: 'bleed', title: '🩸 Theo mép tràn lề', desc: 'Đường cắt = mép ngoài lề bù xén (bao luôn tràn màu). Không cắt giữa vành.' },
     { value: 'none', title: '🚫 Không vẽ đường cắt', desc: 'Chỉ mở nền (tràn màu).' },
 ];
 
@@ -26,7 +26,7 @@ const CORNER_STYLES = [
 ];
 
 const BLEED_COLOR_MODES_STICKER = [
-    { value: 'image', title: '🖼️ Lấy theo màu viền tem', desc: 'Tự động kéo giãn dải màu sát mép tem ra ngoài để lấp đầy vùng cắt.' },
+    { value: 'image', title: '🖼️ Lấy theo màu viền tem', desc: 'Lấy đúng màu dọc viền tem (bỏ AA/trắng mép), kéo ra vùng bù xén. Bật “Bỏ nền trắng” khi file có nền trắng quanh tem.' },
     { value: 'inpaint', title: '✨ Làm mượt thông minh', desc: 'CHỈ hợp mép ảnh chụp/gradient mềm. KHÔNG hợp dải màu phẳng (logo, tem chữ) — sẽ loang, mất nét. Dải màu phẳng nên chọn "Lấy theo màu viền tem".' },
     { value: 'solid', title: '🎨 Đổ màu trơn', desc: 'Bo viền nền bằng hệ màu in ấn chuyên nghiệp (CMYK).' },
 ];
@@ -69,6 +69,11 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     // "Tạo đường cắt cho trang đầu": file nhiều loại tem CÙNG khuôn → chỉ trang 1 mang
     // đường cắt (khuôn master), trang 2+ chỉ bù xén. Bước đệm sang Bình tem bế/CNC đồng nhất.
     const [cutFirstPageOnly, setCutFirstPageOnly] = useState<boolean>(() => getSaved('cutFirstPageOnly', false));
+    // Hình học đường cắt: backend tự nhận (auto_safe). "Hình cắt sai?" → forceContour
+    // ép giữ mép ảnh. KHÔNG lưu localStorage: mỗi file khác hình, mặc định luôn auto.
+    const [forceContour, setForceContour] = useState<boolean>(false);
+    // Tên hình backend đã nhận (đọc từ header X-Sticker-Cut-Kind) → hiện làm van an toàn.
+    const [detectedCutKind, setDetectedCutKind] = useState<string | null>(null);
 
     // Shared State
     const [bleedMm, setBleedMm] = useState<number>(() => getSavedNum('bleedMm', 0.0, 0, 10));
@@ -182,10 +187,13 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         formData.append('draw_cut_contour', productType === 'rectangle' ? 'false' : (cutMode !== 'none' ? 'true' : 'false'));
         formData.append('bleed_color_type', bleedColorType); // 'image', 'inpaint', 'solid'
         formData.append('bleed_color_hex', bleedColorHex);
+        // Lẹm mép CHỈ tab Xén vuông (không có “Bỏ nền trắng” dò mask).
+        // Tab Bế tem: một nút “Bỏ nền trắng” + sample viền (shell/AA) — không thêm ô lẹm.
         formData.append('edge_bite_mm', productType === 'rectangle' ? String(edgeBiteMm) : '0');
         // "Tạo đường cắt cho trang đầu": chỉ tab Bế tem nhãn. Trang 1 mang khuôn
         // CutContour, trang 2+ chỉ bù xén → bước đệm cho Bình tem bế/CNC đồng nhất.
         formData.append('cut_first_page_only', productType === 'sticker' && cutFirstPageOnly ? 'true' : 'false');
+        formData.append('shape_mode', productType === 'sticker' ? (forceContour ? 'contour' : 'auto_safe') : 'contour');
         if (productType === 'rectangle') {
             formData.append('rectangle_mode', 'true');
         }
@@ -205,6 +213,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             const shapeParams = response.headers.get('X-Sticker-Shape-Params');
             setDetectedShapeType(shapeType);
             setDetectedShapeParams(shapeParams);
+            // Hình học đường cắt máy tự nhận (van an toàn thay dropdown đã ẩn):
+            // có kind → tên hình; không có (die phức tạp / forceContour) → 'contour'.
+            const cutKind = response.headers.get('X-Sticker-Cut-Kind');
+            setDetectedCutKind(cutKind || (forceContour ? 'contour' : null));
         }
 
         // Cảnh báo nghiệp vụ (vd một số trang không dò được hình) — header được
@@ -229,7 +241,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         recipeRecorder.noteOperation('sticker_dieline', {
             productType, cutMode, offsetMm, cornerStyle, fillHoles,
             bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex, edgeBiteMm,
-            cutFirstPageOnly,
+            cutFirstPageOnly, shapeMode: forceContour ? 'contour' : 'auto_safe',
         });
 
         try {
@@ -310,7 +322,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                         
                         {cutMode !== 'none' && (
                             <>
-                                <div className="flex gap-2 mt-4 items-end">
+                                <div className="flex gap-2 mt-2 items-end">
                                     <ToolNumberInput
                                         label={t('preprocess.sticker:co_gian_vien')}
                                         value={offsetMm}
@@ -563,6 +575,29 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             <p className="text-[10px] text-slate-500 leading-tight">{t('preprocess.sticker:buoc_tiep_theo_chon_kieu_dan_trang')}</p>
                         </div>
                     </div>
+                    {/* Van an toàn: hiện tên hình cắt máy đã tự nhận + 1 toggle lật về giữ mép
+                        ảnh khi nhận sai — thay cho dropdown shape_mode đã ẩn. Chỉ tab bế tem. */}
+                    {productType === 'sticker' && cutMode !== 'none' && detectedCutKind && (
+                        <div className="mb-3 flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-zinc-700/50">
+                            <span className="text-[11px] text-slate-600 dark:text-zinc-300">
+                                {t('preprocess.sticker:duong_cat_da_nhan')}{' '}
+                                <strong>{t(`preprocess.sticker:cut_kind_${detectedCutKind}`)}</strong>
+                            </span>
+                            {!forceContour && detectedCutKind !== 'contour' && (
+                                <button
+                                    onClick={() => { setForceContour(true); setIsSuccess(false); setTimeout(handleRun, 0); }}
+                                    className="text-[10.5px] font-bold text-amber-600 dark:text-amber-400 hover:underline shrink-0"
+                                >
+                                    {t('preprocess.sticker:hinh_cat_sai_giu_mep_anh')}
+                                </button>
+                            )}
+                            {forceContour && (
+                                <span className="text-[10.5px] font-bold text-teal-600 dark:text-teal-400 shrink-0">
+                                    {t('preprocess.sticker:dang_giu_mep_anh')}
+                                </span>
+                            )}
+                        </div>
+                    )}
                     <div className="flex flex-col gap-2">
                         {/* Rule in ấn: Xén vuông góc = cắt thẳng → bình guillotine (Booklet/N-Up).
                             Bế tem nhãn = có đường bế contour → Bình Bế Tem.

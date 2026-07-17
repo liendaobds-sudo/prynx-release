@@ -201,3 +201,93 @@ def test_nearest_color_fill_propagates_and_keeps_shape():
     out2 = _nearest_color_fill(big_src, big_img)
     assert out2.shape == big_img.shape
     assert int(out2[0, 0].sum()) > 0
+
+
+def test_compute_cut_bleed_offsets_no_double_bleed():
+    """cut_mode=bleed: cut == outer == 1×bleed (không gấp đôi; cắt không nằm giữa vành)."""
+    from app.workers.sticker_engine import compute_cut_bleed_offsets
+
+    mm = 2.834645669  # ~1mm in pts
+    bleed, offset = 3 * mm, 0.0
+
+    # Theo mép tràn lề: cắt bao lề → cut = outer = 3mm, không 6mm.
+    cut, outer = compute_cut_bleed_offsets("bleed", bleed, offset)
+    assert abs(cut - bleed) < 1e-9
+    assert abs(outer - bleed) < 1e-9
+    assert abs(outer - cut) < 1e-9
+
+    # Theo hình gốc: cắt tại 0, bù xén ra ngoài 3mm.
+    cut_o, outer_o = compute_cut_bleed_offsets("original", bleed, offset)
+    assert abs(cut_o - 0.0) < 1e-9
+    assert abs(outer_o - bleed) < 1e-9
+
+    # original + co/giãn: cut = offset, outer = offset + bleed.
+    cut2, outer2 = compute_cut_bleed_offsets("original", bleed, -0.5 * mm)
+    assert abs(cut2 - (-0.5 * mm)) < 1e-9
+    assert abs(outer2 - (bleed - 0.5 * mm)) < 1e-9
+
+    # bleed + offset dương: cả hai dịch cùng offset.
+    cut3, outer3 = compute_cut_bleed_offsets("bleed", bleed, 1.0 * mm)
+    assert abs(cut3 - (bleed + mm)) < 1e-9
+    assert abs(outer3 - cut3) < 1e-9
+
+
+def test_edge_color_source_uses_rim_not_core():
+    """Nguồn màu viền phải là shell mép (đỏ), không hút ruột (xanh).
+
+    REGRESSION: erode cả silhouette sâu hơn viền màu → nearest kéo màu lõi ra
+    bleed (lệch 'màu viền tem').
+    """
+    import cv2
+    import numpy as np
+    from app.workers.sticker_engine import (
+        _build_edge_color_source_mask,
+        _nearest_color_fill,
+    )
+
+    h = w = 120
+    mask = np.zeros((h, w), np.uint8)
+    mask[20:100, 20:100] = 255
+    img = np.zeros((h, w, 3), np.uint8)
+    # Viền đỏ ~6px, ruột xanh.
+    img[20:100, 20:100] = (220, 30, 30)
+    img[26:94, 26:94] = (20, 40, 200)
+
+    csm = _build_edge_color_source_mask(
+        mask, img, band_px=3, peel_px=1, edge_bite_px=0, kernel_type=cv2.MORPH_RECT,
+    )
+    assert np.count_nonzero(csm) > 0
+    rim = img[csm > 0]
+    # Pixel nguồn: R cao, B thấp (đỏ viền, không xanh ruột).
+    assert float(rim[:, 0].mean()) > 150
+    assert float(rim[:, 2].mean()) < 80
+
+    filled = _nearest_color_fill(csm, img)
+    # Điểm ngoài tem, gần cạnh trái → phải nhận đỏ viền.
+    sample = filled[50, 5]
+    assert int(sample[0]) > 150 and int(sample[2]) < 80, f"bleed lấy sai màu: {sample}"
+
+
+def test_edge_color_source_skips_near_white_aa():
+    """Pixel AA gần trắng trên mép không được làm nguồn → tránh bleed nhạt."""
+    import cv2
+    import numpy as np
+    from app.workers.sticker_engine import _build_edge_color_source_mask
+
+    mask = np.zeros((80, 80), np.uint8)
+    mask[20:60, 20:60] = 255
+    img = np.zeros((80, 80, 3), np.uint8)
+    img[20:60, 20:60] = (180, 40, 40)
+    # 1px viền ngoài cùng = gần trắng (giả AA).
+    img[20, 20:60] = (252, 250, 250)
+    img[59, 20:60] = (252, 250, 250)
+    img[20:60, 20] = (252, 250, 250)
+    img[20:60, 59] = (252, 250, 250)
+
+    csm = _build_edge_color_source_mask(
+        mask, img, band_px=3, peel_px=0, edge_bite_px=0, kernel_type=cv2.MORPH_RECT,
+    )
+    assert np.count_nonzero(csm) > 0
+    rim = img[csm > 0]
+    assert float(rim.min(axis=1).mean()) < 240, "nguồn vẫn toàn pixel trắng/AA"
+    assert float(rim[:, 0].mean()) > 100

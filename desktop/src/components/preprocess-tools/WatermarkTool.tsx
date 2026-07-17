@@ -5,7 +5,7 @@ import { RichSelect } from '../imposition-tools/SharedUI';
 import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib';
 import { getFileArrayBuffer } from '../../lib/utils';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
-import { normalizeImageToPngBytes } from '../../lib/imageNormalizer';
+import { imageBytesToPdfDoc, embedImagePreserveCompression } from '../../lib/imageNormalizer';
 import { useTranslation } from 'react-i18next';
 
 const ZINDEX_OPTIONS = [
@@ -152,11 +152,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
             const isJpg = lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg') || pdfFile.type === 'image/jpeg';
 
             if (isPng || isJpg) {
-                doc = await PDFDocument.create();
-                const normBuf = await normalizeImageToPngBytes(buf);
-                const embeddedImg = await doc.embedPng(normBuf);
-                const page = doc.addPage([embeddedImg.width, embeddedImg.height]);
-                page.drawImage(embeddedImg, { x: 0, y: 0, width: embeddedImg.width, height: embeddedImg.height });
+                doc = await imageBytesToPdfDoc(buf, pdfFile.name);
             } else {
                 doc = await PDFDocument.load(buf, { ignoreEncryption: true });
             }
@@ -179,8 +175,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                     wmElementWidth = embeddedPdfPage.width;
                     wmElementHeight = embeddedPdfPage.height;
                 } else {
-                    const normBuf = await normalizeImageToPngBytes(wmBuf);
-                    embeddedWmElement = await outputPdf.embedPng(normBuf);
+                    embeddedWmElement = await embedImagePreserveCompression(outputPdf, wmBuf, watermarkImageFile.name);
                     wmElementWidth = embeddedWmElement.width;
                     wmElementHeight = embeddedWmElement.height;
                 }

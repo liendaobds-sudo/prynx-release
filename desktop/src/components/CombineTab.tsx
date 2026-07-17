@@ -3,7 +3,7 @@ import { runMerge, type ProcessContext } from '../lib/processHandlers';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { getFileArrayBuffer } from '../lib/utils';
-import { normalizeImageToPngBytes } from '../lib/imageNormalizer';
+import { imageBytesToPdfDoc } from '../lib/imageNormalizer';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
@@ -471,11 +471,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         if (!srcDoc) {
           const bytes = await getFileArrayBuffer(p.file!);
           if (p.file!.name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) {
-            srcDoc = await PDFDocument.create();
-            const normBytes = await normalizeImageToPngBytes(bytes);
-            const img = await srcDoc.embedPng(normBytes);
-            const page = srcDoc.addPage([img.width, img.height]);
-            page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+            srcDoc = await imageBytesToPdfDoc(bytes, p.file!.name);
           } else {
             srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
           }
@@ -553,11 +549,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     if (srcDoc) return srcDoc;
     const bytes = await getFileArrayBuffer(file);
     if (file.name.toLowerCase().match(/\.(jpg|jpeg|png)$/)) {
-      srcDoc = await PDFDocument.create();
-      const normBytes = await normalizeImageToPngBytes(bytes);
-      const img = await srcDoc.embedPng(normBytes);
-      const page = srcDoc.addPage([img.width, img.height]);
-      page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+      srcDoc = await imageBytesToPdfDoc(bytes, file.name);
     } else {
       srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
     }
