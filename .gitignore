@@ -88,6 +88,7 @@ test_*.txt
 .debug_logs/
 
 # Sandbox / Trash folders
+/test/
 sandbox/
 backend/sandbox/
 backend/debug/
