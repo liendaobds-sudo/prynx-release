@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuthStore } from '../stores/useAuthStore';
+import { maskLicenseKey } from '../lib/licenseKey';
 import { useTranslation } from 'react-i18next';
+import ChangeLicenseKeyPanel from './auth/ChangeLicenseKeyPanel';
 
 interface AboutModalProps {
   onClose: () => void;
@@ -32,8 +34,8 @@ async function openExternal(url: string) {
 }
 
 /**
- * AboutModal — hộp thoại "Giới thiệu PrynX": logo, phiên bản, tài khoản đang
- * đăng nhập, hạn dùng license và các kênh liên hệ hỗ trợ.
+ * AboutModal — hộp thoại "Giới thiệu PrynX": logo, phiên bản, tài khoản,
+ * hạn dùng license, đổi license key, và các kênh liên hệ hỗ trợ.
  */
 type UpdateState =
   | { kind: 'idle' }
@@ -45,15 +47,27 @@ type UpdateState =
 
 export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
   const { t } = useTranslation();
-  const { user, remainingDays, licenseExpiresAt } = useAuthStore();
+  const user = useAuthStore(s => s.user);
+  const licenseKey = useAuthStore(s => s.licenseKey);
+  const remainingDays = useAuthStore(s => s.remainingDays);
+  const licenseExpiresAt = useAuthStore(s => s.licenseExpiresAt);
+
   const [version, setVersion] = useState('');
   const [upd, setUpd] = useState<UpdateState>({ kind: 'idle' });
+  const [showKeyForm, setShowKeyForm] = useState(false);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (showKeyForm) {
+        setShowKeyForm(false);
+        return;
+      }
+      onClose();
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, showKeyForm]);
 
   useEffect(() => {
     (async () => {
@@ -142,8 +156,52 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
           {remainingDays !== null && (
             <Row
               label={t('misc.about:han_dung')}
-              value={`Còn ${remainingDays} ngày${expiryStr ? ` (đến ${expiryStr})` : ''}`}
+              value={
+                expiryStr
+                  ? t('misc.about:con_ngay_den_ngay', { days: remainingDays, date: expiryStr })
+                  : t('misc.about:con_ngay', { days: remainingDays })
+              }
             />
+          )}
+          {licenseKey && (
+            <div className="flex items-center justify-between gap-2 pt-0.5">
+              <span className="text-slate-500 dark:text-zinc-400 shrink-0">{t('misc.about:ban_quyen')}</span>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="font-mono text-[12px] text-slate-700 dark:text-zinc-300 tabular-nums">
+                  {maskLicenseKey(licenseKey)}
+                </span>
+                {!showKeyForm && (
+                  <button
+                    type="button"
+                    onClick={() => setShowKeyForm(true)}
+                    className="shrink-0 px-2 py-1 rounded-md text-[12px] font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors"
+                  >
+                    {t('misc.about:doi_license_key')}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {!licenseKey && user && !showKeyForm && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowKeyForm(true)}
+                className="px-2 py-1 rounded-md text-[12px] font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10"
+              >
+                {t('misc.about:nhap_license_key')}
+              </button>
+            </div>
+          )}
+
+          {showKeyForm && (
+            <div className="mt-3 p-3 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200 dark:border-white/10">
+              <ChangeLicenseKeyPanel
+                variant="light"
+                onCancel={() => setShowKeyForm(false)}
+                onSuccess={() => setShowKeyForm(false)}
+              />
+            </div>
           )}
         </div>
 
@@ -214,6 +272,7 @@ export default function AboutModal({ onClose, autoCheck }: AboutModalProps) {
           </button>
         </div>
       </div>
+
     </div>,
     document.body
   );

@@ -2,6 +2,24 @@ import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
 import { isLicenseTokenValid } from './licenseToken';
+import { normalizeLicenseKey } from '../lib/licenseKey';
+
+const PRODUCT_ID = 'prynx';
+
+export type ChangeLicenseKeyReason =
+  | 'empty'
+  | 'same'
+  | 'invalid'
+  | 'network'
+  | 'token'
+  | 'unknown';
+
+export type ChangeLicenseKeyResult = {
+  ok: boolean;
+  reason?: ChangeLicenseKeyReason;
+  /** Message hiển thị (server hoặc local). */
+  message?: string;
+};
 
 /**
  * SECURITY PATCHES:
@@ -179,6 +197,12 @@ interface AuthState {
   retryValidation: () => Promise<void>;
   startHeartbeat: () => void;
   stopHeartbeat: () => void;
+  /**
+   * Đổi license key (verify-first).
+   * Chỉ ghi đè key local khi server trả VALID. Không logout Google.
+   * Key cũ giữ nguyên nếu verify fail / mạng lỗi.
+   */
+  changeLicenseKey: (rawKey: string) => Promise<ChangeLicenseKeyResult>;
   /** Bắt đầu quy trình thu hồi có ân hạn (idempotent — gọi lại không reset deadline). */
   beginRevocation: (reason: string) => void;
   /** Huỷ thu hồi khi key hợp lệ trở lại (admin mở khóa trong thời gian ân hạn). */
@@ -616,6 +640,134 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ isLicenseLocked: false, lockReason: '' });
       if (retryInterval) { clearInterval(retryInterval); retryInterval = null; }
       get().startHeartbeat();
+    }
+  },
+
+  /**
+   * Đổi license key khi đã đăng nhập (About / settings).
+   * Verify-first: RPC VALID → clear cache key cũ → setLicenseKey → validateLicense → heartbeat.
+   */
+  changeLicenseKey: async (rawKey: string): Promise<ChangeLicenseKeyResult> => {
+    const newKey = normalizeLicenseKey(rawKey);
+    if (!newKey) {
+      return { ok: false, reason: 'empty', message: 'Vui lòng nhập license key.' };
+    }
+    const current = normalizeLicenseKey(get().licenseKey || '');
+    if (current && current === newKey) {
+      return { ok: false, reason: 'same', message: 'Đây đã là key đang dùng trên máy này.' };
+    }
+
+    try {
+      let hwid = localStorage.getItem(HWID_STORAGE_KEY) || '';
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        hwid = await invoke('get_hardware_id') as string;
+        if (hwid) localStorage.setItem(HWID_STORAGE_KEY, hwid);
+      } catch {
+        // dev/web: dùng cache
+      }
+      if (!hwid) {
+        return {
+          ok: false,
+          reason: 'network',
+          message: 'Không lấy được mã máy. Chạy bản cài đặt PrynX và thử lại.',
+        };
+      }
+
+      const { data, error } = await supabase.rpc('verify_license', {
+        p_license_key: newKey,
+        p_machine_id: hwid,
+        p_product_id: PRODUCT_ID,
+      });
+
+      if (error) {
+        return {
+          ok: false,
+          reason: 'network',
+          message: error.message || 'Không kết nối được máy chủ bản quyền.',
+        };
+      }
+
+      const res = data as {
+        status?: string;
+        message?: string;
+        remaining_days?: number | null;
+        expires_at?: string | null;
+      } | null;
+
+      if (!res || res.status !== 'VALID') {
+        const status = res?.status || 'INVALID';
+        const serverMsg = res?.message || 'License key không hợp lệ.';
+        // Map status thường gặp → message rõ (giữ server message nếu đủ)
+        const byStatus: Record<string, string> = {
+          INVALID: serverMsg,
+          EXPIRED: res?.message || 'License đã hết hạn.',
+          BLOCKED: res?.message || 'License đã bị khóa.',
+          DEVICE_LIMIT: res?.message || 'Key đã đạt giới hạn số máy.',
+          MAX_ACTIVATIONS_REACHED: res?.message || 'Key đã đạt giới hạn số máy.',
+          MACHINE_MISMATCH: res?.message || 'Key đã gắn máy khác. Liên hệ hỗ trợ reset máy.',
+          RATE_LIMITED: res?.message || 'Thử quá nhiều lần. Vui lòng đợi rồi thử lại.',
+          PRODUCT_MISMATCH: res?.message || 'Key không dành cho PrynX.',
+        };
+        return {
+          ok: false,
+          reason: 'invalid',
+          message: byStatus[status] || serverMsg,
+        };
+      }
+
+      // P2-A: gỡ máy khỏi key CŨ (best-effort) — giải phóng seat max_activations.
+      // Phải gọi TRƯỚC setLicenseKey; lỗi RPC không chặn đổi key local (key B đã VALID).
+      if (current) {
+        try {
+          await supabase.rpc('release_machine_activation', {
+            p_license_key: current,
+            p_machine_id: hwid,
+            p_product_id: PRODUCT_ID,
+          });
+        } catch (releaseErr) {
+          console.warn('[AUTH] release_machine_activation (best-effort):', releaseErr);
+        }
+      }
+
+      // VALID — dọn token/cache key cũ rồi ghi key mới (không logout Google).
+      await clearValidatedKeysInRust();
+      await deleteTokenFromDPAPI();
+      set({ licenseToken: null });
+
+      get().setLicenseKey(newKey);
+
+      // Ưu tiên số liệu từ RPC đầu; validateLicense sẽ refresh token + remainingDays.
+      if (res.remaining_days !== undefined && res.remaining_days !== null) {
+        set({ remainingDays: res.remaining_days });
+      }
+      if (res.expires_at) {
+        set({ licenseExpiresAt: res.expires_at });
+      }
+
+      const tokenOk = await get().validateLicense();
+      get().cancelRevocation();
+      if (tokenOk) {
+        set({ isLicenseLocked: false, lockReason: '', licenseValid: true });
+        get().startHeartbeat();
+        return { ok: true };
+      }
+
+      // Key đã VALID + đã lưu; token/sidecar chưa xong — vẫn coi thành công một phần.
+      set({ licenseValid: true, isLicenseLocked: false, lockReason: '' });
+      get().startHeartbeat();
+      return {
+        ok: true,
+        reason: 'token',
+        message: 'Key đã lưu. Nếu API lỗi, thử mở lại app hoặc kiểm tra mạng.',
+      };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        reason: 'network',
+        message: msg || 'Không cập nhật được license. Key hiện tại vẫn được giữ.',
+      };
     }
   },
 
