@@ -1581,8 +1581,9 @@ export default function GridPreview(props: GridPreviewProps) {
                 </div>
               </>
             )}
-            {/* Kích thước tem thành phẩm (W×H mm) — suy từ ô đại diện: sw/scale. */}
-            {visibleCells.length > 0 && scale > 0 && (
+            {/* Kích thước tem thành phẩm — CHỈ bình cắt xén (N-Up guillotine).
+                Ẩn tem bế + CNC (isDieCut): kích thước ô SVG không phải “tem thành phẩm” xén. */}
+            {!isDieCut && visibleCells.length > 0 && scale > 0 && (
               <>
                 <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700"></div>
                 <div className="text-slate-600 dark:text-zinc-400">

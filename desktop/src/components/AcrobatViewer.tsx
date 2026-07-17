@@ -63,13 +63,16 @@ interface Props {
     onEditCommit?: (outputUrl: string, outputFilename: string, outputFid?: string, outputPath?: string) => void | Promise<void>;
     onVdpBoxCreate?: (box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string }) => void;
     rightPanel?: React.ReactNode;
+    /** Nút phụ mép trái toolbar (sau Xuất ảnh), vd Ghi quy trình */
     toolbarExtra?: React.ReactNode;
+    /** Nút phụ mép phải toolbar, vd Mở bằng AI/Corel */
+    toolbarExtraRight?: React.ReactNode;
     /** PHIÊN chỉnh sửa trong bộ nhớ (spec `pdf-edit-session`) — sở hữu bởi ImpositionTab,
         chuyển tiếp xuống LivePageFrame để Apply_In_Memory + overlay clip (task 11.1). */
     editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, onViewerDirtyChange, editSession }: Props) {
+export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
     // ═══ Global Store ═══
     const {
@@ -1107,6 +1110,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                     )}
                     {toolbarExtra}
                 </>}
+                extraActionsRight={toolbarExtraRight}
                 onOpenRotateModalOrTools={(type) => {
                     if ((type as string) === 'rotate') { setActiveDashboardTool('pages'); setIsSidebarOpen(true); }
                     else if ((type as string) === 'delete') { setIsDeleteModalOpen(true); }

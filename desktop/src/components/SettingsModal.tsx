@@ -55,7 +55,10 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
              <button onClick={() => setActiveTab('export')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'export' ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:luu_tru_dau_ra')}</button>
              <button onClick={() => setActiveTab('workspace')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'workspace' ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:khong_gian_lam_viec')}</button>
              <button onClick={() => setActiveTab('shortcuts')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'shortcuts' ? 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:phim_tat_he_thong')}</button>
-             <button onClick={() => setActiveTab('cutter')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'cutter' ? 'bg-pink-100 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:may_be')}</button>
+             {/* Tab "Máy bế" (kết nối TCP/serial) ĐÃ ẨN — kênh chưa kiểm chứng end-to-end;
+                 workflow thay thế = mở trang khuôn bằng AI/Corel. Giữ code CutterMachinesPanel,
+                 chỉ bỏ lối vào. Bật lại: khôi phục nút này + phần render bên dưới.
+             <button onClick={() => setActiveTab('cutter')} className={`text-left px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${activeTab === 'cutter' ? 'bg-pink-100 text-pink-700 dark:bg-pink-500/20 dark:text-pink-300' : 'text-slate-600 hover:bg-slate-200/50 dark:text-zinc-400 dark:hover:bg-zinc-700/50 dark:hover:text-zinc-200'}`}>{t('settings:may_be')}</button> */}
           </div>
         </div>
 

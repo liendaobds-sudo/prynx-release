@@ -9,7 +9,7 @@ use tauri::command;
 /// $(...), newline...) — chỉ dấu nháy đơn ' là ký tự đóng chuỗi, nên chỉ cần double
 /// nó thành ''. TUYỆT ĐỐI không nhúng vào double-quoted string (ở đó $ và ` mới sống).
 /// Đây là nguồn chân lý duy nhất cho mọi chỗ nội suy path/value vào script PS.
-fn ps_single_quote_escape(s: &str) -> String {
+pub(crate) fn ps_single_quote_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
 

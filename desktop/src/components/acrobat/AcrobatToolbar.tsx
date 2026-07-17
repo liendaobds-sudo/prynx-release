@@ -10,10 +10,13 @@ interface AcrobatToolbarProps {
     applyFitWidth: () => void;
     applyFitPage: () => void;
     onOpenRotateModalOrTools: (type: 'tools' | 'delete') => void;
+    /** Mép trái: Xuất ảnh, Ghi quy trình… */
     extraActions?: ReactNode;
+    /** Mép phải: Mở bằng AI/Corel… */
+    extraActionsRight?: ReactNode;
 }
 
-export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, applyFitPage, onOpenRotateModalOrTools, extraActions }: AcrobatToolbarProps) {
+export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, applyFitPage, onOpenRotateModalOrTools, extraActions, extraActionsRight }: AcrobatToolbarProps) {
   const { t } = useTranslation();
     const {
         viewerZoom: zoom, setViewerZoom: setZoom,
@@ -71,7 +74,11 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
     return (
         <div ref={barRef} className={`h-12 w-full shrink-0 bg-[#f3f4f6] dark:bg-[#1e1e1e] border-b border-black/10 dark:border-white/10 flex items-center px-4 shadow-sm z-50 relative overflow-visible gap-2 ${isNarrow ? 'tb-narrow' : ''}`}>
             <style>{`.tb-narrow .tb-label{display:none!important;}`}</style>
-            {/* Spacer trái (co được) để nhóm tool nằm giữa */}
+            {/* Mép trái: Xuất ảnh / Ghi quy trình (và extra khác từ parent) */}
+            <div className="flex items-center gap-1.5 shrink-0 min-w-0">
+                {extraActions}
+            </div>
+            {/* Spacer co được — đẩy nhóm tool navigation/zoom ra giữa */}
             <div className="flex-1 min-w-0" />
             <div className="flex items-center gap-1 min-w-max">
                 <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage - 1)} title="Previous Page" aria-label="Previous Page">
@@ -295,10 +302,9 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
 
             </div>
 
-            {/* Spacer phải + actions phụ (Xuất ảnh / Ghi quy trình...) — trong flow,
-                KHÔNG absolute để không đè lên nhóm tool khi thu hẹp cửa sổ. */}
+            {/* Spacer phải + actions mép phải (Mở bằng AI/Corel…) */}
             <div className="flex-1 min-w-0 flex items-center justify-end gap-2">
-                {extraActions}
+                {extraActionsRight}
             </div>
         </div>
     );

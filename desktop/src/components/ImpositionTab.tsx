@@ -10,11 +10,12 @@ import { useEditSession } from '../hooks/useEditSession';
 import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
 import { Button } from './Button';
-import { Scissors, Settings, Star } from 'lucide-react';
+import { Printer, Scissors, Settings, Star } from 'lucide-react';
 import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
 import { imageBytesToPdfDoc } from '../lib/imageNormalizer';
 import ImposerDashboard from './imposition-tools/ImposerDashboard';
 import CutExportModal from './imposition-tools/cut-export/CutExportModal';
+import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
 import { PREDEFINED_SIZES, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
 import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
@@ -207,8 +208,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Hộp thoại in hợp nhất kiểu Acrobat (máy in / số bản / trang / tỉ lệ / orientation
     // + preview). openPrintDialog() trả Promise<boolean>; printDialog là JSX để render.
     const { openPrintDialog, printDialog } = usePrintDialog();
-    // Gửi Máy Bế (spec: gui-may-be) — chỉ hiện trên toolbar khi file là OUTPUT đã bình.
+    // Gửi Máy Bế (spec: gui-may-be) — CODE GIỮ LẠI nhưng ẩn lối vào UI (kênh TCP/serial chưa
+    // kiểm chứng end-to-end). Thay bằng "Mở bằng Illustrator/CorelDRAW" (showOpenInDesign).
     const [showCutExport, setShowCutExport] = useState(false);
+    // Mở file khuôn bằng AI/Corel (nơi plugin máy bế đã cài) — thay chỗ nút "Gửi Máy Bế".
+    const [showOpenInDesign, setShowOpenInDesign] = useState(false);
     const [showRecipePanel, setShowRecipePanel] = useState(false);
     // Lựa chọn vị trí trang trắng — chỉ hỏi trong dialog Xác nhận khi số trang lẻ tay.
     const [confirmBlankPlacement, setConfirmBlankPlacement] = useState<'end' | 'center'>('end');
@@ -2095,7 +2099,21 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
 
 
-                    {/* Gửi Máy Bế — modal cấp tab, mở từ nút trên toolbar khi xem output đã bình */}
+                    {/* Mở trang khuôn bằng Illustrator/CorelDRAW — nơi plugin máy bế đã cài sẵn */}
+                    <OpenInDesignModal
+                        open={showOpenInDesign}
+                        onClose={() => setShowOpenInDesign(false)}
+                        resultFilePath={(file as any)?.path}
+                        resultBlob={file}
+                        separateCut={!!imposerStoreRef.current?.getState()?.separateCutPage}
+                        cncMode={activeDashboardTool === 'cnc_imposer'}
+                        cncTwoSided={imposerStoreRef.current?.getState()?.duplexFlow === 'double'}
+                        originalName={file?.name}
+                        currentPage={viewerActivePage}
+                    />
+
+                    {/* Gửi Máy Bế — ĐÃ ẨN khỏi UI (kênh TCP/serial chưa kiểm chứng); giữ modal
+                        trong cây để không mất code, nhưng không còn lối vào từ toolbar. */}
                     <CutExportModal
                         open={showCutExport}
                         onClose={() => setShowCutExport(false)}
@@ -2192,20 +2210,27 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}
                                     toolbarExtra={file ? (
+                                        <RecipeRecordControl
+                                            onOpenPanel={() => setShowRecipePanel(true)}
+                                            sourcePageCount={viewerNumPages}
+                                        />
+                                    ) : undefined}
+                                    toolbarExtraRight={file && isImposedOutputFile(file.name) ? (
                                         <div className="flex items-center gap-2">
-                                            <RecipeRecordControl
-                                                onOpenPanel={() => setShowRecipePanel(true)}
-                                                sourcePageCount={viewerNumPages}
-                                            />
-                                            {isImposedOutputFile(file.name) && (
-                                                <button
-                                                    onClick={() => setShowCutExport(true)}
-                                                    className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
-                                                    title={t('tabs.imposition:gui_du_lieu_cat_toi_may_be')}
-                                                >
-                                                    <Scissors className="w-4 h-4" /> {t('tabs.imposition:gui_may_be')}
-                                                </button>
-                                            )}
+                                            <button
+                                                onClick={handlePrintFile}
+                                                className="h-8 px-3 rounded bg-sky-600 hover:bg-sky-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                                                title={t('tabs.imposition:in_ctrl_p')}
+                                            >
+                                                <Printer className="w-4 h-4" /> {t('tabs.imposition:in')}
+                                            </button>
+                                            <button
+                                                onClick={() => setShowOpenInDesign(true)}
+                                                className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                                                title={t('tabs.imposition:mo_trang_khuon_bang_illustrator_corel')}
+                                            >
+                                                <Scissors className="w-4 h-4" /> {t('tabs.imposition:be')}
+                                            </button>
                                         </div>
                                     ) : undefined}
                                     rightPanel={(
