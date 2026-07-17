@@ -386,19 +386,35 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         if (!initialFile) setIsOpeningFile(false);
     }, [initialFile, initialBatchOutput]);
 
-    // Áp lockedMode của công cụ vào taskMode, NHƯNG giữ nguyên khi người dùng đang ở
-    // sub-mode cùng nhóm. 'nup' và 'step_repeat' (Dàn nhiều mẫu / Bình trang S&R) là
-    // 2 chế độ con cùng nhóm công cụ N-Up: nếu đang ở 1 trong 2 thì KHÔNG ép về 'nup'
-    // (nếu ép sẽ xoá lựa chọn 'step_repeat' người dùng đã lưu mỗi lần mở lại tab/app).
-    // Cùng guard đã có ở ImposerDashboard menu — gom về đây để mọi đường ghi dùng chung.
+    // Áp lockedMode = "đang ở công cụ nào". Tác vụ (Bình trang / Dàn nhiều mẫu) nhớ
+    // RIÊNG theo từng công cụ trong toolProfiles — KHÔNG ghi đè taskMode bằng identity
+    // công cụ (sticker_imposer/cnc_imposer). Trước đây ép taskMode = lockedMode → mỗi
+    // lần mở file/tool lại về "Dàn nhiều mẫu".
     const applyLockedMode = (mode: string | undefined | null) => {
         if (!mode) return;
-        const cur = imposerStoreRef.current!.getState().taskMode;
-        if (mode === 'nup' && (cur === 'nup' || cur === 'step_repeat')) return;
-        imposerStoreRef.current!.getState().setTaskMode(mode as any);
+        const st = imposerStoreRef.current!.getState();
+        // Booklet: taskMode chính là booklet
+        if (mode === 'booklet') {
+            st.setTaskMode('booklet');
+            return;
+        }
+        // Cắt xén / tem bế / bế rớt: nạp taskMode đã nhớ của ĐÚNG công cụ đó
+        if (mode === 'nup' || mode === 'sticker_imposer' || mode === 'cnc_imposer') {
+            st.restoreTaskModeForTool(mode);
+            return;
+        }
+        st.setTaskMode(mode as any);
     };
 
-    // Handle initial tool feature from Home screen
+    // Gán công cụ khoá (từ Home: tem bế / bế rớt / cắt xén / booklet) — chỉ khi
+    // lockedMode đổi, KHÔNG phụ thuộc file (tránh reset Tác vụ mỗi lần mở file mới).
+    useEffect(() => {
+        if (!lockedMode) return;
+        setActiveDashboardTool(lockedMode);
+        applyLockedMode(lockedMode);
+    }, [lockedMode]);
+
+    // Handle initial tool feature from Home screen (preprocess tools)
     useEffect(() => {
         if (initialFeature) {
             // Only auto-bypass upload for standalone tools
@@ -407,24 +423,22 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             }
             setActiveDashboardTool(initialFeature);
             applyLockedMode(lockedMode);
-            if (!file) {
-                const names: Record<string, string> = {
-                    'bgremover': t('tabs.imposition:tach_nen_ai'),
-                    'upscale': t('tabs.imposition:phong_to_anh'),
-                    'sticker': t('tabs.imposition:tao_vien_cat_be'),
-                    'split': t('tabs.imposition:tach_file'),
-                    'datamerge': t('tabs.imposition:tron_du_lieu_vdp'),
-                    'numbering': t('tabs.imposition:nhay_so_tu_dong'),
-                    'optimize': t('tabs.imposition:nen_toi_uu_pdf'),
-                    'shuffle': t('tabs.imposition:xao_tron_trang'),
-                    'resize': t('tabs.imposition:co_gian_trang')
-                };
-                if (names[initialFeature]) {
-                    onTitleChange?.(names[initialFeature]);
-                }
+            const names: Record<string, string> = {
+                'bgremover': t('tabs.imposition:tach_nen_ai'),
+                'upscale': t('tabs.imposition:phong_to_anh'),
+                'sticker': t('tabs.imposition:tao_vien_cat_be'),
+                'split': t('tabs.imposition:tach_file'),
+                'datamerge': t('tabs.imposition:tron_du_lieu_vdp'),
+                'numbering': t('tabs.imposition:nhay_so_tu_dong'),
+                'optimize': t('tabs.imposition:nen_toi_uu_pdf'),
+                'shuffle': t('tabs.imposition:xao_tron_trang'),
+                'resize': t('tabs.imposition:co_gian_trang')
+            };
+            if (names[initialFeature]) {
+                onTitleChange?.(names[initialFeature]);
             }
         }
-    }, [initialFeature, file]);
+    }, [initialFeature]);
 
     // Async physical path polyfill (non-blocking via HTTP)
     useEffect(() => {
@@ -2540,10 +2554,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                         if (isActive && isSidebarOpen) {
                                                                                             setIsSidebarOpen(false);
                                                                                         } else {
+                                                                                            // Chỉ đổi active tool — switchToolProfile (ImposerDashboard)
+                                                                                            // sẽ lưu/nạp taskMode theo từng công cụ. Không gọi
+                                                                                            // applyLockedMode ở đây (sẽ làm hỏng snapshot tool cũ).
                                                                                             setActiveDashboardTool(featureId);
-                                                                                            if (tool.defaultPayload?.lockedMode) {
-                                                                                                applyLockedMode(tool.defaultPayload.lockedMode);
-                                                                                            }
                                                                                             if (sidebarWidth < 280) setSidebarWidth(390);
                                                                                             setIsSidebarOpen(true);
                                                                                         }
@@ -2594,9 +2608,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                                                             setIsSidebarOpen(false);
                                                                                         } else {
                                                                                             setActiveDashboardTool(featureId);
-                                                                                            if (tool.defaultPayload?.lockedMode) {
-                                                                                                applyLockedMode(tool.defaultPayload.lockedMode);
-                                                                                            }
                                                                                             if (sidebarWidth < 280) setSidebarWidth(390);
                                                                                             setIsSidebarOpen(true);
                                                                                         }

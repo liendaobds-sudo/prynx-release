@@ -121,4 +121,62 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         // Không đổi state thuật toán
         expect(st().scaleMode).toBe('fit');
     });
+
+    it('mỗi công cụ nhớ riêng taskMode (Bình trang / Dàn nhiều mẫu)', () => {
+        localStorage.clear();
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+
+        // Tem bế: Bình trang
+        st().setActiveDashboardTool('sticker_imposer');
+        st().setTaskMode('step_repeat');
+        expect(st().taskMode).toBe('step_repeat');
+        expect(st().toolProfiles.sticker_imposer?.taskMode).toBe('step_repeat');
+
+        // Chuyển sang cắt xén: mặc định dàn nhiều mẫu (chưa có profile)
+        st().switchToolProfile('sticker_imposer', 'nup');
+        expect(st().taskMode).toBe('nup');
+        st().setActiveDashboardTool('nup');
+        st().setTaskMode('nup');
+
+        // Bế rớt: Bình trang riêng
+        st().switchToolProfile('nup', 'cnc_imposer');
+        expect(st().taskMode).toBe('nup'); // first visit default
+        st().setActiveDashboardTool('cnc_imposer');
+        st().setTaskMode('step_repeat');
+        expect(st().toolProfiles.cnc_imposer?.taskMode).toBe('step_repeat');
+
+        // Quay lại tem bế: vẫn Bình trang
+        st().switchToolProfile('cnc_imposer', 'sticker_imposer');
+        expect(st().taskMode).toBe('step_repeat');
+
+        // Quay lại bế rớt: vẫn Bình trang
+        st().switchToolProfile('sticker_imposer', 'cnc_imposer');
+        expect(st().taskMode).toBe('step_repeat');
+
+        // Cắt xén vẫn Dàn nhiều mẫu
+        st().switchToolProfile('cnc_imposer', 'nup');
+        expect(st().taskMode).toBe('nup');
+    });
+
+    it('restoreTaskModeForTool nạp đúng profile, chuẩn hoá legacy sticker_imposer → nup', () => {
+        localStorage.clear();
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+
+        st().setActiveDashboardTool('sticker_imposer');
+        // Giả lập profile cũ (identity tool bị lưu như taskMode)
+        store.setState({
+            toolProfiles: {
+                sticker_imposer: { taskMode: 'sticker_imposer' },
+                cnc_imposer: { taskMode: 'step_repeat' },
+            },
+        } as any);
+
+        st().restoreTaskModeForTool('sticker_imposer');
+        expect(st().taskMode).toBe('nup');
+
+        st().restoreTaskModeForTool('cnc_imposer');
+        expect(st().taskMode).toBe('step_repeat');
+    });
 });

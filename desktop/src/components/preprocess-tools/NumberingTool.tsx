@@ -40,10 +40,21 @@ export default function NumberingTool({
     const [statusMessage, setStatusMessage] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
     const [spawnNewTab, setSpawnNewTab] = useState(true);
+    const [showHelp, setShowHelp] = useState(false);
 
     // Hủy polling VDP khi unmount để không poll vô hạn nền (#13).
     const pollAbortRef = useRef<AbortController | null>(null);
     useEffect(() => () => { pollAbortRef.current?.abort(); }, []);
+
+    // Đóng modal trợ giúp bằng phím ESC (chỉ gắn listener khi modal đang mở).
+    useEffect(() => {
+        if (!showHelp) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.stopPropagation(); setShowHelp(false); }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [showHelp]);
 
     // Generation State
     const [genMethod, setGenMethod] = useState<'range' | 'set'>('range');
@@ -108,12 +119,12 @@ export default function NumberingTool({
         // Trần an toàn số phần tử để preview/sinh không làm đơ app với range/bộ quá lớn.
         const MAX_SEQUENCE = 200000;
         let rawSequence: string[] = [];
-        
+        const step = Number(increment);
+
         if (genMethod === 'range') {
             // GUARD chống TREO APP: hàm này chạy LIVE trong preview (useMemo) nên một
             // bước nhảy ≤ 0 (vd người dùng gõ 0 hoặc xoá trống → Number('')===0) sẽ làm
             // vòng for chạy VÔ HẠN → đơ toàn ứng dụng. Bước nhảy không hợp lệ → trả rỗng.
-            const step = Number(increment);
             if (Number.isFinite(step) && step > 0 && Number.isFinite(startNum) && Number.isFinite(endNum)) {
                 for (let i = startNum; i <= endNum; i += step) {
                     // Chặn TRÊN: range quá lớn (vd 1..1_000_000) cũng làm đơ preview.
@@ -156,13 +167,19 @@ export default function NumberingTool({
                 if (isAlphaSet) {
                     setValStr = numberToLetters(startSetNum + s, isLower);
                 } else {
+                    // Số BỘ đệm theo đúng độ rộng người dùng gõ ("1"→1,2,3; "01"→01,02),
+                    // KHÔNG dùng padLength (vốn dành cho số thứ tự). Trước đây bộ 1 ký tự
+                    // lại rơi về padLength → độ rộng số bộ nhảy bất ngờ khi thêm/bớt số 0.
                     let sNum = startSetNum + s;
-                    setValStr = padZero ? sNum.toString().padStart(setStartStr.length > 1 ? setStartStr.length : padLength, '0') : sNum.toString();
+                    setValStr = padZero ? sNum.toString().padStart(setStartStr.length, '0') : sNum.toString();
                 }
 
+                // Bước nhảy áp cho cả set mode (trước đây bị bỏ, luôn +1). step không
+                // hợp lệ (≤0/NaN) → coi như 1 để không sinh dãy số trùng/rỗng.
+                const seqStep = Number.isFinite(step) && step > 0 ? step : 1;
                 for (let q = 0; q < seqTotal; q++) {
                     if (rawSequence.length >= MAX_SEQUENCE) break;
-                    let qNum = seqStart + q;
+                    let qNum = seqStart + q * seqStep;
                     let seqValStr = padZero ? qNum.toString().padStart(padLength, '0') : qNum.toString();
                     
                     let resultStr = formatTemplate.replace(/\{\%b\}/g, setValStr).replace(/\{\%t\}/g, seqValStr);
@@ -184,15 +201,14 @@ export default function NumberingTool({
         return rawSequence;
     };
 
-    const generateDataMatrix = () => {
-        if (vdpFields.length === 0) throw new Error(t('preprocess.numbering:vui_long_keo_it_nhat_1_truong_nhay_so'));
-        const rawSequence = generateSequence();
-        if (rawSequence.length === 0) throw new Error(t('preprocess.numbering:day_so_trong_vui_long_kiem_tra_lai'));
-        
-        // Group fields into Slots
+    // Gom field thành slot (theo groupId) rồi SORT theo sortMethod. Dùng CHUNG cho
+    // cả sinh dữ liệu (generateDataMatrix) và preview để preview KHÔNG lệch output:
+    // preview trước đây tính numSlots = vdpFields.length và bỏ qua group/sort nên
+    // hiển thị sai số ô + sai thứ tự ngay khi người dùng group hoặc đổi kiểu quét.
+    const buildSortedSlots = React.useCallback(() => {
         const slots: any[] = [];
         const groupMap = new Map<string, any[]>();
-        
+
         vdpFields.forEach(f => {
             if (f.groupId) {
                 if (!groupMap.has(f.groupId)) groupMap.set(f.groupId, []);
@@ -201,7 +217,7 @@ export default function NumberingTool({
                 slots.push({ ...f, isSlot: true, fields: [f] });
             }
         });
-        
+
         groupMap.forEach((fieldsInGroup, groupId) => {
             // Representative coordinate is the top-left-most field
             let minX = fieldsInGroup[0].x || fieldsInGroup[0].position?.x;
@@ -226,10 +242,18 @@ export default function NumberingTool({
             if (!s.position) s.position = { x: s.x, y: s.y };
         });
 
-        const sortedSlots = sortFieldsGeometrically(slots, sortMethod);
+        return sortFieldsGeometrically(slots, sortMethod);
+    }, [vdpFields, sortMethod]);
+
+    const generateDataMatrix = () => {
+        if (vdpFields.length === 0) throw new Error(t('preprocess.numbering:vui_long_keo_it_nhat_1_truong_nhay_so'));
+        const rawSequence = generateSequence();
+        if (rawSequence.length === 0) throw new Error(t('preprocess.numbering:day_so_trong_vui_long_kiem_tra_lai'));
+
+        const sortedSlots = buildSortedSlots();
         const numSlots = sortedSlots.length;
         const totalPages = Math.ceil(rawSequence.length / numSlots);
-        
+
         const csvData: Record<string, string>[] = [];
         
         for (let p = 0; p < totalPages; p++) {
@@ -296,13 +320,16 @@ export default function NumberingTool({
             if (vdpFields.length === 0) return [t('preprocess.numbering:keo_tha_it_nhat_1_slot_len_man_hinh_de')];
             const rawSequence = generateSequence();
             if (rawSequence.length === 0) return [t('preprocess.numbering:day_so_trong')];
-            
-            const numSlots = vdpFields.length;
+
+            // Dùng CHUNG bố cục slot (group + sort) với generateDataMatrix để preview
+            // phản ánh đúng số ô/thứ tự thực khi xuất; nếu không thì group hay đổi
+            // sortMethod sẽ khiến preview lệch hẳn với file kết quả.
+            const numSlots = buildSortedSlots().length;
             const totalPages = Math.ceil(rawSequence.length / numSlots);
             const lines: string[] = [];
-            
+
             const maxPreviewPages = Math.min(totalPages, 3);
-            
+
             for (let p = 0; p < maxPreviewPages; p++) {
                 let pageStr = `${t('preprocess.numbering:trang', { n: p + 1 })} `;
                 let itemsAdded = 0;
@@ -325,7 +352,7 @@ export default function NumberingTool({
         } catch (err) {
             return [t('preprocess.numbering:loi_cau_hinh_day_so')];
         }
-    }, [genMethod, startNum, endNum, increment, padZero, padLength, prefix, suffix, setTotal, setStartStr, seqTotal, seqStart, formatTemplate, isShuffle, applyStyle, vdpFields.length]);
+    }, [genMethod, startNum, endNum, increment, padZero, padLength, prefix, suffix, setTotal, setStartStr, seqTotal, seqStart, formatTemplate, isShuffle, applyStyle, buildSortedSlots]);
 
     return (
         <div className="flex flex-col h-full bg-white dark:bg-zinc-900 border-l border-slate-200 dark:border-zinc-800 p-4 gap-4 overflow-y-auto scroller-thin">
@@ -338,14 +365,82 @@ export default function NumberingTool({
                 >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
                 </button>
-                <div className="flex-1 min-w-0 text-center pr-8">
+                <div className="flex-1 min-w-0 text-center">
                     <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
                         <span>🔢</span>
                         <span>{t('preprocess.numbering:nhay_so_tu_dong')}</span>
                     </h2>
                     <p className="text-[11px] text-slate-500 mt-1">Numbering & Ticket Generator</p>
                 </div>
+                <button
+                    type="button"
+                    onClick={() => setShowHelp(true)}
+                    className="shrink-0 inline-flex items-center gap-1 px-2 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-500/10 dark:hover:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 rounded-md font-medium transition-colors"
+                    title={t('preprocess.numbering:huong_dan_su_dung')}
+                >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="9" /><path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5v.2" /><path strokeLinecap="round" d="M12 16.5h.01" /></svg>
+                </button>
             </div>
+
+            {showHelp && (
+                <div
+                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4"
+                    onClick={() => setShowHelp(false)}
+                >
+                    <div
+                        className="max-w-lg w-full max-h-[80vh] overflow-auto bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-slate-200 dark:border-zinc-700"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700 sticky top-0 bg-white dark:bg-zinc-900">
+                            <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">{t('preprocess.numbering:huong_dan_nhay_so')}</span>
+                            <button
+                                type="button"
+                                onClick={() => setShowHelp(false)}
+                                className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-zinc-800 transition-colors"
+                                title={t('preprocess.numbering:dong')}
+                            >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                        </div>
+                        <div className="p-4 space-y-4 text-[12px] text-slate-600 dark:text-zinc-300 leading-relaxed">
+                            <p>{t('preprocess.numbering:help_intro')}</p>
+
+                            <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
+                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.numbering:help_slot_tieu_de')}</div>
+                                <div className="text-slate-500 dark:text-zinc-400">{t('preprocess.numbering:help_slot_noi_dung')}</div>
+                            </div>
+
+                            <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
+                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.numbering:help_che_do_tieu_de')}</div>
+                                <div className="mb-1"><b>{t('preprocess.numbering:day_so_1_2_3')}</b> — {t('preprocess.numbering:help_che_do_range')}</div>
+                                <div className="text-slate-500 dark:text-zinc-400"><b>{t('preprocess.numbering:theo_bo_a_01_b_01')}</b> — {t('preprocess.numbering:help_che_do_set')}</div>
+                            </div>
+
+                            <div className="rounded-lg border border-slate-200 dark:border-zinc-700 p-3 bg-slate-50 dark:bg-zinc-800/60">
+                                <div className="font-bold text-slate-700 dark:text-zinc-200 mb-1">{t('preprocess.numbering:help_sort_tieu_de')}</div>
+                                <div className="text-slate-500 dark:text-zinc-400">{t('preprocess.numbering:help_sort_noi_dung')}</div>
+                            </div>
+
+                            <div className="rounded-lg border border-amber-200 dark:border-amber-800 p-3 bg-amber-50 dark:bg-amber-900/20">
+                                <div className="font-bold text-amber-700 dark:text-amber-300 mb-1">{t('preprocess.numbering:help_phanbo_tieu_de')}</div>
+                                <div className="mb-1 text-amber-700/90 dark:text-amber-300/90"><b>{t('preprocess.numbering:theo_thu_tu_linear')}</b> — {t('preprocess.numbering:help_phanbo_linear')}</div>
+                                <div className="text-amber-700/90 dark:text-amber-300/90"><b>{t('preprocess.numbering:xep_chong_stacked')}</b> — {t('preprocess.numbering:help_phanbo_stack')}</div>
+                            </div>
+
+                            <div className="text-[11px] text-slate-500 dark:text-zinc-400">{t('preprocess.numbering:help_ghi_chu')}</div>
+                        </div>
+                        <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-700 text-right">
+                            <button
+                                type="button"
+                                onClick={() => setShowHelp(false)}
+                                className="text-[12px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-medium transition-colors"
+                            >
+                                {t('preprocess.numbering:da_hieu')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Step 1: Configuration */}
             <div className="shrink-0 space-y-3">
@@ -378,7 +473,11 @@ export default function NumberingTool({
                                         className="flex-1 h-8 px-2 text-xs border border-slate-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-900"
                                         onChange={(e) => {
                                             const val = e.target.value;
-                                            const match = val.match(/^(.*?)(\d+)(.*?)$/);
+                                            // Bắt cụm số CUỐI (phần seri), không phải cụm số đầu:
+                                            // đuôi \D* chỉ nhận ký-tự-không-số nên engine buộc
+                                            // \d+ trườn tới cụm số cuối; "AB12-0045" → tiền tố
+                                            // "AB12-", số "0045", hậu tố "".
+                                            const match = val.match(/^(.*?)(\d+)(\D*)$/);
                                             if (match) {
                                                 setPrefix(match[1]);
                                                 setStartNum(parseInt(match[2], 10) || 1);

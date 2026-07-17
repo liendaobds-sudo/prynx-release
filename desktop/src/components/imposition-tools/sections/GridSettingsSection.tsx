@@ -179,7 +179,12 @@ export default function GridSettingsSection(props: GridSettingsProps) {
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <select
-                value={taskMode === "sticker_imposer" ? "nup" : taskMode}
+                // Legacy: sticker_imposer/cnc_imposer từng bị nhầm làm taskMode (= dàn nhiều mẫu)
+                value={
+                  taskMode === "step_repeat"
+                    ? "step_repeat"
+                    : "nup"
+                }
                 onChange={(e) => setTaskMode(e.target.value)}
                 className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
               >

@@ -98,18 +98,22 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const s = useImposerSettingsStore();
 
     // ═══ Active Tool (local — synced with parent) ═══
+    // Ưu tiên lockedMode (tab mở từ Home: tem bế / bế rớt / cắt xén) — KHÔNG để
+    // activeDashboardTool='none' (truthy) che mất lockedMode.
     const [activeTool, setActiveTool] = useState<ActiveToolType>(() => {
-        if (currentTool) return currentTool as any;
         if (lockedMode === 'booklet' || lockedMode === 'nup') return lockedMode;
         if (lockedMode === 'sticker_imposer') return 'sticker_imposer';
         if (lockedMode === 'cnc_imposer') return 'cnc_imposer';
+        if (currentTool && currentTool !== 'none') return currentTool as any;
         const allowedFeatures = ['shuffle', 'resize', 'trim_shift', 'split', 'merge', 'preflight', 'sticker', 'bgremover', 'optimize', 'numbering', 'datamerge', 'ocr'];
         if (initialFeature && allowedFeatures.includes(initialFeature)) return initialFeature as any;
         return 'none';
     });
 
     useEffect(() => {
-        if (currentTool && currentTool !== activeTool) setActiveTool(currentTool as any);
+        if (currentTool && currentTool !== 'none' && currentTool !== activeTool) {
+            setActiveTool(currentTool as any);
+        }
     }, [currentTool]);
 
     useEffect(() => {
@@ -118,32 +122,13 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
 
     // Tool Profiles: khi đổi công cụ, lưu thiết lập thuật toán của tool cũ và nạp tool mới
     // (chống rò rỉ state giữa N-up / Bế tem / Booklet — Task 15/Req 5).
+    // taskMode (Bình trang / Dàn nhiều mẫu) cũng nằm trong profile → mỗi tool nhớ riêng.
     const prevActiveToolRef = useRef<string>(activeTool);
     useEffect(() => {
         const prev = prevActiveToolRef.current;
         if (prev !== activeTool) {
             s.switchToolProfile(prev, activeTool);
             prevActiveToolRef.current = activeTool;
-        }
-    }, [activeTool]);
-
-    // Restore the previous taskMode if we return from Sticker Imposer
-    const prevNonStickerMode = useRef<TaskMode>(s.taskMode !== 'sticker_imposer' ? s.taskMode : 'nup');
-    useEffect(() => {
-        if (s.taskMode !== 'sticker_imposer') {
-            prevNonStickerMode.current = s.taskMode;
-        }
-    }, [s.taskMode]);
-    useEffect(() => {
-        if (activeTool !== 'sticker_imposer' && activeTool !== 'cnc_imposer' && s.taskMode === 'sticker_imposer') {
-            s.setTaskMode(prevNonStickerMode.current);
-        }
-    }, [activeTool]);
-
-    // CNC dùng chung thuật toán xếp/preview với Bế tem → ép taskMode 'sticker_imposer'.
-    useEffect(() => {
-        if (activeTool === 'cnc_imposer' && s.taskMode !== 'sticker_imposer') {
-            s.setTaskMode('sticker_imposer');
         }
     }, [activeTool]);
 
@@ -1000,9 +985,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // ═══ RENDER ═══
     if (activeTool === 'none') {
         return <ToolMenuList setActiveTool={t => setActiveTool(t as ActiveToolType)} setTaskMode={m => {
-            // When clicking "N-Up" tool (lockedMode='nup'), preserve 'step_repeat' if already set
-            // (they're sub-modes of the same N-Up group)
-            if (m === 'nup' && (s.taskMode === 'nup' || s.taskMode === 'step_repeat')) return;
             s.setTaskMode(m as TaskMode);
         }} onActiveToolChange={onActiveToolChange} />;
     }

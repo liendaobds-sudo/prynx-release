@@ -33,8 +33,15 @@ export default function ToolMenuList({ setActiveTool, setTaskMode }: ToolMenuLis
     const keyOf = (t: any) => t.defaultPayload?.focusFeature || t.defaultPayload?.lockedMode || t.id;
     const open = (tool: any) => {
         const featureId = keyOf(tool);
+        // Chỉ đổi tool — switchToolProfile (ImposerDashboard) lưu/nạp taskMode
+        // theo từng công cụ. Không setTaskMode(lockedMode) ở đây (trước đây ép
+        // sticker_imposer/cnc → mất Bình trang; và race với snapshot profile).
         setActiveTool(featureId);
-        if (tool.defaultPayload?.lockedMode) setTaskMode(tool.defaultPayload.lockedMode);
+        // Booklet không qua LAYOUT_TASK profile restore khi prev='none' đã set
+        // taskMode booklet trong switchToolProfile; các tool preprocess không cần.
+        if (tool.defaultPayload?.lockedMode === 'booklet') {
+            setTaskMode('booklet');
+        }
     };
 
     // Filter out standalone apps (category: 'qc')
