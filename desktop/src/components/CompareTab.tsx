@@ -11,12 +11,20 @@ import ReportModal from './ReportModal';
 import { Button } from './Button';
 import { ThemeToggle } from './ThemeToggle';
 import { useTranslation } from 'react-i18next';
+import { usePrintDialog } from './shared/usePrintDialog';
+import { toast } from './ui/Toast';
 
 type Phase = 'upload' | 'processing' | 'results';
 
-export default function CompareTab() {
+interface CompareTabProps {
+  tabId?: string;
+  isActive?: boolean;
+}
+
+export default function CompareTab({ tabId, isActive = true }: CompareTabProps) {
   const { t } = useTranslation();
   const store = useComparisonStore();
+  const { openPrintDialog, printDialog } = usePrintDialog();
   const [phase, setPhase] = useState<Phase>('upload');
   const [uploadingA, setUploadingA] = useState(false);
   const [uploadingB, setUploadingB] = useState(false);
@@ -88,6 +96,36 @@ export default function CompareTab() {
       setUploadingA(false);
     }
   }, [store, handleUploadB]);
+
+  // Ctrl+P / File→In: in bản B (sửa) nếu có, không thì bản A.
+  const handlePrint = useCallback(async () => {
+    const local = store.fileB?.localFile || store.fileA?.localFile;
+    if (!local) {
+      toast.info(t('tabs.compare:can_file_de_in') || 'Cần file PDF để in');
+      return;
+    }
+    try {
+      await openPrintDialog({
+        source: local,
+        numPages: store.fileB?.page_count || store.fileA?.page_count || 1,
+      });
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message === 'NOT_TAURI') {
+        toast.error(t('print:only_in_app'));
+      } else {
+        toast.error((e instanceof Error ? e.message : '') || t('print:cannot_print'));
+      }
+    }
+  }, [store.fileA, store.fileB, openPrintDialog, t]);
+
+  useEffect(() => {
+    const onTrigger = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (isActive && (!detail?.tabId || detail.tabId === tabId)) handlePrint();
+    };
+    window.addEventListener('app-trigger-print', onTrigger);
+    return () => window.removeEventListener('app-trigger-print', onTrigger);
+  }, [isActive, tabId, handlePrint]);
 
   // Start comparison
   const handleStartCompare = useCallback(async () => {
@@ -208,7 +246,13 @@ export default function CompareTab() {
           </div>
 
           <div className="glass-card p-6 mb-6 w-full mt-8">
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white mb-4 transition-colors">{t('tabs.compare:cai_dat_khoi_chay')}</h3>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white mb-2 transition-colors">{t('tabs.compare:cai_dat_khoi_chay')}</h3>
+            <p className="text-[11px] text-slate-500 dark:text-zinc-400 mb-4 leading-relaxed">
+              So sánh <strong className="font-semibold text-slate-700 dark:text-zinc-300">pixel</strong>
+              {' '}(những gì in ra thấy được) — không OCR.
+              Có vùng khác = <strong className="text-red-600 dark:text-red-400">không đạt</strong>.
+              % giống hình chỉ tham khảo. Khuyến nghị: Bình thường + 300 DPI.
+            </p>
             <div className="settings-grid">
               <div>
                 <label className="text-xs text-slate-500 dark:text-zinc-400 block mb-1.5 transition-colors">{t('tabs.compare:do_chinh_xac')}</label>
@@ -284,6 +328,7 @@ export default function CompareTab() {
             <div className="error-banner animate-slide-up bg-red-500/10 border border-red-500/20 text-red-600 w-full mt-4 mb-12">❌ {error}</div>
           )}
         </div>
+        {printDialog}
       </div>
     );
   }
@@ -292,6 +337,7 @@ export default function CompareTab() {
   if (phase === 'processing') {
     return (
       <div className="flex-1 w-full h-full bg-slate-50 dark:bg-zinc-950 transition-colors">
+        {printDialog}
         <div className="max-w-3xl mx-auto px-6 py-20">
           <ProgressTracker
             progress={store.progress}
@@ -326,15 +372,29 @@ export default function CompareTab() {
         </div>
         <div className="flex items-center gap-3">
           {store.summary && (
-             <div className="flex items-center gap-2 mr-4">
+             <div className="flex items-center gap-3 mr-4">
                 <span className={`px-2 py-1 text-[11px] font-bold rounded ${
                    (store.summary as any).overall_status === 'PASS' ? 'bg-green-100 text-green-700' : 
                    (store.summary as any).overall_status === 'FAIL' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                 }`}>
-                   {(store.summary as any).overall_status}
+                   {(store.summary as any).print_verdict
+                     || ((store.summary as any).overall_status === 'PASS' ? 'ĐẠT' : 'KHÔNG ĐẠT')}
                 </span>
-                <span className="text-xs text-slate-600 dark:text-zinc-400 ml-2">
-                   Tương đồng: {(store.summary as any).average_similarity}%
+                <span className={`text-xs font-semibold ${
+                   ((store.summary as any).total_diff_count ?? 0) === 0
+                     ? 'text-green-700 dark:text-green-400'
+                     : 'text-red-700 dark:text-red-400'
+                }`}>
+                   {((store.summary as any).total_diff_count ?? 0) === 0
+                     ? '0 lỗi in'
+                     : `${(store.summary as any).total_diff_count} lỗi in — cần xử lý`}
+                </span>
+                <span
+                  className="text-[11px] text-slate-400 dark:text-zinc-500"
+                  title="Độ giống hình toàn trang (SSIM) — chỉ tham khảo. In ấn không chấm theo % pixel."
+                >
+                   Giống hình (tham khảo): {(store.summary as any).visual_similarity
+                     ?? (store.summary as any).average_similarity}%
                 </span>
              </div>
           )}
@@ -444,6 +504,7 @@ export default function CompareTab() {
                  </button>
               </div>
 
+             {/* printDialog portal lives at end of root */}
              <div 
                className="rounded-xl border border-white/10 shadow-[0_0_80px_rgba(168,85,247,0.15)] flex flex-col bg-[#141418]/60 origin-center select-none"
                style={{ 
@@ -463,6 +524,7 @@ export default function CompareTab() {
         </div>
       )}
 
+      {printDialog}
     </div>
   );
 }

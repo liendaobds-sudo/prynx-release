@@ -13,6 +13,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+MM_TO_PTS = 2.83465
+
+
+def resolve_one_dao_trim(page, cut_type, die_size_mode, die_offset_mm, MM=MM_TO_PTS):
+    """Nguồn chân lý DUY NHẤT cho trim khi 1 Dao + 'theo kích thước trang'.
+
+    Chỉ tác dụng khi cut_type == 'one_dao' và die_size_mode == 'page': trả
+    (trim_w, trim_h) = mediabox (page.rect) ± offset ở CẢ 2 cạnh đối (offset > 0
+    = mở ra, < 0 = co vào). Kẹp min 1.0pt để không sinh kích thước âm khi co quá.
+
+    Trả None ở mọi trường hợp khác → caller GIỮ NGUYÊN logic cũ (ưu tiên đường
+    khuôn thật / trimbox / rect-2*bleed). Dùng chung export (nup_engine,
+    nup_process_chunk) và preview (imposition) để parity preview↔output.
+    """
+    if cut_type != 'one_dao' or die_size_mode != 'page':
+        return None
+    off = float(die_offset_mm or 0) * MM
+    tw = page.rect.width + 2 * off
+    th = page.rect.height + 2 * off
+    return (max(1.0, tw), max(1.0, th))
+
+
 def _path_items_to_polygon(path_items):
 
     """Convert PDF path items (lines + beziers) directly to a Shapely Polygon.

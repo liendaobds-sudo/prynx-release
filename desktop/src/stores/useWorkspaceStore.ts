@@ -109,7 +109,7 @@ export interface WorkspaceState {
     // ── AcrobatViewer Shared State ──
     viewerZoom: number;
     viewerFitMode: 'width' | 'page' | 'custom' | 'smart';
-    viewerToolMode: 'pointer' | 'hand';
+    viewerToolMode: 'pointer' | 'hand' | 'dimension';
     viewerPageDisplayMode: 'single_fit' | 'single_scroll' | 'two_fit' | 'two_scroll';
     viewerActivePage: number;
     viewerNumPages: number;
@@ -190,7 +190,7 @@ export interface WorkspaceState {
 
     setViewerZoom: (updater: number | ((prev: number) => number)) => void;
     setViewerFitMode: (mode: 'width' | 'page' | 'custom' | 'smart') => void;
-    setViewerToolMode: (mode: 'pointer' | 'hand') => void;
+    setViewerToolMode: (mode: 'pointer' | 'hand' | 'dimension') => void;
     setViewerPageDisplayMode: (mode: 'single_fit' | 'single_scroll' | 'two_fit' | 'two_scroll') => void;
     setViewerActivePage: (page: number) => void;
     setViewerNumPages: (n: number) => void;

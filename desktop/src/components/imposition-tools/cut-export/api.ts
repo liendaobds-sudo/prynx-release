@@ -59,6 +59,28 @@ export interface CutExportResult {
   error?: string;
 }
 
+export interface CutConnectionTestResult {
+  ok: boolean;
+  host?: string;
+  port?: number;
+  resolved_ip?: string;
+  latency_ms?: number;
+  detail?: string;
+  error?: string;
+}
+
+export async function testCutConnection(host: string, port: number): Promise<CutConnectionTestResult> {
+  const res = await authenticatedFetch(`${getApiUrl()}/imposition/cut-connection-test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host, port, timeout: 3 }),
+  });
+  if (!res.ok) {
+    return { ok: false, error: i18n.t('cutExport:loi_may_chu_res_status', { status: res.status }) };
+  }
+  return (await res.json()) as CutConnectionTestResult;
+}
+
 export async function listCutProfiles(): Promise<CutProfileInfo[]> {
   const res = await authenticatedFetch(`${getApiUrl()}/imposition/cut-profiles`);
   if (!res.ok) throw new Error(i18n.t('cutExport:khong_tai_duoc_danh_sach_may_be', { status: res.status }));

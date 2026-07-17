@@ -72,6 +72,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         layoutType: state.layoutType, setLayoutType: state.setLayoutType,
         // Grouping Strategy
         groupingStrategy: state.groupingStrategy, setGroupingStrategy: state.setGroupingStrategy,
+        clusterCombineMode: state.clusterCombineMode, setClusterCombineMode: state.setClusterCombineMode,
         clusterSizingMode: state.clusterSizingMode, setClusterSizingMode: state.setClusterSizingMode,
         clusterTileW: state.clusterTileW, setClusterTileW: state.setClusterTileW,
         clusterTileH: state.clusterTileH, setClusterTileH: state.setClusterTileH,
@@ -91,6 +92,8 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         setShowPontModal: state.setShowPontModal,
         // Đường cắt (Bế tem) — gom vào đây cho gọn UI
         cutType: state.cutType, setCutType: state.setCutType,
+        dieSizeMode: state.dieSizeMode, setDieSizeMode: state.setDieSizeMode,
+        dieOffsetMm: state.dieOffsetMm, setDieOffsetMm: state.setDieOffsetMm,
         fillBlockGap: state.fillBlockGap, setFillBlockGap: state.setFillBlockGap,
         // Lưu file in (tự động) — cài trước khi bình
         savePrint: state.savePrint, setSavePrint: state.setSavePrint,
@@ -312,6 +315,58 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             </div>
                         )}
 
+                        {/* KIỂU KHUÔN — chỉ khi 1 Dao: theo khuôn có sẵn / theo kích thước trang */}
+                        {activeTool === 'sticker_imposer' && s.cutType === 'one_dao' && (
+                            <div className="flex items-center gap-3 relative z-[20] pb-1">
+                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:kieu_khuon')}</label>
+                                <div className="flex flex-1 items-center gap-2 min-w-0">
+                                    <select
+                                        value={s.dieSizeMode}
+                                        onChange={e => s.setDieSizeMode(e.target.value as 'die' | 'page')}
+                                        className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                    >
+                                        <option value="die">{t('imposition.advancedSettings:kieu_khuon_die')}</option>
+                                        <option value="page">{t('imposition.advancedSettings:kieu_khuon_page')}</option>
+                                    </select>
+                                    <div
+                                        className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
+                                        onClick={() => setInfoModal({
+                                            title: t('imposition.advancedSettings:kieu_khuon'),
+                                            content: (
+                                                <div className="space-y-4">
+                                                    <div className="space-y-1">
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:kieu_khuon_die')}</h4>
+                                                        <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:kieu_khuon_die_mo_ta')}</p>
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:kieu_khuon_page')}</h4>
+                                                        <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:kieu_khuon_page_mo_ta')}</p>
+                                                    </div>
+                                                    <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:kieu_khuon_offset_mo_ta')}</p>
+                                                </div>
+                                            )
+                                        })}
+                                    >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* CO/MỞ — chỉ khi 1 Dao + theo kích thước trang */}
+                        {activeTool === 'sticker_imposer' && s.cutType === 'one_dao' && s.dieSizeMode === 'page' && (
+                            <div className="flex items-center gap-3 relative z-[20] pb-1">
+                                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:co_mo')}</label>
+                                <div className="flex flex-1 items-center gap-2 min-w-0">
+                                    <div className="relative flex-1">
+                                        <input type="number" step="0.5" value={s.dieOffsetMm} onChange={e => s.setDieOffsetMm(Number(e.target.value))}
+                                            className="w-full h-8 px-2 pr-8 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium" />
+                                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-400 font-medium pointer-events-none">mm</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         </CollapsibleGroup>
                         )}
 
@@ -519,8 +574,10 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
                                         {/* Xem trước report NGAY tại đây (tick tới đâu thấy tới đó) */}
                                         {(() => {
-                                            const sw = s.formsize === 'custom' ? s.customSheetWidth : (PREDEFINED_SIZES[s.formsize]?.w || s.customSheetWidth);
-                                            const sh = s.formsize === 'custom' ? s.customSheetHeight : (PREDEFINED_SIZES[s.formsize]?.h || s.customSheetHeight);
+                                            // custom / custom_* / auto_100 → mirror; predefined ISO A → bảng
+                                            const _free = s.formsize === 'custom' || s.formsize === 'auto_100' || String(s.formsize).startsWith('custom_');
+                                            const sw = _free ? s.customSheetWidth : (PREDEFINED_SIZES[s.formsize]?.w || s.customSheetWidth);
+                                            const sh = _free ? s.customSheetHeight : (PREDEFINED_SIZES[s.formsize]?.h || s.customSheetHeight);
                                             const previewStr = buildReportPreview(s.reportDisplay, {
                                                 orderCode: s.reportOrderCode,
                                                 labelName: s.reportDisplay.labelNameText,
@@ -653,10 +710,11 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         </CollapsibleGroup>
                         )}
 
-                        {/* 1. Grouping Strategy — CHỈ die-cut (Bế tem/CNC). Guillotine (Bình
-                            bài xén) render lưới đều, KHÔNG dùng grouping → ẩn để tránh control
-                            vô tác dụng / lệch preview-output. */}
-                        {s.taskMode !== 'booklet' && stickerLike && (
+                        {/* 1. Grouping Strategy — die-cut (Bế tem/CNC) LẪN bình cắt xén
+                            (guillotine: activeTool 'nup' + markType 'guillotine'). Chia cụm
+                            zone hợp guillotine (vùng chữ nhật = nhát dao thẳng). Ẩn cho các
+                            tổ hợp khác để tránh control vô tác dụng. */}
+                        {s.taskMode !== 'booklet' && (stickerLike || (activeTool === 'nup' && s.markType === 'guillotine')) && (
                         <div>
                             <div className="flex items-center justify-between mb-2">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:cach_chia_cum')}</label>
@@ -703,20 +761,100 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             {/* Cluster Tile Settings */}
                             {s.groupingStrategy === 'cluster_tile' && (
                                 <div className="mt-2 flex flex-col gap-3 p-3 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-white/10 rounded-lg">
-                                    <div className="flex items-center gap-3">
+                                    {/* Kiểu ghép cụm */}
+                                    <div className="flex items-center gap-2">
+                                        <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wide shrink-0 w-[65px]">{t('imposition.advancedSettings:kieu_ghep')}</label>
+                                        <select
+                                            value={s.clusterCombineMode}
+                                            onChange={(e) => s.setClusterCombineMode(e.target.value as 'replicate_mixed' | 'zone_per_type' | 'zone_ratio')}
+                                            className="flex-1 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-[13px] font-medium focus:outline-none focus:border-indigo-500"
+                                        >
+                                            <option value="replicate_mixed">{t('imposition.advancedSettings:cum_tron_nhan_ban')}</option>
+                                            <option value="zone_per_type">{t('imposition.advancedSettings:moi_loai_mot_vung')}</option>
+                                            <option value="zone_ratio">{t('imposition.advancedSettings:vung_theo_ty_le_sl')}</option>
+                                        </select>
+                                        <div
+                                            className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            onClick={() => setInfoModal({
+                                                title: t('imposition.advancedSettings:kieu_ghep_cum'),
+                                                content: (
+                                                    <div className="space-y-4">
+                                                        <div className="space-y-1">
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:cum_tron_nhan_ban')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:kieu_ghep_replicate_mo_ta')}</p>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:moi_loai_mot_vung')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:kieu_ghep_zone_per_type_mo_ta')}</p>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:vung_theo_ty_le_sl')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:kieu_ghep_zone_ratio_mo_ta')}</p>
+                                                        </div>
+                                                    </div>
+                                                )
+                                            })}
+                                        >
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                        </div>
+                                    </div>
+
+                                    {/* Số cột × số hàng vùng — cho kiểu 'mỗi loại một vùng' / 'theo tỉ lệ SL' */}
+                                    {(s.clusterCombineMode === 'zone_per_type' || s.clusterCombineMode === 'zone_ratio') && (
+                                    <div className="grid grid-cols-2 gap-x-3 gap-y-3 border-b border-slate-200 dark:border-white/10 pb-3">
+                                        <div>
+                                            <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:so_cot_vung')}</label>
+                                            <input type="number" min={1} max={20} step={1} value={s.clusterCols} onChange={(e) => s.setClusterCols(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
+                                        </div>
+                                        <div>
+                                            <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:so_hang_vung')}</label>
+                                            <input type="number" min={1} max={20} step={1} value={s.clusterRows} onChange={(e) => s.setClusterRows(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
+                                        </div>
+                                    </div>
+                                    )}
+
+                                    {/* Định cỡ cụm — chỉ cho kiểu 'cụm trộn nhân bản' (zone modes chia tự động) */}
+                                    {s.clusterCombineMode === 'replicate_mixed' && (
+                                    <div className="flex items-center gap-2">
                                         <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wide shrink-0 w-[65px]">{t('imposition.advancedSettings:dinh_co')}</label>
                                         <select
                                             value={s.clusterSizingMode}
-                                            onChange={(e) => s.setClusterSizingMode(e.target.value as 'dims' | 'grid')}
+                                            onChange={(e) => s.setClusterSizingMode(e.target.value as 'dims' | 'split_cols' | 'split_rows')}
                                             className="flex-1 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-[13px] font-medium focus:outline-none focus:border-indigo-500"
                                         >
                                             <option value="dims">{t('imposition.advancedSettings:theo_kho_w_x_h')}</option>
                                             <option value="split_cols">{t('imposition.advancedSettings:chia_theo_cot_doc')}</option>
                                             <option value="split_rows">{t('imposition.advancedSettings:chia_theo_hang_ngang')}</option>
                                         </select>
+                                        <div
+                                            className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
+                                            onClick={() => setInfoModal({
+                                                title: t('imposition.advancedSettings:dinh_co_cum'),
+                                                content: (
+                                                    <div className="space-y-4">
+                                                        <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:dinh_co_cum_mo_ta')}</p>
+                                                        <div className="space-y-1">
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:theo_kho_w_x_h')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:dinh_co_dims_mo_ta')}</p>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:chia_theo_cot_doc')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:dinh_co_split_cols_mo_ta')}</p>
+                                                        </div>
+                                                        <div className="space-y-1">
+                                                            <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:chia_theo_hang_ngang')}</h4>
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:dinh_co_split_rows_mo_ta')}</p>
+                                                        </div>
+                                                    </div>
+                                                )
+                                            })}
+                                        >
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                        </div>
                                     </div>
+                                    )}
 
-                                    {s.clusterSizingMode === 'dims' ? (
+                                    {s.clusterCombineMode === 'replicate_mixed' && s.clusterSizingMode === 'dims' ? (
                                         <div className="flex flex-col gap-2 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div className="flex items-center gap-3">
                                                 <label className="text-[11px] text-slate-500 shrink-0 w-[65px]">{t('imposition.advancedSettings:kho_chuan')}</label>
@@ -746,14 +884,14 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                 </div>
                                             </div>
                                         </div>
-                                    ) : s.clusterSizingMode === 'split_cols' ? (
+                                    ) : s.clusterCombineMode === 'replicate_mixed' && s.clusterSizingMode === 'split_cols' ? (
                                         <div className="grid grid-cols-1 gap-x-3 gap-y-3 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div>
                                                 <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:so_cot_doc')}</label>
                                                 <input type="number" min={1} max={20} step={1} value={s.clusterCols} onChange={(e) => s.setClusterCols(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
                                             </div>
                                         </div>
-                                    ) : s.clusterSizingMode === 'split_rows' ? (
+                                    ) : s.clusterCombineMode === 'replicate_mixed' && s.clusterSizingMode === 'split_rows' ? (
                                         <div className="grid grid-cols-1 gap-x-3 gap-y-3 border-b border-slate-200 dark:border-white/10 pb-3">
                                             <div>
                                                 <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:so_hang_ngang')}</label>
@@ -762,20 +900,59 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                         </div>
                                     ) : null}
 
-                                    <div className="grid grid-cols-2 gap-x-3 gap-y-3">
-                                        <div>
-                                            <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:khoang_ho_doc_mm')}</label>
-                                            <input type="number" min={0} max={50} step={0.5} value={s.tileGapX} onChange={(e) => s.setTileGapX(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
+                                    <div>
+                                        <div className="flex items-center justify-between mb-2">
+                                            <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:khoang_cach_giua_cac_cum')}</label>
+                                            <div
+                                                className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
+                                                onClick={() => setInfoModal({
+                                                    title: t('imposition.advancedSettings:khoang_cach_giua_cac_cum'),
+                                                    content: (
+                                                        <div className="space-y-4">
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:khoang_cach_cum_mo_ta')}</p>
+                                                            <div className="space-y-1">
+                                                                <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:khoang_ho_doc_mm')}</h4>
+                                                                <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:khoang_ho_doc_mo_ta')}</p>
+                                                            </div>
+                                                            <div className="space-y-1">
+                                                                <h4 className="font-bold text-slate-800 dark:text-white">{t('imposition.advancedSettings:khoang_ho_ngang_mm')}</h4>
+                                                                <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:khoang_ho_ngang_mo_ta')}</p>
+                                                            </div>
+                                                        </div>
+                                                    )
+                                                })}
+                                            >
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:khoang_ho_ngang_mm')}</label>
-                                            <input type="number" min={0} max={50} step={0.5} value={s.tileGapY} onChange={(e) => s.setTileGapY(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
+                                        <div className="grid grid-cols-2 gap-x-3 gap-y-3">
+                                            <div>
+                                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:khoang_ho_doc_mm')}</label>
+                                                <input type="number" min={0} max={50} step={0.5} value={s.tileGapX} onChange={(e) => s.setTileGapX(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
+                                            </div>
+                                            <div>
+                                                <label className="text-[11px] text-slate-500 block mb-1 font-medium">{t('imposition.advancedSettings:khoang_ho_ngang_mm')}</label>
+                                                <input type="number" min={0} max={50} step={0.5} value={s.tileGapY} onChange={(e) => s.setTileGapY(Number(e.target.value))} className={inputCls} style={{ paddingLeft: '9px' }} />
+                                            </div>
                                         </div>
                                     </div>
 
                                     {stickerLike && (
-                                        <div className="mt-1">
+                                        <div className="mt-1 flex items-center gap-1">
                                             <Checkbox checked={s.clusterNesting} onChange={s.setClusterNesting} label={t('imposition.advancedSettings:binh_long_sat_trong_cum_nesting')} />
+                                            <div
+                                                className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
+                                                onClick={() => setInfoModal({
+                                                    title: t('imposition.advancedSettings:binh_long_sat_trong_cum_nesting'),
+                                                    content: (
+                                                        <div className="space-y-4">
+                                                            <p className="text-slate-600 dark:text-zinc-300">{t('imposition.advancedSettings:nesting_mo_ta')}</p>
+                                                        </div>
+                                                    )
+                                                })}
+                                            >
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                            </div>
                                         </div>
                                     )}
                                 </div>

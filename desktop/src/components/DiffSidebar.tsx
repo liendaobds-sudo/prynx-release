@@ -47,8 +47,25 @@ export default function DiffSidebar({
           </div>
         </div>
 
-        <div className="text-xs text-slate-500 dark:text-zinc-400 transition-colors">
-          Tổng: {totalDiffs} vùng thay đổi • {results.length} trang
+        <div className="text-xs text-slate-500 dark:text-zinc-400 transition-colors space-y-1">
+          <div className={totalDiffs === 0 ? 'text-green-600 dark:text-green-400 font-semibold' : 'text-red-600 dark:text-red-400 font-semibold'}>
+            {totalDiffs === 0
+              ? 'ĐẠT kiểm in — không có lỗi'
+              : `${totalDiffs} lỗi in — KHÔNG ĐẠT (sai 1 chi tiết cũng là lỗi)`}
+          </div>
+          <div>
+            {results.length} trang
+            {summary && typeof summary.visual_similarity === 'number' && (
+              <span className="text-slate-400 dark:text-zinc-500">
+                {' '}· giống hình (tham khảo): {summary.visual_similarity as number}%
+              </span>
+            )}
+            {summary && typeof summary.visual_similarity !== 'number' && typeof summary.average_similarity === 'number' && (
+              <span className="text-slate-400 dark:text-zinc-500">
+                {' '}· giống hình (tham khảo): {summary.average_similarity as number}%
+              </span>
+            )}
+          </div>
         </div>
       </div>
 

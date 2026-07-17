@@ -7,7 +7,7 @@ import { recommendInNhanh, type ProductInput } from '../../lib/imposerEngine/Pro
 const input: ProductInput = {
     printMethod: 'in_nhanh', binding: 'saddle',
     finishedWidthMm: 74, finishedHeightMm: 105, // nhỏ → multi_up
-    pageCount: 16, sheetWidthMm: 320, sheetHeightMm: 450, quantity: 100, bleedMm: 3,
+    pageCount: 16, sheetWidthMm: 297, sheetHeightMm: 420, quantity: 100, bleedMm: 3, // A3
 };
 
 describe('applyRecommendation → store', () => {
@@ -23,8 +23,8 @@ describe('applyRecommendation → store', () => {
         expect(s.taskMode).toBe('booklet');
         expect(s.paperClassification).toBe('in_nhanh');
         expect(s.signatureMode).toBe('saddle');
-        expect(s.customSheetWidth).toBe(320);
-        expect(s.customSheetHeight).toBe(450);
+        expect(s.customSheetWidth).toBe(297);
+        expect(s.customSheetHeight).toBe(420);
         expect(s.bleed).toBe(3);
         if (mu.strategy === 'multi_up') expect(s.scaleMode).toBe('chain_nup');
     });

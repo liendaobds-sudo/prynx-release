@@ -154,6 +154,32 @@ def test_process_pdf_bleed_preserves_vector_artwork(src_pdf, tmp_path):
         assert b" Do" in _read_all_content(page)
 
 
+@pytest.mark.parametrize("bleed_color_type", ["image", "inpaint"])
+def test_sampled_bleed_stays_lossless_rgb(src_pdf, tmp_path, bleed_color_type):
+    """Bleed lấy mẫu từ artwork phải giữ RGB, không giả lập CMYK với K=0.
+
+    RGB đã là kết quả render màu của artwork. Đổi ngược bằng 255-R/G/B không thể
+    phục hồi CMYK gốc và gây khác màu giữa bleed với viền tem trên RIP.
+    """
+    out = str(tmp_path / f"out_{bleed_color_type}.pdf")
+    engine = StickerEngine(dpi=150)
+
+    success, _meta = engine.process_pdf(
+        input_path=src_pdf, output_path=out,
+        cut_mode="original", offset_mm=0.0, bleed_mm=2.0,
+        bleed_color_type=bleed_color_type,
+    )
+
+    assert success is True
+    with pikepdf.Pdf.open(out) as o:
+        xobjs = o.pages[0].obj.get("/Resources", {}).get("/XObject", {})
+        images = [xobjs[k] for k in xobjs.keys() if str(xobjs[k].get("/Subtype")) == "/Image"]
+        color_images = [img for img in images if str(img.get("/ColorSpace")) != "/DeviceGray"]
+        assert color_images, "Phải có image XObject cho vành bù xén"
+        assert all(str(img.get("/ColorSpace")) == "/DeviceRGB" for img in color_images)
+        assert all(str(img.get("/Filter")) == "/FlateDecode" for img in color_images)
+
+
 def test_nearest_color_fill_propagates_and_keeps_shape():
     """_nearest_color_fill: lấp màu từ vùng có màu ra nền, giữ đúng kích thước —
     cả đường thường (f=1) lẫn đường HẠ MẪU (f>1) cho ROI lớn."""

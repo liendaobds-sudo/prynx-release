@@ -430,7 +430,7 @@ export const imposeCatalogBatch = async (
             gapX: baseSettings.gapX,
             gapY: baseSettings.gapY,
             spreadDistribution: (baseSettings as any).spreadDistribution || 'clustered',
-            paperClassification: (baseSettings as any).paperClassification || 'offset'
+            paperClassification: (baseSettings as any).paperClassification || 'in_nhanh'
         } as any;
 
         // Bước 3: Chạy pipeline
@@ -728,7 +728,7 @@ export const imposeCatalogBatchViaBackend = async (
             foliosize: job.pageIndices.length,
             paperThickness: baseSettings.paperThickness || 0,
             bleed: baseSettings.bleed || 0,
-            paperClassification: (sheetSettings as any).paperClassification || 'offset',
+            paperClassification: (sheetSettings as any).paperClassification || 'in_nhanh',
             sheetWidth: baseSettings.sheetWidth || 0,
             sheetHeight: baseSettings.sheetHeight || 0,
             chainNup: true,

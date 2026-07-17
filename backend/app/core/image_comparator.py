@@ -1,8 +1,11 @@
 """
-Image Comparator — Compare two images using SSIM, pixel diff, and CMYK analysis.
+Image Comparator — Pixel-first PDF/print comparison.
 
 Algorithm reference: Formartha/compare-pdf (cv2.absdiff, np.array_equal)
-Enhanced with SSIM, contour detection, region clustering, and CMYK channel diff.
+Enhanced with SSIM, contour detection, region clustering, micro-diff rescue,
+and CMYK channel diff.
+
+Chính sách: nguồn sự thật = pixel (render). Không OCR/text trong comparator.
 License: OpenCV (Apache 2.0), scikit-image (BSD), Pillow (MIT-like)
 """
 import logging
@@ -17,11 +20,18 @@ import io
 logger = logging.getLogger(__name__)
 
 
-# ── Tolerance thresholds ────────────────────────────────
+# ── Tolerance thresholds (grayscale absdiff, 0–255) ─────
 TOLERANCE_THRESHOLDS = {
-    "STRICT": 0,      # Mọi pixel khác nhau đều báo
-    "NORMAL": 13,     # ~5% of 255 — bỏ qua anti-aliasing nhỏ
-    "LOOSE": 38,      # ~15% of 255 — chỉ báo thay đổi lớn
+    "STRICT": 0,      # Mọi pixel khác nhau đều báo (proof nghiêm)
+    "NORMAL": 13,     # ~5% of 255 — bỏ qua anti-aliasing nhỏ (mặc định in)
+    "LOOSE": 38,      # ~15% of 255 — chỉ báo thay đổi tương đối lớn
+}
+
+# Base min contour area @150 DPI before dpi-scale (capped ×2 elsewhere)
+TOLERANCE_MIN_AREA = {
+    "STRICT": 8,      # giữ nét mỏng / 1 ký tự
+    "NORMAL": 50,
+    "LOOSE": 80,
 }
 
 
@@ -121,110 +131,176 @@ class ImageComparator:
         if not size_eq and area_ratio >= IMPOSITION_AREA_RATIO:
             if area2 >= area1:
                 logger.info(f"Imposition Mode: Image 2 lớn hơn (area {area_ratio:.2f}×). Packaging: {is_packaging}")
-                return self._compare_imposition(template=img1, imposed=img2, is_packaging_mode=is_packaging)
+                return self._compare_imposition(
+                    template=img1, imposed=img2, is_packaging_mode=is_packaging,
+                    tolerance=tolerance, config=config,
+                )
             else:
                 logger.info(f"Imposition Mode: Image 1 lớn hơn (area {area_ratio:.2f}×). Packaging: {is_packaging}")
-                return self._compare_imposition(template=img2, imposed=img1, is_packaging_mode=is_packaging)
+                return self._compare_imposition(
+                    template=img2, imposed=img1, is_packaging_mode=is_packaging,
+                    tolerance=tolerance, config=config,
+                )
 
         # Step 1.5: Ensure same dimensions if standard 1:1 mode
         img1, img2 = self._normalize_dimensions(img1, img2)
 
-        # Step 1.6: Căn chỉnh dịch chuyển (registration) — bù lệch vài px giữa A/B
-        # (render khác nhau, page box lệch...) để tránh absdiff bùng viền giả.
-        img2 = self._align_to(img1, img2)
+        # Step 1.6: Registration — bù lệch render nhỏ (NORMAL/LOOSE).
+        # STRICT: KHÔNG align — lệch 1–2px cố ý (cắt xén/trim) vẫn phải báo.
+        if (tolerance or "NORMAL").upper() != "STRICT":
+            img2 = self._align_to(img1, img2)
 
-        # Ngưỡng diện tích nhiễu scale theo DPI (gốc 50px² @150DPI). Ở 300DPI mật độ
-        # pixel gấp 4 → ngưỡng ×4 để mức lọc nhiễu tương đương giữa các DPI.
+        # Ngưỡng diện tích theo tolerance + DPI (trần scale ×2 — tránh 300DPI nuốt glyph).
         dpi = (config or {}).get("dpi", 150) or 150
-        eff_min_area = max(1, int(min_contour_area * (dpi / 150.0) ** 2))
+        tol_key = (tolerance or "NORMAL").upper()
+        base_min = TOLERANCE_MIN_AREA.get(tol_key, min_contour_area)
+        # Caller có thể override min_contour_area thấp hơn (tests).
+        base_min = min(base_min, min_contour_area) if min_contour_area < 50 else base_min
+        if tol_key == "STRICT":
+            base_min = min(base_min, TOLERANCE_MIN_AREA["STRICT"])
+        dpi_area_scale = min((float(dpi) / 150.0) ** 2, 2.0)
+        eff_min_area = max(1, int(base_min * dpi_area_scale))
+        micro_min_area = max(2 if tol_key == "STRICT" else 4, int(eff_min_area * 0.15))
 
         # Step 2: Convert to grayscale for SSIM
         gray1 = cv2.cvtColor(img1, cv2.COLOR_RGB2GRAY) if len(img1.shape) == 3 else img1
         gray2 = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY) if len(img2.shape) == 3 else img2
 
-        # Step 3: SSIM
+        # Step 3: SSIM (tham khảo — không quyết định pass/fail)
         score, diff_map = ssim(gray1, gray2, full=True)
         result.similarity_score = round(score * 100, 2)
 
         # Step 4 & 5: Pixel difference and Thresholding
-        threshold_val = TOLERANCE_THRESHOLDS.get(tolerance, 13)
-        
-        from app.core.gpu_accelerator import GPUAccelerator
-        gpu = GPUAccelerator.get_instance()
-        
-        if gpu.is_available:
-            # VRAM Accelerated Processing
-            binary_mask = gpu.compute_diff_mask(gray1, gray2, threshold_val)
-        else:
-            # CPU Native Processing
-            try:
-                import pdfcompare_native
-                # Use Rust extension for massive speedup & 50% less RAM usage (Zero-copy single-pass)
-                binary_mask = pdfcompare_native.fast_diff_mask_gray(gray1, gray2, threshold_val)
-            except (ImportError, AttributeError) as e:
-                logger.warning(f"Rust native pixel diff failed/unavailable: {e}. Falling back to OpenCV CPU.")
-                if len(img1.shape) == 3:
-                    abs_diff = cv2.absdiff(img1, img2)
-                    diff_gray = cv2.cvtColor(abs_diff, cv2.COLOR_RGB2GRAY)
-                else:
-                    diff_gray = cv2.absdiff(gray1, gray2)
-                _, binary_mask = cv2.threshold(diff_gray, threshold_val, 255, cv2.THRESH_BINARY)
+        threshold_val = TOLERANCE_THRESHOLDS.get(tol_key, 13)
+        binary_mask = self._build_diff_mask(gray1, gray2, img1, img2, threshold_val)
 
-        # Morphological operations to reduce noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        # Morph: STRICT bỏ OPEN (giữ nét 1px); NORMAL/LOOSE lọc nhiễu AA.
+        binary_mask = self._morph_diff_mask(binary_mask, tol_key)
 
         result.diff_mask = binary_mask
-        # Toạ độ vùng khác biệt nằm trong KÍCH THƯỚC LÀM VIỆC (img2 sau normalize/scale)
         result.render_w = img2.shape[1]
         result.render_h = img2.shape[0]
 
-        # Calculate diff pixel percentage
         total_pixels = binary_mask.shape[0] * binary_mask.shape[1]
-        diff_pixels = np.count_nonzero(binary_mask)
+        diff_pixels = int(np.count_nonzero(binary_mask))
         result.diff_pixel_percentage = round(diff_pixels / total_pixels * 100, 3)
 
-        # Step 6: Find contours (diff regions)
-        contours, _ = cv2.findContours(
-            binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        # Step 6: Contours + micro-diff rescue
+        regions = self._extract_diff_regions(
+            binary_mask, eff_min_area, micro_min_area, total_pixels, tol_key
         )
-
-        regions = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < eff_min_area:
-                continue
-            x, y, w, h = cv2.boundingRect(contour)
-            severity = self._classify_severity(area, total_pixels)
-            regions.append(DiffRegion(
-                x=x, y=y, width=w, height=h,
-                area=area, severity=severity,
-                description=f"Vùng thay đổi {w}x{h}px"
-            ))
-
-        # Cluster nearby regions
         regions = self._cluster_regions(regions, merge_distance=20)
 
         result.diff_regions = regions
         result.diff_count = len(regions)
 
-        # Generate highlighted image
         result.highlighted_image = self.highlight_differences(
             img2.copy(), binary_mask, regions
         )
-
-        # Generate animated GIF if there are differences
         if len(regions) > 0:
             frame_off, frame_on = self._create_spotlight_frames(img2, regions)
             result.gif_image = self._generate_gif(frame_off, frame_on, duration_ms=600)
 
         logger.info(
-            f"Comparison: {result.similarity_score}% similar, "
+            f"Comparison [{tol_key}]: {result.similarity_score}% similar, "
             f"{result.diff_count} regions, {result.diff_pixel_percentage}% pixels differ"
         )
-
         return result
+
+    def _build_diff_mask(
+        self,
+        gray1: np.ndarray,
+        gray2: np.ndarray,
+        img1: np.ndarray,
+        img2: np.ndarray,
+        threshold_val: int,
+    ) -> np.ndarray:
+        """Binary mask of differing pixels (GPU → Rust → OpenCV)."""
+        from app.core.gpu_accelerator import GPUAccelerator
+        gpu = GPUAccelerator.get_instance()
+        if gpu.is_available:
+            return gpu.compute_diff_mask(gray1, gray2, threshold_val)
+        try:
+            import pdfcompare_native
+            return pdfcompare_native.fast_diff_mask_gray(gray1, gray2, threshold_val)
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"Rust native pixel diff failed/unavailable: {e}. Falling back to OpenCV CPU.")
+            if len(img1.shape) == 3:
+                abs_diff = cv2.absdiff(img1, img2)
+                diff_gray = cv2.cvtColor(abs_diff, cv2.COLOR_RGB2GRAY)
+            else:
+                diff_gray = cv2.absdiff(gray1, gray2)
+            _, binary_mask = cv2.threshold(diff_gray, threshold_val, 255, cv2.THRESH_BINARY)
+            return binary_mask
+
+    def _morph_diff_mask(self, binary_mask: np.ndarray, tol_key: str) -> np.ndarray:
+        """Noise reduction; STRICT skips OPEN to preserve thin strokes."""
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        if tol_key == "STRICT":
+            # Chỉ CLOSE 1 lần — nối nét đứt nhẹ, không xóa stroke 1px.
+            return cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        return binary_mask
+
+    def _extract_diff_regions(
+        self,
+        binary_mask: np.ndarray,
+        eff_min_area: float,
+        micro_min_area: float,
+        total_pixels: int,
+        tol_key: str,
+    ) -> list:
+        """Contours above min area + micro-diff rescue when mask has pixels but all filtered."""
+        contours, _ = cv2.findContours(
+            binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        diff_pixels = int(np.count_nonzero(binary_mask))
+
+        def _from_contours(min_area: float, micro: bool = False) -> list:
+            out = []
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < min_area:
+                    continue
+                x, y, w, h = cv2.boundingRect(contour)
+                severity = self._classify_severity(area, total_pixels)
+                out.append(DiffRegion(
+                    x=x, y=y, width=w, height=h,
+                    area=area, severity=severity,
+                    description=(
+                        f"Thay đổi nhỏ {w}x{h}px" if micro
+                        else f"Vùng thay đổi {w}x{h}px"
+                    ),
+                ))
+            return out
+
+        regions = _from_contours(eff_min_area, micro=False)
+        if not regions and diff_pixels > 0:
+            regions = _from_contours(micro_min_area, micro=True)
+            bbox_floor = 4 if tol_key == "STRICT" else 12
+            if not regions and diff_pixels >= bbox_floor:
+                ys, xs = np.where(binary_mask > 0)
+                if len(xs) > 0:
+                    x0, x1 = int(xs.min()), int(xs.max())
+                    y0, y1 = int(ys.min()), int(ys.max())
+                    w, h = max(1, x1 - x0 + 1), max(1, y1 - y0 + 1)
+                    regions = [DiffRegion(
+                        x=x0, y=y0, width=w, height=h,
+                        area=float(diff_pixels),
+                        severity=self._classify_severity(int(diff_pixels), total_pixels),
+                        description=f"Thay đổi nhỏ {w}x{h}px",
+                    )]
+                    logger.info(
+                        f"Micro-diff bbox rescue [{tol_key}]: {diff_pixels} px → "
+                        f"{w}x{h} @({x0},{y0})"
+                    )
+            elif regions:
+                logger.info(
+                    f"Micro-diff contour rescue [{tol_key}]: {len(regions)} region(s) "
+                    f"(micro_min={micro_min_area}, eff_min={eff_min_area})"
+                )
+        return regions
 
     def compare_cmyk(
         self,
@@ -467,15 +543,31 @@ class ImageComparator:
             return "medium"
         return "low"
 
-    def _compare_imposition(self, template: np.ndarray, imposed: np.ndarray, is_packaging_mode: bool = False) -> ComparisonResult:
+    def _compare_imposition(
+        self,
+        template: np.ndarray,
+        imposed: np.ndarray,
+        is_packaging_mode: bool = False,
+        tolerance: str = "NORMAL",
+        config: dict = None,
+    ) -> ComparisonResult:
         """
-        Advanced Imposition Verification: 
-        Finds occurrences of `template` 1-up inside `imposed` N-up sheet.
-        Supports 4-way rotation (0, 90, 180, 270) and Bleed Tolerance Cropping!
+        Advanced Imposition Verification:
+        Finds occurrences of `template` 1-up inside `imposed` N-up sheet,
+        then pixel-compares EACH instance (print-safe).
+        Supports 4-way rotation (0, 90, 180, 270) and bleed crop.
         """
         result = ComparisonResult()
         result.is_imposition_mode = True
         ih, iw = imposed.shape[:2]
+        tol_key = (tolerance or "NORMAL").upper()
+        thr = TOLERANCE_THRESHOLDS.get(tol_key, 13)
+        # Imposition: slightly higher floor than 1:1 to absorb match-align noise,
+        # but STRICT still catches small content edits on one label.
+        inst_min_area = 8 if tol_key == "STRICT" else (20 if tol_key == "NORMAL" else 40)
+        dpi = (config or {}).get("dpi", 150) or 150
+        dpi_area_scale = min((float(dpi) / 150.0) ** 2, 2.0)
+        inst_min_area = max(4, int(inst_min_area * min(dpi_area_scale, 2.0)))
         
         # 1. Prepare base grayscales
         gray_template = cv2.cvtColor(template, cv2.COLOR_RGB2GRAY) if len(template.shape) == 3 else template
@@ -642,50 +734,82 @@ class ImageComparator:
             clean_imposed = sub_imposed[:min_h, :min_w]
             clean_template = target_template[:min_h, :min_w]
 
-            # Use Rust extension for massive speedup if available
+            # Pixel compare instance vs template — cùng threshold tolerance như 1:1
             try:
                 import pdfcompare_native
                 clean_template_gray = cv2.cvtColor(clean_template, cv2.COLOR_RGB2GRAY) if len(clean_template.shape) == 3 else clean_template
                 clean_imposed_gray = cv2.cvtColor(clean_imposed, cv2.COLOR_RGB2GRAY) if len(clean_imposed.shape) == 3 else clean_imposed
-                diff_mask = pdfcompare_native.fast_diff_mask_gray(clean_template_gray, clean_imposed_gray, 30)
+                diff_mask = pdfcompare_native.fast_diff_mask_gray(clean_template_gray, clean_imposed_gray, thr)
             except (ImportError, AttributeError):
                 diff = cv2.absdiff(clean_template, clean_imposed)
                 diff_gray = cv2.cvtColor(diff, cv2.COLOR_RGB2GRAY) if len(diff.shape) == 3 else diff
-                _, diff_mask = cv2.threshold(diff_gray, 30, 255, cv2.THRESH_BINARY)
-            
+                _, diff_mask = cv2.threshold(diff_gray, thr, 255, cv2.THRESH_BINARY)
+
             # Apply alpha content mask for packaging interlocks (ignores neighbor box bleeds crossing corners)
             if target_alpha is not None:
                 clean_alpha = target_alpha[:min_h, :min_w]
                 diff_mask = cv2.bitwise_and(diff_mask, clean_alpha)
-            
-            # CRITICAL: For imposition, we MUST run MORPH_OPEN first to obliterate 1-pixel 
-            # alignment noise lines BEFORE running MORPH_CLOSE (which would thicken them).
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-            diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-            
-            contours, _ = cv2.findContours(diff_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+            # Imposition noise: OPEN first (trừ STRICT — giữ nét mỏng trên 1 nhãn).
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            if tol_key == "STRICT":
+                diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+            else:
+                diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+                diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+            contours, _ = cv2.findContours(diff_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             instance_has_error = False
+            instance_regions = []
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area > 20: 
-                    rx, ry, rw, rh = cv2.boundingRect(cnt)
-                    gx, gy = max(0, x) + rx, max(0, y) + ry
-                    
-                    region = DiffRegion(
-                        x=gx, y=gy, width=rw, height=rh,
-                        area=area, severity="high" if area > 200 else "medium",
-                        description=f"Lỗi {rw}x{rh}px trên bản in"
-                    )
-                    all_diff_regions.append(region)
-                    total_diff_pixels += int(area)
-                    instance_has_error = True
-                    has_errors = True
-            
-            # Draw tracking boundary box (Optional: we can leave it or remove it. Let's keep the green box)
-            cv2.rectangle(combined_overlay, (max(0, x), max(0, y)), (min(iw, x + w), min(ih, y + h)), (0, 255, 0), 2)
-            
+                if area < inst_min_area:
+                    continue
+                rx, ry, rw, rh = cv2.boundingRect(cnt)
+                gx, gy = max(0, x) + rx, max(0, y) + ry
+                region = DiffRegion(
+                    x=gx, y=gy, width=rw, height=rh,
+                    area=area,
+                    severity="high",
+                    description=f"Lỗi pixel {rw}x{rh}px trên bản #{idx + 1}",
+                )
+                instance_regions.append(region)
+                total_diff_pixels += int(area)
+                instance_has_error = True
+                has_errors = True
+
+            # Micro-rescue trên từng bản: mask còn pixel nhưng contour dưới sàn
+            if not instance_has_error:
+                nz = int(np.count_nonzero(diff_mask))
+                micro_floor = 4 if tol_key == "STRICT" else 12
+                if nz >= micro_floor:
+                    ys, xs = np.where(diff_mask > 0)
+                    if len(xs) > 0:
+                        rx0, rx1 = int(xs.min()), int(xs.max())
+                        ry0, ry1 = int(ys.min()), int(ys.max())
+                        rw, rh = max(1, rx1 - rx0 + 1), max(1, ry1 - ry0 + 1)
+                        region = DiffRegion(
+                            x=max(0, x) + rx0, y=max(0, y) + ry0,
+                            width=rw, height=rh, area=float(nz),
+                            severity="high",
+                            description=f"Lỗi pixel nhỏ trên bản #{idx + 1}",
+                        )
+                        instance_regions.append(region)
+                        total_diff_pixels += nz
+                        instance_has_error = True
+                        has_errors = True
+
+            all_diff_regions.extend(instance_regions)
+
+            # Tracking box: xanh = OK, đỏ = lỗi trên bản
+            box_color = (255, 0, 0) if instance_has_error else (0, 255, 0)
+            cv2.rectangle(
+                combined_overlay,
+                (max(0, x), max(0, y)),
+                (min(iw, x + w), min(ih, y + h)),
+                box_color, 2,
+            )
+
             if instance_has_error:
                 failed_instances += 1
 

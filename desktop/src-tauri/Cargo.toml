@@ -26,7 +26,7 @@ tauri-plugin-shell = "2"
 tauri-plugin-process = "2"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-fs = "2.5.0"
-pdfium-render = { version = "0.8", features = ["thread_safe"] }
+pdfium-render = { version = "0.8", features = ["thread_safe", "pdfium_use_win32"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "webp", "gif"] }
 urlencoding = "2"
 tauri-plugin-single-instance = "2.4.2"
@@ -40,14 +40,25 @@ imposition_core = { path = "../../imposition_core" }
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
-# F2: verify token license kÃƒÂ½ Ed25519 ngay trong Rust (lÃ¡Â»â€ºp gate thÃ¡Â»Â© 2, Ã„â€˜Ã¡Â»â„¢c lÃ¡ÂºÂ­p sidecar).
+# F2: verify token license kÃƒÆ’Ã‚Â½ Ed25519 ngay trong Rust (lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp gate thÃƒÂ¡Ã‚Â»Ã‚Â© 2, Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢c lÃƒÂ¡Ã‚ÂºÃ‚Â­p sidecar).
 ed25519-dalek = "2"
 
-# webview2-com: cÃ¡ÂºÂ§n cho block tÃ¡ÂºÂ¯t DevTools release-only (lib.rs `use webview2_com::...`).
-# Pin Ã„â€˜ÃƒÂºng version mÃƒÂ  tauri/wry resolve (xem Cargo.lock) Ã„â€˜Ã¡Â»Æ’ kiÃ¡Â»Æ’u ICoreWebView2Controller
-# trÃ¡ÂºÂ£ vÃ¡Â»Â tÃ¡Â»Â« `with_webview().controller()` khÃ¡Â»â€ºp vÃ¡Â»â€ºi cÃƒÂ¡c interface ta gÃ¡Â»Âi.
+# webview2-com: cÃƒÂ¡Ã‚ÂºÃ‚Â§n cho block tÃƒÂ¡Ã‚ÂºÃ‚Â¯t DevTools release-only (lib.rs `use webview2_com::...`).
+# Pin Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Âºng version mÃƒÆ’Ã‚Â  tauri/wry resolve (xem Cargo.lock) Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã†â€™ kiÃƒÂ¡Ã‚Â»Ã†â€™u ICoreWebView2Controller
+# trÃƒÂ¡Ã‚ÂºÃ‚Â£ vÃƒÂ¡Ã‚Â»Ã‚Â tÃƒÂ¡Ã‚Â»Ã‚Â« `with_webview().controller()` khÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp vÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi cÃƒÆ’Ã‚Â¡c interface ta gÃƒÂ¡Ã‚Â»Ã‚Âi.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"
+# In PDF native qua GDI + PrintDlg (Ctrl+P). pdfium_use_win32 cua pdfium-render
+# tham chieu windows::Win32::Graphics::Gdi::HDC -> phai bat Win32_Graphics_Gdi o day
+# (cargo hop nhat feature toan cay). Version 0.61 khop cay hien tai (Cargo.lock).
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Printing",
+    "Win32_Storage_Xps",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.dev]
 opt-level = 2

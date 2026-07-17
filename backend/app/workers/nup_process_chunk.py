@@ -124,6 +124,7 @@ def process_chunk(args):
     from app.workers.nup_layout_solver import get_src_page_idx, solve_optimal_layout
 
     from app.workers.nup_engine import compute_sticker_layout_for_page, _find_largest_die_path
+    from app.workers.nup_diecut import resolve_one_dao_trim
 
     (source_path, job_id, chunk_idx, start_sheet, end_sheet, 
 
@@ -134,7 +135,7 @@ def process_chunk(args):
      sheet_usable_w, sheet_usable_h, align, cx_count, cy_count, cluster_gap,
      active_grid_w, active_grid_h, super_grid_w, super_grid_h,
      prog_file, total_page_count, layout_type, is_die_cut, pont_config, strategy, detected_shapes_by_page, target_quantity, detected_shape_params_by_page, sheet_mapping, chunk_precalc_placements,
-     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, homogeneous_mode, homogeneous_master_idx) = args
+     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, die_size_mode, die_offset_mm, homogeneous_mode, homogeneous_master_idx) = args
 
     src_doc = pdf_lib.open(source_path)
 
@@ -255,7 +256,17 @@ def process_chunk(args):
 
                         cur_geom_rect = (largest_path['rect'].x0, largest_path['rect'].y0, largest_path['rect'].x1, largest_path['rect'].y1)
 
-                if cur_geom_rect:
+                # 1 Dao + "theo kích thước trang": trim = mediabox ± offset (nguồn chân
+                # lý dùng chung export/preview). Trả None → giữ logic cũ (khuôn/rect-bleed).
+                _one_dao_trim = resolve_one_dao_trim(
+                    src_page, cut_type, die_size_mode, die_offset_mm,
+                )
+
+                if _one_dao_trim is not None:
+
+                    cur_trim_w, cur_trim_h = _one_dao_trim
+
+                elif cur_geom_rect:
 
                     cur_trim_w = cur_geom_rect[2] - cur_geom_rect[0]
 
@@ -315,6 +326,10 @@ def process_chunk(args):
                             bleed_pt=bleed_pt,
 
                             secondary_gap=_chunk_secondary_gap,
+
+                            cut_type=cut_type,
+                            die_size_mode=die_size_mode,
+                            die_offset_mm=die_offset_mm,
 
                         )
                         _layout_cache[src_page_idx] = sticker_layout
@@ -681,6 +696,7 @@ def process_chunk(args):
                 clip_off_x=_clip_off_x, clip_off_y=_clip_off_y,
                 find_largest_die_path=_find_largest_die_path,
                 homogeneous_clip=_hom_clip,
+                die_size_mode=die_size_mode, die_offset_mm=die_offset_mm,
             )
 
             block_id = cell.get('blockId', 0)

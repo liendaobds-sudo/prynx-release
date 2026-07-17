@@ -2,8 +2,9 @@
 
 import socket
 import threading
+import pytest
 
-from app.workers.cut_export.transport.tcp import TcpTransport
+from app.workers.cut_export.transport.tcp import TcpTransport, probe_tcp
 from app.workers.cut_export.transport.serial_port import SerialTransport
 
 
@@ -49,6 +50,27 @@ def test_tcp_error_on_unreachable():
     r = TcpTransport("127.0.0.1", 1, timeout=1.0).send(b"x")
     assert r.ok is False
     assert "Lỗi gửi LAN" in r.detail
+
+
+def test_tcp_probe_opens_port_without_sending_data():
+    received: list = []
+    ready = threading.Event()
+    t = threading.Thread(target=_run_echo_server, args=(received, ready), daemon=True)
+    t.start()
+    ready.wait(2.0)
+
+    r = probe_tcp(" 127.0.0.1 ", ready.port, timeout=1.0)  # type: ignore[attr-defined]
+    t.join(2.0)
+
+    assert r["ok"] is True
+    assert r["resolved_ip"] == "127.0.0.1"
+    assert received == [b""]
+
+
+@pytest.mark.parametrize("host,port", [("", 9100), ("127.0.0.1", 0), ("127.0.0.1", 65536)])
+def test_tcp_rejects_invalid_target(host, port):
+    with pytest.raises(ValueError):
+        probe_tcp(host, port)
 
 
 def test_serial_missing_pyserial_graceful():

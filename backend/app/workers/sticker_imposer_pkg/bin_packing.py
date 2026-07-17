@@ -118,6 +118,7 @@ def solve_auto_fill_mixed(
     gap: float = 0.0,
     allow_rotation: bool = True,
     exclude_zones: Optional[List[Tuple[float, float, float, float]]] = None,
+    uniform_if_equal: bool = False,
 ) -> Dict:
     """
     Auto-fill: pack as many items as possible of each type onto 1 sheet.
@@ -131,6 +132,14 @@ def solve_auto_fill_mixed(
         return {'placements': [], 'total_placed': 0, 'placed_by_page': {}}
 
     sheet_w = _q6(sheet_w); sheet_h = _q6(sheet_h); gap = _q6(gap)
+
+    # 1 Dao + theo kích thước trang: nếu mọi mẫu cùng cỡ thì tất cả là cùng một
+    # hình chữ nhật. MaxRects xoay từng mẫu độc lập sẽ tạo layout vá víu dù không
+    # tăng sức chứa. Dùng một hướng duy nhất cho cả tờ và rải page_idx tuần tự.
+    if uniform_if_equal and _all_page_dims_equal(page_dims):
+        return _solve_uniform_auto_fill(
+            sheet_w, sheet_h, page_dims, gap, allow_rotation, exclude_zones
+        )
 
     n_types = len(page_dims)
 
@@ -230,6 +239,106 @@ def solve_auto_fill_mixed(
         'placements': placements,
         'total_placed': len(placements),
         'placed_by_page': placed_by_page,
+    }
+
+
+def _all_page_dims_equal(
+    page_dims: List[Tuple[int, float, float]],
+    tolerance: float = 0.1,
+) -> bool:
+    if not page_dims:
+        return False
+    _, base_w, base_h = page_dims[0]
+    return all(
+        abs(float(w) - float(base_w)) <= tolerance
+        and abs(float(h) - float(base_h)) <= tolerance
+        for _, w, h in page_dims[1:]
+    )
+
+
+def _solve_uniform_auto_fill(
+    sheet_w: float,
+    sheet_h: float,
+    page_dims: List[Tuple[int, float, float]],
+    gap: float,
+    allow_rotation: bool,
+    exclude_zones: Optional[List[Tuple[float, float, float, float]]],
+) -> Dict:
+    """Build one regular grid, then assign designs round-robin to its cells."""
+    _, item_w, item_h = page_dims[0]
+
+    def _overlaps_zone(x, y, w, h):
+        for zx, zy, zw, zh in (exclude_zones or []):
+            if x < zx + zw and x + w > zx and y < zy + zh and y + h > zy:
+                return True
+        return False
+
+    def _candidate(rotated):
+        cell_w, cell_h = (item_h, item_w) if rotated else (item_w, item_h)
+        if cell_w <= 0 or cell_h <= 0:
+            return [], cell_w, cell_h
+        cols = max(0, int((sheet_w + gap) / (cell_w + gap)))
+        rows = max(0, int((sheet_h + gap) / (cell_h + gap)))
+        used_w = cols * cell_w + max(0, cols - 1) * gap
+        used_h = rows * cell_h + max(0, rows - 1) * gap
+        centered_x = max(0.0, (sheet_w - used_w) / 2.0)
+        centered_y = max(0.0, (sheet_h - used_h) / 2.0)
+        cells = []
+        # Packer Y is top-down.  The preview/export finalizer flips it to PDF Y,
+        # therefore row 0 is the visual TOP row.  Enumerating from row 0 keeps
+        # designs in reading order: left-to-right, then top-to-bottom.
+        for row in range(rows):
+            y = row * (cell_h + gap)
+            for col in range(cols):
+                x = col * (cell_w + gap)
+                # The finalizer centers the whole grid in the usable area.  Test
+                # pont/bolt zones at that FINAL position, not at the temporary
+                # origin (0, 0); otherwise a safe corner cell is removed before
+                # the grid is shifted inward.
+                if not _overlaps_zone(
+                    x + centered_x, y + centered_y, cell_w, cell_h
+                ):
+                    cells.append((x, y))
+        return cells, cell_w, cell_h
+
+    normal = _candidate(False)
+    chosen = normal
+    rotated = False
+    if allow_rotation and abs(item_w - item_h) > 0.1:
+        rotated_candidate = _candidate(True)
+        if len(rotated_candidate[0]) > len(normal[0]):
+            chosen = rotated_candidate
+            rotated = True
+
+    cells, display_w, display_h = chosen
+    # Chia sức chứa cân bằng, nhưng gom các bản cùng mẫu cạnh nhau. Ví dụ
+    # 21 ô / 14 mẫu => 1,1,2,2,...,7,7,8,9,...,14; không rải vòng
+    # 1..14 rồi 1..7 vì người dùng khó kiểm đếm và thành phẩm bị tách cụm.
+    copies_per_design, extra_designs = divmod(len(cells), len(page_dims))
+    page_assignment = []
+    for design_index, (page_idx, _w, _h) in enumerate(page_dims):
+        copies = copies_per_design + (1 if design_index < extra_designs else 0)
+        page_assignment.extend([page_idx] * copies)
+
+    placements = []
+    placed_by_page = {}
+    for index, (x, y) in enumerate(cells):
+        page_idx = page_assignment[index]
+        placements.append({
+            'page_idx': page_idx,
+            'x': x,
+            'y': y,
+            'w': display_w,
+            'h': display_h,
+            'is_rotated': rotated,
+        })
+        placed_by_page[page_idx] = placed_by_page.get(page_idx, 0) + 1
+
+    return {
+        'placements': placements,
+        'total_placed': len(placements),
+        'placed_by_page': placed_by_page,
+        'uniform_grid': True,
     }
 
 

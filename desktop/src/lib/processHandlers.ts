@@ -91,26 +91,34 @@ export async function runProcessEngine(
                 // CNC cũng là die-cut về bản chất → giữ cờ NHẤT QUÁN với UI (audit #C3).
                 // Routing backend vẫn theo imposerMode='cnc' (ưu tiên trước isDieCutMode).
                 isDieCutMode: isDieCut || isCnc,
-                cutType: isDieCut ? (settings as any).cutType : undefined, 
-                fillBlockGap: isDieCut ? (settings as any).fillBlockGap : undefined, 
+                cutType: isDieCut ? (settings as any).cutType : undefined,
+                fillBlockGap: isDieCut ? (settings as any).fillBlockGap : undefined,
+                // 1 Dao: khuôn theo trang + offset co/mở (khớp resolve_one_dao_trim backend).
+                dieSizeMode: isDieCut ? (settings as any).dieSizeMode : undefined,
+                dieOffsetMm: isDieCut ? (settings as any).dieOffsetMm : undefined,
                 pontType: caps.supportsPont ? (settings as any).pontType : undefined, 
                 pontConfig: caps.supportsPont ? (settings as any).pontConfig : undefined,
                 detectedShapesByPage: isDieCut || isCnc ? (settings as any).detectedShapesByPage : undefined,
                 detectedShapeParamsByPage: isDieCut || isCnc ? (settings as any).detectedShapeParamsByPage : undefined,
                 targetQuantity: (settings as any).targetQuantity || 0,
                 targetQuantitiesByPage: (settings as any).targetQuantitiesByPage || {},
-                groupingStrategy: isDieCut ? (settings as any).groupingStrategy || 'maximize_area' : 'maximize_area',
+                // Guillotine (KHÔNG die-cut) chỉ nhận 'cluster_tile' (chia cụm) hoặc
+                // 'maximize_area' (lưới đều mặc định) — cho phép cluster_tile đi qua.
+                groupingStrategy: isDieCut
+                    ? (settings as any).groupingStrategy || 'maximize_area'
+                    : ((settings as any).groupingStrategy === 'cluster_tile' ? 'cluster_tile' : 'maximize_area'),
                 // ═══ Cluster layout (chia cụm trên tờ giấy) ═══
                 clusterMode: (settings as any).clusterMode || 'none',
                 clusterCount: (settings as any).clusterCount || 2,
                 clusterGap: (settings as any).clusterGap || 0,
                 // 'type' = mỗi cọc 1 loại (chia cọc theo tỷ lệ SL); 'default' = ratio_stack trộn ô.
                 clusterDistribution: (settings as any).clusterDistribution || 'default',
-                clusterTileW: isDieCut ? (settings as any).clusterTileW || 148 : undefined,
-                clusterTileH: isDieCut ? (settings as any).clusterTileH || 210 : undefined,
+                clusterTileW: (isDieCut || (settings as any).groupingStrategy === 'cluster_tile') ? (settings as any).clusterTileW || 148 : undefined,
+                clusterTileH: (isDieCut || (settings as any).groupingStrategy === 'cluster_tile') ? (settings as any).clusterTileH || 210 : undefined,
                 clusterCols: (settings as any).clusterCols || 2,
                 clusterRows: (settings as any).clusterRows || 2,
                 clusterSizingMode: (settings as any).clusterSizingMode || 'dims',
+                clusterCombineMode: (settings as any).clusterCombineMode || 'replicate_mixed',
                 clusterNesting: (settings as any).clusterNesting !== false,
                 tileGapX: (settings as any).tileGapX || 0,
                 tileGapY: (settings as any).tileGapY || 0,

@@ -329,6 +329,260 @@ def _cascade_pack_cluster(
     return result
 
 
+# ══════════════════════════════════════════════════════════════════════
+# ZONE PARTITION — mỗi loại một vùng chữ nhật riêng (guillotine full-span)
+# ══════════════════════════════════════════════════════════════════════
+
+def _split_sizes(total: float, weights: List[float], gap: float) -> Optional[List[float]]:
+    """Chia `total` cho n phần theo weights, trừ (n-1)*gap giữa các phần.
+    Trả None nếu không đủ chỗ."""
+    n = len(weights)
+    if n == 0:
+        return None
+    avail = total - (n - 1) * gap
+    if avail <= 1.0:
+        return None
+    s = sum(weights)
+    if s <= 0:
+        weights = [1.0] * n
+        s = float(n)
+    return [avail * (w / s) for w in weights]
+
+
+def _build_zone_placements(
+    zones: List[Tuple[int, float, float, float, float]],
+    zone_layout_fn,
+) -> Tuple[List[Dict], int]:
+    """zones: list of (p_idx, zone_x, zone_y, zone_w, zone_h) — top-down usable coords.
+    Gọi zone_layout_fn để nest 1 loại phủ đầy mỗi vùng; căn giữa nội dung trong vùng.
+    Trả (placements-cùng-shape-với-run_cluster_tile, tổng số con)."""
+    placements: List[Dict] = []
+    total = 0
+    for zi, (p_idx, zx, zy, zw, zh) in enumerate(zones):
+        if zw <= 1.0 or zh <= 1.0:
+            continue
+        layout = zone_layout_fn(p_idx, zw, zh) or {}
+        items = layout.get('items', []) or []
+        if not items:
+            continue
+        content_max_x = max(it.get('x', 0.0) + it.get('width', 0.0) for it in items)
+        content_max_y = max(it.get('y', 0.0) + it.get('height', 0.0) for it in items)
+        off_x = max(0.0, (zw - content_max_x) / 2.0)
+        off_y = max(0.0, (zh - content_max_y) / 2.0)
+        for it in items:
+            iw = it.get('width', 0.0)
+            ih = it.get('height', 0.0)
+            ax = zx + off_x + it.get('x', 0.0)
+            ay = zy + off_y + it.get('y', 0.0)
+            placements.append({
+                'cluster_idx': zi,
+                'src_page_idx': p_idx,
+                'abs_x': ax,
+                'abs_y': ay,
+                'width': iw,
+                'height': ih,
+                'cell': {
+                    'x': ax, 'y': ay, 'width': iw, 'height': ih,
+                    'isRotated': it.get('isRotated', False),
+                    'isRotated180': it.get('isRotated180', False),
+                },
+                'original_cell_y': ay,
+            })
+        total += len(items)
+    return placements, total
+
+
+def _zone_cut_lines(zones: List[Tuple[int, float, float, float, float]],
+                    sheet_used_w: float, sheet_used_h: float) -> Dict:
+    """Đường xén guillotine tại biên vùng. Vì mọi vùng full-span (cột full-height
+    hoặc hàng full-width hoặc lưới đều), các nét chạy edge-to-edge → hợp lệ guillotine.
+    Trả {'v': set(x), 'h': set(y)} top-down (gồm cả bound ngoài)."""
+    v_cuts = set()
+    h_cuts = set()
+    for _p, zx, zy, zw, zh in zones:
+        v_cuts.add(round(zx, 2))
+        v_cuts.add(round(zx + zw, 2))
+        h_cuts.add(round(zy, 2))
+        h_cuts.add(round(zy + zh, 2))
+    v_cuts.add(round(0.0, 2))
+    v_cuts.add(round(sheet_used_w, 2))
+    h_cuts.add(round(0.0, 2))
+    h_cuts.add(round(sheet_used_h, 2))
+    return {'v': v_cuts, 'h': h_cuts}
+
+
+def _zone_grid_geometry(sheet_w, sheet_h, zone_gap_x, zone_gap_y, zone_cols, zone_rows):
+    """Trả list vị trí ô lưới ĐỀU NHAU [(x, y, w, h), ...] theo hàng-trước (top-down),
+    hoặc None nếu lưới quá nhỏ."""
+    col_w = _split_sizes(sheet_w, [1.0] * zone_cols, zone_gap_x)
+    row_h = _split_sizes(sheet_h, [1.0] * zone_rows, zone_gap_y)
+    if not col_w or not row_h:
+        return None
+    positions = []
+    y = 0.0
+    for r in range(zone_rows):
+        x = 0.0
+        for c in range(zone_cols):
+            positions.append((x, y, col_w[c], row_h[r]))
+            x += col_w[c] + zone_gap_x
+        y += row_h[r] + zone_gap_y
+    return positions
+
+
+def _zone_type_slots(page_infos, mode: str) -> List[int]:
+    """Danh sách INDEX loại (trong page_infos) cần rải vào các vùng, XUYÊN mọi tờ.
+    - zone_per_type: mỗi loại đúng 1 slot (17 loại → 17 slot).
+    - zone_ratio: mỗi loại lặp ~ tỉ lệ số lượng (loại SL gấp đôi → gấp đôi slot)."""
+    n = len(page_infos)
+    if n == 0:
+        return []
+    if mode == 'zone_ratio':
+        qtys = [max(1, pi[1]) for pi in page_infos]
+        base = min(qtys)
+        slots: List[int] = []
+        for i in range(n):
+            reps = max(1, round(qtys[i] / base))
+            slots.extend([i] * reps)
+        return slots
+    return list(range(n))
+
+
+def _zone_cut_lines_from_positions(positions, sheet_used_w: float, sheet_used_h: float) -> Dict:
+    """Đường xén guillotine theo lưới ĐẦY ĐỦ (vẽ cả ô trống để cắt nhất quán).
+    Trả {'v': set(x), 'h': set(y)} top-down (gồm bound ngoài)."""
+    v_cuts = set()
+    h_cuts = set()
+    for (x, y, w, h) in positions:
+        v_cuts.add(round(x, 2))
+        v_cuts.add(round(x + w, 2))
+        h_cuts.add(round(y, 2))
+        h_cuts.add(round(y + h, 2))
+    v_cuts.add(round(0.0, 2))
+    v_cuts.add(round(sheet_used_w, 2))
+    h_cuts.add(round(0.0, 2))
+    h_cuts.add(round(sheet_used_h, 2))
+    return {'v': v_cuts, 'h': h_cuts}
+
+
+def run_zone_partition_sheets(
+    page_infos: List[Tuple[int, int, float, float]],
+    zone_layout_fn,
+    sheet_w: float,
+    sheet_h: float,
+    gap_x: float,
+    gap_y: float,
+    zone_gap_x: float = 0.0,
+    zone_gap_y: float = 0.0,
+    mode: str = 'zone_per_type',
+    zone_cols: int = 2,
+    zone_rows: int = 1,
+) -> List[Tuple[List[Dict], Dict]]:
+    """Chia các LOẠI thành NHIỀU TỜ, mỗi tờ lưới `zone_cols × zone_rows` vùng đều nhau;
+    mỗi vùng 1 loại nest PHỦ ĐẦY. Rải loại tuần tự sang tờ mới khi hết vùng.
+
+    Ví dụ: 17 loại, lưới 2×2 = 4 vùng/tờ → 5 tờ (4 tờ đủ 4 loại + 1 tờ cuối 1 loại,
+    3 vùng còn lại để TRỐNG). Mỗi tờ in 1 lần (không nhân theo số lượng).
+
+    Trả List[(placements, tile_cut_lines)] — mỗi phần tử là 1 tờ, top-down usable-space."""
+    n = len(page_infos)
+    if n == 0:
+        return []
+
+    zone_cols = max(1, int(zone_cols))
+    zone_rows = max(1, int(zone_rows))
+    n_zones = zone_cols * zone_rows
+
+    positions = _zone_grid_geometry(sheet_w, sheet_h, zone_gap_x, zone_gap_y,
+                                    zone_cols, zone_rows)
+    if not positions:
+        logger.warning("[ZONE_PARTITION] Lưới %dx%d quá nhỏ trên %.1f×%.1fpt",
+                       zone_cols, zone_rows, sheet_w, sheet_h)
+        return []
+
+    slots = _zone_type_slots(page_infos, mode)
+    cut_lines = _zone_cut_lines_from_positions(positions, sheet_w, sheet_h)
+
+    sheets: List[Tuple[List[Dict], Dict]] = []
+    for s0 in range(0, len(slots), n_zones):
+        chunk = slots[s0:s0 + n_zones]   # ≤ n_zones index loại cho tờ này
+        zones = []
+        for zpos, ti in zip(positions, chunk):
+            zx, zy, zw, zh = zpos
+            zones.append((page_infos[ti][0], zx, zy, zw, zh))
+        placements, _total = _build_zone_placements(zones, zone_layout_fn)
+        sheets.append((placements, cut_lines))
+
+    logger.info(
+        "[ZONE_PARTITION] mode=%s lưới %dx%d=%d vùng/tờ, %d loại → %d tờ",
+        mode, zone_cols, zone_rows, n_zones, n, len(sheets),
+    )
+    return sheets
+
+
+def compute_cluster_sheets(
+    page_infos: List[Tuple[int, int, float, float]],
+    full_layouts: Dict[int, Any],
+    zone_layout_fn,
+    sheet_w: float,
+    sheet_h: float,
+    cluster_w: float,
+    cluster_h: float,
+    gap_x: float,
+    gap_y: float,
+    tile_gap_x: float = 0.0,
+    tile_gap_y: float = 0.0,
+    combine_mode: str = 'replicate_mixed',
+    cluster_nesting: bool = True,
+    is_die_cut: bool = False,
+    doc=None,
+    shape_type: str = 'CUSTOM',
+    shape_props: dict = None,
+    strategy: str = 'optimal_auto',
+    zone_cols: int = 2,
+    zone_rows: int = 1,
+) -> List[Tuple[List[Dict], Dict]]:
+    """SSOT dispatcher — cả preview lẫn export gọi hàm này để có DANH SÁCH TỜ
+    ĐỒNG NHẤT. Mỗi phần tử = (placements, tile_cut_lines) top-down usable-space.
+
+    - replicate_mixed → run_cluster_tile → ĐÚNG 1 tờ mẫu (nhân bản cụm; số tờ in
+      tính sau theo số lượng ở nơi gọi).
+    - zone_per_type / zone_ratio → run_zone_partition_sheets → NHIỀU tờ, mỗi tờ 1 bộ
+      loại khác nhau (17 loại, lưới 2×2 → 5 tờ)."""
+    if combine_mode in ('zone_per_type', 'zone_ratio'):
+        return run_zone_partition_sheets(
+            page_infos=page_infos,
+            zone_layout_fn=zone_layout_fn,
+            sheet_w=sheet_w,
+            sheet_h=sheet_h,
+            gap_x=gap_x,
+            gap_y=gap_y,
+            zone_gap_x=tile_gap_x,
+            zone_gap_y=tile_gap_y,
+            mode=combine_mode,
+            zone_cols=zone_cols,
+            zone_rows=zone_rows,
+        )
+    placements, cut_lines = run_cluster_tile(
+        page_infos=page_infos,
+        full_layouts=full_layouts,
+        sheet_w=sheet_w,
+        sheet_h=sheet_h,
+        cluster_w=cluster_w,
+        cluster_h=cluster_h,
+        gap_x=gap_x,
+        gap_y=gap_y,
+        tile_gap_x=tile_gap_x,
+        tile_gap_y=tile_gap_y,
+        cluster_nesting=cluster_nesting,
+        is_die_cut=is_die_cut,
+        doc=doc,
+        shape_type=shape_type,
+        shape_props=shape_props,
+        strategy=strategy,
+    )
+    return [(placements, cut_lines)] if placements else []
+
+
 def draw_tile_cut_marks(
     out_page,
     tile_cut_lines: Dict,

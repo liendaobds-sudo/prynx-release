@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 
+// pos is normalized to the active page: 0 = top/left, 1 = bottom/right.
 export type Guide = { id: string; type: 'horizontal' | 'vertical'; pos: number };
 
 interface GuideLayerProps {
@@ -31,13 +32,17 @@ export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selected
       // Gốc "0" = mép trang thật (đo DOM), để guide bám trang y hệt thước. Nếu
       // không có anchor → dùng -scroll (tương đương hành vi cũ theo gốc cuộn).
       const layerRect = layer.getBoundingClientRect();
-      const anchorEl = pageAnchorId ? document.getElementById(pageAnchorId) : null;
+      const anchorEl = pageAnchorId ? scroller.querySelector<HTMLElement>(`#${pageAnchorId}`) : null;
       let originX = -scrollX;
       let originY = -scrollY;
+      let pageWidth = 1;
+      let pageHeight = 1;
       if (anchorEl) {
         const pr = anchorEl.getBoundingClientRect();
         originX = pr.left - layerRect.left;
         originY = pr.top - layerRect.top;
+        pageWidth = pr.width;
+        pageHeight = pr.height;
       }
 
       // Update guide positions
@@ -47,9 +52,9 @@ export function GuideLayer({ scrollContainerRef, guides, draggingGuide, selected
         const pos = parseFloat(el.getAttribute('data-pos') || '0');
 
         if (type === 'horizontal') {
-          (el as HTMLElement).style.transform = `translateY(${pos + originY}px)`;
+          (el as HTMLElement).style.transform = `translateY(${pos * pageHeight + originY}px)`;
         } else {
-          (el as HTMLElement).style.transform = `translateX(${pos + originX}px)`;
+          (el as HTMLElement).style.transform = `translateX(${pos * pageWidth + originX}px)`;
         }
       });
 

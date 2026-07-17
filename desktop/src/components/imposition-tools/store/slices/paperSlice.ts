@@ -1,4 +1,5 @@
 import type { ImposerSlice } from '../sliceType';
+import { DEFAULT_FORMSIZE, DEFAULT_SHEET_W, DEFAULT_SHEET_H } from '../../types';
 
 export interface PaperSlice {
     formsize: string;
@@ -37,11 +38,11 @@ export const PAPER_PERSIST_KEYS = [
 ] as const;
 
 export const createPaperSlice: ImposerSlice<PaperSlice> = (set) => ({
-    formsize: 'SRA3',
+    formsize: DEFAULT_FORMSIZE,
     setFormsize: (v) => set({ formsize: v }),
-    customSheetWidth: 320,
+    customSheetWidth: DEFAULT_SHEET_W,
     setCustomSheetWidth: (v) => set({ customSheetWidth: v }),
-    customSheetHeight: 450,
+    customSheetHeight: DEFAULT_SHEET_H,
     setCustomSheetHeight: (v) => set({ customSheetHeight: v }),
     gapX: 0,
     setGapX: (v) => set({ gapX: v }),

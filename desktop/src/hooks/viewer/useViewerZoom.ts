@@ -24,7 +24,7 @@ interface UseViewerZoomProps {
     activePage: number;
     actualWidth100: number;
     navigatePage: (p: number) => void;
-    toolMode: 'pointer' | 'hand';
+    toolMode: 'pointer' | 'hand' | 'dimension';
 }
 
 export function useViewerZoom(props: UseViewerZoomProps) {

@@ -14,7 +14,7 @@ import CropDialog from './workspace/CropDialog';
 import ExportImageModal from './workspace/ExportImageModal';
 import { uploadPDF, getApiUrl } from '../lib/api';
 import { toast } from './ui/Toast';
-import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, ThumbSidebar, ViewerContextMenu, type Guide } from './acrobat';
+import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, DimensionLayer, findDimensionCandidate, ThumbSidebar, ViewerContextMenu, type Guide, type DimensionMeasurement } from './acrobat';
 
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
 import { useTileRenderer } from '../hooks/viewer/useTileRenderer';
@@ -191,6 +191,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     const [guidesHistory, setGuidesHistory] = useState<Guide[][]>([]);
     const [draggingGuide, setDraggingGuide] = useState<Guide | null>(null);
     const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
+    const [dimensions, setDimensions] = useState<DimensionMeasurement[]>([]);
 
     // ═══ Text Content ═══
     const [nativeTextBlocks, setNativeTextBlocks] = useState<Record<number, any[]>>({});
@@ -339,6 +340,9 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     // ═══ Hook: Viewer Hotkeys ═══
     const { commitSnapshot, undo, redo } = useViewerHotkeys({
         containerRef, sidebarRef,
+        // isActive: false khi tab nền — hotkey D/F7/Delete chỉ tab đang xem.
+        // undefined (caller cũ) → coi như active + fallback DOM.
+        isActive: isActive !== false,
         pageOrder, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
         setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
         pastStack, futureStack, setPastStack, setFutureStack,
@@ -392,7 +396,11 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     // đều lặp theo vị trí nên nhận trực tiếp. Xem flattenRotations (per-instance rotation).
     useEffect(() => { setViewerPageRotations?.(flattenRotations(pageInstanceIds, pageRotations)); }, [pageRotations, pageInstanceIds]);
     useEffect(() => { setViewerDirty(pastStack.length > 0); }, [pastStack.length, setViewerDirty]);
-    useEffect(() => { if (isObjectEditMode || isVdpMode) setToolMode('pointer'); }, [isObjectEditMode, isVdpMode]);
+    // Vào Object Edit / VDP → về pointer (tắt DIM nếu đang bật).
+    // Bật DIM (phím D) luôn set isObjectEditMode=false trước nên effect không đè ngược.
+    useEffect(() => {
+        if (isObjectEditMode || isVdpMode) setToolMode('pointer');
+    }, [isObjectEditMode, isVdpMode, setToolMode]);
     useEffect(() => { updatePageDimForPage(activePage, numPages); }, [pdfRef, activePage, numPages, updatePageDimForPage]);
 
     // Reset zoom state on new file
@@ -796,10 +804,12 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     // Đổi toạ độ chuột (client) → pos guide lưu theo MÉP TRANG thật (khớp GuideLayer/Ruler).
     // Fallback về hệ gốc-cuộn cũ nếu không tìm thấy trang active.
     const clientToGuidePos = useCallback((clientX: number, clientY: number, orientation: 'horizontal' | 'vertical') => {
-        const anchorEl = document.getElementById(`pdf-page-container-${activePageRef.current}`);
+        const anchorEl = internalScrollRef.current?.querySelector<HTMLElement>(`#pdf-page-container-${activePageRef.current}`) || null;
         if (anchorEl) {
             const pr = anchorEl.getBoundingClientRect();
-            return orientation === 'horizontal' ? clientY - pr.top : clientX - pr.left;
+            const size = orientation === 'horizontal' ? pr.height : pr.width;
+            if (size <= 0) return 0;
+            return orientation === 'horizontal' ? (clientY - pr.top) / size : (clientX - pr.left) / size;
         }
         // Fallback: hệ cũ (mép container + scroll)
         const scrollContainer = internalScrollRef.current;
@@ -811,6 +821,52 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
             : (clientX - rect.left) + scrollContainer.scrollLeft;
     }, []);
 
+    const activePagePhysical = useMemo(() => {
+        const originalPage = pageOrder[activePage - 1] || activePage;
+        const dim = allPageDims[originalPage] || pageDim;
+        if (!dim) return { widthPt: pageWidthPt || 0, heightPt: 0 };
+        const instanceId = pageInstanceIds[activePage - 1];
+        const rotation = ((instanceId ? pageRotations[instanceId] : 0) || 0) % 360;
+        const widthPt = dim.w * 72 / 96;
+        const heightPt = dim.h * 72 / 96;
+        return rotation === 90 || rotation === 270
+            ? { widthPt: heightPt, heightPt: widthPt }
+            : { widthPt, heightPt };
+    }, [activePage, pageOrder, allPageDims, pageDim, pageWidthPt, pageInstanceIds, pageRotations]);
+
+    const lastDimHintAtRef = useRef(0);
+    const handleDimensionPlacement = useCallback((e: React.MouseEvent) => {
+        // Chỉ chuột trái — tránh nhầm với context menu / nút khác.
+        if (e.button !== 0) return;
+        const anchor = internalScrollRef.current?.querySelector(`#pdf-page-container-${activePage}`) as HTMLElement | null;
+        if (!anchor) return;
+        const pr = anchor.getBoundingClientRect();
+
+        // Ratio theo mép trang; CÓ THỂ <0 hoặc >1 — DIM được phép đặt ngoài trang
+        // (hai guide vẫn khóa hai đầu đo; offsetRatio chỉ là vị trí vẽ nhãn).
+        const xRatio = (e.clientX - pr.left) / pr.width;
+        const yRatio = (e.clientY - pr.top) / pr.height;
+
+        const candidate = findDimensionCandidate(guides, xRatio, yRatio, activePagePhysical.widthPt, activePagePhysical.heightPt);
+        if (!candidate) {
+            // Rate-limit: tránh spam toast mỗi cú click / nhầm với thao tác tắt tool.
+            const now = Date.now();
+            if (now - lastDimHintAtRef.current > 2500) {
+                lastDimHintAtRef.current = now;
+                toast.info('Kéo hai guide cùng hướng từ thước, rồi bấm vào khoảng giữa chúng để đặt DIM.\n(Phím D hoặc Esc để tắt DIM)');
+            }
+            return;
+        }
+        const offsetRatio = candidate.orientation === 'horizontal' ? yRatio : xRatio;
+        setDimensions(prev => {
+            const existing = prev.find(d => d.page === activePage && d.orientation === candidate.orientation &&
+                ((d.guideAId === candidate.guideAId && d.guideBId === candidate.guideBId) || (d.guideAId === candidate.guideBId && d.guideBId === candidate.guideAId)));
+            if (existing) return prev.map(d => d.id === existing.id ? { ...d, offsetRatio } : d);
+            return [...prev, { id: `dim-${Date.now()}`, page: activePage, ...candidate, offsetRatio }];
+        });
+        e.preventDefault();
+        e.stopPropagation();
+    }, [activePage, guides, activePagePhysical]);
     const handleRulerMouseDown = useCallback((e: React.MouseEvent, orientation: 'horizontal' | 'vertical') => {
         e.preventDefault(); e.stopPropagation();
         const scrollContainer = internalScrollRef.current;
@@ -963,7 +1019,7 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         const showOcgOverlay = ocgPreviewUrl && originalPageNum === activePage;
 
         return (
-            <div id={`pdf-page-container-${originalPageNum}`} className="flex flex-col items-center">
+            <div id={`pdf-page-container-${(flatIndex ?? (originalPageNum - 1)) + 1}`} className="flex flex-col items-center">
                 {plateLabel && <div className="text-[11px] font-semibold text-yellow-400 mb-1 px-2 py-0.5 tracking-wide max-w-full truncate">{plateLabel}</div>}
                 <div className="relative">
                     <LivePageFrame
@@ -1101,12 +1157,28 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
                                 </>
                             )}
                             <div
-                                className={`absolute bottom-0 right-0 overflow-hidden bg-[#525659] flex justify-center select-text ${toolMode === 'hand' ? 'panning-mode cursor-grab active:cursor-grabbing' : ''}`}
+                                className={`absolute bottom-0 right-0 overflow-hidden bg-[#525659] flex justify-center select-text ${toolMode === 'hand' ? 'panning-mode cursor-grab active:cursor-grabbing' : toolMode === 'dimension' ? 'cursor-crosshair' : ''}`}
                                 ref={containerRef}
-                                onMouseDown={(e) => { setSelectedGuideId(null); handleDragStart(e); }}
+                                onMouseDown={(e) => {
+                                    // Chỉ clear selection / place DIM khi chuột trái.
+                                    if (e.button !== 0) return;
+                                    setSelectedGuideId(null);
+                                    if (toolMode === 'dimension') handleDimensionPlacement(e);
+                                    else handleDragStart(e);
+                                }}
                                 style={{ left: showRulers ? 20 : 0, top: showRulers ? 20 : 0 }}
                             >
                                 <GuideLayer scrollContainerRef={internalScrollRef as React.RefObject<HTMLElement>} guides={guides} draggingGuide={draggingGuide} selectedGuideId={selectedGuideId} onGuideMouseDown={handleGuideMouseDown} pageAnchorId={`pdf-page-container-${activePage}`} />
+                                <DimensionLayer
+                                    pageAnchorId={`pdf-page-container-${activePage}`}
+                                    guides={guides}
+                                    dimensions={dimensions}
+                                    activePage={activePage}
+                                    pageWidthPt={activePagePhysical.widthPt}
+                                    pageHeightPt={activePagePhysical.heightPt}
+                                    unit={measurementUnit}
+                                    onRemove={(id) => setDimensions(prev => prev.filter(d => d.id !== id))}
+                                />
 
                                 {pageDim && (
                                     <div className="absolute bottom-0 left-0 w-40 h-24 z-[50] group flex items-end p-6">

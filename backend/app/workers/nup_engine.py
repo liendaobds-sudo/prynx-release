@@ -30,7 +30,6 @@ import math
 
 from typing import List, Dict, Any, Optional
 
-from app.workers.cluster_tile_engine import run_cluster_tile, draw_tile_cut_marks
 import logging
 
 MM_TO_PTS = 2.83465
@@ -48,6 +47,7 @@ from app.workers.nup_diecut import (
     extract_page_die_cut_polygon,
     get_optimal_head_to_tail_overlap,
     _find_largest_die_path,
+    resolve_one_dao_trim,
 )
 from app.workers.nup_marks import _draw_ponts_on_page
 from app.workers.nup_sticker import compute_sticker_layout_for_page
@@ -400,7 +400,8 @@ def run_nup_engine(
     strategy = settings.get('gridStrategy', 'simple_auto')
 
     grouping_strategy = settings.get('groupingStrategy', 'maximize_area')
-    logger.info("   ZONE-DEBUG grouping_strategy=%r" % grouping_strategy)
+    cluster_combine_mode = settings.get('clusterCombineMode', 'replicate_mixed')
+    logger.info("   ZONE-DEBUG grouping_strategy=%r combine=%r" % (grouping_strategy, cluster_combine_mode))
     cluster_tile_w_mm = settings.get('clusterTileW', 148.0)   # mm, default A5 width
     cluster_tile_h_mm = settings.get('clusterTileH', 210.0)   # mm, default A5 height
 
@@ -435,6 +436,21 @@ def run_nup_engine(
         logger.info(f"   target_quantity={target_quantity}, is_auto_fill={is_auto_fill}")
 
         logger.info(f"   target_quantities_by_page={target_quantities_by_page}")
+
+        # ── TIMING: đo từng bước để tìm bottleneck (ghi ra rot_audit.log) ──
+        import time as _time
+        _t_marks = [('start', _time.perf_counter())]
+        def _tlog(_label):
+            _now = _time.perf_counter()
+            _prev = _t_marks[-1][1]
+            _t_marks.append((_label, _now))
+            try:
+                from app.workers.rot_audit_log import get_logger as _rgl
+                _rgl().warning("[CLUSTER-TIMING] %-22s +%6.1fms (tổng %6.1fms)",
+                               _label, (_now - _prev) * 1000.0,
+                               (_now - _t_marks[0][1]) * 1000.0)
+            except Exception:
+                pass
 
         # ── Step 1: Build per-page info ──
 
@@ -474,17 +490,32 @@ def run_nup_engine(
 
             src_page = tmp_doc[p_idx]
 
-            largest_path = _find_largest_die_path(src_page)
+            # 1 Dao + "theo kích thước trang": trim = mediabox ± offset (nguồn chân lý
+            # dùng chung export/preview). Trả None → giữ logic cũ bên dưới.
+            _one_dao_trim = resolve_one_dao_trim(
+                src_page, settings.get('cutType', 'default'),
+                settings.get('dieSizeMode', 'die'), settings.get('dieOffsetMm', 0),
+            )
+
+            largest_path = (None if _one_dao_trim is not None
+                            else _find_largest_die_path(src_page))
 
             has_die_by_page[p_idx] = largest_path is not None
 
-            try:
-                from app.workers.sticker_homogeneous import page_has_die as _page_has_die
-                genuine_die_by_page[p_idx] = _page_has_die(src_page)
-            except Exception:
+            if _one_dao_trim is not None:
                 genuine_die_by_page[p_idx] = False
+            else:
+                try:
+                    from app.workers.sticker_homogeneous import page_has_die as _page_has_die
+                    genuine_die_by_page[p_idx] = _page_has_die(src_page)
+                except Exception:
+                    genuine_die_by_page[p_idx] = False
 
-            if largest_path:
+            if _one_dao_trim is not None:
+
+                cur_trim_w, cur_trim_h = _one_dao_trim
+
+            elif largest_path:
 
                 r = largest_path['rect']
 
@@ -517,10 +548,18 @@ def run_nup_engine(
             logger.debug(f"   [ZONE] Page {p_idx}: qty={qty} trim={cur_trim_w:.1f}x{cur_trim_h:.1f}")
 
         # Sort page_infos by size ONLY when mixing multiple types on same sheet
-        # (e.g. maximize_area, strict_ratio, cluster_tile).
-        # For 'none' grouping or 'repeat' layout, preserve original page order.
-        if grouping_strategy != 'none' and layout_type != 'repeat':
+        # (e.g. maximize_area, strict_ratio). For 'none' grouping / 'repeat' layout,
+        # preserve original page order.
+        # CHIA CỤM zone_per_type / zone_ratio: mỗi loại 1 vùng riêng theo THỨ TỰ TRANG
+        # (trang 1→N) → KHÔNG sort (sort làm loại nhảy khỏi thứ tự trang người dùng
+        # mong đợi). replicate_mixed vẫn sort (gom mọi loại vào 1 cụm, loại to trước).
+        _combine_mode_early = settings.get('clusterCombineMode', 'replicate_mixed')
+        _zone_mode_early = (grouping_strategy == 'cluster_tile'
+                            and _combine_mode_early in ('zone_per_type', 'zone_ratio'))
+        if grouping_strategy != 'none' and layout_type != 'repeat' and not _zone_mode_early:
             page_infos.sort(key=lambda x: min(x[2], x[3]), reverse=True)
+
+        _tlog(f"Step1 dò khuôn xong ({len(page_infos)} trang)")
 
         # ── Step 2: Calculate strip heights ──
 
@@ -586,9 +625,15 @@ def run_nup_engine(
 
         full_layouts = {}  # p_idx -> layout_result
 
+        # Zone modes (zone_per_type/zone_ratio) KHÔNG dùng full_layouts (re-nest theo
+        # kích thước VÙNG trong dispatch) → bỏ qua nest full-sheet ở đây để khỏi tốn
+        # 17 lần NFP shape-aware vô ích (chậm ~1 phút với nhiều loại).
+        _skip_full_layouts = (grouping_strategy == 'cluster_tile'
+                              and cluster_combine_mode in ('zone_per_type', 'zone_ratio'))
+
         # Reuse tmp_doc from Step 1 (still open)
 
-        for p_idx, qty, tw, th in page_infos:
+        for p_idx, qty, tw, th in (() if _skip_full_layouts else page_infos):
 
             page_obj = tmp_doc[p_idx]
 
@@ -611,14 +656,25 @@ def run_nup_engine(
             try:
                 w_for_nfp = usable_w
                 h_for_nfp = usable_h
-                if grouping_strategy == 'cluster_tile' and settings.get('clusterNesting', True):
+                # Zone modes (zone_per_type/zone_ratio) re-nest theo kích thước VÙNG
+                # trong dispatch → full_layouts ở đây chỉ cần full-sheet. Chỉ replicate_mixed
+                # mới nest sẵn theo kích thước cụm.
+                if (grouping_strategy == 'cluster_tile' and settings.get('clusterNesting', True)
+                        and cluster_combine_mode == 'replicate_mixed'):
                     cluster_sizing_mode = settings.get('clusterSizingMode', 'dims')
                     MM = 2.83465
                     tile_gap_x_pt = float(settings.get('tileGapX', 0.0)) * MM
                     tile_gap_y_pt = float(settings.get('tileGapY', 0.0)) * MM
-                    if cluster_sizing_mode == 'grid':
-                        cluster_cols = max(1, int(settings.get('clusterCols', 2)))
-                        cluster_rows = max(1, int(settings.get('clusterRows', 2)))
+                    if cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
+                        if cluster_sizing_mode == 'split_cols':
+                            cluster_cols = max(1, int(settings.get('clusterCols', 2)))
+                            cluster_rows = 1
+                        elif cluster_sizing_mode == 'split_rows':
+                            cluster_cols = 1
+                            cluster_rows = max(1, int(settings.get('clusterRows', 2)))
+                        else:
+                            cluster_cols = max(1, int(settings.get('clusterCols', 2)))
+                            cluster_rows = max(1, int(settings.get('clusterRows', 2)))
                         w_for_nfp = (usable_w - (cluster_cols - 1) * tile_gap_x_pt) / cluster_cols
                         h_for_nfp = (usable_h - (cluster_rows - 1) * tile_gap_y_pt) / cluster_rows
                     else:
@@ -655,6 +711,10 @@ def run_nup_engine(
 
                     secondary_gap=_secondary_gap,
 
+                    cut_type=settings.get('cutType', 'default'),
+                    die_size_mode=settings.get('dieSizeMode', 'die'),
+                    die_offset_mm=settings.get('dieOffsetMm', 0),
+
                 )
 
                 full_layouts[p_idx] = layout_result
@@ -685,6 +745,7 @@ def run_nup_engine(
                 full_layouts[p_idx] = None
 
         tmp_doc.close()  # Close after both Step 1 and Step 3 are done
+        _tlog("Step3 nest full_layouts xong (skip=%s, n=%d)" % (_skip_full_layouts, len(full_layouts)))
 
         # Step 3b: Calculate proportional items-per-sheet for each type
 
@@ -732,12 +793,19 @@ def run_nup_engine(
         # detect_homogeneous quyết định (trả None khi ≠ đúng-1-master → giữ đường cũ).
         homogeneous_plan = None
         homogeneous_master_idx = None
+        # 1 Dao theo kích thước trang cố ý bỏ qua đường khuôn có sẵn. Không để
+        # detector homogeneous nhận nhầm một trang thành khuôn master, vì nhánh đó
+        # sẽ clip/co artwork theo khuôn cũ thay vì theo hình chữ nhật của trang.
+        _page_sized_one_dao = (
+            settings.get('cutType', 'default') == 'one_dao'
+            and settings.get('dieSizeMode', 'die') == 'page'
+        )
         try:
             from app.workers import sticker_homogeneous as _sh
             from app.workers.shape_types import ShapeType as _ShapeType, coerce_shape_type as _coerce
             _adapters = []
             for _p in range(page_count):
-                _hd = genuine_die_by_page.get(_p, False)
+                _hd = False if _page_sized_one_dao else genuine_die_by_page.get(_p, False)
                 if _hd:
                     _s = (detected_shapes_by_page.get(str(_p))
                           or detected_shapes_by_page.get(_p))
@@ -948,7 +1016,258 @@ def run_nup_engine(
                 p['abs_y'] = y_off + (total_content_h_s - cell['y'] - cell['height'])
                 p['original_cell_y'] = usable_h + margin_bottom + margin_top - p['abs_y'] - cell['height']
 
-        if homogeneous_plan is not None:
+        if is_die_cut and grouping_strategy == 'cluster_tile':
+            # ══ CHIA CỤM (cluster_tile) — ARM ĐẦU TIÊN, chạy bất kể layout_type / số lượng ══
+            # Trước đây cluster chỉ chạy ở nhánh repeat / auto_fill; layout 'sequential' +
+            # nhập số lượng rơi vào 'else' (bin-pack) → cluster BỊ BỎ. Nay xử lý tập trung
+            # tại đây qua SSOT compute_cluster_sheets (dùng CHUNG với preview).
+            from app.workers.cluster_tile_engine import compute_cluster_sheets
+            MM = MM_TO_PTS
+            combine_mode = settings.get('clusterCombineMode', 'replicate_mixed')
+            try:
+                from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                _rot_get_logger().warning(
+                    "[CLUSTER-EXPORT] ARM ENTER grouping=%r combine_mode=%r "
+                    "clusterCols=%r clusterRows=%r sizing=%r nTypes=%d is_auto_fill=%s",
+                    grouping_strategy, combine_mode,
+                    settings.get('clusterCols'), settings.get('clusterRows'),
+                    settings.get('clusterSizingMode'), len(page_infos), is_auto_fill,
+                )
+            except Exception:
+                pass
+            cluster_nesting = settings.get('clusterNesting', True)
+            tile_gap_x_pt = float(settings.get('tileGapX', 0.0)) * MM
+            tile_gap_y_pt = float(settings.get('tileGapY', 0.0)) * MM
+
+            # cluster_w/h (chỉ dùng cho replicate_mixed) theo sizing mode.
+            cluster_sizing_mode = settings.get('clusterSizingMode', 'dims')
+            if cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
+                if cluster_sizing_mode == 'split_cols':
+                    _c_cols, _c_rows = max(1, int(settings.get('clusterCols', 2))), 1
+                elif cluster_sizing_mode == 'split_rows':
+                    _c_cols, _c_rows = 1, max(1, int(settings.get('clusterRows', 2)))
+                else:
+                    _c_cols = max(1, int(settings.get('clusterCols', 2)))
+                    _c_rows = max(1, int(settings.get('clusterRows', 2)))
+                cw_pt = (usable_w - (_c_cols - 1) * tile_gap_x_pt) / _c_cols
+                ch_pt = (usable_h - (_c_rows - 1) * tile_gap_y_pt) / _c_rows
+            else:
+                cw_pt = float(settings.get('clusterTileW', 148.0)) * MM
+                ch_pt = float(settings.get('clusterTileH', 210.0)) * MM
+
+            # secondary_gap (khe block phụ) — page-independent, khớp full_layouts loop.
+            _fbg = settings.get('fillBlockGap', 0)
+            _ct = settings.get('cutType', 'default')
+            _sg = settings.get('splitGap', None)
+            if _ct == 'one_dao' and _fbg > 0:
+                _zone_secondary_gap = _fbg * MM_TO_PTS
+            elif _sg is not None and _sg > 0:
+                _zone_secondary_gap = _sg * MM_TO_PTS
+            else:
+                _zone_secondary_gap = None
+
+            # zone_layout_fn: nest 1 loại phủ đầy vùng (kích thước vùng ≠ full sheet).
+            # tmp_doc đã đóng ở Step 3 → mở doc riêng, đóng ở finally.
+            from app.workers.nup_sticker import compute_sticker_layout_for_page as _csl
+            _zone_doc = pdf_lib.open(source_path) if combine_mode in ('zone_per_type', 'zone_ratio') else None
+
+            # Cache nest theo (p_idx, zone_w, zone_h): mọi vùng ĐỀU NHAU nên 1 loại
+            # xuất hiện ở K vùng chỉ nest 1 lần (thay vì K lần NFP shape-aware giống hệt).
+            _zone_cache = {}
+
+            def _zone_layout_fn(p_idx, zone_w, zone_h):
+                if _zone_doc is None:
+                    return {'items': []}
+                _ck = (p_idx, round(zone_w, 1), round(zone_h, 1))
+                _cached = _zone_cache.get(_ck)
+                if _cached is not None:
+                    return _cached
+                _pg = _zone_doc[p_idx]
+                _ps = (detected_shapes_by_page.get(str(p_idx))
+                       or detected_shapes_by_page.get(p_idx))
+                _pp = (detected_shape_params_by_page.get(str(p_idx))
+                       or detected_shape_params_by_page.get(p_idx) or {})
+                _t_nest = _time.perf_counter()
+                try:
+                    _res = _csl(
+                        _pg, zone_w, zone_h, gap_x, gap_y,
+                        strategy=strategy,  # PARITY: preview dùng req.strategy (=gridStrategy)
+                        shape_type_override=_ps if _ps else None,
+                        shape_props_override=_pp if _pp else None,
+                        bleed_pt=bleed_pt,
+                        secondary_gap=_zone_secondary_gap,
+                    )
+                except Exception as _e_zl:
+                    logger.warning(f"   [CLUSTER] zone_layout_fn p_idx={p_idx} lỗi: {_e_zl}")
+                    _res = {'items': []}
+                _tlog(f"nest p_idx={p_idx} zone={round(zone_w,1)}x{round(zone_h,1)} "
+                      f"-> {len(_res.get('items', []))} con "
+                      f"({(_time.perf_counter() - _t_nest) * 1000:.0f}ms)")
+                _zone_cache[_ck] = _res
+                return _res
+
+            # full_layouts[p_idx] có thể là None (nest trang đó fail, L696) → dùng an toàn.
+            _fl0 = full_layouts.get(page_infos[0][0]) if full_layouts else None
+
+            try:
+                cluster_sheets = compute_cluster_sheets(
+                    page_infos=page_infos,
+                    full_layouts=full_layouts,
+                    zone_layout_fn=_zone_layout_fn,
+                    sheet_w=usable_w,
+                    sheet_h=usable_h,
+                    cluster_w=cw_pt,
+                    cluster_h=ch_pt,
+                    gap_x=gap_x,
+                    gap_y=gap_y,
+                    tile_gap_x=tile_gap_x_pt,
+                    tile_gap_y=tile_gap_y_pt,
+                    combine_mode=combine_mode,
+                    cluster_nesting=cluster_nesting,
+                    is_die_cut=is_die_cut,
+                    doc=None,
+                    shape_type=(_fl0.get('shapeType', 'CUSTOM') if _fl0 else 'CUSTOM'),
+                    shape_props=(_fl0.get('shapeProps', {}) if _fl0 else {}),
+                    strategy=strategy,
+                    zone_cols=max(1, int(settings.get('clusterCols', 2))),
+                    zone_rows=max(1, int(settings.get('clusterRows', 2))),
+                )
+            finally:
+                if _zone_doc is not None:
+                    _zone_doc.close()
+            _tlog(f"dispatch xong ({len(cluster_sheets)} tờ, cache {len(_zone_cache)} loại)")
+
+            # Shift toạ độ 1 tờ (top-down usable) → tuyệt đối (margin + y-flip).
+            ct_offset_x = margin_left
+            ct_offset_y = sheet_h - margin_bottom - sheet_usable_h
+
+            def _shift_cluster_placements(_placements):
+                _out = []
+                for p_item in _placements:
+                    ox = p_item['abs_x'] + ct_offset_x
+                    oy = p_item['abs_y'] + ct_offset_y
+                    shifted = dict(p_item)
+                    shifted['abs_x'] = ox
+                    shifted['abs_y'] = usable_h + margin_bottom + margin_top - oy - p_item['height']
+                    shifted['original_cell_y'] = oy
+                    shifted['cell'] = dict(p_item['cell'])
+                    shifted['cell']['x'] = ox
+                    shifted['cell']['y'] = oy
+                    _out.append(shifted)
+                return _out
+
+            def _shift_cut_lines(_cuts):
+                if not _cuts:
+                    return None
+                return {
+                    'v': {round(x + ct_offset_x, 2) for x in _cuts.get('v', set())},
+                    'h': {round(y + ct_offset_y, 2) for y in _cuts.get('h', set())},
+                }
+
+            _is_zone = combine_mode in ('zone_per_type', 'zone_ratio')
+            _export_unique_ct = bool(settings.get('exportUniqueSheets', True))
+
+            if _is_zone:
+                # ── ĐA-TỜ: mỗi tờ 1 bộ loại khác nhau, IN 1 LẦN (bỏ qua số lượng) ──
+                # 17 loại, lưới 2×2 → 5 tờ (tờ cuối vùng thừa để trống).
+                _n_out_sheets = len(cluster_sheets)
+                for _sidx, (_pls, _cuts) in enumerate(cluster_sheets):
+                    precalculated_placements[_sidx] = _shift_cluster_placements(_pls)
+                    _scl = _shift_cut_lines(_cuts)
+                    if _scl:
+                        cluster_tile_cuts[_sidx] = _scl
+                total_items_placed = sum(len(p) for p in precalculated_placements.values())
+                _sheets_needed = _n_out_sheets
+                logger.info(
+                    f"   [CLUSTER] mode={combine_mode} lưới → {_n_out_sheets} tờ "
+                    f"(mỗi tờ 1 lần, {len(page_infos)} loại, {total_items_placed} con tổng)"
+                )
+            else:
+                # ── replicate_mixed: 1 tờ mẫu, nhân theo số lượng như cũ ──
+                ct_placements = cluster_sheets[0][0] if cluster_sheets else []
+                tile_cut_lines = cluster_sheets[0][1] if cluster_sheets else None
+                _count_by_type = {}
+                for _pl in ct_placements:
+                    _sp = _pl['src_page_idx']
+                    _count_by_type[_sp] = _count_by_type.get(_sp, 0) + 1
+                _qty_by_type = {pi[0]: pi[1] for pi in page_infos}
+                _sheets_needed = 1
+                if not is_auto_fill:
+                    for _sp, _cnt in _count_by_type.items():
+                        if _cnt > 0:
+                            _sheets_needed = max(_sheets_needed,
+                                                 math.ceil(_qty_by_type.get(_sp, 0) / _cnt))
+                _repeat_ct = 1 if _export_unique_ct else max(1, _sheets_needed)
+                for _sidx in range(_repeat_ct):
+                    precalculated_placements[_sidx] = _shift_cluster_placements(ct_placements)
+                    _scl = _shift_cut_lines(tile_cut_lines)
+                    if _scl:
+                        cluster_tile_cuts[_sidx] = _scl
+                total_items_placed = len(ct_placements) * _repeat_ct
+                logger.info(
+                    f"   [CLUSTER] mode={combine_mode} {len(ct_placements)} con/tờ × {_repeat_ct} tờ "
+                    f"(sheets_needed={_sheets_needed}, exportUnique={_export_unique_ct}, types={len(page_infos)})"
+                )
+
+            # Report — zone modes: MỖI TỜ 1 report riêng (các loại trên tờ đó);
+            # replicate_mixed: 1 report ở tờ 0 như cũ.
+            try:
+                from app.workers import nup_report as _nr_ct
+                _rcfg_ct = settings.get('reportDisplay') or {}
+                if _rcfg_ct.get('enabled') and total_items_placed > 0:
+                    _paper_ct = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                    _label_ct = _rcfg_ct.get('labelNameText') or ""
+                    _material_ct = settings.get('reportMaterial', '') or ''
+                    _lam_ct = settings.get('reportLamination', 0) or 0
+                    _lam_sides_ct = settings.get('reportLaminationSides', 1) or 1
+                    _order_ct = settings.get('reportOrderCode', '') or ''
+
+                    def _build_report(_ips, _req_qty, _identifier, _sheet_count):
+                        _d = _nr_ct.compute_report_data(
+                            label_name=_label_ct,
+                            paper_size=_paper_ct,
+                            items_per_sheet=_ips, requested_qty=_req_qty,
+                            material=_material_ct,
+                            lamination_type=_lam_ct,
+                            lamination_sides=_lam_sides_ct,
+                            mode_label='Bế tem',
+                            order_code=_order_ct,
+                            identifier=_identifier,
+                            sheet_count_override=_sheet_count,
+                        )
+                        return _nr_ct.build_report_string(_rcfg_ct, _d)
+
+                    if _is_zone:
+                        # Mỗi tờ zone 1 report (số con thật của tờ đó).
+                        _n_zone_sheets = len(precalculated_placements)
+                        for _sidx in sorted(precalculated_placements.keys()):
+                            _ips_s = len(precalculated_placements[_sidx])
+                            _reports_by_sheet[_sidx] = _build_report(
+                                _ips_s, 0,
+                                f"Tờ {_sidx + 1}/{_n_zone_sheets} · {combine_mode}",
+                                _n_zone_sheets,
+                            )
+                        _report_rows.append({
+                            'label': _label_ct or f"{len(page_infos)} mẫu",
+                            'items_per_sheet': (total_items_placed // max(1, _n_zone_sheets)),
+                            'requested_qty': 0, 'sheet_count': _n_zone_sheets,
+                        })
+                    else:
+                        _req_qty_ct = sum(max(0, int(pi[1] or 0)) for pi in page_infos) if not is_auto_fill else 0
+                        _ips_ct = len(cluster_sheets[0][0]) if cluster_sheets else 0
+                        _reports_by_sheet[0] = _build_report(
+                            _ips_ct, _req_qty_ct,
+                            f"{len(page_infos)} mẫu · {combine_mode}", _sheets_needed,
+                        )
+                        _report_rows.append({
+                            'label': _label_ct or f"{len(page_infos)} mẫu",
+                            'items_per_sheet': _ips_ct,
+                            'requested_qty': _req_qty_ct, 'sheet_count': _sheets_needed,
+                        })
+            except Exception as _e_ct:
+                logger.warning(f"[REPORT] cluster dựng report lỗi: {_e_ct}")
+
+        elif homogeneous_plan is not None:
             # ══ CHẾ ĐỘ ĐỒNG NHẤT: 1 khuôn master + N trang nội dung (Task 6) ══
             # Chạy cho cả auto-fill LẪN có-số-lượng: _quantities bên dưới đọc số lượng
             # thật theo trang (None khi auto-fill → mỗi trang 1 lần).
@@ -1200,86 +1519,9 @@ def run_nup_engine(
                 fl = full_layouts.get(p_idx)
                 if not fl or not fl.get('items'):
                     continue
-                
-                if grouping_strategy == 'cluster_tile' and settings.get('clusterNesting', True):
-                    MM = 2.83465
-                    cluster_sizing_mode = settings.get('clusterSizingMode', 'dims')
-                    tile_gap_x_pt = float(settings.get('tileGapX', 0.0)) * MM
-                    tile_gap_y_pt = float(settings.get('tileGapY', 0.0)) * MM
-                    cluster_nesting = settings.get('clusterNesting', True)
 
-                    if cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
-                        if cluster_sizing_mode == 'split_cols':
-                            cluster_cols = max(1, int(settings.get('clusterCols', 2)))
-                            cluster_rows = 1
-                        elif cluster_sizing_mode == 'split_rows':
-                            cluster_cols = 1
-                            cluster_rows = max(1, int(settings.get('clusterRows', 2)))
-                        else:
-                            cluster_cols = max(1, int(settings.get('clusterCols', 2)))
-                            cluster_rows = max(1, int(settings.get('clusterRows', 2)))
-                            
-                        cw_pt = (usable_w - (cluster_cols - 1) * tile_gap_x_pt) / cluster_cols
-                        ch_pt = (usable_h - (cluster_rows - 1) * tile_gap_y_pt) / cluster_rows
-                    else:
-                        cw_pt = float(settings.get('clusterTileW', 148.0)) * MM
-                        ch_pt = float(settings.get('clusterTileH', 210.0)) * MM
-
-                    ct_placements, tile_cut_lines = run_cluster_tile(
-                        page_infos=[(p_idx, 1, tw, th)],
-                        full_layouts=full_layouts,
-                        sheet_w=usable_w,
-                        sheet_h=usable_h,
-                        cluster_w=cw_pt,
-                        cluster_h=ch_pt,
-                        gap_x=gap_x,
-                        gap_y=gap_y,
-                        tile_gap_x=tile_gap_x_pt,
-                        tile_gap_y=tile_gap_y_pt,
-                        cluster_nesting=cluster_nesting,
-                        is_die_cut=is_die_cut,
-                        doc=tmp_doc if is_die_cut else None,
-                        shape_type=fl.get('shapeType', 'CUSTOM') if is_die_cut else 'CUSTOM',
-                        shape_props=fl.get('shapeProps', {}) if is_die_cut else {},
-                        strategy=strategy
-                    )
-                    
-                    if ct_placements:
-                        items_per_sheet = len(ct_placements)
-                        sheets_needed = math.ceil(qty / items_per_sheet) if items_per_sheet > 0 else 1
-                        repeat_count = 1 if _export_unique else sheets_needed
-                        _type_report_str = _make_type_report(p_idx, tw, th, items_per_sheet, qty) if _report_enabled else None
-
-                        ct_offset_x = margin_left
-                        ct_offset_y = sheet_h - margin_bottom - sheet_usable_h
-                        
-                        for _ in range(repeat_count):
-                            precalculated_placements[sheet_idx] = []
-                            for p_item in ct_placements:
-                                ox = p_item['abs_x'] + ct_offset_x
-                                oy = p_item['abs_y'] + ct_offset_y
-                                shifted = dict(p_item)
-                                shifted['abs_x'] = ox
-                                shifted['abs_y'] = usable_h + margin_bottom + margin_top - oy - p_item['height']
-                                shifted['original_cell_y'] = oy
-                                shifted['cell'] = dict(p_item['cell'])
-                                shifted['cell']['x'] = ox
-                                shifted['cell']['y'] = oy
-                                precalculated_placements[sheet_idx].append(shifted)
-                            
-                            if tile_cut_lines:
-                                tile_cut_lines_shifted = {'v': set(), 'h': set()}
-                                for v in tile_cut_lines.get('v', []):
-                                    tile_cut_lines_shifted['v'].add(v + ct_offset_x)
-                                for h in tile_cut_lines.get('h', []):
-                                    tile_cut_lines_shifted['h'].add(h + ct_offset_y)
-                                cluster_tile_cuts[sheet_idx] = tile_cut_lines_shifted
-                                
-                            if _type_report_str:
-                                _reports_by_sheet[sheet_idx] = _type_report_str
-                            sheet_idx += 1
-                        continue
-
+                # cluster_tile được xử lý ở ARM ĐẦU TIÊN (compute_cluster_placements),
+                # không còn nhánh cluster riêng ở đây.
                 items_per_sheet = len(fl['items'])
                 sheets_needed = math.ceil(qty / items_per_sheet) if items_per_sheet > 0 else 1
                 repeat_count = 1 if _export_unique else sheets_needed
@@ -1350,129 +1592,71 @@ def run_nup_engine(
 
         elif is_auto_fill:
             # ── AUTO-FILL: Pack all types onto 1 sheet using MaxRects bin-packing ──
+            # (cluster_tile đã xử ở arm đầu, bất kể auto-fill hay có số lượng.)
             from app.workers.sticker_imposer_pkg.bin_packing import solve_auto_fill_mixed
 
-            if grouping_strategy == 'cluster_tile':
-                # -- CLUSTER TILE (gom cum nho roi nhan ban len to lon) --
-                MM = 2.83465
-                cluster_sizing_mode = settings.get('clusterSizingMode', 'dims')
-                tile_gap_x_pt = float(settings.get('tileGapX', 0.0)) * MM
-                tile_gap_y_pt = float(settings.get('tileGapY', 0.0)) * MM
-                cluster_nesting = settings.get('clusterNesting', True)
+            # ── MaxRects BIN-PACKING: all types compete freely for space ──
+            # Pre-compute forbidden zones from pont/ốc marks
+            # Dùng SSOT compute_packer_exclude_zones (NGUỒN CHÂN LÝ DUY NHẤT) để
+            # preview (/preview-layout) và output (đây) LUÔN khớp — không chép tay.
+            engine_exclude_zones = []
+            pont_cfg = settings.get('pontConfig') if settings.get('pontType', 'none') != 'none' else None
+            if pont_cfg and not pont_cfg.get('disableCollision', False):
+                try:
+                    from app.workers.pont_collision import compute_packer_exclude_zones
+                    engine_exclude_zones = compute_packer_exclude_zones(
+                        pont_cfg, sheet_w, sheet_h, usable_w, usable_h,
+                        margin_left, margin_bottom, max(gap_x, gap_y),
+                    )
+                    if engine_exclude_zones:
+                        logger.debug(f"   [ZONE] BIN-PACK: {len(engine_exclude_zones)} exclude zones from pont/oc")
+                except Exception as e:
+                    logger.warning(f"   [ZONE] BIN-PACK: pont zone calc failed: {e}")
+                    engine_exclude_zones = []
 
-                if cluster_sizing_mode == 'grid':
-                    cluster_cols = max(1, int(settings.get('clusterCols', 2)))
-                    cluster_rows = max(1, int(settings.get('clusterRows', 2)))
-                    cw_pt = (usable_w - (cluster_cols - 1) * tile_gap_x_pt) / cluster_cols
-                    ch_pt = (usable_h - (cluster_rows - 1) * tile_gap_y_pt) / cluster_rows
-                else:
-                    cw_pt = float(settings.get('clusterTileW', 148.0)) * MM
-                    ch_pt = float(settings.get('clusterTileH', 210.0)) * MM
+            page_dims = [(p_idx, tw, th) for p_idx, _, tw, th in page_infos]
+            bp_result = solve_auto_fill_mixed(
+                sheet_w=usable_w,
+                sheet_h=usable_h,
+                page_dims=page_dims,
+                gap=max(gap_x, gap_y),
+                allow_rotation=True,
+                exclude_zones=engine_exclude_zones if engine_exclude_zones else None,
+                uniform_if_equal=(
+                    settings.get('cutType', 'default') == 'one_dao'
+                    and settings.get('dieSizeMode', 'die') == 'page'
+                ),
+            )
 
-                ct_placements, tile_cut_lines = run_cluster_tile(
-                    page_infos=page_infos,
-                    full_layouts=full_layouts,
-                    sheet_w=usable_w,
-                    sheet_h=usable_h,
-                    cluster_w=cw_pt,
-                    cluster_h=ch_pt,
-                    gap_x=gap_x,
-                    gap_y=gap_y,
-                    tile_gap_x=tile_gap_x_pt,
-                    tile_gap_y=tile_gap_y_pt,
-                    cluster_nesting=cluster_nesting,
-                    is_die_cut=is_die_cut,
-                    doc=tmp_doc if is_die_cut else None,
-                    shape_type=full_layouts[page_infos[0][0]].get('shapeType', 'CUSTOM') if is_die_cut and full_layouts else 'CUSTOM',
-                    shape_props=full_layouts[page_infos[0][0]].get('shapeProps', {}) if is_die_cut and full_layouts else {},
-                    strategy=strategy
-                )
-                ct_offset_x = margin_left
-                ct_offset_y = sheet_h - margin_bottom - sheet_usable_h
+            sheet_idx = 0
+            precalculated_placements[sheet_idx] = []
+            placed_on_sheet = 0
 
-                sheet_idx = 0
-                precalculated_placements[sheet_idx] = []
-                placed_on_sheet = 0
-                for p_item in ct_placements:
-                    ox = p_item['abs_x'] + ct_offset_x
-                    oy = p_item['abs_y'] + ct_offset_y
-                    shifted = dict(p_item)
-                    shifted['abs_x'] = ox
-                    shifted['abs_y'] = usable_h + margin_bottom + margin_top - oy - p_item['height']
-                    shifted['original_cell_y'] = oy
-                    shifted['cell'] = dict(p_item['cell'])
-                    shifted['cell']['x'] = ox
-                    shifted['cell']['y'] = oy
-                    precalculated_placements[sheet_idx].append(shifted)
-                    placed_on_sheet += 1
+            for p in bp_result['placements']:
+                rx = p['x']
+                ry = p['y']
+                iw = p['w']
+                ih = p['h']
+                p_idx = p['page_idx']
+                is_rot = p['is_rotated']
 
-                if tile_cut_lines:
-                    v_shifted = {round(x + ct_offset_x, 2) for x in tile_cut_lines.get('v', set())}
-                    h_shifted = {round(y + ct_offset_y, 2) for y in tile_cut_lines.get('h', set())}
-                    cluster_tile_cuts[sheet_idx] = {'v': v_shifted, 'h': h_shifted}
+                precalculated_placements[sheet_idx].append({
+                    'cluster_idx': 0,
+                    'cell': {
+                        'x': rx, 'y': ry, 'width': iw, 'height': ih,
+                        'isRotated': is_rot, 'isRotated180': False,
+                    },
+                    'src_page_idx': p_idx,
+                    'abs_x': 0,  # set by _finalize_sheet_centering
+                    'abs_y': 0,
+                    'width': iw,
+                    'height': ih,
+                    'original_cell_y': 0,
+                })
+                placed_on_sheet += 1
 
-                logger.info(f'   [ZONE] CLUSTER_TILE DONE: {placed_on_sheet} items')
-
-            else:
-                # ── MaxRects BIN-PACKING: all types compete freely for space ──
-                
-                # Pre-compute forbidden zones from pont/ốc marks
-                # Dùng SSOT compute_packer_exclude_zones (NGUỒN CHÂN LÝ DUY NHẤT) để
-                # preview (/preview-layout) và output (đây) LUÔN khớp — không chép tay.
-                engine_exclude_zones = []
-                pont_cfg = settings.get('pontConfig') if settings.get('pontType', 'none') != 'none' else None
-                if pont_cfg and not pont_cfg.get('disableCollision', False):
-                    try:
-                        from app.workers.pont_collision import compute_packer_exclude_zones
-                        engine_exclude_zones = compute_packer_exclude_zones(
-                            pont_cfg, sheet_w, sheet_h, usable_w, usable_h,
-                            margin_left, margin_bottom, max(gap_x, gap_y),
-                        )
-                        if engine_exclude_zones:
-                            logger.debug(f"   [ZONE] BIN-PACK: {len(engine_exclude_zones)} exclude zones from pont/oc")
-                    except Exception as e:
-                        logger.warning(f"   [ZONE] BIN-PACK: pont zone calc failed: {e}")
-                        engine_exclude_zones = []
-                
-                page_dims = [(p_idx, tw, th) for p_idx, _, tw, th in page_infos]
-                bp_result = solve_auto_fill_mixed(
-                    sheet_w=usable_w,
-                    sheet_h=usable_h,
-                    page_dims=page_dims,
-                    gap=max(gap_x, gap_y),
-                    allow_rotation=True,
-                    exclude_zones=engine_exclude_zones if engine_exclude_zones else None,
-                )
-
-                sheet_idx = 0
-                precalculated_placements[sheet_idx] = []
-                placed_on_sheet = 0
-
-                for p in bp_result['placements']:
-                    rx = p['x']
-                    ry = p['y']
-                    iw = p['w']
-                    ih = p['h']
-                    p_idx = p['page_idx']
-                    is_rot = p['is_rotated']
-
-                    precalculated_placements[sheet_idx].append({
-                        'cluster_idx': 0,
-                        'cell': {
-                            'x': rx, 'y': ry, 'width': iw, 'height': ih,
-                            'isRotated': is_rot, 'isRotated180': False,
-                        },
-                        'src_page_idx': p_idx,
-                        'abs_x': 0,  # set by _finalize_sheet_centering
-                        'abs_y': 0,
-                        'width': iw,
-                        'height': ih,
-                        'original_cell_y': 0,
-                    })
-                    placed_on_sheet += 1
-
-                _finalize_sheet_centering(sheet_idx)
-                logger.debug(f"   [ZONE] BIN-PACK AUTO-FILL DONE: {placed_on_sheet} items on 1 sheet")
+            _finalize_sheet_centering(sheet_idx)
+            logger.debug(f"   [ZONE] BIN-PACK AUTO-FILL DONE: {placed_on_sheet} items on 1 sheet")
 
             total_items_placed = placed_on_sheet
 
@@ -1675,7 +1859,244 @@ def run_nup_engine(
                     f"sheet_h={sheet_h:.2f} split_gap_mm={settings.get('splitGap')} "
                     f"gripperMargin={settings.get('gripperMargin')}")
 
-        if strategy == 'manual' and cols_manual > 0 and rows_manual > 0:
+        _gui_cluster = (grouping_strategy == 'cluster_tile')
+        if _gui_cluster:
+            # ══ CHIA CỤM (cluster_tile) cho BÌNH CẮT XÉN (guillotine) ══
+            # Tái dùng SSOT compute_cluster_sheets như die-cut, nhưng nest trong VÙNG
+            # bằng grid solver (solve_optimal_layout) thay vì NFP shape-aware → nhanh,
+            # không đường bế. Hỗ trợ 3 kiểu ghép (replicate_mixed/zone_per_type/zone_ratio)
+            # + 2 mặt (duplex). Set precalculated_placements + cluster_tile_cuts → bỏ qua
+            # solver lưới đều gốc; process_chunk vẽ thẳng placements + divider vùng.
+            from app.workers.cluster_tile_engine import compute_cluster_sheets
+            MM = MM_TO_PTS
+            combine_mode = settings.get('clusterCombineMode', 'replicate_mixed')
+            cluster_nesting = settings.get('clusterNesting', True)
+            tile_gap_x_pt = float(settings.get('tileGapX', 0.0)) * MM
+            tile_gap_y_pt = float(settings.get('tileGapY', 0.0)) * MM
+
+            _gui_duplex = (settings.get('duplexFlow', 'single') == 'double'
+                           and page_count >= 2 and page_count % 2 == 0)
+            _n_units_g = (page_count // 2) if _gui_duplex else page_count
+
+            # page_infos guillotine: qty theo trang (duplex → key trang chẵn); trim từ
+            # trimbox nếu lệch rect else rect-2*bleed (KHÔNG dò đường bế).
+            _gdoc = pdf_lib.open(source_path)
+            _gui_page_infos = []
+            _gui_trim = {}
+            try:
+                for _u in range(_n_units_g):
+                    _fp = (_u * 2) if _gui_duplex else _u
+                    _q = target_quantities_by_page.get(
+                        str(_fp), target_quantities_by_page.get(_fp, target_quantity))
+                    try:
+                        _q = int(_q)
+                    except (TypeError, ValueError):
+                        _q = 0
+                    if _q <= 0:
+                        _q = 1
+                    _pg = _gdoc[_fp]
+                    if abs(_pg.trimbox.width - _pg.rect.width) > 1.0:
+                        _tw, _th = _pg.trimbox.width, _pg.trimbox.height
+                    else:
+                        _tw = _pg.rect.width - 2 * bleed_pt
+                        _th = _pg.rect.height - 2 * bleed_pt
+                    _gui_page_infos.append((_fp, _q, _tw, _th))
+                    _gui_trim[_fp] = (_tw, _th)
+            finally:
+                _gdoc.close()
+
+            # replicate_mixed sort theo size (gom mọi loại vào 1 cụm); zone_* giữ thứ tự trang.
+            if combine_mode == 'replicate_mixed':
+                _gui_page_infos.sort(key=lambda x: min(x[2], x[3]), reverse=True)
+
+            # cw/ch cho replicate_mixed theo sizing mode (mirror die-cut L1015-1029).
+            cluster_sizing_mode = settings.get('clusterSizingMode', 'dims')
+            if cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
+                if cluster_sizing_mode == 'split_cols':
+                    _c_cols, _c_rows = max(1, int(settings.get('clusterCols', 2))), 1
+                elif cluster_sizing_mode == 'split_rows':
+                    _c_cols, _c_rows = 1, max(1, int(settings.get('clusterRows', 2)))
+                else:
+                    _c_cols = max(1, int(settings.get('clusterCols', 2)))
+                    _c_rows = max(1, int(settings.get('clusterRows', 2)))
+                cw_pt = (usable_w - (_c_cols - 1) * tile_gap_x_pt) / _c_cols
+                ch_pt = (usable_h - (_c_rows - 1) * tile_gap_y_pt) / _c_rows
+            else:
+                cw_pt = float(settings.get('clusterTileW', 148.0)) * MM
+                ch_pt = float(settings.get('clusterTileH', 210.0)) * MM
+
+            # zone_layout_fn: grid solver trong VÙNG (không NFP). cache per-(pidx,zone).
+            _gui_zcache = {}
+
+            def _gui_zone_layout_fn(p_idx, zone_w, zone_h):
+                _ck = (p_idx, round(zone_w, 1), round(zone_h, 1))
+                _hit = _gui_zcache.get(_ck)
+                if _hit is not None:
+                    return _hit
+                _tw, _th = _gui_trim.get(p_idx, (trim_w, trim_h))
+                _sol = solve_optimal_layout(
+                    zone_w, zone_h, _tw, _th, gap_x, gap_y, strategy, secondary_gap)
+                _items = [{
+                    'x': _c['x'], 'y': _c['y'],
+                    'width': _c['width'], 'height': _c['height'],
+                    'isRotated': _c.get('isRotated', False),
+                    'isRotated180': False,
+                } for _c in _sol.get('cells', [])]
+                _res = {'items': _items}
+                _gui_zcache[_ck] = _res
+                return _res
+
+            # full_layouts (chỉ replicate_mixed cần orientation): nest ở kích thước cụm.
+            _gui_full = {}
+            if combine_mode == 'replicate_mixed':
+                for _pi, _q, _tw, _th in _gui_page_infos:
+                    _gui_full[_pi] = _gui_zone_layout_fn(_pi, cw_pt, ch_pt)
+
+            cluster_sheets = compute_cluster_sheets(
+                page_infos=_gui_page_infos,
+                full_layouts=_gui_full,
+                zone_layout_fn=_gui_zone_layout_fn,
+                sheet_w=usable_w,
+                sheet_h=usable_h,
+                cluster_w=cw_pt,
+                cluster_h=ch_pt,
+                gap_x=gap_x,
+                gap_y=gap_y,
+                tile_gap_x=tile_gap_x_pt,
+                tile_gap_y=tile_gap_y_pt,
+                combine_mode=combine_mode,
+                cluster_nesting=cluster_nesting,
+                is_die_cut=False,
+                doc=None,
+                shape_type='RECTANGLE',
+                shape_props={},
+                strategy=strategy,
+                zone_cols=max(1, int(settings.get('clusterCols', 2))),
+                zone_rows=max(1, int(settings.get('clusterRows', 2))),
+            )
+
+            # Shift top-down usable → abs (margin + y-flip). Mirror die-cut L1113-1138.
+            ct_offset_x = margin_left
+            ct_offset_y = sheet_h - margin_bottom - sheet_usable_h
+
+            def _gshift(_placements, _page_map=None):
+                _out = []
+                for p_item in _placements:
+                    ox = p_item['abs_x'] + ct_offset_x
+                    oy = p_item['abs_y'] + ct_offset_y
+                    shifted = dict(p_item)
+                    shifted['abs_x'] = ox
+                    shifted['abs_y'] = usable_h + margin_bottom + margin_top - oy - p_item['height']
+                    shifted['original_cell_y'] = oy
+                    shifted['cell'] = dict(p_item['cell'])
+                    shifted['cell']['x'] = ox
+                    shifted['cell']['y'] = oy
+                    if _page_map is not None:
+                        shifted['src_page_idx'] = _page_map(p_item.get('src_page_idx', 0))
+                    _out.append(shifted)
+                return _out
+
+            def _gshift_cuts(_cuts):
+                if not _cuts:
+                    return None
+                return {
+                    'v': {round(x + ct_offset_x, 2) for x in _cuts.get('v', set())},
+                    'h': {round(y + ct_offset_y, 2) for y in _cuts.get('h', set())},
+                }
+
+            def _gui_back_page(_sp):
+                # Trang lẻ (mặt sau) = trang chẵn + 1; thiếu → tái dùng mặt trước.
+                _bp = _sp + 1
+                return _bp if _bp < page_count else _sp
+
+            precalculated_placements = {}
+            _is_zone = combine_mode in ('zone_per_type', 'zone_ratio')
+            _export_unique_ct = bool(settings.get('exportUniqueSheets', True))
+
+            # Danh sách tờ front (placements, cuts).
+            if _is_zone:
+                _front_sheets = list(cluster_sheets)
+            else:
+                # replicate_mixed: 1 tờ mẫu × sheets_needed (ceil SL/con-mỗi-loại).
+                _ctp = cluster_sheets[0][0] if cluster_sheets else []
+                _ctc = cluster_sheets[0][1] if cluster_sheets else None
+                _count_by_type = {}
+                for _pl in _ctp:
+                    _sp = _pl['src_page_idx']
+                    _count_by_type[_sp] = _count_by_type.get(_sp, 0) + 1
+                _qty_by_type = {pi[0]: pi[1] for pi in _gui_page_infos}
+                _sheets_needed = 1
+                for _sp, _cnt in _count_by_type.items():
+                    if _cnt > 0:
+                        _sheets_needed = max(
+                            _sheets_needed, math.ceil(_qty_by_type.get(_sp, 0) / _cnt))
+                _repeat_ct = 1 if _export_unique_ct else max(1, _sheets_needed)
+                _front_sheets = [(_ctp, _ctc) for _ in range(_repeat_ct)]
+
+            # Đặt precalc; duplex → đan front (tờ chẵn) / back (tờ lẻ, map trang lẻ +
+            # process_chunk mirror). KHÔNG để L2404 đan lại (guard cluster_tile).
+            if _gui_duplex:
+                for _s, (_pls, _cuts) in enumerate(_front_sheets):
+                    precalculated_placements[_s * 2] = _gshift(_pls)
+                    precalculated_placements[_s * 2 + 1] = _gshift(_pls, _page_map=_gui_back_page)
+                    _scl = _gshift_cuts(_cuts)
+                    if _scl:
+                        cluster_tile_cuts[_s * 2] = _scl
+                        cluster_tile_cuts[_s * 2 + 1] = _scl
+            else:
+                for _s, (_pls, _cuts) in enumerate(_front_sheets):
+                    precalculated_placements[_s] = _gshift(_pls)
+                    _scl = _gshift_cuts(_cuts)
+                    if _scl:
+                        cluster_tile_cuts[_s] = _scl
+
+            total_items_placed = sum(len(p) for p in precalculated_placements.values())
+
+            # Report (mode_label='Cắt xén') — mỗi tờ 1 dòng.
+            try:
+                from app.workers import nup_report as _nr_g
+                _rcfg_g = settings.get('reportDisplay') or {}
+                if _rcfg_g.get('enabled') and total_items_placed > 0:
+                    _paper_g = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
+                    _label_g = _rcfg_g.get('labelNameText') or ""
+                    _n_sheets_g = len(precalculated_placements)
+                    _ips_g = total_items_placed // max(1, _n_sheets_g)
+                    _data_g = _nr_g.compute_report_data(
+                        label_name=_label_g,
+                        paper_size=_paper_g,
+                        items_per_sheet=_ips_g, requested_qty=0,
+                        material=settings.get('reportMaterial', '') or '',
+                        lamination_type=settings.get('reportLamination', 0) or 0,
+                        lamination_sides=settings.get('reportLaminationSides', 1) or 1,
+                        mode_label='Cắt xén',
+                        order_code=settings.get('reportOrderCode', '') or '',
+                        identifier=f"{len(_gui_page_infos)} mẫu · {combine_mode}",
+                        sheet_count_override=_n_sheets_g,
+                    )
+                    _rep_str_g = _nr_g.build_report_string(_rcfg_g, _data_g)
+                    for _si in range(_n_sheets_g):
+                        _reports_by_sheet[_si] = _rep_str_g
+                    _report_rows.append({
+                        'label': _label_g or f"{len(_gui_page_infos)} mẫu",
+                        'items_per_sheet': _ips_g,
+                        'requested_qty': 0, 'sheet_count': _n_sheets_g,
+                    })
+            except Exception as _e_g:
+                logger.warning(f"[REPORT] guillotine cluster report lỗi: {_e_g}")
+
+            layout = {
+                'totalItems': total_items_placed,
+                'overallWidth': usable_w,
+                'overallHeight': usable_h,
+                'cells': [],
+                'strategyUsed': 'Guillotine Zone-Based Cluster',
+            }
+            logger.info(
+                "[GUI-CLUSTER] mode=%s %d tờ, %d con, duplex=%s, types=%d",
+                combine_mode, len(precalculated_placements), total_items_placed,
+                _gui_duplex, len(_gui_page_infos),
+            )
+        elif strategy == 'manual' and cols_manual > 0 and rows_manual > 0:
             layout = solve_manual(trim_w, trim_h, gap_x, gap_y, cols_manual, rows_manual)
         elif _is_cluster_type_early:
             # CHIA CỌC theo loại: dao guillotine cần đường xén THẲNG xuyên tờ → ép lưới
@@ -2253,6 +2674,7 @@ def run_nup_engine(
         and page_count >= 2
         and page_count % 2 == 0
         and layout_type not in ('sequential', 'cut_stacks', 'ratio_stack')
+        and grouping_strategy != 'cluster_tile'  # guillotine cluster tự đan front/back trong arm
     ):
         # Chế độ 'repeat': sheet_mapping là list page-idx, nhóm theo trang rồi đan từng cặp.
         if sheet_mapping and len(sheet_mapping) == total_sheets:
@@ -2362,6 +2784,10 @@ def run_nup_engine(
             mark_style,  # Kiểu dấu xén: 'default' | 'japanese' (nét đôi)
 
             settings.get('duplexFlow', 'single'),  # Duplex flow for mirroring back side
+
+            settings.get('dieSizeMode', 'die'),  # 1 Dao: 'die' (khuôn thật) | 'page' (mediabox±offset)
+
+            settings.get('dieOffsetMm', 0),  # 1 Dao mode=page: offset co(-)/mở(+) mm
 
             (homogeneous_master_idx is not None),  # _homogeneousMode: bật registration đồng nhất
 

@@ -11,6 +11,7 @@ import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { toast } from './ui/Toast';
 import { sizeKeyLabel, groupBySizeKey } from '../lib/combineGroupBySize';
 import { useTranslation } from 'react-i18next';
+import { usePrintDialog } from './shared/usePrintDialog';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -113,8 +114,9 @@ const ImageThumbnail = React.memo(({ file, rotation }: { file: File; rotation?: 
   );
 });
 
-export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTabs, onTitleChange, isActive }: Props) {
+export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTabs, onTitleChange, isActive, tabId }: Props) {
   const { t } = useTranslation();
+  const { openPrintDialog, printDialog } = usePrintDialog();
   const [nodes, setNodes] = useState<CombineNode[]>([]);
   const [pageCounts, setPageCounts] = useState<Record<string, number>>({});
   const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
@@ -623,6 +625,34 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     return finalBytes;
   };
 
+  // Ctrl+P → ghép các node ĐANG THẤY thành 1 PDF (bỏ qua chia-nhóm-theo-size, in
+  // toàn bộ đúng thứ tự đang xem) rồi in native. Combine là editor ghép, không có
+  // "1 file thường trực" nên phải build blob tại thời điểm in. Dùng hạ tầng chung.
+  const handlePrint = useCallback(async () => {
+    const flatNodes = nodes.flatMap(n => n.type === 'collapsed_group' && n.pages ? n.pages : [n]);
+    if (flatNodes.length === 0) { toast.info(t('tabs.combine:chua_co_trang_de_in')); return; }
+    setIsProcessing(true);
+    setStatusMsg(t('tabs.combine:dang_chuan_bi_in'));
+    try {
+      const bytes = await combineFlatNodes(flatNodes, new Map());
+      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      await openPrintDialog({ source: blob, numPages: flatNodes.length });
+    } catch (e: any) {
+      toast.error(t('tabs.combine:khong_the_in_file') + (e?.message || e));
+    } finally {
+      setIsProcessing(false);
+      setStatusMsg('');
+    }
+  }, [nodes, openPrintDialog, t]);
+
+  useEffect(() => {
+    const onTriggerPrint = (e: any) => {
+      if (isActive && e.detail?.tabId === tabId) handlePrint();
+    };
+    window.addEventListener('app-trigger-print', onTriggerPrint);
+    return () => window.removeEventListener('app-trigger-print', onTriggerPrint);
+  }, [isActive, tabId, handlePrint]);
+
   /** Đo sizeKey (mm) của 1 node — cùng quy ước kích thước hiển thị viewer. */
   const measureNodeSizeKey = async (
     node: CombineNode,
@@ -1038,6 +1068,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       onDragEnter={(e) => e.preventDefault()}
       onDragOver={(e) => e.preventDefault()}
     >
+      {printDialog}
       {/* Header Toolbar */}
       <div className="flex items-center justify-between p-4 bg-white dark:bg-[#252526] border-b border-slate-200 dark:border-white/10 shadow-sm shrink-0">
         <div className="flex items-center gap-4">

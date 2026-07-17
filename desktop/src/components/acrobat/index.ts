@@ -4,5 +4,7 @@ export { AcrobatToolbar } from './AcrobatToolbar';
 export { useThumbSidebar } from './useThumbSidebar';
 export { Ruler } from './Ruler';
 export { GuideLayer, type Guide } from './GuideLayer';
+export { DimensionLayer } from './DimensionLayer';
+export { findDimensionCandidate, type DimensionMeasurement } from './dimensionMath';
 export { ThumbSidebar } from './ThumbSidebar';
 export { ViewerContextMenu } from './ViewerContextMenu';

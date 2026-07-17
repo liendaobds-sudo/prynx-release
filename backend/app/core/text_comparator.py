@@ -20,9 +20,15 @@ class TextComparator:
         Compare two lists of text blocks extracted by pdfplumber.
         Each block is {text, x0, y0, x1, y1, fontname, size}.
         """
-        # Sort blocks by Y (top-to-bottom) then X (left-to-right) to form reading order
-        blocks_a.sort(key=lambda b: (round(b.get("y0", 0) / 10), b.get("x0", 0)))
-        blocks_b.sort(key=lambda b: (round(b.get("y0", 0) / 10), b.get("x0", 0)))
+        # Copy before sort — caller may reuse original lists; sort is in-place.
+        blocks_a = sorted(
+            list(blocks_a),
+            key=lambda b: (round(b.get("y0", 0) / 10), b.get("x0", 0)),
+        )
+        blocks_b = sorted(
+            list(blocks_b),
+            key=lambda b: (round(b.get("y0", 0) / 10), b.get("x0", 0)),
+        )
         
         texts_a = [b.get("text", "") for b in blocks_a]
         texts_b = [b.get("text", "") for b in blocks_b]
@@ -38,10 +44,11 @@ class TextComparator:
         
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag == "replace":
-                # Text was modified
-                for idx_a, idx_b in zip(range(i1, i2), range(j1, j2)):
-                    b_a = blocks_a[idx_a]
-                    b_b = blocks_b[idx_b]
+                n_a, n_b = i2 - i1, j2 - j1
+                n_pair = min(n_a, n_b)
+                for k in range(n_pair):
+                    b_a = blocks_a[i1 + k]
+                    b_b = blocks_b[j1 + k]
                     changed.append({
                         "original": b_a["text"],
                         "new": b_b["text"],
@@ -49,6 +56,25 @@ class TextComparator:
                         "y": min(b_a["y0"], b_b["y0"]),
                         "width": max(b_a["x1"], b_b["x1"]) - min(b_a["x0"], b_b["x0"]),
                         "height": max(b_a["y1"], b_b["y1"]) - min(b_a["y0"], b_b["y0"])
+                    })
+                # Phần thừa khi replace lệch độ dài — trước đây zip() nuốt mất.
+                for idx_a in range(i1 + n_pair, i2):
+                    b_a = blocks_a[idx_a]
+                    removed.append({
+                        "text": b_a["text"],
+                        "x": b_a["x0"],
+                        "y": b_a["y0"],
+                        "width": b_a["x1"] - b_a["x0"],
+                        "height": b_a["y1"] - b_a["y0"]
+                    })
+                for idx_b in range(j1 + n_pair, j2):
+                    b_b = blocks_b[idx_b]
+                    added.append({
+                        "text": b_b["text"],
+                        "x": b_b["x0"],
+                        "y": b_b["y0"],
+                        "width": b_b["x1"] - b_b["x0"],
+                        "height": b_b["y1"] - b_b["y0"]
                     })
             elif tag == "delete":
                 for idx_a in range(i1, i2):

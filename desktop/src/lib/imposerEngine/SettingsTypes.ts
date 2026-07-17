@@ -120,9 +120,10 @@ export interface DieCutSettings extends BaseSettings {
     clusterGapMode?: 'item' | 'mark';
     clusterDistribution?: 'default' | 'type';
     clusterBorder?: boolean;
+    clusterCombineMode?: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio';
     clusterTileW?: number;
     clusterTileH?: number;
-    clusterSizingMode?: 'dims' | 'grid';
+    clusterSizingMode?: 'dims' | 'split_cols' | 'split_rows';
     clusterCols?: number;
     clusterRows?: number;
     tileGapX?: number;

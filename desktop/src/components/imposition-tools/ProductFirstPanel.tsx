@@ -44,7 +44,7 @@ export default function ProductFirstPanel({
     const store = useContext(ImposerSettingsContext);
 
     const [binding, setBinding] = useState<InNhanhBinding>('saddle');
-    const [sheetKey, setSheetKey] = useState<string>('SRA3');
+    const [sheetKey, setSheetKey] = useState<string>('A3');
     const [quantity, setQuantity] = useState<number>(100);
     const [finW, setFinW] = useState<number>(finishedWidthMm || 0);
     const [finH, setFinH] = useState<number>(finishedHeightMm || 0);

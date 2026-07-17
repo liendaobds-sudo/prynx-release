@@ -122,6 +122,65 @@ def test_tiny_change_keeps_high_ssim_but_flags_region():
     assert res.similarity_score >= 99.0  # SSIM toàn cục vẫn rất cao
 
 
+def test_micro_glyph_change_not_filtered_as_noise():
+    """Audit false-identical: đổi 1 chữ ~6pt trên trang đầy nội dung phải được
+    bắt (micro-diff rescue), không PASS 0 region vì min_contour_area."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    def _page(ch: str, size_pt: int = 6, dpi: int = 150):
+        w, h = int(595 * dpi / 72), int(842 * dpi / 72)
+        img = Image.new("RGB", (w, h), "white")
+        d = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("arial.ttf", max(1, int(size_pt * dpi / 72)))
+        except Exception:
+            font = ImageFont.load_default()
+        for i in range(40):
+            d.text(
+                (40, 40 + i * 18),
+                "Content line number %02d static text block" % i,
+                fill="black",
+                font=font,
+            )
+        d.text((40, 40 + 40 * 18), f"ID: 1234{ch}", fill="black", font=font)
+        return np.array(img)
+
+    cmp = ImageComparator()
+    a = _page("0")
+    b = _page("1")
+    res = cmp.compare(a, b, tolerance="NORMAL", config={"dpi": 150})
+    assert res.diff_count >= 1, "6pt one-char change must not be filtered to 0 regions"
+    # Identical pages still clean
+    res_same = cmp.compare(a, a.copy(), tolerance="NORMAL", config={"dpi": 150})
+    assert res_same.diff_count == 0
+
+
+def test_real_label_goc_vs_binh_detects_diff():
+    """Regression file thật: test/goc.pdf vs test/binh.pdf — trước đây PASS giả
+    (contour 18–65 < min_area 50–200). Phải diff_count ≥ 1 ở 150 và 300 DPI."""
+    from pathlib import Path
+    import pypdfium2 as pdfium
+
+    root = Path(__file__).resolve().parents[2]  # repo root pdfcompare/
+    goc = root / "test" / "goc.pdf"
+    binh = root / "test" / "binh.pdf"
+    if not goc.is_file() or not binh.is_file():
+        pytest.skip("test/goc.pdf or test/binh.pdf missing")
+
+    def _render(path, dpi):
+        pdf = pdfium.PdfDocument(str(path))
+        bmp = pdf[0].render(scale=dpi / 72.0, rev_byteorder=True)
+        arr = np.array(bmp.to_pil().convert("RGB"))
+        pdf.close()
+        return arr
+
+    cmp = ImageComparator()
+    for dpi in (150, 300):
+        a, b = _render(goc, dpi), _render(binh, dpi)
+        res = cmp.compare(a, b, tolerance="NORMAL", config={"dpi": dpi})
+        assert res.diff_count >= 1, f"goc vs binh must flag diff @ {dpi} DPI (got 0)"
+
+
 def test_padding_no_false_diff_on_size_mismatch():
     """#2: 2 ảnh khác kích thước nhưng cùng nội dung góc trên-trái → PAD (không
     resize-ép) nên KHÔNG sinh khác biệt giả toàn trang."""
@@ -175,3 +234,84 @@ def test_scaled_single_copy_via_multiscale_imposition():
     # Tìm thấy bản → KHÔNG phải thông báo "không tìm thấy bản thiết kế"
     descs = " ".join(r.description for r in res.diff_regions)
     assert "Không tìm thấy" not in descs
+
+
+# ── Phase 1–2: tolerance matrix, STRICT align, imposition instance pixel ──
+
+
+def test_tolerance_matrix_catches_solid_black_patch():
+    """STRICT/NORMAL/LOOSE × 150/300: ô đen rõ phải luôn bị bắt; identical = 0."""
+    cmp = ImageComparator()
+    for dpi in (150, 300):
+        a = np.full((400, 400, 3), 255, np.uint8)
+        b = a.copy()
+        b[100:140, 100:160] = 0
+        for tol in ("STRICT", "NORMAL", "LOOSE"):
+            res = cmp.compare(a, b, tolerance=tol, config={"dpi": dpi})
+            assert res.diff_count >= 1, f"tol={tol} dpi={dpi} must detect solid patch"
+            same = cmp.compare(a, a.copy(), tolerance=tol, config={"dpi": dpi})
+            assert same.diff_count == 0, f"identical must be clean tol={tol} dpi={dpi}"
+
+
+def test_strict_detects_intentional_few_pixel_shift():
+    """STRICT không registration → dịch nội dung 3px phải báo khác (trim/crop)."""
+    cmp = ImageComparator()
+    a = np.full((200, 200, 3), 255, np.uint8)
+    a[40:80, 40:120] = 0
+    b = np.full((200, 200, 3), 255, np.uint8)
+    b[40:80, 43:123] = 0  # dịch +3px X
+    res_s = cmp.compare(a, b, tolerance="STRICT", config={"dpi": 150})
+    assert res_s.diff_count >= 1, "STRICT must flag intentional 3px shift"
+    # NORMAL may align away small shift — either OK or still flag; just no crash
+    res_n = cmp.compare(a, b, tolerance="NORMAL", config={"dpi": 150})
+    assert res_n.similarity_score >= 0.0
+
+
+def test_goc_binh_all_tolerances_and_dpi():
+    """File thật nhãn: mọi tolerance × DPI chính phải ≥1 vùng (pixel-first)."""
+    from pathlib import Path
+    import pypdfium2 as pdfium
+
+    root = Path(__file__).resolve().parents[2]
+    goc, binh = root / "test" / "goc.pdf", root / "test" / "binh.pdf"
+    if not goc.is_file() or not binh.is_file():
+        pytest.skip("test fixtures missing")
+
+    def _render(path, dpi):
+        pdf = pdfium.PdfDocument(str(path))
+        arr = np.array(pdf[0].render(scale=dpi / 72.0, rev_byteorder=True).to_pil().convert("RGB"))
+        pdf.close()
+        return arr
+
+    cmp = ImageComparator()
+    for dpi in (150, 300):
+        a, b = _render(goc, dpi), _render(binh, dpi)
+        for tol in ("STRICT", "NORMAL", "LOOSE"):
+            res = cmp.compare(a, b, tolerance=tol, config={"dpi": dpi})
+            assert res.diff_count >= 1, f"goc/binh miss tol={tol} dpi={dpi}"
+
+
+def test_imposition_flags_changed_instance():
+    """N-up: 4 bản match; 1 bản sửa nhỏ (vẫn matchTemplate) → failed_instances ≥ 1."""
+    cmp = ImageComparator()
+    templ = np.full((100, 120, 3), 255, np.uint8)
+    templ[10:90, 10:110] = 230
+    templ[20:50, 20:100] = 40
+    templ[55:75, 30:90] = 0
+    templ[80:90, 15:105] = 80
+
+    sheet = np.full((220, 260, 3), 255, np.uint8)
+    positions = [(5, 5), (5, 130), (110, 5), (110, 130)]
+    for yy, xx in positions:
+        sheet[yy:yy + 100, xx:xx + 120] = templ
+    # Sửa nhỏ trên bản #4 — đủ để pixel bắt, không phá match ≥0.82
+    sheet[110 + 60:110 + 72, 130 + 50:130 + 70] = 255
+
+    res = cmp.compare(templ, sheet, tolerance="NORMAL", config={"dpi": 150})
+    assert res.is_imposition_mode is True
+    assert res.total_instances >= 4
+    assert res.failed_instances >= 1
+    assert res.diff_count >= 1
+
+
+

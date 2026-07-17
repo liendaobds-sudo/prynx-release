@@ -1,6 +1,9 @@
-import { useEffect, useRef, useCallback } from 'react';
-import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { useEffect, useRef, useCallback, useContext } from 'react';
+import { useWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
+
+/** Chống 2 listener (nhiều tab mount) toggle DIM 2 lần trong 1 cú nhấn → kẹt ON. */
+let dimShortcutLockUntil = 0;
 
 interface ViewerSnapshot {
     order: number[];
@@ -12,6 +15,8 @@ interface ViewerSnapshot {
 interface UseViewerHotkeysProps {
     containerRef: React.RefObject<HTMLDivElement | null>;
     sidebarRef: React.RefObject<HTMLDivElement | null>;
+    /** Tab đang hiển thị? Ưu tiên hơn heuristic DOM (opacity-0). */
+    isActive?: boolean;
     // Page state
     pageOrder: number[];
     selectedIndices: Set<number>;
@@ -31,8 +36,8 @@ interface UseViewerHotkeysProps {
     setPastStack: React.Dispatch<React.SetStateAction<ViewerSnapshot[]>>;
     setFutureStack: React.Dispatch<React.SetStateAction<ViewerSnapshot[]>>;
     // Tool modes
-    toolMode: 'pointer' | 'hand';
-    setToolMode: (m: 'pointer' | 'hand') => void;
+    toolMode: 'pointer' | 'hand' | 'dimension';
+    setToolMode: (m: 'pointer' | 'hand' | 'dimension') => void;
     isVdpMode: boolean;
     isThumbMenuOpen: boolean;
     isDeleteModalOpen: boolean;
@@ -64,7 +69,7 @@ interface UseViewerHotkeysProps {
 
 export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     const {
-        containerRef, sidebarRef,
+        containerRef, sidebarRef, isActive = true,
         pageOrder, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
         setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
         pastStack, futureStack, setPastStack, setFutureStack,
@@ -77,11 +82,33 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         isObjectEditMode, onEditUndo, onEditRedo,
     } = props;
 
-    const prevToolModeRef = useRef<'pointer' | 'hand'>('pointer');
+    const prevToolModeRef = useRef<'pointer' | 'hand' | 'dimension'>('pointer');
+    const toolModeRef = useRef(toolMode);
+    useEffect(() => { toolModeRef.current = toolMode; }, [toolMode]);
+    const setToolModeRef = useRef(setToolMode);
+    useEffect(() => { setToolModeRef.current = setToolMode; }, [setToolMode]);
+    const toggleRulersRef = useRef(toggleRulers);
+    useEffect(() => { toggleRulersRef.current = toggleRulers; }, [toggleRulers]);
+    const isActiveRef = useRef(isActive);
+    useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
     const isSpacebarHeldRef = useRef(false);
     const spacePressTimeRef = useRef<number>(0);
     const guidesRef = useRef(guides);
     useEffect(() => { guidesRef.current = guides; }, [guides]);
+
+    // Tab active?
+    // 1) isActive=false → chắc chắn bỏ qua (không stopPropagation).
+    // 2) Defense: ancestor .opacity-0 (shell tab nền) — kể cả khi caller quên truyền isActive.
+    // 3) Không bắt buộc containerRef (canvas chỉ có khi numPages>0; toolbar vẫn cần phím D).
+    const isViewerLive = useCallback(() => {
+        if (!isActiveRef.current) return false;
+        const root = containerRef.current || sidebarRef.current;
+        if (root?.closest('.opacity-0')) return false;
+        return true;
+    }, [containerRef, sidebarRef]);
+
+    // Store API per-tab (context) — dùng getState() trong hotkey để không stale.
+    const workspaceStore = useContext(WorkspaceContext);
 
     // F7 rewire: hook chạy TRONG WorkspaceContext.Provider nên lấy setter/isCropMode
     // qua selector (KHÔNG dùng useWorkspaceStore.getState() — store per-Provider, không
@@ -89,10 +116,13 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     // lần → đọc isCropMode qua ref để luôn thấy giá trị mới nhất, tránh stale closure.
     const setIsObjectEditMode = useWorkspaceStore(s => s.setIsObjectEditMode);
     const isCropMode = useWorkspaceStore(s => s.isCropMode);
+    const setIsCropMode = useWorkspaceStore(s => s.setIsCropMode);
     const isCropModeRef = useRef(isCropMode);
     useEffect(() => { isCropModeRef.current = isCropMode; }, [isCropMode]);
     const setIsObjectEditModeRef = useRef(setIsObjectEditMode);
     useEffect(() => { setIsObjectEditModeRef.current = setIsObjectEditMode; }, [setIsObjectEditMode]);
+    const setIsCropModeRef = useRef(setIsCropMode);
+    useEffect(() => { setIsCropModeRef.current = setIsCropMode; }, [setIsCropMode]);
 
     // Helper: commit snapshot for undo
     const commitSnapshot = useCallback(() => {
@@ -143,16 +173,20 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         setPageRotations(next.rotations);
     }, [futureStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack, setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations]);
 
+    // True khi IME (Unikey/Telex…) đang compose — không chạy hotkey.
+    // Telex "dd"→"đ" hay phát Backspace giả; nếu hotkey xóa trang bắt Backspace
+    // thì bấm D lần 2 (tắt DIM) sẽ mở nhầm popup xóa trang.
+    const isImeNoise = (e: KeyboardEvent) => e.isComposing || e.keyCode === 229;
+
     // Guide hotkeys (Ctrl+R, Ctrl+Z for guides, Delete guide)
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (!containerRef.current || containerRef.current.offsetParent === null) return;
-            // Ignore events if this viewer is in a background tab (which has opacity-0)
-            if (containerRef.current.closest('.opacity-0')) return;
+            if (isImeNoise(e)) return;
+            if (!isViewerLive()) return;
 
             if (e.ctrlKey && (e.code === 'KeyR' || e.key.toLowerCase() === 'r')) {
                 e.preventDefault();
-                toggleRulers();
+                toggleRulersRef.current();
                 return;
             }
 
@@ -167,7 +201,8 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                 return;
             }
 
-            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedGuideId) {
+            // Xóa guide: Delete hoặc Backspace — chỉ khi đã chọn guide (không phải xóa trang).
+            if ((e.code === 'Delete' || e.code === 'Backspace') && selectedGuideId) {
                 if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
                     return;
                 }
@@ -180,7 +215,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [toggleRulers, guidesHistory, guides, selectedGuideId]);
+    }, [isViewerLive, guidesHistory, guides, selectedGuideId, setGuides, setGuidesHistory, setSelectedGuideId]);
 
     // F7 → bật/tắt Object Edit Mode (gộp F7 Layer Panel vào Edit PDF: một panel
     // thống nhất). ĐĂNG KÝ PER-INSTANCE + guard tab active (giống handler chính bên
@@ -189,10 +224,9 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     useEffect(() => {
         const handleF7 = (e: KeyboardEvent) => {
             if (e.key !== 'F7') return;
+            if (isImeNoise(e)) return;
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-            // Chỉ tab đang hiện xử lý (tab nền dùng opacity-0, vẫn display:flex).
-            if (!containerRef.current || containerRef.current.offsetParent === null) return;
-            if (containerRef.current.closest('.opacity-0')) return;
+            if (!isViewerLive()) return;
             // Đang Crop → bỏ qua F7 (tránh mở edit mode chồng lên crop).
             if (isCropModeRef.current) return;
             e.preventDefault();
@@ -209,18 +243,67 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         };
         document.addEventListener('keydown', handleF7, true);
         return () => document.removeEventListener('keydown', handleF7, true);
-    }, [containerRef, setIsObjectEditMode]);
+    }, [isViewerLive]);
+
+    // D = DIM bật/tắt. Capture phase + isActive.
+    // Đọc mode từ store.getState() (không tin ref stale) → D lần 2 chắc chắn TẮT.
+    useEffect(() => {
+        const handleDimensionShortcut = (e: KeyboardEvent) => {
+            if (e.code !== 'KeyD') return;
+            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            const target = e.target as HTMLElement | null;
+            if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
+            // Tab nền: bỏ qua, KHÔNG stopPropagation — để tab active nhận sự kiện.
+            if (!isViewerLive()) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            if (e.repeat) return;
+            // Hai listener cùng tab/cùng event (Strict Mode / multi-mount) → khóa 120ms.
+            const now = Date.now();
+            if (now < dimShortcutLockUntil) return;
+            dimShortcutLockUntil = now + 120;
+
+            const storeApi = workspaceStore;
+            const current = storeApi?.getState().viewerToolMode ?? toolModeRef.current;
+            const next = current === 'dimension' ? 'pointer' : 'dimension';
+            toolModeRef.current = next;
+            if (storeApi) {
+                storeApi.getState().setViewerToolMode(next);
+                if (next === 'dimension') {
+                    storeApi.getState().setIsObjectEditMode(false);
+                    storeApi.getState().setIsCropMode(false);
+                }
+            } else {
+                setToolModeRef.current(next);
+                if (next === 'dimension') {
+                    setIsObjectEditModeRef.current(false);
+                    setIsCropModeRef.current(false);
+                }
+            }
+            if (next === 'dimension' && !useAppSettingsStore.getState().showRulers) {
+                toggleRulersRef.current();
+            }
+            // Rời focus khỏi nút toolbar (tránh Space/Enter kích hoạt nhầm sau đó).
+            if (document.activeElement instanceof HTMLElement) {
+                const tag = document.activeElement.tagName;
+                if (tag === 'BUTTON' || tag === 'A') document.activeElement.blur();
+            }
+        };
+        window.addEventListener('keydown', handleDimensionShortcut, true);
+        return () => window.removeEventListener('keydown', handleDimensionShortcut, true);
+    }, [isViewerLive, workspaceStore]);
 
     // Global keyboard commands (Undo/Redo, Delete, Extract, Spacebar)
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (isImeNoise(e)) return;
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
             if (e.key === 'F7') return; // Handled by independent listener above
+            // KeyD do handler DIM (capture) xử lý — không đụng nhánh khác.
+            if (e.code === 'KeyD') return;
 
-            // Bỏ qua nếu viewer này thuộc tab nền. offsetParent chỉ null khi display:none,
-            // nhưng tab nền dùng opacity-0 (vẫn display:flex) nên cần check thêm .opacity-0.
-            if (!containerRef.current || containerRef.current.offsetParent === null) return;
-            if (containerRef.current.closest('.opacity-0')) return;
+            if (!isViewerLive()) return;
 
             if (e.ctrlKey || e.metaKey) {
                 // Khi đang ở chế độ VDP, undo/redo do useVdpHistory xử lý (capture-phase).
@@ -246,7 +329,11 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                     e.preventDefault();
                     redo();
                 }
-            } else if (e.key === 'Delete' || e.key === 'Backspace') {
+
+            } else if (e.code === 'Delete') {
+                // CHỈ phím Delete vật lý mở xóa trang.
+                // KHÔNG bắt Backspace: IME Telex (Unikey) khi gõ D/đ thường phát Backspace
+                // → trước đây bấm D lần 2 (tắt DIM) lại mở popup xóa trang.
                 if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
                 if (isObjectEditMode || isVdpMode) return;
                 // Xóa khi có trang đang chọn trong thumbnail. Không phụ thuộc focus
@@ -255,7 +342,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                 if (selectedIndices.size === 0) return;
                 e.preventDefault();
                 setIsDeleteModalOpen(true);
-            } else if (e.key === 'e') {
+            } else if (e.code === 'KeyE') {
                 e.preventDefault();
                 const sortedSel = Array.from(selectedIndices).sort((a, b) => a - b).map(i => i + 1);
                 let str = sortedSel.length > 0 ? sortedSel.join(', ') : '';
@@ -267,8 +354,8 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                     if (!isSpacebarHeldRef.current) {
                         isSpacebarHeldRef.current = true;
                         spacePressTimeRef.current = Date.now();
-                        prevToolModeRef.current = toolMode;
-                        setToolMode('hand');
+                        prevToolModeRef.current = toolModeRef.current;
+                        setToolModeRef.current('hand');
                     }
                 } else {
                     e.preventDefault();
@@ -277,13 +364,13 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         };
 
         const handleKeyUp = (e: KeyboardEvent) => {
+            if (isImeNoise(e)) return;
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-            if (!containerRef.current || containerRef.current.offsetParent === null) return;
-            if (containerRef.current.closest('.opacity-0')) return;
+            if (!isViewerLive()) return;
             if (e.code === 'Space') {
                 e.preventDefault();
                 isSpacebarHeldRef.current = false;
-                setToolMode(prevToolModeRef.current);
+                setToolModeRef.current(prevToolModeRef.current);
 
                 if (Date.now() - spacePressTimeRef.current < 250) {
                     if (e.shiftKey) {
@@ -301,21 +388,27 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             document.removeEventListener('keydown', handleKeyDown);
             document.removeEventListener('keyup', handleKeyUp);
         };
-    }, [pastStack, futureStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, toolMode, isThumbMenuOpen, isDeleteModalOpen, activePage, numPages, undo, redo, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo]);
+    }, [isViewerLive, selectedIndices, activePage, undo, redo, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo, navigatePage, setIsDeleteModalOpen, setExtractPagesStrForModal, setIsExtractModalOpen]);
 
-    // Escape key closes modals
+    // Escape: đóng modal + thoát DIM (nếu đang bật)
     useEffect(() => {
         const handleEscape = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                setIsInsertModalOpen(false);
-                setIsExtractModalOpen(false);
-                setIsDeleteModalOpen(false);
-                setContextMenu(null);
+            if (e.key !== 'Escape') return;
+            if (!isViewerLive()) return;
+            setIsInsertModalOpen(false);
+            setIsExtractModalOpen(false);
+            setIsDeleteModalOpen(false);
+            setContextMenu(null);
+            const mode = workspaceStore?.getState().viewerToolMode ?? toolModeRef.current;
+            if (mode === 'dimension') {
+                toolModeRef.current = 'pointer';
+                if (workspaceStore) workspaceStore.getState().setViewerToolMode('pointer');
+                else setToolModeRef.current('pointer');
             }
         };
         document.addEventListener('keydown', handleEscape);
         return () => document.removeEventListener('keydown', handleEscape);
-    }, []);
+    }, [isViewerLive, workspaceStore, setIsInsertModalOpen, setIsExtractModalOpen, setIsDeleteModalOpen, setContextMenu]);
 
     return { commitSnapshot, undo, redo };
 }

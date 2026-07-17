@@ -8,14 +8,16 @@ interface Preset {
     h: number; // mm
 }
 
+// Chỉ series ISO A (+ custom). Khổ máy đặc thù tạo bằng "Tùy chỉnh".
 const PRESETS: Preset[] = [
+    { id: 'a7', label: 'A7 (74 × 105)', w: 74, h: 105 },
+    { id: 'a6', label: 'A6 (105 × 148)', w: 105, h: 148 },
+    { id: 'a5', label: 'A5 (148 × 210)', w: 148, h: 210 },
     { id: 'a4', label: 'A4 (210 × 297)', w: 210, h: 297 },
     { id: 'a3', label: 'A3 (297 × 420)', w: 297, h: 420 },
-    { id: 'a5', label: 'A5 (148 × 210)', w: 148, h: 210 },
-    { id: 'a6', label: 'A6 (105 × 148)', w: 105, h: 148 },
-    { id: 'sra3', label: 'SRA3 (320 × 450)', w: 320, h: 450 },
-    { id: 'letter', label: 'Letter (216 × 279)', w: 215.9, h: 279.4 },
-    { id: 'card', label: 'Danh thiếp (90 × 54)', w: 90, h: 54 },
+    { id: 'a2', label: 'A2 (420 × 594)', w: 420, h: 594 },
+    { id: 'a1', label: 'A1 (594 × 841)', w: 594, h: 841 },
+    { id: 'a0', label: 'A0 (841 × 1189)', w: 841, h: 1189 },
     { id: 'custom', label: 'Tùy chỉnh...', w: 0, h: 0 },
 ];
 

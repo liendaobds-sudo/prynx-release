@@ -57,6 +57,17 @@ class ShapeBuilder:
         self.stream.append(f"{p1.x:.4f} {self.page_height - p1.y:.4f} m")
         self.stream.append(f"{p2.x:.4f} {self.page_height - p2.y:.4f} l")
 
+    def draw_polyline(self, points):
+        """Vẽ 1 subpath LIỀN qua nhiều điểm: moveto điểm đầu, lineto các điểm sau.
+        Khác với gọi draw_line nhiều lần (mỗi lần phát 'm' mới → cắt thành các
+        subpath rời, không có line-join tại đỉnh gấp khúc như góc L)."""
+        if not points or len(points) < 2:
+            return
+        p0 = points[0]
+        self.stream.append(f"{p0.x:.4f} {self.page_height - p0.y:.4f} m")
+        for p in points[1:]:
+            self.stream.append(f"{p.x:.4f} {self.page_height - p.y:.4f} l")
+
     def draw_circle(self, center: Point, radius: float):
         cx, cy_top = center.x, self.page_height - center.y
         k = 0.5522847498
@@ -136,11 +147,15 @@ class ShapeBuilder:
         })
         return font_key
 
-    def finish(self, color=(0, 0, 0, 1), width=1, closePath=False, fill=None, dashes=None, oc=None, item_name=None):
+    def finish(self, color=(0, 0, 0, 1), width=1, closePath=False, fill=None, dashes=None, oc=None, item_name=None, line_join=None):
         # Phòng thủ: caller có thể truyền color=None (vd path chỉ-tô). Tránh len(None).
         if color is None:
             color = (0, 0, 0, 1)
         preamble = []
+        # line_join: 0=miter, 1=round, 2=bevel — cho đỉnh gấp khúc (vd góc L của ốc)
+        # nối liền, không hở/vát. Bỏ qua khi None (giữ mặc định PDF = miter).
+        if line_join is not None:
+            preamble.append(f"{int(line_join)} j")
         if fill:
             if len(fill) == 4:
                 preamble.append(f"{fill[0]} {fill[1]} {fill[2]} {fill[3]} k")

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useTranslation } from 'react-i18next';
 
@@ -26,6 +27,7 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
     } = useWorkspaceStore();
 
     const { activeDashboardTool } = useImposerSettingsStore();
+    const { showRulers, toggleRulers } = useAppSettingsStore();
     
     const handleCustomZoom = (newZoom: number | ((z: number) => number)) => {
         setZoom(newZoom);
@@ -109,6 +111,25 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     </svg>
                 </button>
 
+                <button
+                    type="button"
+                    className={`h-8 min-w-10 px-1.5 flex items-center justify-center rounded text-[11px] font-bold tracking-wide transition-colors ${toolMode === 'dimension' ? 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-900/30 ring-1 ring-rose-300 dark:ring-rose-700' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
+                    // preventDefault trên mousedown: không lấy focus → Space/phím sau không kích hoạt nhầm nút.
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                        const next = toolMode === 'dimension' ? 'pointer' : 'dimension';
+                        setToolMode(next);
+                        if (next === 'dimension') {
+                            setIsObjectEditMode(false);
+                            setIsCropMode(false);
+                            if (!showRulers) toggleRulers();
+                        }
+                    }}
+                    title="DIM — đo khoảng cách thực giữa hai guide (D)"
+                    aria-label="Công cụ DIM đo khoảng cách"
+                >
+                    DIM
+                </button>
                 {/* Old Selection Tool removed - object management now integrated into Object Edit mode with better PDFium-based listing */}
 
                 {/* Chế độ Chỉnh sửa đối tượng — độc lập Selection Tool. Màu emerald để phân biệt với Selection (cam). */}

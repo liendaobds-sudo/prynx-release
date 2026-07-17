@@ -39,6 +39,7 @@ import CoverNumberingTool from './preprocess-tools/CoverNumberingTool';
 import StickTextNumberTool from './preprocess-tools/StickTextNumberTool';
 import SaveModal from './workspace/SaveModal';
 import SavePrintFilesModal from './workspace/SavePrintFilesModal';
+import { usePrintDialog } from './shared/usePrintDialog';
 import EditLayersPanel from './workspace/SelectionLayersPanel';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 
@@ -207,6 +208,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const [isMiniToolbarExpanded, setIsMiniToolbarExpanded] = useState(false);
     const [showSavePrintModal, setShowSavePrintModal] = useState(false);
     const [scaleConfirmModal, setScaleConfirmModal] = useState<{ msg: string, resolve: (v: boolean) => void } | null>(null);
+    // Hộp thoại in hợp nhất kiểu Acrobat (máy in / số bản / trang / tỉ lệ / orientation
+    // + preview). openPrintDialog() trả Promise<boolean>; printDialog là JSX để render.
+    const { openPrintDialog, printDialog } = usePrintDialog();
     // Gửi Máy Bế (spec: gui-may-be) — chỉ hiện trên toolbar khi file là OUTPUT đã bình.
     const [showCutExport, setShowCutExport] = useState(false);
     const [showRecipePanel, setShowRecipePanel] = useState(false);
@@ -1255,10 +1259,11 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     const handleStartBooklet = useCallback((config: BookletSettings) => {
         // NOTE: For 'auto_100', sheet dimension will be dynamically resolved inside the Engine during Phase 2.
+        // Dashboard đã resolve press dims + formsize='custom' khi chạy; vẫn resolve an toàn nếu formsize named.
         const actualFormsize = config.scaleMode === '100' ? 'auto_100' : config.formsize;
-        const isCustom = actualFormsize === 'custom' || actualFormsize.startsWith('custom_');
-        const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[actualFormsize]?.w || config.customSheetWidth);
-        const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[actualFormsize]?.h || config.customSheetHeight);
+        const isCustom = actualFormsize === 'custom' || actualFormsize === 'auto_100' || actualFormsize.startsWith('custom_');
+        const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[actualFormsize]?.w ?? config.customSheetWidth);
+        const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[actualFormsize]?.h ?? config.customSheetHeight);
 
         const settings: any = {
             imposerMode: config.foldPattern ? 'offset' : 'guillotine',
@@ -1342,9 +1347,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     }, [viewerPageOrder, viewerPageRotations, setConfirmBookletSettings, processEngine, detectedDimensionsByPage]);
 
     const handleStartNup = useCallback((config: NupSettings) => {
-        const isCustom = config.formsize === 'custom';
-        const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[config.formsize]?.w || config.customSheetWidth);
-        const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[config.formsize]?.h || config.customSheetHeight);
+        // formsize named (A3…) hoặc custom / custom_* (dims đã press-resolve từ dashboard)
+        const isCustom = config.formsize === 'custom' || config.formsize === 'auto_100' || String(config.formsize).startsWith('custom_');
+        const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[config.formsize]?.w ?? config.customSheetWidth);
+        const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[config.formsize]?.h ?? config.customSheetHeight);
 
         const settings: any = {
             imposerMode: config.cncMode ? 'cnc' : (config.isDieCutMode ? 'diecut' : 'guillotine'),
@@ -1384,6 +1390,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             isDieCutMode: config.isDieCutMode,
             cutType: config.cutType,
             fillBlockGap: config.fillBlockGap,
+            dieSizeMode: config.dieSizeMode,
+            dieOffsetMm: config.dieOffsetMm,
             pontType: config.pontType,
             pontConfig: config.pontConfig,
             shapeType: config.shapeType,
@@ -1393,6 +1401,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             targetQuantity: config.targetQuantity,
             targetQuantitiesByPage: config.targetQuantitiesByPage,
             groupingStrategy: config.groupingStrategy,
+            clusterCombineMode: config.clusterCombineMode,
             clusterTileW: config.clusterTileW,
             clusterTileH: config.clusterTileH,
             clusterSizingMode: config.clusterSizingMode,
@@ -1474,6 +1483,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const sourcePageCountCacheRef = useRef<{ key: string; count: number } | null>(null);
     // Max độ dài order đã thấy trên file hiện tại — xóa trang (kể cả đuôi) luôn < max.
     const maxViewerOrderLenRef = useRef(0);
+    const isPrintingRef = useRef(false);
     useEffect(() => {
         sourcePageCountCacheRef.current = null;
         maxViewerOrderLenRef.current = 0;
@@ -1510,10 +1520,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return order.every((p, i) => p === i + 1);
     };
 
-    const applyAcrobatEdits = async () => {
-        if (!file || !viewerPageOrder) return null;
+    const applyAcrobatEdits = async (sourceFile: File | null = file) => {
+        if (!sourceFile || !viewerPageOrder) return null;
         const rotations = viewerPageRotations || {};
-        const arrayBuffer = await getFileArrayBuffer(file);
+        const arrayBuffer = await getFileArrayBuffer(sourceFile);
         const srcDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
         const newDoc = await PDFDocument.create();
 
@@ -1652,7 +1662,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setIsProcessing(true);
             setProcessStatus(t('tabs.imposition:dang_ap_dung_thay_doi_va_luu'));
             try {
-                const editedBlob = await applyAcrobatEdits();
+                const editedBlob = await applyAcrobatEdits(curFile);
                 if (editedBlob) {
                     targetBlob = editedBlob;
                     didBake = true;
@@ -1811,6 +1821,80 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         window.addEventListener('app-trigger-save', handleTriggerSave);
         return () => window.removeEventListener('app-trigger-save', handleTriggerSave);
     }, [isActive, tabId, isDirty, viewerDirty, handleSaveFile]);
+
+    // Ctrl+P → in PDF ĐANG XEM qua hộp thoại máy in Windows (lệnh Rust print_pdf).
+    // KHÔNG dùng window.print() của WebView2 (chỉ in DOM giao diện). Resolve path
+    // giống Ctrl+S: commit editSession nếu dirty → đọc file mới nhất từ store → nếu
+    // có visual edits (xoay/sắp trang) thì bake ra blob rồi ghi file tạm để lấy path
+    // thật cho PDFium; nếu chỉ có blob in-memory (không path đĩa) cũng ghi tạm.
+    const handlePrintFile = useCallback(async () => {
+        if (isPrintingRef.current) return;
+        isPrintingRef.current = true;
+        setError('');
+
+        try {
+            if (!(window as any).__TAURI_INTERNALS__) {
+                setError(t('tabs.imposition:in_chi_ho_tro_trong_ung_dung'));
+                return;
+            }
+
+            if (editSession.dirty) {
+                try {
+                    await editSession.commit();
+                    await new Promise<void>(r => setTimeout(r, 0));
+                } catch {
+                    setError(t('tabs.imposition:khong_luu_duoc_thay_doi_chinh_sua_vao'));
+                    return;
+                }
+            }
+
+            // Sau commit phải đọc lại file từ store; biến `file` trong closure có thể vẫn
+            // là bản trước khi chỉnh sửa đối tượng được ghi vào PDF.
+            const curFile: File | null = (store?.getState().file as File | null) || file;
+            if (!curFile) return;
+
+            const hasRotationEdits = !!(viewerPageRotations && Object.values(viewerPageRotations).some((r: any) => ((((r as number) % 360) + 360) % 360) !== 0));
+            const hasOrderEdits = !!viewerPageOrder
+                && !(await isViewerOrderIdentityForSource(curFile, viewerPageOrder));
+
+            // Luôn áp dụng trạng thái xoay/thứ tự đang thấy, kể cả đây là file kết quả
+            // đã sinh từ Bình trang/VDP. Cờ isGenerated chỉ liên quan cách lưu, không
+            // được dùng để bỏ qua thay đổi của viewer khi in.
+            let bakedBlob: Blob | null = null;
+            if (hasRotationEdits || hasOrderEdits) {
+                setIsProcessing(true);
+                setProcessStatus(t('tabs.imposition:dang_chuan_bi_in'));
+                try {
+                    bakedBlob = await applyAcrobatEdits(curFile);
+                } finally {
+                    setIsProcessing(false);
+                    setProcessStatus('');
+                }
+            }
+
+            // Hộp thoại in hợp nhất lo hết: chọn tỉ lệ/máy in/orientation + preview, ghi
+            // temp nếu là blob (bakedBlob) hoặc file không có path đĩa, in native + dọn temp.
+            // Ưu tiên bake (bản đang thấy); nếu không thì curFile — resolvePrintableFilePath
+            // tự dùng curFile.path (file mở từ đĩa) hoặc ghi temp (blob in-memory).
+            const source: Blob | File = bakedBlob || curFile;
+            await openPrintDialog({ source, numPages: viewerNumPages || 1 });
+        } catch (e: any) {
+            setError(t('tabs.imposition:khong_the_in_file') + (e?.message || e));
+        } finally {
+            isPrintingRef.current = false;
+        }
+    }, [file, viewerPageRotations, viewerPageOrder, viewerNumPages, editSession, store, openPrintDialog, t]);
+
+    useEffect(() => {
+        const handleTriggerPrint = (e: any) => {
+            if (!isActive) return;
+            if (e.detail.tabId === tabId) {
+                handlePrintFile();
+            }
+        };
+        window.addEventListener('app-trigger-print', handleTriggerPrint);
+        return () => window.removeEventListener('app-trigger-print', handleTriggerPrint);
+    }, [isActive, tabId, handlePrintFile]);
 
     const handleExtractPages = async (indices: number[], deleteAfter: boolean) => {
         if (!file || !onSpawnTab || !viewerPageOrder || !viewerPageRotations) return;
@@ -2505,7 +2589,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 originalName={file?.name}
             />
 
-            {/* Custom Scale Confirm Modal */}
+            {/* Hộp thoại in hợp nhất kiểu Acrobat (máy in/tỉ lệ/orientation + preview). */}
+            {printDialog}
+
             {scaleConfirmModal && createPortal(
                 <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => { scaleConfirmModal.resolve(false); setScaleConfirmModal(null); }} onKeyDown={e => { if (e.key === 'Escape') { scaleConfirmModal.resolve(false); setScaleConfirmModal(null); } }} tabIndex={-1} ref={el => el?.focus()}>
                     <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 dark:border-zinc-700" onClick={e => e.stopPropagation()}>

@@ -484,6 +484,52 @@ async def get_pdf_meta(body: dict):
 # cùng file trả tức thì, không tính lại. Bounded để tránh phình bộ nhớ.
 _DETECT_CACHE: dict = {}
 _DETECT_CACHE_MAX = 32
+_DETECT_INFLIGHT: dict = {}
+
+
+def _make_detect_cache_key(file_path, config):
+    """Cache key for both the PDF revision and the detection configuration."""
+    try:
+        st = os.stat(file_path)
+        config_key = (
+            tuple(config.die_channel_names or ()),
+            tuple(tuple(c) for c in (config.die_colors or ())),
+            float(config.die_color_tol),
+            int(config.raster_fallback_dpi),
+        )
+        return (
+            os.path.normcase(os.path.abspath(file_path)),
+            int(st.st_mtime_ns),
+            int(st.st_size),
+            config_key,
+        )
+    except Exception:
+        return None
+
+
+async def _run_shared_detection(cache_key, work):
+    """Share one in-flight detection task for the same PDF and configuration."""
+    if cache_key is None:
+        return await work()
+
+    import asyncio
+    task = _DETECT_INFLIGHT.get(cache_key)
+    if task is None:
+        task = asyncio.create_task(work())
+        _DETECT_INFLIGHT[cache_key] = task
+
+        def _cleanup(done_task, key=cache_key):
+            if _DETECT_INFLIGHT.get(key) is done_task:
+                _DETECT_INFLIGHT.pop(key, None)
+            try:
+                done_task.exception()
+            except BaseException:
+                pass
+
+        task.add_done_callback(_cleanup)
+
+    # A disconnected/stale client must not cancel work shared with another caller.
+    return await asyncio.shield(task)
 
 
 async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
@@ -546,6 +592,39 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
     return None
 
 
+async def _compute_detect_response(file_path, config, detect_logger):
+    """Run vector detection plus raster fallback and return the legacy response."""
+    from app.workers import pdf_wrapper as pdf_lib
+    from app.workers.die_detection import detect_die_shapes, to_legacy_response
+    from app.core.separations import SeparationEngine
+
+    doc = pdf_lib.open(file_path)
+    try:
+        result = detect_die_shapes(doc, config)
+        engine = SeparationEngine()
+        for i, shape in enumerate(result.shapes):
+            if shape.source != "custom" or not result.statuses[i].ok:
+                continue
+            fallback = await _raster_fallback_shape(
+                engine, file_path, shape.page, config, detect_logger
+            )
+            if fallback is not None:
+                result.shapes[i] = fallback
+                result.statuses[i] = type(result.statuses[i])(
+                    page=fallback.page,
+                    ok=True,
+                    source=fallback.source,
+                    error=None,
+                )
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+    return to_legacy_response(result)
+
+
 @router.post("/detect-shape")
 async def api_detect_shape(body: dict):
     """
@@ -589,22 +668,7 @@ async def api_detect_shape(body: dict):
             raise ValueError(f"File not found on disk: {file_path}")
 
         # Cache theo (path, mtime, size) — trả tức thì khi đổi công cụ / mở lại cùng file.
-        _cache_key = None
-        try:
-            _st = os.stat(file_path)
-            _cache_key = (os.path.abspath(file_path), int(_st.st_mtime), _st.st_size)
-            _cached = _DETECT_CACHE.get(_cache_key)
-            if _cached is not None:
-                _detect_logger.info("[DETECT_SHAPE] cache hit")
-                return _cached
-        except Exception:
-            _cache_key = None
-
-        from app.workers import pdf_wrapper as pdf_lib
-        from app.workers.die_detection import (
-            detect_die_shapes, DetectionConfig, to_legacy_response,
-        )
-        from app.core.separations import SeparationEngine
+        from app.workers.die_detection import DetectionConfig
 
         config = DetectionConfig()
         # Override tuỳ chọn từ client: cho phép người dùng chỉ định kênh/màu đường bế
@@ -623,36 +687,25 @@ async def api_detect_shape(body: dict):
                 config = DetectionConfig(**_kw)
         except Exception as _e:
             _detect_logger.warning(f"[DETECT_SHAPE] override config bỏ qua: {_e}")
-        doc = pdf_lib.open(file_path)
-        try:
-            # === Lớp 1 — vector SSOT (mọi trang, cô lập lỗi) ===
-            result = detect_die_shapes(doc, config)
 
-            # === Raster fallback cho trang không có đường bế vector (source='custom') ===
-            engine = SeparationEngine()
-            for i, shape in enumerate(result.shapes):
-                if shape.source != "custom" or not result.statuses[i].ok:
-                    continue
-                fb = await _raster_fallback_shape(
-                    engine, file_path, shape.page, config, _detect_logger
-                )
-                if fb is not None:
-                    result.shapes[i] = fb
-                    result.statuses[i] = type(result.statuses[i])(
-                        page=fb.page, ok=True, source=fb.source, error=None
-                    )
-        finally:
-            try:
-                doc.close()
-            except Exception:
-                pass
-
-        _resp = to_legacy_response(result)
+        _cache_key = _make_detect_cache_key(file_path, config)
         if _cache_key is not None:
-            if len(_DETECT_CACHE) >= _DETECT_CACHE_MAX:
-                _DETECT_CACHE.clear()
-            _DETECT_CACHE[_cache_key] = _resp
-        return _resp
+            _cached = _DETECT_CACHE.get(_cache_key)
+            if _cached is not None:
+                _detect_logger.info("[DETECT_SHAPE] cache hit")
+                return _cached
+            if _cache_key in _DETECT_INFLIGHT:
+                _detect_logger.info("[DETECT_SHAPE] joining in-flight detection")
+
+        async def _work():
+            response = await _compute_detect_response(file_path, config, _detect_logger)
+            if _cache_key is not None:
+                if len(_DETECT_CACHE) >= _DETECT_CACHE_MAX:
+                    _DETECT_CACHE.clear()
+                _DETECT_CACHE[_cache_key] = response
+            return response
+
+        return await _run_shared_detection(_cache_key, _work)
 
     except Exception as e:
         import traceback
@@ -860,6 +913,7 @@ class PreviewLayoutRequest(BaseModel):
     is_die_cut: Optional[bool] = False
     grouping_strategy: str = "none"
     cluster_sizing_mode: str = "dims"
+    cluster_combine_mode: str = "replicate_mixed"
     cluster_cols: int = 2
     cluster_rows: int = 2
     cluster_w: float = 0
@@ -887,6 +941,9 @@ class PreviewLayoutRequest(BaseModel):
     # Chế độ 1 Dao (LETA): KC cụm phụ (mm) — preview phải khớp nup_engine secondary_gap.
     cut_type: Optional[str] = "default"
     fill_block_gap: Optional[float] = 0
+    # 1 Dao: kiểu khuôn ('die'=đường bế thật / 'page'=mediabox±offset) + offset co-mở (mm).
+    die_size_mode: Optional[str] = "die"
+    die_offset_mm: Optional[float] = 0
     # ── Chia cọc xén (guillotine batching) — preview khớp nup_engine cluster_type ──
     # cluster_distribution='type' + cluster_mode∈{row,column}: mỗi cọc 1 loại theo tỷ lệ SL.
     cluster_mode: Optional[str] = "none"
@@ -1070,6 +1127,13 @@ async def preview_layout(req: PreviewLayoutRequest):
             from app.workers.sticker_imposer_pkg.layout_compute import compute_sticker_layout_for_page
             from app.workers.imposition_finalize import finalize_placements, resolve_pont_collisions_on_placements
 
+            # ── TIMING TẠM (chẩn đoán preview chậm) — mốc thời gian theo giai đoạn ──
+            import time as _t_mod
+            _T_PREVIEW_START = _t_mod.perf_counter()
+            def _plog(_lbl):
+                logger.warning("[PREVIEW-TIMING] %-32s +%7.1fms",
+                               _lbl, (_t_mod.perf_counter() - _T_PREVIEW_START) * 1000.0)
+
             logger.debug("[PREVIEW] file_id=%s path=%s usable=%.2fx%.2f item=%.2fx%.2f gap=%.2fx%.2f strategy=%s shape=%s props=%s",
                          req.file_id, req.path, req.usable_w, req.usable_h, req.item_w, req.item_h,
                          req.gap_x, req.gap_y, req.strategy, req.shape_type, req.shape_props)
@@ -1112,9 +1176,11 @@ async def preview_layout(req: PreviewLayoutRequest):
             
             logger.debug("   file_path=%s", file_path)
             
+            _plog("resolve+validate path")
             doc = pdf_lib.open(file_path)
+            _plog(f"open doc ({file_path.split(chr(92))[-1]}, {doc.page_count}p)")
             src_page_count = doc.page_count
-            
+
             page_idx = min(req.page_idx, doc.page_count - 1) if getattr(req, 'page_idx', 0) >= 0 else 0
             page = doc[page_idx]
             
@@ -1124,21 +1190,318 @@ async def preview_layout(req: PreviewLayoutRequest):
             _lt = getattr(req, 'layout_type', None)
             _tq = getattr(req, 'target_quantity', 0)
             logger.debug("[PREVIEW DEBUG] task_mode=%r layout_type=%r target_qty=%s page_count=%d", _tm, _lt, _tq, doc.page_count)
+            # cluster_tile (chia cụm) đi nhánh cluster RIÊNG (dùng chung SSOT
+            # compute_cluster_placements với export), kể cả file nhiều trang → loại khỏi
+            # is_nup_multi để không bị bin-pack trộn nuốt.
+            # cluster_tile chạy cho CẢ die-cut (bế/CNC, nest NFP) LẪN guillotine (bình
+            # cắt xén, nest grid solve_optimal_layout). _cluster_is_die phân nhánh nest.
+            _is_cluster_req = (getattr(req, 'grouping_strategy', None) == 'cluster_tile')
+            _cluster_is_die = bool(getattr(req, 'is_die_cut', False))
             is_nup_multi = (
                 _tm in ('nup', 'booklet', 'sticker_imposer')
                 and _lt != 'repeat'
                 and doc.page_count > 1
                 and (_tm == 'sticker_imposer' or bool(getattr(req, 'is_die_cut', False)))
+                and not _is_cluster_req
             )
             # Lưu ý: "trộn nhiều mẫu / auto-fill" là tính năng DIE-CUT (Bế tem/CNC).
             # Bình bài xén (taskMode='nup', guillotine) dao chém THẲNG → phải dùng
             # LƯỚI ĐỀU (solve_optimal_layout) để preview KHỚP output (render guillotine
             # cũng dùng solve_optimal_layout). KHÔNG đi nhánh bin-pack trộn ở đây.
             
+            if _is_cluster_req:
+                _plog("ENTER cluster branch")
+                # ══ CHIA CỤM (cluster_tile) PREVIEW — DÙNG CHUNG SSOT với export ══
+                # compute_cluster_placements xử cả single/multi-page + 3 kiểu ghép
+                # (replicate_mixed / zone_per_type / zone_ratio). Preview ≡ output vì
+                # cùng hàm, cùng zone_layout_fn (nest 1 loại phủ đầy vùng).
+                from app.workers.cluster_tile_engine import compute_cluster_sheets
+                from app.workers.nup_diecut import _find_largest_die_path
+                from app.workers.nup_sticker import compute_sticker_layout_for_page as _csl_c
+
+                bleed_pt = req.bleed or 0
+                MM = 2.83465
+                combine_mode = getattr(req, 'cluster_combine_mode', 'replicate_mixed')
+                # Guillotine cluster (bình cắt xén, KHÔNG bế): nest trong vùng bằng
+                # grid solver, KHÔNG NFP/đường bế → khớp export (_gui_zone_layout_fn).
+                _is_gui_cluster = not bool(getattr(req, 'is_die_cut', False))
+                from app.workers.nup_layout_solver import solve_optimal_layout as _sol_c
+                _uw = req.usable_w
+                _uh = req.usable_h
+                _ml = getattr(req, 'margin_left', 0) or 0
+                _mb = getattr(req, 'margin_bottom', 0) or 0
+                _mt = getattr(req, 'margin_top', 0) or 0
+                _shapes = getattr(req, 'detected_shapes_by_page', None) or {}
+                _sprops = getattr(req, 'detected_shape_params_by_page', None) or {}
+                _tqbp = getattr(req, 'target_quantities_by_page', None) or {}
+                _gq = getattr(req, 'target_quantity', 0) or 0
+
+                def _qty_c(pi):
+                    q = _tqbp.get(str(pi), _tqbp.get(pi, _gq))
+                    try:
+                        q = int(q)
+                    except (TypeError, ValueError):
+                        q = 0
+                    return q if q > 0 else 1
+
+                # page_infos mọi trang (multi-type). trim từ đường bế nếu có.
+                # _die_geo_by_page_c: pi → (die_items, die_rect) để gắn diePolylines
+                # PER-CELL (đường bế THẬT + transform xoay/lật) như S&R, thay vì scale
+                # outline chuẩn hoá vào bbox (méo).
+                page_infos_c = []
+                _die_geo_by_page_c = {}
+                from app.workers.nup_diecut import resolve_one_dao_trim as _r1d_cl
+                _dsm_cl = getattr(req, 'die_size_mode', 'die')
+                _dom_cl = getattr(req, 'die_offset_mm', 0)
+                _ct_cl = getattr(req, 'cut_type', 'default')
+                for pi in range(doc.page_count):
+                    pg = doc[pi]
+                    if _is_gui_cluster:
+                        # Guillotine: KHÔNG dò đường bế; trim = trimbox nếu lệch rect
+                        # else rect-2*bleed (khớp _gui_page_infos export).
+                        if abs(pg.trimbox.width - pg.rect.width) > 1.0:
+                            tw_c, th_c = pg.trimbox.width, pg.trimbox.height
+                        else:
+                            tw_c = pg.rect.width - 2 * bleed_pt
+                            th_c = pg.rect.height - 2 * bleed_pt
+                        page_infos_c.append((pi, _qty_c(pi), tw_c, th_c))
+                        continue
+                    lp = _find_largest_die_path(pg)
+                    # 1 Dao + "theo kích thước trang": trim = mediabox ± offset (chung export).
+                    _odt = _r1d_cl(pg, _ct_cl, _dsm_cl, _dom_cl)
+                    if _odt is not None:
+                        # page mode: cắt là chữ nhật theo trang → KHÔNG gắn contour thật
+                        # (tránh preview vẽ đường bế bo góc trong khi cắt thẳng).
+                        tw_c, th_c = _odt
+                    elif lp:
+                        tw_c, th_c = lp['rect'].width, lp['rect'].height
+                        if lp.get('items'):
+                            _die_geo_by_page_c[pi] = (lp['items'], lp['rect'])
+                    else:
+                        tw_c = pg.rect.width - 2 * bleed_pt
+                        th_c = pg.rect.height - 2 * bleed_pt
+                    page_infos_c.append((pi, _qty_c(pi), tw_c, th_c))
+
+                # PARITY với export (nup_engine): CHỈ replicate_mixed sort theo kích
+                # thước (gom mọi loại vào 1 cụm). zone_per_type / zone_ratio giữ THỨ TỰ
+                # TRANG (mỗi loại 1 vùng theo trang 1→N) → KHÔNG sort.
+                if combine_mode == 'replicate_mixed':
+                    page_infos_c.sort(key=lambda x: min(x[2], x[3]), reverse=True)
+
+                _sg_c = _resolve_preview_secondary_gap(req)
+
+                # ── TIMING: đo từng nest preview (ghi rot_audit.log) ──
+                import time as _time_c
+                _tc_start = _time_c.perf_counter()
+                def _tclog(_lbl):
+                    try:
+                        from app.workers.rot_audit_log import get_logger as _rgl
+                        _rgl().warning("[CLUSTER-TIMING][PREVIEW] %-30s (tổng %6.1fms)",
+                                       _lbl, (_time_c.perf_counter() - _tc_start) * 1000.0)
+                    except Exception:
+                        pass
+
+                # Cache nest SỐNG QUA REQUEST (_ZONE_NEST_CACHE, module-level LRU) →
+                # lăn chuột / đổi setting không đụng layout KHÔNG nest lại 17 loại (~4.7s).
+                # Key gồm file+mtime để tự vô hiệu khi file đổi; zone dims + params layout.
+                try:
+                    _zc_mtime = int(os.path.getmtime(file_path))
+                except OSError:
+                    _zc_mtime = 0
+                _zc_fp = os.path.abspath(file_path)
+
+                def _zone_layout_fn_c(p_idx, zone_w, zone_h):
+                    _ps = _shapes.get(str(p_idx)) or _shapes.get(p_idx)
+                    _pp = _sprops.get(str(p_idx)) or _sprops.get(p_idx) or {}
+                    _ck = (
+                        _zc_fp, _zc_mtime, p_idx,
+                        round(zone_w, 1), round(zone_h, 1),
+                        round(req.gap_x, 2), round(req.gap_y, 2),
+                        req.strategy, _ps or None,
+                        _json_batch.dumps(_pp, sort_keys=True) if _pp else '',
+                        round(bleed_pt, 2),
+                        round(_sg_c, 2) if _sg_c is not None else None,
+                        _is_gui_cluster,
+                        _ct_cl, _dsm_cl, round(float(_dom_cl or 0), 3),
+                    )
+                    _hit = _ZONE_NEST_CACHE.get(_ck)
+                    if _hit is not None:
+                        _ZONE_NEST_CACHE.move_to_end(_ck)
+                        return _hit
+                    _pg = doc[p_idx]
+                    _t_n = _time_c.perf_counter()
+                    if _is_gui_cluster:
+                        # Guillotine: grid solver trong vùng (khớp _gui_zone_layout_fn export).
+                        # trim = trimbox nếu lệch rect else rect-2*bleed (KHÔNG dò đường bế).
+                        if abs(_pg.trimbox.width - _pg.rect.width) > 1.0:
+                            _tw_g, _th_g = _pg.trimbox.width, _pg.trimbox.height
+                        else:
+                            _tw_g = _pg.rect.width - 2 * bleed_pt
+                            _th_g = _pg.rect.height - 2 * bleed_pt
+                        try:
+                            _sol = _sol_c(zone_w, zone_h, _tw_g, _th_g,
+                                          req.gap_x, req.gap_y, req.strategy, _sg_c)
+                            _r = {'items': [{
+                                'x': _c['x'], 'y': _c['y'],
+                                'width': _c['width'], 'height': _c['height'],
+                                'isRotated': _c.get('isRotated', False),
+                                'isRotated180': False,
+                            } for _c in _sol.get('cells', [])]}
+                        except Exception as _e_zg:
+                            logger.warning("preview gui zone p_idx=%s lỗi: %s", p_idx, _e_zg)
+                            _r = {'items': []}
+                        _ZONE_NEST_CACHE[_ck] = _r
+                        if len(_ZONE_NEST_CACHE) > _ZONE_NEST_CACHE_MAX:
+                            _ZONE_NEST_CACHE.popitem(last=False)
+                        return _r
+                    try:
+                        _r = _csl_c(
+                            _pg, zone_w, zone_h, req.gap_x, req.gap_y,
+                            strategy=req.strategy,
+                            shape_type_override=_ps if _ps else None,
+                            shape_props_override=_pp if _pp else None,
+                            bleed_pt=bleed_pt,
+                            secondary_gap=_sg_c,
+                            cut_type=_ct_cl,
+                            die_size_mode=_dsm_cl,
+                            die_offset_mm=_dom_cl,
+                        )
+                    except Exception as _e_zc:
+                        logger.warning("preview zone_layout_fn p_idx=%s lỗi: %s", p_idx, _e_zc)
+                        _r = {'items': []}
+                    _tclog(f"nest p_idx={p_idx} zone={round(zone_w,1)}x{round(zone_h,1)} "
+                           f"-> {len(_r.get('items', []))} con "
+                           f"({(_time_c.perf_counter() - _t_n) * 1000:.0f}ms)")
+                    _ZONE_NEST_CACHE[_ck] = _r
+                    if len(_ZONE_NEST_CACHE) > _ZONE_NEST_CACHE_MAX:
+                        _ZONE_NEST_CACHE.popitem(last=False)
+                    return _r
+
+                # cluster_w/h cho replicate_mixed theo sizing mode (mirror export).
+                _csm = req.cluster_sizing_mode
+                _tgx = (req.tile_gap_x or 0)
+                _tgy = (req.tile_gap_y or 0)
+                if _csm in ('grid', 'split_cols', 'split_rows'):
+                    if _csm == 'split_cols':
+                        _cc, _cr = max(1, req.cluster_cols or 2), 1
+                    elif _csm == 'split_rows':
+                        _cc, _cr = 1, max(1, req.cluster_rows or 2)
+                    else:
+                        _cc, _cr = max(1, req.cluster_cols or 2), max(1, req.cluster_rows or 2)
+                    _cw = (_uw - (_cc - 1) * _tgx) / _cc
+                    _ch = (_uh - (_cr - 1) * _tgy) / _cr
+                else:
+                    _cw = (req.cluster_w or 148.0 * MM)
+                    _ch = (req.cluster_h or 210.0 * MM)
+
+                # replicate_mixed cần full_layouts (nest ở kích thước cụm) — dựng như export.
+                full_layouts_c = {}
+                if combine_mode == 'replicate_mixed':
+                    for pi, _q, _tw, _th in page_infos_c:
+                        full_layouts_c[pi] = _zone_layout_fn_c(pi, _cw, _ch)
+
+                cluster_sheets = compute_cluster_sheets(
+                    page_infos=page_infos_c,
+                    full_layouts=full_layouts_c,
+                    zone_layout_fn=_zone_layout_fn_c,
+                    sheet_w=_uw,
+                    sheet_h=_uh,
+                    cluster_w=_cw,
+                    cluster_h=_ch,
+                    gap_x=req.gap_x,
+                    gap_y=req.gap_y,
+                    tile_gap_x=_tgx,
+                    tile_gap_y=_tgy,
+                    combine_mode=combine_mode,
+                    cluster_nesting=True,
+                    is_die_cut=True,
+                    zone_cols=max(1, req.cluster_cols or 2),
+                    zone_rows=max(1, req.cluster_rows or 1),
+                )
+                doc.close()
+
+                # Dựng MỌI tờ (frontend lật ◄ 1/N ►). zone modes → nhiều tờ (mỗi tờ 1
+                # bộ loại); replicate_mixed → 1 tờ mẫu. Mỗi tờ: cells abs + cutLines abs.
+                _n_sheets_c = len(cluster_sheets)
+
+                _mt_c = getattr(req, 'margin_top', 0) or 0
+                from app.workers.nup_artwork import die_polylines_for_placement as _die_pl_c
+
+                def _sheet_to_abs(ct_placements, tile_cut_lines):
+                    _cells = []
+                    _mw = 0.0
+                    _mh = 0.0
+                    for place in ct_placements:
+                        c = place.get('cell', {})
+                        w = place.get('width', 0)
+                        h = place.get('height', 0)
+                        _sp = place.get('src_page_idx', 0)
+                        abs_x = place.get('abs_x', 0) + _ml
+                        abs_y = _uh + _mb - place.get('abs_y', 0) - h
+                        _cd = {
+                            'x': place.get('abs_x', 0), 'y': place.get('abs_y', 0),
+                            'absX': abs_x, 'absY': abs_y,
+                            'width': w, 'height': h,
+                            'isRotated': c.get('isRotated', False),
+                            'isRotated180': c.get('isRotated180', False),
+                            'blockId': _sp,   # màu theo LOẠI (mỗi loại/vùng 1 màu)
+                            'pageIdx': _sp,
+                        }
+                        # Đường bế THẬT per-cell (như S&R) → contour đúng + transform xoay/lật.
+                        _geo = _die_geo_by_page_c.get(_sp)
+                        if _geo is not None:
+                            _ay_td = (_uh + _mb + _mt_c) - abs_y - h
+                            try:
+                                _cd['diePolylines'] = _die_pl_c(
+                                    _geo[0], _geo[1], abs_x, _ay_td,
+                                    is_rotated=c.get('isRotated', False),
+                                    is_rotated_180=c.get('isRotated180', False),
+                                )
+                            except Exception as _e_dpc:
+                                logger.debug("cluster die polylines build failed: %s", _e_dpc)
+                        _cells.append(_cd)
+                        _mw = max(_mw, abs_x + w)
+                        _mh = max(_mh, abs_y + h)
+                    _cv = sorted({round(x + _ml, 2) for x in tile_cut_lines.get('v', set())})
+                    _ch = sorted({round(_uh + _mb - y, 2) for y in tile_cut_lines.get('h', set())})
+                    return _cells, _mw, _mh, {"v": _cv, "h": _ch}
+
+                _sheets_out = []
+                for _pls, _cuts in cluster_sheets:
+                    _cells, _mw, _mh, _cl = _sheet_to_abs(_pls, _cuts)
+                    _sheets_out.append({
+                        "cells": _cells,
+                        "overallWidth": _mw,
+                        "overallHeight": _mh,
+                        "totalItems": len(_cells),
+                        "cutLines": _cl,
+                    })
+
+                # Tờ đầu ở top-level (tương thích code cũ); mọi tờ ở "sheets".
+                _first = _sheets_out[0] if _sheets_out else {
+                    "cells": [], "overallWidth": 0.0, "overallHeight": 0.0,
+                    "totalItems": 0, "cutLines": {"v": [], "h": []},
+                }
+                return {
+                    "success": True,
+                    "cells": _first["cells"],
+                    "overallWidth": _first["overallWidth"],
+                    "overallHeight": _first["overallHeight"],
+                    "totalItems": _first["totalItems"],
+                    "strategyUsed": "cluster_tile",
+                    "clusterCombineMode": combine_mode,
+                    "isMixedPreview": True,
+                    "absPlacement": True,
+                    "cutLines": _first["cutLines"],
+                    "sheets": _sheets_out,
+                    "sheetsNeeded": max(1, _n_sheets_c),
+                }
+
             if is_nup_multi:
+                _plog("ENTER is_nup_multi branch")
                 from app.workers.sticker_imposer_pkg.bin_packing import solve_auto_fill_mixed
                 from app.workers.nup_diecut import _find_largest_die_path
-                
+
                 bleed_pt = req.bleed or 0
 
                 # ── CNC ghép nhiều mẫu: dùng CHUNG helper với cnc_render (preview==output) ──
@@ -1161,10 +1524,17 @@ async def preview_layout(req: PreviewLayoutRequest):
                     page_dims_qty = []
                     _cnc_die_poly_by_page = {}
                     from app.workers.pont_collision import build_shapely_polygon_from_paths as _bspfp_cnc
+                    from app.workers.nup_diecut import resolve_one_dao_trim as _r1d_cnc
+                    _dsm_cnc = getattr(req, 'die_size_mode', 'die')
+                    _dom_cnc = getattr(req, 'die_offset_mm', 0)
+                    _ct_cnc = getattr(req, 'cut_type', 'default')
                     for pi in front_idxs:
                         pg = doc[pi]
                         lp = _find_largest_die_path(pg)
-                        if lp:
+                        _odt = _r1d_cnc(pg, _ct_cnc, _dsm_cnc, _dom_cnc)
+                        if _odt is not None:
+                            tw, th = _odt
+                        elif lp:
                             tw, th = lp['rect'].width, lp['rect'].height
                         else:
                             tw = pg.rect.width - 2 * bleed_pt
@@ -1249,12 +1619,25 @@ async def preview_layout(req: PreviewLayoutRequest):
                 _genuine_die_by_page = {}  # tín hiệu ĐÁNG TIN (kênh/màu bế) — phân biệt cùng/khác khuôn
                 _trim_by_page = {}
                 _die_poly_by_page = {}  # pi → đường bế THẬT (0..1) để preview vẽ contour đúng (kể cả CUSTOM)
+                # pi → (die_items, die_rect) để gắn diePolylines PER-CELL (đường bế THẬT,
+                # transform xoay/lật chính xác) GIỐNG S&R — thay outline scale-vào-bbox (méo).
+                _die_geo_by_page = {}
                 from app.workers.sticker_homogeneous import page_has_die as _page_has_die
                 from app.workers.pont_collision import build_shapely_polygon_from_paths as _bspfp
+                from app.workers.nup_diecut import resolve_one_dao_trim as _r1d_b
+                _dsm_b = getattr(req, 'die_size_mode', 'die')
+                _dom_b = getattr(req, 'die_offset_mm', 0)
+                _ct_b = getattr(req, 'cut_type', 'default')
                 for pi in range(doc.page_count):
                     pg = doc[pi]
-                    lp = _find_largest_die_path(pg)
-                    if lp:
+                    # 1 Dao + "theo kích thước trang": trim = mediabox ± offset (chung export).
+                    _odt = _r1d_b(pg, _ct_b, _dsm_b, _dom_b)
+                    # Page-mode không dùng khuôn thật: bỏ luôn dò path/contour để preview
+                    # chỉ còn lưới chữ nhật theo trang và tránh công việc thừa.
+                    lp = None if _odt is not None else _find_largest_die_path(pg)
+                    if _odt is not None:
+                        tw, th = _odt
+                    elif lp:
                         r = lp['rect']
                         tw, th = r.width, r.height
                     else:
@@ -1264,19 +1647,24 @@ async def preview_layout(req: PreviewLayoutRequest):
                         th -= 2 * bleed_pt
                     page_dims.append((pi, tw, th))
                     _has_die_by_page[pi] = lp is not None
-                    try:
-                        _genuine_die_by_page[pi] = _page_has_die(pg)
-                    except Exception:
+                    if _odt is not None:
                         _genuine_die_by_page[pi] = False
+                    else:
+                        try:
+                            _genuine_die_by_page[pi] = _page_has_die(pg)
+                        except Exception:
+                            _genuine_die_by_page[pi] = False
                     _trim_by_page[pi] = (tw, th)
                     # Đường bế THẬT của trang (chỉ khi có khuôn) → preview vẽ đúng contour
                     # cho MỌI hình kể cả CUSTOM (khuôn 'bù xén' trace). extract cache theo Page.
-                    if lp is not None:
+                    if lp is not None and _odt is None:
                         try:
                             _die_poly_by_page[pi] = _normalize_polygon_to_unit(
                                 _bspfp(pg.extract_vector_paths(), pg.rect))
                         except Exception:
                             _die_poly_by_page[pi] = None
+                        if lp.get('items'):
+                            _die_geo_by_page[pi] = (lp['items'], lp['rect'])
                 
                 # Sort by min dimension descending — MUST match nup_engine line 330
                 grouping_strategy = getattr(req, 'grouping_strategy', None) or 'maximize_area'
@@ -1333,7 +1721,11 @@ async def preview_layout(req: PreviewLayoutRequest):
                     _det_params = getattr(req, 'detected_shape_params_by_page', None) or {}
                     _adapters = []
                     for _p in range(doc.page_count):
-                        _hd = _genuine_die_by_page.get(_p, False)
+                        # Page-sized 1 Dao bỏ qua mọi khuôn có sẵn; không được dùng
+                        # khuôn cũ làm master/clip homogeneous trong preview.
+                        _page_sized_one_dao_pv = (_ct_b == 'one_dao' and _dsm_b == 'page')
+                        _hd = (False if _page_sized_one_dao_pv
+                               else _genuine_die_by_page.get(_p, False))
                         if _hd:
                             _s = (_det_shapes.get(str(_p)) or _det_shapes.get(_p))
                             try:
@@ -1501,6 +1893,7 @@ async def preview_layout(req: PreviewLayoutRequest):
                         gap=max(gap_x_pt, gap_y_pt),
                         allow_rotation=True,
                         exclude_zones=exclude_zones if exclude_zones else None,
+                        uniform_if_equal=(_ct_b == 'one_dao' and _dsm_b == 'page'),
                     )
                 
                 doc.close()
@@ -1509,11 +1902,17 @@ async def preview_layout(req: PreviewLayoutRequest):
                 # Packer trả top-left (y-down); căn giữa rồi flip → abs bottom-up sheet space.
                 _ml = getattr(req, 'margin_left', 0) or 0
                 _mb = getattr(req, 'margin_bottom', 0) or 0
+                _mt = getattr(req, 'margin_top', 0) or 0
                 _pl = bp_result['placements']
                 max_x_used = max((p['x'] + p['w'] for p in _pl), default=0.0)
                 max_bottom = max((p['y'] + p['h'] for p in _pl), default=0.0)
                 x_off = _ml + (req.usable_w - max_x_used) / 2 if max_x_used < req.usable_w else _ml
                 y_off = _mb + (req.usable_h - max_bottom) / 2 if max_bottom < req.usable_h else _mb
+
+                # Đường bế THẬT per-cell (như S&R) → mỗi ô vẽ đúng contour + transform
+                # xoay/lật, thay vì scale outline chuẩn hoá vào bbox (méo). Toạ độ TOP-DOWN
+                # trang đích: _ay_td = (usable_h + mb + mt) - abs_y - h (nhất quán S&R).
+                from app.workers.nup_artwork import die_polylines_for_placement as _die_pl_mixed
 
                 items = []
                 ov_w = 0.0
@@ -1521,7 +1920,7 @@ async def preview_layout(req: PreviewLayoutRequest):
                 for p in _pl:
                     abs_x = x_off + p['x']
                     abs_y = y_off + (max_bottom - p['y'] - p['h'])
-                    items.append({
+                    _cell_mixed = {
                         'x': p['x'],
                         'y': p['y'],
                         'absX': abs_x,
@@ -1531,7 +1930,19 @@ async def preview_layout(req: PreviewLayoutRequest):
                         'isRotated': p['is_rotated'],
                         'isRotated180': False,
                         'pageIdx': p['page_idx'],
-                    })
+                    }
+                    _geo = _die_geo_by_page.get(p['page_idx'])
+                    if _geo is not None:
+                        _ay_td = (req.usable_h + _mb + _mt) - abs_y - p['h']
+                        try:
+                            _cell_mixed['diePolylines'] = _die_pl_mixed(
+                                _geo[0], _geo[1], abs_x, _ay_td,
+                                is_rotated=p['is_rotated'],
+                                is_rotated_180=False,
+                            )
+                        except Exception as _e_dpl:
+                            logger.debug("mixed die polylines build failed: %s", _e_dpl)
+                    items.append(_cell_mixed)
                     ov_w = max(ov_w, abs_x + p['w'])
                     ov_h = max(ov_h, abs_y + p['h'])
 
@@ -2035,33 +2446,10 @@ async def preview_layout(req: PreviewLayoutRequest):
             logger.debug("CALLING compute_sticker_layout_for_page...")
             
             bleed_pt = req.bleed or 0
-            
-            is_cluster = (req.grouping_strategy == 'cluster_tile') and bool(getattr(req, 'is_die_cut', False))
-            req_cluster_w = req.cluster_w
-            req_cluster_h = req.cluster_h
-            
-            if is_cluster:
-                if req.cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
-                    if req.cluster_sizing_mode == 'split_cols':
-                        cluster_cols = max(1, req.cluster_cols or 2)
-                        cluster_rows = 1
-                    elif req.cluster_sizing_mode == 'split_rows':
-                        cluster_cols = 1
-                        cluster_rows = max(1, req.cluster_rows or 2)
-                    else:
-                        cluster_cols = max(1, req.cluster_cols or 2)
-                        cluster_rows = max(1, req.cluster_rows or 2)
-                        
-                    req_cluster_w = (req.usable_w - (cluster_cols - 1) * (req.tile_gap_x or 0)) / cluster_cols
-                    req_cluster_h = (req.usable_h - (cluster_rows - 1) * (req.tile_gap_y or 0)) / cluster_rows
-                
-                # Fallback if invalid
-                if not req_cluster_w or not req_cluster_h:
-                    req_cluster_w = 148.0 * 2.83465
-                    req_cluster_h = 210.0 * 2.83465
 
-            compute_w = req_cluster_w if is_cluster else req.usable_w
-            compute_h = req_cluster_h if is_cluster else req.usable_h
+            # cluster_tile đã xử lý ở nhánh _is_cluster_req đầu hàm (SSOT chung export).
+            compute_w = req.usable_w
+            compute_h = req.usable_h
 
             if not getattr(req, 'is_die_cut', False) and _tm in ('nup', 'step_repeat', 'booklet'):
                 from app.workers.nup_layout_solver import solve_optimal_layout, solve_manual
@@ -2087,97 +2475,69 @@ async def preview_layout(req: PreviewLayoutRequest):
                 result['widthUsed'] = result.get('overallWidth', 0)
                 result['heightUsed'] = result.get('overallHeight', 0)
                 result['items'] = result.get('cells', [])
+                _plog("branch B: before solve_optimal (nup grid)")
             else:
                 from app.workers.nup_sticker import compute_sticker_layout_for_page
-                result = compute_sticker_layout_for_page(
-                    page=page,
-                    sheet_usable_w=compute_w,
-                    sheet_usable_h=compute_h,
-                    gap_x=req.gap_x,
-                    gap_y=req.gap_y,
-                    strategy=req.strategy,
-                    shape_type_override=shape_override,
-                    # PARITY (audit shape-detection): truyền props từ Detection (SSOT)
-                    # GIỐNG output (nup_process_chunk). Trước đây preview KHÔNG truyền
-                    # props → solver tự classify lại → props (vd hướng búa/tạ) lệch
-                    # output → preview ≠ output với hình bất đối xứng.
-                    shape_props_override=(req.shape_props or None),
-                    bleed_pt=bleed_pt,
-                    # PARITY (audit): output (nup_process_chunk) truyền secondary_gap
-                    # (khe block phụ / split-gap); preview trước đây BỎ → block phụ xếp
-                    # khít hơn output. Truyền split_gap (points) frontend đã gửi cho khớp.
-                    secondary_gap=_resolve_preview_secondary_gap(req),
+                _plog("branch B: before compute_sticker_layout (die-cut/sticker nest)")
+                # ── CACHE nest single-page (branch A die-cut/sticker) ──
+                # compute_sticker_layout_for_page (parse vector + NFP Shapely) ~280ms/
+                # trang → đổi setting KHÔNG đụng layout (vd bật dim, lăn chuột) trước đây
+                # nest lại từ đầu. Key = MỌI arg truyền vào hàm nest + (file, mtime,
+                # page_idx) → cache CHỈ hit khi mọi tham số ảnh hưởng layout y hệt →
+                # không thể lệch preview. deepcopy vào/ra để downstream mutate (finalize/
+                # collision) không làm hỏng bản cache.
+                _sg_a = _resolve_preview_secondary_gap(req)
+                _ct_a = getattr(req, 'cut_type', 'default')
+                _dsm_a = getattr(req, 'die_size_mode', 'die')
+                _dom_a = getattr(req, 'die_offset_mm', 0)
+                try:
+                    _mtime_a = os.path.getmtime(file_path)
+                except OSError:
+                    _mtime_a = 0.0
+                _ck_a = (
+                    file_path, _mtime_a, page_idx,
+                    round(compute_w, 3), round(compute_h, 3),
+                    round(req.gap_x, 3), round(req.gap_y, 3),
+                    req.strategy, shape_override,
+                    _json_batch.dumps(req.shape_props or {}, sort_keys=True),
+                    round(bleed_pt, 3),
+                    round(_sg_a, 3) if _sg_a is not None else None,
+                    _ct_a, _dsm_a, round(float(_dom_a or 0), 3),
                 )
+                _hit_a = _NEST_A_CACHE.get(_ck_a)
+                if _hit_a is not None:
+                    _NEST_A_CACHE.move_to_end(_ck_a)
+                    result = _copy_mod.deepcopy(_hit_a)
+                    _plog("compute layout done (nest CACHE HIT)")
+                else:
+                    result = compute_sticker_layout_for_page(
+                        page=page,
+                        sheet_usable_w=compute_w,
+                        sheet_usable_h=compute_h,
+                        gap_x=req.gap_x,
+                        gap_y=req.gap_y,
+                        strategy=req.strategy,
+                        shape_type_override=shape_override,
+                        # PARITY (audit shape-detection): truyền props từ Detection (SSOT)
+                        # GIỐNG output (nup_process_chunk). Trước đây preview KHÔNG truyền
+                        # props → solver tự classify lại → props (vd hướng búa/tạ) lệch
+                        # output → preview ≠ output với hình bất đối xứng.
+                        shape_props_override=(req.shape_props or None),
+                        bleed_pt=bleed_pt,
+                        # PARITY (audit): output (nup_process_chunk) truyền secondary_gap
+                        # (khe block phụ / split-gap); preview trước đây BỎ → block phụ xếp
+                        # khít hơn output. Truyền split_gap (points) frontend đã gửi cho khớp.
+                        secondary_gap=_sg_a,
+                        # 1 Dao + "theo kích thước trang": trim = mediabox ± offset (chung export).
+                        cut_type=_ct_a,
+                        die_size_mode=_dsm_a,
+                        die_offset_mm=_dom_a,
+                    )
+                    _plog("compute layout done (nest)")
+                    _NEST_A_CACHE[_ck_a] = _copy_mod.deepcopy(result)
+                    if len(_NEST_A_CACHE) > _NEST_A_CACHE_MAX:
+                        _NEST_A_CACHE.popitem(last=False)
 
-            if is_cluster:
-                from app.workers.cluster_tile_engine import run_cluster_tile
-                
-                # Mock inputs to run_cluster_tile to match exactly what nup_engine does
-                p_idx = 0
-                items = result.get("items", [])
-                full_layouts = {
-                    p_idx: {
-                        'items': items,
-                        'widthUsed': result.get("widthUsed", 0),
-                        'heightUsed': result.get("heightUsed", 0)
-                    }
-                }
-                
-                ct_placements, _ = run_cluster_tile(
-                    page_infos=[(p_idx, 1, req.item_w, req.item_h)],
-                    full_layouts=full_layouts,
-                    sheet_w=req.usable_w,
-                    sheet_h=req.usable_h,
-                    cluster_w=req_cluster_w,
-                    cluster_h=req_cluster_h,
-                    gap_x=req.gap_x,
-                    gap_y=req.gap_y,
-                    tile_gap_x=req.tile_gap_x or req.gap_x,
-                    tile_gap_y=req.tile_gap_y or req.gap_y,
-                    cluster_nesting=True,
-                    is_die_cut=True
-                )
-                
-                # ── Branch B: CLUSTER-TILE → toạ độ TUYỆT ĐỐI khớp export (nup_engine L807-819) ──
-                # ct_offset_x = margin_left ; ct_offset_y = margin_top (= sheet_h - mb - usable_h).
-                # absY (bottom-up sheet) = usable_h + mb + mt - (abs_y_topdown + mt) - h.
-                doc.close()
-                _ml = getattr(req, 'margin_left', 0) or 0
-                _mb = getattr(req, 'margin_bottom', 0) or 0
-                _mt = getattr(req, 'margin_top', 0) or 0
-                abs_cells = []
-                max_w = 0.0
-                max_h = 0.0
-                for place in ct_placements:
-                    c = place.get('cell', {})
-                    w = place.get('width', 0)
-                    h = place.get('height', 0)
-                    ox = place.get('abs_x', 0) + _ml
-                    oy = place.get('abs_y', 0) + _mt
-                    abs_x = ox
-                    abs_y = req.usable_h + _mb + _mt - oy - h
-                    abs_cells.append({
-                        'x': place.get('abs_x', 0),
-                        'y': place.get('abs_y', 0),
-                        'absX': abs_x,
-                        'absY': abs_y,
-                        'width': w,
-                        'height': h,
-                        'isRotated': c.get('isRotated', False),
-                        'isRotated180': c.get('isRotated180', False),
-                        'blockId': place.get('cluster_idx', 0),
-                    })
-                    max_w = max(max_w, abs_x + w)
-                    max_h = max(max_h, abs_y + h)
-                return {
-                    "success": True,
-                    "cells": abs_cells,
-                    "overallWidth": max_w,
-                    "overallHeight": max_h,
-                    "totalItems": len(abs_cells),
-                    "strategyUsed": "cluster_tile",
-                    "absPlacement": True,
-                }
             base_poly = _build_pont_base_poly_for_preview(page, result, req, shape_override)
 
             # ── Đường bế THẬT cho preview (vẽ đúng outline, không phụ thuộc hình tổng hợp).
@@ -2244,6 +2604,7 @@ async def preview_layout(req: PreviewLayoutRequest):
                     _auto_fill = (_gq == 0) and not any(int(v or 0) > 0 for v in _tqbp.values())
                     if not _auto_fill:
                         items = items[:min(src_page_count, _capacity)]
+                _plog(f"RETURN branch E (relative grid, {_capacity} items)")
                 return {
                     "success": True,
                     "cells": items,
@@ -2310,6 +2671,7 @@ async def preview_layout(req: PreviewLayoutRequest):
 
             logger.info(f"[PREVIEW] abs S&R: shape={result.get('shapeType')} items={len(abs_cells)} (strategy={result.get('strategyUsed')})")
 
+            _plog(f"RETURN branch A die/S&R ({len(abs_cells)} cells)")
             return {
                 "success": True,
                 "cells": abs_cells,
@@ -2396,6 +2758,29 @@ json = _json_batch
 _BATCH_CAP_CACHE: "_OrderedDict_batch[tuple, int]" = _OrderedDict_batch()
 _BATCH_CAP_CACHE_MAX = 512
 
+# Cache nest 1 loại (kết quả layout của compute_sticker_layout_for_page) SỐNG QUA
+# NHIỀU REQUEST — nest NFP shape-aware ~270ms/loại, chia cụm 17 loại ≈ 4.7s/lần.
+# Không cache cross-request → mỗi preview (lăn chuột / đổi setting không đụng layout)
+# nest lại từ đầu. Key gồm file+mtime + zone dims + params ảnh hưởng layout.
+_ZONE_NEST_CACHE: "_OrderedDict_batch[tuple, dict]" = _OrderedDict_batch()
+_ZONE_NEST_CACHE_MAX = 2048
+
+# Cache nest single-page branch A (die-cut/sticker preview 1 trang) — cùng lý do
+# _ZONE_NEST_CACHE nhưng cho luồng preview 1 trang. Key = mọi arg của
+# compute_sticker_layout_for_page + (file, mtime, page_idx). deepcopy vào/ra.
+import copy as _copy_mod
+_NEST_A_CACHE: "_OrderedDict_batch[tuple, dict]" = _OrderedDict_batch()
+_NEST_A_CACHE_MAX = 1024
+
+# Cache nest branch A (preview 1 loại die-cut/sticker, /preview-layout) — CÙNG bản chất
+# _ZONE_NEST_CACHE nhưng cho preview đơn (không chia cụm). compute_sticker_layout_for_page
+# ~280ms/lần → đổi setting KHÔNG đụng layout (vd bật/tắt dim, lăn chuột) nest lại từ đầu.
+# Key = MỌI arg thực sự truyền vào hàm nest + (file, mtime, page_idx) → không thể lệch:
+# thiếu 1 arg mới sai, mà mọi arg đều có mặt. Chỉ cache RESULT của nest (không cache
+# finalize/collision/polylines downstream — chúng rẻ và phụ thuộc thêm state khác).
+_SINGLE_NEST_CACHE: "_OrderedDict_batch[tuple, dict]" = _OrderedDict_batch()
+_SINGLE_NEST_CACHE_MAX = 1024
+
 class PreviewLayoutBatchRequest(BaseModel):
     """Tính SỐ TEM/TỜ cho MỌI trang trong 1 lần — cột "Tem/tờ" bảng nhập SL.
 
@@ -2422,9 +2807,13 @@ class PreviewLayoutBatchRequest(BaseModel):
     cut_type: Optional[str] = "default"
     fill_block_gap: Optional[float] = 0
     split_gap: Optional[float] = 0
+    # 1 Dao: khuôn theo trang + offset co/mở (khớp resolve_one_dao_trim export).
+    die_size_mode: Optional[str] = "die"
+    die_offset_mm: Optional[float] = 0
     # cluster_tile: kích thước ô cụm (compute_w/h) — mirror single preview.
     grouping_strategy: str = "none"
     cluster_sizing_mode: str = "dims"
+    cluster_combine_mode: str = "replicate_mixed"
     cluster_cols: int = 2
     cluster_rows: int = 2
     cluster_w: float = 0
@@ -2506,6 +2895,7 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest):
                 json.dumps(p.get("shape_props") or {}, sort_keys=True),
                 round(bleed_pt, 3),
                 round(_secondary_gap, 3) if _secondary_gap is not None else None,
+                req.cut_type, req.die_size_mode, round(float(req.die_offset_mm or 0), 3),
                 round(p.get("item_w", 0) or 0, 3), round(p.get("item_h", 0) or 0, 3),
             )
             _cached = _BATCH_CAP_CACHE.get(_ck)
@@ -2529,6 +2919,9 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest):
                         shape_props_override=(p.get("shape_props") or None),
                         bleed_pt=bleed_pt,
                         secondary_gap=_secondary_gap,
+                        cut_type=getattr(req, 'cut_type', 'default'),
+                        die_size_mode=getattr(req, 'die_size_mode', 'die'),
+                        die_offset_mm=getattr(req, 'die_offset_mm', 0),
                     )
                     _cap = len(result.get("items", []))
                 else:

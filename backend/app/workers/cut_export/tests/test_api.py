@@ -10,11 +10,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.workers.cut_export.api import router
+from app.core.license_guard import require_license
 
 
 def _client():
     app = FastAPI()
     app.include_router(router)
+    app.dependency_overrides[require_license] = lambda: True
     return TestClient(app)
 
 
@@ -23,6 +25,13 @@ def test_list_profiles():
     assert r.status_code == 200
     ids = [p["id"] for p in r.json()["profiles"]]
     assert "yuty_a3_max" in ids and "generic_hpgl" in ids
+
+
+def test_connection_test_rejects_empty_host():
+    r = _client().post("/imposition/cut-connection-test", json={"host": "", "port": 9100})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "IP" in r.json()["error"]
 
 
 def test_cut_export_to_file(tmp_path):

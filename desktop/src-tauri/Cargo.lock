@@ -3097,6 +3097,7 @@ dependencies = [
  "tokio",
  "urlencoding",
  "webview2-com",
+ "windows",
 ]
 
 [[package]]
@@ -3123,6 +3124,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "windows",
 ]
 
 [[package]]

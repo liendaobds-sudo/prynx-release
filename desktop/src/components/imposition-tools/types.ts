@@ -59,17 +59,25 @@ import type { MergeSettings } from '../preprocess-tools/MergeTool';
 
 // ==================== SHARED CONSTANTS ====================
 
+/**
+ * Chỉ series ISO A (portrait). Không SRA3/B/Ledger — khổ máy in đặc thù
+ * lưu qua preset custom + usages[].
+ */
 export const PREDEFINED_SIZES: Record<string, { w: number; h: number; classification: 'offset' | 'in_nhanh'; gripperMargin: number }> = {
+    A7: { w: 74, h: 105, classification: 'in_nhanh', gripperMargin: 0 },
+    A6: { w: 105, h: 148, classification: 'in_nhanh', gripperMargin: 0 },
+    A5: { w: 148, h: 210, classification: 'in_nhanh', gripperMargin: 0 },
     A4: { w: 210, h: 297, classification: 'in_nhanh', gripperMargin: 0 },
-    A4_L: { w: 297, h: 210, classification: 'in_nhanh', gripperMargin: 0 },
     A3: { w: 297, h: 420, classification: 'in_nhanh', gripperMargin: 0 },
-    A3_L: { w: 420, h: 297, classification: 'in_nhanh', gripperMargin: 0 },
-    SRA3: { w: 320, h: 450, classification: 'in_nhanh', gripperMargin: 0 },
-    SRA3_L: { w: 450, h: 320, classification: 'in_nhanh', gripperMargin: 0 },
-    B: { w: 320, h: 430, classification: 'in_nhanh', gripperMargin: 0 },
-    Ledger: { w: 279, h: 432, classification: 'in_nhanh', gripperMargin: 0 },
-    Ledger_L: { w: 432, h: 279, classification: 'in_nhanh', gripperMargin: 0 },
+    A2: { w: 420, h: 594, classification: 'in_nhanh', gripperMargin: 0 },
+    A1: { w: 594, h: 841, classification: 'in_nhanh', gripperMargin: 0 },
+    A0: { w: 841, h: 1189, classification: 'in_nhanh', gripperMargin: 0 },
 };
+
+/** Default formsize + dims khi mount / heal (A3 — khổ in phổ biến). */
+export const DEFAULT_FORMSIZE = 'A3';
+export const DEFAULT_SHEET_W = PREDEFINED_SIZES.A3.w;
+export const DEFAULT_SHEET_H = PREDEFINED_SIZES.A3.h;
 
 // ==================== EXPORTED INTERFACES ====================
 
@@ -125,7 +133,8 @@ export interface NupSettings {
     clusterGapMode: 'item' | 'mark';
     clusterDistribution?: 'default' | 'type';
     clusterBorder: boolean;
-    clusterSizingMode?: 'dims' | 'grid';
+    clusterSizingMode?: 'dims' | 'split_cols' | 'split_rows';
+    clusterCombineMode?: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio';
     clusterCols?: number;
     clusterRows?: number;
     tileGapX?: number;
@@ -149,6 +158,8 @@ export interface NupSettings {
     markThickness?: number;
     markStyle?: 'default' | 'japanese';
     cutType?: 'default' | 'one_dao';
+    dieSizeMode?: 'die' | 'page';
+    dieOffsetMm?: number;
     fillBlockGap?: number;
     pontType?: 'none' | 'corner' | '5mm' | 'custom';
     pontConfig?: PontConfig;

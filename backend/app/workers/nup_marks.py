@@ -45,33 +45,30 @@ def _draw_ponts_on_page(page, placements, pont_config, sheet_w, sheet_h, margin_
             pont_shape.draw_circle(pdf_lib.Point(cx, cy), radius)
             pont_shape.finish(color=color, fill=color, width=0, oc=ocg_xref, item_name=item_name) if ocg_xref else pont_shape.finish(color=color, fill=color, width=0, item_name=item_name)
         elif p_shape == 'l_inverted':
+            # Góc L = MỘT polyline liền (điểm-đầu → ĐỈNH → điểm-cuối) để đỉnh có
+            # line join thật (miter), không phải 2 đoạn rời chạm nhau (đầu but-cap
+            # chồng lên → không liền mạch khi phóng to / máy cắt chạy path).
             if loc == 'TL':
-                pont_shape.draw_line(pdf_lib.Point(cx + radius, cy - radius), pdf_lib.Point(cx + radius, cy + radius))
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy + radius), pdf_lib.Point(cx + radius, cy + radius))
+                _pts = [(cx + radius, cy - radius), (cx + radius, cy + radius), (cx - radius, cy + radius)]
             elif loc == 'TR':
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy - radius), pdf_lib.Point(cx - radius, cy + radius))
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy + radius), pdf_lib.Point(cx + radius, cy + radius))
+                _pts = [(cx - radius, cy - radius), (cx - radius, cy + radius), (cx + radius, cy + radius)]
             elif loc == 'BL':
-                pont_shape.draw_line(pdf_lib.Point(cx + radius, cy - radius), pdf_lib.Point(cx + radius, cy + radius))
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy - radius), pdf_lib.Point(cx + radius, cy - radius))
-            elif loc == 'BR':
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy - radius), pdf_lib.Point(cx - radius, cy + radius))
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy - radius), pdf_lib.Point(cx + radius, cy - radius))
-            pont_shape.finish(color=color, width=p_thick, oc=ocg_xref, item_name=item_name) if ocg_xref else pont_shape.finish(color=color, width=p_thick, item_name=item_name)
+                _pts = [(cx + radius, cy + radius), (cx + radius, cy - radius), (cx - radius, cy - radius)]
+            else:  # BR
+                _pts = [(cx - radius, cy + radius), (cx - radius, cy - radius), (cx + radius, cy - radius)]
+            pont_shape.draw_polyline([pdf_lib.Point(_x, _y) for _x, _y in _pts])
+            pont_shape.finish(color=color, width=p_thick, line_join=0, oc=ocg_xref, item_name=item_name) if ocg_xref else pont_shape.finish(color=color, width=p_thick, line_join=0, item_name=item_name)
         elif p_shape == 'l_corner':
             if loc == 'TL':
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy - radius), pdf_lib.Point(cx - radius, cy + radius))
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy - radius), pdf_lib.Point(cx + radius, cy - radius))
+                _pts = [(cx - radius, cy + radius), (cx - radius, cy - radius), (cx + radius, cy - radius)]
             elif loc == 'TR':
-                pont_shape.draw_line(pdf_lib.Point(cx + radius, cy - radius), pdf_lib.Point(cx + radius, cy + radius))
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy - radius), pdf_lib.Point(cx + radius, cy - radius))
+                _pts = [(cx + radius, cy + radius), (cx + radius, cy - radius), (cx - radius, cy - radius)]
             elif loc == 'BL':
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy - radius), pdf_lib.Point(cx - radius, cy + radius))
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy + radius), pdf_lib.Point(cx + radius, cy + radius))
-            elif loc == 'BR':
-                pont_shape.draw_line(pdf_lib.Point(cx + radius, cy - radius), pdf_lib.Point(cx + radius, cy + radius))
-                pont_shape.draw_line(pdf_lib.Point(cx - radius, cy + radius), pdf_lib.Point(cx + radius, cy + radius))
-            pont_shape.finish(color=color, width=p_thick, oc=ocg_xref, item_name=item_name) if ocg_xref else pont_shape.finish(color=color, width=p_thick, item_name=item_name)
+                _pts = [(cx - radius, cy - radius), (cx - radius, cy + radius), (cx + radius, cy + radius)]
+            else:  # BR
+                _pts = [(cx + radius, cy - radius), (cx + radius, cy + radius), (cx - radius, cy + radius)]
+            pont_shape.draw_polyline([pdf_lib.Point(_x, _y) for _x, _y in _pts])
+            pont_shape.finish(color=color, width=p_thick, line_join=0, oc=ocg_xref, item_name=item_name) if ocg_xref else pont_shape.finish(color=color, width=p_thick, line_join=0, item_name=item_name)
         pont_shape.commit()
 
     # Paper guides

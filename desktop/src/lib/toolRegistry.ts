@@ -697,7 +697,7 @@ export const TOOL_KEYWORDS: Record<string, string> = {
   upscale: 'upscale super resolution enlarge ai sr phong to net cang',
   // QC / standalone
   combine_pdf: 'combine merge join concat interleave insert ghep noi gop tron xen ke chen trang le chan file',
-  compare_pdf: 'compare diff pixel difference so sanh do pixel ban mau ban binh',
-  compare_text: 'compare text diff so sanh van ban chu',
+  compare_pdf: 'compare diff pixel difference so sanh do pixel ban mau ban binh kiem in khong ocr',
+  compare_text: 'compare text diff so sanh van ban chu khong thay so pixel in',
   ai_qc: 'ai qc spell check grammar llm soat loi chinh ta ngu phap',
 };

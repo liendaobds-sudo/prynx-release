@@ -12,6 +12,8 @@ export interface NupSlice {
     setGridStrategy: (v: NupSettings['gridStrategy']) => void;
     groupingStrategy: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     setGroupingStrategy: (v: 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none') => void;
+    clusterCombineMode: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio';
+    setClusterCombineMode: (v: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio') => void;
     clusterTileW: number;
     setClusterTileW: (v: number) => void;
     clusterTileH: number;
@@ -62,6 +64,7 @@ export interface NupSlice {
 
 export const NUP_PERSIST_KEYS = [
     'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy',
+    'clusterCombineMode',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
     'tileGapX', 'tileGapY', 'clusterNesting', 'duplexFlow', 'align',
     'clusterMode', 'clusterCount', 'clusterGap', 'clusterGapMode', 'clusterDistribution',
@@ -79,6 +82,8 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
     setGridStrategy: (v) => set({ gridStrategy: v }),
     groupingStrategy: 'maximize_area',
     setGroupingStrategy: (v) => set({ groupingStrategy: v }),
+    clusterCombineMode: 'replicate_mixed',
+    setClusterCombineMode: (v) => set({ clusterCombineMode: v }),
     clusterTileW: 148,
     setClusterTileW: (v) => set({ clusterTileW: v }),
     clusterTileH: 210,

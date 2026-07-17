@@ -27,6 +27,7 @@ from app.workers.cut_export.profile import (
 from app.workers.cut_export import profile_store
 from app.workers.cut_export import service
 from app.workers.cut_export.pdf_source import build_cut_model_from_pdf, preview_svg_from_pdf, list_cut_layers, list_cut_pages
+from app.workers.cut_export.transport.tcp import probe_tcp
 
 router = APIRouter(prefix="/imposition", tags=["cut-export"], dependencies=[Depends(require_license)])
 
@@ -56,6 +57,21 @@ class CutExportRequest(BaseModel):
     pont_config: Optional[dict] = None
     ignore_limits: bool = False
     copies: int = 1
+
+
+class CutConnectionTestRequest(BaseModel):
+    host: str
+    port: int = 9100
+    timeout: float = Field(default=3.0, ge=0.2, le=10.0)
+
+
+@router.post("/cut-connection-test")
+def cut_connection_test(req: CutConnectionTestRequest):
+    """Kiểm tra máy có mở cổng TCP; không gửi dữ liệu và không khởi động dao."""
+    try:
+        return probe_tcp(req.host, req.port, req.timeout)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 @router.get("/cut-profiles")

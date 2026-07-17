@@ -9,6 +9,7 @@ import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
+import { usePrintDialog } from './shared/usePrintDialog';
 
 // ── Types ──
 interface PreflightIssue {
@@ -61,8 +62,9 @@ const INSPECT_RULES = [
 
 type Phase = 'upload' | 'workspace';
 
-export default function PreflightTab({ onDirtyChange }: any = {}) {
+export default function PreflightTab({ onDirtyChange, tabId, isActive }: any = {}) {
   const { t } = useTranslation();
+  const { openPrintDialog, printDialog } = usePrintDialog();
   const [phase, setPhase] = useState<Phase>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [fileId, setFileId] = useState('');
@@ -118,6 +120,29 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
       return () => { isCancelled = true; };
     }
   }, [file]);
+
+  // Ctrl+P → in ĐÚNG cái viewer đang hiển thị. Viewer bám theo pdfUrl (bản gốc, hoặc
+  // bản ĐÃ SỬA sau khi chạy fix — setPdfUrl bằng blob kết quả). Nên in fetch từ pdfUrl
+  // để "view sao in vậy"; KHÔNG dùng state `file` (luôn là bản gốc → sau fix sẽ in nhầm
+  // bản chưa sửa). Dùng hộp thoại in hợp nhất (usePrintDialog).
+  const handlePrint = useCallback(async () => {
+    try {
+      if (!pdfUrl) { setError(t('preflight.preflight:chua_co_file_de_in')); return; }
+      const source = await (await fetch(pdfUrl)).blob();
+      await openPrintDialog({ source, numPages: report?.total_pages || 1 });
+    } catch (e: any) {
+      if (e?.message === 'NOT_TAURI') { setError(t('preflight.preflight:in_chi_ho_tro_trong_ung_dung')); return; }
+      setError(t('preflight.preflight:khong_the_in_file') + (e?.message || e));
+    }
+  }, [pdfUrl, openPrintDialog, report, t]);
+
+  useEffect(() => {
+    const onTriggerPrint = (e: any) => {
+      if (isActive && e.detail?.tabId === tabId) handlePrint();
+    };
+    window.addEventListener('app-trigger-print', onTriggerPrint);
+    return () => window.removeEventListener('app-trigger-print', onTriggerPrint);
+  }, [isActive, tabId, handlePrint]);
 
   const fileSizeStr = file ? (file.size / (1024 * 1024)).toFixed(2) + ' MB' : '';
 
@@ -242,6 +267,7 @@ export default function PreflightTab({ onDirtyChange }: any = {}) {
   // ════════════════════════════════════════
   return (
     <div className="w-full h-full flex flex-col bg-slate-50 dark:bg-[#1a1a1a]">
+      {printDialog}
       <div className="flex-1 flex flex-row overflow-hidden relative animate-fade-in">
 
         {error && (

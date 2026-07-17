@@ -6,16 +6,55 @@ Requirements: 5.2 (gửi tới IP:port cấu hình), 5.4 (lỗi báo rõ, không
 from __future__ import annotations
 
 import socket
+import time
 
 from app.workers.cut_export.cut_model import SendResult
+
+
+def validate_tcp_target(host: str, port: int) -> tuple[str, int]:
+    """Chuẩn hóa đích TCP và báo lỗi cấu hình trước khi chạm socket."""
+    clean_host = str(host or "").strip()
+    if not clean_host:
+        raise ValueError("Chưa nhập IP hoặc tên máy bế.")
+    try:
+        clean_port = int(port)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Cổng TCP không hợp lệ.") from exc
+    if not 1 <= clean_port <= 65535:
+        raise ValueError("Cổng TCP phải nằm trong khoảng 1–65535.")
+    return clean_host, clean_port
+
+
+def probe_tcp(host: str, port: int = 9100, timeout: float = 3.0) -> dict:
+    """Thử mở TCP tới máy, không gửi lệnh cắt và không coi đây là protocol ACK."""
+    clean_host, clean_port = validate_tcp_target(host, port)
+    started = time.perf_counter()
+    try:
+        with socket.create_connection((clean_host, clean_port), timeout=timeout) as sock:
+            peer = sock.getpeername()[0]
+        return {
+            "ok": True,
+            "host": clean_host,
+            "port": clean_port,
+            "resolved_ip": peer,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "detail": "Đã mở được cổng TCP. Chưa xác nhận máy hiểu lệnh PLT/HPGL.",
+        }
+    except (OSError, socket.timeout) as exc:
+        return {
+            "ok": False,
+            "host": clean_host,
+            "port": clean_port,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "error": f"Không mở được TCP {clean_host}:{clean_port}: {exc}",
+        }
 
 
 class TcpTransport:
     channel = "tcp"
 
     def __init__(self, host: str, port: int = 9100, timeout: float = 10.0):
-        self.host = host
-        self.port = int(port)
+        self.host, self.port = validate_tcp_target(host, port)
         self.timeout = timeout
 
     def send(self, data: bytes) -> SendResult:

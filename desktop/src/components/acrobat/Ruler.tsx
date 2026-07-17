@@ -174,7 +174,7 @@ export function Ruler({ orientation, scrollContainerRef, zoom, unit, thickness =
       // tìm thấy trang (giữ hành vi cũ). Vì draw() chạy trong RAF loop liên tục,
       // getBoundingClientRect luôn phản ánh vị trí trang hiện tại.
       const canvasRect = canvas.getBoundingClientRect();
-      const anchorEl = pageAnchorId ? document.getElementById(pageAnchorId) : null;
+      const anchorEl = pageAnchorId ? scrollContainerRef.current?.querySelector<HTMLElement>(`#${pageAnchorId}`) : null;
       let anchorOffset: number;
       if (anchorEl) {
         const pr = anchorEl.getBoundingClientRect();

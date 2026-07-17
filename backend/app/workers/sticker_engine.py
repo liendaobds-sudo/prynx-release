@@ -112,26 +112,6 @@ def _inpaint_color_fill(sub_img, sub_csm, sub_bleed, max_dim: int = 4000):
     return out
 
 
-def _rgb_to_cmyk(rgb):
-    """Chuyển ảnh RGB (H,W,3) uint8 → CMYK (H,W,4) uint8, K=0 (không sinh đen).
-
-    Dùng cho vành bù xén (bleed): màu bleed lấy từ ảnh pdfium render (RGB), nhưng
-    artwork gốc + đầu ra in là CMYK. Ghi bleed ở DeviceRGB → RIP nong RGB→CMYK bằng
-    phép KHÁC lúc raster → lệch màu ở mép nối bleed↔artwork. Nghịch đảo đơn giản
-    C=255−R, M=255−G, Y=255−B, K=0 giữ ĐÚNG mặt CMY (không chèn đen vào màu nhạt như
-    nền kem) → mép khớp màu. K=0 vì nền tem thường không có thành phần đen; đen/rich-
-    black ở mép (hiếm với tem bế) sẽ thành CMY nặng nhưng vành bleed bị cắt bỏ nên
-    không hại. Byte layout (C,M,Y,K straight, 0=không mực) khớp nhánh solid-CMYK.
-    """
-    h, w = rgb.shape[:2]
-    cmyk = np.empty((h, w, 4), dtype=np.uint8)
-    cmyk[:, :, 0] = 255 - rgb[:, :, 0]
-    cmyk[:, :, 1] = 255 - rgb[:, :, 1]
-    cmyk[:, :, 2] = 255 - rgb[:, :, 2]
-    cmyk[:, :, 3] = 0
-    return cmyk
-
-
 def _band_tiles(band, band_radius: int, tile: int = 1024):
     """Sinh (crop_slice, core_slice) cho MỖI ô tile×tile GIAO với band.
 
@@ -863,15 +843,11 @@ class StickerEngine:
                         # (nearest/inpaint/solid fill) → dùng trực tiếp, cạnh chỉ còn màu↔màu.
                         bleed_rgb = bleed_colors
 
-                        # Đồng bộ HỆ MÀU với artwork gốc (CMYK): màu bleed image/inpaint
-                        # lấy từ ảnh pdfium render (RGB). Ghi ở DeviceRGB → RIP nong RGB→CMYK
-                        # bằng phép KHÁC lúc raster → lệch màu ở mép nối bleed↔artwork. Chuyển
-                        # sang CMYK (K=0) để mép khớp: nghịch đảo C=255−R… tái tạo gần đúng CMY
-                        # gốc (vd nền kem RGB(243,237,227) → C5 M7 Y11 K0 ≈ C4 M5 Y10 gốc).
-                        # Nhánh solid-CMYK (4 kênh) đã là CMYK; chỉ chuyển khi còn 3 kênh.
-                        if not is_bleed_cmyk and bleed_rgb.ndim == 3 and bleed_rgb.shape[2] == 3:
-                            bleed_rgb = _rgb_to_cmyk(bleed_rgb)
-                            is_bleed_cmyk = True
+                        # image/inpaint được lấy từ bản render RGB của chính artwork, vì
+                        # vậy phải giữ DeviceRGB để bảo toàn đúng các mẫu màu đã lấy ở mép.
+                        # Không thể khôi phục CMYK gốc bằng C=255-R, M=255-G, Y=255-B,
+                        # K=0: phép đó làm mất K/ICC/spot alternate và gây lệch màu khi RIP.
+                        # Chỉ nhánh solid có 4 kênh do người dùng nhập mới là DeviceCMYK.
 
                         # LOSSLESS (zlib/FlateDecode) cho CẢ RGB lẫn CMYK. TRƯỚC đây RGB
                         # lưu JPEG q90 → ringing (Gibbs) ở mọi ranh giới tương phản cao:

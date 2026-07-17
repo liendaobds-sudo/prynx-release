@@ -2,35 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '../Button';
 import { useTranslation } from 'react-i18next';
+import {
+    formUsages,
+    primaryClassificationFromUsages,
+    type PaperUsage,
+    type SavedForm,
+} from './paperUtils';
 
-export type PaperUsage = 'in_nhanh' | 'offset' | 'diecut' | 'nup';
-
-export interface SavedForm {
-    id: string;
-    name: string;
-    w: number;
-    h: number;
-    marginTop: number;
-    marginBottom: number;
-    marginLeft: number;
-    marginRight: number;
-    marginMode?: 'labels_only' | 'include_marks';
-    classification?: 'offset' | 'in_nhanh';
-    usages?: PaperUsage[];
-    gripperMargin?: number;
-}
-
-/**
- * Trả về danh sách mục đích sử dụng của một khổ giấy đã lưu.
- * Ưu tiên `usages` (model mới, đa-mục-đích). Nếu chưa có (form cũ chỉ có
- * `classification`) thì suy ra để giữ tương thích ngược:
- *   - classification === 'offset' → ['offset']
- *   - mọi giá trị khác / undefined → ['in_nhanh']
- */
-export function formUsages(f: Pick<SavedForm, 'usages' | 'classification'>): PaperUsage[] {
-    if (Array.isArray(f.usages) && f.usages.length > 0) return f.usages;
-    return f.classification === 'offset' ? ['offset'] : ['in_nhanh'];
-}
+export type { PaperUsage, SavedForm };
+export { formUsages };
 
 export function usePaperPresets(storageKey: string) {
     const [savedForms, setSavedForms] = useState<SavedForm[]>([]);
@@ -72,7 +52,9 @@ export function PaperSettingsDialog({
     isOpen, onClose, 
     width, height, marginTop, marginBottom, marginLeft, marginRight, marginMode,
     classification, gripperMargin,
-    onApply, savedForms, onSavePreset, onUpdatePreset, onDeletePreset, currentFormsize
+    onApply, savedForms, onSavePreset, onUpdatePreset, onDeletePreset, currentFormsize,
+    /** Usages pre-tick khi tạo mới (theo tool: diecut/nup/…). */
+    defaultUsages,
 }: {
     isOpen: boolean;
     onClose: () => void;
@@ -87,6 +69,7 @@ export function PaperSettingsDialog({
     onUpdatePreset: (id: string, name: string, w: number, h: number, mT: number, mB: number, mL: number, mR: number, mode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripperMargin: number, usages: PaperUsage[]) => void;
     onDeletePreset: (id: string) => void;
     currentFormsize: string;
+    defaultUsages?: PaperUsage[];
 }) {
   const { t } = useTranslation();
     const [presetName, setPresetName] = useState("");
@@ -97,24 +80,20 @@ export function PaperSettingsDialog({
     const [mL, setML] = useState(marginLeft);
     const [mR, setMR] = useState(marginRight);
     const [mMode, setMMode] = useState(marginMode);
-    const [usages, setUsages] = useState<PaperUsage[]>(
-        classification === 'offset' ? ['offset'] : ['in_nhanh']
-    );
+    const initialUsages = (): PaperUsage[] =>
+        defaultUsages?.length
+            ? [...defaultUsages]
+            : (classification === 'offset' ? ['offset'] : ['in_nhanh']);
+    const [usages, setUsages] = useState<PaperUsage[]>(initialUsages);
     const [gripper, setGripper] = useState(gripperMargin || 0);
 
-    // Phân loại chính (giữ tham số classification positional cho logic margin/gripper +
-    // paperClassification cũ): có offset → 'offset', còn lại → 'in_nhanh'.
-    const primaryClassification: 'offset' | 'in_nhanh' = usages.includes('offset') ? 'offset' : 'in_nhanh';
+    const primaryClassification = primaryClassificationFromUsages(usages);
 
     const toggleUsage = (u: PaperUsage) => {
         setUsages(prev => {
             const has = prev.includes(u);
             const next = has ? prev.filter(x => x !== u) : [...prev, u];
-            // Bật offset thì reset gripper hợp lý; bỏ offset (không còn offset) thì gripper về 0.
-            if (u === 'offset') {
-                if (!has) { /* vừa bật offset, giữ gripper hiện tại */ }
-                else { setGripper(0); }
-            }
+            if (u === 'offset' && has) setGripper(0);
             return next;
         });
     };
@@ -124,7 +103,7 @@ export function PaperSettingsDialog({
     useEffect(() => {
         if (isOpen) { 
             setW(width); setH(height); setMT(marginTop); setMB(marginBottom); setML(marginLeft); setMR(marginRight); setMMode(marginMode); 
-            setUsages(classification === 'offset' ? ['offset'] : ['in_nhanh']); setGripper(gripperMargin || 0);
+            setGripper(gripperMargin || 0);
             if (isEditing) {
                 const f = savedForms.find(x => x.id === currentFormsize);
                 if (f) {
@@ -132,12 +111,20 @@ export function PaperSettingsDialog({
                     if (f.marginMode) setMMode(f.marginMode);
                     setUsages(formUsages(f));
                     if (f.gripperMargin !== undefined) setGripper(f.gripperMargin);
+                } else {
+                    setUsages(initialUsages());
                 }
             } else {
                 setPresetName("");
+                // Tạo mới: tick theo tool context (diecut/nup/…), không luôn in_nhanh.
+                setUsages(
+                    defaultUsages?.length
+                        ? [...defaultUsages]
+                        : (classification === 'offset' ? ['offset'] : ['in_nhanh']),
+                );
             }
         }
-    }, [isOpen, width, height, marginTop, marginBottom, marginLeft, marginRight, marginMode, classification, gripperMargin, currentFormsize, savedForms, isEditing]);
+    }, [isOpen, width, height, marginTop, marginBottom, marginLeft, marginRight, marginMode, classification, gripperMargin, currentFormsize, savedForms, isEditing, defaultUsages]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {

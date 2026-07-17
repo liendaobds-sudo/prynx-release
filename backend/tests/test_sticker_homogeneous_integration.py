@@ -156,6 +156,72 @@ def test_homogeneous_branch_routing_and_src_page_idx(monkeypatch):
         assert "abs_x" in pl and "abs_y" in pl and "original_cell_y" in pl
 
 
+def test_one_dao_page_mode_does_not_use_homogeneous_clip(monkeypatch):
+    """1 Dao theo kích thước trang phải bỏ qua khuôn master có sẵn.
+
+    Nếu homogeneous còn bật, process_chunk sẽ tạo homogeneous_clip từ artwork bbox
+    và place_one_artwork return sớm trước nhánh clip chữ nhật theo kích thước trang.
+    """
+    n_pages = 2
+    find_calls = {"n": 0}
+
+    def _fake_find_die(_src_page):
+        idx = find_calls["n"]
+        find_calls["n"] += 1
+        if idx == 0:
+            return {
+                "rect": pdf_lib.Rect(20.0, 20.0, 120.0, 100.0),
+                "items": [], "color": (0, 1, 1, 0), "width": 0.5,
+            }
+        return None
+
+    monkeypatch.setattr(nup_engine, "_find_largest_die_path", _fake_find_die)
+    monkeypatch.setattr(nup_engine, "compute_sticker_layout_for_page", _canned_layout)
+
+    die_calls = {"n": 0}
+    def _fake_page_has_die(_pg):
+        idx = die_calls["n"]
+        die_calls["n"] += 1
+        return idx == 0
+    monkeypatch.setattr(sh, "page_has_die", _fake_page_has_die)
+
+    captured = {}
+    def _capture_chunk(args):
+        captured["precalc"] = args[37]
+        captured["homogeneous_mode"] = args[-2]
+        captured["master_idx"] = args[-1]
+        raise _StopEngine()
+    monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "src.pdf")
+        out = os.path.join(td, "out.pdf")
+        _make_blank_pdf(src, n_pages)
+        settings = {
+            "isDieCutMode": True,
+            "sheetWidth": 320, "sheetHeight": 450,
+            "targetQuantity": 0, "targetQuantitiesByPage": {},
+            "detectedShapesByPage": {"0": "CIRCLE_ELLIPSE"},
+            "gridStrategy": "optimal_auto",
+            "groupingStrategy": "maximize_area",
+            "pontType": "none",
+            "cutType": "one_dao",
+            "dieSizeMode": "page",
+            "dieOffsetMm": 0,
+        }
+        with pytest.raises(_StopEngine):
+            nup_engine.run_nup_engine(src, out, settings, job_id="t-one-dao-page")
+
+    assert captured["homogeneous_mode"] is False
+    assert captured["master_idx"] is None
+    sheet0 = captured["precalc"][0]
+    assert len({(p["width"], p["height"], p["cell"]["isRotated"]) for p in sheet0}) == 1
+    src_order = [p["src_page_idx"] for p in sheet0]
+    assert src_order == sorted(src_order)
+    assert set(src_order) == {0, 1}
+    assert abs(src_order.count(0) - src_order.count(1)) <= 1
+
+
 def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
     """Regression: chế độ đồng nhất PHẢI chạy khi nhập SỐ LƯỢNG khác nhau (không auto-fill).
 
@@ -434,6 +500,31 @@ class _FakeSrcDoc:
 
     def __getitem__(self, _idx):
         return object()
+
+
+def test_one_dao_page_clip_is_exact_trim_even_at_outer_sheet_edge():
+    """Tem sát lề không được nới clip thêm bleed trong page-sized 1 Dao."""
+    from app.workers.nup_artwork import resolve_die_output_clip
+
+    trim = pdf_lib.Rect(10.0, 20.0, 110.0, 100.0)
+    bleed = pdf_lib.Rect(4.0, 14.0, 116.0, 106.0)
+    # Mô phỏng ô ngoài cùng: logic block cũ cũng trả full bleed ở mọi mép ngoài.
+    outer_clip = pdf_lib.Rect(4.0, 14.0, 116.0, 106.0)
+
+    actual = resolve_die_output_clip(trim, bleed, outer_clip, "one_dao", "page")
+    assert (actual.x0, actual.y0, actual.x1, actual.y1) == (10.0, 20.0, 110.0, 100.0)
+
+
+def test_existing_die_mode_keeps_outer_bleed_clip():
+    """Không làm đổi hành vi bù xén của chế độ lấy khuôn có sẵn."""
+    from app.workers.nup_artwork import resolve_die_output_clip
+
+    trim = pdf_lib.Rect(10.0, 20.0, 110.0, 100.0)
+    bleed = pdf_lib.Rect(4.0, 14.0, 116.0, 106.0)
+    outer_clip = pdf_lib.Rect(4.0, 14.0, 116.0, 106.0)
+
+    actual = resolve_die_output_clip(trim, bleed, outer_clip, "one_dao", "die")
+    assert (actual.x0, actual.y0, actual.x1, actual.y1) == (4.0, 14.0, 116.0, 106.0)
 
 
 def _place_homogeneous(is_rotated: bool, is_rotated_180: bool = False):

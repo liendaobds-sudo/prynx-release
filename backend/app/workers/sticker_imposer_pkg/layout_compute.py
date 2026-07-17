@@ -13,6 +13,7 @@ from app.workers.nup_diecut import (
     _find_largest_die_path,
     extract_page_die_cut_polygon,
     get_optimal_head_to_tail_overlap,
+    resolve_one_dao_trim,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,12 @@ def compute_sticker_layout_for_page(
     bleed_pt: float = 0.0,
 
     secondary_gap: float = None,
+
+    cut_type: str = 'default',
+
+    die_size_mode: str = 'die',
+
+    die_offset_mm: float = 0,
 
 ) -> dict:
 
@@ -139,9 +146,20 @@ def compute_sticker_layout_for_page(
 
     # ── Step 1: Determine trim dimensions from page ──
 
-    largest_path = _find_largest_die_path(page)
+    # 1 Dao + "theo kích thước trang": trim = page.rect ± offset (nguồn chân lý dùng
+    # chung với export). BỎ QUA dò đường bế → layout tạo ô đúng kích thước trang, khớp
+    # place_one_artwork (die_box cũng = rect ± offset) → clip không cắt mất tem.
+    _one_dao_trim = resolve_one_dao_trim(page, cut_type, die_size_mode, die_offset_mm)
 
-    if largest_path:
+    largest_path = None if _one_dao_trim is not None else _find_largest_die_path(page)
+
+    if _one_dao_trim is not None:
+
+        trim_w, trim_h = _one_dao_trim
+
+        logger.debug(f"   TRIM: 1-dao page-mode → trim_w={trim_w:.2f} trim_h={trim_h:.2f}")
+
+    elif largest_path:
 
         r = largest_path['rect']
 
@@ -187,11 +205,18 @@ def compute_sticker_layout_for_page(
 
     _auto_detected_props = {}
 
-    # Chỉ chạy classify_shape khi THỰC SỰ cần (thiếu override type HOẶC thiếu
-    # override props). Khi Detection (SSOT) đã cấp đủ type+props → bỏ qua, tránh
-    # phân loại "tính-rồi-vứt" trong vòng nóng layout (audit shape-detection #2).
-
-    _need_auto = (not shape_type) or (not shape_props_override)
+    # 1 Dao + page-mode: hình cắt là CHỮ NHẬT full trang → ép RECTANGLE, KHÔNG dò
+    # đường bế / classify (base_poly nest phải là chữ nhật trang, không theo die-path
+    # nhỏ hơn → nếu không tem nest chồng theo hình nhỏ, chồng mực khi cắt thẳng).
+    if _one_dao_trim is not None:
+        shape_type = 'RECTANGLE'
+        shape_props = {}
+        _need_auto = False
+    else:
+        # Chỉ chạy classify_shape khi THỰC SỰ cần (thiếu override type HOẶC thiếu
+        # override props). Khi Detection (SSOT) đã cấp đủ type+props → bỏ qua, tránh
+        # phân loại "tính-rồi-vứt" trong vòng nóng layout (audit shape-detection #2).
+        _need_auto = (not shape_type) or (not shape_props_override)
 
     if _need_auto:
 
@@ -213,7 +238,13 @@ def compute_sticker_layout_for_page(
 
             logger.debug(f"   SHAyE: classify_shape failed: {e}")
 
-    if not shape_type:
+    if _one_dao_trim is not None:
+
+        # page-mode: giữ RECTANGLE + shape_props={} đã set ở trên (KHÔNG honor
+        # override props của hình cũ → base_poly nest = chữ nhật trang).
+        pass
+
+    elif not shape_type:
 
         # No override — use auto-detected shape
 
@@ -293,7 +324,14 @@ def compute_sticker_layout_for_page(
 
     base_poly = None
 
-    if strategy in ('optimal_auto', 'head_to_tail') and hasattr(page, 'extract_vector_paths'):
+    # 1 Dao + page-mode: base_poly (va chạm/nest) là CHỮ NHẬT trim full trang, KHÔNG
+    # NFP / dò đường bế (die-path nhỏ hơn → tem nest chồng theo hình nhỏ → chồng mực
+    # khi cắt thẳng). Bỏ qua toàn bộ Step 4 NFP bên dưới.
+    if _one_dao_trim is not None:
+        from shapely.geometry import box as _box
+        base_poly = _box(0, 0, trim_w, trim_h)
+        logger.debug(f"   POLY: 1-dao page-mode rectangle {trim_w:.2f}x{trim_h:.2f}")
+    elif strategy in ('optimal_auto', 'head_to_tail') and hasattr(page, 'extract_vector_paths'):
 
         try:
 

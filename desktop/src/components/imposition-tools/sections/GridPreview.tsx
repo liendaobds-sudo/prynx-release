@@ -43,6 +43,7 @@ export interface GridPreviewProps {
   pageIdx?: number;
   bleed?: number; // in mm
   groupingStrategy?: string;
+  clusterCombineMode?: string;
   clusterSizingMode?: string;
   clusterCols?: number;
   clusterRows?: number;
@@ -61,6 +62,8 @@ export interface GridPreviewProps {
   cncFlipEdge?: "long" | "short";
   cutType?: string;
   fillBlockGap?: number;
+  dieSizeMode?: "die" | "page";
+  dieOffsetMm?: number;
   /** PDF đã bake chỉnh sửa viewer — parity preview≡output (không đọc file gốc). */
   getWorkingFile?: () => Promise<File>;
   /** Đổi khi xoay/xóa/sắp trang → invalidate cache path preview. */
@@ -104,6 +107,18 @@ interface BackendLayoutResult {
   sheetsNeeded?: number;
   /** ratio_stack: chỉ số mẫu có SL>0 nhưng không đủ chỗ trên tờ. */
   ratioUnplaced?: number[];
+  /** chia cụm: kiểu ghép đã dùng (replicate_mixed / zone_per_type / zone_ratio). */
+  clusterCombineMode?: string;
+  /** chia cụm: đường xén guillotine giữa các cụm/vùng (pt, cùng không gian abs với cells). */
+  cutLines?: { v: number[]; h: number[] };
+  /** chia cụm zone modes: MỌI tờ (mỗi tờ 1 bộ loại) để lật ◄ n/N ► không fetch lại. */
+  sheets?: Array<{
+    cells: BackendLayoutCell[];
+    overallWidth: number;
+    overallHeight: number;
+    totalItems: number;
+    cutLines?: { v: number[]; h: number[] };
+  }>;
 }
 
 // =====================================================================
@@ -742,6 +757,7 @@ export default function GridPreview(props: GridPreviewProps) {
     pageIdx = 0,
     bleed = 0,
     groupingStrategy,
+    clusterCombineMode,
     clusterSizingMode,
     clusterCols,
     clusterRows,
@@ -758,6 +774,8 @@ export default function GridPreview(props: GridPreviewProps) {
     cncFlipEdge,
     cutType,
     fillBlockGap,
+    dieSizeMode,
+    dieOffsetMm,
     getWorkingFile,
     previewSourceKey,
   } = props;
@@ -767,6 +785,8 @@ export default function GridPreview(props: GridPreviewProps) {
     null,
   );
   const [isLoading, setIsLoading] = useState(false);
+  // chia cụm zone modes: tờ đang xem (0-based) để lật ◄ n/N ►.
+  const [activeSheet, setActiveSheet] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onCapacityChangeRef = useRef(onCapacityChange);
@@ -917,6 +937,19 @@ export default function GridPreview(props: GridPreviewProps) {
   // Generation id — chặn response cũ (10 trang) ghi đè response mới (4 trang).
   const previewGenRef = useRef(0);
 
+  // Chia cụm (cluster_tile): backend tính bố cục cho MỌI trang cùng lúc
+  // (duyệt doc.page_count), KHÔNG dùng page_idx → cuộn đổi trang view KHÔNG được
+  // fetch lại. Ghim pageIdx dep về 0 cho mode này để tránh tính lại bố cục oan.
+  // Gồm cả bế (die-cut) LẪN bình cắt xén (guillotine) — cả hai đi nhánh cluster.
+  const _isClusterPreview = groupingStrategy === "cluster_tile";
+  const _pageIdxDep = _isClusterPreview ? 0 : pageIdx;
+  // shapeType/itemW/itemH lấy theo TRANG ĐANG XEM (detectedShapesByPage[pageIdx]).
+  // Cluster mode backend duyệt MỌI trang, KHÔNG dùng các giá trị "trang hiện tại" này
+  // → ghim để cuộn đổi trang không refetch bố cục oan.
+  const _shapeTypeDep = _isClusterPreview ? "__cluster__" : shapeType;
+  const _itemWDep = _isClusterPreview ? 0 : itemW;
+  const _itemHDep = _isClusterPreview ? 0 : itemH;
+
   useEffect(() => {
     // Clear any pending debounce
     if (debounceRef.current) {
@@ -990,7 +1023,10 @@ export default function GridPreview(props: GridPreviewProps) {
           bleed: bleed * MM_TO_PT, // bleed in points to match nup_engine
           cut_type: cutType || "default",
           fill_block_gap: fillBlockGap ?? 0,
+          die_size_mode: dieSizeMode || "die",
+          die_offset_mm: dieOffsetMm ?? 0,
           grouping_strategy: groupingStrategy,
+          cluster_combine_mode: clusterCombineMode,
           cluster_sizing_mode: clusterSizingMode,
           cluster_cols: clusterCols,
           cluster_rows: clusterRows,
@@ -1109,7 +1145,44 @@ export default function GridPreview(props: GridPreviewProps) {
               overallWidth: data.overallWidth * PT_TO_MM,
               overallHeight: data.overallHeight * PT_TO_MM,
               cells,
+              // cutLines (chia cụm) — pt→mm, cùng không gian abs với cells.
+              cutLines: data.cutLines
+                ? {
+                    v: (data.cutLines.v || []).map((x: number) => x * PT_TO_MM),
+                    h: (data.cutLines.h || []).map((y: number) => y * PT_TO_MM),
+                  }
+                : undefined,
+              // sheets (chia cụm zone modes) — convert MỌI tờ pt→mm để lật không fetch lại.
+              sheets: Array.isArray((data as any).sheets)
+                ? (data as any).sheets.map((sh: any) => ({
+                    overallWidth: (sh.overallWidth || 0) * PT_TO_MM,
+                    overallHeight: (sh.overallHeight || 0) * PT_TO_MM,
+                    totalItems: sh.totalItems || 0,
+                    cells: (sh.cells || []).map((cell: any) => ({
+                      ...cell,
+                      x: cell.x * PT_TO_MM,
+                      y: cell.y * PT_TO_MM,
+                      absX: cell.absX != null ? cell.absX * PT_TO_MM : undefined,
+                      absY: cell.absY != null ? cell.absY * PT_TO_MM : undefined,
+                      width: cell.width * PT_TO_MM,
+                      height: cell.height * PT_TO_MM,
+                      // diePolylines (đường bế THẬT, pt top-down) → mm, KHỚP đơn vị cells.
+                      diePolylines: cell.diePolylines
+                        ? cell.diePolylines.map((pl: number[][]) =>
+                            pl.map(([px, py]) => [px * PT_TO_MM, py * PT_TO_MM]),
+                          )
+                        : undefined,
+                    })),
+                    cutLines: sh.cutLines
+                      ? {
+                          v: (sh.cutLines.v || []).map((x: number) => x * PT_TO_MM),
+                          h: (sh.cutLines.h || []).map((y: number) => y * PT_TO_MM),
+                        }
+                      : undefined,
+                  }))
+                : undefined,
             };
+            setActiveSheet(0);
             setLayoutResult(convertedResult);
             if (onCapacityChangeRef.current)
               onCapacityChangeRef.current(convertedResult.totalItems);
@@ -1170,15 +1243,15 @@ export default function GridPreview(props: GridPreviewProps) {
   }, [
     usableW,
     usableH,
-    itemW,
-    itemH,
+    _itemWDep,
+    _itemHDep,
     gapX,
     gapY,
     splitGap,
     gridStrategy,
     columns,
     rows,
-    shapeType,
+    _shapeTypeDep,
     shapeParams,
     pontConfig,
     pontType,
@@ -1196,9 +1269,10 @@ export default function GridPreview(props: GridPreviewProps) {
     align,
     fileId,
     filePath,
-    pageIdx,
+    _pageIdxDep,
     bleed,
     groupingStrategy,
+    clusterCombineMode,
     clusterSizingMode,
     clusterCols,
     clusterRows,
@@ -1219,6 +1293,8 @@ export default function GridPreview(props: GridPreviewProps) {
     cncFlipEdge,
     cutType,
     fillBlockGap,
+    dieSizeMode,
+    dieOffsetMm,
     // getWorkingFile: đọc qua getWorkingFileRef (không đưa vào dep) — parent tạo mới
     // reference mỗi render (kéo resize panel → re-render) khiến fetch lại bố cục OAN.
     previewSourceKey,
@@ -1343,7 +1419,13 @@ export default function GridPreview(props: GridPreviewProps) {
     // SSOT: backend đã trả toạ độ TUYỆT ĐỐI (sau căn giữa + va chạm). Frontend CHỈ vẽ.
     const useAbs = !!layoutResult.absPlacement;
 
-    return layoutResult.cells.map((cell, idx) => {
+    // Chia cụm zone modes: lật giữa nhiều tờ → lấy cells tờ đang chọn (nếu có).
+    const _sheetArr = layoutResult.sheets;
+    const _cellsForSheet = (_sheetArr && _sheetArr[activeSheet]?.cells)
+      ? _sheetArr[activeSheet].cells
+      : layoutResult.cells;
+
+    return _cellsForSheet.map((cell, idx) => {
       let svgX_mm: number;
       let svgY_mm: number;
 
@@ -1377,6 +1459,7 @@ export default function GridPreview(props: GridPreviewProps) {
     });
   }, [
     layoutResult,
+    activeSheet,
     svgBaseX,
     svgBaseYConst,
     scale,
@@ -1392,6 +1475,15 @@ export default function GridPreview(props: GridPreviewProps) {
   const uaY = pad + marginTop * scale;
   const uaW = usableW * scale;
   const uaH = usableH * scale;
+
+  // ── Đường xén cụm (chia cụm / zone) → pixel. cutLines (mm) gốc dưới-trái Y-up:
+  //   v = hoành độ (x), h = tung độ (y). SVG: x = pad + v*scale ; y = pad + (H - y)*scale.
+  const _sheetArrCuts = layoutResult?.sheets;
+  const _cutLines = ((_sheetArrCuts && _sheetArrCuts[activeSheet]?.cutLines)
+    ? _sheetArrCuts[activeSheet].cutLines
+    : (layoutResult as any)?.cutLines) as { v?: number[]; h?: number[] } | undefined;
+  const cutVpx = (_cutLines?.v || []).map((v) => pad + v * scale);
+  const cutHpx = (_cutLines?.h || []).map((h) => pad + (sheetHeight - h) * scale);
 
   // Lật gương Mặt sau theo cạnh lật (CNC). Mặc định long-edge = lật ngang.
   const _isCncPreview = !!(layoutResult as any)?.isCncPreview;
@@ -1460,9 +1552,13 @@ export default function GridPreview(props: GridPreviewProps) {
             <div className="text-slate-600 dark:text-zinc-400">
               {t('imposition.gridPreview:suc_chua')}{" "}
               <span className="font-bold text-slate-800 dark:text-zinc-200">
-                {_showCount < layoutResult.totalItems
-                  ? `${_showCount} / ${layoutResult.totalItems}`
-                  : layoutResult.totalItems}
+                {/* Chia cụm zone đa-tờ: mỗi tờ số con KHÁC nhau → hiện số con TỜ ĐANG XEM
+                    (svgCells đã theo activeSheet), không dùng totalItems (tờ đầu). */}
+                {layoutResult.sheets && layoutResult.sheets.length > 1
+                  ? svgCells.length
+                  : _showCount < layoutResult.totalItems
+                    ? `${_showCount} / ${layoutResult.totalItems}`
+                    : layoutResult.totalItems}
               </span>{" "}
               {t('imposition.gridPreview:tem_to')}
             </div>
@@ -1485,7 +1581,43 @@ export default function GridPreview(props: GridPreviewProps) {
                 </div>
               </>
             )}
+            {/* Kích thước tem thành phẩm (W×H mm) — suy từ ô đại diện: sw/scale. */}
+            {visibleCells.length > 0 && scale > 0 && (
+              <>
+                <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700"></div>
+                <div className="text-slate-600 dark:text-zinc-400">
+                  {t('imposition.gridPreview:tem_thanh_pham')}{" "}
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                    {(visibleCells[0].sw / scale).toFixed(1)} × {(visibleCells[0].sh / scale).toFixed(1)} mm
+                  </span>
+                </div>
+              </>
+            )}
           </div>
+          {/* Chia cụm zone modes: nút lật giữa các tờ (mỗi tờ 1 bộ loại khác nhau). */}
+          {layoutResult.sheets && layoutResult.sheets.length > 1 && (
+            <div className="flex items-center gap-3 text-[13px] font-medium">
+              <button
+                type="button"
+                onClick={() => setActiveSheet((s) => Math.max(0, s - 1))}
+                disabled={activeSheet <= 0}
+                className="w-7 h-7 flex items-center justify-center rounded border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-300 disabled:opacity-40 hover:border-indigo-500 disabled:hover:border-slate-300"
+              >
+                ◄
+              </button>
+              <span className="text-slate-700 dark:text-zinc-200 tabular-nums">
+                {t('imposition.gridPreview:to')} {activeSheet + 1} / {layoutResult.sheets.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveSheet((s) => Math.min((layoutResult.sheets?.length || 1) - 1, s + 1))}
+                disabled={activeSheet >= (layoutResult.sheets.length - 1)}
+                className="w-7 h-7 flex items-center justify-center rounded border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-300 disabled:opacity-40 hover:border-indigo-500 disabled:hover:border-slate-300"
+              >
+                ►
+              </button>
+            </div>
+          )}
           {/* Chú thích động: người dùng học bằng mắt — 1 câu tiếng người mô tả preview.
               _isClusterType = dàn nhiều loại (ratio_stack) + đã chọn chia cọc → mỗi cọc
               1 loại riêng, bề rộng theo SL. */}
@@ -1571,6 +1703,18 @@ export default function GridPreview(props: GridPreviewProps) {
                     ry={2}
                     className="dark:fill-zinc-800 dark:stroke-zinc-600"
                   />
+
+                  {/* Đường xén guillotine giữa các cụm/vùng (chia cụm) */}
+                  {(cutVpx.length > 0 || cutHpx.length > 0) && (
+                    <g stroke="#0ea5e9" strokeWidth={0.7} strokeDasharray="5,3" opacity={0.85}>
+                      {cutVpx.map((x, i) => (
+                        <line key={`cv${i}`} x1={x} y1={pad} x2={x} y2={pad + sheetHeight * scale} />
+                      ))}
+                      {cutHpx.map((y, i) => (
+                        <line key={`ch${i}`} x1={pad} y1={y} x2={pad + sheetWidth * scale} y2={y} />
+                      ))}
+                    </g>
+                  )}
 
                   {/* Margin boundary (Usable Area) */}
                   {(marginTop > 0 ||

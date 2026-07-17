@@ -2,6 +2,12 @@
 Shared comparison engine logic.
 Extracted from compare.py (sync route) and compare_task.py (Celery worker)
 to eliminate code duplication.
+
+Chính sách so sánh PDF (in ấn): PIXEL-FIRST.
+  - Nguồn sự thật = render trang → absdiff / SSIM / contour (ImageComparator).
+  - Không OCR, không inject region từ text layer — tránh nhiễu / bỏ sót outline.
+  - Text layer (nếu có) chỉ dùng phụ cho căn trang khi lệch số trang, không quyết
+    định pass/fail. So chữ thuần: tool compare_text / QC riêng.
 """
 import logging
 from datetime import datetime, timezone
@@ -12,8 +18,6 @@ from app.config import settings
 from app.core.pdf_processor import PDFProcessor
 from app.core.image_comparator import ImageComparator
 from app.core.highlight_renderer import HighlightRenderer
-from app.core.text_comparator import TextComparator
-from app.core.ocr_engine import OCREngine
 from app.models.job import ComparisonJob, PageResult, UploadedFile
 
 logger = logging.getLogger(__name__)
@@ -27,6 +31,8 @@ def run_comparison_pipeline(
     """
     Core comparison pipeline shared by both sync (DEV_MODE) and Celery (production).
 
+    Pass/fail dựa hoàn toàn trên so pixel (ImageComparator). Không OCR / text-inject.
+
     Args:
         job_id: The comparison job ID.
         db: SQLAlchemy session.
@@ -36,7 +42,6 @@ def run_comparison_pipeline(
     processor = PDFProcessor()
     comparator = ImageComparator()
     renderer = HighlightRenderer()
-    text_comparator = TextComparator()
 
     def notify(progress: int, message: str = "", status: str = "processing",
                current_page: int = 0, total_pages: int = 0):
@@ -234,71 +239,7 @@ def run_comparison_pipeline(
                     else:
                         current_b_idx = found_b_idx + 1
                     
-            # ── Augment with Text Semantic Diffs (Standard Mode only) ──
-            if img_a is not None and img_b is not None and result is not None:
-                is_imposition = getattr(result, "is_imposition_mode", False)
-                if not is_imposition and len(result.diff_regions) > 0:
-                    try:
-                        # Extract text blocks (A: a_idx+1 = trang A THỰC SỰ; B: found_b_idx+1
-                        # = trang B THỰC SỰ đã so. Ở chế độ căn trang, page_num là thứ tự
-                        # XUẤT nên KHÔNG dùng cho A).
-                        blocks_a = processor.extract_text_blocks(file_a.file_path, a_idx + 1)
-                        blocks_b = processor.extract_text_blocks(file_b.file_path, found_b_idx + 1)
-                        
-                        # OCR Fallback for Flattened/Rasterized PDFs
-                        if len(blocks_a) == 0 and img_a is not None:
-                            logger.info(f"Page {page_num} of A has no text. Activating OCR Fallback...")
-                            blocks_a = OCREngine.extract_text_blocks(img_a, dpi=dpi)
-                            
-                        if len(blocks_b) == 0 and img_b is not None:
-                            logger.info(f"Page {found_b_idx + 1} of B has no text. Activating OCR Fallback...")
-                            blocks_b = OCREngine.extract_text_blocks(img_b, dpi=dpi)
-                        
-                        text_diff = text_comparator.compare_blocks(blocks_a, blocks_b)
-                        
-                        if not text_diff.is_identical:
-                            scale = dpi / 72.0
-                            for region in result.diff_regions:
-                                # Convert visual region to PDF Space (72 DPI)
-                                rx = region.x / scale
-                                ry = region.y / scale
-                                rw = region.width / scale
-                                rh = region.height / scale
-                                
-                                # Find intersecting text diffs
-                                matched_texts = []
-                                for chg in text_diff.changed_blocks:
-                                    # Very loose intersection
-                                    ix = max(rx, chg["x"])
-                                    iy = max(ry, chg["y"])
-                                    iw = min(rx + rw, chg["x"] + chg["width"]) - ix
-                                    ih = min(ry + rh, chg["y"] + chg["height"]) - iy
-                                    if iw > -10 and ih > -10:  # Allow 10pt wiggle room
-                                        matched_texts.append(f"Chữ thay đổi: '{chg['original'].strip()}' → '{chg['new'].strip()}'")
-                                        
-                                for rem in text_diff.removed_blocks:
-                                    ix = max(rx, rem["x"])
-                                    iy = max(ry, rem["y"])
-                                    iw = min(rx + rw, rem["x"] + rem["width"]) - ix
-                                    ih = min(ry + rh, rem["y"] + rem["height"]) - iy
-                                    if iw > -10 and ih > -10:
-                                        matched_texts.append(f"Xóa chữ: '{rem['text'].strip()}'")
-                                        
-                                for add in text_diff.added_blocks:
-                                    ix = max(rx, add["x"])
-                                    iy = max(ry, add["y"])
-                                    iw = min(rx + rw, add["x"] + add["width"]) - ix
-                                    ih = min(ry + rh, add["y"] + add["height"]) - iy
-                                    if iw > -10 and ih > -10:
-                                        matched_texts.append(f"Thêm chữ: '{add['text'].strip()}'")
-                                        
-                                if matched_texts:
-                                    region.type = "text"
-                                    # Preserve OpenCV severity if it exists, otherwise Default 'medium'
-                                    prev_desc = region.description if region.description != "Phát hiện khác biệt" else ""
-                                    region.description = " | ".join(matched_texts) + (f" | {prev_desc}" if prev_desc else "")
-                    except Exception as e:
-                        logger.warning(f"Text comparison failed on page {page_num}: {e}")
+            # PIXEL-ONLY: không OCR / không text-inject. Pass/fail = ImageComparator.
 
             # Handle missing pages (out-of-range positional, hoặc trang thêm/xoá khi căn trang)
             if img_a is None or img_b is None or result is None:
@@ -341,23 +282,27 @@ def run_comparison_pipeline(
                     result.gif_image, str(job_id), page_num
                 )
 
-            # Determine page status
+            # Determine page status — chuẩn IN ẤN, không chuẩn "giống % pixel".
+            # SSIM/px% chỉ mô tả mức giống HÌNH toàn trang (tham khảo). Sai 1 chữ
+            # trên nhãn vẫn SSIM ~99.9% nhưng là LỖI NGHIÊM TRỌNG → luôn FAIL khi
+            # đã có vùng khác (sau lọc nhiễu). Không còn hạ severity xuống warning
+            # chỉ vì vùng nhỏ / SSIM cao.
             if result.diff_count == 0:
                 status = "pass"
                 pages_pass += 1
             else:
-                # CÓ vùng khác biệt (đã qua lọc nhiễu theo diện tích + morphology) ⇒
-                # KHÔNG được đánh PASS chỉ vì SSIM toàn cục cao. SSIM là độ tương đồng
-                # TOÀN CỤC: một sửa đổi nhỏ nhưng THẬT (vd đổi 1 chữ số giá) chỉ chiếm
-                # <0.1% pixel → SSIM ~99.9% nhưng vẫn là lỗi cần soát. Tối thiểu là
-                # 'warning' để không bỏ lọt (audit so-sánh #1).
-                has_high = any(r.severity == "high" for r in result.diff_regions)
-                if has_high or result.similarity_score < 95.0:
-                    status = "fail"
-                    pages_fail += 1
-                else:
-                    status = "warning"
-                    pages_warning += 1
+                for region in result.diff_regions:
+                    # Mọi khác biệt nội dung thật đều high cho QA in (kể cả micro-glyph).
+                    if region.severity == "low":
+                        region.severity = "high"
+                    if region.type in ("image", "") and (
+                        (region.description or "").startswith("Thay đổi nhỏ")
+                        or (region.description or "").startswith("Vùng thay đổi")
+                    ):
+                        # Không có nhãn text: vẫn coi là lỗi in cần xử lý.
+                        region.severity = "high"
+                status = "fail"
+                pages_fail += 1
 
             # Normalize diff regions for frontend
             # Dùng KÍCH THƯỚC RENDER của kết quả (có thể khác img_b gốc khi đã co giãn
@@ -422,6 +367,20 @@ def run_comparison_pipeline(
     # Legacy LLM integration removed. QC is now handled by the standalone /qc/check-text endpoint.
 
     avg_similarity = total_similarity / total_pages if total_pages > 0 else 100.0
+    # SSIM = độ giống HÌNH (tham khảo). Verdict in ấn = có/không lỗi.
+    print_ok = (pages_fail == 0 and pages_warning == 0 and total_diff_count == 0)
+    if print_ok:
+        verdict_detail = "Không phát hiện khác biệt pixel — ĐẠT kiểm in."
+    elif total_diff_count == 1:
+        verdict_detail = (
+            "1 vùng pixel khác — KHÔNG ĐẠT. "
+            "So sánh theo pixel (an toàn in ấn): mọi lệch hiển thị đều là lỗi."
+        )
+    else:
+        verdict_detail = (
+            f"{total_diff_count} vùng pixel khác — KHÔNG ĐẠT. "
+            "So sánh theo pixel: mọi lệch hiển thị đều cần xử lý trước khi in."
+        )
 
     job.result_summary = {
         "total_pages": total_pages,
@@ -429,11 +388,16 @@ def run_comparison_pipeline(
         "pages_fail": pages_fail,
         "pages_warning": pages_warning,
         "total_diff_count": total_diff_count,
+        # Giữ average_similarity = SSIM visual (tương thích API/UI cũ).
         "average_similarity": round(avg_similarity, 2),
+        "visual_similarity": round(avg_similarity, 2),
+        "compare_method": "pixel",
+        "print_verdict": "ĐẠT" if print_ok else "KHÔNG ĐẠT",
+        "verdict_detail": verdict_detail,
         "total_instances": total_imposition_instances,
         "failed_instances": failed_imposition_instances,
-        "overall_status": "PASS" if pages_fail == 0 and pages_warning == 0
-                         else ("WARNING" if pages_fail == 0 else "FAIL"),
+        "overall_status": "PASS" if print_ok
+                         else ("WARNING" if pages_fail == 0 and pages_warning > 0 else "FAIL"),
         "llm_warnings": llm_warnings,
     }
     job.status = "completed"

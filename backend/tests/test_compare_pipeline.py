@@ -83,7 +83,12 @@ def test_summary_reflects_single_changed_page(tmp_path):
     assert s["total_pages"] == 3
     assert s["pages_fail"] + s["pages_warning"] == 1   # đúng 1 trang có vấn đề
     assert s["pages_pass"] == 2
-    assert s["overall_status"] in ("FAIL", "WARNING")
+    # In ấn: có lỗi → FAIL + KHÔNG ĐẠT (không còn WARNING vì SSIM cao)
+    assert s["overall_status"] == "FAIL"
+    assert s.get("print_verdict") == "KHÔNG ĐẠT"
+    assert s.get("total_diff_count", 0) >= 1
+    assert s.get("compare_method") == "pixel"
+    assert "visual_similarity" in s
 
 
 # ── Căn trang khi LỆCH SỐ TRANG (audit so-sánh #4) ──

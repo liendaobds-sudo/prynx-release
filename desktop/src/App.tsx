@@ -31,6 +31,11 @@ import { tv } from './i18n';
 
 type AppTabType = 'home' | AppToolId;
 
+const NATIVE_PRINT_TOOL_TYPES = new Set<AppToolId>([
+  'imposition', 'nup', 'diecut', 'cnc', 'preflight', 'combine_pdf', 'dieline',
+  'compare_pdf',
+]);
+
 interface AppTab {
   id: string;
   type: AppTabType;
@@ -699,10 +704,23 @@ function AppInner() {
         e.preventDefault();
         handleOpenFile();
       }
+      // Ctrl+P: in PDF đang xem qua hộp thoại máy in Windows (Rust print_pdf).
+      // preventDefault() cũng chặn hành vi in DOM mặc định của WebView2 (in nguyên UI).
+      if (e.ctrlKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        const activeTab = tabsRef.current.find(tab => tab.id === activeTabIdRef.current);
+        if (activeTab && activeTab.type !== 'home' && NATIVE_PRINT_TOOL_TYPES.has(activeTab.type)) {
+          window.dispatchEvent(new CustomEvent('app-trigger-print', {
+            detail: { tabId: activeTab.id }
+          }));
+        } else {
+          toast.info(t('shell:ctrl_p_chi_ho_tro_trinh_xem_pdf'));
+        }
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleCloseTab, handleOpenApp, handleOpenFile]);
+  }, [handleCloseTab, handleOpenApp, handleOpenFile, t]);
 
   const accumulatedFiles = useRef<File[]>([]);
   const sysTimeoutRef = useRef<any>(null);
@@ -779,6 +797,12 @@ function AppInner() {
     window.dispatchEvent(new CustomEvent('prynx-menu-command', { detail: { cmd } }));
   }, []);
   const isToolActive = activeTabId !== 'home';
+  const activeTabType = tabs.find(t => t.id === activeTabId)?.type;
+  const canNativePrint = !!(
+    activeTabType
+    && activeTabType !== 'home'
+    && NATIVE_PRINT_TOOL_TYPES.has(activeTabType as AppToolId)
+  );
 
   const openRecentFile = useCallback(async (rf: { path: string; name: string; size: number }) => {
     if (!(window as any).__TAURI_INTERNALS__) return;
@@ -820,6 +844,19 @@ function AppInner() {
           onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: false } })) },
         { label: tv('Lưu thành…'), shortcut: 'Ctrl+Shift+S', disabled: !isToolActive,
           onClick: () => window.dispatchEvent(new CustomEvent('app-trigger-save', { detail: { tabId: activeTabId, saveAs: true } })) },
+        { separator: true },
+        {
+          label: tv('In…'),
+          shortcut: 'Ctrl+P',
+          disabled: !canNativePrint,
+          onClick: () => {
+            if (canNativePrint) {
+              window.dispatchEvent(new CustomEvent('app-trigger-print', { detail: { tabId: activeTabId } }));
+            } else {
+              toast.info(t('shell:ctrl_p_chi_ho_tro_trinh_xem_pdf'));
+            }
+          },
+        },
         { separator: true },
         { label: tv('Đóng tab'), shortcut: 'Ctrl+W', disabled: !isToolActive, onClick: () => handleCloseTab(activeTabId) },
         { label: tv('Thoát'), shortcut: 'Alt+F4', onClick: () => window.dispatchEvent(new CustomEvent('prynx-request-quit')) },

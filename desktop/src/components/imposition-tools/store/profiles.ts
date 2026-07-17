@@ -8,7 +8,7 @@ export const ALGO_PROFILE_KEYS: string[] = [
     'clusterMode', 'clusterCount', 'clusterGap', 'clusterGapMode',
     'clusterDistribution', 'clusterBorder',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
-    'tileGapX', 'tileGapY', 'clusterNesting',
+    'clusterCombineMode', 'tileGapX', 'tileGapY', 'clusterNesting',
     'cutType', 'fillBlockGap', 'pontType', 'pontConfig',
     'gapX', 'gapY', 'targetQuantity', 'targetQuantitiesByPage',
     'markType', 'scaleMode', 'signatureMode', 'foliosize', 'interleave',

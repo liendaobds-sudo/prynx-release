@@ -3,7 +3,7 @@
 // 2-step flow: Gallery (pick box type) → Editor (design)
 // ============================================================
 
-import React, { useState, Suspense, lazy, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useState, Suspense, lazy, Component, ErrorInfo, ReactNode, useCallback, useEffect } from 'react';
 import DielineGallery from './DielineGallery';
 import ParamPanel from './ParamPanel';
 import MockupPanel from './MockupPanel';
@@ -11,12 +11,14 @@ import DielineCanvas2D from './DielineCanvas2D';
 import NestingPanel from './NestingPanel';
 import NestingCanvas from './NestingCanvas';
 import { useBoxStore } from '../../store/useBoxStore';
-import { downloadPDF } from '../../lib/dieline/exportPDF';
-import { downloadNestingPDF } from '../../lib/dieline/exportNestingPDF';
+import { downloadPDF, buildDielinePdfBlob } from '../../lib/dieline/exportPDF';
+import { downloadNestingPDF, buildNestingPdfBlob } from '../../lib/dieline/exportNestingPDF';
 import { BoxParams } from '../../lib/dieline/types';
 import '../../styles/dieline-tool.css';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import { usePrintDialog } from '../shared/usePrintDialog';
+import { toast } from 'sonner';
 
 // Lazy load 3D scene (heavy Three.js bundle)
 const DielineScene3D = lazy(() => import('./DielineScene3D'));
@@ -46,8 +48,9 @@ class Scene3DErrorBoundary extends Component<{ children: ReactNode }, { hasError
     }
 }
 
-export default function DielineTool() {
+export default function DielineTool({ tabId, isActive }: { tabId?: string; isActive?: boolean } = {}) {
   const { t } = useTranslation();
+    const { openPrintDialog, printDialog } = usePrintDialog();
     const [view, setView] = useState<'gallery' | 'editor'>('gallery');
     const [activeTab, setActiveTab] = useState<'2d' | '3d' | 'split' | 'nesting'>('2d');
     const { dieline, nestingResult, nestingConfig, setParam } = useBoxStore();
@@ -57,6 +60,34 @@ export default function DielineTool() {
         setParam('boxType', type);
         setView('editor');
     };
+
+    // Ctrl+P → in đúng thứ ĐANG XEM: tab Nesting in bản xếp khuôn, còn lại in bản
+    // trải khuôn 1:1. Dieline vẽ vector tham số (không có file PDF thường trực) nên
+    // generate blob tại thời điểm in. Dùng hạ tầng chung (modal tỉ lệ + print_pdf).
+    // autoRotate=true: khuôn bế thường ngang, cho xoay lọt khổ giấy tiện hơn.
+    const handlePrint = useCallback(async () => {
+        if (!dieline) { toast.warning(tv('Chưa có khuôn để in')); return; }
+        const toastId = toast.loading(tv('Đang tạo PDF...'));
+        try {
+            const blob = activeTab === 'nesting' && nestingResult
+                ? await buildNestingPdfBlob(dieline, nestingResult, nestingConfig)
+                : await buildDielinePdfBlob(dieline);
+            toast.dismiss(toastId);
+            if (!blob) { toast.error(tv('Không tạo được PDF để in')); return; }
+            await openPrintDialog({ source: blob, numPages: 1, autoRotateDefault: true });
+        } catch (e: any) {
+            toast.dismiss(toastId);
+            toast.error(tv('Không thể in file: ') + (e?.message || e));
+        }
+    }, [dieline, activeTab, nestingResult, nestingConfig, openPrintDialog]);
+
+    useEffect(() => {
+        const onTriggerPrint = (e: any) => {
+            if (isActive && e.detail?.tabId === tabId) handlePrint();
+        };
+        window.addEventListener('app-trigger-print', onTriggerPrint);
+        return () => window.removeEventListener('app-trigger-print', onTriggerPrint);
+    }, [isActive, tabId, handlePrint]);
 
     // ─── Gallery View ───
     if (view === 'gallery') {
@@ -70,6 +101,7 @@ export default function DielineTool() {
     // ─── Editor View ───
     return (
         <main className="dieline-tool">
+            {printDialog}
             {/* Left Panel — Params or Nesting Config */}
             <aside className="dt-sidebar">
                 <div className="dt-sidebar-scroll">

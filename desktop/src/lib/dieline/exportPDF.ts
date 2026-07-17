@@ -363,3 +363,44 @@ export async function downloadPDF(
         toast.error('Lỗi khi tạo PDF: ' + (err instanceof Error ? err.message : 'Unknown error'), { id: toastId });
     }
 }
+
+/**
+ * Dựng khuôn bế thành PDF blob (KHÔNG tải xuống) — dùng cho In (Ctrl+P).
+ * Tách phần build từ downloadPDF: cùng khổ trải + SVG vector, nhưng trả blob
+ * để in native qua printPdfSource. KHÔNG chạy cổng kiểm biên hở ở đây — caller
+ * (nút/handler in) tự cảnh báo nếu cần; in là thao tác xem thử, không ghi file.
+ * @returns Blob PDF, hoặc null nếu build lỗi.
+ */
+export async function buildDielinePdfBlob(model: DielineModel): Promise<Blob | null> {
+    try {
+        const { boundingBox } = model;
+        const margin = 10;
+        const dimExtra = 35;
+        const pageW = boundingBox.width + margin * 2 + dimExtra;
+        const pageH = boundingBox.height + margin * 2 + dimExtra;
+
+        const doc = new jsPDF({
+            orientation: pageW > pageH ? 'landscape' : 'portrait',
+            unit: 'mm',
+            format: [pageW, pageH],
+        });
+
+        const svgString = buildSvgString(model);
+        const parser = new DOMParser();
+        const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
+        const svgElement = svgDoc.documentElement;
+
+        await (doc as any).svg(svgElement, { x: 0, y: 0, width: pageW, height: pageH });
+
+        doc.setProperties({
+            title: `${model.name} - ${model.params.L}x${model.params.W}x${model.params.D}`,
+            subject: `Khuôn bế ${model.standardCode}`,
+            creator: 'Dieline Generator',
+        });
+
+        return doc.output('blob');
+    } catch (err) {
+        console.error('buildDielinePdfBlob error:', err);
+        return null;
+    }
+}

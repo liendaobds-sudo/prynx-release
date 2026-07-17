@@ -12,6 +12,7 @@ import {
   getCutProfile,
   saveCutProfile,
   deleteCutProfile,
+  testCutConnection,
   type CutProfileInfo,
   type CutMachineProfile,
 } from "./api";
@@ -34,6 +35,9 @@ export default function CutterMachinesPanel() {
   const [isNew, setIsNew] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [testingId, setTestingId] = useState("");
+  const [connectionStatus, setConnectionStatus] = useState<Record<string, { ok: boolean; message: string }>>({});
+  const [guideOpen, setGuideOpen] = useState(false);
 
   const reload = () => {
     setConns(loadAllMachineConns());
@@ -47,6 +51,24 @@ export default function CutterMachinesPanel() {
       saveMachineConn(id, next);
       return { ...prev, [id]: next };
     });
+  };
+
+  const testConnection = async (id: string, conn: MachineConn) => {
+    const host = String(conn.tcpHost || "").trim();
+    const port = Number(conn.tcpPort ?? 9100);
+    setTestingId(id);
+    setConnectionStatus((prev) => ({ ...prev, [id]: { ok: false, message: t('imposition.cutterMachines:dang_kiem_tra') } }));
+    try {
+      const r = await testCutConnection(host, port);
+      const message = r.ok
+        ? t('imposition.cutterMachines:mo_duoc_cong_tcp', { ip: r.resolved_ip || host, port, ms: r.latency_ms ?? 0 })
+        : (r.error || t('imposition.cutterMachines:khong_ket_noi_duoc'));
+      setConnectionStatus((prev) => ({ ...prev, [id]: { ok: r.ok, message } }));
+    } catch (e) {
+      setConnectionStatus((prev) => ({ ...prev, [id]: { ok: false, message: String(e) } }));
+    } finally {
+      setTestingId("");
+    }
   };
 
   const startAdd = async () => {
@@ -107,7 +129,7 @@ export default function CutterMachinesPanel() {
   };
 
   return (
-    <div className="animate-fade-in flex flex-col h-full">
+    <div className="animate-fade-in h-full overflow-y-auto custom-scrollbar pr-4">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-xl font-bold text-slate-900 dark:text-white">{t('imposition.cutterMachines:ket_noi_may_be')}</h3>
         <button
@@ -120,6 +142,57 @@ export default function CutterMachinesPanel() {
       <p className="text-sm text-slate-500 dark:text-zinc-400 mb-6 leading-relaxed shrink-0">
         {t('imposition.cutterMachines:cau_hinh_ket_noi_kenh_gui_ip_thu_muc_cho_tung_may')}
       </p>
+
+      <div className="mb-5 rounded-xl border border-indigo-200 dark:border-indigo-800/50 bg-indigo-50/60 dark:bg-indigo-950/20">
+        <button
+          type="button"
+          onClick={() => setGuideOpen((v) => !v)}
+          className="w-full px-4 py-3 flex items-center justify-between text-left text-sm font-bold text-indigo-700 dark:text-indigo-300"
+        >
+          <span>{t('imposition.cutterMachines:huong_dan_ket_noi_chi_tiet')}</span>
+          <span aria-hidden>{guideOpen ? "▴" : "▾"}</span>
+        </button>
+        {guideOpen && (
+          <div className="px-4 pb-4 space-y-4 text-[13px] leading-relaxed text-slate-700 dark:text-zinc-300">
+            <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 p-3 text-amber-800 dark:text-amber-300">
+              {t('imposition.cutterMachines:guide_scope_warning')}
+            </div>
+            <div>
+              <strong>{t('imposition.cutterMachines:guide_choose_title')}</strong>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                <div className="rounded-lg border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50/70 dark:bg-emerald-950/20 p-3">
+                  <div className="font-semibold text-emerald-700 dark:text-emerald-300">{t('imposition.cutterMachines:guide_choose_lan_title')}</div>
+                  <div className="mt-1">{t('imposition.cutterMachines:guide_choose_lan_body')}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200 dark:border-white/10 bg-white/70 dark:bg-zinc-900/30 p-3">
+                  <div className="font-semibold">{t('imposition.cutterMachines:guide_choose_file_title')}</div>
+                  <div className="mt-1">{t('imposition.cutterMachines:guide_choose_file_body')}</div>
+                </div>
+              </div>
+            </div>
+            <ol className="list-decimal pl-5 space-y-3">
+              <li><strong>{t('imposition.cutterMachines:guide_step1_title')}</strong><br />{t('imposition.cutterMachines:guide_step1_body')}</li>
+              <li><strong>{t('imposition.cutterMachines:guide_step2_title')}</strong><br />{t('imposition.cutterMachines:guide_step2_body')}</li>
+              <li><strong>{t('imposition.cutterMachines:guide_step3_title')}</strong><br />{t('imposition.cutterMachines:guide_step3_body')}</li>
+              <li><strong>{t('imposition.cutterMachines:guide_step4_title')}</strong><br />{t('imposition.cutterMachines:guide_step4_body')}</li>
+              <li><strong>{t('imposition.cutterMachines:guide_step5_title')}</strong><br />{t('imposition.cutterMachines:guide_step5_body')}</li>
+            </ol>
+            <div>
+              <strong>{t('imposition.cutterMachines:guide_troubleshoot_title')}</strong>
+              <ul className="list-disc pl-5 mt-1 space-y-1">
+                <li>{t('imposition.cutterMachines:guide_timeout')}</li>
+                <li>{t('imposition.cutterMachines:guide_refused')}</li>
+                <li>{t('imposition.cutterMachines:guide_open_no_cut')}</li>
+                <li>{t('imposition.cutterMachines:guide_usb')}</li>
+              </ul>
+            </div>
+            <div className="rounded-lg bg-white/70 dark:bg-zinc-900/30 border border-slate-200 dark:border-white/10 p-3">
+              <strong>{t('imposition.cutterMachines:guide_terms_title')}</strong><br />
+              {t('imposition.cutterMachines:guide_terms_body')}
+            </div>
+          </div>
+        )}
+      </div>
 
       {error && (
         <p className="text-[13px] text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40 rounded p-2 mb-3">
@@ -192,7 +265,7 @@ export default function CutterMachinesPanel() {
         </div>
       )}
 
-      <div className="space-y-4 flex-1 pr-4 overflow-y-auto custom-scrollbar pb-10">
+      <div className="space-y-4 pb-10">
         {profiles.length === 0 && <div className="text-sm text-slate-500 dark:text-zinc-400">{t('imposition.cutterMachines:khong_tai_duoc_danh_sach_may_be')}</div>}
         {profiles.map((p) => {
           const conn = conns[p.id] || DEFAULT_CONN;
@@ -243,6 +316,24 @@ export default function CutterMachinesPanel() {
                       {t('imposition.cutterMachines:cong')}
                       <input type="number" className={inp} value={conn.tcpPort ?? 9100} onChange={(e) => updateConn(p.id, { tcpPort: parseInt(e.target.value || "9100", 10) || 9100 })} placeholder="9100" />
                     </label>
+                    <div className="col-span-2 flex items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={testingId === p.id || !String(conn.tcpHost || "").trim()}
+                        onClick={() => testConnection(p.id, conn)}
+                        className="h-9 px-3 rounded-lg border border-indigo-300 text-indigo-600 dark:text-indigo-400 text-sm font-semibold disabled:opacity-40"
+                      >
+                        {testingId === p.id ? t('imposition.cutterMachines:dang_kiem_tra') : t('imposition.cutterMachines:kiem_tra_ket_noi')}
+                      </button>
+                      {connectionStatus[p.id] && (
+                        <span className={`text-[12px] ${connectionStatus[p.id].ok ? "text-emerald-600" : "text-red-500"}`}>
+                          {connectionStatus[p.id].message}
+                        </span>
+                      )}
+                    </div>
+                    <p className="col-span-2 text-[11px] text-slate-500 dark:text-zinc-400">
+                      {t('imposition.cutterMachines:tcp_raw_luu_y')}
+                    </p>
                   </>
                 )}
 

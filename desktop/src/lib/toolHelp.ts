@@ -343,19 +343,40 @@ export const TOOL_HELP: Record<string, ToolHelp> = {
   // ─────────── KIỂM TRA CHẤT LƯỢNG (QC) ───────────
   compare_pdf: {
     title: 'So sánh PDF (In ấn)',
-    tagline: 'So pixel bản mẫu và bản bình để phát hiện sai khác.',
+    tagline: 'So pixel — những gì in ra thấy được. Sai 1 chi tiết = không đạt.',
     sections: [
       { heading: 'Khi nào dùng', items: [
-        'Kiểm tra bản bình có lệch so với bản mẫu duyệt.',
+        'Đối chiếu bản mẫu duyệt với bản sửa / bản bình trước khi in.',
+        'Nhãn tem, bao bì, tờ N-up: bắt lệch hình, chữ outline, màu.',
+      ]},
+      { heading: 'Cách hoạt động (pixel-first)', items: [
+        'Render 2 PDF → so từng pixel (không OCR, không dựa text layer).',
+        'Có vùng pixel khác = KHÔNG ĐẠT. % giống hình chỉ tham khảo (SSIM).',
+        'In ấn: sai một chữ / một chi tiết cũng là lỗi — không “còn 99% là ổn”.',
+      ]},
+      { heading: 'Độ chính xác (tolerance)', items: [
+        'Nghiêm ngặt: mọi pixel — proof / nhãn nhỏ.',
+        'Bình thường (khuyến nghị): bỏ nhiễu anti-alias nhỏ.',
+        'Rộng: chỉ lệch lớn — dễ bỏ sót chữ nhạt; không dùng proof cuối.',
+      ]},
+      { heading: 'DPI', items: [
+        '300 DPI: chính xác hơn (khuyến nghị). 150 DPI: nhanh hơn.',
+      ]},
+      { heading: 'Khác so sánh văn bản', items: [
+        'So văn bản (compare_text) chỉ so chữ extract — không thấy outline/ảnh.',
+        'So PDF in: dùng compare PDF (pixel).',
       ]},
     ],
   },
   compare_text: {
     title: 'So sánh Văn bản',
-    tagline: 'So sánh text thuần siêu tốc giữa 2 phiên bản.',
+    tagline: 'So text layer / nội dung chữ — không thay so pixel in ấn.',
     sections: [
       { heading: 'Khi nào dùng', items: [
-        'Đối chiếu nội dung chữ giữa 2 bản Word/PDF.',
+        'Đối chiếu nội dung chữ giữa 2 bản (có text chọn được).',
+      ]},
+      { heading: 'Không dùng khi', items: [
+        'Kiểm in / nhãn outline / cần chắc “in ra giống nhau” → dùng So sánh PDF.',
       ]},
     ],
   },

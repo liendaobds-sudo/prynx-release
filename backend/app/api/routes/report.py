@@ -199,15 +199,24 @@ def _generate_pdf_report(job: ComparisonJob, output_path: str):
     
     summary = job.result_summary or {}
     total_diff_count = summary.get("total_diff_count", 0)
-    avg_similarity = summary.get("average_similarity", 100.0)
+    avg_similarity = summary.get("visual_similarity", summary.get("average_similarity", 100.0))
+    print_verdict = summary.get("print_verdict") or ("ĐẠT" if total_diff_count == 0 else "KHÔNG ĐẠT")
+    verdict_detail = summary.get("verdict_detail") or (
+        "Không phát hiện khác biệt — ĐẠT kiểm in."
+        if total_diff_count == 0
+        else f"{total_diff_count} điểm khác biệt — KHÔNG ĐẠT (in ấn: sai 1 chữ cũng là lỗi)."
+    )
     total_instances = summary.get("total_instances", 0)
     failed_instances = summary.get("failed_instances", 0)
     
     is_imposition = summary.get("is_imposition_mode", False) or total_instances > 0
     
+    # In ấn: chấm theo SỐ LỖI + ĐẠT/KHÔNG ĐẠT. SSIM chỉ tham khảo (không xanh vì 99%).
     results_data = [
-        [Paragraph(safe_text("Trung bình độ khớp độ (Similarity):"), styles['CustomBold']), Paragraph(safe_text(f"{avg_similarity:.2f}%"), styles['CustomNormal'])],
-        [Paragraph(safe_text("Tổng số điểm khác biệt:"), styles['CustomBold']), Paragraph(safe_text(f"{total_diff_count} điểm (errors)"), styles['CustomNormal'])],
+        [Paragraph(safe_text("Kết luận in ấn:"), styles['CustomBold']), Paragraph(safe_text(print_verdict), styles['CustomNormal'])],
+        [Paragraph(safe_text("Số lỗi / điểm khác biệt:"), styles['CustomBold']), Paragraph(safe_text(f"{total_diff_count}"), styles['CustomNormal'])],
+        [Paragraph(safe_text("Chi tiết:"), styles['CustomBold']), Paragraph(safe_text(verdict_detail), styles['CustomNormal'])],
+        [Paragraph(safe_text("Độ giống hình — tham khảo (SSIM):"), styles['CustomBold']), Paragraph(safe_text(f"{avg_similarity:.2f}%"), styles['CustomNormal'])],
     ]
     
     if is_imposition:
@@ -219,7 +228,7 @@ def _generate_pdf_report(job: ComparisonJob, output_path: str):
         ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#9ca3af')),
         ('INNERGRID', (0,0), (-1,-1), 0.25, colors.lightgrey),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BACKGROUND', (1, 0), (1, 0), colors.HexColor('#dcfce7') if avg_similarity >= 99.0 else colors.HexColor('#fee2e2')),
+        ('BACKGROUND', (1, 0), (1, 0), colors.HexColor('#dcfce7') if total_diff_count == 0 else colors.HexColor('#fee2e2')),
         ('BACKGROUND', (1, 1), (1, 1), colors.HexColor('#dcfce7') if total_diff_count == 0 else colors.HexColor('#fee2e2')),
     ]))
     
@@ -234,9 +243,12 @@ def _generate_pdf_report(job: ComparisonJob, output_path: str):
         story.append(Paragraph(safe_text("Không có dữ liệu chi tiết trang."), styles['CustomNormal']))
     else:
         for pr in page_results:
-            status_text = "ĐẠT" if pr.diff_count == 0 else "PHÁT HIỆN LỖI"
+            status_text = "ĐẠT" if pr.diff_count == 0 else "KHÔNG ĐẠT"
             
-            p_header = f"Trang {pr.page_number} — Khớp: {pr.similarity_score:.2f}% — Số lỗi: {pr.diff_count} ({status_text})"
+            p_header = (
+                f"Trang {pr.page_number} — {status_text} — Số lỗi: {pr.diff_count}"
+                f" — Giống hình (tham khảo): {pr.similarity_score:.2f}%"
+            )
             story.append(Paragraph(safe_text(p_header), styles['CustomBold']))
             
             # Print regions if any

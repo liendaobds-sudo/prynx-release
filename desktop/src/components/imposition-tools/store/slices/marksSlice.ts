@@ -10,6 +10,12 @@ export interface MarksSlice {
     setMarkType: (v: 'none' | 'corners' | 'guillotine') => void;
     cutType: 'default' | 'one_dao';
     setCutType: (v: 'default' | 'one_dao') => void;
+    // 1 Dao: khuôn theo đường bế có sẵn ('die') hay theo kích thước trang PDF ('page').
+    dieSizeMode: 'die' | 'page';
+    setDieSizeMode: (v: 'die' | 'page') => void;
+    // 1 Dao + page mode: offset co (−) / mở (+) mm so với trang gốc, áp đều 4 phía.
+    dieOffsetMm: number;
+    setDieOffsetMm: (v: number) => void;
     fillBlockGap: number;
     setFillBlockGap: (v: number) => void;
     pontType: 'none' | 'corner' | '5mm' | 'custom';
@@ -34,7 +40,7 @@ export interface MarksSlice {
 }
 
 export const MARKS_PERSIST_KEYS = [
-    'markType', 'cutType', 'fillBlockGap', 'pontType', 'pontConfig',
+    'markType', 'cutType', 'dieSizeMode', 'dieOffsetMm', 'fillBlockGap', 'pontType', 'pontConfig',
     'bleed', 'spawnNewTabByTool', 'separateCutPage', 'pontsOnCutFile',
 ] as const;
 
@@ -43,6 +49,10 @@ export const createMarksSlice: ImposerSlice<MarksSlice> = (set) => ({
     setMarkType: (v) => set({ markType: v }),
     cutType: 'default',
     setCutType: (v) => set({ cutType: v }),
+    dieSizeMode: 'die',
+    setDieSizeMode: (v) => set({ dieSizeMode: v }),
+    dieOffsetMm: 0,
+    setDieOffsetMm: (v) => set({ dieOffsetMm: v }),
     fillBlockGap: 0,
     setFillBlockGap: (v) => set({ fillBlockGap: v }),
     pontType: 'none',

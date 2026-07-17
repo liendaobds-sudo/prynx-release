@@ -1,8 +1,8 @@
-use tauri::command;
-use std::process::Command;
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::process::Command;
+use tauri::command;
 
 /// Escape a value để nhúng an toàn vào PowerShell SINGLE-quoted string ('...').
 /// Trong single-quoted string của PowerShell, MỌI ký tự đều literal (backtick, $,
@@ -24,8 +24,12 @@ fn collect_hardware_fingerprint() -> Result<String, String> {
 
     // 1. System UUID (Win32_ComputerSystemProduct)
     if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-NoLogo", "-Command",
-               "(Get-CimInstance Win32_ComputerSystemProduct).UUID"])
+        .args([
+            "-NoProfile",
+            "-NoLogo",
+            "-Command",
+            "(Get-CimInstance Win32_ComputerSystemProduct).UUID",
+        ])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW — hide console flash
         .output()
     {
@@ -38,8 +42,12 @@ fn collect_hardware_fingerprint() -> Result<String, String> {
 
     // 2. CPU ProcessorId (hardware serial burned into silicon)
     if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-NoLogo", "-Command",
-               "(Get-CimInstance Win32_Processor).ProcessorId"])
+        .args([
+            "-NoProfile",
+            "-NoLogo",
+            "-Command",
+            "(Get-CimInstance Win32_Processor).ProcessorId",
+        ])
         .creation_flags(0x08000000)
         .output()
     {
@@ -52,8 +60,12 @@ fn collect_hardware_fingerprint() -> Result<String, String> {
 
     // 3. BIOS Serial Number
     if let Ok(output) = Command::new("powershell")
-        .args(["-NoProfile", "-NoLogo", "-Command",
-               "(Get-CimInstance Win32_BIOS).SerialNumber"])
+        .args([
+            "-NoProfile",
+            "-NoLogo",
+            "-Command",
+            "(Get-CimInstance Win32_BIOS).SerialNumber",
+        ])
         .creation_flags(0x08000000)
         .output()
     {
@@ -73,7 +85,7 @@ fn collect_hardware_fingerprint() -> Result<String, String> {
     // SHA-256 (ổn định vĩnh viễn) thay cho DefaultHasher/SipHash — vốn KHÔNG được Rust
     // đảm bảo ổn định giữa các bản toolchain (nâng cấp Rust có thể đổi mọi HWID → vỡ license).
     // Lấy 8 byte đầu → 16 hex ký tự (giữ đúng độ dài định dạng HWID cũ).
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let combined = components.join("|");
     let mut hasher = Sha256::new();
     hasher.update(combined.as_bytes());
@@ -83,7 +95,10 @@ fn collect_hardware_fingerprint() -> Result<String, String> {
     // ra cờ KHÁC nhau (vd count=3 rồi count=2) → đúng nguồn rớt làm HWID trôi.
     log::warn!(
         "[HWID] collect OK: count={} uuid={} cpu={} bios={} hwid=...{}",
-        components.len(), has_uuid, has_cpu, has_bios,
+        components.len(),
+        has_uuid,
+        has_cpu,
+        has_bios,
         &hwid[hwid.len().saturating_sub(4)..]
     );
     Ok(hwid)
@@ -185,7 +200,10 @@ pub fn get_hardware_id() -> Result<String, String> {
 
     // 2. Disk cache (DPAPI) — ổn định qua các lần mở lại app, kể cả khi WMI về sau hiccup.
     if let Ok(h) = load_hwid_from_disk() {
-        log::warn!("[HWID] resolve: nguon=DISK hwid=...{}", &h[h.len().saturating_sub(4)..]);
+        log::warn!(
+            "[HWID] resolve: nguon=DISK hwid=...{}",
+            &h[h.len().saturating_sub(4)..]
+        );
         if let Ok(mut cache) = CACHED_HWID.lock() {
             *cache = Some(h.clone());
         }
@@ -236,7 +254,11 @@ static VALIDATED_KEYS: std::sync::LazyLock<Mutex<HashMap<String, u64>>> =
 /// Token rỗng khi PRYNX_ENFORCE_LICENSE_TOKEN=true → từ chối, không cache.
 /// Token rỗng khi enforce=false (rollout/dev) → vẫn cache; sidecar là backstop.
 #[command]
-pub fn register_validated_key(license_key: String, hwid: Option<String>, token: Option<String>) -> Result<(), String> {
+pub fn register_validated_key(
+    license_key: String,
+    hwid: Option<String>,
+    token: Option<String>,
+) -> Result<(), String> {
     let tok = token.unwrap_or_default();
     let enforce = std::env::var("PRYNX_ENFORCE_LICENSE_TOKEN")
         .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
@@ -261,7 +283,9 @@ pub fn register_validated_key(license_key: String, hwid: Option<String>, token: 
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let mut cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let mut cache = VALIDATED_KEYS
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
     cache.insert(license_key, now);
     Ok(())
 }
@@ -272,7 +296,9 @@ pub fn register_validated_key(license_key: String, hwid: Option<String>, token: 
 /// Best-effort: lỗi lock chỉ trả về String, không panic.
 #[command]
 pub fn clear_validated_keys() -> Result<(), String> {
-    let mut cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let mut cache = VALIDATED_KEYS
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
     cache.clear();
     Ok(())
 }
@@ -282,8 +308,10 @@ pub fn clear_validated_keys() -> Result<(), String> {
 const LICENSE_PUBLIC_KEY_B64: &str = "AxpiZnEFXady9wI01spdMRrTNtEthMD30W/90gi27Zk=";
 
 fn b64url_decode(s: &str) -> Result<Vec<u8>, String> {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    URL_SAFE_NO_PAD.decode(s).map_err(|e| format!("b64url: {}", e))
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    URL_SAFE_NO_PAD
+        .decode(s)
+        .map_err(|e| format!("b64url: {}", e))
 }
 
 /// Verify token "<payload_b64url>.<sig_b64url>" (sig ký trên BYTES ASCII của payload_b64url).
@@ -293,28 +321,43 @@ fn verify_license_token_internal(token: &str, hwid: &str, license_key: &str) -> 
 }
 
 /// Lõi verify, nhận pubkey tham số (để unit-test bằng keypair test mà không cần private key thật).
-fn verify_token_with_pubkey(token: &str, hwid: &str, license_key: &str, pub_b64: &str) -> Result<(), String> {
-    use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-    use base64::{Engine, engine::general_purpose::STANDARD};
+fn verify_token_with_pubkey(
+    token: &str,
+    hwid: &str,
+    license_key: &str,
+    pub_b64: &str,
+) -> Result<(), String> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     let (payload_b64, sig_b64) = token.split_once('.').ok_or("malformed license token")?;
 
-    let pub_bytes = STANDARD.decode(pub_b64).map_err(|e| format!("pubkey b64: {}", e))?;
-    let pub_arr: [u8; 32] = pub_bytes.as_slice().try_into().map_err(|_| "pubkey length")?;
+    let pub_bytes = STANDARD
+        .decode(pub_b64)
+        .map_err(|e| format!("pubkey b64: {}", e))?;
+    let pub_arr: [u8; 32] = pub_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "pubkey length")?;
     let vk = VerifyingKey::from_bytes(&pub_arr).map_err(|e| format!("pubkey: {}", e))?;
 
     let sig_bytes = b64url_decode(sig_b64)?;
     let sig = Signature::from_slice(&sig_bytes).map_err(|e| format!("sig: {}", e))?;
-    vk.verify(payload_b64.as_bytes(), &sig).map_err(|_| "invalid license token signature".to_string())?;
+    vk.verify(payload_b64.as_bytes(), &sig)
+        .map_err(|_| "invalid license token signature".to_string())?;
 
     let payload_bytes = b64url_decode(payload_b64)?;
     let payload: serde_json::Value =
         serde_json::from_slice(&payload_bytes).map_err(|e| format!("payload json: {}", e))?;
 
     let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     let exp = payload.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
-    if exp < now { return Err("license token expired".to_string()); }
+    if exp < now {
+        return Err("license token expired".to_string());
+    }
 
     // V3 (đối xứng backend license_guard.py): cận trên tuổi thọ token — chống replay token
     // cũ bằng cách LÙI đồng hồ hệ thống. Token TTL 2h nên (exp - now) hợp lệ luôn ≤ TTL;
@@ -327,21 +370,27 @@ fn verify_token_with_pubkey(token: &str, hwid: &str, license_key: &str, pub_b64:
 
     // DS-4: field "m" (machine id) BẮT BUỘC — đối xứng với backend license_guard.py:248.
     // Token thiếu "m" KHÔNG được pass (chống token vạn năng dùng mọi máy).
-    let m = payload.get("m").and_then(|v| v.as_str())
+    let m = payload
+        .get("m")
+        .and_then(|v| v.as_str())
         .ok_or("license token missing required field: machine id")?;
     if !hwid.is_empty() && m != hwid {
         return Err("license token machine mismatch".to_string());
     }
 
     // DS-4: field "k" (key hash) BẮT BUỘC — đối xứng với backend license_guard.py:255.
-    let k = payload.get("k").and_then(|v| v.as_str())
+    let k = payload
+        .get("k")
+        .and_then(|v| v.as_str())
         .ok_or("license token missing required field: key hash")?;
     if !license_key.is_empty() {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(license_key.as_bytes());
         let kh = hex::encode(h.finalize());
-        if k != &kh[..16] { return Err("license token key mismatch".to_string()); }
+        if k != &kh[..16] {
+            return Err("license token key mismatch".to_string());
+        }
     }
     Ok(())
 }
@@ -389,12 +438,19 @@ mod ps_escape_tests {
 #[cfg(test)]
 mod token_tests {
     use super::*;
-    use base64::{Engine, engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}};
-    use ed25519_dalek::{SigningKey, Signer};
-    use sha2::{Sha256, Digest};
+    use base64::{
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+        Engine,
+    };
+    use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha256};
 
     fn mk_token(sk: &SigningKey, hwid: &str, key: &str, exp: i64) -> String {
-        let kh = { let mut h = Sha256::new(); h.update(key.as_bytes()); hex::encode(h.finalize()) };
+        let kh = {
+            let mut h = Sha256::new();
+            h.update(key.as_bytes());
+            hex::encode(h.finalize())
+        };
         let payload = serde_json::json!({ "k": &kh[..16], "m": hwid, "p": "prynx", "exp": exp });
         let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
         let sig = sk.sign(payload_b64.as_bytes());
@@ -406,7 +462,11 @@ mod token_tests {
     fn valid_token_passes() {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
-        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
         let tok = mk_token(&sk, "HW123", "LIC-KEY", future);
         assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_ok());
     }
@@ -415,7 +475,11 @@ mod token_tests {
     fn tampered_signature_rejected() {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
-        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
         let tok = mk_token(&sk, "HW123", "LIC-KEY", future);
         // Đổi CHẮC CHẮN 1 ký tự đầu của phần sig (đảm bảo khác ký tự gốc).
         let (p, s) = tok.split_once('.').unwrap();
@@ -430,7 +494,11 @@ mod token_tests {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let attacker = SigningKey::from_bytes(&[9u8; 32]);
         let pubk = STANDARD.encode(sk.verifying_key().to_bytes()); // trust anchor = sk
-        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
         let tok = mk_token(&attacker, "HW123", "LIC-KEY", future); // ký bằng khoá khác (keygen giả)
         assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_err());
     }
@@ -447,18 +515,28 @@ mod token_tests {
     fn machine_mismatch_rejected() {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
-        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
         let tok = mk_token(&sk, "HW-A", "LIC-KEY", future);
-        assert!(verify_token_with_pubkey(&tok, "HW-B", "LIC-KEY", &pubk).is_err()); // token máy khác
+        assert!(verify_token_with_pubkey(&tok, "HW-B", "LIC-KEY", &pubk).is_err());
+        // token máy khác
     }
 
     #[test]
     fn key_mismatch_rejected() {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
-        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
         let tok = mk_token(&sk, "HW123", "LIC-A", future);
-        assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-B", &pubk).is_err()); // key khác
+        assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-B", &pubk).is_err());
+        // key khác
     }
 
     // DS-4: token ký hợp lệ nhưng THIẾU field "m" hoặc "k" phải bị từ chối
@@ -474,9 +552,16 @@ mod token_tests {
     fn missing_machine_field_rejected() {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
-        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
         // payload không có "m"
-        let tok = mk_token_payload(&sk, serde_json::json!({ "k": "0123456789abcdef", "p": "prynx", "exp": future }));
+        let tok = mk_token_payload(
+            &sk,
+            serde_json::json!({ "k": "0123456789abcdef", "p": "prynx", "exp": future }),
+        );
         assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_err());
     }
 
@@ -484,9 +569,16 @@ mod token_tests {
     fn missing_key_field_rejected() {
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
-        let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 + 3600;
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
         // payload không có "k"
-        let tok = mk_token_payload(&sk, serde_json::json!({ "m": "HW123", "p": "prynx", "exp": future }));
+        let tok = mk_token_payload(
+            &sk,
+            serde_json::json!({ "m": "HW123", "p": "prynx", "exp": future }),
+        );
         assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_err());
     }
 }
@@ -499,18 +591,16 @@ mod token_tests {
 
 #[cfg(not(debug_assertions))]
 pub fn start_anti_debug_monitor() {
-    std::thread::spawn(|| {
-        loop {
-            if is_debugger_attached() {
-                log::error!("[SECURITY] Debugger detected! Terminating.");
-                std::process::exit(1);
-            }
-            if is_critical_api_hooked() {
-                log::error!("[SECURITY] API hook detected! Terminating.");
-                std::process::exit(1);
-            }
-            std::thread::sleep(std::time::Duration::from_secs(5));
+    std::thread::spawn(|| loop {
+        if is_debugger_attached() {
+            log::error!("[SECURITY] Debugger detected! Terminating.");
+            std::process::exit(1);
         }
+        if is_critical_api_hooked() {
+            log::error!("[SECURITY] API hook detected! Terminating.");
+            std::process::exit(1);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
     });
 }
 
@@ -521,7 +611,7 @@ fn is_debugger_attached() -> bool {
         extern "system" {
             fn IsDebuggerPresent() -> i32;
         }
-        
+
         #[link(name = "ntdll")]
         extern "system" {
             fn NtQueryInformationProcess(
@@ -537,7 +627,7 @@ fn is_debugger_attached() -> bool {
         if IsDebuggerPresent() != 0 {
             return true;
         }
-        
+
         // Method 2: ProcessDebugPort (class=7) — catches hidden debuggers
         let mut debug_port: usize = 0;
         let status = NtQueryInformationProcess(
@@ -550,7 +640,7 @@ fn is_debugger_attached() -> bool {
         if status == 0 && debug_port != 0 {
             return true;
         }
-        
+
         false
     }
 }
@@ -563,7 +653,7 @@ fn is_critical_api_hooked() -> bool {
             fn GetModuleHandleA(name: *const u8) -> isize;
             fn GetProcAddress(module: isize, name: *const u8) -> *const u8;
         }
-        
+
         // Check CryptUnprotectData (DPAPI — used for license/timestamp storage)
         let crypt32 = GetModuleHandleA(b"crypt32.dll\0".as_ptr());
         if crypt32 != 0 {
@@ -580,7 +670,7 @@ fn is_critical_api_hooked() -> bool {
                 }
             }
         }
-        
+
         false
     }
 }
@@ -592,29 +682,37 @@ fn is_critical_api_hooked() -> bool {
 // ══════════════════════════════════════════════════════════════
 
 struct EncryptedToken {
-    cipher: Vec<u8>,  // token XOR mask
-    mask: Vec<u8>,    // random mask
+    cipher: Vec<u8>, // token XOR mask
+    mask: Vec<u8>,   // random mask
 }
 
 impl EncryptedToken {
     fn new() -> Self {
-        Self { cipher: Vec::new(), mask: Vec::new() }
+        Self {
+            cipher: Vec::new(),
+            mask: Vec::new(),
+        }
     }
-    
+
     fn store(&mut self, token: &str) {
         use rand::Rng;
         let mut rng = rand::thread_rng();
         let token_bytes = token.as_bytes();
         self.mask = (0..token_bytes.len()).map(|_| rng.gen::<u8>()).collect();
-        self.cipher = token_bytes.iter()
+        self.cipher = token_bytes
+            .iter()
             .zip(self.mask.iter())
             .map(|(t, m)| t ^ m)
             .collect();
     }
-    
+
     fn decrypt(&self) -> String {
-        if self.cipher.is_empty() { return String::new(); }
-        let plain: Vec<u8> = self.cipher.iter()
+        if self.cipher.is_empty() {
+            return String::new();
+        }
+        let plain: Vec<u8> = self
+            .cipher
+            .iter()
             .zip(self.mask.iter())
             .map(|(c, m)| c ^ m)
             .collect();
@@ -636,13 +734,16 @@ pub fn set_sidecar_token(token: &str) {
 /// The token + hash algorithm NEVER leave Rust.
 /// Also gates on license validation: if license not in cache, refuses to sign.
 #[command]
-pub fn sign_api_request(url_path: String, license_key: String) -> Result<HashMap<String, String>, String> {
+pub fn sign_api_request(
+    url_path: String,
+    license_key: String,
+) -> Result<HashMap<String, String>, String> {
     // Gate 1: Check license in Rust cache (mandatory, not opt-in)
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     {
         let cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock: {}", e))?;
         let is_valid = if let Some(&validated_at) = cache.get(&license_key) {
@@ -650,7 +751,7 @@ pub fn sign_api_request(url_path: String, license_key: String) -> Result<HashMap
         } else {
             false
         };
-        
+
         if !is_valid {
             // F1 FIX: từ chối ký khi license CHƯA validate trong cache — KỂ CẢ key rỗng.
             // Trước đây điều kiện `!is_valid && !license_key.is_empty()` cho key="" lọt qua.
@@ -659,7 +760,7 @@ pub fn sign_api_request(url_path: String, license_key: String) -> Result<HashMap
             return Err("License not validated in Rust cache".to_string());
         }
     }
-    
+
     // Gate 2: Decrypt token from encrypted memory (VECTOR #14)
     let token_str = {
         let enc = SIDECAR_TOKEN.lock().map_err(|e| format!("Lock: {}", e))?;
@@ -669,25 +770,25 @@ pub fn sign_api_request(url_path: String, license_key: String) -> Result<HashMap
         }
         decrypted
     }; // enc lock released here
-    
+
     // Gate 3: Compute HMAC-SHA256 signature (industry standard)
     let timestamp = now_secs.to_string();
     let sign_payload = format!("{}:{}", timestamp, url_path);
-    
+
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
-    
+
     let mut mac = HmacSha256::new_from_slice(token_str.as_bytes())
         .map_err(|e| format!("HMAC init error: {}", e))?;
     mac.update(sign_payload.as_bytes());
     let signature = hex::encode(mac.finalize().into_bytes());
-    
+
     let mut headers = HashMap::new();
     headers.insert("X-PrynX-Token".to_string(), token_str);
     headers.insert("X-PrynX-Timestamp".to_string(), timestamp);
     headers.insert("X-PrynX-Signature".to_string(), signature);
-    
+
     Ok(headers)
 }
 
@@ -702,11 +803,10 @@ const CREDENTIAL_FILE: &str = "prynx_license.dat";
 
 /// Get the path to the credential file in AppData
 fn get_credential_path() -> Result<std::path::PathBuf, String> {
-    let appdata = std::env::var("APPDATA")
-        .map_err(|_| "Cannot find APPDATA directory".to_string())?;
+    let appdata =
+        std::env::var("APPDATA").map_err(|_| "Cannot find APPDATA directory".to_string())?;
     let dir = std::path::Path::new(&appdata).join("PrynX");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Cannot create PrynX directory: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create PrynX directory: {}", e))?;
     Ok(dir.join(CREDENTIAL_FILE))
 }
 
@@ -728,29 +828,29 @@ pub fn store_license(license_key: String) -> Result<(), String> {
         ps_single_quote_escape(&license_key),
         cred_path_str
     );
-    
+
     let output = Command::new("powershell")
         .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
         .creation_flags(0x08000000)
         .output()
         .map_err(|e| format!("Failed to run DPAPI encrypt: {}", e))?;
-    
+
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("DPAPI encrypt failed: {}", err));
     }
-    
+
     Ok(())
 }
 
 #[command]
 pub fn load_license() -> Result<String, String> {
     let cred_path = get_credential_path()?;
-    
+
     if !cred_path.exists() {
         return Err("No stored license found".to_string());
     }
-    
+
     let cred_path_str = ps_single_quote_escape(&cred_path.to_string_lossy());
 
     // Use PowerShell + DPAPI to decrypt
@@ -765,23 +865,23 @@ pub fn load_license() -> Result<String, String> {
         "#,
         cred_path_str
     );
-    
+
     let output = Command::new("powershell")
         .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
         .creation_flags(0x08000000)
         .output()
         .map_err(|e| format!("Failed to run DPAPI decrypt: {}", e))?;
-    
+
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("DPAPI decrypt failed: {}", err));
     }
-    
+
     let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if key.is_empty() {
         return Err("Decrypted license key is empty".to_string());
     }
-    
+
     Ok(key)
 }
 
@@ -804,24 +904,24 @@ pub fn delete_license() -> Result<(), String> {
 const TIMESTAMP_FILE: &str = "prynx_ts.dat";
 
 fn get_timestamp_path() -> Result<std::path::PathBuf, String> {
-    let appdata = std::env::var("APPDATA")
-        .map_err(|_| "Cannot find APPDATA".to_string())?;
+    let appdata = std::env::var("APPDATA").map_err(|_| "Cannot find APPDATA".to_string())?;
     let dir = std::path::Path::new(&appdata).join("PrynX");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Cannot create dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create dir: {}", e))?;
     Ok(dir.join(TIMESTAMP_FILE))
 }
 
 #[command]
 pub fn store_last_online(timestamp_ms: u64) -> Result<(), String> {
     let current = load_last_online().unwrap_or(0);
-    
+
     if current > 0 {
         // ── Anti-clockback: reject if clock was set backward ──
         if timestamp_ms + 300_000 < current {
-            return Err("Clock manipulation detected: system time is behind stored timestamp".to_string());
+            return Err(
+                "Clock manipulation detected: system time is behind stored timestamp".to_string(),
+            );
         }
-        
+
         // ── VECTOR #11 FIX: Anti-forward-jump ──
         // If time jumped MORE than 25 hours since last store, suspicious.
         // Normal heartbeat is every 30 min, so >25h gap means either:
@@ -835,7 +935,9 @@ pub fn store_last_online(timestamp_ms: u64) -> Result<(), String> {
             // (user can't chain T+23h → T+46h → T+69h infinitely)
             log::warn!(
                 "[SECURITY] Large time jump detected: {}ms → {}ms (delta={}h)",
-                current, timestamp_ms, (timestamp_ms - current) / 3_600_000
+                current,
+                timestamp_ms,
+                (timestamp_ms - current) / 3_600_000
             );
         }
     }
@@ -843,7 +945,7 @@ pub fn store_last_online(timestamp_ms: u64) -> Result<(), String> {
     let path = get_timestamp_path()?;
     let cred_path_str = ps_single_quote_escape(&path.to_string_lossy());
     let ts_str = timestamp_ms.to_string();
-    
+
     // Use DPAPI to encrypt timestamp (same mechanism as license key)
     let ps_script = format!(
         r#"
@@ -856,13 +958,13 @@ pub fn store_last_online(timestamp_ms: u64) -> Result<(), String> {
         "#,
         ts_str, cred_path_str
     );
-    
+
     let output = Command::new("powershell")
         .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
         .creation_flags(0x08000000)
         .output()
         .map_err(|e| format!("DPAPI timestamp encrypt failed: {}", e))?;
-    
+
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("DPAPI timestamp encrypt failed: {}", err));
@@ -876,9 +978,9 @@ pub fn load_last_online() -> Result<u64, String> {
     if !path.exists() {
         return Ok(0);
     }
-    
+
     let cred_path_str = ps_single_quote_escape(&path.to_string_lossy());
-    
+
     let ps_script = format!(
         r#"
         Add-Type -AssemblyName System.Security
@@ -890,19 +992,21 @@ pub fn load_last_online() -> Result<u64, String> {
         "#,
         cred_path_str
     );
-    
+
     let output = Command::new("powershell")
         .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
         .creation_flags(0x08000000)
         .output()
         .map_err(|e| format!("DPAPI timestamp decrypt failed: {}", e))?;
-    
+
     if !output.status.success() {
         return Ok(0); // Corrupted or tampered — treat as never online
     }
-    
+
     let ts_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    ts_str.parse::<u64>().map_err(|_| "Invalid timestamp".to_string())
+    ts_str
+        .parse::<u64>()
+        .map_err(|_| "Invalid timestamp".to_string())
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -919,11 +1023,9 @@ pub fn load_last_online() -> Result<u64, String> {
 const TOKEN_FILE: &str = "prynx_token.dat";
 
 fn get_token_path() -> Result<std::path::PathBuf, String> {
-    let appdata = std::env::var("APPDATA")
-        .map_err(|_| "Cannot find APPDATA".to_string())?;
+    let appdata = std::env::var("APPDATA").map_err(|_| "Cannot find APPDATA".to_string())?;
     let dir = std::path::Path::new(&appdata).join("PrynX");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Cannot create dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create dir: {}", e))?;
     Ok(dir.join(TOKEN_FILE))
 }
 
@@ -992,8 +1094,7 @@ pub fn load_license_token() -> Result<String, String> {
 pub fn delete_license_token() -> Result<(), String> {
     let path = get_token_path()?;
     if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("Failed to delete token file: {}", e))?;
+        std::fs::remove_file(&path).map_err(|e| format!("Failed to delete token file: {}", e))?;
     }
     Ok(())
 }

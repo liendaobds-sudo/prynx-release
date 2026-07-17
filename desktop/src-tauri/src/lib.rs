@@ -1,11 +1,11 @@
-use tauri::{Manager, Emitter};
 use tauri::http::{self};
+use tauri::{Emitter, Manager};
 
 // Add state struct for PDFium
-use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::HashMap;
 use pdfium_render::prelude::*;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::ipc::Response;
 
 // `creation_flags` (ẩn cửa sổ console) đến từ trait CommandExt — chỉ cần ở các block
@@ -98,7 +98,11 @@ struct PageLru {
 }
 impl PageLru {
     fn new(max: usize) -> Self {
-        Self { map: HashMap::new(), order: std::collections::VecDeque::new(), max }
+        Self {
+            map: HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            max,
+        }
     }
 }
 
@@ -138,8 +142,12 @@ fn bind_pdfium() -> Result<Box<dyn PdfiumLibraryBindings>, String> {
             return Ok(bindings);
         }
     }
-    Pdfium::bind_to_system_library()
-        .map_err(|e| format!("Khong tim thay pdfium.dll (da thu canh exe, ./bin va system): {:?}", e))
+    Pdfium::bind_to_system_library().map_err(|e| {
+        format!(
+            "Khong tim thay pdfium.dll (da thu canh exe, ./bin va system): {:?}",
+            e
+        )
+    })
 }
 
 /// Bind thư viện pdfium MỘT LẦN. Trả về Result để KHÔNG panic khi không tìm thấy
@@ -163,14 +171,20 @@ struct TileCache {
 }
 impl TileCache {
     fn new(max_size: usize) -> Self {
-        Self { map: HashMap::new(), queue: std::collections::VecDeque::new(), max_size }
+        Self {
+            map: HashMap::new(),
+            queue: std::collections::VecDeque::new(),
+            max_size,
+        }
     }
     fn get(&mut self, key: &str) -> Option<Vec<u8>> {
         if self.map.contains_key(key) {
             self.queue.retain(|k| k != key);
             self.queue.push_back(key.to_string());
             self.map.get(key).cloned()
-        } else { None }
+        } else {
+            None
+        }
     }
     fn insert(&mut self, key: String, data: Vec<u8>) {
         if self.map.contains_key(&key) {
@@ -186,6 +200,13 @@ impl TileCache {
 }
 static TILE_CACHE: OnceLock<Mutex<TileCache>> = OnceLock::new();
 static LOAD_LOCK: Mutex<()> = Mutex::new(());
+// PDFium KHÔNG thread-safe kể cả trên các FPDF_DOCUMENT khác nhau (font cache & state
+// toàn cục dùng chung). Render tile giữ handle.lock PER-DOC nên 2 tab có thể render song
+// song; đường in (print.rs) mở doc RIÊNG qua FFI, nằm ngoài DOC_CACHE nên không bị
+// handle.lock chặn → có thể render đè lên tile → crash. RENDER_LOCK serialize MỌI thao
+// tác render PDFium (tile + in). Chỉ bọc quanh chính lệnh render, KHÔNG giữ khi mở
+// PrintDlg (tránh treo viewer suốt lúc hộp thoại mở).
+pub static RENDER_LOCK: Mutex<()> = Mutex::new(());
 
 // The State wrapper in Tauri requires Send + Sync
 pub struct PdfiumState {
@@ -200,7 +221,11 @@ unsafe impl Sync for PdfiumState {}
 fn append_perf_log(app_handle: tauri::AppHandle, msg: String) {
     if let Ok(desktop_dir) = app_handle.path().desktop_dir() {
         let file_path = desktop_dir.join("PrynX_Performance.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(file_path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file_path)
+        {
             use std::io::Write;
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
             let _ = writeln!(&mut file, "[{}] {}", now, msg);
@@ -209,7 +234,10 @@ fn append_perf_log(app_handle: tauri::AppHandle, msg: String) {
 }
 
 #[tauri::command]
-async fn get_pdf_metadata(app_handle: tauri::AppHandle, file_path: String) -> Result<serde_json::Value, String> {
+async fn get_pdf_metadata(
+    app_handle: tauri::AppHandle,
+    file_path: String,
+) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
         let start_time = std::time::Instant::now();
         let pdfium = ensure_pdfium()?;
@@ -223,8 +251,10 @@ async fn get_pdf_metadata(app_handle: tauri::AppHandle, file_path: String) -> Re
             // Lazy pool: open only 1 handle immediately for fast metadata access
             let doc = {
                 let _guard = LOAD_LOCK.lock().unwrap();
-                let bytes = std::fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
-                pdfium.load_pdf_from_byte_vec(bytes, None)
+                let bytes =
+                    std::fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
+                pdfium
+                    .load_pdf_from_byte_vec(bytes, None)
                     .map_err(|e| format!("Failed to open PDF: {:?}", e))?
             };
             load_ms = load_start.elapsed().as_millis();
@@ -308,20 +338,38 @@ async fn get_pdf_metadata(app_handle: tauri::AppHandle, file_path: String) -> Re
             "heightPt": height_pt,
             "allDims": all_dims
         }))
-    }).await.unwrap_or_else(|_| Err("Task panicked".into()))
+    })
+    .await
+    .unwrap_or_else(|_| Err("Task panicked".into()))
 }
 
 // ═══ Shared tile rendering core (used by both IPC command and protocol handler) ═══
 fn render_tile_jpeg(
-    file_path: &str, page: i32, zoom: f32, rotation: i32,
-    clip_x: Option<i32>, clip_y: Option<i32>, clip_w: Option<i32>, clip_h: Option<i32>
+    file_path: &str,
+    page: i32,
+    zoom: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
 ) -> Result<Vec<u8>, String> {
     // RENDER_VER: đổi token này mỗi khi thay đổi cách render/encode (LCD text, JPEG
     // quality...) → vô hiệu MỌI tile cache cũ (RAM + đĩa) render bằng cấu hình cũ.
     // Nếu không, tile q92/không-LCD đã lưu vẫn được đọc lại, che mất thay đổi (2026-07-06).
     const RENDER_VER: &str = "v5_q90";
-    let cache_key = format!("{}_{}_{}_{}_{}_{}_{}_{}_{}", RENDER_VER, file_path, page, zoom, rotation,
-        clip_x.unwrap_or(0), clip_y.unwrap_or(0), clip_w.unwrap_or(0), clip_h.unwrap_or(0));
+    let cache_key = format!(
+        "{}_{}_{}_{}_{}_{}_{}_{}_{}",
+        RENDER_VER,
+        file_path,
+        page,
+        zoom,
+        rotation,
+        clip_x.unwrap_or(0),
+        clip_y.unwrap_or(0),
+        clip_w.unwrap_or(0),
+        clip_h.unwrap_or(0)
+    );
 
     {
         let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
@@ -407,9 +455,13 @@ fn render_tile_jpeg(
             // SAFETY: page mượn từ handle.doc; doc nằm trong Pdfium đã Box::leak ('static),
             // sống suốt vòng đời tiến trình, nên kéo dài borrow lên 'static là hợp lệ ở đây.
             let doc_ref: &'static PdfDocument<'static> = unsafe {
-                std::mem::transmute::<&PdfDocument<'static>, &'static PdfDocument<'static>>(&handle.doc)
+                std::mem::transmute::<&PdfDocument<'static>, &'static PdfDocument<'static>>(
+                    &handle.doc,
+                )
             };
-            let new_page = doc_ref.pages().get(page_index)
+            let new_page = doc_ref
+                .pages()
+                .get(page_index)
                 .map_err(|e| format!("Failed to get page: {:?}", e))?;
             if lru.order.len() >= lru.max {
                 if let Some(old) = lru.order.pop_front() {
@@ -436,13 +488,18 @@ fn render_tile_jpeg(
         // bằng max_dim=8000 bên dưới. Nên trần scale là THỪA và chính là thứ phá tile.
         render_scale = render_scale.max(0.01);
 
-        let render_config = if let (Some(x), Some(y), Some(w), Some(h)) = (clip_x, clip_y, clip_w, clip_h) {
+        let render_config =
+            if let (Some(x), Some(y), Some(w), Some(h)) = (clip_x, clip_y, clip_w, clip_h) {
             let safe_w = w.clamp(1, 4000) as i32;
             let safe_h = h.clamp(1, 4000) as i32;
             PdfRenderConfig::new()
                 .set_clear_color(PdfColor::WHITE)
                 .set_fixed_size(safe_w, safe_h)
-                .translate(PdfPoints::new(-(x as f32) / render_scale), PdfPoints::new(-(y as f32) / render_scale)).unwrap_or_default()
+                    .translate(
+                        PdfPoints::new(-(x as f32) / render_scale),
+                        PdfPoints::new(-(y as f32) / render_scale),
+                    )
+                    .unwrap_or_default()
                 .scale_page_by_factor(render_scale)
                 // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
                 .use_lcd_text_rendering(true)
@@ -469,7 +526,13 @@ fn render_tile_jpeg(
                 // LCD subpixel text → chữ sắc nét kiểu Acrobat (audit render 2026-07-06).
                 .use_lcd_text_rendering(true)
         };
-        let bitmap = pdf_page.render_with_config(&render_config)
+        // RENDER_LOCK: serialize với đường in (print.rs mở doc riêng ngoài DOC_CACHE).
+        // PDFium không thread-safe kể cả trên doc khác nhau.
+        let _render_guard = RENDER_LOCK
+            .lock()
+            .map_err(|_| "Render lock poisoned".to_string())?;
+        let bitmap = pdf_page
+            .render_with_config(&render_config)
             .map_err(|e| format!("Failed to render page: {:?}", e))?;
         bitmap.as_image().to_rgba8()
     };
@@ -481,7 +544,9 @@ fn render_tile_jpeg(
     // gần như không phân biệt với q98 trên ảnh render màn hình. (Từng: q92→q98 cho nét, nay
     // hạ q90 đổi lấy tốc độ vì debounce đã đảm bảo mỗi lần zoom chỉ 1 render.)
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 90);
-    encoder.encode_image(&rgba_image).map_err(|e| format!("Encode error: {:?}", e))?;
+    encoder
+        .encode_image(&rgba_image)
+        .map_err(|e| format!("Encode error: {:?}", e))?;
     // LƯU Ý: ĐÃ GỠ block ghi PrynX_Performance.log ở đây — nó gọi chrono::Local::now()
     // và PANIC ở bản release ("Task panicked"), khiến render_tile_jpeg trả 500 → main view
     // kẹt RENDERING + thumbnail vỡ. Đây là nguyên nhân gốc thật sự (xem frontend_debug.log).
@@ -511,18 +576,30 @@ fn render_tile_jpeg(
 // đường tile://). Viewport-tiling gửi nhiều ô cùng lúc → nếu không chặn, mỗi render
 // round-robin qua doc pool khiến mỗi handle decode lại page (RAM) + spawn_blocking
 // không giới hạn. Semaphore ~4 giữ song song vừa phải, tránh thrash (audit render).
-static RENDER_SEMAPHORE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+static RENDER_SEMAPHORE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
 
 #[tauri::command]
 async fn render_pdf_page(
     _app_handle: tauri::AppHandle,
-    file_path: String, page: i32, zoom: f32, rotation: i32,
-    clip_x: Option<i32>, clip_y: Option<i32>, clip_w: Option<i32>, clip_h: Option<i32>,
+    file_path: String,
+    page: i32,
+    zoom: f32,
+    rotation: i32,
+    clip_x: Option<i32>,
+    clip_y: Option<i32>,
+    clip_w: Option<i32>,
+    clip_h: Option<i32>,
 ) -> Result<tauri::ipc::Response, String> {
     let sem = RENDER_SEMAPHORE.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4)));
-    let _permit = sem.acquire().await.map_err(|_| "Render semaphore closed".to_string())?;
+    let _permit = sem
+        .acquire()
+        .await
+        .map_err(|_| "Render semaphore closed".to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        match render_tile_jpeg(&file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h) {
+        match render_tile_jpeg(
+            &file_path, page, zoom, rotation, clip_x, clip_y, clip_w, clip_h,
+        ) {
             Ok(data) => Ok(tauri::ipc::Response::new(data)),
             Err(e) => {
                 // Ghi LÝ DO thật ra log (release tắt devtools → console.error phía JS biến
@@ -530,12 +607,18 @@ async fn render_pdf_page(
                 // OOM/clamp tờ lớn, file backend sinh hỏng, hết RAM, page out of bounds...
                 log::error!(
                     "[RENDER] Fail file='{}' page={} zoom={} rot={}: {}",
-                    file_path, page, zoom, rotation, e
+                    file_path,
+                    page,
+                    zoom,
+                    rotation,
+                    e
                 );
                 Err(e)
             }
         }
-    }).await.unwrap_or_else(|_| {
+    })
+    .await
+    .unwrap_or_else(|_| {
         // Task panic (vd STATUS_STACK_BUFFER_OVERRUN khi bitmap tờ booklet quá lớn) —
         // trước đây nuốt lý do thành "Task panicked" chung chung. Ghi lại để lần theo.
         log::error!("[RENDER] Task panicked (khả năng pdfium crash: bitmap quá lớn / OOM)");
@@ -567,7 +650,11 @@ fn is_sensitive_path(path: &str) -> bool {
     }
     let home_l = home.replace('/', "\\").to_lowercase();
     let blocked = [
-        ".ssh", ".aws", ".gnupg", ".config", ".kube",
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".config",
+        ".kube",
         "appdata\\local\\microsoft\\credentials",
         "appdata\\roaming\\microsoft\\credentials",
     ];
@@ -586,14 +673,22 @@ fn is_sensitive_write_path(path: &str) -> bool {
     }
     let norm = path.replace('/', "\\").to_lowercase();
     let mut sys_dirs: Vec<String> = Vec::new();
-    for var in ["WINDIR", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+    for var in [
+        "WINDIR",
+        "SystemRoot",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+    ] {
         if let Ok(v) = std::env::var(var) {
             if !v.is_empty() {
                 sys_dirs.push(v.replace('/', "\\").to_lowercase());
             }
         }
     }
-    sys_dirs.iter().any(|d| norm == *d || norm.starts_with(&format!("{}\\", d)))
+    sys_dirs
+        .iter()
+        .any(|d| norm == *d || norm.starts_with(&format!("{}\\", d)))
 }
 
 #[tauri::command]
@@ -604,7 +699,10 @@ fn read_system_file(path: String) -> Result<Response, String> {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let allowed = ["pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "icc", "icm", "svg", "ttf", "otf", "ttc"];
+    let allowed = [
+        "pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "icc", "icm", "svg", "ttf",
+        "otf", "ttc",
+    ];
     if !allowed.contains(&ext.as_str()) {
         return Err(format!("File type .{} not allowed", ext));
     }
@@ -635,7 +733,9 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    let allowed = ["pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "svg", "csv", "txt", "json"];
+    let allowed = [
+        "pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "svg", "csv", "txt", "json",
+    ];
     if !allowed.contains(&ext.as_str()) {
         return Err(format!("File type .{} not allowed", ext));
     }
@@ -647,10 +747,7 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => std::path::PathBuf::from("."),
     };
-    let fname = target
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("out");
+    let fname = target.file_name().and_then(|n| n.to_str()).unwrap_or("out");
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -710,26 +807,36 @@ async fn normalize_image_to_png(file_path: String) -> Result<tauri::ipc::Respons
     tauri::async_runtime::spawn_blocking(move || {
         let img = image::open(&file_path).map_err(|e| format!("Failed to open image: {}", e))?;
         let mut buffer = std::io::Cursor::new(Vec::new());
-        img.write_to(&mut buffer, image::ImageFormat::Png).map_err(|e| format!("Failed to encode image: {}", e))?;
+        img.write_to(&mut buffer, image::ImageFormat::Png)
+            .map_err(|e| format!("Failed to encode image: {}", e))?;
         Ok(tauri::ipc::Response::new(buffer.into_inner()))
-    }).await.unwrap_or_else(|_| Err("Task panicked".to_string()))
+    })
+    .await
+    .unwrap_or_else(|_| Err("Task panicked".to_string()))
 }
 
 #[tauri::command]
 async fn normalize_image_bytes(bytes: Vec<u8>) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let img = image::load_from_memory(&bytes).map_err(|e| format!("Failed to load image from memory: {}", e))?;
+        let img = image::load_from_memory(&bytes)
+            .map_err(|e| format!("Failed to load image from memory: {}", e))?;
         let mut buffer = std::io::Cursor::new(Vec::new());
-        img.write_to(&mut buffer, image::ImageFormat::Png).map_err(|e| format!("Failed to encode image: {}", e))?;
+        img.write_to(&mut buffer, image::ImageFormat::Png)
+            .map_err(|e| format!("Failed to encode image: {}", e))?;
         Ok(tauri::ipc::Response::new(buffer.into_inner()))
-    }).await.unwrap_or_else(|_| Err("Task panicked".to_string()))
+    })
+    .await
+    .unwrap_or_else(|_| Err("Task panicked".to_string()))
 }
 
 #[tauri::command]
 fn solve_layout(
-    usable_w: f64, usable_h: f64,
-    orig_w: f64, orig_h: f64,
-    gap_x: f64, gap_y: f64,
+    usable_w: f64,
+    usable_h: f64,
+    orig_w: f64,
+    orig_h: f64,
+    gap_x: f64,
+    gap_y: f64,
     strategy: String,
 ) -> Result<serde_json::Value, String> {
     // Dùng nguồn chân lý duy nhất: imposition_core (Task 9 / Req 1.3).
@@ -747,16 +854,19 @@ fn solve_layout(
 
 /// Compute SHA-256 hash of a file
 fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
     use std::io::Read;
-    use sha2::{Sha256, Digest};
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("Cannot open sidecar binary: {}", e))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("Cannot open sidecar binary: {}", e))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
     loop {
-        let bytes_read = file.read(&mut buffer)
+        let bytes_read = file
+            .read(&mut buffer)
             .map_err(|e| format!("Cannot read sidecar binary: {}", e))?;
-        if bytes_read == 0 { break; }
+        if bytes_read == 0 {
+            break;
+        }
         hasher.update(&buffer[..bytes_read]);
     }
     Ok(hex::encode(hasher.finalize()))
@@ -788,18 +898,21 @@ fn verify_sidecar_integrity(sidecar_path: &std::path::Path) -> Result<(), String
         Err(e) => {
             log::error!(
                 "[INTEGRITY] Cannot hash sidecar at {} ({}); refusing to start (fail-closed).",
-                sidecar_path.display(), e
+                sidecar_path.display(),
+                e
             );
             return Err(format!(
                 "Security error: cannot verify backend integrity ({}). \
-                 The backend file may be missing, quarantined by antivirus, or tampered with.", e
+                 The backend file may be missing, quarantined by antivirus, or tampered with.",
+                e
             ));
         }
     };
     if actual_hash != expected_hash {
         log::error!(
             "[INTEGRITY] Sidecar binary has been tampered! Expected={}, Got={}",
-            expected_hash, actual_hash
+            expected_hash,
+            actual_hash
         );
         return Err(format!(
             "Security error: backend binary integrity check failed. \
@@ -885,9 +998,12 @@ fn sha256_directory(dir: &std::path::Path) -> Result<String, String> {
         let mut buffer = [0u8; 8192];
         loop {
             use std::io::Read;
-            let n = file.read(&mut buffer)
+            let n = file
+                .read(&mut buffer)
                 .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             hasher.update(&buffer[..n]);
         }
     }
@@ -897,8 +1013,8 @@ fn sha256_directory(dir: &std::path::Path) -> Result<String, String> {
 
 #[cfg(not(debug_assertions))]
 fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("Cannot read dir {}: {}", dir.display(), e))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("Cannot read dir {}: {}", dir.display(), e))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
         let path = entry.path();
@@ -919,7 +1035,11 @@ pub fn run() {
         if let Ok(appdata) = std::env::var("APPDATA") {
             let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
             let _ = std::fs::create_dir_all(&dir);
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("rust_panic.log")) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("rust_panic.log"))
+            {
                 use std::io::Write;
                 let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
                 let _ = writeln!(f, "[{}] PANIC: {} | at {:?}", now, info, info.location());
@@ -936,14 +1056,18 @@ pub fn run() {
         let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
         // CHỈ thêm các cờ AN TOÀN (không mở remote-debugging-port) — không tạo lỗ hổng.
         let flags = "--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows --disable-background-timer-throttling --disable-renderer-backgrounding";
-        let merged = if existing.trim().is_empty() { flags.to_string() } else { format!("{} {}", existing, flags) };
+        let merged = if existing.trim().is_empty() {
+            flags.to_string()
+        } else {
+            format!("{} {}", existing, flags)
+        };
         std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", merged);
     }
 
     tauri::Builder::default()
         .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, read_dir_json, append_perf_log, pdf_engine::diecut::strip_diecut_lines, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, read_dir_json, append_perf_log, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -1277,6 +1401,31 @@ pub fn run() {
                                     let _ = settings.SetAreDevToolsEnabled(false);
                                     let _ = settings.SetAreDefaultContextMenusEnabled(false);
                                     let _ = settings.SetIsStatusBarEnabled(false);
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+
+            // Tắt phím tắt trình duyệt của WebView2 (Ctrl+P, Ctrl+F, F5, Ctrl+R…).
+            // KHÔNG gate theo release: WebView2 bắt Ctrl+P ở tầng runtime Edge TRƯỚC khi
+            // JS thấy event, nên e.preventDefault() trong React vô hiệu → Edge tự bung hộp
+            // thoại "This app doesn't support print preview". Tắt accelerator keys ở đây
+            // để Ctrl+P chỉ chạy handler của ta (in native qua print_pdf). Chạy cả debug
+            // lẫn release để dev test đúng hành vi. Cần ICoreWebView2Settings3.
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.with_webview(|webview| {
+                        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+                        use windows::core::Interface;
+                        unsafe {
+                            if let Ok(core) = webview.controller().CoreWebView2() {
+                                if let Ok(settings) = core.Settings() {
+                                    if let Ok(s3) = settings.cast::<ICoreWebView2Settings3>() {
+                                        let _ = s3.SetAreBrowserAcceleratorKeysEnabled(false);
+                                    }
                                 }
                             }
                         }

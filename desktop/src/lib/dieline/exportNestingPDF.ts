@@ -279,3 +279,32 @@ export async function downloadNestingPDF(
         toast.error(i18n.t('lib.exportNestingPDF:loi_khi_tao_pdf') + ' ' + (err instanceof Error ? err.message : 'Unknown error'));
     }
 }
+
+/**
+ * Dựng PDF xếp khuôn thành Blob (để IN native) — tách phần build khỏi phần tải
+ * xuống của downloadNestingPDF. Không toast, không lưu; ném lỗi cho caller xử lý.
+ */
+export async function buildNestingPdfBlob(
+    model: DielineModel,
+    result: NestingResult,
+    config: NestingConfig,
+): Promise<Blob> {
+    const { actualSheet } = result;
+    const pageW = actualSheet.width;
+    const pageH = actualSheet.height;
+
+    const doc = new jsPDF({
+        orientation: pageW > pageH ? 'landscape' : 'portrait',
+        unit: 'mm',
+        format: [pageW, pageH],
+    });
+
+    const svgString = buildNestingSvg(model, result, config);
+    const parser = new DOMParser();
+    const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
+    const svgElement = svgDoc.documentElement;
+
+    await (doc as any).svg(svgElement, { x: 0, y: 0, width: pageW, height: pageH });
+
+    return doc.output('blob');
+}

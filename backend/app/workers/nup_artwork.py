@@ -19,6 +19,18 @@ from app.workers import pdf_wrapper as pdf_lib
 logger = logging.getLogger(__name__)
 
 
+def resolve_die_output_clip(trim_rect, bleed_rect, cell_out_clip, cut_type, die_size_mode):
+    """Chọn clip mask đích cho artwork die-cut.
+
+    1 Dao theo kích thước trang coi chính hình chữ nhật ô là kích thước tem, nên
+    mask phải trùng tuyệt đối với ô ở cả giữa tờ lẫn sát lề. Các chế độ khuôn khác
+    vẫn giữ bleed ở mép ngoài block và nửa gap ở mép trong.
+    """
+    if cut_type == 'one_dao' and die_size_mode == 'page':
+        return trim_rect
+    return cell_out_clip if cell_out_clip is not None else bleed_rect
+
+
 def _die_channel_names_lower():
     """Tên kênh bế chuẩn (lowercase) — tái dùng cấu hình detection để nhất quán."""
     try:
@@ -205,6 +217,8 @@ def place_one_artwork(
     mirror_y=False,
     homogeneous_clip=None,
     homogeneous_rect=None,
+    die_size_mode='die',
+    die_offset_mm=0,
 ):
     """Đặt MỘT placement `p` lên `out_page`. Trả về (trim_rect, src_page_idx).
 
@@ -350,12 +364,21 @@ def place_one_artwork(
         largest_path = None
         if cache_key not in diecut_geom_cache:
             sx0, sy0, sx1, sy1 = src_page.rect
-            largest_path = find_largest_die_path(src_page)
-            if largest_path:
-                r = largest_path['rect']
-                tx0, ty0, tx1, ty1 = r.x0, r.y0, r.x1, r.y1
+            _off_pt = (float(die_offset_mm or 0) * 2.83465
+                       if (cut_type == 'one_dao' and die_size_mode == 'page') else None)
+            if _off_pt is not None:
+                tx0 = sx0 - _off_pt
+                ty0 = sy0 - _off_pt
+                tx1 = sx1 + _off_pt
+                ty1 = sy1 + _off_pt
+                largest_path = None
             else:
-                tx0, ty0, tx1, ty1 = src_page.trimbox
+                largest_path = find_largest_die_path(src_page)
+                if largest_path:
+                    r = largest_path['rect']
+                    tx0, ty0, tx1, ty1 = r.x0, r.y0, r.x1, r.y1
+                else:
+                    tx0, ty0, tx1, ty1 = src_page.trimbox
 
             if len(diecut_geom_cache) >= max_geom_cache:
                 diecut_geom_cache.pop(next(iter(diecut_geom_cache)))
@@ -434,7 +457,9 @@ def place_one_artwork(
         # out_clip chỉ giới hạn vùng trên trang ĐÍCH, KHÔNG đổi scale/vị trí → hình học giữ
         # nguyên (audit bảo toàn nội dung 2026-07-07). GIỚI HẠN: clip là bbox chữ nhật, tem
         # hình lồng phức tạp vẫn có thể chồng nhẹ ở vùng bleed — nhưng marks/slug ở xa bị loại hẳn.
-        _die_clip = cell_out_clip if cell_out_clip is not None else bleed_rect
+        _die_clip = resolve_die_output_clip(
+            trim_rect, bleed_rect, cell_out_clip, cut_type, die_size_mode,
+        )
 
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_h - rel_ty1)
