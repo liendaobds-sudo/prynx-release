@@ -23,14 +23,14 @@ from app.workers.vdp_validate import (
     build_error_report_csv,
 )
 from app.workers.vdp_preview import render_record_preview
-from app.core.license_guard import require_license
+from app.core.license_guard import require_license, require_feature
 from app.config import settings
 
 import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_feature("vdp.datamerge"))])
 
 UPLOAD_DIR = settings.UPLOAD_DIR
 RESULTS_DIR = settings.RESULTS_DIR

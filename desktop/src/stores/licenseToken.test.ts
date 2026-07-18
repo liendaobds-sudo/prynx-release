@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isLicenseTokenValid } from './licenseToken';
+import { isLicenseTokenValid, readLicenseTokenClaims } from './licenseToken';
 
 // Dựng token giả "<payload_b64url>.<sig>" với exp cho trước (giây unix).
 // isLicenseTokenValid KHÔNG verify chữ ký (đó là việc của backend/Rust) — chỉ đọc exp,
 // nên sig để chuỗi bất kỳ.
-function makeToken(expSeconds: number): string {
-  const payload = JSON.stringify({ k: 'abc', m: 'hwid', p: 'prynx', exp: expSeconds });
+function makeToken(expSeconds: number, extra: Record<string, unknown> = {}): string {
+  const payload = JSON.stringify({ k: 'abc', m: 'hwid', p: 'prynx', exp: expSeconds, ...extra });
   const b64 = btoa(unescape(encodeURIComponent(payload)))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   return `${b64}.fakesignature`;
@@ -14,6 +14,12 @@ function makeToken(expSeconds: number): string {
 const NOW = () => Math.floor(Date.now() / 1000);
 
 describe('isLicenseTokenValid', () => {
+
+  it('đọc plan và features từ token mới', () => {
+    const claims = readLicenseTokenClaims(makeToken(NOW() + 3600, { plan: 'free', features: ['pdf.merge'] }));
+    expect(claims?.plan).toBe('free');
+    expect(claims?.features).toEqual(['pdf.merge']);
+  });
   it('token còn hạn xa (2 ngày) → hợp lệ', () => {
     expect(isLicenseTokenValid(makeToken(NOW() + 2 * 24 * 3600))).toBe(true);
   });

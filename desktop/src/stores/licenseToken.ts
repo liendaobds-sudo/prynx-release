@@ -1,30 +1,48 @@
-/**
- * licenseToken.ts — tiện ích thuần cho token license Ed25519 do server ký.
- *
- * Tách khỏi useAuthStore để unit-test được mà KHÔNG phải nạp cả store (vốn kéo theo
- * supabase client + zustand + Tauri). Hàm ở đây không có side-effect, không phụ thuộc
- * môi trường Tauri.
- */
+﻿/** Tiện ích thuần để đọc token license Ed25519 do server ký. */
+
+export interface LicenseTokenClaims {
+  exp: number;
+  plan?: string;
+  features?: string[];
+  k?: string;
+  m?: string;
+  p?: string;
+}
+
+function decodePayload(token: string): unknown {
+  if (!token || token.indexOf('.') < 0) throw new Error('Malformed token');
+  let payload = token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+  while (payload.length % 4) payload += '=';
+  return JSON.parse(decodeURIComponent(escape(atob(payload))));
+}
 
 /**
- * Đọc 'exp' (unix giây) từ token "<payload_b64url>.<sig>" và kiểm tra CÒN HẠN.
- *
- * Đệm 60s: coi token là hết hạn SỚM 60s trước exp thật, tránh trường hợp token vừa lọt
- * qua kiểm tra ở client nhưng tới lúc backend nhận thì đã hết hạn (lệch đồng hồ nhẹ + độ trễ).
- *
- * Trả false khi: token rỗng/null, sai định dạng (thiếu '.'), payload không giải mã được,
- * hoặc thiếu/không hợp lệ trường exp. An toàn tuyệt đối — mọi lỗi → false (fail-closed).
+ * Chỉ đọc claims để hiển thị/quyết định UX. Chữ ký vẫn được Rust và sidecar xác minh;
+ * frontend không được xem là biên giới bảo mật.
  */
-export function isLicenseTokenValid(token: string | null): boolean {
-  if (!token || token.indexOf('.') < 0) return false;
+export function readLicenseTokenClaims(token: string | null): LicenseTokenClaims | null {
+  if (!token) return null;
   try {
-    let p = token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
-    while (p.length % 4) p += '=';
-    const payload = JSON.parse(decodeURIComponent(escape(atob(p))));
-    const exp = Number(payload?.exp || 0);
-    if (!exp) return false;
-    return exp * 1000 > Date.now() + 60_000;
+    const raw = decodePayload(token) as Record<string, unknown>;
+    const exp = Number(raw.exp || 0);
+    if (!exp) return null;
+    return {
+      exp,
+      plan: typeof raw.plan === 'string' ? raw.plan : undefined,
+      features: Array.isArray(raw.features)
+        ? raw.features.filter((item): item is string => typeof item === 'string')
+        : undefined,
+      k: typeof raw.k === 'string' ? raw.k : undefined,
+      m: typeof raw.m === 'string' ? raw.m : undefined,
+      p: typeof raw.p === 'string' ? raw.p : undefined,
+    };
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Coi token hết hạn sớm 60 giây để tránh hết hạn giữa một request. */
+export function isLicenseTokenValid(token: string | null): boolean {
+  const claims = readLicenseTokenClaims(token);
+  return !!claims && claims.exp * 1000 > Date.now() + 60_000;
 }

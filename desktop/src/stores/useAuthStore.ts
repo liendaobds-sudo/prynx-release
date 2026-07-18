@@ -1,8 +1,16 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
-import { isLicenseTokenValid } from './licenseToken';
+import { isLicenseTokenValid, readLicenseTokenClaims } from './licenseToken';
+import { normalizePlan, type LicensePlan } from '../lib/license/features';
 import { normalizeLicenseKey } from '../lib/licenseKey';
+import {
+  clearPendingSecurityEvents,
+  enqueueSecurityEvent,
+  getPendingSecurityEvents,
+  removePendingSecurityEvent,
+  toSecuritySignalDetails,
+} from '../lib/securityEventQueue';
 
 const PRODUCT_ID = 'prynx';
 
@@ -170,6 +178,10 @@ interface AuthState {
   licenseKey: string | null;
   /** Token license ngắn hạn do server (edge function) ký — gắn vào request gửi sidecar. */
   licenseToken: string | null;
+  /** Gói lấy từ token/server. Mặc định Pro để key cũ không bị khóa nhầm khi rollout. */
+  licensePlan: LicensePlan;
+  /** Quyền cấp riêng; null nghĩa là dùng quyền mặc định theo plan. */
+  licenseFeatures: string[] | null;
   /** Số ngày còn lại tới hạn dùng (do verify_license trả về). null nếu không giới hạn/chưa biết. */
   remainingDays: number | null;
   /** Mốc hết hạn (ISO) do verify_license trả về. */
@@ -226,32 +238,72 @@ const REVOKE_GRACE_MS = 5 * 60 * 1000;            // 5 phút ân hạn để kh�
 const LAST_ONLINE_KEY = 'prynx_last_online';
 
 /**
- * Silent telemetry: log suspicious security events to Supabase.
- * This runs in the background and never blocks the UI.
+ * Durable security telemetry. Events are queued without a license key, then
+ * retried after the license server is reachable and has verified the machine.
  */
-async function logSecurityEvent(eventType: string, details: Record<string, any> = {}) {
-  try {
-    const { supabase: sb } = await import('../lib/supabase');
-    let hwid = localStorage.getItem(HWID_STORAGE_KEY) || 'unknown';
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      hwid = await invoke('get_hardware_id') as string;
-    } catch {}
+let telemetryFlushPromise: Promise<void> | null = null;
 
-    // Report qua edge function (license-verify ghi security_logs bằng service role).
-    // Anon KHÔNG ghi trực tiếp vào bảng được nữa (RLS siết chống giả mạo/flood).
-    // Best-effort: nếu offline thì bỏ qua, không ảnh hưởng trải nghiệm.
-    await sb.functions.invoke('license-verify', {
-      body: {
-        license_key: useAuthStore.getState().licenseKey || 'none',
-        machine_id: hwid,
-        product_id: 'prynx',
-        client_signal: { event_type: eventType, details },
-      },
-    });
+async function getTelemetryHardwareId(): Promise<string> {
+  let hwid = localStorage.getItem(HWID_STORAGE_KEY) || '';
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    hwid = await invoke('get_hardware_id') as string;
+    if (hwid) localStorage.setItem(HWID_STORAGE_KEY, hwid);
   } catch {
-    // Silent fail — telemetry must never affect user experience
+    // Keep the cached identifier in web/dev mode.
   }
+  return hwid;
+}
+
+async function flushPendingSecurityEvents(): Promise<void> {
+  if (telemetryFlushPromise) return telemetryFlushPromise;
+
+  telemetryFlushPromise = (async () => {
+    const licenseKey = useAuthStore.getState().licenseKey;
+    if (!licenseKey) return;
+
+    const hwid = await getTelemetryHardwareId();
+    if (!hwid) return;
+
+    const pending = getPendingSecurityEvents().slice(0, 10);
+    for (const event of pending) {
+      try {
+        const { data, error } = await supabase.functions.invoke('license-verify', {
+          body: {
+            license_key: licenseKey,
+            machine_id: hwid,
+            product_id: PRODUCT_ID,
+            client_signal: {
+              event_type: event.eventType,
+              details: toSecuritySignalDetails(event),
+            },
+          },
+        });
+
+        if (error) break;
+
+        const response = data as Record<string, unknown> | null;
+        if (response?.security_signal_processed === true || (response && response.status !== 'VALID')) {
+          removePendingSecurityEvent(event.id);
+          continue;
+        }
+
+        // Server was reachable but did not confirm processing. Keep the event for retry.
+        break;
+      } catch {
+        break;
+      }
+    }
+  })().finally(() => {
+    telemetryFlushPromise = null;
+  });
+
+  return telemetryFlushPromise;
+}
+
+function logSecurityEvent(eventType: string, details: Record<string, unknown> = {}): void {
+  enqueueSecurityEvent(eventType, details);
+  void flushPendingSecurityEvents();
 }
 
 /**
@@ -302,6 +354,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   session: null,
   licenseKey: loadStoredKeySync(),
   licenseToken: null,
+  licensePlan: 'pro',
+  licenseFeatures: null,
   remainingDays: null,
   licenseExpiresAt: null,
   isChecking: true,
@@ -316,6 +370,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setUser: (user, session) => set({ user, session }),
   
   setLicenseKey: (key) => {
+    const previousKey = get().licenseKey;
+    if (previousKey && previousKey !== key) {
+      // A queued event must never be attributed to a different customer key.
+      clearPendingSecurityEvents();
+    }
+
     if (key) {
       // Save to DPAPI (async, fire-and-forget) + localStorage fallback
       saveToDPAPI(key).then(saved => {
@@ -348,6 +408,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       user: null, session: null, licenseValid: false, lastValidated: 0,
       remainingDays: null, licenseExpiresAt: null, licenseToken: null,
+      licensePlan: 'pro', licenseFeatures: null,
       isRevoking: false, revokeDeadline: null, revokeReason: '',
     });
   },
@@ -371,7 +432,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // vào grace) thì vẫn có token hợp lệ gửi sidecar. Chỉ dùng nếu CHƯA hết hạn.
         const persistedToken = await loadTokenFromDPAPI();
         if (isLicenseTokenValid(persistedToken)) {
-          set({ licenseToken: persistedToken });
+          const claims = readLicenseTokenClaims(persistedToken);
+          set({
+            licenseToken: persistedToken,
+            licensePlan: claims?.plan ? normalizePlan(claims.plan) : 'pro',
+            licenseFeatures: claims?.features ?? null,
+          });
         } else if (persistedToken) {
           await deleteTokenFromDPAPI(); // token cũ đã hết hạn → dọn
         }
@@ -559,7 +625,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             });
             if ((tokData as any)?.token) {
               freshToken = (tokData as any).token as string;
-              set({ licenseToken: freshToken });
+              const claims = readLicenseTokenClaims(freshToken);
+              set({
+                licenseToken: freshToken,
+                licensePlan: normalizePlan((tokData as any)?.plan || claims?.plan || 'pro'),
+                licenseFeatures: Array.isArray((tokData as any)?.features)
+                  ? (tokData as any).features
+                  : (claims?.features ?? null),
+              });
               void saveTokenToDPAPI(freshToken);
             }
           } catch { /* ignore — token optional during rollout */ }
@@ -567,6 +640,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           // F2: register kèm token+hwid → Rust TỰ verify Ed25519 (lớp gate thứ 2, độc lập sidecar).
           await invoke('register_validated_key', { licenseKey, hwid, token: freshToken });
         } catch { /* ignore in dev/web mode */ }
+        void flushPendingSecurityEvents();
       }
       set({
         licenseValid: isValid,

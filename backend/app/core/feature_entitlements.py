@@ -1,73 +1,58 @@
-"""
-Free/Pro feature entitlements — Phase D scaffold.
-
-FEATURE_GATING_ENABLED = False → mọi request license-valid vẫn chạy (hành vi hiện tại).
-Khi bật: map feature_id → plan tối thiểu; phụ thuộc license_info['plan'].
-
-Không gắn pricing. Không chặn route khi flag tắt.
-"""
-
+﻿"""Danh mục quyền Free/Pro phía sidecar, đồng bộ với desktop."""
 from __future__ import annotations
 
+import os
 from typing import Optional
 
-# ── Tắt gate mặc định (an toàn ship) ──
-FEATURE_GATING_ENABLED = False
-
-# plan rank
+FEATURE_GATING_ENABLED = os.getenv("PRYNX_FEATURE_GATING_ENABLED", "false").lower() == "true"
 _PLAN_RANK = {"free": 1, "pro": 2, "dev": 99}
-
-# feature_id → min plan
+FREE_FEATURES = {
+    "pdf.shuffle", "pdf.resize", "pdf.split", "pdf.pages", "pdf.merge",
+    "pdf.encrypt", "pdf.decrypt", "pdf.metadata", "pdf.optimize", "pdf.watermark",
+    "pdf.header_footer", "pdf.office_convert", "qc.compare_text",
+}
+PRO_FEATURES = {
+    "pdf.resize_batch", "pdf.office_batch", "pdf.optimize_advanced", "pdf.trim_shift",
+    "prepress.preflight", "prepress.convert_colors", "prepress.hairlines", "prepress.trapping",
+    "prepress.cutline", "prepress.pdfx", "vdp.datamerge", "vdp.numbering", "vdp.cover_numbering",
+    "impo.booklet", "impo.nup", "impo.diecut", "impo.cnc", "packaging.dieline",
+    "util.bgremover", "util.upscale", "qc.compare_pdf",
+}
 FEATURE_MIN_PLAN: dict[str, str] = {
-    "pdf.encrypt": "free",
-    "pdf.decrypt": "free",
-    "pdf.metadata": "free",
-    "pdf.optimize": "free",
-    "pdf.watermark": "free",
-    "pdf.merge": "free",
-    "pdf.split": "free",
-    "pdf.pages": "free",
-    "pdf.office_convert": "free",
-    "impo.booklet": "pro",
-    "impo.nup": "pro",
-    "impo.diecut": "pro",
-    "impo.cnc": "pro",
-    "impo.dieline": "pro",
-    "vdp.numbering": "pro",
-    "vdp.datamerge": "pro",
-    "print.preflight": "pro",
-    "qc.compare": "pro",
+    **{feature: "free" for feature in FREE_FEATURES},
+    **{feature: "pro" for feature in PRO_FEATURES},
 }
 
 
 def normalize_plan(raw: Optional[str]) -> str:
-    p = (raw or "").strip().lower()
-    if p in ("pro", "professional", "enterprise"):
+    plan = (raw or "").strip().lower()
+    if plan in ("pro", "professional", "enterprise", "paid"):
         return "pro"
-    if p in ("dev", "development", "internal"):
+    if plan in ("dev", "development", "internal", "admin"):
         return "dev"
     return "free"
 
 
-def can_use_feature(feature_id: str, plan: Optional[str] = None) -> bool:
-    """True nếu plan đủ entitlement. Khi gate tắt → luôn True."""
+def can_use_feature(feature_id: str, plan: Optional[str] = None, features: Optional[list[str]] = None) -> bool:
     if not FEATURE_GATING_ENABLED:
         return True
-    need = FEATURE_MIN_PLAN.get(feature_id)
-    if not need:
-        return True
     have = normalize_plan(plan)
-    return _PLAN_RANK.get(have, 0) >= _PLAN_RANK.get(need, 0)
+    if have in ("pro", "dev"):
+        return True
+    if features and ("*" in features or feature_id in features):
+        return True
+    need = FEATURE_MIN_PLAN.get(feature_id)
+    if need is None:
+        return False
+    return _PLAN_RANK[have] >= _PLAN_RANK[need]
 
 
 def assert_feature(feature_id: str, license_info: Optional[dict] = None) -> None:
-    """Raise PermissionError nếu thiếu entitlement (chỉ khi gate bật)."""
     if not FEATURE_GATING_ENABLED:
         return
-    plan = None
-    if license_info:
-        plan = license_info.get("plan") or license_info.get("tier")
-    if not can_use_feature(feature_id, plan):
+    info = license_info or {}
+    if not can_use_feature(feature_id, info.get("plan") or info.get("tier"), info.get("features")):
         raise PermissionError(
-            f"Tính năng '{feature_id}' yêu cầu gói cao hơn (plan hiện tại: {normalize_plan(plan)})."
+            f"Tính năng '{feature_id}' yêu cầu PrynX Pro "
+            f"(gói hiện tại: {normalize_plan(info.get('plan') or info.get('tier'))})."
         )

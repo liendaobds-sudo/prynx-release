@@ -11,6 +11,8 @@ import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/a
 import { OFFICE_EXTENSIONS, isOfficePathOrName, mimeForOfficeName } from '../../lib/officeFileTypes';
 import { ToolSectionLabel } from './ToolUI';
 import { useTranslation } from 'react-i18next';
+import { useAuthStore } from '../../stores/useAuthStore';
+import { canUse } from '../../lib/license/features';
 
 interface Props {
     pdfFile?: File | null;
@@ -52,6 +54,9 @@ function looksLikeGoogleUrl(text: string): boolean {
 
 export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles, onFileFixed }: Props) {
     const { t } = useTranslation();
+    const licensePlan = useAuthStore((state) => state.licensePlan);
+    const licenseFeatures = useAuthStore((state) => state.licenseFeatures);
+    const canBatch = canUse('pdf.office_batch', licensePlan, licenseFeatures);
     const convertingRef = useRef(false);
     const lastSourceKeyRef = useRef<string>('');
     const batchCancelRef = useRef(false);
@@ -219,7 +224,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
             if ((window as any).__TAURI_INTERNALS__) {
                 const { open } = await import('@tauri-apps/plugin-dialog');
                 const selected = await open({
-                    multiple: true,
+                    multiple: canBatch,
                     filters: [
                         { name: 'Word / Excel / PowerPoint / PDF', extensions: [...OFFICE_EXTENSIONS, 'pdf'] },
                         { name: 'Office / PDF', extensions: [...OFFICE_EXTENSIONS, 'pdf'] },
@@ -253,7 +258,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 // Browser fallback
                 const input = document.createElement('input');
                 input.type = 'file';
-                input.multiple = true;
+                input.multiple = canBatch;
                 input.accept = [...OFFICE_EXTENSIONS, 'pdf'].map((e) => '.' + e).join(',');
                 input.onchange = async () => {
                     const files = Array.from(input.files || []);
@@ -265,7 +270,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
         } catch (e: any) {
             setError(e?.message || t('preprocess.officeConvert:loi_khong_xac_dinh'));
         }
-    }, [stageFile, t]);
+    }, [canBatch, stageFile, t]);
 
     const handleGoogle = async () => {
         const url = googleUrl.trim();
@@ -696,7 +701,13 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                 )}
             </div>
 
-            {mode === 'file' && (
+            {mode === 'file' && !canBatch && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50/70 dark:border-amber-500/30 dark:bg-amber-500/10 p-3">
+                    <div className="text-[12px] font-bold text-amber-800 dark:text-amber-300">Xử lý nhiều file và cả thư mục · PrynX Pro</div>
+                    <div className="mt-1 text-[10px] text-amber-700/80 dark:text-amber-200/70">Bản Free vẫn chuyển từng file Word, Excel hoặc Google Docs bình thường.</div>
+                </div>
+            )}
+            {mode === 'file' && canBatch && (
                 <div className="rounded-xl border border-slate-200 dark:border-zinc-700 p-3 space-y-3">
                     <div>
                         <div className="text-[12px] font-bold text-slate-700 dark:text-zinc-200">

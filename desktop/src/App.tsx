@@ -29,6 +29,7 @@ import { listSnapshots, clearAllSnapshots, deleteSnapshot, type RecoverySnapshot
 import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Columns2, Rows2, Ruler, Moon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { tv } from './i18n';
+import { canUse, featureIdForFocus, FEATURE_CATALOG } from './lib/license/features';
 
 type AppTabType = 'home' | AppToolId;
 
@@ -441,6 +442,16 @@ function AppInner() {
   }, []);
 
   const handleOpenApp = useCallback((appId: AppToolId, payload?: any) => {
+    const toolKey = payload?.focusFeature || payload?.lockedMode || appId;
+    const featureId = featureIdForFocus(toolKey);
+    if (featureId) {
+      const { licensePlan, licenseFeatures } = useAuthStore.getState();
+      if (!canUse(featureId, licensePlan, licenseFeatures)) {
+        toast.info('Tính năng ' + FEATURE_CATALOG[featureId].label + ' dành cho PrynX Pro.');
+        return;
+      }
+    }
+
     // Check single-instance tools
     const existingId = getExistingInstance(appId, tabs);
     if (existingId) {

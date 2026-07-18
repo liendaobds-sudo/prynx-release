@@ -24,7 +24,8 @@ import time
 import json
 import base64
 from typing import Optional
-from fastapi import Request, HTTPException
+from app.core.feature_entitlements import assert_feature
+from fastapi import Request, HTTPException, Depends
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +372,34 @@ def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> t
     return True, ""
 
 
+def _read_verified_entitlements(token: str) -> dict:
+    """Read entitlement claims only after verify_license_token returned True."""
+    try:
+        payload_b64 = token.split(".", 1)[0]
+        payload = json.loads(_b64url_decode(payload_b64))
+        plan = str(payload.get("plan") or "pro").strip().lower()
+        if plan not in ("free", "pro", "dev"):
+            plan = "pro"
+        features = payload.get("features")
+        if not isinstance(features, list):
+            features = None
+        else:
+            features = [item for item in features if isinstance(item, str)]
+        return {"plan": plan, "features": features}
+    except Exception:
+        return {"plan": "pro", "features": None}
+
+
+def _license_context(license_key: str, hwid: str, verified: bool, entitlements: dict | None = None) -> dict:
+    rights = entitlements or {"plan": "pro", "features": None}
+    return {
+        "license_key": license_key,
+        "hwid": hwid,
+        "verified": verified,
+        "plan": rights.get("plan") or "pro",
+        "features": rights.get("features"),
+    }
+
 async def require_license(request: Request) -> dict:
     """
     FastAPI dependency that enforces license verification on every request.
@@ -409,13 +438,14 @@ async def require_license(request: Request) -> dict:
         # In dev mode, allow requests without credentials but log a warning
         if _is_dev_mode():
             logger.debug("[LICENSE_GUARD] Dev mode: allowing request without credentials")
-            return {"license_key": "DEV_MODE", "hwid": "DEV_MODE", "verified": False}
+            return _license_context("DEV_MODE", "DEV_MODE", False, {"plan": "dev", "features": ["*"]})
         raise HTTPException(status_code=401, detail="Missing license credentials (X-License-Key, X-Hardware-Id)")
     
     # ── Step 2b: Verify server-signed license token (chống client tự phong hợp lệ) ──
     # Token do edge function Supabase ký; sidecar verify bằng public key nhúng sẵn.
     # Rollout an toàn: nếu CHƯA bật cưỡng chế thì chỉ verify-nếu-có (log), không chặn.
     lic_token = request.headers.get("X-License-Token", "").strip()
+    token_entitlements = {"plan": "pro", "features": None}
     if _enforce_license_token():
         tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
         if not tok_ok:
@@ -430,10 +460,13 @@ async def require_license(request: Request) -> dict:
                 )
             )
             raise HTTPException(status_code=403, detail=f"License token rejected: {tok_reason}")
+        token_entitlements = _read_verified_entitlements(lic_token)
     elif lic_token:
         tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
         if not tok_ok:
             logger.warning(f"[LICENSE_GUARD] License token present but invalid (not enforced yet): {tok_reason}")
+        else:
+            token_entitlements = _read_verified_entitlements(lic_token)
     
     # ── Step 3: Check cache ──
     cache_key = _hash_credentials(license_key, hwid)
@@ -442,7 +475,7 @@ async def require_license(request: Request) -> dict:
         is_valid, expire_at = cached
         if time.time() < expire_at:
             if is_valid:
-                return {"license_key": license_key, "hwid": hwid, "verified": True}
+                return _license_context(license_key, hwid, True, token_entitlements)
             else:
                 raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
     
@@ -472,7 +505,23 @@ async def require_license(request: Request) -> dict:
             _security_log_to_file(f"LICENSE_CHECK_ERROR reason={type(e).__name__}")
             raise HTTPException(status_code=403, detail="License check unavailable")
 
-    return {"license_key": license_key, "hwid": hwid, "verified": True}
+    return _license_context(license_key, hwid, True, token_entitlements)
+
+
+def enforce_feature(feature_id: str, license_info: dict) -> dict:
+    """Enforce a feature when the route chooses its entitlement dynamically."""
+    try:
+        assert_feature(feature_id, license_info)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return license_info
+
+
+def require_feature(feature_id: str):
+    """FastAPI dependency enforcing a named entitlement after signed-token validation."""
+    async def dependency(license_info: dict = Depends(require_license)) -> dict:
+        return enforce_feature(feature_id, license_info)
+    return dependency
 
 
 async def _verify_with_supabase(license_key: str, hwid: str) -> bool:

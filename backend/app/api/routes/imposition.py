@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
-from app.core.license_guard import require_license
+from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.schemas.imposition import ImpositionResponse
 import uuid
 
@@ -807,17 +807,18 @@ async def start_impose_job(body: dict, license_info: dict = Depends(require_lice
     Expects body: { "source_path": "...", "settings": {...} }
     """
     is_diecut = bool(body.get("settings", {}).get("isDieCutMode", False))
+    enforce_feature("impo.diecut" if is_diecut else "impo.nup", license_info)
     return _launch_impose_job(body, "sticker" if is_diecut else "nup", license_info)
 
 
 @router.post("/nup-start")
-async def start_nup_job(body: dict, license_info: dict = Depends(require_license)):
+async def start_nup_job(body: dict, license_info: dict = Depends(require_feature("impo.nup"))):
     """Alias tương thích ngược — dùng /impose-start. (Task 18)"""
     return _launch_impose_job(body, "nup", license_info)
 
 
 @router.post("/sticker-start")
-async def start_sticker_job(body: dict, license_info: dict = Depends(require_license)):
+async def start_sticker_job(body: dict, license_info: dict = Depends(require_feature("impo.diecut"))):
     """Alias tương thích ngược — dùng /impose-start. (Task 18)"""
     return _launch_impose_job(body, "sticker", license_info)
 

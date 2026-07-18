@@ -28,12 +28,12 @@ from app.utils.file_handler import save_upload_file
 from app.utils.subprocess_utils import run_hidden
 from app.utils.errors import raise_http
 from app.config import settings
-from app.core.license_guard import require_license
+from app.core.license_guard import require_license, require_feature
 from app.database import SessionLocal
 from app.models.job import UploadedFile
 
 logger = logging.getLogger(__name__)
-router = APIRouter(dependencies=[Depends(require_license)])
+router = APIRouter(dependencies=[Depends(require_feature("prepress.preflight"))])
 
 
 # ── Request/Response Schemas ──

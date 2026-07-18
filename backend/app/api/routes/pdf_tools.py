@@ -16,7 +16,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, D
 from fastapi.responses import FileResponse
 from typing import List, Optional
 import json
-from app.core.license_guard import require_license
+from app.core.license_guard import require_license, require_feature
 from app.config import settings
 from app.utils.errors import raise_http
 
@@ -882,7 +882,7 @@ async def office_convert_resize_output(
             except OSError:
                 pass
 
-@router.post("/sticker-dieline")
+@router.post("/sticker-dieline", dependencies=[Depends(require_feature("prepress.cutline"))])
 async def sticker_dieline_endpoint(request: Request, license_info: dict = Depends(require_license)):
     """Generate Cut Contour and Bleed for Stickers."""
     from app.workers.sticker_engine import StickerEngine
@@ -1044,7 +1044,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         try: os.remove(source_path)
         except OSError: pass
 
-@router.post("/remove-background")
+@router.post("/remove-background", dependencies=[Depends(require_feature("util.bgremover"))])
 async def remove_background_endpoint(
     file: Optional[UploadFile] = File(None),
     file_path: Optional[str] = Form(None),
@@ -1142,7 +1142,7 @@ async def remove_background_endpoint(
             except OSError: pass
 
 
-@router.post("/remove-background/warmup")
+@router.post("/remove-background/warmup", dependencies=[Depends(require_feature("util.bgremover"))])
 async def remove_background_warmup(engine: str = Form("general")):
     """Nạp sẵn model tách nền (chạy nền) để lần bấm đầu không phải chờ cold-start.
     FE gọi khi mở công cụ; chạy trong threadpool nên không khoá event loop.
@@ -1167,7 +1167,7 @@ async def remove_background_warmup(engine: str = Form("general")):
     return {"ok": bool(ok)}
 
 
-@router.post("/upscale")
+@router.post("/upscale", dependencies=[Depends(require_feature("util.upscale"))])
 async def upscale_endpoint(
     file: Optional[UploadFile] = File(None),
     file_path: Optional[str] = Form(None),
@@ -1234,7 +1234,7 @@ async def upscale_endpoint(
             except OSError: pass
 
 
-@router.post("/upscale/warmup")
+@router.post("/upscale/warmup", dependencies=[Depends(require_feature("util.upscale"))])
 async def upscale_warmup(engine: str = Form("general")):
     """Nạp sẵn model upscale (chạy nền) để lần bấm đầu không phải chờ cold-start."""
     from fastapi.concurrency import run_in_threadpool

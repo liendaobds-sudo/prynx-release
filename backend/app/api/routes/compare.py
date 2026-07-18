@@ -12,7 +12,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.job import ComparisonJob, UploadedFile
 from app.schemas.job import CompareRequest, JobCreateResponse
-from app.core.license_guard import require_license
+from app.core.license_guard import require_license, require_feature
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,7 +54,7 @@ def run_comparison_sync(job_id: str):
 def create_comparison_job(
     request: CompareRequest,
     db: Session = Depends(get_db),
-    license_info: dict = Depends(require_license),
+    license_info: dict = Depends(require_feature("qc.compare_pdf")),
 ):
     """Create a new PDF comparison job."""
     # Validate files exist
