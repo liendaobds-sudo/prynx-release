@@ -193,25 +193,42 @@ def resize_pages(source_path: str, output_path: str,
                         except Exception:
                             pass
 
-                # Ép CropBox = MediaBox để chắc chắn BBox form = MediaBox (gồm trọn bleed).
+                # 1) Quyết định src size TRƯỚC khi đụng CropBox.
+                # Crop “mềm” (chỉ CropBox, MediaBox còn gốc): dùng CropBox.
+                # File thường / đã sync MediaBox=CropBox: dùng MediaBox (giữ bleed).
+                use_crop_as_source = False
                 try:
-                    src_page.CropBox = src_page.MediaBox
+                    mb = src_page.mediabox
+                    mb_w = float(mb[2] - mb[0])
+                    mb_h = float(mb[3] - mb[1])
+                    cb = src_page.cropbox
+                    cb_w = float(cb[2] - cb[0])
+                    cb_h = float(cb[3] - cb[1])
+                    if (
+                        cb_w > 1 and cb_h > 1
+                        and (cb_w * cb_h) < (mb_w * mb_h) * 0.99
+                    ):
+                        src_w, src_h = cb_w, cb_h
+                        use_crop_as_source = True
+                    else:
+                        src_w, src_h = mb_w, mb_h
                 except Exception:
-                    pass
+                    src_w, src_h = 595.28, 841.89
+                    use_crop_as_source = False
+
+                # 2) Chuẩn bị form BBox rồi mới as_form_xobject.
+                # - use_crop: GIỮ CropBox → form = vùng đã cắt (đúng sau Crop UI).
+                # - else: ép CropBox=MediaBox → form gồm trọn bleed (hành vi cũ).
+                if not use_crop_as_source:
+                    try:
+                        src_page.CropBox = src_page.MediaBox
+                    except Exception:
+                        pass
 
                 # Copy foreign the source page as an XObject
                 xobj = src_page.as_form_xobject()
                 xobj_name = new_page.add_resource(xobj, pikepdf.Name.XObject)
                 xobj_name_str = str(xobj_name)
-                
-                # Calculate scale and offset
-                try:
-                    # pikepdf mediabox is [llx, lly, urx, ury]
-                    mb = src_page.mediabox
-                    src_w = float(mb[2] - mb[0])
-                    src_h = float(mb[3] - mb[1])
-                except Exception:
-                    src_w, src_h = 595.28, 841.89
 
                 # 4 mode PHẢI khớp frontend PageResizer.ts (đường không-downsample):
                 #  - fit: scale ĐỀU nhỏ nhất, vừa khít, có viền → KHÔNG cắt.

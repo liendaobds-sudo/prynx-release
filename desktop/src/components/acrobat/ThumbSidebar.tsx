@@ -411,7 +411,8 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                 >
                     <div
                         className="acro-thumb-scroll w-full h-full overflow-y-auto"
-                        data-pdf-url={pdfUrl}
+                        data-pdf-url={pdfUrl || undefined}
+                        data-file-name={file?.name || undefined}
                     >
                         <div className="flex flex-wrap gap-4 justify-center px-2 py-4">
                             {pageOrder.slice(0, 1000).map((originalPageNum, index) => {

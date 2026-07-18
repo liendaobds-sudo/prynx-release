@@ -40,7 +40,9 @@ export interface MarksSlice {
 }
 
 export const MARKS_PERSIST_KEYS = [
-    'markType', 'cutType', 'dieSizeMode', 'dieOffsetMm', 'fillBlockGap', 'pontType', 'pontConfig',
+    // cutType / dieSizeMode / dieOffsetMm: KHÔNG persist — dao cắt luôn mặc định khi vào
+    // Bình tem bế / CNC; user tự đổi 1 Dao trong phiên nếu cần.
+    'markType', 'fillBlockGap', 'pontType', 'pontConfig',
     'bleed', 'spawnNewTabByTool', 'separateCutPage', 'pontsOnCutFile',
 ] as const;
 

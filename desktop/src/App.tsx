@@ -209,7 +209,10 @@ function AppInner() {
   ]);
   const [activeTabId, setActiveTabId] = useState<string>('home');
   const [tabToConfirmClose, setTabToConfirmClose] = useState<string | null>(null);
-  const [showAppCloseConfirm, setShowAppCloseConfirm] = useState(false);
+  /** Thoát app: hỏi TỪNG file dirty (như Acrobat), không gộp 1 popup tất cả. */
+  const [quitDirtyQueue, setQuitDirtyQueue] = useState<string[]>([]);
+  const [quitBusy, setQuitBusy] = useState(false);
+  const quitQueueRef = useRef<string[]>([]);
   const [recoverySnaps, setRecoverySnaps] = useState<RecoverySnapshot[] | null>(null);
   const [isGlobalSettingsOpen, setIsGlobalSettingsOpen] = useState(false);
   const [isNewDocOpen, setIsNewDocOpen] = useState(false);
@@ -603,10 +606,85 @@ function AppInner() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
+  /** Bắt đầu / chạy tiếp hàng đợi file dirty khi thoát app (mỗi file 1 dialog). */
+  const beginQuitWithDirtyPrompt = useCallback(() => {
+    const dirtyIds = tabsRef.current.filter(t => t.isDirty).map(t => t.id);
+    if (dirtyIds.length === 0) {
+      forceCloseRef.current = true;
+      clearAllSnapshots().finally(() => {
+        getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
+      });
+      return;
+    }
+    quitQueueRef.current = dirtyIds;
+    setQuitDirtyQueue(dirtyIds);
+  }, []);
+
+  const finishAppQuit = useCallback(() => {
+    forceCloseRef.current = true;
+    setQuitDirtyQueue([]);
+    quitQueueRef.current = [];
+    setQuitBusy(false);
+    clearAllSnapshots().finally(() => {
+      getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
+    });
+  }, []);
+
+  const advanceQuitQueue = useCallback(() => {
+    const next = quitQueueRef.current.slice(1);
+    quitQueueRef.current = next;
+    setQuitDirtyQueue(next);
+    if (next.length === 0) finishAppQuit();
+  }, [finishAppQuit]);
+
+  const cancelQuitFlow = useCallback(() => {
+    setQuitDirtyQueue([]);
+    quitQueueRef.current = [];
+    setQuitBusy(false);
+  }, []);
+
+  /** Lưu tab hiện tại trong hàng đợi thoát (chờ app-save-result từ ImpositionTab). */
+  const quitSaveCurrent = useCallback(async () => {
+    const tabId = quitQueueRef.current[0];
+    if (!tabId || quitBusy) return;
+    setQuitBusy(true);
+    setActiveTabId(tabId);
+    // Đợi tab active render xong (isActive=true) rồi mới bắn save.
+    await new Promise<void>(r => setTimeout(r, 150));
+
+    const requestId = `quit_save_${tabId}_${Date.now()}`;
+    const result = await new Promise<'saved' | 'cancelled' | 'failed'>((resolve) => {
+      const onDone = (e: Event) => {
+        const d = (e as CustomEvent).detail;
+        if (!d || d.requestId !== requestId) return;
+        window.removeEventListener('app-save-result', onDone);
+        resolve(d.result === 'saved' ? 'saved' : d.result === 'failed' ? 'failed' : 'cancelled');
+      };
+      window.addEventListener('app-save-result', onDone);
+      window.dispatchEvent(new CustomEvent('app-trigger-save', {
+        detail: { tabId, saveAs: false, requestId },
+      }));
+      // Timeout: không có handler save (tool khác) hoặc treo dialog quá lâu
+      setTimeout(() => {
+        window.removeEventListener('app-save-result', onDone);
+        resolve('failed');
+      }, 180_000);
+    });
+
+    setQuitBusy(false);
+    if (result === 'saved') {
+      // Tab đã lưu → coi như hết dirty; sang file tiếp theo
+      advanceQuitQueue();
+    } else if (result === 'failed') {
+      toast.info(tv('Không lưu được file này — hãy lưu thủ công (Ctrl+S) hoặc chọn Không lưu.'));
+    }
+    // cancelled: giữ dialog cùng file (user huỷ hộp thoại lưu)
+  }, [quitBusy, advanceQuitQueue]);
+
   // CHẶN ĐÓNG CỬA SỔ TAURI khi còn tab CHƯA LƯU. beforeunload KHÔNG bắt được nút X
   // native (Tauri đóng cửa sổ qua sự kiện riêng `close-requested`, không qua DOM
   // unload) → trước đây bấm X = mất sạch dữ liệu chưa lưu, KHÔNG cảnh báo. Đăng ký
-  // onCloseRequested: nếu có tab dirty → preventDefault + hiện popup xác nhận. Bao
+  // onCloseRequested: nếu có tab dirty → preventDefault + hỏi TỪNG file. Bao
   // trùm cả nút X (gọi close()), Alt+F4, và đóng từ taskbar (đều phát close-requested).
   useEffect(() => {
     if (!(window as any).__TAURI_INTERNALS__) return;  // chỉ áp cho desktop Tauri
@@ -617,7 +695,7 @@ function AppInner() {
         if (forceCloseRef.current) return;            // đã xác nhận thoát → cho đóng
         if (tabsRef.current.some(t => t.isDirty)) {
           event.preventDefault();          // giữ cửa sổ lại
-          setShowAppCloseConfirm(true);    // hiện popup xác nhận
+          beginQuitWithDirtyPrompt();      // hỏi từng file dirty
         }
         // không dirty → để Tauri đóng bình thường
       })
@@ -626,22 +704,35 @@ function AppInner() {
       })
       .catch(() => {});
     return () => { disposed = true; if (unlisten) unlisten(); };
-  }, []);
+  }, [beginQuitWithDirtyPrompt]);
 
   // Nút X (title bar) phát 'prynx-request-quit' → kiểm tra tab chưa lưu ở đây rồi
   // đóng bằng destroy() (đáng tin như min/max; close() không tự đóng WebView2 khi có
-  // listener close-requested). Có tab dirty → hiện dialog xác nhận thay vì đóng thẳng.
+  // listener close-requested). Có tab dirty → hỏi từng file thay vì đóng thẳng.
   useEffect(() => {
     const onQuit = () => {
       if (!(window as any).__TAURI_INTERNALS__) return;
       if (!forceCloseRef.current && tabsRef.current.some(t => t.isDirty)) {
-        setShowAppCloseConfirm(true);
+        beginQuitWithDirtyPrompt();
         return;
       }
       getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
     };
     window.addEventListener('prynx-request-quit', onQuit);
     return () => window.removeEventListener('prynx-request-quit', onQuit);
+  }, [beginQuitWithDirtyPrompt]);
+
+  // Copy/Move trang sang file khác (menu thumbnail) → nhảy sang tab đích để thấy trang mới.
+  useEffect(() => {
+    const onActivate = (e: Event) => {
+      const id = (e as CustomEvent).detail?.tabId as string | undefined;
+      if (!id) return;
+      if (tabsRef.current.some(t => t.id === id)) {
+        setActiveTabId(id);
+      }
+    };
+    window.addEventListener('prynx-activate-tab', onActivate);
+    return () => window.removeEventListener('prynx-activate-tab', onActivate);
   }, []);
 
   // Mở file (PDF/ảnh) — dùng chung cho phím tắt Ctrl+O và menu File > Mở.
@@ -708,6 +799,8 @@ function AppInner() {
       // preventDefault() cũng chặn hành vi in DOM mặc định của WebView2 (in nguyên UI).
       if (e.ctrlKey && e.key.toLowerCase() === 'p') {
         e.preventDefault();
+        e.stopPropagation();
+        void import('./lib/nativePrint').then(m => m.logPrintEvent('App: Ctrl+P keydown')).catch(() => undefined);
         const activeTab = tabsRef.current.find(tab => tab.id === activeTabIdRef.current);
         if (activeTab && activeTab.type !== 'home' && NATIVE_PRINT_TOOL_TYPES.has(activeTab.type)) {
           window.dispatchEvent(new CustomEvent('app-trigger-print', {
@@ -1119,34 +1212,42 @@ function AppInner() {
         onCancel={() => setTabToConfirmClose(null)}
       />
 
-      <ConfirmCloseModal
-        isOpen={showAppCloseConfirm}
-        fileName=""
-        title={tv('Thoát ứng dụng?')}
-        confirmText={tv('Vẫn thoát')}
-        body={(() => {
-          const dirty = tabs.filter(t => t.isDirty);
-          return (<>
-            {t('shell:co')} <span className="text-rose-500 font-bold px-1">{dirty.length}</span>
-            {' '}{t('shell:tai_lieu_chua_luu')}{dirty.length ? ': ' : ''}
-            <span className="text-rose-500 font-bold break-all">
-              {dirty.map(t => t.title).join(', ')}
-            </span>.
-            <br /><br />
-            {tv('Nếu thoát, bạn sẽ mất toàn bộ thành quả chưa lưu. Bạn có chắc chắn muốn thoát?')}
-          </>);
-        })()}
-        onConfirm={() => {
-          setShowAppCloseConfirm(false);
-          // Thoát SẠCH (user xác nhận) → xóa hết snapshot recovery rồi mới đóng, để
-          // lần mở sau KHÔNG hỏi khôi phục (snapshot còn sót chỉ khi CRASH).
-          forceCloseRef.current = true;
-          clearAllSnapshots().finally(() => {
-            getCurrentWindow().destroy().catch((e: any) => toast.error("Close Error: " + (e.message || e)));
-          });
-        }}
-        onCancel={() => setShowAppCloseConfirm(false)}
-      />
+      {/* Thoát app: 1 dialog / 1 file dirty (Acrobat-style), không gộp tất cả. */}
+      {(() => {
+        const quitTab = tabs.find(t => t.id === quitDirtyQueue[0]);
+        const canSave = !!(quitTab && ['imposition', 'nup', 'diecut', 'cnc'].includes(quitTab.type));
+        const name = quitTab?.title || tv('Chưa rõ tên');
+        const remain = quitDirtyQueue.length;
+        return (
+          <ConfirmCloseModal
+            isOpen={quitDirtyQueue.length > 0}
+            fileName={name}
+            title={t('shell:luu_thay_doi_truoc_khi_thoat')}
+            body={(<>
+              {t('shell:file_label')}{' '}
+              <span className="text-rose-500 font-bold px-1 break-all">{name}</span>{' '}
+              {t('shell:file_chua_duoc_luu_vao_may_neu_dong')}
+              {remain > 1 && (
+                <>
+                  <br /><br />
+                  <span className="text-slate-500 text-[12px]">
+                    {t('shell:con_n_file_chua_xu_ly', { n: remain - 1 })}
+                  </span>
+                </>
+              )}
+            </>)}
+            confirmText={t('shell:khong_luu')}
+            secondaryText={canSave ? t('shell:luu') : undefined}
+            onSecondary={canSave && !quitBusy ? () => { void quitSaveCurrent(); } : undefined}
+            onConfirm={() => {
+              if (quitBusy) return;
+              advanceQuitQueue();
+            }}
+            onCancel={cancelQuitFlow}
+            busy={quitBusy}
+          />
+        );
+      })()}
 
       {recoverySnaps && recoverySnaps.length > 0 && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -1205,19 +1306,34 @@ function AppInner() {
   );
 }
 
-function ConfirmCloseModal({ isOpen, fileName, onConfirm, onCancel, title, body, confirmText }: { isOpen: boolean, fileName: string, onConfirm: () => void, onCancel: () => void, title?: string, body?: React.ReactNode, confirmText?: string }) {
+function ConfirmCloseModal({
+  isOpen, fileName, onConfirm, onCancel, title, body, confirmText,
+  secondaryText, onSecondary, busy,
+}: {
+  isOpen: boolean;
+  fileName: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  title?: string;
+  body?: React.ReactNode;
+  confirmText?: string;
+  /** Nút phụ (vd Lưu) — đặt giữa Hủy và confirm (Không lưu). */
+  secondaryText?: string;
+  onSecondary?: () => void;
+  busy?: boolean;
+}) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (isOpen && e.key === 'Escape') onCancel();
+      if (isOpen && e.key === 'Escape' && !busy) onCancel();
     };
     if (isOpen) document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onCancel]);
+  }, [isOpen, onCancel, busy]);
 
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-sm w-full mx-4 border border-rose-500/30">
+      <div className="bg-white dark:bg-zinc-800 p-6 rounded-lg shadow-2xl max-w-md w-full mx-4 border border-rose-500/30">
         <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-2">{title || tv('Cảnh báo chưa lưu')}</h3>
         <p className="text-sm text-slate-600 dark:text-zinc-300 mb-6 font-medium">
           {body || (<>
@@ -1226,16 +1342,30 @@ function ConfirmCloseModal({ isOpen, fileName, onConfirm, onCancel, title, body,
           {tv('Bạn có chắc chắn muốn đóng tab này không?')}
           </>)}
         </p>
-        <div className="flex justify-end gap-3">
+        <div className="flex justify-end flex-wrap gap-2">
           <button
+            type="button"
+            disabled={busy}
             onClick={onCancel}
-            className="px-6 py-2.5 min-w-[100px] text-[15px] font-semibold rounded bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 transition-colors focus:outline-none"
+            className="px-5 py-2.5 min-w-[88px] text-[14px] font-semibold rounded bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 transition-colors focus:outline-none disabled:opacity-50"
           >
             {tv('Hủy bỏ')}
           </button>
+          {secondaryText && onSecondary && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onSecondary}
+              className="px-5 py-2.5 min-w-[88px] text-[14px] font-bold rounded bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-sm focus:outline-none disabled:opacity-50"
+            >
+              {busy ? '…' : secondaryText}
+            </button>
+          )}
           <button
+            type="button"
+            disabled={busy}
             onClick={onConfirm}
-            className="px-6 py-2.5 min-w-[100px] text-[15px] font-bold rounded bg-rose-500 hover:bg-rose-600 text-white transition-colors shadow-sm focus:outline-none"
+            className="px-5 py-2.5 min-w-[88px] text-[14px] font-bold rounded bg-rose-500 hover:bg-rose-600 text-white transition-colors shadow-sm focus:outline-none disabled:opacity-50"
           >
             {confirmText || tv('Vẫn Đóng')}
           </button>

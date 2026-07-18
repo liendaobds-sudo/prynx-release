@@ -904,6 +904,30 @@ async def set_page_boxes(req: SetPageBoxesRequest):
         raise_http(e, "Không cập nhật được page boxes")
 
 
+class CropRegionsRequest(BaseModel):
+    """Crop nhiều vùng trên 1 trang → PDF nhiều trang (mỗi vùng = 1 page)."""
+    file_id: str
+    page: int  # 1-indexed
+    rects_mm: List[dict]  # [{x0,y0,x1,y1}, ...] mm theo MediaBox
+
+
+@router.post("/preflight/crop-regions")
+async def crop_regions(req: CropRegionsRequest):
+    """Mỗi vùng quét → 1 trang trong PDF kết quả (thứ tự giữ nguyên)."""
+    file_path = _get_file_path(req.file_id)
+    from app.core.page_boxes import PageBoxesEngine
+    engine = PageBoxesEngine()
+    try:
+        output = engine.crop_regions_to_pages(file_path, req.page, req.rects_mm)
+        return {
+            "success": True,
+            "output_filename": Path(output).name,
+            "page_count": len(req.rects_mm),
+        }
+    except Exception as e:
+        raise_http(e, "Không crop được nhiều vùng")
+
+
 class AutoTrimRequest(BaseModel):
     file_id: str
     pages: Optional[List[int]] = None

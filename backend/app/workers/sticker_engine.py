@@ -602,7 +602,12 @@ class StickerEngine:
                 # - original: cut = offset, outer = offset + bleed
                 # - bleed:    cut = outer = bleed + offset  (cắt bao lề bù xén)
                 # - none:     chỉ tràn màu bleed
-                if cut_mode == "none":
+                # - rectangle_mode (Xén vuông góc): shape = đúng page rect → CHỈ pad
+                #   bằng bleed. CỘNG +50pt “safety” (dùng cho tem bám contour lệch mép)
+                #   sẽ tạo 4 dải TRẮNG quanh thành phẩm (~17.6mm/cạnh) dù bleed=0.
+                if rectangle_mode:
+                    max_expansion_pts = abs(bleed_pts)
+                elif cut_mode == "none":
                     max_expansion_pts = abs(bleed_pts) + 50
                 elif cut_mode == "bleed":
                     _outer = (bleed_pts + offset_pts) if bleed_pts > 0 else offset_pts

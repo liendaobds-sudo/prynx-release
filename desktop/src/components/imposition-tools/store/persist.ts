@@ -86,12 +86,23 @@ function migrate(persistedState: any, version: number): any {
             },
         };
     }
+    if (version < 9) {
+        // v8 → v9: dao cắt (cutType/dieSize*) không còn nhớ — luôn mặc định session
+        const { cutType: _c, dieSizeMode: _d, dieOffsetMm: _o, ...rest } = persistedState || {};
+        const profiles = { ...(rest.toolProfiles || {}) };
+        for (const tool of Object.keys(profiles)) {
+            if (!profiles[tool] || typeof profiles[tool] !== 'object') continue;
+            const { cutType: _tc, dieSizeMode: _td, dieOffsetMm: _to, ...pRest } = profiles[tool];
+            profiles[tool] = pRest;
+        }
+        persistedState = { ...rest, toolProfiles: profiles };
+    }
     return persistedState;
 }
 
 export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<ImposerSettingsState>> = {
     name: 'ps_imposer_settings',
-    version: 8,
+    version: 9,
     migrate,
     partialize: (state) => {
         const out: Record<string, any> = {};

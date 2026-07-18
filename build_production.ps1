@@ -11,6 +11,7 @@
 #    .\build_production.ps1 -NuitkaOnly      # Only compile Python
 #    .\build_production.ps1 -Release         # Build updater artifacts (needs signing key)
 #    .\build_production.ps1 -SkipPreflightQA # Emergency build without pytest gate
+#    .\build_production.ps1 -Version 1.0.0-beta.12  # Bump version before build
 #
 # ============================================================
 
@@ -19,7 +20,8 @@ param(
     [switch]$SkipTauri,
     [switch]$NuitkaOnly,
     [switch]$Release,
-    [switch]$SkipPreflightQA
+    [switch]$SkipPreflightQA,
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -35,13 +37,45 @@ $VENV_PYTHON = "$ROOT\backend\venv\Scripts\python.exe"
 $SIDECAR_DIR = "$ROOT\desktop\src-tauri\binaries"
 $SIDECAR_NAME = "pdf-inspector-backend"
 
+$TAURI_CONF = "$ROOT\desktop\src-tauri\tauri.conf.json"
+$PKG_JSON = "$ROOT\desktop\package.json"
+$CARGO_TOML = "$ROOT\desktop\src-tauri\Cargo.toml"
+
+# ---- Optional: bump version from -Version (Build NỘI BỘ / CLI) ----
+# Trước đây chỉ release_update.ps1 ghi version; build nội bộ đọc tauri.conf cũ
+# → gõ 1.0.0-beta.12 vẫn ra installer .11. Ghi UTF-8 không BOM (tránh hỏng JSON).
+if (-not [string]::IsNullOrWhiteSpace($Version)) {
+    $Version = $Version.Trim()
+    if ($Version -notmatch '^\d+\.\d+\.\d+') {
+        Write-Host "ERROR: -Version phai la SemVer (vd 1.0.0-beta.12), nhan duoc: $Version" -ForegroundColor Red
+        exit 1
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    if (Test-Path $TAURI_CONF) {
+        $conf = Get-Content $TAURI_CONF -Raw
+        $conf = [regex]::Replace($conf, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
+        [System.IO.File]::WriteAllText($TAURI_CONF, $conf.TrimStart([char]0xFEFF), $utf8NoBom)
+    }
+    if (Test-Path $PKG_JSON) {
+        $pkg = Get-Content $PKG_JSON -Raw
+        $pkg = [regex]::Replace($pkg, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
+        [System.IO.File]::WriteAllText($PKG_JSON, $pkg.TrimStart([char]0xFEFF), $utf8NoBom)
+    }
+    if (Test-Path $CARGO_TOML) {
+        $cargo = Get-Content $CARGO_TOML -Raw
+        # Chi dong [package] version dau file, khong dong dependency
+        $cargo = [regex]::Replace($cargo, '(?m)^(version\s*=\s*")[^"]*(")', "`${1}$Version`${2}", 1)
+        [System.IO.File]::WriteAllText($CARGO_TOML, $cargo.TrimStart([char]0xFEFF), $utf8NoBom)
+    }
+    Write-Host "  [OK] Da dat version=$Version (tauri.conf + package.json + Cargo.toml)" -ForegroundColor Green
+}
+
 # ---- Derive version from tauri.conf.json (single source of truth) ----
 # tauri.conf.json giu SemVer (co the kem prerelease: 1.0.0-beta.9). Nhung Windows
 # version resource (Nuitka --file-version/--product-version) BAT BUOC numeric 4 phan
 # X.X.X.X -- chuoi "1.0.0-beta.9" se lam Nuitka bao loi. Anh xa so prerelease sang
 # phan thu 4: 1.0.0-beta.9 -> 1.0.0.9 ; khong prerelease -> .0. Nho vay file .exe
 # hien dung phien ban thay vi ket "1.0.0" nhu truoc (build_production.ps1 hardcode).
-$TAURI_CONF = "$ROOT\desktop\src-tauri\tauri.conf.json"
 $APP_VERSION = "1.0.0"
 $NUMERIC_VERSION = "1.0.0.0"
 if (Test-Path $TAURI_CONF) {

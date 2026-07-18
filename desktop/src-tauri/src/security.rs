@@ -590,15 +590,36 @@ mod token_tests {
 // ══════════════════════════════════════════════════════════════
 
 #[cfg(not(debug_assertions))]
+fn security_kill_log(reason: &str) {
+    log::error!("[SECURITY] {} — terminating process", reason);
+    // Ghi file riêng (panic hook không chạy khi exit(1)) để chẩn đoán "app tự thoát".
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("security_kill.log"))
+        {
+            use std::io::Write;
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            let _ = writeln!(f, "[{}] {}", now, reason);
+        }
+    }
+}
+
+#[cfg(not(debug_assertions))]
 pub fn start_anti_debug_monitor() {
+    // Chỉ GHI LOG — không process::exit.
+    // Trước đây exit(1) khi nghi hook/debugger; false-positive (hoặc tương tác
+    // với nạp driver máy in / crypt32) khiến release “Ctrl+P → app out” trong khi
+    // dev không chạy monitor này. Giữ detect để audit; không giết process.
     std::thread::spawn(|| loop {
         if is_debugger_attached() {
-            log::error!("[SECURITY] Debugger detected! Terminating.");
-            std::process::exit(1);
+            security_kill_log("Debugger detected (log-only, no exit)");
         }
         if is_critical_api_hooked() {
-            log::error!("[SECURITY] API hook detected! Terminating.");
-            std::process::exit(1);
+            security_kill_log("API hook suspected CryptUnprotectData (log-only, no exit)");
         }
         std::thread::sleep(std::time::Duration::from_secs(5));
     });
@@ -660,12 +681,13 @@ fn is_critical_api_hooked() -> bool {
             let func = GetProcAddress(crypt32, b"CryptUnprotectData\0".as_ptr());
             if !func.is_null() {
                 let first_byte = *func;
-                // 0xE9 = JMP rel32, 0xFF = JMP indirect (common hook patterns)
-                if first_byte == 0xE9 || first_byte == 0xFF {
-                    return true;
-                }
-                // 0xCC = INT3 (breakpoint)
-                if first_byte == 0xCC {
+                // CHỈ coi là hook khi prologue rõ ràng là detour:
+                //  - 0xE9 = JMP rel32 (MinHook/Detours cổ điển)
+                //  - 0xCC = INT3 (breakpoint debugger)
+                // KHÔNG dùng 0xFF: nhiều hàm hợp lệ / hotpatch / endbr stub trên
+                // Win10/11 bắt đầu bằng FF 25 (JMP [rip+disp]) hoặc F3 0F… — false
+                // positive → process exit(1) sau khi in/nạp DLL (release-only).
+                if first_byte == 0xE9 || first_byte == 0xCC {
                     return true;
                 }
             }

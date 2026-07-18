@@ -734,9 +734,9 @@ export const LivePageFrame = (props: any) => {
 
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
-    // Crop PDF: vùng đã quét (px hệ hiển thị, gốc trên-trái) của TRANG này. Giữ hiển
-    // thị tới khi Enter (mở hộp thoại Set Page Boxes) hoặc Esc (huỷ).
-    const [cropSel, setCropSel] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+    // Crop PDF: NHIỀU vùng quét trên 1 trang (px hệ hiển thị, gốc trên-trái).
+    // Quét thêm = push; Enter → dialog; Esc = xóa hết; Delete = xóa vùng cuối.
+    const [cropSels, setCropSels] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
     const [editTextContent, setEditTextContent] = useState<string>('');
     // Font người dùng chọn khi sửa/thêm text (đường dẫn file .ttf/.otf trên máy);
     // rỗng = giữ font gốc nếu được, ngược lại fallback DejaVuSans (hành vi cũ).
@@ -1372,35 +1372,41 @@ export const LivePageFrame = (props: any) => {
     const displayHeight = pageDim && pageDim.w ? displayWidth * (pageDim.h / pageDim.w) : displayWidth * 1.414;
 
     // Crop PDF: dọn vùng quét khi tắt chế độ crop.
-    useEffect(() => { if (!isCropMode) setCropSel(null); }, [isCropMode]);
+    useEffect(() => { if (!isCropMode) setCropSels([]); }, [isCropMode]);
 
-    // Crop PDF: Enter → mở hộp thoại Set Page Boxes với fractions vùng quét; Esc → huỷ.
-    // Chỉ frame ĐANG GIỮ vùng quét (cropSel) mới gắn listener → không trùng lặp.
+    // Crop PDF: Enter → dialog (mọi vùng); Esc → xóa hết; Delete/Backspace → xóa vùng cuối.
+    // Chỉ frame ĐANG CÓ vùng quét mới gắn listener → không trùng lặp giữa các trang.
     useEffect(() => {
-        if (!isCropMode || !cropSel) return;
+        if (!isCropMode || cropSels.length === 0) return;
         const onKey = (e: KeyboardEvent) => {
             if (e.key === 'Enter') {
                 if (!pageDim?.w || !pageDim?.h) return;
                 const dW = displayWidth || 1;
                 const dH = displayHeight || 1;
                 const clamp = (v: number) => Math.max(0, Math.min(1, v));
-                const frac = {
-                    x0: clamp(cropSel.x / dW),
-                    y0: clamp(cropSel.y / dH),
-                    x1: clamp((cropSel.x + cropSel.w) / dW),
-                    y1: clamp((cropSel.y + cropSel.h) / dH),
-                };
+                const fracs = cropSels.map((sel) => ({
+                    x0: clamp(sel.x / dW),
+                    y0: clamp(sel.y / dH),
+                    x1: clamp((sel.x + sel.w) / dW),
+                    y1: clamp((sel.y + sel.h) / dH),
+                }));
                 e.preventDefault();
                 window.dispatchEvent(new CustomEvent('prynx-crop-open', {
-                    detail: { pageNum: originalPageNum, frac },
+                    detail: { pageNum: originalPageNum, fracs, frac: fracs[0] },
                 }));
             } else if (e.key === 'Escape') {
-                setCropSel(null);
+                setCropSels([]);
+            } else if (e.key === 'Delete' || e.key === 'Backspace') {
+                // Không xóa khi đang gõ trong input
+                const tag = (e.target as HTMLElement)?.tagName;
+                if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+                e.preventDefault();
+                setCropSels((prev) => prev.slice(0, -1));
             }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isCropMode, cropSel, pageDim, displayWidth, displayHeight, originalPageNum]);
+    }, [isCropMode, cropSels, pageDim, displayWidth, displayHeight, originalPageNum]);
     // Panel → canvas: khi selection đổi (vd click dòng trong panel Thành phần), cuộn
     // overlay object đầu được chọn vào tầm nhìn. Chỉ frame CHỨA overlay đó mới cuộn
     // (query data-obj-id trong containerRef; frame khác không có node → bỏ qua). Dùng
@@ -1690,7 +1696,7 @@ export const LivePageFrame = (props: any) => {
         const rect = containerRef.current.getBoundingClientRect();
         const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
         dragRef.current = { startX: coords.x, startY: coords.y, active: true };
-        if (isCropMode) setCropSel(null); // bắt đầu quét vùng mới → xoá vùng cũ
+        // Multi-crop: bắt đầu quét vùng MỚI — giữ các vùng đã chốt (không xóa).
         if (marqueeRef.current) {
             marqueeRef.current.style.display = 'block';
             marqueeRef.current.style.left = `${coords.x}px`;
@@ -1773,10 +1779,10 @@ export const LivePageFrame = (props: any) => {
         const x2 = Math.max(startX, curX);
         const y2 = Math.max(startY, curY);
 
-        // ─── Crop PDF: chốt vùng quét (giữ hiển thị để nhấn Enter mở hộp thoại) ───
+        // ─── Crop PDF: chốt thêm 1 vùng (multi) — quét tiếp để thêm vùng ───
         if (isCropMode) {
-            if (x2 - x1 < 5 || y2 - y1 < 5) { setCropSel(null); return; }
-            setCropSel({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+            if (x2 - x1 < 5 || y2 - y1 < 5) return;
+            setCropSels((prev) => [...prev, { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }]);
             return;
         }
         
@@ -3142,17 +3148,23 @@ export const LivePageFrame = (props: any) => {
                  />
              )}
 
-             {/* Crop PDF — vùng đã quét, giữ hiển thị chờ Enter/Esc */}
-             {isCropMode && cropSel && (
+             {/* Crop PDF — nhiều vùng đã quét (mỗi vùng → 1 trang sau khi áp dụng) */}
+             {isCropMode && cropSels.map((sel, i) => (
                  <div
+                     key={`crop-${i}-${sel.x}-${sel.y}`}
                      className="absolute border-2 border-orange-500 bg-orange-400/10 z-40 pointer-events-none"
-                     style={{ left: cropSel.x, top: cropSel.y, width: cropSel.w, height: cropSel.h }}
+                     style={{ left: sel.x, top: sel.y, width: sel.w, height: sel.h }}
                  >
-                     <div className="absolute -top-6 left-0 text-[10px] font-semibold bg-orange-500 text-white px-1.5 py-0.5 rounded shadow whitespace-nowrap">
-                         {t('misc.livePageFrame:enter_cat_kho_esc_huy')}
+                     <div className="absolute -top-5 left-0 text-[10px] font-bold bg-orange-500 text-white px-1.5 py-0.5 rounded shadow">
+                         {i + 1}
                      </div>
+                     {i === cropSels.length - 1 && (
+                         <div className="absolute -bottom-6 left-0 text-[9px] font-semibold bg-slate-800/90 text-white px-1.5 py-0.5 rounded shadow whitespace-nowrap max-w-[220px]">
+                             Enter · Esc xóa hết · Del xóa cuối
+                         </div>
+                     )}
                  </div>
-             )}
+             ))}
             </div>
         </div>
 

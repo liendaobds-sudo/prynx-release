@@ -121,6 +121,23 @@ def test_convex_heptagon_not_arrow():
     assert got is not ShapeType.ARROW
 
 
+def test_irregular_octagon_not_circle():
+    """Regression: 8 cạnh LỆCH không được ép CIRCLE_ELLIPSE (trước: mọi 8-cạnh → tròn)."""
+    irreg = lines([
+        (0, 20), (40, 0), (90, 5), (120, 30),
+        (115, 70), (80, 100), (30, 95), (5, 60),
+    ])
+    got = classify_shape(irreg)["shape_type"]
+    assert got is not ShapeType.CIRCLE_ELLIPSE, f"8-cạnh lệch bị nhận {got.name}"
+
+
+def test_regular_octagon_still_circle():
+    """Bát giác đều vẫn map CIRCLE_ELLIPSE (layout nest tròn) sau siết cổng."""
+    oct_ = reg_polygon(100, 100, 60, 8)
+    got = classify_shape(oct_)["shape_type"]
+    assert got is ShapeType.CIRCLE_ELLIPSE
+
+
 # ─── Regression búa/tạ: HÌNH ĐẶC BIỆT không được nhận nhầm thành búa/tạ ──────
 # (audit búa/tạ — cổng "đầu gọn ở mút" _MAX_HEAD_EXTENT_FRAC). Đo thực nghiệm: các
 # hình này có big_d_along_axis_frac 0.69–0.77 (khối phình trải dài, KHÔNG phải đầu+cán).

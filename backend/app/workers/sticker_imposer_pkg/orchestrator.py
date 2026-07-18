@@ -198,6 +198,18 @@ def _solve_optimal_sticker_layout_impl(usable_w: float, usable_h: float, item_w:
             ]
             candidates.sort(key=lambda x: (x[0]['totalItems'], -x[0]['widthUsed']*x[0]['heightUsed']), reverse=True)
             configs = [candidates[0]]
+
+        elif shape_type == 'RECTANGLE':
+            # Chữ nhật / 1 Dao LETA: chỉ lưới + L-shape (fill block). KHÔNG head_to_tail
+            # / hex (trước rơi nhánh generic → preview 1 Dao xếp/vẽ sai).
+            p1 = solve_grid_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y)
+            p2 = solve_grid_layout(usable_w, usable_h, item_h, item_w, gap_x, gap_y)
+            p7 = solve_l_shape_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y, secondary_gap)
+            configs = [
+                (p1, False, 'grid'),
+                (p2, True, 'grid'),
+                (p7, False, 'l_shape'),
+            ]
             
         else:
             # Generic shapes: compete all strategies
@@ -448,6 +460,16 @@ def solve_optimal_sticker_layout(*args, **kwargs) -> Dict[str, Any]:
     strategy_used = best_config.get('strategyUsed', '') if best_config else ''
     SKIP_COLLISION_STRATEGIES = {'hex_tiling', 'staggered', 'staggered_hex_tiling', 'triangle_advanced', 'pentagon_advanced'}
     skip_collision = any(s in strategy_used for s in SKIP_COLLISION_STRATEGIES)
+    # base_poly thiếu (không dò được khuôn): dùng bbox ô tem để vẫn prune chồng/gap.
+    if base_poly is None and best_config and best_config.get('items'):
+        try:
+            from shapely.geometry import box as _box
+            _iw = float(args[2]) if len(args) >= 3 else 0.0  # item_w
+            _ih = float(args[3]) if len(args) >= 4 else 0.0  # item_h
+            if _iw > 0 and _ih > 0:
+                base_poly = _box(0, 0, _iw, _ih)
+        except Exception:
+            pass
     if base_poly is not None and best_config and 'items' in best_config and best_config['items'] and not skip_collision:
         best_config['items'] = resolve_layout_collisions(best_config['items'], base_poly, max(gap_x, gap_y))
         best_config['totalItems'] = len(best_config['items'])

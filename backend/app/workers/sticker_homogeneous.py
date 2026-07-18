@@ -146,11 +146,10 @@ def _has_die(shape: Any) -> bool:
         return False
 
 
-# Ngưỡng "có đường bế THẬT": tách tín hiệu bế-đặc-thù khỏi tín hiệu hình-học generic.
-# Bảng điểm _score_die_candidate: kênh khuôn +1000, spot-nét +400, màu bế +300 (đặc thù)
-# vs nét +100 / hairline +60 / khép kín +30 / diện tích +20 (generic, artwork cũng có →
-# tối đa ~210). Ngưỡng 250 nằm giữa ⇒ chỉ trang có đường bế đặc thù mới True.
-_DIE_SCORE_MIN = 250.0
+# Ngưỡng strong tối thiểu: màu-bế-stroke = 300, spot-nét = 400, tên kênh = 1000.
+# Tín hiệu YẾU (nét/hairline/diện tích) không còn cộng vào strong → không cần
+# “ngưỡng 250” để lọc artwork nữa; strong > 0 là đủ.
+_DIE_SCORE_MIN = 1.0
 
 
 def page_has_die(page: Any, *, min_score: float = _DIE_SCORE_MIN) -> bool:
@@ -160,9 +159,8 @@ def page_has_die(page: Any, *, min_score: float = _DIE_SCORE_MIN) -> bool:
       - CÙNG khuôn (homogeneous): ĐÚNG 1 trang page_has_die=True (master) + còn lại False.
       - KHÁC khuôn (mixed): ≥2 trang page_has_die=True → đi bin-pack trộn.
 
-    Dùng ``_score_die_candidate`` (SSOT chấm điểm của die_detection) nhưng CHỈ chấp
-    nhận điểm ≥ ``min_score`` (tín hiệu kênh khuôn / spot-nét / màu bế) — LOẠI fallback
-    hình học (nét/khép kín/diện tích) mà artwork nội dung cũng có → chống nhầm 2 chiều.
+    Dùng ``_score_die_candidate`` (strong, weak, by_spot): chỉ strong ≥ min_score
+    (tên kênh / spot-nét / màu-bế-stroke). Không đoán path artwork.
     Trang không path / lỗi extract → False (an toàn).
     """
     try:
@@ -189,10 +187,12 @@ def page_has_die(page: Any, *, min_score: float = _DIE_SCORE_MIN) -> bool:
         if abs(r.width - rect.width) <= 2 and abs(r.height - rect.height) <= 2:
             continue
         try:
-            sc, _ = _score_die_candidate(p, rect, names_lower, cfg.die_colors, cfg.die_color_tol)
+            strong, _weak, _by_spot = _score_die_candidate(
+                p, rect, names_lower, cfg.die_colors, cfg.die_color_tol
+            )
         except Exception:
             continue
-        if sc >= min_score:
+        if strong >= min_score:
             return True
     return False
 

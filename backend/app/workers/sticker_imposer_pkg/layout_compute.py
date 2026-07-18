@@ -146,9 +146,11 @@ def compute_sticker_layout_for_page(
 
     # ── Step 1: Determine trim dimensions from page ──
 
-    # 1 Dao + "theo kích thước trang": trim = page.rect ± offset (nguồn chân lý dùng
-    # chung với export). BỎ QUA dò đường bế → layout tạo ô đúng kích thước trang, khớp
-    # place_one_artwork (die_box cũng = rect ± offset) → clip không cắt mất tem.
+    # 1 Dao (Dao LETA): luôn xếp/nest như CHỮ NHẬT (lưới + L-shape), không hex/tròn.
+    # - die_size_mode == 'page': trim = mediabox ± offset (resolve_one_dao_trim)
+    # - die_size_mode == 'die':  trim = bbox đường bế (nếu có), else page − 2*bleed
+    # Preview trước đây vẫn honor shape CIRCLE từ detect-shape → vẽ/xếp sai 1 Dao.
+    _is_one_dao = (cut_type == 'one_dao')
     _one_dao_trim = resolve_one_dao_trim(page, cut_type, die_size_mode, die_offset_mm)
 
     largest_path = None if _one_dao_trim is not None else _find_largest_die_path(page)
@@ -205,10 +207,10 @@ def compute_sticker_layout_for_page(
 
     _auto_detected_props = {}
 
-    # 1 Dao + page-mode: hình cắt là CHỮ NHẬT full trang → ép RECTANGLE, KHÔNG dò
-    # đường bế / classify (base_poly nest phải là chữ nhật trang, không theo die-path
-    # nhỏ hơn → nếu không tem nest chồng theo hình nhỏ, chồng mực khi cắt thẳng).
-    if _one_dao_trim is not None:
+    # 1 Dao (mọi die_size_mode): ép RECTANGLE — dao thẳng LETA không nest tròn/hex/búa.
+    # page-mode: thêm base_poly = chữ nhật trang (bên dưới). die-mode: trim từ khuôn
+    # nhưng strategy vẫn grid/L-shape chữ nhật.
+    if _is_one_dao:
         shape_type = 'RECTANGLE'
         shape_props = {}
         _need_auto = False
@@ -238,10 +240,9 @@ def compute_sticker_layout_for_page(
 
             logger.debug(f"   SHAyE: classify_shape failed: {e}")
 
-    if _one_dao_trim is not None:
+    if _is_one_dao:
 
-        # page-mode: giữ RECTANGLE + shape_props={} đã set ở trên (KHÔNG honor
-        # override props của hình cũ → base_poly nest = chữ nhật trang).
+        # Giữ RECTANGLE + props rỗng đã set — KHÔNG honor override CIRCLE/CUSTOM.
         pass
 
     elif not shape_type:
@@ -324,13 +325,12 @@ def compute_sticker_layout_for_page(
 
     base_poly = None
 
-    # 1 Dao + page-mode: base_poly (va chạm/nest) là CHỮ NHẬT trim full trang, KHÔNG
-    # NFP / dò đường bế (die-path nhỏ hơn → tem nest chồng theo hình nhỏ → chồng mực
-    # khi cắt thẳng). Bỏ qua toàn bộ Step 4 NFP bên dưới.
-    if _one_dao_trim is not None:
+    # 1 Dao: base_poly = CHỮ NHẬT trim (page hoặc die bbox), KHÔNG NFP contour cong
+    # (tránh nest/khử đè theo outline tròn trong khi dao cắt thẳng).
+    if _is_one_dao:
         from shapely.geometry import box as _box
         base_poly = _box(0, 0, trim_w, trim_h)
-        logger.debug(f"   POLY: 1-dao page-mode rectangle {trim_w:.2f}x{trim_h:.2f}")
+        logger.debug(f"   POLY: 1-dao rectangle {trim_w:.2f}x{trim_h:.2f}")
     elif strategy in ('optimal_auto', 'head_to_tail') and hasattr(page, 'extract_vector_paths'):
 
         try:
@@ -379,15 +379,33 @@ def compute_sticker_layout_for_page(
 
         logger.debug(f"   yOLY: from NFy → {'YES' if base_poly else 'None'}")
 
-    # If user explicitly chose CUSTOM via dropdown, force it
-
-    if shape_type_override == 'CUSTOM':
+    # If user explicitly chose CUSTOM via dropdown, force it — trừ 1 Dao (luôn RECTANGLE).
+    if shape_type_override == 'CUSTOM' and not _is_one_dao:
 
         shape_type = 'CUSTOM'
 
         shape_props = {}
 
         logger.debug(f"   OVERRIDE: forced CUSTOM by user")
+
+    # 1 Dao: chốt lại RECTANGLE sau mọi nhánh NFP/override (FE có thể gửi CIRCLE/CUSTOM).
+    if _is_one_dao:
+        shape_type = 'RECTANGLE'
+        shape_props = {'width': trim_w, 'height': trim_h}
+        if base_poly is None:
+            from shapely.geometry import box as _box
+            base_poly = _box(0, 0, trim_w, trim_h)
+
+    # Va chạm tem–tem (resolve_layout_collisions) CẦN base_poly. Khi không có đường bế
+    # (stroke-only gate → None) / extract fail → trước đây base_poly=None → BỎ HẲN
+    # collision (tem chồng / dính gap). Fallback chữ nhật trim = vẫn dò overlap/gap.
+    if base_poly is None and trim_w > 0 and trim_h > 0:
+        from shapely.geometry import box as _box
+        base_poly = _box(0, 0, float(trim_w), float(trim_h))
+        logger.debug(
+            f"   POLY: collision fallback rectangle {trim_w:.2f}x{trim_h:.2f} "
+            f"(no die path — keep resolve_layout_collisions)"
+        )
 
     logger.debug(f"   FINAL: shape={shape_type} trim={trim_w:.2f}x{trim_h:.2f} base_poly={'YES' if base_poly else 'None'}")
 

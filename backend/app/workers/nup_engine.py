@@ -377,10 +377,27 @@ def run_nup_engine(
     # secondary_gap nhưng args tuple vẫn dùng → tránh UnboundLocalError.
     secondary_gap = None
 
+    layout_type = settings.get('layoutType', 'sequential')
+    is_die_cut = settings.get('isDieCutMode', False)
+    # CNC cũng đi nhánh die-cut (imposerMode='cnc' + isDieCutMode).
+    imposer_mode = (settings.get('imposerMode') or '').lower()
+    is_cnc = imposer_mode == 'cnc' or bool(settings.get('cncMode'))
+
+    # Chia cọc row/column CHỈ cho N-Up xén (guillotine). Tem bế / CNC lấp đầy
+    # toàn bộ usable — nếu để clusterMode rò từ N-Up (row/column) sẽ CHIA ĐÔI
+    # usable_h/w → tem chỉ nằm 1 dải trên tờ (bug "chỉ bình được 1 phần tờ").
+    if is_die_cut or is_cnc:
+        if cluster_mode in ('row', 'column'):
+            logger.info(
+                "   [CLUSTER] ignore clusterMode=%r on die-cut/CNC — use full usable sheet",
+                cluster_mode,
+            )
+        cluster_mode = 'none'
+
     # Cluster-type (ratio_stack + chia cọc theo LOẠI): KHÔNG chia usable đều theo
     # cluster_count. Bề RỘNG mỗi cọc TỶ LỆ với SL → nhánh precalc cluster_type tự giải
     # lưới ĐẦY ĐỦ tờ rồi phân cột/hàng theo tỷ lệ. Ở đây giữ nguyên usable + cx/cy=1.
-    _lt_early = settings.get('layoutType', 'sequential')
+    _lt_early = layout_type
     _is_cluster_type_early = (_lt_early == 'ratio_stack' and cluster_mode in ('row', 'column'))
 
     if _is_cluster_type_early:
@@ -404,10 +421,6 @@ def run_nup_engine(
     logger.info("   ZONE-DEBUG grouping_strategy=%r combine=%r" % (grouping_strategy, cluster_combine_mode))
     cluster_tile_w_mm = settings.get('clusterTileW', 148.0)   # mm, default A5 width
     cluster_tile_h_mm = settings.get('clusterTileH', 210.0)   # mm, default A5 height
-
-    layout_type = settings.get('layoutType', 'sequential')
-
-    is_die_cut = settings.get('isDieCutMode', False)
 
     precalculated_placements = None
     cluster_tile_cuts = {}

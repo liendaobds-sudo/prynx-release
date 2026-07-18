@@ -140,16 +140,24 @@ $btnList.Add_Click({
 })
 
 $btnLocal.Add_Click({
+    if (-not $txtVer.Text.Trim()) {
+        [System.Windows.Forms.MessageBox]::Show("Nhap phien ban moi (vd 1.0.0-beta.12) truoc khi build.", "Thieu phien ban")
+        return
+    }
     $ok = [System.Windows.Forms.MessageBox]::Show(
-        "Build NOI BO (test truoc, KHONG upload)?`r`nTao file cai dat trong  Ban_Phat_Hanh\`r`nQua trinh co the mat 10-20 phut (chay trong cua so rieng).",
+        "Build NOI BO v$($txtVer.Text) (test truoc, KHONG upload)?`r`nTao file cai dat trong Ban_Phat_Hanh\`r`nQua trinh co the mat 10-20 phut (chay trong cua so rieng).",
         "Xac nhan build noi bo", [System.Windows.Forms.MessageBoxButtons]::YesNo)
     if ($ok -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    Save-Config
     $buildScript = Join-Path $ROOT "build_production.ps1"
     $skipArg = if ($chkSkipNuitka.Checked) { " -SkipNuitka" } else { "" }
+    # PHAI truyen -Version: build_production doc tauri.conf; truoc day Build NỘI BỘ
+    # bo qua o phien ban -> installer van mang version cu (vd go .12 van ra .11).
+    $verArg = " -Version `"$($txtVer.Text.Trim())`""
     # KHONG -Release: build installer local, khong ky updater, khong upload.
-    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$buildScript`"$skipArg"
+    $argList = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$buildScript`"$verArg$skipArg"
     Start-Process powershell -ArgumentList $argList
-    Log "Da khoi chay build NOI BO trong cua so rieng. File cai dat se nam trong Ban_Phat_Hanh\."
+    Log "Da khoi chay build NOI BO v$($txtVer.Text) trong cua so rieng. File cai dat se nam trong Ban_Phat_Hanh\."
 })
 
 $btnPublish.Add_Click({

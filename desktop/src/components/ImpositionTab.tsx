@@ -1641,7 +1641,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         return file!;
     };
 
-    const handleSaveFile = useCallback(async (isSaveAs: boolean = false) => {
+    /** @returns true nếu đã lưu thành công; false nếu huỷ dialog / lỗi. */
+    const handleSaveFile = useCallback(async (isSaveAs: boolean = false): Promise<boolean> => {
         // Edit-session COMMIT-ON-SAVE: nếu đang sửa object và có thay đổi chưa ghi
         // (commit-on-exit chưa chạy vì vẫn ở edit mode), commit NGAY để `file`/pdfUrl
         // trỏ Working_File mới ĐÃ bake mọi op. onCommit → handleEditCommit set state
@@ -1654,7 +1655,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 await new Promise<void>(r => setTimeout(r, 0));
             } catch {
                 setError(t('tabs.imposition:khong_luu_duoc_thay_doi_chinh_sua_vao'));
-                return;
+                return false;
             }
         }
         // Sau commit, `file` (biến closure) đã STALE — onCommit set store bất đồng bộ.
@@ -1665,7 +1666,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         let targetName = curFile ? curFile.name : 'Document.pdf';
         let didBake = false;  // có bake edits/VDP vào blob mới hay không
 
-        if (!targetBlob) return;
+        if (!targetBlob) return false;
 
         // File kết quả đã sinh sẵn (VDP/batch...) đã bake đủ — KHÔNG áp lại edits/VDP còn
         // sót trong store (tránh bị thêm tiền tố "Edited_"/"VDP_" sai khi chạy nhiều file).
@@ -1698,7 +1699,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 }
             } catch (err: any) {
                 setError(t('tabs.imposition:loi_khi_ap_dung_sua_doi') + err.message);
-                return;
+                return false;
             } finally {
                 setIsProcessing(false);
                 setProcessStatus('');
@@ -1762,7 +1763,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         const fileName = path.split(/[\\/]/).pop() || targetName;
                         setIsSaved(true);
                         onTitleChange?.(fileName);
-                        return;
+                        return true;
                     }
                     // Bytes THẬT để ghi: nếu KHÔNG bake và file có path trên đĩa (kết quả VDP
                     // có blob in-memory chỉ là placeholder 5 byte, hoặc file mở từ OS có body
@@ -1792,6 +1793,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         }
                         setIsSaved(true);
                         onTitleChange?.(fileName);
+                        return true;
                     } catch (writeErr: any) {
                         if (writeErr.toString().includes('forbidden path') || writeErr.toString().includes('not allowed')) {
                             const fallbackPath = await save({
@@ -1805,12 +1807,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 if (didBake) _bakeInMemory(targetBlob, fileName, fallbackPath);
                                 setIsSaved(true);
                                 onTitleChange?.(fileName);
+                                return true;
                             }
+                            return false; // user huỷ fallback
                         } else {
                             throw writeErr;
                         }
                     }
                 }
+                return false; // user huỷ hộp thoại lưu
             } else {
                 // Browser Fallback
                 const url = URL.createObjectURL(targetBlob);
@@ -1828,23 +1833,43 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 if (didBake) _bakeInMemory(targetBlob, targetName, null);
                 setIsSaved(true);
                 onTitleChange?.(targetName);
+                return true;
             }
         } catch (e: any) {
             setError(t('tabs.imposition:khong_the_luu_file') + e);
+            return false;
         }
     }, [file, viewerPageOrder, viewerPageRotations, vdpFields, viewerNumPages, pdfUrl, onTitleChange, editSession, store, isObjectEditMode]);
 
     useEffect(() => {
-        const handleTriggerSave = (e: any) => {
-            if (!isActive) return;
-            if (e.detail.tabId === tabId) {
-                if (e.detail.saveAs) {
-                    setShowSaveAsModal(true);
-                } else {
-                    if (isDirty || viewerDirty) {
-                        handleSaveFile(false);
-                    }
-                }
+        const handleTriggerSave = async (e: any) => {
+            if (e.detail?.tabId !== tabId) return;
+            const requestId = e.detail?.requestId as string | undefined;
+            const reply = (result: 'saved' | 'cancelled' | 'failed') => {
+                if (!requestId) return;
+                window.dispatchEvent(new CustomEvent('app-save-result', {
+                    detail: { requestId, result, tabId },
+                }));
+            };
+            // Menu Ctrl+S: chỉ tab đang xem. Luồng thoát app (có requestId) cho phép
+            // lưu cả khi vừa setActive (tránh race isActive chưa kịp true).
+            if (!isActive && !requestId) return;
+            if (e.detail.saveAs) {
+                setShowSaveAsModal(true);
+                // Save As modal không await → báo cancelled cho luồng thoát tuần tự
+                // (user vẫn lưu được qua modal; thoát app dùng Lưu trực tiếp không saveAs).
+                reply('cancelled');
+                return;
+            }
+            if (!(isDirty || viewerDirty)) {
+                reply('saved');
+                return;
+            }
+            try {
+                const ok = await handleSaveFile(false);
+                reply(ok ? 'saved' : 'cancelled');
+            } catch {
+                reply('failed');
             }
         };
         window.addEventListener('app-trigger-save', handleTriggerSave);
@@ -2216,6 +2241,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         {/* Main workspace is always AcrobatViewer */}
                                 <AcrobatViewer
                                     isActive={isActive}
+                                    tabId={tabId}
                                     onViewerDirtyChange={setViewerDirty}
                                     onExtractPages={handleExtractPages}
                                     onObjectDelete={handleDeleteObjects}
@@ -2229,8 +2255,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             sourcePageCount={viewerNumPages}
                                         />
                                     ) : undefined}
-                                    toolbarExtraRight={file && isImposedOutputFile(file.name) ? (
+                                    toolbarExtraRight={file ? (
                                         <div className="flex items-center gap-2">
+                                            {/* In: luôn hiện khi có file (Ctrl+P / File→In vẫn dùng).
+                                                Trước chỉ hiện với file Imposed_* → mở PDF thường tưởng mất nút. */}
                                             <button
                                                 onClick={handlePrintFile}
                                                 className="h-8 px-3 rounded bg-sky-600 hover:bg-sky-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
@@ -2238,13 +2266,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             >
                                                 <Printer className="w-4 h-4" /> {t('tabs.imposition:in')}
                                             </button>
-                                            <button
-                                                onClick={() => setShowOpenInDesign(true)}
-                                                className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
-                                                title={t('tabs.imposition:mo_trang_khuon_bang_illustrator_corel')}
-                                            >
-                                                <Scissors className="w-4 h-4" /> {t('tabs.imposition:be')}
-                                            </button>
+                                            {isImposedOutputFile(file.name) && (
+                                                <button
+                                                    onClick={() => setShowOpenInDesign(true)}
+                                                    className="h-8 px-3 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[13px] font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                                                    title={t('tabs.imposition:mo_trang_khuon_bang_illustrator_corel')}
+                                                >
+                                                    <Scissors className="w-4 h-4" /> {t('tabs.imposition:be')}
+                                                </button>
+                                            )}
                                         </div>
                                     ) : undefined}
                                     rightPanel={(

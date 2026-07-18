@@ -41,11 +41,26 @@ def detect_shape(mask_img: np.ndarray) -> ShapeType:
         logger.info(f"Shape detected: RECTANGLE (Area ratio: {area/min_rect_area:.2f})")
         return ShapeType.RECTANGLE
 
-    # 2. Hình Tròn / Elip
+    # 2. Hình Tròn / Elip — siết so với 0.85 cũ (tem bo tròn / blob hay lọt).
+    # Tròn raster discretize ~0.89–0.95; ngưỡng 0.88 + (tuỳ chọn) fitEllipse residual.
     circularity = 4 * math.pi * area / (perimeter * perimeter)
-    if circularity > 0.85:
-        logger.info(f"Shape detected: CIRCLE_ELLIPSE (Circularity: {circularity:.2f})")
-        return ShapeType.CIRCLE_ELLIPSE
+    aspect = (min(w, h) / max(w, h)) if max(w, h) > 0 else 0.0
+    if circularity > 0.88 and aspect >= 0.15:
+        ellipse_ok = True
+        if len(cnt) >= 5:
+            try:
+                (ex, ey), (e_ma, e_MI), _ang = cv2.fitEllipse(cnt)
+                # Diện tích elip ≈ π*a*b/4 với a,b là full axes của fitEllipse
+                e_area = math.pi * (e_ma * 0.5) * (e_MI * 0.5)
+                if e_area > 1e-6:
+                    # Lệch diện tích contour vs elip fit > 12% → không phải tròn/elip thật
+                    if abs(area - e_area) / e_area > 0.12:
+                        ellipse_ok = False
+            except Exception:
+                pass
+        if ellipse_ok:
+            logger.info(f"Shape detected: CIRCLE_ELLIPSE (Circularity: {circularity:.2f})")
+            return ShapeType.CIRCLE_ELLIPSE
             
     # Đơn giản hóa đa giác
     epsilon = 0.02 * perimeter

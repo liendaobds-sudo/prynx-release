@@ -154,23 +154,41 @@ class PageBoxesEngine:
 
     def set_boxes(
         self, file_path: str, box_type: str, rect_mm: dict,
-        pages: list[int] | None = None
+        pages: list[int] | None = None,
+        *,
+        sync_mediabox: bool | None = None,
+        physical_crop: bool | None = None,
     ) -> str:
         """
         Cập nhật 1 loại box cho danh sách trang.
         box_type: 'mediabox' | 'cropbox' | 'trimbox' | 'bleedbox' | 'artbox'
         rect_mm: {"x0": float, "y0": float, "x1": float, "y1": float}
         pages: list of 1-indexed page numbers, None = all pages
+        sync_mediabox:
+          - None (mặc định): khi box_type='cropbox' → CŨNG set MediaBox = rect
+          - True/False: ép bật/tắt
+        physical_crop:
+          - None (mặc định): khi box_type='cropbox' → CẮT VẬT LÝ: dịch content
+            về gốc (0,0) + MediaBox=[0,0,w,h]. Chỉ set box tuyệt đối [x0,y0,x1,y1]
+            khiến nhiều tool (resize/form XObject) clip/scale sai → “cắt lún vào
+            object”. Acrobat-style hard crop = translate + zero-origin boxes.
+          - True/False: ép bật/tắt
         Returns: output file path.
         """
         doc = pikepdf.Pdf.open(file_path)
 
-        target_rect_pt = pikepdf.Array([
-            rect_mm["x0"] * PT_PER_MM,
-            rect_mm["y0"] * PT_PER_MM,
-            rect_mm["x1"] * PT_PER_MM,
-            rect_mm["y1"] * PT_PER_MM,
-        ])
+        x0_pt = float(rect_mm["x0"]) * PT_PER_MM
+        y0_pt = float(rect_mm["y0"]) * PT_PER_MM
+        x1_pt = float(rect_mm["x1"]) * PT_PER_MM
+        y1_pt = float(rect_mm["y1"]) * PT_PER_MM
+        if x1_pt <= x0_pt or y1_pt <= y0_pt:
+            doc.close()
+            raise ValueError("rect_mm không hợp lệ (x1<=x0 hoặc y1<=y0)")
+
+        w_pt = x1_pt - x0_pt
+        h_pt = y1_pt - y0_pt
+        target_rect_pt = [x0_pt, y0_pt, x1_pt, y1_pt]
+        zero_origin_rect = [0.0, 0.0, w_pt, h_pt]
 
         box_key_map = {
             "mediabox": "/MediaBox",
@@ -180,24 +198,132 @@ class PageBoxesEngine:
             "artbox": "/ArtBox",
         }
 
-        box_key = box_key_map.get(box_type.lower())
+        box_type_l = box_type.lower()
+        box_key = box_key_map.get(box_type_l)
         if not box_key:
             doc.close()
             raise ValueError(f"box_type '{box_type}' không hợp lệ")
 
+        do_sync_media = (
+            sync_mediabox if sync_mediabox is not None
+            else (box_type_l == "cropbox")
+        )
+        do_physical = (
+            physical_crop if physical_crop is not None
+            else (box_type_l == "cropbox")
+        )
+
         target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
 
         for pnum in target_pages:
-            if 1 <= pnum <= len(doc.pages):
-                page = doc.pages[pnum - 1]
+            if not (1 <= pnum <= len(doc.pages)):
+                continue
+            page = doc.pages[pnum - 1]
+
+            if do_physical and box_type_l in ("cropbox", "mediabox"):
+                # ── Hard crop: form XObject + trang mới [0,0,w,h] ──
+                # Tránh chỉ gán MediaBox=[x0,y0,x1,y1] (content vẫn ở toạ độ cũ →
+                # tool sau “nhìn” lệch / clip vào object).
+                self._physical_crop_page(doc, page, x0_pt, y0_pt, w_pt, h_pt)
+            else:
                 page[pikepdf.Name(box_key)] = pikepdf.Array(target_rect_pt)
+                if do_sync_media and box_type_l != "mediabox":
+                    page[pikepdf.Name.MediaBox] = pikepdf.Array(target_rect_pt)
+                    page[pikepdf.Name.CropBox] = pikepdf.Array(target_rect_pt)
 
         output_name = f"{Path(file_path).stem}_boxes_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
         doc.save(output_path)
         doc.close()
 
-        logger.info(f"Set {box_type} on {len(target_pages)} pages → {output_path}")
+        logger.info(
+            "Set %s on %d pages (sync_mediabox=%s physical_crop=%s) → %s",
+            box_type, len(target_pages), do_sync_media, do_physical, output_path,
+        )
+        return output_path
+
+    @staticmethod
+    def _physical_crop_page(doc, page, x0: float, y0: float, w: float, h: float) -> None:
+        """Cắt thật 1 trang: dịch content (-x0,-y0), MediaBox/CropBox = [0,0,w,h].
+
+        Chỉ gán MediaBox=[x0,y0,x1,y1] (không dịch) khiến form XObject / resize
+        clip-scale lệch — user thấy “cắt lún vào object” thay vì đúng khung quét.
+        """
+        for _bk in ("/TrimBox", "/BleedBox", "/ArtBox"):
+            try:
+                if _bk in page:
+                    del page[pikepdf.Name(_bk)]
+            except Exception:
+                pass
+
+        # Dịch toàn bộ content stream về gốc (0,0).
+        try:
+            page.contents_coalesce()
+            raw = b""
+            if page.get("/Contents") is not None:
+                raw = page.Contents.read_bytes()
+            # q … Q bọc để không phá balance q/Q bên trong (best-effort).
+            prefix = f"q 1 0 0 1 {-x0:.6f} {-y0:.6f} cm\n".encode("latin-1", errors="replace")
+            suffix = b"\nQ\n"
+            page.Contents = pikepdf.Stream(doc, prefix + raw + suffix)
+        except Exception as e:
+            logger.warning("physical crop content translate failed: %s — box-only fallback", e)
+            page.MediaBox = pikepdf.Array([x0, y0, x0 + w, y0 + h])
+            page.CropBox = pikepdf.Array([x0, y0, x0 + w, y0 + h])
+            return
+
+        page.MediaBox = pikepdf.Array([0.0, 0.0, w, h])
+        page.CropBox = pikepdf.Array([0.0, 0.0, w, h])
+
+    def crop_regions_to_pages(
+        self,
+        file_path: str,
+        page_num: int,
+        rects_mm: list[dict],
+    ) -> str:
+        """Crop N vùng trên 1 trang → 1 PDF N trang (mỗi vùng = 1 page).
+
+        page_num: 1-indexed.
+        rects_mm: [{x0,y0,x1,y1}, ...] đơn vị mm, hệ MediaBox trang nguồn.
+        """
+        if not rects_mm:
+            raise ValueError("rects_mm rỗng — cần ít nhất 1 vùng crop")
+        if page_num < 1:
+            raise ValueError(f"page_num không hợp lệ: {page_num}")
+
+        out = pikepdf.Pdf.new()
+        # Mở lại nguồn cho MỖI vùng để physical crop không chồng transform.
+        # pikepdf 9: copy page giữa PDF phải qua pages / import_pages — KHÔNG copy_foreign(Page).
+        for i, rect_mm in enumerate(rects_mm):
+            x0 = float(rect_mm["x0"]) * PT_PER_MM
+            y0 = float(rect_mm["y0"]) * PT_PER_MM
+            x1 = float(rect_mm["x1"]) * PT_PER_MM
+            y1 = float(rect_mm["y1"]) * PT_PER_MM
+            if x1 <= x0 or y1 <= y0:
+                raise ValueError(f"Vùng #{i + 1} không hợp lệ (x1<=x0 hoặc y1<=y0)")
+            w, h = x1 - x0, y1 - y0
+
+            src = pikepdf.Pdf.open(file_path)
+            try:
+                if page_num > len(src.pages):
+                    raise ValueError(
+                        f"Trang {page_num} không hợp lệ (file có {len(src.pages)} trang)"
+                    )
+                page = src.pages[page_num - 1]
+                self._physical_crop_page(src, page, x0, y0, w, h)
+                # pikepdf 9: append Page qua pages[] (copy_foreign(Page) bị cấm)
+                out.pages.append(src.pages[page_num - 1])
+            finally:
+                src.close()
+
+        output_name = f"{Path(file_path).stem}_multicrop_{uuid.uuid4().hex[:6]}.pdf"
+        output_path = str(self.output_dir / output_name)
+        out.save(output_path)
+        out.close()
+        logger.info(
+            "crop_regions_to_pages: page=%d n=%d → %s",
+            page_num, len(rects_mm), output_path,
+        )
         return output_path
 
     def auto_trim(self, file_path: str, pages: list[int] | None = None, margin_mm: float = 0) -> str:

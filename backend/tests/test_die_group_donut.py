@@ -69,14 +69,14 @@ def test_th_b_two_separate_rings_are_merged():
 
 
 def test_no_die_signal_does_not_overgroup():
-    # Không spot, không màu bế → chỉ giữ anchor (không nuốt nét artwork đen khác).
+    # Không spot, không màu bế → không chọn path nào (không đoán nét artwork).
     s1 = _path(10, 10, 120, 110, type='s', spot=None, color=(0, 0, 0), nitems=6)
     s2 = _path(10, 10, 150, 120, type='s', spot=None, color=(0, 0, 0), nitems=6)
     paths = [s1, s2]
-    anchor, by_spot, _ = _select_from_paths(paths, PAGE, (), (), 0.06)
+    anchor, by_spot, is_fb = _select_from_paths(paths, PAGE, (), (), 0.06)
+    assert anchor is None
     assert by_spot is False
-    members = _collect_die_group(paths, anchor, PAGE, CFG.die_colors, CFG.die_color_tol)
-    assert members == [anchor]
+    assert is_fb is False
 
 
 def test_magenta_no_spot_donut_merged_by_color():

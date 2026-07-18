@@ -77,7 +77,8 @@ export async function runProcessEngine(
                 bleed: settings.bleed, gapX: settings.gapX || 0, gapY: settings.gapY || 0,
                 marginTop: settings.marginTop || 0, marginBottom: settings.marginBottom || 0,
                 marginLeft: settings.marginLeft || 0, marginRight: settings.marginRight || 0,
-                gripperMargin: (settings as any).gripperMargin || 0,
+                // Gripper/nhíp chỉ N-Up offset — tem bế/CNC không cắn nhíp (tránh rò lề đáy).
+                gripperMargin: (isDieCut || isCnc) ? 0 : ((settings as any).gripperMargin || 0),
                 marginMode: settings.marginMode || 'labels_only',
                 markType: caps.supportsMarks ? ((settings as any).markType || 'none') : 'none',
                 markLength: (settings as any).markLength || 5, markOffset: (settings as any).markOffset || 3,

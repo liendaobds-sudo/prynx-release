@@ -39,8 +39,14 @@ VALID_SOURCES: frozenset[str] = frozenset(
 class DetectionConfig:
     """Cấu hình nhận diện đường khuôn (Phase 0)."""
     # Tên kênh Spot/Separation coi là đường khuôn — khớp full-name, case-insensitive (R3.6, R3.7).
+    # Mở rộng tên phổ biến prepress (AI/Corel/PDF tem bế VN + quốc tế).
     die_channel_names: tuple[str, ...] = (
-        "CutContour", "Dieline", "Thru-cut", "Kiss", "Crease",
+        "CutContour", "Cut Contour", "CutLine", "Cut Line", "Cut",
+        "Dieline", "Die Line", "DieLine", "Die", "DieCut", "Die Cut",
+        "Thru-cut", "Thru Cut", "Thrucut",
+        "Kiss", "Kiss Cut", "KissCut",
+        "Crease", "Perforate", "Perf",
+        "Stanc", "Decoupe",
     )
     # Màu đường bế nhận diện kèm (ngoài tên kênh): bắt ca đường bế tô màu thuần,
     # KHÔNG có kênh spot riêng. Mỗi phần tử là tuple màu: 4 số = CMYK, 3 số = RGB.
@@ -324,18 +330,77 @@ def _page_dims_pt(page) -> tuple[float, float]:
     return w, h
 
 
+def _norm_channel_token(name: str) -> str:
+    """Chuẩn hoá tên kênh để khớp biến thể: 'Cut Contour' / 'Cut-Contour' / 'CutContour'."""
+    return "".join(ch for ch in str(name).strip().lower() if ch.isalnum())
+
+
 def _match_die_channel(spot_name, names_lower: frozenset) -> bool:
     """Khớp tên kênh khuôn: full-name, case-insensitive, KHÔNG khớp chuỗi con (R3.7).
 
     spot_name có thể là DeviceN nối '+' (vd 'Cut+Crease') → tách kiểm tra từng kênh.
     Độc lập tên trùng Cyan/Magenta/Yellow/Black (R3.9) vì so khớp theo danh sách
     cấu hình, không loại trừ theo CMYK.
+
+    So khớp cả dạng đã bỏ khoảng/gạch (Cut Contour ≡ CutContour) để bắt tên kênh
+    từ AI/Corel xuất khác nhau.
     """
     if not spot_name or not names_lower:
         return False
+    names_norm = frozenset(_norm_channel_token(n) for n in names_lower if n)
     for part in str(spot_name).split("+"):
-        if part.strip().lower() in names_lower:
+        raw = part.strip().lower()
+        if not raw:
+            continue
+        if raw in names_lower:
             return True
+        if _norm_channel_token(raw) in names_norm:
+            return True
+    return False
+
+
+def _is_strokish_path(path) -> bool:
+    """Path có thành phần nét (stroke hoặc stroke+fill). Legacy — dùng nội bộ hạn chế."""
+    ptype = path.get("type")
+    fill = path.get("fill")
+    color = path.get("color")
+    return ptype in ("s", "sf") or (fill is None and color is not None)
+
+
+def _has_fill_paint(path) -> bool:
+    """Path có tô (fill) — mảng màu / vùng đặc, không phải đường bế nét thuần."""
+    fill = path.get("fill")
+    if fill is None:
+        return False
+    # Một số parser gán fill=() hoặc fill=False — coi như không tô.
+    if fill is False:
+        return False
+    if isinstance(fill, (list, tuple)) and len(fill) == 0:
+        return False
+    return True
+
+
+def _is_stroke_only_path(path) -> bool:
+    """Đường bế hợp lệ: CHỈ nét (stroke), KHÔNG có fill/tô màu.
+
+    - type 'f' / fill-only → False (mảng màu artwork)
+    - type 'sf' (stroke+fill) → False (vùng tô + nét mép)
+    - type 's' + fill paint → False
+    - type 's' + fill None → True
+    """
+    if path is None:
+        return False
+    ptype = path.get("type")
+    if ptype in ("f", "f*", "sf", "B", "b", "B*", "b*"):
+        return False
+    if _has_fill_paint(path):
+        return False
+    # Nét thuần: type stroke, hoặc có stroke color mà không fill
+    if ptype == "s":
+        return True
+    color = path.get("color")
+    if color is not None and not _has_fill_paint(path) and ptype not in ("f", "sf"):
+        return True
     return False
 
 
@@ -389,63 +454,69 @@ def _is_hairline(width, page_rect) -> bool:
 
 
 def _score_die_candidate(path, page_rect, names_lower, die_colors, die_color_tol):
-    """Chấm điểm 1 path là ĐƯỜNG BẾ theo nhiều tín hiệu (xem bảng trong giải pháp P1).
+    """Chấm điểm 1 path là ĐƯỜNG BẾ — tách TÍN HIỆU MẠNH / YẾU.
 
-    Trả (score, matched_by_spot). matched_by_spot=True khi thắng nhờ kênh spot
-    (để gắn source='separation').
+    BẮT BUỘC: path là NÉT THUẦN (stroke-only, không fill). Mảng tô / sf → strong=0
+    → không chọn; caller fallback khổ trang.
+
+    Tín hiệu MẠNH (chỉ trên stroke-only):
+      - Tên kênh khuôn (CutContour, Dieline, …)
+      - Kênh spot dành riêng
+      - Màu bế cấu hình trên stroke (vd magenta 100%)
+
+    Tín hiệu YẾU (xếp hạng giữa ứng viên đã strong>0): hairline, closePath, area.
+
+    Trả (strong, weak, matched_by_spot).
     """
+    # Cổng cứng: không nét thuần → không bao giờ là đường bế (kể cả tên kênh trên fill).
+    if not _is_stroke_only_path(path):
+        return 0.0, 0.0, False
+
     spot = path.get("spot_name")
     color = path.get("color")
-    fill = path.get("fill")
     ptype = path.get("type")
-    score = 0.0
+    strong = 0.0
+    weak = 0.0
     by_spot = False
 
     if _match_die_channel(spot, names_lower):
-        score += 1000.0
+        strong += 1000.0
         by_spot = True
     elif _is_genuine_spot(spot):
-        # Đường bế gần như LUÔN là NÉT (stroke/sf). Kênh spot chỉ là tín hiệu bế
-        # mạnh khi path là nét; với VÙNG TÔ thuần (fill) hạ mạnh điểm để không nuốt
-        # nhầm mảng màu spot của artwork (vd logo Pantone) làm đường khuôn (audit #8).
-        # Tên kênh cấu hình (+1000 ở trên) vẫn được tôn trọng vô điều kiện.
-        # Lưu ý: KHÔNG dùng _is_hairline để xét "có nét" vì path fill vẫn mang width
-        # stroke thừa kế (mặc định 1.0) trong parser → dễ nhận nhầm. Dùng đúng tiêu
-        # chí nét theo type, nhất quán với heuristic stroke ở nup_diecut/nup_engine.
-        is_strokish = ptype in ("s", "sf") or (fill is None and color is not None)
-        score += 400.0 if is_strokish else 80.0
-        by_spot = is_strokish
+        strong += 400.0
+        by_spot = True
 
-    if _color_matches_die(color, die_colors, die_color_tol) or \
-            _color_matches_die(fill, die_colors, die_color_tol):
-        score += 300.0
+    # Màu bế chỉ trên stroke color (không đọc fill — path stroke-only đã không có fill).
+    if _color_matches_die(color, die_colors, die_color_tol):
+        strong += 300.0
 
-    if ptype in ("s", "sf"):
-        score += 100.0
+    # Yếu: xếp hạng khi đã có strong > 0.
+    if ptype == "s":
+        weak += 100.0
     if _is_hairline(path.get("width"), page_rect):
-        score += 60.0
+        weak += 60.0
     if path.get("closePath"):
-        score += 30.0
-
-    # Tie-break: ưu tiên contour bao quanh lớn (nhưng < trang) — tỉ lệ diện tích.
+        weak += 30.0
     page_area = (page_rect.width * page_rect.height) or 1.0
     r = path["rect"]
-    score += min(1.0, (r.width * r.height) / page_area) * 20.0
-    return score, by_spot
+    weak += min(1.0, (r.width * r.height) / page_area) * 20.0
+
+    return strong, weak, by_spot
 
 
 def _select_from_paths(paths, page_rect, die_channel_names=(),
                        die_colors=(), die_color_tol=0.06):
     """Lõi chọn đường khuôn (thuần, KHÔNG IO) — dùng chung (R3.1, R3.2, R3.6, R3.10).
 
-    Chấm điểm đa tín hiệu (P1): tên kênh khuôn > kênh spot bất kỳ > màu bế cấu hình
-    > nét/hairline/khép kín > diện tích bao. Loại nền full-page. Điểm > 0 → chọn path
-    điểm cao nhất. Toàn bộ điểm 0 → fallback (stroke lớn nhất → path lớn nhất).
-    Trả (path_dict, matched_by_spot, is_fallback) hoặc (None, False, False).
+    Chỉ chọn path:
+      1) stroke-only (không fill), VÀ
+      2) có tín hiệu bế mạnh (tên kênh / spot / màu-bế trên nét).
 
-    is_fallback=True khi KHÔNG có tín hiệu bế nào (điểm 0) và phải đoán mò path lớn
-    nhất → caller hạ confidence để không báo "chắc chắn" cho hình đoán (Fix F, audit
-    bảo toàn nội dung 2026-07-07).
+    Không có → (None, False, False): caller dùng khổ trang (MediaBox), KHÔNG
+    lấy mảng màu / path tô lớn nhất.
+
+    Xếp hạng: strong ↓, weak ↓, area ↓.
+    Trả (path_dict, matched_by_spot, is_fallback).
     """
     if not paths:
         return None, False, False
@@ -454,39 +525,35 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
     if not valid:
         return None, False, False
 
+    # Chỉ xét nét thuần — loại fill/sf trước khi chấm điểm (rẻ + rõ ràng).
+    stroke_only = [p for p in valid if _is_stroke_only_path(p)]
+    if not stroke_only:
+        return None, False, False
+
     filtered = [
-        p for p in valid
+        p for p in stroke_only
         if not (abs(p["rect"].width - page_rect.width) <= 2
                 and abs(p["rect"].height - page_rect.height) <= 2)
     ]
-    if filtered:
-        valid = filtered
+    candidates = filtered if filtered else stroke_only
 
     names_lower = frozenset(n.strip().lower() for n in (die_channel_names or ()))
 
-    # Chấm điểm tất cả ứng viên; chọn điểm cao nhất (tie-break: diện tích lớn hơn).
-    best = None  # (score, area, by_spot, path)
-    for p in valid:
-        sc, by_spot = _score_die_candidate(
+    best = None  # (strong, weak, area, by_spot, path)
+    for p in candidates:
+        strong, weak, by_spot = _score_die_candidate(
             p, page_rect, names_lower, die_colors, die_color_tol
         )
+        if strong <= 0:
+            continue
         area = p["rect"].width * p["rect"].height
-        cand = (sc, area, by_spot, p)
-        if best is None or (sc, area) > (best[0], best[1]):
+        cand = (strong, weak, area, by_spot, p)
+        if best is None or (strong, weak, area) > (best[0], best[1], best[2]):
             best = cand
 
-    if best is not None and best[0] > 0:
-        return best[3], best[2], False
-
-    # Fallback khi không có tín hiệu nào (điểm 0): nét → nếu không có thì path lớn nhất.
-    stroke = [
-        p for p in valid
-        if p.get("type") in ("s", "sf") or (p.get("fill") is None and p.get("color") is not None)
-    ]
-    target = stroke if stroke else valid
-    if not target:
+    if best is None:
         return None, False, False
-    return max(target, key=lambda p: p["rect"].width * p["rect"].height), False, True
+    return best[4], best[3], False
 
 
 def _die_group_key_spot(spot_name):
@@ -512,23 +579,25 @@ def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.
     nuốt nhầm nét artwork khi anchor chỉ là fallback "stroke lớn nhất".
     """
     anchor_spot_key = _die_group_key_spot(anchor.get("spot_name"))
-    anchor_col = anchor.get("color") if anchor.get("color") is not None else anchor.get("fill")
+    # Chỉ stroke color — không dùng fill (mảng màu) để gộp layer bế.
+    anchor_col = anchor.get("color")
     anchor_is_diecolor = _color_matches_die(anchor_col, die_colors, die_color_tol)
 
     if anchor_spot_key is None and not anchor_is_diecolor:
         return [anchor]  # không tín hiệu bế → giữ 1 path (an toàn)
 
-    # Ứng viên: cùng layer bế với anchor (spot-key HOẶC màu bế), bỏ nền/nét quá nhỏ.
+    # Ứng viên: cùng layer bế + stroke-only (không nuốt mảng tô cùng màu).
     def _is_member_candidate(p):
         if p is anchor:
             return True
+        if not _is_stroke_only_path(p):
+            return False
         r = p["rect"]
         if r.width <= 5 or r.height <= 5 or _is_background(p, page_rect):
             return False
         if anchor_spot_key is not None:
             return _die_group_key_spot(p.get("spot_name")) == anchor_spot_key
-        col = p.get("color") if p.get("color") is not None else p.get("fill")
-        return _color_matches_die(col, die_colors, die_color_tol)
+        return _color_matches_die(p.get("color"), die_colors, die_color_tol)
 
     candidates = [p for p in paths if _is_member_candidate(p)]
 

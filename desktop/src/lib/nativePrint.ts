@@ -20,6 +20,17 @@ function isTauriRuntime(): boolean {
     return '__TAURI_INTERNALS__' in window;
 }
 
+/** Ghi breadcrumb vào %APPDATA%\\PrynX\\logs\\print_debug.log (chẩn đoán crash Ctrl+P). */
+export async function logPrintEvent(message: string): Promise<void> {
+    if (!isTauriRuntime()) return;
+    try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('log_print_event', { message });
+    } catch {
+        /* best-effort */
+    }
+}
+
 
 export interface PrinterInfo {
     name: string;
@@ -76,8 +87,10 @@ export async function resolvePrintableFilePath(
 ): Promise<{ filePath: string; deleteAfter: boolean }> {
     const existing: string | null = (source as PathBackedBlob).path || null;
     if (existing) {
+        await logPrintEvent(`resolvePath: use disk path (${existing.length} chars)`);
         return { filePath: existing, deleteAfter: false };
     }
+    await logPrintEvent(`resolvePath: write temp (size=${source.size})`);
     const { invoke } = await import('@tauri-apps/api/core');
     const { tempDir, join } = await import('@tauri-apps/api/path');
     const buffer = await source.arrayBuffer();
@@ -85,6 +98,7 @@ export async function resolvePrintableFilePath(
     const tmpName = `prynx_print_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.pdf`;
     const tmpPath = await join(tDir, tmpName);
     await invoke('write_file_atomic', { path: tmpPath, contents: new Uint8Array(buffer) });
+    await logPrintEvent('resolvePath: temp written');
     return { filePath: tmpPath, deleteAfter: true };
 }
 

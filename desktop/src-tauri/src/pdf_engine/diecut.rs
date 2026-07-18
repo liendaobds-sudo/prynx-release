@@ -5,13 +5,10 @@ use std::path::Path;
 /// Trả về đường dẫn của file PDF đã làm sạch.
 #[tauri::command]
 pub fn strip_diecut_lines(input_path: String, output_path: String) -> Result<String, String> {
-    // Khởi tạo Pdfium engine
-    println!("DEBUG: Start bind");
-    let bindings = Pdfium::bind_to_system_library()
-        .or_else(|_| Pdfium::bind_to_library("pdfium.dll"))
-        .map_err(|e| format!("Lỗi tải thư viện PDFium: {:?}", e))?;
-
-    let pdfium = Pdfium::new(bindings);
+    // Dùng ensure_pdfium() dùng chung (đường dẫn release cạnh exe / bin/) — KHÔNG
+    // bind_to_system_library riêng: release có thể không thấy pdfium trên PATH,
+    // còn dev may mắn tìm thấy → lỗi "chỉ bản cài".
+    let pdfium = crate::ensure_pdfium()?;
 
     if !Path::new(&input_path).exists() {
         return Err(format!("File không tồn tại: {}", input_path));

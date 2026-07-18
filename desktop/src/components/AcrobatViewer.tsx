@@ -15,6 +15,7 @@ import ExportImageModal from './workspace/ExportImageModal';
 import { uploadPDF, getApiUrl } from '../lib/api';
 import { toast } from './ui/Toast';
 import { QuickDeleteModal, ExtractPagesModal, InsertBlankPageModal, AcrobatToolbar, Ruler, GuideLayer, DimensionLayer, findDimensionCandidate, ThumbSidebar, ViewerContextMenu, type Guide, type DimensionMeasurement } from './acrobat';
+import { CrossFileInsertModal, type CrossFileInsertPending } from './acrobat/CrossFileInsertModal';
 
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
 import { useTileRenderer } from '../hooks/viewer/useTileRenderer';
@@ -56,6 +57,8 @@ const OcgPreviewOverlay = ({ url }: { url: string }) => {
 interface Props {
     /** Tab đang hiển thị? — chỉ tab active mới xử lý lệnh menu (tránh mọi tab mounted cùng phản ứng). */
     isActive?: boolean;
+    /** ID tab App (để copy/move trang → chuyển sang tab đích). */
+    tabId?: string;
     onViewerDirtyChange?: (isDirty: boolean) => void;
     onExtractPages?: (indices: number[], deleteAfter: boolean) => void;
     onObjectDelete?: (objs: any[], pageNum: number) => void;
@@ -72,7 +75,7 @@ interface Props {
     editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
     // ═══ Global Store ═══
     const {
@@ -139,20 +142,32 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     const setIsObjectEditMode = useWorkspaceStore(s => s.setIsObjectEditMode);
 
     const ensureCropFileId = useCallback(async () => {
-        if (selectionFileId) return selectionFileId;
+        // LUÔN upload lại file ĐANG XEM (bytes hiện tại). Reuse selectionFileId cũ
+        // dễ trỏ Working_File / edit session TRƯỚC ĐÓ → crop chạy trên file sai
+        // (user thấy “cắt lệch / lún vào object” so với vùng quét trên màn).
         if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
         const res = await uploadPDF(file);
         setSelectionFileId(res.id);
         return res.id;
-    }, [selectionFileId, file, setSelectionFileId]);
+    }, [file, setSelectionFileId]);
 
     const handleCropApplied = useCallback((blob: Blob) => {
-        const newFile = new File([blob], (file?.name || 'cropped.pdf'), { type: 'application/pdf' });
+        // Crop tạo file MỚI (blob) — KHÔNG giữ .path file gốc (nếu giữ, getFileArrayBuffer
+        // / tile native có thể đọc lại PDF gốc → resize/tool sau “co giãn nhầm hình gốc”).
+        const base = (file?.name || 'document.pdf').replace(/\.[^/.]+$/, '');
+        const newFile = new File([blob], `Cropped_${base}.pdf`, { type: 'application/pdf' });
+        if (pdfUrl && pdfUrl.startsWith('blob:')) {
+            try { URL.revokeObjectURL(pdfUrl); } catch { /* ignore */ }
+        }
         setFile(newFile);
         setPdfUrl(URL.createObjectURL(newFile));
-        setSelectionFileId(''); // buộc re-upload cho thao tác sau (output không có fid)
+        setSelectionFileId(''); // buộc re-upload cho thao tác sau
         setIsCropMode(false);
-    }, [file, setFile, setPdfUrl, setSelectionFileId, setIsCropMode]);
+        // File mới đã bake crop; bỏ edit ảo trên file cũ (order/rot).
+        setViewerPageOrder(undefined);
+        setViewerPageRotations(undefined);
+        setViewerDirty(false);
+    }, [file, pdfUrl, setFile, setPdfUrl, setSelectionFileId, setIsCropMode, setViewerPageOrder, setViewerPageRotations, setViewerDirty]);
     const onVdpBoxSelect = (fieldIds: string[]) => {}; // Handled directly in LivePageFrame now
     const onVdpFieldsChange = setVdpFields;
 
@@ -188,6 +203,8 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
     const [isExtractModalOpen, setIsExtractModalOpen] = useState(false);
     const [extractPagesStrForModal, setExtractPagesStrForModal] = useState('');
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; visible: boolean } | null>(null);
+    /** Copy/Move sang file khác — chờ chọn vị trí chèn (đầu/cuối/trước/sau trang N). */
+    const [crossFileInsertPending, setCrossFileInsertPending] = useState<CrossFileInsertPending | null>(null);
 
     // ═══ Guide State ═══
     const [guides, setGuides] = useState<Guide[]>([]);
@@ -748,54 +765,192 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
         handleExtractPages(`${start}-${end}`, deleteAfter);
     };
 
-    const handleCrossFileDrop = async (sourcePdfUrl: string, sourcePageNums: number[], insertDropIndex: number) => {
+    // Copy/Move trang từ file khác vào file này (kéo-thả + menu chuột phải).
+    // mode='move' → sau khi copy xong báo file nguồn xóa trang (event riêng).
+    // notify=true chỉ khi gọi từ menu (kéo-thả giữ im lặng như cũ).
+    const handleCrossFileDrop = async (
+        sourcePdfUrl: string,
+        sourcePageNums: number[],
+        insertDropIndex: number,
+        mode: 'copy' | 'move' = 'copy',
+        sourceIndices?: number[],
+        notify = false,
+    ) => {
         if (!pdfUrl) return;
         try {
             commitSnapshot();
             setIsProcessing(true);
-            setProcessStatus(t('misc.acrobatViewer:dang_sao_chep_trang'));
+            setProcessStatus(
+                mode === 'move'
+                    ? t('misc.acrobatViewer:dang_di_chuyen_trang')
+                    : t('misc.acrobatViewer:dang_sao_chep_trang'),
+            );
 
             const { PDFDocument } = await import('pdf-lib');
             const srcResp = await fetch(sourcePdfUrl);
             const srcDoc = await PDFDocument.load(await srcResp.arrayBuffer());
-            
+
             const tgtResp = await fetch(pdfUrl);
             const tgtDoc = await PDFDocument.load(await tgtResp.arrayBuffer());
-            
+
             const copiedPages = await tgtDoc.copyPages(srcDoc, sourcePageNums.map(n => n - 1));
             copiedPages.forEach(p => tgtDoc.addPage(p));
-            
+
             const newBytes = await tgtDoc.save();
             const newFile = new File([newBytes as any], file?.name || 'Merged.pdf', { type: 'application/pdf' });
-            
+            // Đánh dấu in-memory — buộc Lưu trước khi thoát (file blob mới).
+            try { Object.defineProperty(newFile, 'isInMemory', { value: true }); } catch { /* ignore */ }
+
             const newOrder = [...pageOrder];
-            // If we added multiple pages, their original page numbers will be sequentially added to the end
+            // Trang mới được addPage ở cuối → số trang gốc tuần tự từ (count - n + 1)
             const newOriginalNum = tgtDoc.getPageCount() - copiedPages.length;
+            const firstNewVisualIdx = Math.max(0, Math.min(insertDropIndex, newOrder.length));
             for (let i = 0; i < copiedPages.length; i++) {
                 newOrder.splice(insertDropIndex + i, 0, newOriginalNum + i + 1);
             }
-            (window as any).__prynx_cross_file_page_order = newOrder;
+            const newPdfUrl = URL.createObjectURL(newFile);
+            // Scope theo URL đích — tránh tab khác nuốt order rồi xóa global.
+            (window as any).__prynx_cross_file_page_order = {
+                pdfUrl: newPdfUrl,
+                order: newOrder,
+                focusIndex: firstNewVisualIdx,
+            };
 
             setFile(newFile);
-            setPdfUrl(URL.createObjectURL(newFile));
+            setPdfUrl(newPdfUrl);
+            setViewerDirty(true);
+
+            // Move: báo file nguồn xóa các index đã chọn (chỉ sau khi copy thành công)
+            if (mode === 'move' && sourceIndices && sourceIndices.length > 0) {
+                window.dispatchEvent(new CustomEvent('prynx-cross-file-source-remove', {
+                    detail: { sourcePdfUrl, sourceIndices },
+                }));
+            }
+
+            if (notify) {
+                const toastKey = mode === 'move'
+                    ? 'misc.acrobatViewer:da_di_chuyen_trang_sang'
+                    : 'misc.acrobatViewer:da_copy_trang_sang';
+                toast.success(t(toastKey, {
+                    count: copiedPages.length,
+                    name: file?.name || 'PDF',
+                }));
+            }
         } catch (e) {
-            console.error("Cross-file copy failed", e);
+            console.error('Cross-file transfer failed', e);
+            if (notify) toast.error(t('misc.acrobatViewer:khong_the_copy_sang_file'));
         } finally {
             setIsProcessing(false);
         }
     };
 
+    // Menu chuột phải: copy/move → mở dialog chọn vị trí chèn (đầu/cuối/trước/sau trang N).
+    const handleTransferToOtherFile = (
+        targetPdfUrl: string,
+        mode: 'copy' | 'move',
+        targetTabId?: string,
+        targetNumPages?: number,
+        targetName?: string,
+    ) => {
+        if (!pdfUrl) return;
+        const sel = Array.from(selectedIndices).sort((a, b) => a - b);
+        if (sel.length === 0) return;
+
+        // Trang trắng (pageOrder = -1) không có trong PDF gốc → bỏ qua.
+        const pairs = sel
+            .map(idx => ({ idx, pageNum: pageOrder[idx] }))
+            .filter(p => p.pageNum > 0);
+        if (pairs.length === 0) {
+            toast.info(t('misc.acrobatViewer:khong_co_trang_hop_le'));
+            setContextMenu(null);
+            return;
+        }
+
+        setContextMenu(null);
+        setCrossFileInsertPending({
+            targetPdfUrl,
+            targetTabId,
+            targetName: targetName || 'PDF',
+            targetNumPages: typeof targetNumPages === 'number' ? targetNumPages : 0,
+            mode,
+            sourcePageNums: pairs.map(p => p.pageNum),
+            sourceIndices: pairs.map(p => p.idx),
+        });
+    };
+
+    const confirmCrossFileInsert = (dropIndex: number) => {
+        const p = crossFileInsertPending;
+        if (!p || !pdfUrl) {
+            setCrossFileInsertPending(null);
+            return;
+        }
+        window.dispatchEvent(new CustomEvent('prynx-cross-file-drop', {
+            detail: {
+                sourcePdfUrl: pdfUrl,
+                sourcePageNums: p.sourcePageNums,
+                targetPdfUrl: p.targetPdfUrl,
+                targetTabId: p.targetTabId,
+                dropIndex, // 0 = đầu, n = cuối, k = trước trang k+1 / sau trang k
+                mode: p.mode,
+                sourceIndices: p.sourceIndices,
+                fromMenu: true,
+            },
+        }));
+        setCrossFileInsertPending(null);
+    };
+
     useEffect(() => {
         const handleCrossFileEvent = (e: any) => {
-            const { sourcePdfUrl, sourcePageNums, targetPdfUrl, dropIndex } = e.detail;
+            const { sourcePdfUrl, sourcePageNums, targetPdfUrl, targetTabId, dropIndex, mode, sourceIndices, fromMenu } = e.detail || {};
             if (targetPdfUrl === pdfUrl) {
                 const insertIdx = dropIndex !== null && dropIndex !== undefined ? dropIndex : pageOrder.length;
-                handleCrossFileDrop(sourcePdfUrl, sourcePageNums, insertIdx);
+                // Gắn tabId đích vào handler (để sau khi xong chuyển tab) — ưu tiên detail.
+                const run = handleCrossFileDrop(
+                    sourcePdfUrl,
+                    sourcePageNums,
+                    insertIdx,
+                    mode === 'move' ? 'move' : 'copy',
+                    sourceIndices,
+                    !!fromMenu,
+                );
+                // Sau copy xong: focus tab đích (targetTabId từ menu, hoặc tabId của viewer này).
+                if (fromMenu) {
+                    Promise.resolve(run).then(() => {
+                        const focusId = targetTabId || tabId;
+                        if (focusId) {
+                            window.dispatchEvent(new CustomEvent('prynx-activate-tab', {
+                                detail: { tabId: focusId, reason: 'cross-file-transfer' },
+                            }));
+                        }
+                    }).catch(() => { /* toast đã báo lỗi */ });
+                }
             }
         };
         window.addEventListener('prynx-cross-file-drop', handleCrossFileEvent);
         return () => window.removeEventListener('prynx-cross-file-drop', handleCrossFileEvent);
-    }, [pdfUrl, pageOrder]);
+    }, [pdfUrl, pageOrder, tabId]);
+
+    // Move sang file khác: file nguồn nhận event và xóa các trang đã chuyển.
+    useEffect(() => {
+        const handleSourceRemove = (e: any) => {
+            const { sourcePdfUrl, sourceIndices } = e.detail || {};
+            if (sourcePdfUrl !== pdfUrl) return;
+            if (!Array.isArray(sourceIndices) || sourceIndices.length === 0) return;
+
+            commitSnapshot();
+            const toRemove = new Set<number>(sourceIndices);
+            const keep = (_: unknown, idx: number) => !toRemove.has(idx);
+            const after = pageOrder.filter(keep);
+            applyOrderChange(after, pageInstanceIds.filter(keep));
+            // Selection sau xóa: về vị trí gần index đầu tiên bị xóa (clamp).
+            const firstRemoved = Math.min(...sourceIndices);
+            const nextSel = after.length === 0 ? null : Math.max(0, Math.min(firstRemoved, after.length - 1));
+            setSelectedIndices(new Set(nextSel === null ? [] : [nextSel]));
+            setLastSelectedIndex(nextSel);
+        };
+        window.addEventListener('prynx-cross-file-source-remove', handleSourceRemove);
+        return () => window.removeEventListener('prynx-cross-file-source-remove', handleSourceRemove);
+    }, [pdfUrl, pageOrder, pageInstanceIds, commitSnapshot, applyOrderChange]);
 
     // ═══ Guide handlers ═══
     const guidesRef = useRef<Guide[]>([]);
@@ -1076,7 +1231,13 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
 
     // ═══ RENDER ═══
     return (
-        <div className="flex flex-col h-full w-full bg-[#f3f4f6] dark:bg-[#323639] text-slate-800 dark:text-zinc-200 transition-colors overflow-hidden relative font-sans select-none">
+        <div
+            className="flex flex-col h-full w-full bg-[#f3f4f6] dark:bg-[#323639] text-slate-800 dark:text-zinc-200 transition-colors overflow-hidden relative font-sans select-none"
+            data-prynx-open-pdf={pdfUrl || undefined}
+            data-file-name={file?.name || undefined}
+            data-prynx-tab-id={tabId || undefined}
+            data-prynx-num-pages={pageOrder.length > 0 ? String(pageOrder.length) : (numPages > 0 ? String(numPages) : undefined)}
+        >
             <style>{`
                 .acro-scroll::-webkit-scrollbar { width: 14px; height: 14px; }
                 .acro-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -1257,6 +1418,12 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
             {isExtractModalOpen && <ExtractPagesModal pageCount={pageOrder.length} initialPagesStr={extractPagesStrForModal} onConfirm={handleExtractPages} onClose={() => setIsExtractModalOpen(false)} />}
             {isInsertModalOpen && <InsertBlankPageModal pageCount={pageOrder.length} onConfirm={handleInsertBlankPage} onClose={() => setIsInsertModalOpen(false)} />}
 
+            <CrossFileInsertModal
+                pending={crossFileInsertPending}
+                onConfirm={confirmCrossFileInsert}
+                onCancel={() => setCrossFileInsertPending(null)}
+            />
+
             {/* Crop PDF dialog (Set Page Boxes) */}
             <CropDialog ensureFileId={ensureCropFileId} onApplied={handleCropApplied} onClose={() => setIsCropMode(false)} />
 
@@ -1274,10 +1441,12 @@ export default function AcrobatViewer({ isActive, onExtractPages, onObjectDelete
             {/* Context Menu */}
             <ViewerContextMenu
                 contextMenu={contextMenu} selectedIndices={selectedIndices} setContextMenu={setContextMenu}
+                currentPdfUrl={pdfUrl}
                 setIsInsertModalOpen={setIsInsertModalOpen} setIsExtractModalOpen={setIsExtractModalOpen}
                 setExtractPagesStrForModal={setExtractPagesStrForModal} setIsDeleteModalOpen={setIsDeleteModalOpen}
                 setActiveDashboardTool={setActiveDashboardTool} setIsSidebarOpen={setIsSidebarOpen}
                 onQuickDuplicate={handleQuickDuplicate}
+                onTransferToOtherFile={handleTransferToOtherFile}
             />
         </div>
     );

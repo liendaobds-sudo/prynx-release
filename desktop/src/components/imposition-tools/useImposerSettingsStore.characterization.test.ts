@@ -38,7 +38,7 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         const raw = localStorage.getItem(PERSIST_KEY);
         expect(raw).toBeTruthy();
         const parsed = JSON.parse(raw as string);
-        expect(parsed.version).toBe(8);
+        expect(parsed.version).toBe(9);
         const keys = Object.keys(parsed.state).sort();
         expect(keys).toMatchSnapshot();
     });
@@ -178,5 +178,57 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
 
         st().restoreTaskModeForTool('cnc_imposer');
         expect(st().taskMode).toBe('step_repeat');
+    });
+
+    it('dao cắt luôn mặc định khi vào tem bế / CNC (không nhớ 1 Dao lần trước)', () => {
+        localStorage.clear();
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+
+        st().setActiveDashboardTool('sticker_imposer');
+        st().setCutType('one_dao');
+        st().setDieSizeMode('page');
+        st().setDieOffsetMm(-1);
+        expect(st().cutType).toBe('one_dao');
+
+        // Rời tem bế → profile không còn lưu cutType; vào lại → luôn default
+        st().switchToolProfile('sticker_imposer', 'nup');
+        st().switchToolProfile('nup', 'sticker_imposer');
+        expect(st().cutType).toBe('default');
+        expect(st().dieSizeMode).toBe('die');
+        expect(st().dieOffsetMm).toBe(0);
+
+        // Legacy profile có cutType one_dao cũng bị bỏ qua
+        store.setState({
+            toolProfiles: {
+                cnc_imposer: { taskMode: 'step_repeat', cutType: 'one_dao', dieSizeMode: 'page' },
+            },
+            cutType: 'one_dao',
+        } as any);
+        st().switchToolProfile('sticker_imposer', 'cnc_imposer');
+        expect(st().cutType).toBe('default');
+        expect(st().dieSizeMode).toBe('die');
+        expect(st().dieOffsetMm).toBe(0);
+        // taskMode vẫn nhớ riêng
+        expect(st().taskMode).toBe('step_repeat');
+    });
+
+    it('vào tem bế/CNC reset clusterMode=none (chống rò chia cọc N-Up)', () => {
+        localStorage.clear();
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+
+        st().setActiveDashboardTool('nup');
+        st().setClusterMode('row');
+        st().setClusterCount(3);
+        expect(st().clusterMode).toBe('row');
+
+        st().switchToolProfile('nup', 'sticker_imposer');
+        expect(st().clusterMode).toBe('none');
+
+        // N-Up vẫn nhớ row sau khi quay lại
+        st().setClusterMode('column'); // user đổi trong tem… rồi sang nup
+        st().switchToolProfile('sticker_imposer', 'nup');
+        expect(st().clusterMode).toBe('row');
     });
 });

@@ -19,6 +19,37 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// User bấm Hủy trong UI → set true; job in kiểm tra giữa các tờ.
 static PRINT_CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
+/// Breadcrumb chẩn đoán crash Ctrl+P release → %APPDATA%\PrynX\logs\print_debug.log
+pub fn print_breadcrumb(msg: &str) {
+    log::info!("[PRINT] {}", msg);
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("print_debug.log"))
+        {
+            use std::io::Write;
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+            let _ = writeln!(f, "[{}] {}", now, msg);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn log_print_event(message: String) {
+    print_breadcrumb(&format!("js: {}", message));
+}
+
+// ── API pub(crate) cho print_worker (out-of-process) ──
+pub(crate) fn parse_scale_mode_pub(s: Option<&str>) -> ScaleMode {
+    parse_scale_mode(s)
+}
+pub(crate) fn resolve_scale_mode_pub(s: Option<&str>, percent: Option<f64>) -> ScaleMode {
+    resolve_scale_mode(s, percent)
+}
+
 fn for_each_print_page<E, F>(
     start_page: i32,
     end_page: i32,
@@ -53,7 +84,7 @@ where
 // giữ 1:1 với mọi trang lọt khổ, chỉ thu tờ quá khổ để không mất nội dung.
 //  - Custom(f): tỉ lệ do user nhập (f là phân số: 1.5 = 150%).
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum ScaleMode {
+pub(crate) enum ScaleMode {
     Actual,
     Fit,
     Shrink,
@@ -297,29 +328,40 @@ fn build_devmode(
 #[cfg(windows)]
 #[tauri::command]
 pub async fn open_printer_properties(
-    window: tauri::WebviewWindow,
+    _window: tauri::WebviewWindow,
     printer_name: String,
     current_devmode: Option<Vec<u8>>,
     advanced: Option<bool>,
 ) -> Result<Option<Vec<u8>>, String> {
-    let owner_hwnd = window
-        .hwnd()
-        .map_err(|e| format!("Không lấy được cửa sổ PrynX: {e}"))?
-        .0 as isize;
+    print_breadcrumb(&format!(
+        "open_printer_properties: enter isolated printer={:?} advanced={:?}",
+        printer_name, advanced
+    ));
+    // Out-of-process: DocumentPropertiesW nạp UI driver — AV chỉ giết worker.
     tauri::async_runtime::spawn_blocking(move || {
-        open_printer_properties_blocking(
-            owner_hwnd,
+        let job = crate::pdf_engine::print_worker::PrintWorkerJob::OpenProperties {
             printer_name,
             current_devmode,
-            advanced.unwrap_or(false),
-        )
+            advanced: advanced.unwrap_or(false),
+        };
+        match crate::pdf_engine::print_worker::run_isolated(job) {
+            Ok(res) => {
+                print_breadcrumb("open_printer_properties: leave");
+                // None = user cancel; Some = DEVMODE mới — cả hai đều ok:true
+                Ok(res.devmode)
+            }
+            Err(e) => {
+                print_breadcrumb(&format!("open_printer_properties: err {e}"));
+                Err(e)
+            }
+        }
     })
     .await
     .map_err(|e| format!("Luồng thuộc tính máy in bị lỗi: {e}"))?
 }
 
 #[cfg(windows)]
-fn open_printer_properties_blocking(
+pub(crate) fn open_printer_properties_blocking(
     owner_hwnd: isize,
     printer_name: String,
     current_devmode: Option<Vec<u8>>,
@@ -422,28 +464,52 @@ pub async fn print_pdf(
         .0 as isize;
     // Mặc định: Shrink-to-fit + KHÔNG auto-rotate. An toàn cho tab bình bài/CNC —
     // giữ 1:1 với tờ lọt khổ, không tự xoay làm lệch định hướng đã thiết kế.
-    let mode = parse_scale_mode(scale_mode.as_deref());
     let auto_rotate = auto_rotate.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || {
-        let result = print_pdf_blocking(
-            file_path.clone(),
+    let mode_for_fallback = parse_scale_mode(scale_mode.as_deref());
+    print_breadcrumb("print_pdf: enter (isolated PrintDlg)");
+    // Out-of-process: driver AV không kéo sập UI. hwnd owner = 0 trong worker.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let job = crate::pdf_engine::print_worker::PrintWorkerJob::PrintDlg {
+            file_path: file_path.clone(),
             from_page,
             to_page,
-            owner_hwnd,
-            mode,
+            scale_mode,
             auto_rotate,
-        );
+        };
+        let r = crate::pdf_engine::print_worker::run_isolated(job).map(|res| {
+            res.printed.unwrap_or(false)
+        });
         if delete_after.unwrap_or(false) {
             remove_owned_print_temp(&file_path);
         }
-        result
+        // Fallback in-process nếu spawn worker fail (path/exe lạ)
+        match r {
+            Ok(v) => Ok(v),
+            Err(e) if e.contains("Không spawn print worker") => {
+                print_breadcrumb("print_pdf: fallback in-process");
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    print_pdf_blocking(
+                        file_path.clone(),
+                        from_page,
+                        to_page,
+                        owner_hwnd,
+                        mode_for_fallback,
+                        auto_rotate,
+                    )
+                }))
+                .unwrap_or_else(|_| Err("Lệnh in bị lỗi hệ thống (driver/GDI)".into()))
+            }
+            Err(e) => Err(e),
+        }
     })
     .await
-    .map_err(|e| format!("Luồng in bị lỗi: {e}"))?
+    .map_err(|e| format!("Luồng in bị lỗi: {e}"))?;
+    print_breadcrumb("print_pdf: leave");
+    result
 }
 
 #[cfg(windows)]
-fn print_pdf_blocking(
+pub(crate) fn print_pdf_blocking(
     file_path: String,
     from_page: Option<i32>,
     to_page: Option<i32>,
@@ -470,9 +536,7 @@ fn print_pdf_blocking(
     let b = pdfium.bindings();
 
     let doc = {
-        let _guard = crate::LOAD_LOCK
-            .lock()
-            .map_err(|_| "Load lock poisoned".to_string())?;
+        let _guard = crate::lock_mutex(&crate::LOAD_LOCK);
         b.FPDF_LoadDocument(&file_path, None)
     };
     if doc.is_null() {
@@ -655,9 +719,7 @@ fn run_print_job(
         return Err("Máy in không cung cấp vùng in hoặc độ phân giải hợp lệ".into());
     }
 
-    let _render_guard = crate::RENDER_LOCK
-        .lock()
-        .map_err(|_| "Render lock poisoned".to_string())?;
+    let _render_guard = crate::lock_mutex(&crate::RENDER_LOCK);
 
     let doc_name_w: Vec<u16> = doc_name.encode_utf16().chain(std::iter::once(0)).collect();
     let mut di = DOCINFOW::default();
@@ -962,38 +1024,37 @@ pub async fn print_pdf_direct(
     poster_rows: Option<u32>,
 ) -> Result<bool, String> {
     use tauri::Emitter;
-    let mode = resolve_scale_mode(scale_mode.as_deref(), scale_percent);
     let auto_rotate = auto_rotate.unwrap_or(false);
-    let app_for_job = app.clone();
     let app_done = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let layout = LayoutMode::parse(layout_mode.as_deref());
-        // Booklet: fit each half-cell; poster: use Fit so tile coverage is full.
-        let effective_mode = match layout {
-            LayoutMode::Booklet | LayoutMode::Poster => ScaleMode::Fit,
-            _ => mode,
-        };
-        let result = print_direct_blocking(
-            file_path.clone(),
+    print_breadcrumb(&format!(
+        "print_pdf_direct: enter isolated printer={:?} pages={:?}-{:?}",
+        printer_name, from_page, to_page
+    ));
+    let scale_mode_s = scale_mode.clone().unwrap_or_else(|| "shrink".into());
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let job = crate::pdf_engine::print_worker::PrintWorkerJob::PrintDirect {
+            file_path: file_path.clone(),
             printer_name,
             from_page,
             to_page,
-            normalize_copies(copies),
-            collate.unwrap_or(true),
-            effective_mode,
-            orientation.as_deref(),
+            copies: normalize_copies(copies),
+            collate: collate.unwrap_or(true),
+            scale_mode: scale_mode_s,
+            scale_percent,
+            orientation,
             auto_rotate,
-            grayscale.unwrap_or(false),
-            print_annotations.unwrap_or(true),
-            reverse.unwrap_or(false),
-            PageSubset::parse(page_subset.as_deref()),
-            layout,
-            pages_per_sheet.unwrap_or(2).clamp(1, 16),
-            poster_cols.unwrap_or(2).clamp(1, 6),
-            poster_rows.unwrap_or(2).clamp(1, 6),
+            grayscale: grayscale.unwrap_or(false),
+            print_annotations: print_annotations.unwrap_or(true),
+            reverse: reverse.unwrap_or(false),
+            page_subset,
+            layout_mode,
+            pages_per_sheet: pages_per_sheet.unwrap_or(2).clamp(1, 16),
+            poster_cols: poster_cols.unwrap_or(2).clamp(1, 6),
+            poster_rows: poster_rows.unwrap_or(2).clamp(1, 6),
             devmode,
-            Some(app_for_job),
-        );
+        };
+        let r = crate::pdf_engine::print_worker::run_isolated(job)
+            .map(|res| res.printed.unwrap_or(false));
         if delete_after.unwrap_or(false) {
             remove_owned_print_temp(&file_path);
         }
@@ -1001,21 +1062,24 @@ pub async fn print_pdf_direct(
             "print-progress",
             serde_json::json!({ "current": 0, "total": 0, "done": true }),
         );
-        result
+        print_breadcrumb("print_pdf_direct: leave");
+        r
     })
     .await
-    .map_err(|e| format!("Luồng in bị lỗi: {e}"))?
+    .map_err(|e| format!("Luồng in bị lỗi: {e}"))?;
+    result
 }
 
 #[cfg(windows)]
 #[tauri::command]
 pub fn cancel_print_job() -> Result<(), String> {
     PRINT_CANCEL_FLAG.store(true, Ordering::SeqCst);
+    crate::pdf_engine::print_worker::kill_print_worker();
     Ok(())
 }
 
 #[cfg(windows)]
-fn print_direct_blocking(
+pub(crate) fn print_direct_blocking(
     file_path: String,
     printer_name: String,
     from_page: Option<i32>,
@@ -1050,9 +1114,7 @@ fn print_direct_blocking(
     let pdfium = crate::ensure_pdfium()?;
     let b = pdfium.bindings();
     let doc = {
-        let _guard = crate::LOAD_LOCK
-            .lock()
-            .map_err(|_| "Load lock poisoned".to_string())?;
+        let _guard = crate::lock_mutex(&crate::LOAD_LOCK);
         b.FPDF_LoadDocument(&file_path, None)
     };
     if doc.is_null() {
@@ -1126,7 +1188,7 @@ fn print_direct_blocking(
     result.map(|_| true)
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrinterInfo {
     pub name: String,
     pub is_default: bool,
@@ -1137,13 +1199,31 @@ pub struct PrinterInfo {
 #[cfg(windows)]
 #[tauri::command]
 pub async fn list_printers() -> Result<Vec<PrinterInfo>, String> {
-    tauri::async_runtime::spawn_blocking(list_printers_blocking)
-        .await
-        .map_err(|e| format!("Luồng liệt kê máy in lỗi: {e}"))?
+    print_breadcrumb("list_printers: enter isolated");
+    // Out-of-process EnumPrinters — provider/driver lạ không kéo sập UI.
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        let job = crate::pdf_engine::print_worker::PrintWorkerJob::ListPrinters;
+        match crate::pdf_engine::print_worker::run_isolated(job) {
+            Ok(res) => {
+                let printers = res.printers.unwrap_or_default();
+                print_breadcrumb(&format!("list_printers: ok count={}", printers.len()));
+                Ok(printers)
+            }
+            Err(e) => {
+                // Dialog vẫn mở được với list rỗng + PrintDlg fallback
+                print_breadcrumb(&format!("list_printers: isolated fail → empty ({e})"));
+                Ok(vec![])
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("Luồng liệt kê máy in lỗi: {e}"))?;
+    print_breadcrumb("list_printers: leave");
+    result
 }
 
 #[cfg(windows)]
-fn list_printers_blocking() -> Result<Vec<PrinterInfo>, String> {
+pub(crate) fn list_printers_blocking() -> Result<Vec<PrinterInfo>, String> {
     use windows::core::PWSTR;
     use windows::Win32::Graphics::Printing::{
         EnumPrintersW, GetDefaultPrinterW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL,
@@ -1210,7 +1290,7 @@ fn list_printers_blocking() -> Result<Vec<PrinterInfo>, String> {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrinterGeometry {
     pub paper_w_mm: f64,
     pub paper_h_mm: f64,
@@ -1229,15 +1309,35 @@ pub async fn get_printer_geometry(
     orientation: Option<String>,
     devmode: Option<Vec<u8>>,
 ) -> Result<PrinterGeometry, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        get_printer_geometry_blocking(printer_name, orientation.as_deref(), devmode)
+    print_breadcrumb(&format!(
+        "get_printer_geometry: enter isolated printer={:?} orient={:?}",
+        printer_name, orientation
+    ));
+    // Out-of-process CreateDC — driver AV không kéo sập UI.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let job = crate::pdf_engine::print_worker::PrintWorkerJob::Geometry {
+            printer_name,
+            orientation,
+            devmode,
+        };
+        match crate::pdf_engine::print_worker::run_isolated(job) {
+            Ok(res) => res
+                .geometry
+                .ok_or_else(|| "Worker không trả geometry".to_string()),
+            Err(e) => {
+                print_breadcrumb(&format!("get_printer_geometry: isolated err {e}"));
+                Err(e)
+            }
+        }
     })
     .await
-    .map_err(|e| format!("Luồng đọc khổ giấy lỗi: {e}"))?
+    .map_err(|e| format!("Luồng đọc khổ giấy lỗi: {e}"))?;
+    print_breadcrumb("get_printer_geometry: leave");
+    result
 }
 
 #[cfg(windows)]
-fn get_printer_geometry_blocking(
+pub(crate) fn get_printer_geometry_blocking(
     printer_name: String,
     orientation: Option<&str>,
     devmode: Option<Vec<u8>>,

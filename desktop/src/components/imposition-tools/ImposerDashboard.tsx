@@ -132,6 +132,19 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         }
     }, [activeTool]);
 
+    // Dao cắt + clusterMode: mỗi lần vào tem bế / CNC → mặc định an toàn
+    // (kể cả mở tab lockedMode lần đầu, khi switchToolProfile không chạy vì prev === next).
+    useEffect(() => {
+        if (activeTool !== 'sticker_imposer' && activeTool !== 'cnc_imposer') return;
+        if (s.cutType !== 'default') s.setCutType('default');
+        if (s.dieSizeMode !== 'die') s.setDieSizeMode('die');
+        if ((s.dieOffsetMm ?? 0) !== 0) s.setDieOffsetMm(0);
+        // Chặn rò chia cọc N-Up → tem chỉ lấp 1 dải tờ.
+        if (s.clusterMode && s.clusterMode !== 'none') s.setClusterMode('none');
+        // Chỉ phụ thuộc activeTool — không re-reset khi user đang chọn 1 Dao.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTool]);
+
     // ═══ Merge Settings (stays local — complex sub-component) ═══
     const [mergeSettings, setMergeSettings] = useState<MergeSettings>(defaultMergeSettings);
     const [isDetectingShape, setIsDetectingShape] = useState(false);
@@ -867,15 +880,14 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 } catch { /* ignore */ }
             }
 
-            // Chia cọc CHỈ áp dụng cho N-Up guillotine ở tổ hợp: dàn nhiều loại
-            // (ratio_stack) hoặc bình trang (step_repeat). Với sequential/cut_stacks,
-            // clusterMode='column/row' rò vào payload sẽ khiến engine (nup_engine ~L388)
-            // CHIA usable + xuất cọc thật, trong khi preview không chia → preview≠output.
-            // Gate về 'none' cho tổ hợp không áp dụng. Die-cut/CNC (stickerLike) đi nhánh
-            // riêng (cluster_tile) → giữ nguyên, không đụng.
-            const _clusterAppliesNup = stickerLike
-                || (s.taskMode === 'nup' && s.layoutType === 'ratio_stack')
-                || s.taskMode === 'step_repeat';
+            // Chia cọc row/column CHỈ cho N-Up xén (guillotine).
+            // Tem bế/CNC: LUÔN 'none' — clusterMode rò từ N-Up sẽ khiến engine chia
+            // usable_h/w đôi → tem chỉ nằm 1 dải trên tờ (không lấp đầy).
+            // (cluster_tile die-cut là groupingStrategy riêng, không dùng clusterMode.)
+            const _clusterAppliesNup = !stickerLike && (
+                (s.taskMode === 'nup' && s.layoutType === 'ratio_stack')
+                || s.taskMode === 'step_repeat'
+            );
             const effClusterMode = _clusterAppliesNup ? s.clusterMode : 'none';
 
             onStartNup({
@@ -1246,12 +1258,11 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                     }
                                 }
 
-                                // Chia cọc chỉ áp dụng N-Up ratio_stack / step_repeat (hoặc
-                                // die-cut/CNC nhánh riêng). Gate 'none' cho tổ hợp khác để
-                                // preview KHỚP payload execute (cùng logic effClusterMode).
-                                const _clusterAppliesPv = stickerLike
-                                    || (s.taskMode === 'nup' && s.layoutType === 'ratio_stack')
-                                    || s.taskMode === 'step_repeat';
+                                // Cùng gate execute: tem bế/CNC không bao giờ chia cọc row/column.
+                                const _clusterAppliesPv = !stickerLike && (
+                                    (s.taskMode === 'nup' && s.layoutType === 'ratio_stack')
+                                    || s.taskMode === 'step_repeat'
+                                );
                                 const _effClusterModePv = _clusterAppliesPv ? s.clusterMode : 'none';
                                 return (
                             <GridPreview
@@ -1273,9 +1284,37 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 sheetHeight={resolvePressSheetDims().h}
                                 marginTop={effMarginTop} marginBottom={effMarginBottom} marginLeft={effMarginLeft} marginRight={effMarginRight}
                                 align={s.align}
-                                shapeType={stickerLike ? (detectedShapesByPage[safePageIdx] || 'CUSTOM') : 'RECTANGLE'}
-                                itemW={(() => { const dim = detectedDimensionsByPage[safePageIdx]; const w = dim?.w ?? s.sourcePageDim?.w; return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 : 90; })()}
-                                itemH={(() => { const dim = detectedDimensionsByPage[safePageIdx]; const h = dim?.h ?? s.sourcePageDim?.h; return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 : 55; })()}
+                                // 1 Dao: luôn chữ nhật (khớp backend). Không đưa CIRCLE/CUSTOM
+                                // từ detect-shape → tránh hex nest / outline cong trên preview.
+                                shapeType={
+                                    stickerLike
+                                        ? (s.cutType === 'one_dao'
+                                            ? 'RECTANGLE'
+                                            : (detectedShapesByPage[safePageIdx] || 'CUSTOM'))
+                                        : 'RECTANGLE'
+                                }
+                                itemW={(() => {
+                                    if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
+                                        const dim = s.sourcePageDims?.[safePageIdx] || s.sourcePageDim;
+                                        const off = (s.dieOffsetMm || 0) * 2;
+                                        const w = dim?.w;
+                                        return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 + off : 90;
+                                    }
+                                    const dim = detectedDimensionsByPage[safePageIdx];
+                                    const w = dim?.w ?? s.sourcePageDim?.w;
+                                    return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 : 90;
+                                })()}
+                                itemH={(() => {
+                                    if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
+                                        const dim = s.sourcePageDims?.[safePageIdx] || s.sourcePageDim;
+                                        const off = (s.dieOffsetMm || 0) * 2;
+                                        const h = dim?.h;
+                                        return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 + off : 55;
+                                    }
+                                    const dim = detectedDimensionsByPage[safePageIdx];
+                                    const h = dim?.h ?? s.sourcePageDim?.h;
+                                    return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 : 55;
+                                })()}
                                 targetQuantity={s.targetQuantity}
                                 // N-Up cắt xén (ratio_stack/sequential) cũng cần SL từng trang cho preview ≡ output.
                                 targetQuantitiesByPage={s.targetQuantitiesByPage}
@@ -1283,9 +1322,20 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 imposerMode={activeTool === 'cnc_imposer' ? 'cnc' : undefined}
                                 cncTwoSided={activeTool === 'cnc_imposer' && s.duplexFlow === 'double'}
                                 cncFlipEdge={s.cncFlipEdge}
-                                shapeParams={(() => { const params = detectedShapeParamsByPage[safePageIdx]; return params ? JSON.stringify(params) : null; })()}
-                                shapesByPage={stickerLike ? detectedShapesByPage : undefined}
-                                shapeParamsByPage={stickerLike ? detectedShapeParamsByPage : undefined}
+                                shapeParams={
+                                    s.cutType === 'one_dao'
+                                        ? null
+                                        : (() => {
+                                            const params = detectedShapeParamsByPage[safePageIdx];
+                                            return params ? JSON.stringify(params) : null;
+                                        })()
+                                }
+                                shapesByPage={
+                                    stickerLike && s.cutType !== 'one_dao' ? detectedShapesByPage : undefined
+                                }
+                                shapeParamsByPage={
+                                    stickerLike && s.cutType !== 'one_dao' ? detectedShapeParamsByPage : undefined
+                                }
                                 isDetectingShape={isDetectingShape}
                                 pontType={s.pontType} pontConfig={(stickerLike && s.pontType !== 'none') ? s.pontConfig : null}
                                 onCapacityChange={(cap) => { s.setPreviewCapacity(cap); s.setPreviewCapacities({ ...s.previewCapacities, [safePageIdx]: cap }); }}

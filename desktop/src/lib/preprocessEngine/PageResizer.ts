@@ -66,44 +66,59 @@ export async function resizePages(
         }
 
         // Embed source page.
-        // GIỮ BLEED: pdf-lib embedPages() mặc định lấy bounding box = CropBox →
-        // nội dung NGOÀI CropBox (vùng bleed/tràn lề) bị clip → thành trắng sau
-        // resize. Ép bounding box = MediaBox để nhúng TRỌN nội dung (khớp srcW/srcH
-        // lấy từ getSize() = MediaBox, nên scale/căn giữa vẫn đúng).
+        // Ưu tiên CropBox khi nhỏ hơn MediaBox (sau Crop UI: viewer đã cắt, MediaBox
+        // có thể còn gốc nếu bản cũ chưa sync) → resize đúng vùng đã cắt, không co
+        // cả trang gốc. Còn lại dùng MediaBox để GIỮ BLEED (nội dung ngoài CropBox).
         const mb: any = (srcPage as any).getMediaBox
             ? (srcPage as any).getMediaBox()
             : { x: 0, y: 0, width: srcW, height: srcH };
+        let box = { left: mb.x as number, bottom: mb.y as number, right: mb.x + mb.width, top: mb.y + mb.height };
+        let embedW = srcW;
+        let embedH = srcH;
+        try {
+            const cb: any = (srcPage as any).getCropBox?.() ?? null;
+            if (cb && cb.width > 1 && cb.height > 1) {
+                const mediaArea = Math.max(1, srcW * srcH);
+                const cropArea = cb.width * cb.height;
+                if (cropArea < mediaArea * 0.99) {
+                    box = { left: cb.x, bottom: cb.y, right: cb.x + cb.width, top: cb.y + cb.height };
+                    embedW = cb.width;
+                    embedH = cb.height;
+                }
+            }
+        } catch { /* no crop box */ }
+
         const [embedded] = await outputPdf.embedPages(
             [srcPage],
-            [{ left: mb.x, bottom: mb.y, right: mb.x + mb.width, top: mb.y + mb.height }],
+            [box],
         );
 
-        // Calculate scale and position
+        // Calculate scale and position (theo khổ embed — MediaBox hoặc CropBox)
         let scaleX = 1, scaleY = 1, offsetX = 0, offsetY = 0;
 
         switch (options.scaleMode) {
             case 'fit': {
-                const scale = Math.min(targetWPt / srcW, targetHPt / srcH);
+                const scale = Math.min(targetWPt / embedW, targetHPt / embedH);
                 scaleX = scaleY = scale;
-                offsetX = (targetWPt - srcW * scale) / 2;
-                offsetY = (targetHPt - srcH * scale) / 2;
+                offsetX = (targetWPt - embedW * scale) / 2;
+                offsetY = (targetHPt - embedH * scale) / 2;
                 break;
             }
             case 'fill': {
-                const scale = Math.max(targetWPt / srcW, targetHPt / srcH);
+                const scale = Math.max(targetWPt / embedW, targetHPt / embedH);
                 scaleX = scaleY = scale;
-                offsetX = (targetWPt - srcW * scale) / 2;
-                offsetY = (targetHPt - srcH * scale) / 2;
+                offsetX = (targetWPt - embedW * scale) / 2;
+                offsetY = (targetHPt - embedH * scale) / 2;
                 break;
             }
             case 'stretch': {
-                scaleX = targetWPt / srcW;
-                scaleY = targetHPt / srcH;
+                scaleX = targetWPt / embedW;
+                scaleY = targetHPt / embedH;
                 break;
             }
             case 'center_no_scale': {
-                offsetX = (targetWPt - srcW) / 2;
-                offsetY = (targetHPt - srcH) / 2;
+                offsetX = (targetWPt - embedW) / 2;
+                offsetY = (targetHPt - embedH) / 2;
                 break;
             }
         }
@@ -111,8 +126,8 @@ export async function resizePages(
         newPage.drawPage(embedded, {
             x: offsetX,
             y: offsetY,
-            width: srcW * scaleX,
-            height: srcH * scaleY,
+            width: embedW * scaleX,
+            height: embedH * scaleY,
         });
     }
 

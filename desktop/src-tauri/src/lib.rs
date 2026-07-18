@@ -153,7 +153,7 @@ fn bind_pdfium() -> Result<Box<dyn PdfiumLibraryBindings>, String> {
 
 /// Bind thư viện pdfium MỘT LẦN. Trả về Result để KHÔNG panic khi không tìm thấy
 /// dll (panic trong spawn_blocking sẽ làm task render crash → "Task panicked").
-fn ensure_pdfium() -> Result<&'static Pdfium, String> {
+pub fn ensure_pdfium() -> Result<&'static Pdfium, String> {
     if let Some(p) = PDFIUM_STATIC.get() {
         return Ok(p.0);
     }
@@ -161,7 +161,38 @@ fn ensure_pdfium() -> Result<&'static Pdfium, String> {
     let leaked: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
     // Nếu thread khác đã set trước (race), bản leaked này bị bỏ qua (rò rỉ nhỏ, vô hại).
     let _ = PDFIUM_STATIC.set(SyncPdfium(leaked));
-    Ok(PDFIUM_STATIC.get().unwrap().0)
+    Ok(PDFIUM_STATIC.get().map(|s| s.0).ok_or_else(|| "PDFium OnceLock empty".to_string())?)
+}
+
+/// Mutex lock không panic khi poisoned (thread trước panic) — recover guard.
+pub fn lock_mutex<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| {
+        log::error!("[LOCK] mutex poisoned — recovering (thread trước đã panic)");
+        poisoned.into_inner()
+    })
+}
+
+/// Entry print worker (gọi từ main khi --prynx-print-job).
+pub fn run_print_worker(job_path: &str, result_path: &str) -> i32 {
+    pdf_engine::print_worker::run_print_worker(job_path, result_path)
+}
+
+/// Breadcrumb khởi động → %APPDATA%\PrynX\logs\startup_debug.log
+fn startup_breadcrumb(msg: &str) {
+    log::info!("[STARTUP] {}", msg);
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("startup_debug.log"))
+        {
+            use std::io::Write;
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+            let _ = writeln!(f, "[{}] {}", now, msg);
+        }
+    }
 }
 
 // In-Memory LRU Tile Cache (Stores ~200 last rendered JPEGs)
@@ -200,7 +231,7 @@ impl TileCache {
     }
 }
 static TILE_CACHE: OnceLock<Mutex<TileCache>> = OnceLock::new();
-static LOAD_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static LOAD_LOCK: Mutex<()> = Mutex::new(());
 // PDFium KHÔNG thread-safe kể cả trên các FPDF_DOCUMENT khác nhau (font cache & state
 // toàn cục dùng chung). Render tile giữ handle.lock PER-DOC nên 2 tab có thể render song
 // song; đường in (print.rs) mở doc RIÊNG qua FFI, nằm ngoài DOC_CACHE nên không bị
@@ -244,14 +275,14 @@ async fn get_pdf_metadata(
         let pdfium = ensure_pdfium()?;
         
         let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut cache = cache_lock.lock().map_err(|_| "Cache lock error")?;
+        let mut cache = lock_mutex(cache_lock);
         
         let mut load_ms = 0;
         if !cache.contains_key(&file_path) {
             let load_start = std::time::Instant::now();
             // Lazy pool: open only 1 handle immediately for fast metadata access
             let doc = {
-                let _guard = LOAD_LOCK.lock().unwrap();
+                let _guard = lock_mutex(&LOAD_LOCK);
                 let bytes =
                     std::fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
                 pdfium
@@ -272,11 +303,11 @@ async fn get_pdf_metadata(
             }));
         }
         
-        let document_arc = Arc::clone(cache.get(&file_path).unwrap());
+        let document_arc = Arc::clone(cache.get(&file_path).ok_or("PDF cache miss")?);
         drop(cache);
 
-        let handle = document_arc.pool[0].get().unwrap();
-        let _guard = handle.lock.lock().unwrap();
+        let handle = document_arc.pool[0].get().ok_or("PDF pool empty")?;
+        let _guard = lock_mutex(&handle.lock);
         let document = &handle.doc;
         let num_pages = document.pages().len();
         
@@ -398,7 +429,7 @@ fn render_tile_jpeg(
     let pdfium = ensure_pdfium()?;
     
     let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache_lock.lock().map_err(|_| "Cache lock error")?;
+    let mut cache = lock_mutex(cache_lock);
     
     if !cache.contains_key(file_path) {
         // Fallback lazy pool init (normally get_pdf_metadata initializes this)
@@ -409,7 +440,7 @@ fn render_tile_jpeg(
         }
         let bytes = std::fs::read(&file_path).map_err(|e| format!("FS read error: {}", e))?;
         let doc = {
-            let _guard = LOAD_LOCK.lock().unwrap();
+            let _guard = lock_mutex(&LOAD_LOCK);
             pdfium.load_pdf_from_byte_vec(bytes, None)
                 .map_err(|e| format!("Failed to open PDF: {:?}", e))?
         };
@@ -420,7 +451,7 @@ fn render_tile_jpeg(
         }));
     }
     
-    let document_arc = Arc::clone(cache.get(file_path).unwrap());
+    let document_arc = Arc::clone(cache.get(file_path).ok_or("PDF cache miss")?);
     drop(cache);
     
     let pool_size = document_arc.pool.len();
@@ -432,7 +463,7 @@ fn render_tile_jpeg(
     let cell = &document_arc.pool[pool_idx];
     if cell.get().is_none() {
         let doc = {
-            let _guard = LOAD_LOCK.lock().map_err(|_| "Load lock poisoned".to_string())?;
+            let _guard = lock_mutex(&LOAD_LOCK);
             let bytes = std::fs::read(file_path).map_err(|e| format!("FS read error (lazy): {}", e))?;
             pdfium.load_pdf_from_byte_vec(bytes, None)
                 .map_err(|e| format!("Failed to open PDF (lazy): {:?}", e))?
@@ -443,7 +474,7 @@ fn render_tile_jpeg(
     let handle = cell.get().ok_or_else(|| "DocHandle init failed".to_string())?;
     
     let rgba_image = {
-        let _guard = handle.lock.lock().unwrap();
+        let _guard = lock_mutex(&handle.lock);
         let page_index = (page - 1) as u16;
         if page_index >= handle.doc.pages().len() {
             return Err("Page out of bounds".into());
@@ -451,7 +482,7 @@ fn render_tile_jpeg(
         // Lấy page từ cache LRU. Giữ PdfPage MỞ giữa các lần render để pdfium TÁI DÙNG
         // ảnh đã giải nén (giun.pdf: 16MB ảnh/trang). Nếu mở page mới mỗi lần render,
         // pdfium giải nén lại toàn bộ → ~600-1300ms; tái dùng page → ~120ms.
-        let mut lru = handle.pages.lock().unwrap();
+        let mut lru = lock_mutex(&handle.pages);
         if !lru.map.contains_key(&page_index) {
             // SAFETY: page mượn từ handle.doc; doc nằm trong Pdfium đã Box::leak ('static),
             // sống suốt vòng đời tiến trình, nên kéo dài borrow lên 'static là hợp lệ ở đây.
@@ -476,8 +507,11 @@ fn render_tile_jpeg(
             lru.order.remove(pos);
             lru.order.push_back(page_index);
         }
-        let pdf_page = lru.map.get(&page_index).unwrap();
-        
+        let pdf_page = lru
+            .map
+            .get(&page_index)
+            .ok_or_else(|| "Page cache miss after insert".to_string())?;
+
         let mut render_scale = (96.0 / 72.0) * zoom as f32;
         if render_scale.is_nan() || render_scale.is_infinite() {
             render_scale = 1.0;
@@ -529,9 +563,7 @@ fn render_tile_jpeg(
         };
         // RENDER_LOCK: serialize với đường in (print.rs mở doc riêng ngoài DOC_CACHE).
         // PDFium không thread-safe kể cả trên doc khác nhau.
-        let _render_guard = RENDER_LOCK
-            .lock()
-            .map_err(|_| "Render lock poisoned".to_string())?;
+        let _render_guard = lock_mutex(&RENDER_LOCK);
         let bitmap = pdf_page
             .render_with_config(&render_config)
             .map_err(|e| format!("Failed to render page: {:?}", e))?;
@@ -797,7 +829,7 @@ fn read_dir_json(dir: String) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 fn get_pending_system_files(state: tauri::State<SystemFilesState>) -> Vec<String> {
-    let mut pending = state.0.lock().unwrap();
+    let mut pending = lock_mutex(&state.0);
     let files = pending.clone();
     pending.clear();
     files
@@ -1068,7 +1100,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, read_dir_json, append_perf_log, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, read_dir_json, append_perf_log, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -1134,74 +1166,43 @@ pub fn run() {
             }
 
             // ══════════════════════════════════════════════════════════════
-            // VECTOR #15 FIX: SetProcessMitigationPolicy
-            // Block unsigned DLL injection + dynamic code generation
+            // VECTOR #15: process mitigations — TẮT trên bản release hiện tại.
+            //
+            // Lịch sử: MicrosoftSignedOnly + ProhibitDynamicCode chỉ chạy
+            // #[cfg(not(debug_assertions))] → dev in OK, release Ctrl+P process
+            // chết (không rust_panic.log — AV/SEH từ driver máy in hoặc chặn
+            // LoadLibrary/code gen). Print GDI (EnumPrinters/CreateDC/PrintDlg/
+            // FPDF_RenderPage→HDC) nạp driver third-party + đôi khi cấp exec mem.
+            // Không thể vừa chặn DLL lạ tuyệt đối vừa in native in-process.
+            // pdfium vẫn warm-up; anti-debug chỉ GHI LOG (không exit) để chẩn đoán.
             // ══════════════════════════════════════════════════════════════
             #[cfg(not(debug_assertions))]
             {
-                // QUAN TRỌNG (root-cause "release render chết / thumbnail vỡ"):
-                // pdfium.dll là DLL BÊN THỨ 3, KHÔNG ký bởi Microsoft. Nếu bật
-                // ProcessSignaturePolicy(MicrosoftSignedOnly) TRƯỚC khi nạp nó thì
-                // LoadLibrary(pdfium.dll) bị chặn → error 577 (ERROR_INVALID_IMAGE_HASH)
-                // → mọi render PDF (main view + thumbnail + bình tem) thất bại.
-                // Một DLL đã nạp vào tiến trình thì policy KHÔNG gỡ ra → warmup pdfium
-                // NGAY TẠI ĐÂY (trước policy) để nó hoạt động, mà vẫn chặn được DLL lạ
-                // bị inject về SAU. (Dev không chạy block này nên không gặp lỗi.)
+                startup_breadcrumb("release setup: begin");
                 match ensure_pdfium() {
-                    Ok(_) => log::info!("[SECURITY] pdfium warmed up before signature policy"),
-                    Err(e) => log::error!("[SECURITY] pdfium warmup FAILED before policy: {}", e),
+                    Ok(_) => {
+                        log::info!("[SECURITY] pdfium warmed up at startup (no process mitigations)");
+                        startup_breadcrumb("pdfium: OK");
+                    }
+                    Err(e) => {
+                        log::error!("[SECURITY] pdfium warmup FAILED: {}", e);
+                        startup_breadcrumb(&format!("pdfium: FAIL {e}"));
+                    }
                 }
 
-                unsafe {
-                    use std::ffi::c_void;
-                    
-                    #[repr(C)]
-                    struct BinarySignaturePolicy {
-                        flags: u32,
-                    }
-                    
-                    #[repr(C)]
-                    struct DynamicCodePolicy {
-                        flags: u32,
-                    }
-
-                    #[link(name = "kernel32")]
-                    extern "system" {
-                        fn SetProcessMitigationPolicy(
-                            policy: i32,
-                            info: *const c_void,
-                            length: usize,
-                        ) -> i32;
-                    }
-                    
-                    // ProcessSignaturePolicy = 8: Only load Microsoft-signed DLLs
-                    let sig_policy = BinarySignaturePolicy { flags: 0x1 }; // MicrosoftSignedOnly
-                    let _ = SetProcessMitigationPolicy(
-                        8,
-                        &sig_policy as *const _ as *const c_void,
-                        std::mem::size_of::<BinarySignaturePolicy>(),
-                    );
-                    
-                    // ProcessDynamicCodePolicy = 2: Prevent dynamic code (blocks Frida/CE)
-                    let code_policy = DynamicCodePolicy { flags: 0x1 }; // ProhibitDynamicCode
-                    let _ = SetProcessMitigationPolicy(
-                        2,
-                        &code_policy as *const _ as *const c_void,
-                        std::mem::size_of::<DynamicCodePolicy>(),
-                    );
-                    
-                    log::info!("[SECURITY] Process mitigation policies applied");
-                }
-
-                // Start anti-debug background monitor (checks every 5 seconds)
+                // Chỉ log, KHÔNG exit — tránh false-positive giết app khi user in.
                 security::start_anti_debug_monitor();
+                startup_breadcrumb("anti-debug: log-only monitor started");
             }
 
             // VECTOR #4 FIX: Verify frontend JS hasn't been tampered with
             #[cfg(not(debug_assertions))]
             {
-                if let Err(e) = verify_frontend_integrity(app) {
+                match verify_frontend_integrity(app) {
+                    Ok(()) => startup_breadcrumb("frontend integrity: OK (or skipped — embedded)"),
+                    Err(e) => {
                     log::error!("[SECURITY] {}", e);
+                    startup_breadcrumb(&format!("frontend integrity: FAIL {e}"));
                     // Show error dialog and exit. Escape ' — `e` có thể chứa tên file (từ
                     // sha256_directory: "Cannot open {path}: {e}") mà kẻ nghịch dist/ đặt tên
                     // chứa dấu nháy để thoát khỏi chuỗi PS single-quote → chèn lệnh. Escape
@@ -1214,6 +1215,7 @@ pub fn run() {
                         .creation_flags(0x08000000)
                         .output();
                     std::process::exit(1);
+                    }
                 }
             }
 
@@ -1267,6 +1269,7 @@ pub fn run() {
                 };
                 if let Err(e) = verify_sidecar_integrity(&sidecar_path) {
                     log::error!("[SECURITY] {}", e);
+                    startup_breadcrumb(&format!("sidecar integrity: FAIL {e}"));
                     let _ = std::process::Command::new("powershell")
                         .args(["-NoProfile", "-Command", &format!(
                             "[System.Windows.MessageBox]::Show('{}', 'PrynX Security', 'OK', 'Error')",
@@ -1276,11 +1279,13 @@ pub fn run() {
                         .output();
                     std::process::exit(1);
                 }
+                startup_breadcrumb("sidecar integrity: OK");
 
                 let sidecar = match app.shell().sidecar("pdf-inspector-backend") {
                     Ok(s) => s,
                     Err(e) => {
                         log::error!("[SIDECAR] Khong tim thay binary sidecar: {}", e);
+                        startup_breadcrumb(&format!("sidecar binary: MISSING {e}"));
                         let _ = std::process::Command::new("powershell")
                             .args(["-NoProfile", "-Command",
                                 "[System.Windows.MessageBox]::Show('Khong tim thay tien trinh nen (pdf-inspector-backend.exe). Co the bi phan mem diet virus cach ly hoac thieu file. Vui long khoi phuc/loai tru file roi mo lai ung dung.', 'PrynX', 'OK', 'Error')"])
@@ -1384,7 +1389,10 @@ pub fn run() {
                 }
 
                 log::info!("Python backend sidecar started on port 8321 (token via stdin pipe)");
+                startup_breadcrumb("sidecar: spawned on :8321 (token via stdin)");
             }
+
+            startup_breadcrumb("setup complete — app ready");
 
             // ══════════════════════════════════════════════════════════════
             // VECTOR #3 FIX: Disable DevTools + context menu in release builds.
@@ -1495,21 +1503,21 @@ pub fn run() {
                             .header("Content-Type", "image/jpeg")
                             .header("Cache-Control", "max-age=3600, immutable")
                             .body(jpeg_bytes)
-                            .unwrap();
+                            .unwrap_or_else(|_| http::Response::new(Vec::new()));
                         responder.respond(resp);
                     }
                     Ok(Err(e)) => {
                         let resp = http::Response::builder()
                             .status(500)
                             .body(format!("Render error: {}", e).into_bytes())
-                            .unwrap();
+                            .unwrap_or_else(|_| http::Response::new(Vec::new()));
                         responder.respond(resp);
                     }
                     Err(e) => {
                         let resp = http::Response::builder()
                             .status(500)
                             .body(format!("Join error: {}", e).into_bytes())
-                            .unwrap();
+                            .unwrap_or_else(|_| http::Response::new(Vec::new()));
                         responder.respond(resp);
                     }
                 }

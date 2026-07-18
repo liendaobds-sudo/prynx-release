@@ -13,12 +13,23 @@ export const ALGO_PROFILE_KEYS: string[] = [
     'clusterDistribution', 'clusterBorder',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
     'clusterCombineMode', 'tileGapX', 'tileGapY', 'clusterNesting',
-    'cutType', 'fillBlockGap', 'pontType', 'pontConfig',
+    // cutType / dieSizeMode / dieOffsetMm: KHÔNG profile — luôn mặc định khi vào tem bế/CNC
+    // (user tự chọn 1 Dao nếu cần; không nhớ lần trước).
+    'fillBlockGap', 'pontType', 'pontConfig',
     'gapX', 'gapY', 'targetQuantity', 'targetQuantitiesByPage',
     'markType', 'scaleMode', 'signatureMode', 'foliosize', 'interleave',
     'separateCutPage', 'pontsOnCutFile',
     'cncFlipEdge', 'cncDuplexMarks',
 ];
+
+/** Dao cắt + offset 1 Dao: session-only, reset mỗi lần vào tem bế / CNC. */
+export const DIE_CUT_SESSION_DEFAULTS = {
+    cutType: 'default' as const,
+    dieSizeMode: 'die' as const,
+    dieOffsetMm: 0,
+    // Chặn rò clusterMode row/column từ N-Up → tem chỉ lấp 1 dải tờ.
+    clusterMode: 'none' as const,
+};
 
 export const PROFILED_TOOLS = ['nup', 'sticker_imposer', 'cnc_imposer', 'booklet'];
 

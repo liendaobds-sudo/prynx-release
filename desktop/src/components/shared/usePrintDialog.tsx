@@ -11,6 +11,7 @@ import {
     printPdfDirect,
     printPdfPath,
     deletePrintTemp,
+    logPrintEvent,
     type PrinterInfo,
 } from '../../lib/nativePrint';
 
@@ -42,11 +43,18 @@ export function usePrintDialog() {
             if (!('__TAURI_INTERNALS__' in window)) {
                 throw new Error('NOT_TAURI');
             }
-            // Resolve path (ghi temp nếu blob in-memory) + liệt kê máy in song song.
-            const [{ filePath, deleteAfter }, printers] = await Promise.all([
-                resolvePrintableFilePath(req.source),
-                listPrinters(),
-            ]);
+            await logPrintEvent(`openPrintDialog: start pages=${req.numPages} size=${req.source.size}`);
+            // Resolve path trước; list máy in sau (tránh crash/driver song song với ghi temp).
+            const { filePath, deleteAfter } = await resolvePrintableFilePath(req.source);
+            await logPrintEvent('openPrintDialog: path ready, listing printers');
+            let printers: PrinterInfo[] = [];
+            try {
+                printers = await listPrinters();
+            } catch (e: any) {
+                await logPrintEvent(`openPrintDialog: listPrinters failed ${e?.message || e}`);
+                printers = [];
+            }
+            await logPrintEvent(`openPrintDialog: printers=${printers.length}, show dialog`);
             if (!mountedRef.current) {
                 if (deleteAfter) await deletePrintTemp(filePath);
                 return false;

@@ -952,7 +952,12 @@ class PreviewLayoutRequest(BaseModel):
     cluster_distribution: Optional[str] = "default"
 
 def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_hint: str = None):
-    """Polygon va chạm boong — KHỚP nup_process_chunk (dùng kích thước Ô solver, không item_w FE)."""
+    """Polygon va chạm boong — KHỚP nup_process_chunk (dùng kích thước Ô solver, không item_w FE).
+
+    1 Dao / RECTANGLE: PHẢI dùng chữ nhật ô tem. Trước đây rơi nhánh extract_vector_paths
+    → lấy mảng màu artwork làm base_poly → get_item_polygon scale sai → boong không
+    đụng outline giả → coi như không va chạm (bug 1 Dao + theo kích thước trang).
+    """
     pc = getattr(req, 'pont_config', None)
     if not pc or pc.get('disableCollision', False):
         return None
@@ -964,6 +969,10 @@ def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_h
     if ph <= 0:
         ph = float(result.get('trimH') or getattr(req, 'item_h', 0) or 0)
     shape = (result.get('shapeType') or shape_type_hint or getattr(req, 'shape_type', None) or '').upper()
+    cut_type = (getattr(req, 'cut_type', None) or 'default')
+    if pw > 0 and ph > 0 and (cut_type == 'one_dao' or shape == 'RECTANGLE'):
+        from shapely.geometry import box as _box
+        return _box(0.0, 0.0, pw, ph)
     if shape == 'CIRCLE_ELLIPSE' and pw > 0 and ph > 0:
         from shapely.geometry import Point
         from shapely.affinity import scale
@@ -975,6 +984,10 @@ def _build_pont_base_poly_for_preview(page, result: dict, req: Any, shape_type_h
             return build_shapely_polygon_from_paths(paths, page.rect)
     except Exception:
         pass
+    # Không extract được: vẫn chữ nhật ô để dò boong (AABB đủ; poly khớp ô tem).
+    if pw > 0 and ph > 0:
+        from shapely.geometry import box as _box
+        return _box(0.0, 0.0, pw, ph)
     return None
 
 def _resolve_preview_secondary_gap(req: Any) -> Optional[float]:
@@ -2547,7 +2560,9 @@ async def preview_layout(req: PreviewLayoutRequest):
             # nhật/đa giác…) giữ vẽ schematic (khớp + không tốn thêm).
             die_polygon_norm = None
             _shape_final = (result.get('shapeType') or '').upper()
-            if _shape_final in ('HAMMER', 'DUMBBELL', 'CUSTOM', 'ARROW'):
+            # 1 Dao: preview vẽ CHỮ NHẬT ô tem — không extract contour bế cong (lệch layout).
+            _ct_preview = (getattr(req, 'cut_type', None) or 'default')
+            if _ct_preview != 'one_dao' and _shape_final in ('HAMMER', 'DUMBBELL', 'CUSTOM', 'ARROW'):
                 try:
                     _outline = base_poly
                     if _outline is None:

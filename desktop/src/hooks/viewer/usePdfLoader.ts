@@ -243,11 +243,26 @@ export function usePdfLoader({
                     }
                     setAllPageDims(dims);
 
-                    if ((window as any).__prynx_cross_file_page_order) {
-                        const cfOrder = (window as any).__prynx_cross_file_page_order as number[];
+                    // Cross-file copy/move: order scoped theo pdfUrl đích (tránh tab khác nuốt).
+                    const cfPayload = (window as any).__prynx_cross_file_page_order;
+                    const cfOrder: number[] | null = Array.isArray(cfPayload)
+                        ? cfPayload
+                        : (cfPayload && cfPayload.pdfUrl === pdfUrl && Array.isArray(cfPayload.order)
+                            ? cfPayload.order
+                            : null);
+                    const cfFocus: number | null = (!Array.isArray(cfPayload) && cfPayload?.pdfUrl === pdfUrl
+                        && typeof cfPayload.focusIndex === 'number')
+                        ? cfPayload.focusIndex
+                        : null;
+                    if (cfOrder) {
                         setPageOrder(cfOrder);
                         setPageInstanceIds(genPageIds(cfOrder.length));
-                        setTimeout(() => { (window as any).__prynx_cross_file_page_order = null; }, 100);
+                        setTimeout(() => {
+                            const cur = (window as any).__prynx_cross_file_page_order;
+                            if (cur && (Array.isArray(cur) || cur.pdfUrl === pdfUrl)) {
+                                (window as any).__prynx_cross_file_page_order = null;
+                            }
+                        }, 100);
                     } else {
                         const keepOrder = isSameUrl && pageOrder.length === numPagesFromEngine;
                         setPageOrder(prev => (isSameUrl && prev.length === numPagesFromEngine) ? prev : Array.from({ length: numPagesFromEngine }, (_, i) => i + 1));
@@ -255,12 +270,15 @@ export function usePdfLoader({
                     }
                     
                     if (!isSameUrl) {
-                        setSelectedIndices(new Set([0]));
-                        setLastSelectedIndex(0);
+                        const focusIdx = cfFocus != null
+                            ? Math.max(0, Math.min(cfFocus, (cfOrder?.length || numPagesFromEngine) - 1))
+                            : 0;
+                        setSelectedIndices(new Set([focusIdx]));
+                        setLastSelectedIndex(focusIdx);
                         setPastStack([]);
                         setFutureStack([]);
                         setPageRotations({});
-                        setActivePage(1);
+                        setActivePage(focusIdx + 1);
                         setPlateLabels({});
                     }
 
@@ -304,11 +322,25 @@ export function usePdfLoader({
                     setPdfRef(doc);
                     setThumbPdfRef(doc);
                     setNumPages(doc.numPages);
-                    if ((window as any).__prynx_cross_file_page_order) {
-                        const cfOrder = (window as any).__prynx_cross_file_page_order as number[];
-                        setPageOrder(cfOrder);
-                        setPageInstanceIds(genPageIds(cfOrder.length));
-                        setTimeout(() => { (window as any).__prynx_cross_file_page_order = null; }, 100);
+                    const cfPayload2 = (window as any).__prynx_cross_file_page_order;
+                    const cfOrder2: number[] | null = Array.isArray(cfPayload2)
+                        ? cfPayload2
+                        : (cfPayload2 && cfPayload2.pdfUrl === pdfUrl && Array.isArray(cfPayload2.order)
+                            ? cfPayload2.order
+                            : null);
+                    const cfFocus2: number | null = (!Array.isArray(cfPayload2) && cfPayload2?.pdfUrl === pdfUrl
+                        && typeof cfPayload2.focusIndex === 'number')
+                        ? cfPayload2.focusIndex
+                        : null;
+                    if (cfOrder2) {
+                        setPageOrder(cfOrder2);
+                        setPageInstanceIds(genPageIds(cfOrder2.length));
+                        setTimeout(() => {
+                            const cur = (window as any).__prynx_cross_file_page_order;
+                            if (cur && (Array.isArray(cur) || cur.pdfUrl === pdfUrl)) {
+                                (window as any).__prynx_cross_file_page_order = null;
+                            }
+                        }, 100);
                     } else {
                         const keepOrder = isSameUrl && pageOrder.length === doc.numPages;
                         setPageOrder(prev => (isSameUrl && prev.length === doc.numPages) ? prev : Array.from({ length: doc.numPages }, (_, i) => i + 1));
@@ -316,12 +348,15 @@ export function usePdfLoader({
                     }
 
                     if (!isSameUrl) {
-                        setSelectedIndices(new Set([0]));
-                        setLastSelectedIndex(0);
+                        const focusIdx = cfFocus2 != null
+                            ? Math.max(0, Math.min(cfFocus2, (cfOrder2?.length || doc.numPages) - 1))
+                            : 0;
+                        setSelectedIndices(new Set([focusIdx]));
+                        setLastSelectedIndex(focusIdx);
                         setPastStack([]);
                         setFutureStack([]);
                         setPageRotations({});
-                        setActivePage(1);
+                        setActivePage(focusIdx + 1);
                         setPlateLabels({});
                     }
 

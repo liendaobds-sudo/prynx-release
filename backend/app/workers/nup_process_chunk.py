@@ -570,18 +570,31 @@ def process_chunk(args):
                     base_poly, base_rect_pts = _base_poly_cache[_bp_key]
                 else:
                     base_poly = None
-                    base_rect_pts = (0, 0, placements[0]['width'], placements[0]['height'])
+                    _iw0 = float(placements[0]['width'])
+                    _ih0 = float(placements[0]['height'])
+                    base_rect_pts = (0, 0, _iw0, _ih0)
                     src_page = src_doc[first_src_idx]
 
                     # Use mathematically perfect polygon for Circle/Ellipse
                     shape_type = (detected_shapes_by_page.get(str(first_src_idx)) or detected_shapes_by_page.get(first_src_idx, 'CUSTOM')) if is_die_cut else 'CUSTOM'
-                    if shape_type == 'CIRCLE_ELLIPSE':
+                    # 1 Dao / chữ nhật: KHÔNG extract path artwork (mảng màu) làm base_poly
+                    # — scale sai → boong "không va chạm". Dùng đúng chữ nhật ô tem.
+                    # (cut_type lấy từ args process_chunk — không có dict `settings` ở đây.)
+                    _is_rect_cell = (
+                        cut_type == 'one_dao'
+                        or str(shape_type).upper() == 'RECTANGLE'
+                    )
+                    if str(shape_type).upper() == 'CIRCLE_ELLIPSE' and not _is_rect_cell:
                         from shapely.geometry import Point
                         from shapely.affinity import scale
-                        rx = placements[0]['width'] / 2.0
-                        ry = placements[0]['height'] / 2.0
+                        rx = _iw0 / 2.0
+                        ry = _ih0 / 2.0
                         base_poly = scale(Point(0,0).buffer(1.0, resolution=64), xfact=rx, yfact=ry)
                         base_rect_pts = (-rx, -ry, rx, ry)
+                    elif _is_rect_cell and _iw0 > 0 and _ih0 > 0:
+                        from shapely.geometry import box as _box
+                        base_poly = _box(0.0, 0.0, _iw0, _ih0)
+                        base_rect_pts = (0.0, 0.0, _iw0, _ih0)
                     else:
                         paths = src_page.extract_vector_paths()
                         if paths:
@@ -589,6 +602,9 @@ def process_chunk(args):
                             if base_poly:
                                 minx, miny, maxx, maxy = base_poly.bounds
                                 base_rect_pts = (minx, miny, maxx, maxy)
+                        if base_poly is None and _iw0 > 0 and _ih0 > 0:
+                            from shapely.geometry import box as _box
+                            base_poly = _box(0.0, 0.0, _iw0, _ih0)
 
                     _base_poly_cache[_bp_key] = (base_poly, base_rect_pts)
 

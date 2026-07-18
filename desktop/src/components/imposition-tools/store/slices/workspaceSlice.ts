@@ -2,6 +2,7 @@ import type { ImposerSlice } from '../sliceType';
 import type { TaskMode } from '../../types';
 import {
     ALGO_PROFILE_KEYS,
+    DIE_CUT_SESSION_DEFAULTS,
     PROFILED_TOOLS,
     LAYOUT_TASK_TOOLS,
     normalizeProfileTaskMode,
@@ -91,6 +92,10 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 } else if ((LAYOUT_TASK_TOOLS as readonly string[]).includes(nextTool)) {
                     updates.taskMode = 'nup';
                 }
+            }
+            // Dao cắt: luôn về mặc định khi vào tem bế / CNC (không nhớ 1 Dao lần trước)
+            if (nextTool === 'sticker_imposer' || nextTool === 'cnc_imposer') {
+                Object.assign(updates, DIE_CUT_SESSION_DEFAULTS);
             }
             return updates as any;
         });
