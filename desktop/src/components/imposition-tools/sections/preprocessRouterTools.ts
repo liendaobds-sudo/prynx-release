@@ -11,6 +11,7 @@ export const PREPROCESS_ROUTER_TOOLS = [
     'shuffle', 'resize', 'trim_shift', 'split', 'pages',
     'preflight', 'hairlines', 'convertcolors', 'trapping', 'pdfx',
     'ocr', 'optimize', 'sticker', 'bgremover', 'watermark', 'upscale',
+    'encrypt', 'metadata', 'office_convert',
 ] as const;
 
 export type PreprocessRouterTool = (typeof PREPROCESS_ROUTER_TOOLS)[number];

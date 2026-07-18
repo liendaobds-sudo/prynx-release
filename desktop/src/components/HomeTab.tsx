@@ -1,11 +1,21 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { TOOL_CATEGORIES, getToolsByCategory, toolMatchesQuery, type ToolDefinition, type AppToolId } from '../lib/toolRegistry';
+import { OFFICE_EXTENSIONS, isOfficePathOrName, mimeForOfficeName } from '../lib/officeFileTypes';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useRecentFiles } from '../lib/useRecentFiles';
 import { useAppSettingsStore } from '../stores/appSettingsStore';
 import RecentFilesGrid from './RecentFiles/RecentFilesGrid';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
+
+/** accept= cho input file — dựng từ OFFICE_EXTENSIONS (tránh HMR stale export). */
+const HOME_FILE_ACCEPT = [
+  'application/pdf',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  ...OFFICE_EXTENSIONS.map((ext) => `.${ext}`),
+].join(',');
 
 interface Props {
   onOpenApp: (appId: AppToolId, payload?: any) => void;
@@ -237,24 +247,40 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                     {/* BIG DROPZONE / BROWSE BUTTON */}
                     <div
                         onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => { e.preventDefault(); }}
+                        onDrop={(e) => { e.preventDefault(); /* Tauri tauri://drag-drop xử lý path */ }}
                         onClick={async () => {
                             if ((window as any).__TAURI_INTERNALS__) {
                                 try {
                                     const selected = await open({
                                         multiple: false,
-                                        filters: [{ name: t('tabs.home:tai_lieu_hinh_anh'), extensions: ['pdf', 'png', 'jpg', 'jpeg'] }]
+                                        filters: [
+                                            { name: t('tabs.home:tai_lieu_hinh_anh'), extensions: ['pdf', 'png', 'jpg', 'jpeg', ...OFFICE_EXTENSIONS] },
+                                            { name: 'Word / Excel', extensions: [...OFFICE_EXTENSIONS] },
+                                            { name: 'PDF', extensions: ['pdf'] },
+                                        ]
                                     });
                                     if (selected && typeof selected === 'string') {
                                         const { stat } = await import('@tauri-apps/plugin-fs');
-                                        const fileStat = await stat(selected);
+                                        let size = 0;
+                                        try { size = (await stat(selected)).size; } catch { /* ignore */ }
                                         const name = selected.split('\\').pop() || selected.split('/').pop() || 'unknown';
                                         const lower = name.toLowerCase();
-                                        const type = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
+                                        let type = 'application/octet-stream';
+                                        if (lower.endsWith('.pdf')) type = 'application/pdf';
+                                        else if (lower.endsWith('.png')) type = 'image/png';
+                                        else if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) type = 'image/jpeg';
+                                        else if (isOfficePathOrName(name)) type = mimeForOfficeName(name);
                                         const fileObj = new File([], name, { type });
                                         Object.defineProperty(fileObj, 'path', { value: selected });
-                                        Object.defineProperty(fileObj, 'size', { value: fileStat.size });
-                                        onOpenApp('imposition', { file: fileObj });
+                                        Object.defineProperty(fileObj, 'size', { value: size });
+                                        if (isOfficePathOrName(name)) {
+                                            onOpenApp('imposition', {
+                                                focusFeature: 'office_convert',
+                                                officeSourceFile: fileObj,
+                                            });
+                                        } else {
+                                            onOpenApp('imposition', { file: fileObj });
+                                        }
                                     }
                                 } catch (e) {
                                     document.getElementById('home-generic-pdf-input')?.click();
@@ -268,11 +294,20 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
                         <input
                             id="home-generic-pdf-input"
                             type="file"
-                            accept="application/pdf,image/png,image/jpeg,image/jpg"
+                            accept={HOME_FILE_ACCEPT}
                             className="hidden"
                             onChange={(e) => {
                                 const file = e.target.files?.[0];
-                                if (file) onOpenApp('imposition', { file });
+                                if (file) {
+                                    if (isOfficePathOrName(file.name)) {
+                                        onOpenApp('imposition', {
+                                            focusFeature: 'office_convert',
+                                            officeSourceFile: file,
+                                        });
+                                    } else {
+                                        onOpenApp('imposition', { file });
+                                    }
+                                }
                                 e.target.value = '';
                             }}
                         />

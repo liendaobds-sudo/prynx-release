@@ -249,7 +249,7 @@ export const DEFAULT_REPORT_CONFIG: ReportDisplayConfig = {
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';
 
-export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages' | 'trim_shift';
+export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert';
 
 /**
  * Loại panel mà một công cụ hiển thị trong workspace bình bài.
@@ -299,6 +299,9 @@ export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = 
     watermark: 'preprocess',
     upscale: 'preprocess',
     trim_shift: 'preprocess',
+    encrypt: 'preprocess',
+    metadata: 'preprocess',
+    office_convert: 'preprocess',
 };
 
 /**
@@ -335,6 +338,9 @@ export interface ImposerDashboardProps {
     onBleedUpdate?: (show: boolean, mm: number) => void;
     onFileFixed?: (blob: Blob, name: string) => void;
     systemMergeFiles?: File[];
+    /** Office file → PDF (Word/Excel path-stub File). */
+    officeSourceFile?: File | null;
+    officeSourceFiles?: File[];
     /** PDF đã bake sửa viewer (xoay/xóa/sắp trang) — preview dùng CÙNG nguồn với output. */
     getWorkingFile?: () => Promise<File>;
 }

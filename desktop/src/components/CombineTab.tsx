@@ -1064,7 +1064,10 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       {/* Header Toolbar */}
       <div className="flex items-center justify-between p-4 bg-white dark:bg-[#252526] border-b border-slate-200 dark:border-white/10 shadow-sm shrink-0">
         <div className="flex items-center gap-4">
-          <h2 className="text-lg font-semibold text-slate-800 dark:text-zinc-200">Combine Files</h2>
+          <div className="flex flex-col min-w-0">
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-zinc-200">{t('tabs.combine:title_b8')}</h2>
+            <p className="text-[10px] text-slate-500 dark:text-zinc-400 truncate max-w-[280px]">{t('tabs.combine:help_b8')}</p>
+          </div>
           <div className="h-6 w-px bg-slate-300 dark:bg-white/10 mx-2"></div>
           
           <button

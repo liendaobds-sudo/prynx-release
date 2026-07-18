@@ -15,6 +15,7 @@ import pikepdf
 import pytest
 
 from app.workers.pdf_tools_engine import (
+    resize_pages,
     resize_pages_smart,
     _choose_auto_mode,
     _doc_has_text_fonts,
@@ -106,6 +107,17 @@ def test_geometry_only_no_downsample(tmp_path):
     assert len(sizes) == 3
     assert all(w == 148 and h == 210 for (w, h) in sizes), sizes
 
+
+def test_auto_orientation_uses_portrait_and_landscape_per_page(tmp_path):
+    src = str(tmp_path / "mixed.pdf")
+    out = str(tmp_path / "mixed_a4.pdf")
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(300, 500))
+    pdf.add_blank_page(page_size=(500, 300))
+    pdf.save(src)
+
+    resize_pages(src, out, 210, 297, "fit", "all", auto_orientation=True)
+    assert _page_sizes_mm(out) == [(210, 297), (297, 210)]
 
 def test_xobject_mode_ignores_dpi(tmp_path):
     src = str(tmp_path / "src.pdf")

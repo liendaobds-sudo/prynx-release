@@ -48,6 +48,9 @@ python-barcode==0.16.1
 # VDP upgrade (spec vdp-upgrade 1.2/1.3/1.12): đọc nguồn dữ liệu Excel .xlsx
 # (gồm tên sheet và merged cell) trong Data_Source_Reader (vdp_datasource.read_xlsx).
 openpyxl==3.1.5
+# Office → PDF (Windows): Word/Excel COM. Optional — engine degrades to LibreOffice if absent.
+# Install on Windows build/runtime: pip install pywin32
+pywin32==308; sys_platform == "win32"
 shapely==2.0.6
 scipy==1.12.0
 

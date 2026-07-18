@@ -64,7 +64,7 @@ describe('resolveRightPanel — routing panel-phải ImpositionTab (lưới an t
         for (const t of ['none', 'booklet', 'nup', 'sticker_imposer', 'cnc_imposer',
             'merge', 'shuffle', 'resize', 'split', 'pages', 'sticker', 'preflight',
             'hairlines', 'convertcolors', 'trapping', 'pdfx', 'ocr', 'optimize',
-            'bgremover', 'watermark', 'upscale']) {
+            'bgremover', 'watermark', 'upscale', 'encrypt', 'metadata', 'office_convert']) {
             expect(resolveRightPanel(t, false)).toBe('dashboard');
         }
     });

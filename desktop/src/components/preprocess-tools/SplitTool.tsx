@@ -24,6 +24,7 @@ export default function SplitTool({ settings, onChange }: Props) {
   const { t } = useTranslation();
     return (
         <div className="flex flex-col gap-4 animate-in fade-in duration-200 relative z-[60]">
+            <ToolInfo desc={<>{t('preprocess.split:help_b8')}</>} />
             
             <div className="flex flex-col gap-2">
                 <ToolSectionLabel>{t('preprocess.split:1_che_do_tach')}</ToolSectionLabel>

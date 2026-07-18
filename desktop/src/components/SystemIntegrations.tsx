@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from './ui/Toast';
 import { useTranslation } from 'react-i18next';
+import { isOfficePathOrName, isPdfOrImagePath, mimeForOfficeName } from '../lib/officeFileTypes';
 
 export default function SystemIntegrations() {
   const { t } = useTranslation();
@@ -21,8 +22,8 @@ export default function SystemIntegrations() {
                 window.dispatchEvent(new CustomEvent('auth-url-received', { detail: { url: p } }));
                 return false;
             }
-            const lower = p.toLowerCase();
-            return lower.endsWith('.pdf') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png');
+            // PDF / ảnh (viewer) + Office (→ PDF convert)
+            return isPdfOrImagePath(p) || isOfficePathOrName(p);
         });
 
         if (validPaths.length === 0) return;
@@ -33,8 +34,11 @@ export default function SystemIntegrations() {
             try {
                 const name = path.split('\\').pop() || path.split('/').pop() || 'unknown';
                 const lower = name.toLowerCase();
-                const type = lower.endsWith('.pdf') ? 'application/pdf' : 
-                            lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
+                let type = 'application/octet-stream';
+                if (lower.endsWith('.pdf')) type = 'application/pdf';
+                else if (lower.endsWith('.png')) type = 'image/png';
+                else if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) type = 'image/jpeg';
+                else if (isOfficePathOrName(name)) type = mimeForOfficeName(name);
 
                 // Lấy kích thước bằng lệnh Rust get_file_size (std::fs), KHÔNG dùng
                 // plugin-fs stat(): plugin-fs bị giới hạn scope ($DESKTOP/$HOME/$DOCUMENT

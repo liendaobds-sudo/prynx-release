@@ -110,13 +110,16 @@ export default function PageToolsPanel() {
         { id: 'duplicate', label: t('preprocess.pageTools:nhan_ban') },
         { id: 'move', label: t('preprocess.pageTools:di_chuyen') },
         { id: 'delete', label: t('preprocess.pageTools:xoa_trang') },
-        { id: 'rotate', label: 'Xoay trang' },
+        { id: 'rotate', label: t('preprocess.pageTools:xoay_trang') },
         { id: 'insert', label: t('preprocess.pageTools:chen_trang') },
         { id: 'extract', label: t('preprocess.pageTools:trich_xuat') },
     ];
 
     return (
         <div className="flex flex-col font-sans w-full">
+            <p className="text-[11px] text-slate-500 dark:text-zinc-400 mb-2 px-0.5">
+                {t('preprocess.pageTools:help_b7')}
+            </p>
             {/* Tabs */}
             <div className="flex px-1 pt-1 border-b border-slate-200 dark:border-zinc-700 relative">
                 <div className="absolute bottom-[0px] left-0 w-full h-[1px] bg-slate-200 dark:bg-zinc-700"></div>

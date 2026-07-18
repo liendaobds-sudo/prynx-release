@@ -338,6 +338,60 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
         }
     };
 
+    /** B3 — chỉ đổi state UI; engine handleRun giữ nguyên. */
+    const applyPreset = (preset: 'signature_image' | 'signature_text' | 'diagonal_wm' | 'confidential') => {
+        if (preset === 'signature_image') {
+            setWatermarkType('image');
+            setIsRepeated(false);
+            setLayerZIndex('top');
+            setPositionXMode('right');
+            setPositionYMode('bottom');
+            setOffsetX(8);
+            setOffsetY(8);
+            setOpacity(0.95);
+            setRotation(0);
+            setScaleMode('absolute');
+            setImageScale(0.28);
+            setTargetType('all');
+        } else if (preset === 'signature_text') {
+            setWatermarkType('text');
+            setWatermarkText(t('preprocess.watermark:preset_signature_text_default'));
+            setIsRepeated(false);
+            setLayerZIndex('top');
+            setPositionXMode('right');
+            setPositionYMode('bottom');
+            setOffsetX(10);
+            setOffsetY(10);
+            setOpacity(1);
+            setRotation(0);
+            setFontSize(14);
+            setColor('#1e3a5f');
+            setTargetType('all');
+        } else if (preset === 'diagonal_wm') {
+            setWatermarkType('text');
+            setWatermarkText(t('preprocess.watermark:preset_diagonal_default'));
+            setIsRepeated(true);
+            setLayerZIndex('top');
+            setOpacity(0.25);
+            setRotation(45);
+            setFontSize(48);
+            setColor('#000000');
+            setSpacing(120);
+            setTargetType('all');
+        } else if (preset === 'confidential') {
+            setWatermarkType('text');
+            setWatermarkText(t('preprocess.watermark:preset_confidential_default'));
+            setIsRepeated(true);
+            setLayerZIndex('top');
+            setOpacity(0.2);
+            setRotation(35);
+            setFontSize(56);
+            setColor('#cc0000');
+            setSpacing(100);
+            setTargetType('all');
+        }
+    };
+
     return (
         <div className="flex flex-col gap-4 animate-in fade-in duration-300">
             <div>
@@ -348,6 +402,43 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                         {' '}{t('preprocess.watermark:xu_ly_truc_tiep_tren_trinh_duyet_bao_mat')}
                     </p>
                 </div>
+            </div>
+
+            {/* B3 — Preset nhanh (chữ ký / đóng dấu) — không tool mới */}
+            <div>
+                <ToolSectionLabel>{t('preprocess.watermark:preset_title')}</ToolSectionLabel>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                    <button
+                        type="button"
+                        onClick={() => applyPreset('signature_image')}
+                        className="text-[10px] font-bold bg-amber-50 dark:bg-amber-900/30 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800 px-2.5 py-1.5 rounded-lg transition-colors"
+                        title={t('preprocess.watermark:preset_signature_image_hint')}
+                    >
+                        ✍️ {t('preprocess.watermark:preset_signature_image')}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => applyPreset('signature_text')}
+                        className="text-[10px] font-bold bg-sky-50 dark:bg-sky-900/30 hover:bg-sky-100 dark:hover:bg-sky-900/50 text-sky-800 dark:text-sky-200 border border-sky-200 dark:border-sky-800 px-2.5 py-1.5 rounded-lg transition-colors"
+                    >
+                        📝 {t('preprocess.watermark:preset_signature_text')}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => applyPreset('diagonal_wm')}
+                        className="text-[10px] font-bold bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-300 px-2.5 py-1.5 rounded-lg transition-colors"
+                    >
+                        ©️ {t('preprocess.watermark:preset_diagonal')}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => applyPreset('confidential')}
+                        className="text-[10px] font-bold bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 px-2.5 py-1.5 rounded-lg transition-colors"
+                    >
+                        🚫 {t('preprocess.watermark:preset_confidential')}
+                    </button>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1.5">{t('preprocess.watermark:preset_footer')}</p>
             </div>
 
             <div className="flex flex-col gap-4">

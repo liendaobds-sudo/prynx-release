@@ -72,6 +72,9 @@ interface Props {
     lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
     batchOutput?: { docs: { blob: Blob, filename: string, report?: string }[], mergedBlob: Blob };
     systemMergeFiles?: File[];
+    /** Office → PDF source (path-stub File from Tauri open/drop). */
+    officeSourceFile?: File | null;
+    officeSourceFiles?: File[];
     initialRecovery?: import('../lib/recovery').RecoverySnapshot;
 }
 
@@ -125,7 +128,7 @@ async function imageFileToPdfIfNeeded(f: File): Promise<File> {
     return new File([_pdfBytes as any], _pdfName, { type: 'application/pdf' });
 }
 
-function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, initialRecovery, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
+function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onSpawnTab, initialFile, initialReport, initialFeature, lockedMode, batchOutput: initialBatchOutput, systemMergeFiles, officeSourceFile, officeSourceFiles, initialRecovery, imposerStoreRef }: Props & { imposerStoreRef: React.MutableRefObject<ReturnType<typeof createImposerSettingsStore> | null> }) {
   const { t } = useTranslation();
     //#region State & Hooks
     // ═══ All state from Zustand store ═══
@@ -418,10 +421,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     useEffect(() => {
         if (initialFeature) {
             // Only auto-bypass upload for standalone tools
-            if (initialFeature === 'bgremover' || initialFeature === 'upscale') {
+            if (initialFeature === 'bgremover' || initialFeature === 'upscale' || initialFeature === 'office_convert') {
                 setPhase('workspace');
             }
             setActiveDashboardTool(initialFeature);
+            // Home/tool-registry opens a new tab with the requested tool. Ensure the
+            // tool panel is visible even when the user previously collapsed it.
+            if (initialFeature === 'office_convert') {
+                if (sidebarWidth < 280) setSidebarWidth(390);
+                setIsSidebarOpen(true);
+            }
             applyLockedMode(lockedMode);
             const names: Record<string, string> = {
                 'bgremover': t('tabs.imposition:tach_nen_ai'),
@@ -2202,8 +2211,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             </div>
                         )}
 
-                        {/* Empty State Overlay — hidden when bgremover/upscale active */}
-                        {!pdfUrl && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (
+                        {/* Empty State Overlay — ẩn khi tool không cần PDF sẵn (AI / office convert / util) */}
+                        {!pdfUrl && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale'
+                            && activeDashboardTool !== 'office_convert' && activeDashboardTool !== 'encrypt'
+                            && activeDashboardTool !== 'metadata' && (
                             <div className="absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style={{ right: isSidebarOpen ? sidebarWidth : 0 }}>
                                 <div className="pointer-events-auto max-w-2xl w-full px-6">
                                     <div 
@@ -2500,6 +2511,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             onBleedUpdate={handleBleedUpdate}
                                                             onFileFixed={commitWorkingFile}
                                                             systemMergeFiles={systemMergeFiles}
+                                                            officeSourceFile={officeSourceFile}
+                                                            officeSourceFiles={officeSourceFiles}
                                                             getWorkingFile={getWorkingFile}
                                                         />
                                                     )}

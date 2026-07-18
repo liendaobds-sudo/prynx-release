@@ -500,6 +500,388 @@ async def optimize_pdf_endpoint(
         try: os.remove(source_path)
         except OSError: pass
 
+@router.post("/encrypt")
+async def encrypt_pdf_endpoint(
+    file: UploadFile = File(...),
+    user_password: str = Form(""),
+    owner_password: str = Form(""),
+    allow_print: str = Form("true"),
+    allow_copy: str = Form("true"),
+    allow_modify: str = Form("false"),
+    allow_annotate: str = Form("true"),
+    allow_form: str = Form("true"),
+    allow_assembly: str = Form("false"),
+    open_password: str = Form(""),
+    license_info: dict = Depends(require_license),
+):
+    """Lock a PDF (AES-256 via pikepdf). Does not modify other pdf-tools pipelines."""
+    from app.workers.pdf_tools_engine import encrypt_pdf
+
+    source_path = await save_upload(file)
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"encrypted_{job_id}.pdf")
+
+    def _flag(v: str) -> bool:
+        return (v or "").lower() in ("true", "1", "yes")
+
+    try:
+        # Không gọi _safe_watermark sau khi khóa (file đã encrypt → open fail).
+        # Watermark stealth vẫn áp dụng trên /decrypt và các tool plain-PDF khác.
+        encrypt_pdf(
+            source_path,
+            output_path,
+            user_password=user_password or "",
+            owner_password=owner_password or "",
+            allow_print=_flag(allow_print),
+            allow_copy=_flag(allow_copy),
+            allow_modify=_flag(allow_modify),
+            allow_annotate=_flag(allow_annotate),
+            allow_form=_flag(allow_form),
+            allow_assembly=_flag(allow_assembly),
+            open_password=open_password or "",
+        )
+        base = file.filename or "document.pdf"
+        return FileResponse(
+            path=output_path,
+            filename=f"encrypted_{base}",
+            media_type="application/pdf",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Khóa PDF thất bại")
+        raise_http(e, "Khóa PDF thất bại")
+    finally:
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
+
+
+@router.post("/decrypt")
+async def decrypt_pdf_endpoint(
+    file: UploadFile = File(...),
+    password: str = Form(""),
+    license_info: dict = Depends(require_license),
+):
+    """Unlock a PDF when the password is known. Isolated from other tools."""
+    from app.workers.pdf_tools_engine import decrypt_pdf
+
+    source_path = await save_upload(file)
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"decrypted_{job_id}.pdf")
+
+    try:
+        decrypt_pdf(source_path, output_path, password=password or "")
+        _safe_watermark(output_path, license_info)
+        base = file.filename or "document.pdf"
+        return FileResponse(
+            path=output_path,
+            filename=f"decrypted_{base}",
+            media_type="application/pdf",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Mở khóa PDF thất bại")
+        raise_http(e, "Mở khóa PDF thất bại")
+    finally:
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
+
+
+@router.post("/encryption-status")
+async def encryption_status_endpoint(
+    file: UploadFile = File(...),
+    license_info: dict = Depends(require_license),
+):
+    """Lightweight probe: is this PDF encrypted? Does not alter the file."""
+    from app.workers.pdf_tools_engine import pdf_is_encrypted
+
+    source_path = await save_upload(file)
+    try:
+        return {"encrypted": pdf_is_encrypted(source_path)}
+    except Exception as e:
+        logger.exception("Kiểm tra mã hóa thất bại")
+        raise_http(e, "Kiểm tra mã hóa thất bại")
+    finally:
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
+
+
+@router.post("/metadata/read")
+async def metadata_read_endpoint(
+    file: UploadFile = File(...),
+    password: str = Form(""),
+    license_info: dict = Depends(require_license),
+):
+    """Read standard Info metadata. Isolated from optimize strip_metadata."""
+    from app.workers.pdf_tools_engine import read_pdf_metadata
+
+    source_path = await save_upload(file)
+    try:
+        meta = read_pdf_metadata(source_path, password=password or "")
+        return {"metadata": meta}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Đọc metadata thất bại")
+        raise_http(e, "Đọc metadata thất bại")
+    finally:
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
+
+
+@router.post("/metadata/write")
+async def metadata_write_endpoint(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    author: str = Form(""),
+    subject: str = Form(""),
+    keywords: str = Form(""),
+    creator: str = Form(""),
+    producer: str = Form(""),
+    clear_all: str = Form("false"),
+    password: str = Form(""),
+    license_info: dict = Depends(require_license),
+):
+    """Write or clear Info metadata. Does not change page content / optimize path."""
+    from app.workers.pdf_tools_engine import write_pdf_metadata
+
+    source_path = await save_upload(file)
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"metadata_{job_id}.pdf")
+    do_clear = (clear_all or "").lower() in ("true", "1", "yes")
+
+    try:
+        fields = {
+            "Title": title,
+            "Author": author,
+            "Subject": subject,
+            "Keywords": keywords,
+            "Creator": creator,
+            "Producer": producer,
+        }
+        write_pdf_metadata(
+            source_path,
+            output_path,
+            fields=fields,
+            clear_all=do_clear,
+            password=password or "",
+        )
+        _safe_watermark(output_path, license_info)
+        base = file.filename or "document.pdf"
+        return FileResponse(
+            path=output_path,
+            filename=f"metadata_{base}",
+            media_type="application/pdf",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Ghi metadata thất bại")
+        raise_http(e, "Ghi metadata thất bại")
+    finally:
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
+
+
+@router.get("/office-convert/status")
+async def office_convert_status(license_info: dict = Depends(require_license)):
+    """Probe available Word/Excel/LibreOffice/Google converters (no side effects)."""
+    from app.workers.office_convert_engine import probe_converters
+    return probe_converters()
+
+
+@router.post("/office-convert/file")
+async def office_convert_file_endpoint(
+    file: Optional[UploadFile] = File(None),
+    file_path: str = Form(""),
+    excel_layout: str = Form("preserve"),
+    license_info: dict = Depends(require_license),
+):
+    """Convert Word/Excel/… → PDF.
+
+    Prefer ``file_path`` (absolute path on same machine as sidecar) — reliable for
+    Tauri path-stub Files. Fallback: multipart upload ``file``.
+    """
+    from app.workers.office_convert_engine import convert_office_file, OFFICE_EXTENSIONS
+
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"converted_{job_id}.pdf")
+    source_path: Optional[str] = None
+    delete_source = False
+    name = "document.docx"
+
+    try:
+        path_arg = (file_path or "").strip().strip('"')
+        if path_arg:
+            if not os.path.isfile(path_arg):
+                raise HTTPException(status_code=400, detail=f"Không tìm thấy file: {path_arg}")
+            source_path = path_arg
+            name = os.path.basename(path_arg)
+            delete_source = False  # never delete user's original
+        elif file is not None and (file.filename or file.size is not None):
+            name = file.filename or "document.docx"
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in OFFICE_EXTENSIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Định dạng không hỗ trợ: {ext}. Hỗ trợ: {', '.join(sorted(OFFICE_EXTENSIONS))}",
+                )
+            file_id = uuid.uuid4().hex
+            source_path = os.path.join(UPLOAD_DIR, f"{file_id}{ext}")
+            await file.seek(0)
+            content = await file.read()
+            if not content:
+                raise HTTPException(
+                    status_code=400,
+                    detail="File upload rỗng. Hãy chọn lại file hoặc dùng đường dẫn đĩa.",
+                )
+            with open(source_path, "wb") as f:
+                f.write(content)
+            delete_source = True
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Thiếu file: gửi file_path (đường dẫn tuyệt đối) hoặc upload file.",
+            )
+
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in OFFICE_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Định dạng không hỗ trợ: {ext}. Hỗ trợ: {', '.join(sorted(OFFICE_EXTENSIONS))}",
+            )
+
+        # COM/LibreOffice are blocking and may take minutes on complex files.
+        from fastapi.concurrency import run_in_threadpool
+        await run_in_threadpool(convert_office_file, source_path, output_path, excel_layout)
+        if not os.path.isfile(output_path) or os.path.getsize(output_path) < 32:
+            raise HTTPException(status_code=500, detail="Chuyển đổi xong nhưng file PDF rỗng.")
+
+        _safe_watermark(output_path, license_info)
+        base = os.path.splitext(name)[0] + ".pdf"
+        return FileResponse(
+            path=output_path,
+            filename=f"converted_{base}",
+            media_type="application/pdf",
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Office convert failed")
+        raise_http(e, "Chuyển Office → PDF thất bại")
+    finally:
+        if delete_source and source_path:
+            try:
+                os.remove(source_path)
+            except OSError:
+                pass
+
+
+@router.post("/office-convert/google")
+async def office_convert_google_endpoint(
+    url: str = Form(...),
+    license_info: dict = Depends(require_license),
+):
+    """Export PDF from a shareable Google Docs / Sheets / Slides link."""
+    from app.workers.office_convert_engine import convert_google_link, parse_google_url
+
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"google_{job_id}.pdf")
+    try:
+        kind, _fid = parse_google_url(url)
+        # The engine uses a synchronous HTTP client; keep the API loop responsive.
+        from fastapi.concurrency import run_in_threadpool
+        await run_in_threadpool(convert_google_link, url, output_path)
+        _safe_watermark(output_path, license_info)
+        return FileResponse(
+            path=output_path,
+            filename=f"google_{kind}.pdf",
+            media_type="application/pdf",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Google convert failed")
+        raise_http(e, "Xuất Google → PDF thất bại")
+
+
+@router.post("/office-convert/resize-output")
+async def office_convert_resize_output(
+    file: Optional[UploadFile] = File(None),
+    file_path: str = Form(""),
+    target_w: float = Form(...),
+    target_h: float = Form(...),
+    auto_orientation: bool = Form(True),
+    license_info: dict = Depends(require_license),
+):
+    """Fit a batch PDF onto a standard paper size without rasterizing or overwriting."""
+    from fastapi.concurrency import run_in_threadpool
+    from app.workers.pdf_tools_engine import resize_pages
+
+    if not (10.0 <= target_w <= 5000.0 and 10.0 <= target_h <= 5000.0):
+        raise HTTPException(status_code=400, detail="Kích thước PDF phải từ 10 đến 5000 mm.")
+
+    source_path: Optional[str] = None
+    delete_source = False
+    name = "document.pdf"
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"batch_resized_{job_id}.pdf")
+    try:
+        path_arg = (file_path or "").strip().strip('"')
+        if path_arg:
+            if not os.path.isfile(path_arg) or not path_arg.lower().endswith(".pdf"):
+                raise HTTPException(status_code=400, detail="Không tìm thấy file PDF nguồn.")
+            source_path = path_arg
+            name = os.path.basename(path_arg)
+        elif file is not None:
+            name = file.filename or "document.pdf"
+            if not name.lower().endswith(".pdf"):
+                raise HTTPException(status_code=400, detail="File tải lên không phải PDF.")
+            source_path = await save_upload(file)
+            delete_source = True
+        else:
+            raise HTTPException(status_code=400, detail="Thiếu file PDF cần chuẩn hóa.")
+
+        await run_in_threadpool(
+            resize_pages,
+            source_path,
+            output_path,
+            target_w,
+            target_h,
+            "fit",
+            "all",
+            auto_orientation,
+        )
+        return FileResponse(
+            path=output_path,
+            filename=f"resized_{name}",
+            media_type="application/pdf",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Batch output resize failed")
+        raise_http(e, "Chuẩn hóa khổ PDF thất bại")
+    finally:
+        if delete_source and source_path:
+            try:
+                os.remove(source_path)
+            except OSError:
+                pass
+
 @router.post("/sticker-dieline")
 async def sticker_dieline_endpoint(request: Request, license_info: dict = Depends(require_license)):
     """Generate Cut Contour and Bleed for Stickers."""

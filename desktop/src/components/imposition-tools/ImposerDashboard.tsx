@@ -65,7 +65,7 @@ import {
 } from './shapeDetectionPolicy';
 
 
-export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, getWorkingFile }: ImposerDashboardProps) {
+export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, getWorkingFile }: ImposerDashboardProps) {
   const { t } = useTranslation();
 
     // ═══ Workspace State ═══
@@ -105,7 +105,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         if (lockedMode === 'sticker_imposer') return 'sticker_imposer';
         if (lockedMode === 'cnc_imposer') return 'cnc_imposer';
         if (currentTool && currentTool !== 'none') return currentTool as any;
-        const allowedFeatures = ['shuffle', 'resize', 'trim_shift', 'split', 'merge', 'preflight', 'sticker', 'bgremover', 'optimize', 'numbering', 'datamerge', 'ocr'];
+        const allowedFeatures = ['shuffle', 'resize', 'trim_shift', 'split', 'merge', 'preflight', 'sticker', 'bgremover', 'optimize', 'numbering', 'datamerge', 'ocr', 'encrypt', 'metadata', 'office_convert', 'watermark', 'upscale', 'pages', 'pdfx', 'hairlines', 'convertcolors', 'trapping'];
         if (initialFeature && allowedFeatures.includes(initialFeature)) return initialFeature as any;
         return 'none';
     });
@@ -1088,6 +1088,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     onStartTrimShift={onStartTrimShift}
                     onStartSplit={onStartSplit} onStartMerge={onStartMerge}
                     onIssueSelect={onIssueSelect} onOpenOutputPreview={onOpenOutputPreview} onFileFixed={onFileFixed}
+                    officeSourceFile={officeSourceFile}
+                    officeSourceFiles={officeSourceFiles}
                 />
             )}
 

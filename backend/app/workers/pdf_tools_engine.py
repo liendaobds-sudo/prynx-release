@@ -126,7 +126,8 @@ def split_pdf(source_path: str, output_dir: str, mode: str = 'by_range',
 def resize_pages(source_path: str, output_path: str,
                  target_w_mm: float, target_h_mm: float,
                  scale_mode: str = 'fit',
-                 apply_to: str = 'all') -> str:
+                 apply_to: str = 'all',
+                 auto_orientation: bool = False) -> str:
     target_w = target_w_mm * MM_TO_PTS
     target_h = target_h_mm * MM_TO_PTS
 
@@ -168,9 +169,6 @@ def resize_pages(source_path: str, output_path: str,
             src_page = src.pages[i]
             
             if i in pages_to_resize:
-                # Add a blank page with target dimensions
-                new_page = out_doc.add_blank_page(page_size=(target_w, target_h))
-
                 # GIỮ BOX BLEED/TRIM: đọc TrimBox/BleedBox/ArtBox GỐC trước khi đụng
                 # CropBox — resize phải mang các box này sang trang mới (scale theo
                 # cùng biến đổi nội dung), nếu không file kết quả MẤT định nghĩa bleed
@@ -216,6 +214,18 @@ def resize_pages(source_path: str, output_path: str,
                     src_w, src_h = 595.28, 841.89
                     use_crop_as_source = False
 
+                page_target_w, page_target_h = target_w, target_h
+                orientation_w, orientation_h = src_w, src_h
+                try:
+                    if int(src_page.get('/Rotate', 0)) % 180:
+                        orientation_w, orientation_h = orientation_h, orientation_w
+                except Exception:
+                    pass
+                if auto_orientation and ((orientation_w > orientation_h) != (target_w > target_h)):
+                    page_target_w, page_target_h = target_h, target_w
+                # Create the destination only after choosing its per-page orientation.
+                new_page = out_doc.add_blank_page(page_size=(page_target_w, page_target_h))
+
                 # 2) Chuẩn bị form BBox rồi mới as_form_xobject.
                 # - use_crop: GIỮ CropBox → form = vùng đã cắt (đúng sau Crop UI).
                 # - else: ép CropBox=MediaBox → form gồm trọn bleed (hành vi cũ).
@@ -239,22 +249,22 @@ def resize_pages(source_path: str, output_path: str,
                 # fill → phóng to giữ tỉ lệ + cắt mất hình (user báo "ép bóp méo mà lại
                 # thu khung cắt hình").
                 if scale_mode == 'fit':
-                    scale = min(target_w / src_w, target_h / src_h)
+                    scale = min(page_target_w / src_w, page_target_h / src_h)
                     scale_x = scale_y = scale
                 elif scale_mode == 'stretch':
-                    scale_x = target_w / src_w
-                    scale_y = target_h / src_h
+                    scale_x = page_target_w / src_w
+                    scale_y = page_target_h / src_h
                 elif scale_mode == 'center_no_scale':
                     scale_x = scale_y = 1.0
                 else:
                     # fill/crop
-                    scale = max(target_w / src_w, target_h / src_h)
+                    scale = max(page_target_w / src_w, page_target_h / src_h)
                     scale_x = scale_y = scale
 
                 new_w = src_w * scale_x
                 new_h = src_h * scale_y
-                offset_x = (target_w - new_w) / 2
-                offset_y = (target_h - new_h) / 2
+                offset_x = (page_target_w - new_w) / 2
+                offset_y = (page_target_h - new_h) / 2
 
                 # Inject Matrix drawing command (a=scale_x, d=scale_y — stretch méo hình).
                 content = f"q {scale_x:.4f} 0 0 {scale_y:.4f} {offset_x:.4f} {offset_y:.4f} cm {xobj_name_str} Do Q"
@@ -270,8 +280,8 @@ def resize_pages(source_path: str, output_path: str,
                     ny0 = y0 * scale_y + offset_y
                     nx1 = x1 * scale_x + offset_x
                     ny1 = y1 * scale_y + offset_y
-                    nx0, nx1 = max(0.0, min(nx0, nx1)), min(target_w, max(nx0, nx1))
-                    ny0, ny1 = max(0.0, min(ny0, ny1)), min(target_h, max(ny0, ny1))
+                    nx0, nx1 = max(0.0, min(nx0, nx1)), min(page_target_w, max(nx0, nx1))
+                    ny0, ny1 = max(0.0, min(ny0, ny1)), min(page_target_h, max(ny0, ny1))
                     return [round(nx0, 3), round(ny0, 3), round(nx1, 3), round(ny1, 3)]
 
                 for _bk, _box in _orig_boxes.items():
@@ -570,4 +580,192 @@ def shuffle_pages(source_path: str, output_path: str,
             out_doc.pages.append(src.pages[idx])
 
         save_pdf_compat(out_doc, output_path)
+    return output_path
+
+
+# =========================================================================
+#  5. ENCRYPT / DECRYPT  (B1/B2 — isolated; does not alter merge/split/etc.)
+# =========================================================================
+
+def pdf_is_encrypted(source_path: str) -> bool:
+    """True if the PDF has an encryption dictionary (may still open empty-password)."""
+    try:
+        with pikepdf.Pdf.open(source_path) as pdf:
+            return bool(pdf.is_encrypted)
+    except pikepdf.PasswordError:
+        return True
+    except Exception:
+        # Corrupt / non-PDF: let caller surface a clearer error on open.
+        return False
+
+
+def encrypt_pdf(
+    source_path: str,
+    output_path: str,
+    *,
+    user_password: str = "",
+    owner_password: str = "",
+    allow_print: bool = True,
+    allow_copy: bool = True,
+    allow_modify: bool = False,
+    allow_annotate: bool = True,
+    allow_form: bool = True,
+    allow_assembly: bool = False,
+    open_password: str = "",
+) -> str:
+    """Encrypt PDF with AES (R=6) via pikepdf.
+
+    In-place structural save (no Pdf.new + pages.extend) so Outlines, forms,
+    attachments and other catalog objects are preserved.
+
+    - user_password: required to open (empty = open freely, restrictions still apply with owner)
+    - owner_password: required to change permissions (falls back to user if empty)
+    - open_password: if source is already encrypted, password to open it first
+    """
+    user_password = user_password or ""
+    owner_password = owner_password or user_password or ""
+    if not user_password and not owner_password:
+        raise ValueError("Cần ít nhất mật khẩu người dùng hoặc mật khẩu chủ sở hữu.")
+
+    perms = pikepdf.Permissions(
+        accessibility=True,
+        extract=bool(allow_copy),
+        modify_annotation=bool(allow_annotate),
+        modify_assembly=bool(allow_assembly),
+        modify_form=bool(allow_form),
+        modify_other=bool(allow_modify),
+        print_lowres=bool(allow_print),
+        print_highres=bool(allow_print),
+    )
+    encryption = pikepdf.Encryption(
+        user=user_password,
+        owner=owner_password,
+        R=6,
+        allow=perms,
+        aes=True,
+        metadata=True,
+    )
+
+    open_kw: dict = {}
+    if open_password:
+        open_kw["password"] = open_password
+    # Same-path overwrite (rare; routes use RESULTS_DIR) needs this flag.
+    if os.path.abspath(source_path) == os.path.abspath(output_path):
+        open_kw["allow_overwriting_input"] = True
+
+    try:
+        with pikepdf.Pdf.open(source_path, **open_kw) as pdf:
+            # Save THE SAME document graph — keep Outlines / AcroForm / EmbeddedFiles.
+            save_pdf_compat(pdf, output_path, encryption=encryption)
+    except pikepdf.PasswordError as e:
+        raise ValueError("Sai mật khẩu hoặc file đã khóa — không mở được để khóa lại.") from e
+
+    return output_path
+
+
+def decrypt_pdf(source_path: str, output_path: str, *, password: str = "") -> str:
+    """Remove encryption and save a plain PDF. Requires correct password when locked.
+
+    In-place structural save — preserves Outlines and catalog (no page-only clone).
+    """
+    open_kw: dict = {"password": password or ""}
+    if os.path.abspath(source_path) == os.path.abspath(output_path):
+        open_kw["allow_overwriting_input"] = True
+    try:
+        with pikepdf.Pdf.open(source_path, **open_kw) as pdf:
+            # Saving without encryption= strips encryption while keeping structure.
+            save_pdf_compat(pdf, output_path)
+    except pikepdf.PasswordError as e:
+        raise ValueError("Sai mật khẩu — không mở được file đã khóa.") from e
+
+    return output_path
+
+
+# =========================================================================
+#  6. METADATA  (B6 — isolated; does not alter optimize strip checkbox)
+# =========================================================================
+
+# Standard Info dict keys we expose in the editor UI.
+_META_KEYS = (
+    "Title",
+    "Author",
+    "Subject",
+    "Keywords",
+    "Creator",
+    "Producer",
+)
+
+
+def _docinfo_to_dict(pdf: "pikepdf.Pdf") -> dict:
+    out: dict = {k: "" for k in _META_KEYS}
+    try:
+        if not pdf.docinfo:
+            return out
+        for k, v in pdf.docinfo.items():
+            name = str(k).lstrip("/")
+            if name in out or name in _META_KEYS:
+                try:
+                    out[name] = str(v) if v is not None else ""
+                except Exception:
+                    out[name] = ""
+            # Keep only standard keys in response for a stable UI contract.
+    except Exception:
+        pass
+    return {k: out.get(k, "") for k in _META_KEYS}
+
+
+def read_pdf_metadata(source_path: str, *, password: str = "") -> dict:
+    """Return standard Info dictionary fields (Title, Author, …)."""
+    try:
+        with pikepdf.Pdf.open(source_path, password=password or "") as pdf:
+            return _docinfo_to_dict(pdf)
+    except pikepdf.PasswordError as e:
+        raise ValueError("Sai mật khẩu — không đọc được metadata.") from e
+
+
+def write_pdf_metadata(
+    source_path: str,
+    output_path: str,
+    *,
+    fields: dict | None = None,
+    clear_all: bool = False,
+    password: str = "",
+) -> str:
+    """Update or clear PDF Info metadata in-place (preserves Outlines / structure)."""
+    fields = fields or {}
+    open_kw: dict = {"password": password or ""}
+    if os.path.abspath(source_path) == os.path.abspath(output_path):
+        open_kw["allow_overwriting_input"] = True
+    try:
+        with pikepdf.Pdf.open(source_path, **open_kw) as pdf:
+            if clear_all:
+                try:
+                    for k in list(pdf.docinfo.keys()):
+                        del pdf.docinfo[k]
+                except Exception:
+                    pass
+                for key in _META_KEYS:
+                    try:
+                        del pdf.docinfo[pikepdf.Name(f"/{key}")]
+                    except Exception:
+                        pass
+            else:
+                for key in _META_KEYS:
+                    if key not in fields:
+                        continue
+                    val = fields.get(key)
+                    name = pikepdf.Name(f"/{key}")
+                    if val is None or str(val).strip() == "":
+                        try:
+                            if name in pdf.docinfo:
+                                del pdf.docinfo[name]
+                        except Exception:
+                            pass
+                    else:
+                        pdf.docinfo[name] = str(val)
+
+            save_pdf_compat(pdf, output_path)
+    except pikepdf.PasswordError as e:
+        raise ValueError("Sai mật khẩu — không ghi được metadata.") from e
+
     return output_path

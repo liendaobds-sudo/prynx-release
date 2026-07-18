@@ -724,6 +724,160 @@ fn is_sensitive_write_path(path: &str) -> bool {
         .any(|d| norm == *d || norm.starts_with(&format!("{}\\", d)))
 }
 
+#[derive(serde::Serialize)]
+struct BatchFolderFile {
+    path: String,
+    name: String,
+    size: u64,
+}
+
+fn supported_batch_extension(path: &std::path::Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "pdf" | "doc" | "docx" | "odt" | "rtf" |
+        "xls" | "xlsx" | "ods" | "csv" |
+        "ppt" | "pptx" | "odp"
+    )
+}
+
+#[tauri::command]
+fn list_batch_folder_files(folder: String) -> Result<Vec<BatchFolderFile>, String> {
+    if is_sensitive_path(&folder) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    let dir = std::path::Path::new(&folder);
+    if !dir.is_dir() {
+        return Err("Selected source is not a folder".to_string());
+    }
+
+    let mut files = Vec::new();
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("Cannot read folder: {}", e))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !supported_batch_extension(&path) {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) if !name.starts_with("~$") => name.to_string(),
+            _ => continue,
+        };
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        files.push(BatchFolderFile {
+            path: path.to_string_lossy().to_string(),
+            name,
+            size,
+        });
+    }
+    files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(files)
+}
+
+fn unique_batch_pdf_target(output_dir: &std::path::Path, preferred_name: &str) -> Result<std::path::PathBuf, String> {
+    if !output_dir.is_dir() {
+        return Err("Selected output is not a folder".to_string());
+    }
+    let safe_name = std::path::Path::new(preferred_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid output filename".to_string())?;
+    if !safe_name.to_ascii_lowercase().ends_with(".pdf") {
+        return Err("Batch output must be a PDF".to_string());
+    }
+    let stem = std::path::Path::new(safe_name)
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("document");
+    for index in 1..=10_000u32 {
+        let name = if index == 1 {
+            format!("{}.pdf", stem)
+        } else {
+            format!("{}_{}.pdf", stem, index)
+        };
+        let candidate = output_dir.join(name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("Could not allocate a unique output filename".to_string())
+}
+
+fn finish_batch_temp(temp: &std::path::Path, output_dir: &std::path::Path, preferred_name: &str) -> Result<String, String> {
+    // Re-check after writing the temp file so existing results are never overwritten.
+    for _ in 0..10_000 {
+        let target = unique_batch_pdf_target(output_dir, preferred_name)?;
+        // Windows rename fails when the destination already exists, providing
+        // atomic publication without overwriting and working on FAT/SMB drives.
+        #[cfg(windows)]
+        match std::fs::rename(temp, &target) {
+            Ok(()) => return Ok(target.to_string_lossy().to_string()),
+            Err(_) if target.exists() => continue,
+            Err(e) => return Err(format!("Cannot finalize output PDF: {}", e)),
+        }
+        // On Unix rename may replace an existing target, so use an atomic link.
+        #[cfg(not(windows))]
+        match std::fs::hard_link(temp, &target) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(temp);
+                return Ok(target.to_string_lossy().to_string());
+            }
+            Err(_) if target.exists() => continue,
+            Err(e) => return Err(format!("Cannot finalize output PDF: {}", e)),
+        }
+    }
+    Err("Could not allocate a unique output filename".to_string())
+}
+
+fn batch_temp_path(output_dir: &std::path::Path) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    output_dir.join(format!(".prynx_batch_{}_{}.tmp", std::process::id(), nanos))
+}
+
+#[tauri::command]
+fn write_batch_pdf(output_dir: String, preferred_name: String, contents: Vec<u8>) -> Result<String, String> {
+    if is_sensitive_write_path(&output_dir) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    if contents.len() < 4 || &contents[..4] != b"%PDF" {
+        return Err("Converted output is not a valid PDF".to_string());
+    }
+    let dir = std::path::Path::new(&output_dir);
+    let temp = batch_temp_path(dir);
+    std::fs::write(&temp, contents).map_err(|e| format!("Cannot write temporary PDF: {}", e))?;
+    let result = finish_batch_temp(&temp, dir, &preferred_name);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
+#[tauri::command]
+fn copy_batch_pdf(source: String, output_dir: String, preferred_name: String) -> Result<String, String> {
+    if is_sensitive_path(&source) || is_sensitive_write_path(&output_dir) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    let source_path = std::path::Path::new(&source);
+    if !source_path.is_file()
+        || !source_path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("pdf")).unwrap_or(false)
+    {
+        return Err("Source is not a PDF file".to_string());
+    }
+    let dir = std::path::Path::new(&output_dir);
+    let temp = batch_temp_path(dir);
+    std::fs::copy(source_path, &temp).map_err(|e| format!("Cannot copy PDF: {}", e))?;
+    let result = finish_batch_temp(&temp, dir, &preferred_name);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
 #[tauri::command]
 fn read_system_file(path: String) -> Result<Response, String> {
     // Security: only allow known file types to prevent arbitrary file reads
@@ -1060,6 +1214,52 @@ fn collect_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Re
     Ok(())
 }
 
+#[cfg(test)]
+mod batch_folder_tests {
+    use super::*;
+
+    fn test_dir(label: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("prynx_{}_{}_{}", label, std::process::id(), stamp));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn batch_scan_filters_temp_and_unsupported_files() {
+        let dir = test_dir("scan");
+        std::fs::write(dir.join("02-report.docx"), b"doc").unwrap();
+        std::fs::write(dir.join("01-source.pdf"), b"%PDF").unwrap();
+        std::fs::write(dir.join("~$02-report.docx"), b"lock").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"ignore").unwrap();
+
+        let files = list_batch_folder_files(dir.to_string_lossy().to_string()).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].name, "01-source.pdf");
+        assert_eq!(files[1].name, "02-report.docx");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn batch_write_never_overwrites_existing_pdf() {
+        let dir = test_dir("write");
+        std::fs::write(dir.join("report.pdf"), b"%PDF-original").unwrap();
+
+        let output = write_batch_pdf(
+            dir.to_string_lossy().to_string(),
+            "report.pdf".to_string(),
+            b"%PDF-new".to_vec(),
+        ).unwrap();
+
+        assert_eq!(std::fs::read(dir.join("report.pdf")).unwrap(), b"%PDF-original");
+        assert!(output.ends_with("report_2.pdf"));
+        assert_eq!(std::fs::read(output).unwrap(), b"%PDF-new");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Panic hook: ghi mọi panic (message + vị trí) ra %APPDATA%\PrynX\logs\rust_panic.log
@@ -1100,7 +1300,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, get_pending_system_files, write_file_atomic, read_dir_json, append_perf_log, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, read_dir_json, append_perf_log, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {

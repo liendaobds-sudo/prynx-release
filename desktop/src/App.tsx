@@ -10,6 +10,7 @@ import { scheduleWarmupPdfjs } from './lib/pdfWarmup';
 import SystemIntegrations from './components/SystemIntegrations';
 import UpdateChecker from './components/UpdateChecker';
 import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, type AppToolId } from './lib/toolRegistry';
+import { isOfficePathOrName } from './lib/officeFileTypes';
 import { MenuBar, type MenuDef } from './components/MenuBar';
 import AboutModal, { SUPPORT } from './components/AboutModal';
 import { useAppSettingsStore } from './stores/appSettingsStore';
@@ -735,25 +736,51 @@ function AppInner() {
     return () => window.removeEventListener('prynx-activate-tab', onActivate);
   }, []);
 
-  // Mở file (PDF/ảnh) — dùng chung cho phím tắt Ctrl+O và menu File > Mở.
+  // Mở file (PDF/ảnh/Office) — Ctrl+O và menu File > Mở.
+  // Office → tab Word/Excel/Google convert; PDF/ảnh → viewer như cũ.
   const handleOpenFile = useCallback(() => {
     if ((window as any).__TAURI_INTERNALS__) {
       import('@tauri-apps/plugin-dialog').then(async ({ open }) => {
         try {
+          const { OFFICE_EXTENSIONS, isOfficePathOrName, mimeForOfficeName } = await import('./lib/officeFileTypes');
           const selected = await open({
             multiple: false,
-            filters: [{ name: 'Tài liệu & Hình ảnh', extensions: ['pdf', 'png', 'jpg', 'jpeg'] }]
+            filters: [
+              { name: 'PDF, Office & Hình ảnh', extensions: ['pdf', 'png', 'jpg', 'jpeg', ...OFFICE_EXTENSIONS] },
+              { name: 'PDF', extensions: ['pdf'] },
+              { name: 'Word / Excel / PowerPoint', extensions: [...OFFICE_EXTENSIONS] },
+              { name: 'Hình ảnh', extensions: ['png', 'jpg', 'jpeg'] },
+            ]
           });
           if (selected && typeof selected === 'string') {
             const { stat } = await import('@tauri-apps/plugin-fs');
-            const fileStat = await stat(selected);
+            let size = 0;
+            try {
+              size = (await stat(selected)).size;
+            } catch {
+              try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                size = await invoke<number>('get_file_size', { path: selected });
+              } catch { /* keep 0 */ }
+            }
             const name = selected.split('\\').pop() || selected.split('/').pop() || 'unknown';
             const lower = name.toLowerCase();
-            const type = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.png') ? 'image/png' : 'image/jpeg';
+            let type = 'application/octet-stream';
+            if (lower.endsWith('.pdf')) type = 'application/pdf';
+            else if (lower.endsWith('.png')) type = 'image/png';
+            else if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) type = 'image/jpeg';
+            else if (isOfficePathOrName(name)) type = mimeForOfficeName(name);
             const fileObj = new File([], name, { type });
             Object.defineProperty(fileObj, 'path', { value: selected });
-            Object.defineProperty(fileObj, 'size', { value: fileStat.size });
-            handleOpenApp('imposition', { file: fileObj });
+            Object.defineProperty(fileObj, 'size', { value: size });
+            if (isOfficePathOrName(name)) {
+              handleOpenApp('imposition', {
+                focusFeature: 'office_convert',
+                officeSourceFile: fileObj,
+              });
+            } else {
+              handleOpenApp('imposition', { file: fileObj });
+            }
           }
         } catch (err) {
           console.error(err);
@@ -844,34 +871,50 @@ function AppInner() {
             );
           }
           if (filesToProcess.length > 0) {
+            // Office files → tool convert (không mở viewer PDF)
+            const officeFiles = filesToProcess.filter(f => isOfficePathOrName(f.name));
+            const otherFiles = filesToProcess.filter(f => !isOfficePathOrName(f.name));
+            const pdfFiles = otherFiles.filter(f => /\.pdf$/i.test(f.name));
+            const conversionFiles = officeFiles.length > 0 ? [...officeFiles, ...pdfFiles] : [];
+            const remainingOtherFiles = officeFiles.length > 0
+              ? otherFiles.filter(f => !/\.pdf$/i.test(f.name))
+              : otherFiles;
+
+            if (conversionFiles.length > 0) {
+              handleOpenApp('imposition', {
+                focusFeature: 'office_convert',
+                officeSourceFile: conversionFiles[0],
+                officeSourceFiles: conversionFiles,
+              });
+            }
+
+            if (remainingOtherFiles.length === 0) return;
+            const filesForOtherTools = remainingOtherFiles;
+
             if (intent === 'convert') {
               // Menu "Convert to PDF" (chỉ ảnh): mở tab Ghép để nhúng ảnh→PDF —
               // KỂ CẢ 1 file (khác luồng mặc định đẩy 1 file vào imposition).
               // CombineTab đã có sẵn logic ảnh→trang PDF; convert = combine 1 ảnh.
-              handleOpenApp('combine_pdf' as AppToolId, { files: filesToProcess });
-            } else if (filesToProcess.length > 1) {
+              handleOpenApp('combine_pdf' as AppToolId, { files: filesForOtherTools });
+            } else if (filesForOtherTools.length > 1) {
               if ((window as any).__isBgRemoverActive) {
-                  // If BgRemover is active, intercept the drop and send directly to the tool
-                  window.dispatchEvent(new CustomEvent('prynx-bgremover-add-files', { detail: { files: filesToProcess } }));
+                  window.dispatchEvent(new CustomEvent('prynx-bgremover-add-files', { detail: { files: filesForOtherTools } }));
               } else {
                   handleOpenApp('combine_pdf' as AppToolId, {
-                    files: filesToProcess
+                    files: filesForOtherTools
                   });
               }
             } else if ((window as any).__isBgRemoverActive) {
-              // Single file dropped while BgRemover is active — route through same event
-              window.dispatchEvent(new CustomEvent('prynx-bgremover-add-files', { detail: { files: filesToProcess } }));
+              window.dispatchEvent(new CustomEvent('prynx-bgremover-add-files', { detail: { files: filesForOtherTools } }));
             } else {
-              // Get current active tab
               const activeTab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
               if (activeTab && activeTab.type !== 'home' && activeTab.type !== 'combine_pdf') {
-                // Route the single file to the currently active tab natively
                 window.dispatchEvent(new CustomEvent(`send-file-to-tab-${activeTab.id}`, {
-                  detail: { file: filesToProcess[0] }
+                  detail: { file: filesForOtherTools[0] }
                 }));
               } else {
                 handleOpenApp('imposition', {
-                  file: filesToProcess[0],
+                  file: filesForOtherTools[0],
                 });
               }
             }
@@ -1157,6 +1200,8 @@ function AppInner() {
                       initialRecovery={tab.payload?.initialRecovery}
                       batchOutput={tab.payload?.batchOutput} // Note: batchOutput now primarily from imposerStore in context, this is legacy payload
                       systemMergeFiles={tab.payload?.systemMergeFiles}
+                      officeSourceFile={tab.payload?.officeSourceFile}
+                      officeSourceFiles={tab.payload?.officeSourceFiles}
                       onSpawnTab={(file: any, extraPayload?: any) => handleOpenApp('imposition', { file, lockedMode: tab.payload?.lockedMode, ...extraPayload })}
                     />
                   </Suspense>

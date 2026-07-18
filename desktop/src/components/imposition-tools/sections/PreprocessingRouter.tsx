@@ -27,6 +27,9 @@ import StickerTool from '../../preprocess-tools/StickerTool';
 import BgRemoverTool from '../../preprocess-tools/BgRemoverTool';
 import WatermarkTool from '../../preprocess-tools/WatermarkTool';
 import UpscaleTool from '../../preprocess-tools/UpscaleTool';
+import EncryptTool from '../../preprocess-tools/EncryptTool';
+import MetadataTool from '../../preprocess-tools/MetadataTool';
+import OfficeConvertTool from '../../preprocess-tools/OfficeConvertTool';
 
 import PageToolsPanel from '../../preprocess-tools/PageToolsPanel';
 import { PREPROCESS_ROUTER_TOOLS } from './preprocessRouterTools';
@@ -55,6 +58,9 @@ const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }
     watermark: { icon: '©️', title: 'Chèn Nền & Đóng Dấu', desc: 'Chèn phôi nền (Background), logo chìm, text mờ (Watermark).' },
     upscale: { icon: '🪄', title: 'Phóng to Ảnh', desc: 'Phóng to ảnh nhưng vẫn giữ được độ sắc nét, không bị vỡ hạt.' },
     pages: { icon: '📄', title: 'Quản lý trang', desc: 'Nhân bản, xóa, xoay, và di chuyển trang PDF.' },
+    encrypt: { icon: '🔐', title: 'Khóa / Mở khóa PDF', desc: 'Đặt mật khẩu, hạn chế in/copy, hoặc gỡ khóa khi biết mật khẩu.' },
+    metadata: { icon: '🏷️', title: 'Metadata PDF', desc: 'Xem / sửa Title, Author, Subject… hoặc xóa metadata.' },
+    office_convert: { icon: '📝', title: 'Word / Excel / Google → PDF', desc: 'Chuyển .docx/.xlsx hoặc link Google Docs/Sheets thành PDF.' },
 };
 
 
@@ -73,12 +79,14 @@ interface PreprocessingRouterProps {
     onIssueSelect: (issue: any) => void;
     onOpenOutputPreview: () => void;
     onFileFixed?: (blob: Blob, name: string) => void;
+    officeSourceFile?: File | null;
+    officeSourceFiles?: File[];
 }
 
 export default function PreprocessingRouter({
     tabId, activeTool, pdfFile, isProcessing,
     onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
-    onIssueSelect, onOpenOutputPreview, onFileFixed,
+    onIssueSelect, onOpenOutputPreview, onFileFixed, officeSourceFile, officeSourceFiles,
 }: PreprocessingRouterProps) {
   const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
@@ -231,6 +239,23 @@ export default function PreprocessingRouter({
 
             {activeTool === 'upscale' && (
                 <UpscaleTool tabId={tabId} pdfFile={pdfFile} />
+            )}
+
+            {activeTool === 'encrypt' && (
+                <EncryptTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+            )}
+
+            {activeTool === 'metadata' && (
+                <MetadataTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+            )}
+
+            {activeTool === 'office_convert' && (
+                <OfficeConvertTool
+                    pdfFile={pdfFile}
+                    officeSourceFile={officeSourceFile}
+                    officeSourceFiles={officeSourceFiles}
+                    onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }}
+                />
             )}
         </>
     );
