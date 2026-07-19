@@ -133,6 +133,9 @@ import CameraRig from '../CameraRig';
 import { useSceneExport } from '../useSceneExport';
 import { useMockupStore } from '../../../store/useMockupStore';
 import { computeExportSize } from '../../../lib/mockup3d/exportSizing';
+import { useBoxStore } from '../../../store/useBoxStore';
+import { generateDieline } from '../../../lib/dieline/engine';
+import { DEFAULT_PARAMS } from '../../../lib/dieline/types';
 
 // ─── Tiện ích dựng threeState giả ───────────────────────────────────────────
 
@@ -187,6 +190,12 @@ beforeEach(() => {
     h.glbResult = null;
     h.threeState = makeFakeThreeState();
 
+    const params = { ...DEFAULT_PARAMS };
+    useBoxStore.setState({
+        params,
+        dieline: generateDieline(params),
+        isModelCurrent: true,
+    });
     // Stub WebGL detection: getContext('webgl') trả context giả → supported = true.
     // `getContext` có nhiều overload (2D/WebGL/WebGPU do @webgpu/types thêm vào),
     // nên ép kiểu qua `never` để mockReturnValue khớp với mọi overload.
@@ -216,6 +225,7 @@ afterEach(() => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+    useBoxStore.setState({ dieline: null, isModelCurrent: false });
 // Yêu cầu 3.4 — Tone mapping ACES Filmic trong MockupCanvas
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -233,6 +243,8 @@ describe('MockupCanvas — tone mapping ACES Filmic (Yêu cầu 3.4)', () => {
         expect(props.gl.outputColorSpace).toBe(THREE.SRGBColorSpace);
         // preserveDrawingBuffer cần cho xuất PNG phía client.
         expect(props.gl.preserveDrawingBuffer).toBe(true);
+        expect(props.frameloop).toBe('demand');
+        expect(props.dpr).toEqual([1, 1.5]);
     });
 
     it('callback onCreated áp ACESFilmicToneMapping lên renderer thật', async () => {

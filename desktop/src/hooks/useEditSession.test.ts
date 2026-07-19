@@ -343,9 +343,9 @@ describe('useEditSession', () => {
                 await result.current.redo();
             });
             expect(received).toEqual([
-                { page: 0, path: '/op' },
-                { page: 0, path: '/undo' },
-                { page: 0, path: '/redo' },
+                { page: 0, path: '/op', kind: 'move', targetIds: ['obj-1'] },
+                { page: 0, path: '/undo', kind: '', targetIds: [] },
+                { page: 0, path: '/redo', kind: '', targetIds: [] },
             ]);
         } finally {
             window.removeEventListener('edit-session-objects-changed', listener);

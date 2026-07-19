@@ -3079,6 +3079,48 @@ class PreviewLayoutBatchRequest(BaseModel):
     tile_gap_x: float = 0
     tile_gap_y: float = 0
 
+def _batch_single_mold_master(pages: list) -> Optional[dict]:
+    """1 khuôn → trả entry master để nest 1 lần; nhiều khuôn → None (nest từng trang).
+
+    Điều kiện:
+      - ≥2 trang
+      - Đúng 1 shape_type ≠ CUSTOM trong toàn batch (sau inherit FE: 28× CIRCLE)
+      - item_w/item_h các trang không lệch > 2pt so với master (tránh copy nhầm die size)
+    """
+    if not pages or len(pages) < 2:
+        return None
+    types: set[str] = set()
+    master: Optional[dict] = None
+    for p in pages:
+        if not isinstance(p, dict):
+            continue
+        st = str(p.get("shape_type") or "").strip().upper()
+        if st and st != "CUSTOM":
+            types.add(st)
+            if master is None:
+                master = p
+    if len(types) != 1 or master is None:
+        return None
+    try:
+        mw = float(master.get("item_w") or 0)
+        mh = float(master.get("item_h") or 0)
+    except (TypeError, ValueError):
+        mw, mh = 0.0, 0.0
+    for p in pages:
+        if not isinstance(p, dict):
+            continue
+        try:
+            w = float(p.get("item_w") or 0)
+            h = float(p.get("item_h") or 0)
+        except (TypeError, ValueError):
+            continue
+        if mw > 0 and w > 0 and abs(w - mw) > 2.0:
+            return None
+        if mh > 0 and h > 0 and abs(h - mh) > 2.0:
+            return None
+    return master
+
+
 @router.post("/preview-layouts-batch")
 async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = Depends(require_license)):
     enforce_feature(_imposition_feature(req), license_info)
@@ -3151,84 +3193,123 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: di
     except OSError:
         _mtime = 0.0
 
-    results = {}
+    results: dict = {}
+    pages_in = [p for p in (req.pages or []) if isinstance(p, dict)]
+    # 1 khuôn (die-cut): nest 1 trang master, copy capacity — nhiều khuôn: full loop.
+    _mold_master = _batch_single_mold_master(pages_in) if _use_sticker else None
+    if _mold_master is not None:
+        _perf(
+            "BATCH", "single_mold_fast_path",
+            master_page=_mold_master.get("page_idx"),
+            shape=_mold_master.get("shape_type"),
+            pages_total=len(pages_in),
+        )
+
+    def _nest_one_page(p: dict, page_idx: int, doc) -> int:
+        _shape = p.get("shape_type")
+        shape_override = _shape if (_shape and _shape != 'CUSTOM') else ('CUSTOM' if _shape == 'CUSTOM' else None)
+        _ck = (
+            file_path, _mtime, page_idx, _use_sticker,
+            round(compute_w, 3), round(compute_h, 3),
+            round(req.gap_x, 3), round(req.gap_y, 3),
+            req.strategy, shape_override,
+            json.dumps(p.get("shape_props") or {}, sort_keys=True),
+            round(bleed_pt, 3),
+            round(_secondary_gap, 3) if _secondary_gap is not None else None,
+            req.cut_type, req.die_size_mode, round(float(req.die_offset_mm or 0), 3),
+            round(p.get("item_w", 0) or 0, 3), round(p.get("item_h", 0) or 0, 3),
+        )
+        _cached = _BATCH_CAP_CACHE.get(_ck)
+        if _cached is not None:
+            _BATCH_CAP_CACHE.move_to_end(_ck)
+            return int(_cached)
+        try:
+            if _use_sticker:
+                from app.workers.nup_sticker import compute_sticker_layout_for_page
+                result = compute_sticker_layout_for_page(
+                    page=doc[page_idx],
+                    sheet_usable_w=compute_w,
+                    sheet_usable_h=compute_h,
+                    gap_x=req.gap_x,
+                    gap_y=req.gap_y,
+                    strategy=req.strategy,
+                    shape_type_override=shape_override,
+                    shape_props_override=(p.get("shape_props") or None),
+                    bleed_pt=bleed_pt,
+                    secondary_gap=_secondary_gap,
+                    cut_type=getattr(req, 'cut_type', 'default'),
+                    die_size_mode=getattr(req, 'die_size_mode', 'die'),
+                    die_offset_mm=getattr(req, 'die_offset_mm', 0),
+                )
+                _cap = len(result.get("items", []))
+            else:
+                from app.workers.nup_layout_solver import solve_optimal_layout
+                trim_w = max((p.get("item_w", 0) or 0) - 2 * bleed_pt, 1.0)
+                trim_h = max((p.get("item_h", 0) or 0) - 2 * bleed_pt, 1.0)
+                res = solve_optimal_layout(
+                    usable_w=compute_w,
+                    usable_h=compute_h,
+                    orig_w=trim_w,
+                    orig_h=trim_h,
+                    gap_x=req.gap_x,
+                    gap_y=req.gap_y,
+                    strategy=req.strategy,
+                    secondary_gap=_secondary_gap,
+                )
+                _cap = len(res.get('cells', []))
+            _BATCH_CAP_CACHE[_ck] = _cap
+            if len(_BATCH_CAP_CACHE) > _BATCH_CAP_CACHE_MAX:
+                _BATCH_CAP_CACHE.popitem(last=False)
+            return int(_cap)
+        except Exception as e:
+            logger.warning("[BATCH CAPACITY] page %s failed: %s", page_idx, e)
+            return 0
+
     doc = pdf_lib.open(file_path)
     try:
-        for p in req.pages:
-            page_idx = p.get("page_idx")
-            if page_idx is None or page_idx < 0 or page_idx >= doc.page_count:
-                continue
-            _shape = p.get("shape_type")
-            shape_override = _shape if (_shape and _shape != 'CUSTOM') else ('CUSTOM' if _shape == 'CUSTOM' else None)
-            _ck = (
-                file_path, _mtime, page_idx, _use_sticker,
-                round(compute_w, 3), round(compute_h, 3),
-                round(req.gap_x, 3), round(req.gap_y, 3),
-                req.strategy, shape_override,
-                json.dumps(p.get("shape_props") or {}, sort_keys=True),
-                round(bleed_pt, 3),
-                round(_secondary_gap, 3) if _secondary_gap is not None else None,
-                req.cut_type, req.die_size_mode, round(float(req.die_offset_mm or 0), 3),
-                round(p.get("item_w", 0) or 0, 3), round(p.get("item_h", 0) or 0, 3),
-            )
-            _cached = _BATCH_CAP_CACHE.get(_ck)
-            if _cached is not None:
-                _BATCH_CAP_CACHE.move_to_end(_ck)
-                results[page_idx] = _cached
-                continue
+        if _mold_master is not None:
+            # ── FAST PATH: 1 khuôn → nest master, broadcast ──
             try:
-                if _use_sticker:
-                    # Die-cut / CNC / sticker: shape-aware, ĐỌC đường bế THẬT từ trang →
-                    # con số KHỚP export (nup_engine dùng cùng hàm dựng full_layouts).
-                    from app.workers.nup_sticker import compute_sticker_layout_for_page
-                    result = compute_sticker_layout_for_page(
-                        page=doc[page_idx],
-                        sheet_usable_w=compute_w,
-                        sheet_usable_h=compute_h,
-                        gap_x=req.gap_x,
-                        gap_y=req.gap_y,
-                        strategy=req.strategy,
-                        shape_type_override=shape_override,
-                        shape_props_override=(p.get("shape_props") or None),
-                        bleed_pt=bleed_pt,
-                        secondary_gap=_secondary_gap,
-                        cut_type=getattr(req, 'cut_type', 'default'),
-                        die_size_mode=getattr(req, 'die_size_mode', 'die'),
-                        die_offset_mm=getattr(req, 'die_offset_mm', 0),
-                    )
-                    _cap = len(result.get("items", []))
-                else:
-                    # N-Up xén (không die-cut): lưới đều, kích thước tem = item_w/item_h (trim).
-                    from app.workers.nup_layout_solver import solve_optimal_layout
-                    trim_w = max((p.get("item_w", 0) or 0) - 2 * bleed_pt, 1.0)
-                    trim_h = max((p.get("item_h", 0) or 0) - 2 * bleed_pt, 1.0)
-                    res = solve_optimal_layout(
-                        usable_w=compute_w,
-                        usable_h=compute_h,
-                        orig_w=trim_w,
-                        orig_h=trim_h,
-                        gap_x=req.gap_x,
-                        gap_y=req.gap_y,
-                        strategy=req.strategy,
-                        secondary_gap=_secondary_gap,
-                    )
-                    _cap = len(res.get('cells', []))
-                results[page_idx] = _cap
-                _BATCH_CAP_CACHE[_ck] = _cap
-                if len(_BATCH_CAP_CACHE) > _BATCH_CAP_CACHE_MAX:
-                    _BATCH_CAP_CACHE.popitem(last=False)
-            except Exception as e:
-                logger.warning("[BATCH CAPACITY] page %s failed: %s", page_idx, e)
-                results[page_idx] = 0
+                m_idx = int(_mold_master.get("page_idx"))
+            except (TypeError, ValueError):
+                m_idx = -1
+            if m_idx < 0 or m_idx >= doc.page_count:
+                m_idx = 0
+                _mold_master = {**_mold_master, "page_idx": m_idx}
+            _cap = _nest_one_page(_mold_master, m_idx, doc)
+            for p in pages_in:
+                try:
+                    pi = int(p.get("page_idx"))
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= pi < doc.page_count:
+                    results[pi] = _cap
+            _perf(
+                "BATCH", "single_mold_done",
+                master_page=m_idx, cap=_cap, pages_out=len(results),
+            )
+        else:
+            # ── FULL PATH: nhiều khuôn / N-Up xén → nest từng trang ──
+            for p in pages_in:
+                page_idx = p.get("page_idx")
+                if page_idx is None:
+                    continue
+                try:
+                    page_idx = int(page_idx)
+                except (TypeError, ValueError):
+                    continue
+                if page_idx < 0 or page_idx >= doc.page_count:
+                    continue
+                results[page_idx] = _nest_one_page(p, page_idx, doc)
     finally:
         doc.close()
 
-    _hits = sum(1 for _ in results)  # computed or cached results count
     _pmark(
         "BATCH", "api_done", _t0,
         file=os.path.basename(file_path),
         pages_out=len(results),
         pages_req=_n_pages_req,
+        single_mold=bool(_mold_master is not None),
         capacities=str({k: results[k] for k in sorted(results)[:8]}),
     )
     return {"success": True, "capacities": results}

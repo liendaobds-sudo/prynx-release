@@ -34,7 +34,7 @@ export type CameraPreset = 'front' | 'top' | 'isometric' | 'orthographic';
 export const DEFAULT_HDRI_PRESET = 'studio-soft';
 
 /** Id preset nền/sàn mặc định (≥2 preset — Yêu cầu 7.3). */
-export const DEFAULT_BACKGROUND_PRESET = 'studio-dark';
+export const DEFAULT_BACKGROUND_PRESET = 'studio-white';
 
 /** Miền hệ số tách exploded view (Yêu cầu 7.5). */
 export const EXPLODED_FACTOR_MIN = 0.0;
@@ -82,6 +82,10 @@ export interface MockupState {
     backgroundPreset: string; // ≥2 preset nền/sàn
     explodedFactor: number; // 0.0..5.0, 0 = lắp ráp
     showDimensions: boolean;
+    /** Overlay CUT/CREASE phục vụ kiểm tra kỹ thuật; mặc định tắt ở mockup sạch. */
+    showTechnicalLines: boolean;
+    /** Lưới sàn tham chiếu; mặc định tắt để cảnh studio không giống chế độ debug. */
+    showFloorGrid: boolean;
 
     // ═══ Ảnh nghệ thuật ═══
     artwork: ArtworkConfig;
@@ -125,6 +129,8 @@ export interface MockupState {
     setBackgroundPreset: (preset: string) => void;
     setExplodedFactor: (factor: number) => void;
     setShowDimensions: (show: boolean) => void;
+    setShowTechnicalLines: (show: boolean) => void;
+    setShowFloorGrid: (show: boolean) => void;
     setExportScale: (scale: ExportScale) => void;
     setExportTransparent: (v: boolean) => void;
     setHdriStatus: (status: HdriStatus) => void;
@@ -184,6 +190,33 @@ const HISTORY_COALESCE_MS = 450;
 /** Mốc thời gian thao tác gần nhất (gộp kéo slider thành 1 bước undo). */
 let lastEditTs = 0;
 
+function artworkUrls(config: ArtworkConfig): (string | null)[] {
+    return [config.outer.url, config.inner.url, config.spotUvMaskUrl, config.embossMaskUrl];
+}
+
+function releaseArtworkResources(configs: ArtworkConfig[], keep: ArtworkConfig | null): void {
+    if (typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
+    const retained = new Set(keep ? artworkUrls(keep).filter(Boolean) : []);
+    const stale = new Set<string>();
+    for (const config of configs) {
+        for (const url of artworkUrls(config)) {
+            if (url?.startsWith('blob:') && !retained.has(url)) stale.add(url);
+        }
+    }
+    if (stale.size > 0) setTimeout(() => stale.forEach((url) => URL.revokeObjectURL(url)), 0);
+}
+
+/** URL blobs are session resources, not undo state. Replacing one clears URL
+ * snapshots so undo can never resurrect a revoked object URL. */
+function replaceArtworkResources(state: MockupState, artwork: ArtworkConfig): Partial<MockupState> {
+    releaseArtworkResources(
+        [state.artwork, ...state.artworkPast, ...state.artworkFuture],
+        artwork,
+    );
+    lastEditTs = 0;
+    return { artwork, artworkPast: [], artworkFuture: [] };
+}
+
 /** Đẩy snapshot artwork hiện tại vào lịch sử rồi áp artwork mới.
  *  `coalesce` = true → gộp với bước trước nếu xảy ra trong HISTORY_COALESCE_MS
  *  (tránh mỗi lần kéo slider tạo 1 bước undo). */
@@ -215,6 +248,7 @@ function createInitialState(): Omit<
     MockupState,
     | 'setEdgeColor' | 'setFinishId' | 'setHdriPreset' | 'setCameraPreset'
     | 'setBackgroundPreset' | 'setExplodedFactor' | 'setShowDimensions'
+    | 'setShowTechnicalLines' | 'setShowFloorGrid'
     | 'setExportScale' | 'setHdriStatus' | 'setWebglSupported'
     | 'setExportTransparent'
     | 'requestExportPng' | 'requestExportGlb'
@@ -237,6 +271,8 @@ function createInitialState(): Omit<
         backgroundPreset: DEFAULT_BACKGROUND_PRESET,
         explodedFactor: EXPLODED_FACTOR_MIN,
         showDimensions: false,
+        showTechnicalLines: false,
+        showFloorGrid: false,
         artwork: {
             outer: { url: null, transform: { ...DEFAULT_TRANSFORM } },
             inner: { enabled: false, url: null, transform: { ...DEFAULT_TRANSFORM } },
@@ -274,6 +310,8 @@ export const useMockupStore = create<MockupState>((set) => ({
     setExplodedFactor: (factor) =>
         set({ explodedFactor: clampNumber(factor, EXPLODED_FACTOR_MIN, EXPLODED_FACTOR_MAX, EXPLODED_FACTOR_MIN) }),
     setShowDimensions: (show) => set({ showDimensions: show }),
+    setShowTechnicalLines: (show) => set({ showTechnicalLines: show }),
+    setShowFloorGrid: (show) => set({ showFloorGrid: show }),
     setExportScale: (scale) => set({ exportScale: scale }),
     setExportTransparent: (v) => set({ exportTransparent: v }),
     setHdriStatus: (status) => set({ hdriStatus: status }),
@@ -321,6 +359,8 @@ export const useMockupStore = create<MockupState>((set) => ({
                     backgroundPreset: state.backgroundPreset,
                     explodedFactor: state.explodedFactor,
                     showDimensions: state.showDimensions,
+                    showTechnicalLines: state.showTechnicalLines,
+                    showFloorGrid: state.showFloorGrid,
                     exportScale: state.exportScale,
                     exportTransparent: state.exportTransparent,
                     artwork: {
@@ -353,6 +393,8 @@ export const useMockupStore = create<MockupState>((set) => ({
                     backgroundPreset: d.backgroundPreset ?? state.backgroundPreset,
                     explodedFactor: clampNumber(d.explodedFactor, EXPLODED_FACTOR_MIN, EXPLODED_FACTOR_MAX, state.explodedFactor),
                     showDimensions: !!d.showDimensions,
+                    showTechnicalLines: !!d.showTechnicalLines,
+                    showFloorGrid: !!d.showFloorGrid,
                     exportScale: (d.exportScale === 2 || d.exportScale === 4 ? d.exportScale : 1) as ExportScale,
                     exportTransparent: !!d.exportTransparent,
                     // Giữ URL ảnh hiện tại, chỉ khôi phục transform/cờ.
@@ -378,7 +420,7 @@ export const useMockupStore = create<MockupState>((set) => ({
 
     // ── Ảnh nghệ thuật: mặt ngoài và mặt trong cập nhật độc lập (Yêu cầu 5.4) ──
     setOuterArtworkUrl: (url) =>
-        set((state) => withArtworkHistory(state, { ...state.artwork, outer: { ...state.artwork.outer, url } })),
+        set((state) => replaceArtworkResources(state, { ...state.artwork, outer: { ...state.artwork.outer, url } })),
     setOuterArtworkTransform: (transform) =>
         set((state) => withArtworkHistory(
             state,
@@ -388,7 +430,7 @@ export const useMockupStore = create<MockupState>((set) => ({
     setInnerArtworkEnabled: (enabled) =>
         set((state) => withArtworkHistory(state, { ...state.artwork, inner: { ...state.artwork.inner, enabled } })),
     setInnerArtworkUrl: (url) =>
-        set((state) => withArtworkHistory(state, { ...state.artwork, inner: { ...state.artwork.inner, url } })),
+        set((state) => replaceArtworkResources(state, { ...state.artwork, inner: { ...state.artwork.inner, url } })),
     setInnerArtworkTransform: (transform) =>
         set((state) => withArtworkHistory(
             state,
@@ -398,8 +440,8 @@ export const useMockupStore = create<MockupState>((set) => ({
     setArtworkMode: (mode) => set((state) => withArtworkHistory(state, { ...state.artwork, mode })),
     setArtworkEditMode: (v) => set({ artworkEditMode: v }),
     setShowBleedSafe: (show) => set((state) => withArtworkHistory(state, { ...state.artwork, showBleedSafe: show })),
-    setSpotUvMaskUrl: (url) => set((state) => withArtworkHistory(state, { ...state.artwork, spotUvMaskUrl: url })),
-    setEmbossMaskUrl: (url) => set((state) => withArtworkHistory(state, { ...state.artwork, embossMaskUrl: url })),
+    setSpotUvMaskUrl: (url) => set((state) => replaceArtworkResources(state, { ...state.artwork, spotUvMaskUrl: url })),
+    setEmbossMaskUrl: (url) => set((state) => replaceArtworkResources(state, { ...state.artwork, embossMaskUrl: url })),
     setEmbossHeightMm: (height) =>
         set((state) => withArtworkHistory(
             state,
@@ -410,5 +452,9 @@ export const useMockupStore = create<MockupState>((set) => ({
             true,
         )),
 
-    resetMockup: () => set(createInitialState()),
+    resetMockup: () => set((state) => {
+        releaseArtworkResources([state.artwork, ...state.artworkPast, ...state.artworkFuture], null);
+        lastEditTs = 0;
+        return createInitialState();
+    }),
 }));

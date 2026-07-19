@@ -49,7 +49,7 @@ const MemoThumbItem = React.memo((props: any) => {
         index, originalPageNum, logicalPageLabel,
         isSelected, isActive, isDragged, showCopyBadge, hoverTargetState,
         rot, localDim, thumbBaseWidth,
-        pdfUrl, file, isLoadable, registerRef,
+        pdfUrl, file, thumbRev, isLoadable, registerRef,
         handleThumbClick, handlePointerDown, onContextMenu
     } = props;
     const { t } = useTranslation();
@@ -66,24 +66,28 @@ const MemoThumbItem = React.memo((props: any) => {
     const footprintW = isRotated ? imgH : imgW;
     const footprintH = isRotated ? imgW : imgH;
 
-    let finalSrc = thumbCacheRef.current.get(`${pdfUrl}_${originalPageNum}_0_400`);
+    // Cache key theo zoom thực tế + thumbRev (pdfUrl/fid đổi sau edit) — tránh key chết `_0_400`
+    // và tránh giữ blob JPEG cũ khi path giữ nguyên sau commit.
+    const baseW = localDim?.w || 595;
+    const optimalZoom = Math.max(0.1, Math.min(1.5, (thumbBaseWidth * 1.3) / baseW));
+    const revToken = thumbRev || pdfUrl || '';
+    const cacheKey = `${revToken}_${originalPageNum}_0_${Math.round(optimalZoom * 1000)}`;
+    let finalSrc = thumbCacheRef.current.get(cacheKey);
     const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
 
     if (!finalSrc && isImage) {
         finalSrc = pdfUrl || undefined;
     } else if (!finalSrc && isLoadable && (window as any).__TAURI_INTERNALS__ && file?.path) {
-        // Chỉ tạo URL tile:// khi thumbnail nằm trong tầm nhìn VÀ trang chính đã hiển thị xong.
-        // Tránh hàng loạt request thumbnail tranh chấp pdfium handle với trang chính khi mới mở file.
-        // Render theo bề rộng hiển thị thực tế (oversample 1.3×) để QR/mã vạch trên trang nhỏ
-        // không bị vón thành mảng đen. render width(px) = localDim.w × zoom.
-        const baseW = localDim?.w || 595;
-        const optimalZoom = Math.max(0.1, Math.min(1.5, (thumbBaseWidth * 1.3) / baseW));
-        finalSrc = `http://tile.localhost/${encodeURIComponent(file.path)}/${originalPageNum}/${optimalZoom}/0/0/0/0/0`;
+        // Chỉ tạo URL tile khi thumbnail nằm trong tầm nhìn VÀ trang chính đã hiển thị xong.
+        // `r=` buộc finalSrc đổi theo thumbRev → useEffect re-fetch dù path không đổi.
+        finalSrc = `http://tile.localhost/${encodeURIComponent(file.path)}/${originalPageNum}/${optimalZoom}/0/0/0/0/0?r=${encodeURIComponent(revToken)}`;
     }
 
     const dimW = localDim ? (localDim.w * 25.4 / 72).toFixed(1) : 0;
     const dimH = localDim ? (localDim.h * 25.4 / 72).toFixed(1) : 0;
     const tooltipText = originalPageNum !== -1 ? t('misc.thumbSidebar:trang_kich_thuoc_tooltip', { page: logicalPageLabel, w: dimW, h: dimH }) : t('misc.thumbSidebar:trang_trong');
+    // Chưa có dim thật → contain tránh méo theo fallback A4 1.414; có dim → fill khớp khung.
+    const imgObjectFit: 'fill' | 'contain' = localDim ? 'fill' : 'contain';
 
     // FIX release: protocol tile.localhost (img/new Image/fetch) đều KHÔNG hiển thị ở release.
     // Lấy bytes JPEG qua IPC invoke('render_pdf_page') (đáng tin, giống tách nền) → blob: → img.
@@ -100,8 +104,6 @@ const MemoThumbItem = React.memo((props: any) => {
         (async () => {
             try {
                 const { invoke } = await import('@tauri-apps/api/core');
-                const baseW = localDim?.w || 595;
-                const optimalZoom = Math.max(0.1, Math.min(1.5, (thumbBaseWidth * 1.3) / baseW));
                 const bytes: ArrayBuffer = await invoke('render_pdf_page', {
                     filePath: file.path, page: originalPageNum, zoom: optimalZoom, rotation: 0,
                     clipX: null, clipY: null, clipW: null, clipH: null,
@@ -114,7 +116,8 @@ const MemoThumbItem = React.memo((props: any) => {
             }
         })();
         return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
-    }, [finalSrc, file?.path, originalPageNum, thumbBaseWidth, localDim?.w]);
+        // thumbRev: bust sau edit/commit khi path có thể giữ nguyên nhưng nội dung PDF đã đổi.
+    }, [finalSrc, file?.path, originalPageNum, thumbBaseWidth, localDim?.w, thumbRev, optimalZoom]);
 
     return (
         <div
@@ -143,7 +146,10 @@ const MemoThumbItem = React.memo((props: any) => {
             {/* SLOT ngoài = footprint SAU xoay (đã hoán rộng↔cao khi 90/270). Outline chọn bao
                 quanh slot. Khung trắng + ảnh nằm trong 1 KHỐI xoay cùng nhau bên trong slot →
                 khung luôn khớp hướng ruột, không còn "khung 1 hướng ruột 1 hướng". */}
-            <div className={`
+            <div
+                data-thumb-footprint="1"
+                data-thumb-rot={normRot}
+                className={`
                 relative flex items-center justify-center
                 ${isSelected ? 'outline outline-3 outline-blue-500' : 'outline outline-1 outline-black/20 dark:outline-white/10'}
             `} style={{ width: footprintW, height: footprintH }}>
@@ -163,12 +169,12 @@ const MemoThumbItem = React.memo((props: any) => {
                             width: imgW, height: imgH, position: 'absolute', left: '50%', top: '50%',
                             transform: `translate(-50%, -50%) rotate(${normRot}deg)`, transformOrigin: 'center center',
                             overflow: 'hidden',
-                        }} className="bg-white">
+                        }} className="bg-white" data-thumb-page="1">
                             {finalSrc ? (
                                 <img
                                     ref={thumbImgRef}
                                     alt={`Page ${originalPageNum}`}
-                                    style={{ width: '100%', height: '100%', display: 'block', objectFit: 'fill' }}
+                                    style={{ width: '100%', height: '100%', display: 'block', objectFit: imgObjectFit }}
                                     className="pointer-events-none bg-white"
                                     draggable={false}
                                 />
@@ -178,6 +184,8 @@ const MemoThumbItem = React.memo((props: any) => {
                                 </div>
                             )}
                         </div>
+                        {/* Indicator trên footprint (cùng hệ toạ độ AABB với main page outer box).
+                            Không gắn trong khối CSS-rotate — % left/top map thẳng từ updateViewportRect. */}
                         {isActive && (
                             <div className="absolute inset-0 overflow-hidden pointer-events-none z-10">
                                 <div
@@ -219,7 +227,8 @@ const MemoThumbItem = React.memo((props: any) => {
         prev.localDim?.w === next.localDim?.w &&
         prev.localDim?.h === next.localDim?.h &&
         prev.isLoadable === next.isLoadable &&
-        prev.pdfUrl === next.pdfUrl;
+        prev.pdfUrl === next.pdfUrl &&
+        prev.thumbRev === next.thumbRev;
 });
 
 // Cổng tải thumbnail: hoãn render thumbnail (qua tile://) cho đến khi trang chính
@@ -228,8 +237,8 @@ const MemoThumbItem = React.memo((props: any) => {
 function useThumbLoadGate(pdfUrl: string | null, skipReset?: boolean) {
     const [ready, setReady] = useState(false);
     useEffect(() => {
-        // Edit-commit: giữ cổng đang mở (không setReady(false)) → thumbnail không
-        // "tải lại" cả dải; trang bị sửa tự cập nhật do MemoThumbItem re-render.
+        // Edit-commit: giữ cổng đang mở (không setReady(false)) → không unmount cả dải.
+        // Nội dung từng thumb bust qua thumbRev (pdfUrl) trong MemoThumbItem useEffect.
         if (skipReset) return;
         setReady(false);
         let opened = false;
@@ -240,7 +249,7 @@ function useThumbLoadGate(pdfUrl: string | null, skipReset?: boolean) {
             window.removeEventListener('prynx-main-tile-ready', open);
             clearTimeout(t);
         };
-    }, [pdfUrl]);
+    }, [pdfUrl, skipReset]);
     return ready;
 }
 
@@ -263,6 +272,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
 
     const {
         thumbWidth,
+        livePanelWidth,
         isResizing,
         draggedIndex,
         hoverTargetIndex,
@@ -292,16 +302,22 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         }
     });
 
+    // Panel width hiệu dụng: lúc kéo resize dùng live width (style.width), không chỉ store.
+    const panelWidthForClamp = livePanelWidth ?? thumbWidth;
+
     // Khi thu hẹp panel / Ctrl+wheel phóng to thumb: ảnh (thumbBaseWidth) có thể RỘNG HƠN
     // panel → overflow cắt mất nửa phải. Clamp bề rộng hiển thị theo panel (trừ padding + scrollbar).
     // Trang xoay 90° footprint = chiều cao gốc ≈ base×ratio — chừa thêm margin 0.72.
     const THUMB_H_PAD = 52; // px-2 list + px-3 item + outline + scrollbar (~12)
-    const maxFootprintW = Math.max(48, thumbWidth - THUMB_H_PAD);
+    const maxFootprintW = Math.max(48, panelWidthForClamp - THUMB_H_PAD);
     const fittedThumbBase = Math.min(
         thumbBaseWidth,
         Math.floor(maxFootprintW * 0.72), // 0.72 ≈ 1/1.4 — an toàn cho portrait sau xoay 90°
     );
     const displayThumbBase = Math.max(40, fittedThumbBase);
+
+    // thumbRev: pdfUrl đổi sau mỗi edit-commit → force re-render IPC + revoke blob cũ.
+    const thumbRev = pdfUrl || '';
 
     // ═══ Lazy-load thumbnails ═══
     // Chỉ tải tile cho thumbnail đang nằm trong tầm nhìn (IntersectionObserver), kết hợp
@@ -348,7 +364,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
             ref={sidebarRef}
             tabIndex={-1}
             className={`flex flex-col bg-slate-50 dark:bg-[#121212] transition-[width] relative border-r border-black/20 dark:border-white/5 z-50 shrink-0 focus:outline-none ${isResizing ? 'duration-0' : 'duration-300'}`}
-            style={{ width: isThumbMenuOpen ? thumbWidth : 40 }}
+            style={{ width: isThumbMenuOpen ? (livePanelWidth ?? thumbWidth) : 40 }}
         >
             {/* Border Toggle Button */}
             <button
@@ -450,6 +466,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         localDim={allPageDims[originalPageNum]}
                                         thumbBaseWidth={displayThumbBase}
                                         pdfUrl={pdfUrl}
+                                        thumbRev={thumbRev}
                                         file={file}
                                         isLoadable={thumbsGateOpen && visibleThumbs.has(index)}
                                         registerRef={registerThumbRef}

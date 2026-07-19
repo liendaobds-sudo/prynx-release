@@ -399,11 +399,12 @@ def _read_verified_entitlements(token: str) -> dict:
         return {"plan": "free", "features": None}
 
 
-def _license_context(license_key: str, hwid: str, verified: bool, entitlements: dict | None = None) -> dict:
+def _license_context(license_key: str, hwid: str, verified: bool, entitlements: dict | None = None, license_token: str = "") -> dict:
     rights = entitlements or {"plan": "free", "features": None}
     return {
         "license_key": license_key,
         "hwid": hwid,
+        "license_token": license_token,
         "verified": verified,
         "plan": rights.get("plan") or "free",
         "features": rights.get("features"),
@@ -488,7 +489,7 @@ async def require_license(request: Request) -> dict:
         is_valid, expire_at = cached
         if time.time() < expire_at:
             if is_valid:
-                return _license_context(license_key, hwid, True, token_entitlements)
+                return _license_context(license_key, hwid, True, token_entitlements, lic_token)
             else:
                 raise HTTPException(status_code=403, detail="License key is invalid or has been revoked.")
     
@@ -518,7 +519,7 @@ async def require_license(request: Request) -> dict:
             _security_log_to_file(f"LICENSE_CHECK_ERROR reason={type(e).__name__}")
             raise HTTPException(status_code=403, detail="License check unavailable")
 
-    return _license_context(license_key, hwid, True, token_entitlements)
+    return _license_context(license_key, hwid, True, token_entitlements, lic_token)
 
 
 def enforce_feature(feature_id: str, license_info: dict) -> dict:

@@ -113,6 +113,51 @@ function hexLuminance(hex: string): number {
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 }
 
+/**
+ * Lưới sàn một cấp nét. Không dùng THREE.GridHelper vì helper đó vẽ riêng
+ * đường tâm và đường ô, dễ trông như hai lớp lưới khi nhìn ở góc xiên.
+ */
+function SingleLayerFloorGrid({
+    size,
+    divisions,
+    y,
+    color,
+}: {
+    size: number;
+    divisions: number;
+    y: number;
+    color: string;
+}) {
+    const geometry = useMemo(() => {
+        const half = size / 2;
+        const step = size / divisions;
+        const points: THREE.Vector3[] = [];
+        for (let i = 0; i <= divisions; i += 1) {
+            const offset = -half + i * step;
+            points.push(
+                new THREE.Vector3(offset, 0, -half),
+                new THREE.Vector3(offset, 0, half),
+                new THREE.Vector3(-half, 0, offset),
+                new THREE.Vector3(half, 0, offset),
+            );
+        }
+        return new THREE.BufferGeometry().setFromPoints(points);
+    }, [size, divisions]);
+
+    useEffect(() => () => geometry.dispose(), [geometry]);
+
+    return (
+        <lineSegments geometry={geometry} position={[0, y, 0]} renderOrder={2}>
+            <lineBasicMaterial
+                color={color}
+                transparent
+                opacity={0.55}
+                depthWrite={false}
+                toneMapped={false}
+            />
+        </lineSegments>
+    );
+}
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export interface ShadowFloorProps {
@@ -128,8 +173,12 @@ export interface ShadowFloorProps {
      * môi trường HDRI/component khác kiểm soát nền.
      */
     applyBackground?: boolean;
-    /** Có render mặt sàn đặc (nhận bóng) hay không. Mặc định `false` (chỉ lưới). */
+    /** Có render mặt sàn đặc (nhận bóng) hay không. Mặc định `true`. */
     showFloorPlane?: boolean;
+    /** Lưới đo kỹ thuật trên sàn; mặc định tắt cho chế độ mockup sạch. */
+    showGrid?: boolean;
+    /** Đổi giá trị để chụp lại bóng một lần sau khi hình học hộp đã ổn định. */
+    shadowRevision?: string | number;
 }
 
 /**
@@ -144,7 +193,9 @@ export default function ShadowFloor({
     floorY = 0,
     size = 1000,
     applyBackground = true,
-    showFloorPlane = false,
+    showFloorPlane = true,
+    showGrid = false,
+    shadowRevision = 0,
 }: ShadowFloorProps) {
     const backgroundPreset = useMockupStore((s) => s.backgroundPreset);
     const preset = useMemo(() => getBackgroundPreset(backgroundPreset), [backgroundPreset]);
@@ -167,24 +218,28 @@ export default function ShadowFloor({
     const shadowScale = size * 1.4;
     const floorSize = size * 3;
 
-    // Lưới caro tham chiếu: ô ~ size/20, màu tương phản với độ sáng sàn.
-    const cell = Math.max(5, size / 20);
-    const divisions = Math.max(4, Math.round(floorSize / cell));
+    // Giới hạn mật độ để tránh moiré/nhấp nháy ở góc camera xiên.
+    const divisions = Math.max(8, Math.min(32, Math.round(floorSize / Math.max(10, size / 12))));
     const dark = hexLuminance(preset.backgroundColor) < 0.5;
     const gridColor = dark ? '#2c3138' : '#d2d8e0';
-    const gridCenterColor = dark ? '#3a4049' : '#c2c9d2';
+    const shadowLift = Math.max(0.08, size * 0.0005);
+    const gridLift = shadowLift + Math.max(0.04, size * 0.0002);
 
     return (
         <group name="mockup-floor">
             {/* Soft/contact shadow tại chân hộp tiếp giáp mặt nền (Yêu cầu 3.5) */}
             <ContactShadows
-                position={[0, floorY + 0.01, 0]}
+                key={shadowRevision}
+                position={[0, floorY + shadowLift, 0]}
                 scale={shadowScale}
-                resolution={1024}
+                resolution={512}
                 far={size}
                 blur={preset.shadowBlur}
                 opacity={preset.shadowOpacity}
                 color={preset.shadowColor}
+                frames={1}
+                smooth
+                depthWrite={false}
             />
 
             {/* Mặt sàn đặc theo preset (nhận bóng đổ của đèn studio) */}
@@ -192,7 +247,6 @@ export default function ShadowFloor({
                 <mesh
                     rotation={[-Math.PI / 2, 0, 0]}
                     position={[0, floorY, 0]}
-                    receiveShadow
                 >
                     <planeGeometry args={[floorSize, floorSize]} />
                     <meshStandardMaterial
@@ -204,11 +258,15 @@ export default function ShadowFloor({
                 </mesh>
             )}
 
-            {/* Lưới caro tham chiếu trên mặt sàn (đặt hơi trên sàn để thấy rõ) */}
-            <gridHelper
-                args={[floorSize, divisions, gridCenterColor, gridColor]}
-                position={[0, floorY + 0.05, 0]}
-            />
+            {/* Lưới chỉ dành cho kiểm tra kỹ thuật, không phủ lên mockup mặc định. */}
+            {showGrid && (
+                <SingleLayerFloorGrid
+                    size={floorSize}
+                    divisions={divisions}
+                    y={floorY + gridLift}
+                    color={gridColor}
+                />
+            )}
         </group>
     );
 }

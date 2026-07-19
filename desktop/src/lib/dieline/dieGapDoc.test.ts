@@ -67,14 +67,13 @@ describe('dieGap doc static test (Requirement 8.3)', () => {
         expect(src).toMatch(/dieGap:\s*number;/);
     });
 
-    it('JSDoc dieGap mô tả Polygon_Offset thực theo từng cạnh', () => {
+    it('JSDoc dieGap mô tả khoảng hở tối thiểu trên CUT thật', () => {
         // Đoạn JSDoc phải gắn trực tiếp vào thuộc tính dieGap
         expect(dieGapDoc.length).toBeGreaterThan(0);
-        // Mô tả phép offset polygon thực
-        expect(dieGapDoc).toMatch(/offset polygon thực/i);
-        // Nêu rõ tác động lên từng cạnh của đường biên (outline)
-        expect(dieGapDoc).toMatch(/từng cạnh/i);
-        expect(dieGapDoc).toMatch(/outline|đường biên/i);
+        // Hợp đồng mới: khoảng hở tối thiểu được kiểm tra trên CUT thật.
+        expect(dieGapDoc).toMatch(/khoảng hở dao bế tối thiểu/i);
+        expect(dieGapDoc).toMatch(/silhouette thực/i);
+        expect(dieGapDoc).toMatch(/CUT/i);
     });
 
     it('KHÔNG còn ghi chú "known limitation Giai đoạn 2"', () => {

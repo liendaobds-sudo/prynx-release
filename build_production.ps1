@@ -194,6 +194,26 @@ if (-not $SkipNuitka) {
         }
     }
 
+    # Bundle the protected TypeScript engine before Rust include_str! embeds it.
+    # This keeps the generator out of the WebView while preserving the existing
+    # well-tested geometry implementation inside the native extension.
+    Push-Location "$ROOT\desktop"
+    if (-not (Test-Path "$ROOT\desktop\node_modules\.bin\vite.cmd")) {
+        npm.cmd ci --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to install locked frontend dependencies" -ForegroundColor Red
+            Pop-Location
+            exit 1
+        }
+    }
+    npm.cmd run build:dieline-sidecar
+    $dielineBundleExit = $LASTEXITCODE
+    Pop-Location
+    if ($dielineBundleExit -ne 0) {
+        Write-Host "ERROR: Failed to build protected dieline engine" -ForegroundColor Red
+        exit 1
+    }
+
     # ---- Step 1a: Build the Rust/Python native extension ----
 
     # Rebuild the Rust/Python extension for the active Python ABI on every full
@@ -450,9 +470,16 @@ if (-not $SkipTauri) {
     Write-Host "`n[4/5] Building frontend + computing integrity hash..." -ForegroundColor Yellow
 
     Push-Location "$ROOT\desktop"
-    npm run build
+    npm.cmd run build
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Frontend build failed!" -ForegroundColor Red
+        Pop-Location
+        exit 1
+    }
+
+    npm.cmd run check:dieline-webview
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Protected dieline engine leaked into frontend bundle!" -ForegroundColor Red
         Pop-Location
         exit 1
     }

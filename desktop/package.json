@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --force",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "build:dieline-sidecar": "vite build --config vite.dieline.config.ts",
+    "check:dieline-webview": "node scripts/check-dieline-webview-bundle.mjs",
     "build": "tsc --noEmit -p tsconfig.app.json && vite build",
     "lint": "eslint .",
     "preview": "vite preview",

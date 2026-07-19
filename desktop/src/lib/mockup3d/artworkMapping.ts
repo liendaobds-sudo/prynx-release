@@ -154,6 +154,8 @@ export function computePanelUV(
     transform: ArtworkTransform,
     globalBBox: BBox,
     faceSide: FaceSide,
+    /** Tỷ lệ rộng/cao của ảnh nguồn. Khi có, ảnh được cover mà không méo. */
+    imageAspect?: number,
 ): Float32Array {
     const points = getOutlinePoints(panel);
     const uv = new Float32Array(points.length * 2);
@@ -172,8 +174,40 @@ export function computePanelUV(
     const flipH = !!transform?.flipH;
     const flipV = !!transform?.flipV;
 
+    // Khi biết tỷ lệ ảnh thật, ánh xạ trong hệ tọa độ vật lý của khuôn thay
+    // vì chuẩn hóa X/Y độc lập. Ảnh được phóng đều theo kiểu "cover": phủ
+    // kín khung tham chiếu, giữ nguyên tỷ lệ và crop cân giữa phần dư.
+    // Giữ nhánh cũ khi không có imageAspect để tương thích các caller/test
+    // thuần không có texture.
+    const preserveAspect = Number.isFinite(imageAspect) && imageAspect! > 0
+        && ref.width > 0 && ref.height > 0;
+    const coverScale = preserveAspect
+        ? Math.max(ref.width / imageAspect!, ref.height)
+        : 1;
+    const renderedWidth = imageAspect! * coverScale * scale;
+    const renderedHeight = coverScale * scale;
+    const centerX = ref.minX + ref.width / 2;
+    const centerY = ref.minY + ref.height / 2;
+
     for (let i = 0; i < points.length; i++) {
         const p = points[i];
+
+        if (preserveAspect) {
+            // Tọa độ vật lý quanh tâm giúp phép xoay cũng không làm ảnh bị
+            // bóp khi khung khuôn không vuông.
+            let dx = p.x - centerX;
+            let dy = p.y - centerY;
+            if (faceSide === 'inner') dx = -dx;
+            if (flipH) dx = -dx;
+            if (flipV) dy = -dy;
+
+            // Xoay ngược hệ lấy mẫu để ảnh xoay thuận chiều rotationDeg.
+            const rx = dx * cosR + dy * sinR;
+            const ry = -dx * sinR + dy * cosR;
+            uv[i * 2] = rx / renderedWidth + 0.5 - offX;
+            uv[i * 2 + 1] = ry / renderedHeight + 0.5 - offY;
+            continue;
+        }
 
         // Tọa độ chuẩn hóa cơ sở trong [0,1] theo khung tham chiếu.
         let uBase = normalizeCoord(p.x, ref.minX, ref.width);

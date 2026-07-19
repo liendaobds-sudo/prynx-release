@@ -50,7 +50,7 @@ import type { BBox, Panel, Point2D } from '../../lib/mockup3d/types';
 import { buildPanelSolid, buildFoldFilletGeometry, clampThickness, normalizeEdgeColor } from '../../lib/mockup3d/panelSolid';
 import { buildConeFrustumGeometry, buildConeGluePatchGeometry, buildConeOutlineGeometries, type ConeWarpParams } from '../../lib/mockup3d/cupSleeveCone';
 import { tracePerimeter } from '../../lib/dieline/tracePerimeter';
-import { computePanelUV } from '../../lib/mockup3d/artworkMapping';
+import { clampArtworkTransform, computePanelUV } from '../../lib/mockup3d/artworkMapping';
 import { getFinish } from '../../lib/mockup3d/materialLibrary';
 import { applyFoldCompensation } from '../../lib/mockup3d/foldCompensation';
 import { applyExplodedOffset, type Vec3 } from '../../lib/mockup3d/explodedView';
@@ -269,6 +269,8 @@ function applySolidPanelUV(
     outerTransform: ArtworkXform,
     innerTransform: ArtworkXform,
     globalBBox: BBox,
+    outerImageAspect?: number,
+    innerImageAspect?: number,
 ): void {
     const position = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
     if (!position || position.count === 0) {
@@ -298,8 +300,8 @@ function applySolidPanelUV(
     const pseudoPanel = { ...panel, outline: points } as Panel;
 
     // Mặt ngoài / mặt trong dùng transform ĐỘC LẬP (Yêu cầu 5.4).
-    const outerUV = computePanelUV(pseudoPanel, mode, outerTransform, globalBBox, 'outer');
-    const innerUV = computePanelUV(pseudoPanel, mode, innerTransform, globalBBox, 'inner');
+    const outerUV = computePanelUV(pseudoPanel, mode, outerTransform, globalBBox, 'outer', outerImageAspect);
+    const innerUV = computePanelUV(pseudoPanel, mode, innerTransform, globalBBox, 'inner', innerImageAspect);
 
     const uv = new Float32Array(count * 2);
     for (let i = 0; i < count; i++) {
@@ -355,6 +357,96 @@ function buildPathLineGeometries(panel: Panel): THREE.BufferGeometry[] {
 }
 
 /**
+ * Giữ tỷ lệ artwork trên thân bọc ly. Geometry nón có UV chuẩn hóa sẵn;
+ * chuyển UV đó sang hệ vật lý của mặt khai triển tại chu vi trung bình.
+ */
+function applyConeArtworkUV(
+    geometry: THREE.BufferGeometry,
+    cone: ConeWarpParams,
+    outerTransform: ArtworkXform,
+    innerTransform: ArtworkXform,
+    outerImageAspect?: number,
+    innerImageAspect?: number,
+): void {
+    const uv = geometry.getAttribute('uv') as THREE.BufferAttribute | undefined;
+    if (!uv || uv.count === 0) return;
+
+    const cacheKey = '__prynxBaseArtworkUv';
+    let base = geometry.userData[cacheKey] as Float32Array | undefined;
+    if (!base || base.length !== uv.count * 2) {
+        base = Float32Array.from(uv.array as ArrayLike<number>);
+        geometry.userData[cacheKey] = base;
+    }
+
+    const coverage = Math.max(0, cone.psiMax / (2 * Math.PI));
+    const meanCircumference = Math.PI * ((cone.d1 + cone.d2) / 2) * coverage;
+    const slantHeight = Math.max(1e-6, cone.r2 - cone.r1);
+    const targetAspect = meanCircumference / slantHeight;
+
+    const applyRange = (
+        start: number,
+        count: number,
+        side: 'outer' | 'inner',
+        transform: ArtworkXform,
+        imageAspect?: number,
+    ) => {
+        if (!Number.isFinite(imageAspect) || imageAspect! <= 0 || !(targetAspect > 0)) return;
+        const t = clampArtworkTransform(transform);
+        const scale = t.scalePct / 100;
+        const cover = Math.max(targetAspect / imageAspect!, 1);
+        const renderedWidth = imageAspect! * cover * scale;
+        const renderedHeight = cover * scale;
+        const rot = ((t.rotationDeg ?? 0) * Math.PI) / 180;
+        const cosR = Math.cos(rot);
+        const sinR = Math.sin(rot);
+
+        const end = Math.min(uv.count, start + count);
+        for (let i = Math.max(0, start); i < end; i++) {
+            let dx = (base![i * 2] - 0.5) * targetAspect;
+            let dy = base![i * 2 + 1] - 0.5;
+            if (side === 'inner') dx = -dx;
+            if (t.flipH) dx = -dx;
+            if (t.flipV) dy = -dy;
+            const rx = dx * cosR + dy * sinR;
+            const ry = -dx * sinR + dy * cosR;
+            uv.setXY(
+                i,
+                rx / renderedWidth + 0.5 - t.offsetXPct / 100,
+                ry / renderedHeight + 0.5 - t.offsetYPct / 100,
+            );
+        }
+    };
+
+    // Khôi phục UV gốc trước mỗi lần đổi transform để không cộng dồn sai số.
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, base[i * 2], base[i * 2 + 1]);
+    for (const group of geometry.groups) {
+        if (group.materialIndex === MAT_OUTER) {
+            applyRange(group.start, group.count, 'outer', outerTransform, outerImageAspect);
+        } else if (group.materialIndex === MAT_INNER) {
+            applyRange(group.start, group.count, 'inner', innerTransform, innerImageAspect);
+        }
+    }
+    uv.needsUpdate = true;
+}
+/** Đọc đúng tỷ lệ pixel của ảnh đã giải mã trong THREE.Texture. */
+function textureImageAspect(texture: THREE.Texture | null): number | undefined {
+    const image = texture?.image as {
+        naturalWidth?: number;
+        naturalHeight?: number;
+        videoWidth?: number;
+        videoHeight?: number;
+        width?: number;
+        height?: number;
+    } | undefined;
+    if (!image) return undefined;
+    const width = image.naturalWidth ?? image.videoWidth ?? image.width;
+    const height = image.naturalHeight ?? image.videoHeight ?? image.height;
+    return Number.isFinite(width) && Number.isFinite(height) && width! > 0 && height! > 0
+        ? width! / height!
+        : undefined;
+}
+
+/**
  * Trích mảng điểm (mỗi cặp liên tiếp = 1 đoạn) từ geometry lineSegments để
  * truyền vào drei <Line segments>. Gán `z` cố định (lượng nâng nét) cho mọi
  * điểm. Trả [] nếu rỗng.
@@ -406,6 +498,8 @@ export default function SolidPanelMesh({
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
     const outerUrl = useMockupStore((s) => s.artwork.outer.url);
     const setOuterArtworkTransform = useMockupStore((s) => s.setOuterArtworkTransform);
+    const outerImageAspect = textureImageAspect(texture);
+    const innerImageAspect = textureImageAspect(innerTexture);
 
     // Độ dày hiển thị đã chuẩn hóa (mm) — dùng cho canh giữa Z và đặt line overlay.
     const depth = clampThickness(thickness);
@@ -468,9 +562,19 @@ export default function SolidPanelMesh({
 
     // ── 2. UV theo ảnh nghệ thuật (Yêu cầu 5.1, 5.3, 5.4) ──
     // Áp lại khi geometry hoặc tham số ánh xạ đổi; mutate uv attribute tại chỗ.
-    // Nón cụt đã có UV dựng sẵn trong builder → bỏ qua bước này.
     useEffect(() => {
-        if (!geometry || coneWarp) return;
+        if (!geometry) return;
+        if (coneWarp) {
+            applyConeArtworkUV(
+                geometry,
+                coneWarp,
+                outerTransform,
+                innerTransform,
+                outerImageAspect,
+                innerImageAspect,
+            );
+            return;
+        }
         applySolidPanelUV(
             geometry as THREE.ExtrudeGeometry,
             panel,
@@ -478,8 +582,10 @@ export default function SolidPanelMesh({
             outerTransform,
             innerTransform,
             globalBBox,
+            outerImageAspect,
+            innerImageAspect,
         );
-    }, [geometry, panel, artworkMode, outerTransform, innerTransform, globalBBox, coneWarp]);
+    }, [geometry, panel, artworkMode, outerTransform, innerTransform, globalBBox, coneWarp, outerImageAspect, innerImageAspect]);
 
     // ── 3. Vật liệu: mặt ngoài (finish/ảnh) ≠ mặt trong (giấy bồi) ≠ tường cạnh.
     //    Thứ tự material khớp chỉ số nhóm: [MAT_OUTER, MAT_WALL, MAT_INNER]
@@ -706,7 +812,7 @@ export default function SolidPanelMesh({
     const flatHasCrease = !coneWarp && !hideCadLines && !!creaseGeo && (creaseGeo.getAttribute('position')?.count ?? 0) > 0;
     // Bọc ly: nét khuôn đã ánh xạ bám mặt nón; đặt ở cùng tịnh tiến với geometry
     // nón (cx, cy−H/2) để trùng surface.
-    const coneLines = !!coneWarp && !!conePaths;
+    const coneLines = !!coneWarp && !hideCadLines && !!conePaths;
     const coneCutHas = coneLines && !!cutGeo && (cutGeo.getAttribute('position')?.count ?? 0) > 0;
     const coneCreaseHas = coneLines && !!creaseGeo && (creaseGeo.getAttribute('position')?.count ?? 0) > 0;
     const coneLinePos: [number, number, number] = coneWarp

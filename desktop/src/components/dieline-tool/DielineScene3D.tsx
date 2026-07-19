@@ -79,6 +79,7 @@ function BoxScene() {
     const outerArtworkUrl = useMockupStore((s) => s.artwork.outer.url);
     const innerArtworkUrl = useMockupStore((s) => s.artwork.inner.url);
     const innerArtworkEnabled = useMockupStore((s) => s.artwork.inner.enabled);
+    const showTechnicalLines = useMockupStore((s) => s.showTechnicalLines);
     const textureUrl = outerArtworkUrl ?? mockupTextureUrl;
     const innerUrl = innerArtworkEnabled ? innerArtworkUrl : null;
 
@@ -109,6 +110,19 @@ function BoxScene() {
             innerTexture.flipY = true;
         }
     }, [innerTexture, innerUrl]);
+    useEffect(() => () => {
+        if (textureUrl?.startsWith('blob:')) {
+            texture.dispose();
+            useLoader.clear(THREE.TextureLoader, textureUrl);
+        }
+    }, [texture, textureUrl]);
+    useEffect(() => () => {
+        if (innerUrl?.startsWith('blob:')) {
+            innerTexture.dispose();
+            useLoader.clear(THREE.TextureLoader, innerUrl);
+        }
+    }, [innerTexture, innerUrl]);
+
 
     // Compute depth map for auto-phasing (cần cho SolidPanelMesh / foldCompensation).
     const panels = dieline?.panels ?? [];
@@ -202,7 +216,7 @@ function BoxScene() {
                 coneWarp={isCupSleeve ? coneWarp : null}
                 conePaths={panel.name === 'body' && isCupSleeve ? dieline.allPaths : null}
                 conePatchOnly={isCupSleeve && panel.name !== 'body'}
-                hideCadLines={dieline.standardCode === 'ENV'}
+                hideCadLines={!showTechnicalLines || dieline.standardCode === 'ENV'}
                 roundFolds={dieline.params.boxType === 'pizza'}
             />
         )
@@ -378,8 +392,9 @@ function SceneExporter() {
 
 export default function DielineScene3D() {
   const { t } = useTranslation();
-    const { dieline, isStanding } = useBoxStore();
+    const { dieline, isStanding, foldProgress, isAnimating } = useBoxStore();
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
+    const showFloorGrid = useMockupStore((s) => s.showFloorGrid);
 
     if (!dieline) {
         return (
@@ -411,7 +426,13 @@ export default function DielineScene3D() {
                 <EnvironmentRig />
 
                 {/* ── Contact/soft shadow + preset nền/sàn (Yêu cầu 3.5, 7.3) ── */}
-                <ShadowFloor floorY={-yOffset} size={bbExtent} />
+                <ShadowFloor
+                    floorY={-yOffset}
+                    size={bbExtent}
+                    showFloorPlane
+                    showGrid={showFloorGrid}
+                    shadowRevision={isAnimating ? 'animating' : Math.round(foldProgress * 1000)}
+                />
 
                 {/* Box layout orientation */}
                 <group

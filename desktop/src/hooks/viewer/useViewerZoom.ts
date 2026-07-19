@@ -368,8 +368,14 @@ export function useViewerZoom(props: UseViewerZoomProps) {
         if (!scrollEl || !activePage) return;
 
         // Scope query trong instance này (ID bị trùng giữa các tab mounted).
+        // page footprint = outer box (cùng hệ AABB với data-thumb-footprint trên thumb),
+        // KHÔNG lấy khối CSS-rotate bên trong — tránh % lệch khi trang xoay 90°/270° (T3).
         const pageContainer = scrollEl.querySelector(`#pdf-page-container-${activePage}`);
-        const pageEl = pageContainer?.lastElementChild as HTMLElement;
+        const pageWrap = pageContainer?.lastElementChild as HTMLElement | null;
+        // LivePageFrame container (footprint outer) — class có `/` nên query bằng attribute.
+        const pageEl = (pageWrap?.querySelector('[class*="group/pdf-frame"]') as HTMLElement | null)
+            || (pageWrap?.firstElementChild as HTMLElement | null)
+            || pageWrap;
         const indicatorEl = sidebarRef.current?.querySelector('#thumb-viewport-indicator') as HTMLElement | null;
         if (!pageEl || !indicatorEl) {
             if (indicatorEl) indicatorEl.style.display = 'none';
@@ -439,7 +445,10 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             const el = internalScrollRef.current;
             // Scope query trong instance này (ID bị trùng giữa các tab mounted).
             const pageContainer = el?.querySelector(`#pdf-page-container-${activePage}`);
-            const pageEl = pageContainer?.lastElementChild as HTMLElement;
+            const pageWrap = pageContainer?.lastElementChild as HTMLElement | null;
+            const pageEl = (pageWrap?.querySelector('[class*="group/pdf-frame"]') as HTMLElement | null)
+                || (pageWrap?.firstElementChild as HTMLElement | null)
+                || pageWrap;
             if (!el || !pageEl) return;
 
             const startX = typeof e.detail?.x === 'number' ? e.detail.x : 0;
@@ -451,11 +460,14 @@ export function useViewerZoom(props: UseViewerZoomProps) {
             const thumbItem = indicatorEl?.closest('.acro-thumb-item') as HTMLElement;
             if (!thumbItem) return;
 
-            const thumbImage = thumbItem.querySelector('img') || thumbItem.querySelector('.bg-white.flex.relative > div');
-            if (!thumbImage) return;
+            // Scale theo footprint slot (AABB sau xoay), không theo <img> trong khối CSS-rotate (T3).
+            const thumbFootprint = thumbItem.querySelector('[data-thumb-footprint]') as HTMLElement
+                || thumbItem.querySelector('img')
+                || thumbItem;
+            if (!thumbFootprint) return;
 
             const pageRect = pageEl.getBoundingClientRect();
-            const thumbRect = thumbImage.getBoundingClientRect();
+            const thumbRect = thumbFootprint.getBoundingClientRect();
             
             const scaleX = (pageRect.width || 1) / Math.max(1, thumbRect.width || 1);
             const scaleY = (pageRect.height || 1) / Math.max(1, thumbRect.height || 1);

@@ -60,11 +60,24 @@ interface LoadedImageInfo {
  * Trả về thông tin ảnh khi nạp thành công; reject khi ảnh không nạp được
  * (Yêu cầu 5.9 — nhánh lỗi nạp ảnh).
  */
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const MAX_IMAGE_EDGE = 8192;
+const MAX_IMAGE_PIXELS = 40_000_000;
+
 function loadImageFile(file: File): Promise<LoadedImageInfo> {
     return new Promise((resolve, reject) => {
+        if (file.size > MAX_IMAGE_BYTES) {
+            reject(new Error('image-file-too-large')); return;
+        }
         const url = URL.createObjectURL(file);
         const img = new Image();
         img.onload = () => {
+            if (img.naturalWidth > MAX_IMAGE_EDGE || img.naturalHeight > MAX_IMAGE_EDGE
+                || img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
+                URL.revokeObjectURL(url);
+                reject(new Error('image-dimensions-too-large'));
+                return;
+            }
             resolve({ url, width: img.naturalWidth, height: img.naturalHeight, format: file.type });
         };
         img.onerror = () => {
@@ -301,13 +314,17 @@ export default function MockupArtworkPanel() {
     async function handleArtworkUpload(
         file: File,
         setUrl: (url: string | null) => void,
+        setTransform: (transform: ArtworkTransform) => void,
         setError: (msg: string | null) => void,
         setName: (n: string | null) => void,
     ) {
         setError(null);
         try {
             const info = await loadImageFile(file);
-            setUrl(info.url); // transform (scale/offset) giữ nguyên — không reset
+            setUrl(info.url);
+            // Ảnh mới luôn bắt đầu từ đúng 100%, không thừa hưởng scale/offset
+            // của ảnh trước khiến người dùng tưởng ảnh vừa tải đã bị sai.
+            setTransform({ ...DEFAULT_TRANSFORM });
             setName(file.name);
         } catch {
             setUrl(null);
@@ -384,7 +401,7 @@ export default function MockupArtworkPanel() {
                     label={t('dieline.mockupArtwork:anh_mat_ngoai')}
                     url={artwork.outer.url}
                     fileName={outerName}
-                    onFile={(f) => handleArtworkUpload(f, setOuterArtworkUrl, setOuterError, setOuterName)}
+                    onFile={(f) => handleArtworkUpload(f, setOuterArtworkUrl, setOuterArtworkTransform, setOuterError, setOuterName)}
                     onClear={() => { setOuterArtworkUrl(null); setOuterError(null); setOuterName(null); }}
                 />
                 {outerError && (
@@ -461,7 +478,7 @@ export default function MockupArtworkPanel() {
                             label={t('dieline.mockupArtwork:anh_mat_trong')}
                             url={artwork.inner.url}
                             fileName={innerName}
-                            onFile={(f) => handleArtworkUpload(f, setInnerArtworkUrl, setInnerError, setInnerName)}
+                            onFile={(f) => handleArtworkUpload(f, setInnerArtworkUrl, setInnerArtworkTransform, setInnerError, setInnerName)}
                             onClear={() => { setInnerArtworkUrl(null); setInnerError(null); setInnerName(null); }}
                         />
                         {innerError && (

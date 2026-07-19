@@ -6,6 +6,7 @@
 import React, { useRef, useCallback, useEffect, useState, useMemo } from 'react';
 import { useBoxStore } from '../../store/useBoxStore';
 import { PathSegment } from '../../lib/dieline/types';
+import { svgPlacementTransform } from '../../lib/dieline/placementTransform';
 
 // ── CQ-2: Theme-aware tag styles with MutationObserver ──────
 
@@ -41,40 +42,11 @@ function calcDielineTransform(
     pos: { x: number; y: number; rotation: number },
     bb: { minX: number; minY: number; width: number; height: number; maxX?: number; maxY?: number },
 ): string {
-    const { x, y, rotation } = pos;
-    // Tâm bbox (trong không gian template đã Y-flip)
-    const cx = bb.minX + bb.width / 2;
-    const cy = bb.minY + bb.height / 2;
-
-    if (rotation === 0) {
-        return `translate(${x - bb.minX}, ${y - bb.minY})`;
-    }
-
-    // Cho mọi góc xoay: đặt bbox vào vị trí (x,y) rồi xoay quanh tâm bbox.
-    // Sau xoay, bbox xoay chiếm diện tích khác → cần bù offset.
-    // Với 180°: kích thước không đổi → không cần bù.
-    // Với 90°/270°: W↔H swap → cần bù để (x,y) vẫn là góc trên-trái.
-
-    if (rotation === 180) {
-        return `translate(${x - bb.minX}, ${y - bb.minY}) rotate(180, ${cx}, ${cy})`;
-    }
-
-    if (rotation === 90) {
-        // Xoay -90° quanh tâm bbox. Sau xoay, top-left dịch:
-        //   tx = x - minX + (height - width)/2
-        //   ty = y - minY + (width - height)/2
-        const dx = (bb.height - bb.width) / 2;
-        const dy = (bb.width - bb.height) / 2;
-        return `translate(${x - bb.minX + dx}, ${y - bb.minY + dy}) rotate(-90, ${cx}, ${cy})`;
-    }
-
-    if (rotation === 270) {
-        const dx = (bb.height - bb.width) / 2;
-        const dy = (bb.width - bb.height) / 2;
-        return `translate(${x - bb.minX + dx}, ${y - bb.minY + dy}) rotate(90, ${cx}, ${cy})`;
-    }
-
-    return `translate(${x - bb.minX}, ${y - bb.minY})`;
+    return svgPlacementTransform(pos, {
+        ...bb,
+        maxX: bb.maxX ?? bb.minX + bb.width,
+        maxY: bb.maxY ?? bb.minY + bb.height,
+    });
 }
 
 // ── Build fill path — closed polygon per panel ──────────────

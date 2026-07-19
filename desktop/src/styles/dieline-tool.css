@@ -456,6 +456,7 @@
 
 /* --- Viewport --- */
 .dt-viewport {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -526,6 +527,14 @@
   margin-left: 6px;
 }
 
+.dt-export-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--dt-bg-tertiary);
+  color: var(--dt-text-secondary);
+  border-color: var(--dt-border) !important;
+}
+
 /* --- Canvas Area --- */
 .dt-canvas-area {
   flex: 1;
@@ -533,6 +542,22 @@
   position: relative;
 }
 
+
+.dt-stale-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--dt-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--dt-bg-primary) 72%, transparent);
+  backdrop-filter: blur(1px);
+  pointer-events: all;
+}
 /* --- 2D Canvas --- */
 .dt-canvas-2d-container {
   width: 100%;

@@ -12,8 +12,9 @@ import NestingPanel from './NestingPanel';
 import NestingCanvas from './NestingCanvas';
 import { useBoxStore } from '../../store/useBoxStore';
 import { downloadPDF, buildDielinePdfBlob } from '../../lib/dieline/exportPDF';
-import { downloadNestingPDF, buildNestingPdfBlob } from '../../lib/dieline/exportNestingPDF';
+import { downloadNestingPDF, buildNestingPdfBlob, buildTrayNestingPdfBlob, downloadTrayNestingPDF } from '../../lib/dieline/exportNestingPDF';
 import { BoxParams } from '../../lib/dieline/types';
+import { downloadProductionDielinePDF, downloadProductionNestingPDF, downloadProductionTrayNestingPDF } from '../../lib/dieline/productionPDF';
 import '../../styles/dieline-tool.css';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -53,7 +54,8 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
     const { openPrintDialog, printDialog } = usePrintDialog();
     const [view, setView] = useState<'gallery' | 'editor'>('gallery');
     const [activeTab, setActiveTab] = useState<'2d' | '3d' | 'split' | 'nesting'>('2d');
-    const { dieline, nestingResult, nestingConfig, setParam } = useBoxStore();
+    const { dieline, nestingResult, sleeveNestingResult, nestingConfig, setParam, regenerate, isGenerating, isModelCurrent, generationError } = useBoxStore();
+    const canExport = Boolean(dieline && isModelCurrent && !isGenerating && !generationError);
 
     // User selects a box type from the gallery → switch to editor
     const handleSelectType = (type: BoxParams['boxType']) => {
@@ -66,20 +68,30 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
     // generate blob tại thời điểm in. Dùng hạ tầng chung (modal tỉ lệ + print_pdf).
     // autoRotate=true: khuôn bế thường ngang, cho xoay lọt khổ giấy tiện hơn.
     const handlePrint = useCallback(async () => {
-        if (!dieline) { toast.warning(tv('Chưa có khuôn để in')); return; }
+        if (!dieline || !canExport) {
+            toast.warning(tv('Khuôn đang cập nhật hoặc có lỗi; chưa thể in.'));
+            return;
+        }
         const toastId = toast.loading(tv('Đang tạo PDF...'));
         try {
-            const blob = activeTab === 'nesting' && nestingResult
-                ? await buildNestingPdfBlob(dieline, nestingResult, nestingConfig)
-                : await buildDielinePdfBlob(dieline);
+            let numPages = 1;
+            let blob: Blob | null;
+            if (activeTab === 'nesting' && nestingResult) {
+                if (dieline.params.boxType === 'tray' && sleeveNestingResult) {
+                    blob = await buildTrayNestingPdfBlob(dieline, nestingResult, sleeveNestingResult, nestingConfig);
+                    numPages = nestingConfig.trayNestingMode === 'split' ? 2 : 1;
+                } else {
+                    blob = await buildNestingPdfBlob(dieline, nestingResult, nestingConfig);
+                }
+            } else blob = await buildDielinePdfBlob(dieline);
             toast.dismiss(toastId);
             if (!blob) { toast.error(tv('Không tạo được PDF để in')); return; }
-            await openPrintDialog({ source: blob, numPages: 1, autoRotateDefault: true });
+            await openPrintDialog({ source: blob, numPages, autoRotateDefault: true });
         } catch (e: any) {
             toast.dismiss(toastId);
             toast.error(tv('Không thể in file: ') + (e?.message || e));
         }
-    }, [dieline, activeTab, nestingResult, nestingConfig, openPrintDialog]);
+    }, [dieline, canExport, activeTab, nestingResult, sleeveNestingResult, nestingConfig, openPrintDialog]);
 
     useEffect(() => {
         const onTriggerPrint = (e: any) => {
@@ -120,6 +132,25 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
 
             {/* Right Panel — Canvas */}
             <section className="dt-viewport">
+                {(isGenerating || generationError) && (
+                    <div
+                        role="status"
+                        style={{
+                            position: 'absolute', top: 10, right: 12, zIndex: 30,
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '7px 10px', borderRadius: 8,
+                            background: generationError ? '#7f1d1d' : 'rgba(15, 23, 42, 0.88)',
+                            color: '#fff', fontSize: 12, boxShadow: '0 3px 12px rgba(0,0,0,.2)',
+                        }}
+                    >
+                        {isGenerating ? tv('Đang cập nhật khuôn…') : generationError}
+                        {generationError && (
+                            <button className="dt-toolbar-btn" onClick={regenerate} style={{ color: '#fff' }}>
+                                {tv('Thử lại')}
+                            </button>
+                        )}
+                    </div>
+                )}
                 {/* Tab Switcher */}
                 <div className="dt-tab-bar">
                     <button
@@ -152,26 +183,51 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                         {t('dieline.dieline:xep_khuon')}
                     </button>
                     {(activeTab === '2d' || activeTab === 'split') && dieline && (
-                        <button
-                            className="dt-export-tab"
-                            onClick={() => downloadPDF(dieline)}
-                        >
-                            ⬇ PDF
-                        </button>
+                        <>
+                            <button className="dt-export-tab" disabled={!canExport}
+                                onClick={() => { if (canExport) downloadPDF(dieline); }}>
+                                PDF kỹ thuật
+                            </button>
+                            <button className="dt-export-tab" disabled={!canExport}
+                                onClick={() => { if (canExport) downloadProductionDielinePDF(dieline); }}
+                                title={tv('PDF sạch với màu spot và overprint, không có kích thước/chú thích')}>
+                                PDF sản xuất
+                            </button>
+                        </>
                     )}
                     {activeTab === 'nesting' && dieline && nestingResult && (
-                        <button
-                            className="dt-export-tab"
-                            onClick={() => downloadNestingPDF(dieline, nestingResult, nestingConfig)}
-                            title={t('dieline.dieline:xuat_pdf_binh_ban_xep_khuon')}
-                        >
-                            {t('dieline.dieline:pdf_xep_khuon')}
-                        </button>
+                        <>
+                            <button className="dt-export-tab" disabled={!canExport}
+                                onClick={() => {
+                                    if (!canExport) return;
+                                    if (dieline.params.boxType === 'tray' && sleeveNestingResult)
+                                        downloadTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
+                                    else downloadNestingPDF(dieline, nestingResult, nestingConfig);
+                                }}
+                                title={t('dieline.dieline:xuat_pdf_binh_ban_xep_khuon')}>
+                                PDF kỹ thuật
+                            </button>
+                            <button className="dt-export-tab" disabled={!canExport}
+                                onClick={() => {
+                                    if (!canExport) return;
+                                    if (dieline.params.boxType === 'tray' && sleeveNestingResult)
+                                        downloadProductionTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
+                                    else downloadProductionNestingPDF(dieline, nestingResult);
+                                }}
+                                title={tv('PDF xếp khuôn sạch với màu spot và overprint')}>
+                                PDF sản xuất
+                            </button>
+                        </>
                     )}
                 </div>
 
                 {/* Canvas Area */}
                 <div className="dt-canvas-area">
+                    {dieline && !isModelCurrent && (
+                        <div className="dt-stale-overlay" aria-live="polite">
+                            {generationError ? tv('Khuôn hiện tại đã cũ — hãy sửa lỗi hoặc thử lại.') : tv('Đang tính lại khuôn…')}
+                        </div>
+                    )}
                     {activeTab === '2d' ? (
                         <DielineCanvas2D />
                     ) : activeTab === 'nesting' ? (

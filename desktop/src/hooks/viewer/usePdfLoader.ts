@@ -417,20 +417,25 @@ export function usePdfLoader({
         }
     }, [pdfRef]);
 
-    // Thumbnail generation helper
+    // Thumbnail generation helper (web/pdfjs only). Tauri dùng IPC render_pdf_page trong ThumbSidebar.
+    // Cache key khớp MemoThumbItem: `${pdfUrl}_${page}_0_${zoomMilli}` với zoom suy từ width.
     const generateThumb = useCallback(async (pdf: any, pageNum: number, rotation: number, width: number) => {
         const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
         if (isImage) return;
-        if ((file as any)?.path) return; // Tauri Mode: use native tile:// protocol
+        if ((file as any)?.path) return; // Tauri: IPC path trong MemoThumbItem, không dùng cache này
 
-        const cacheKey = `${pdfUrl}_${pageNum}_${rotation}_${width}`;
+        // width prop ≈ thumbBaseWidth; zoom milli khớp công thức oversample 1.3× (baseW mặc định 595).
+        const baseW = 595;
+        const optimalZoom = Math.max(0.1, Math.min(1.5, (width * 1.3) / baseW));
+        const cacheKey = `${pdfUrl}_${pageNum}_0_${Math.round(optimalZoom * 1000)}`;
         if (thumbCacheRef.current.has(cacheKey)) return;
 
         try {
             const page = await pdf.getPage(pageNum);
-            const vp = page.getViewport({ scale: 1, rotation });
+            // Bitmap luôn rot=0; CSS rotate ở ThumbSidebar (cùng main viewer).
+            const vp = page.getViewport({ scale: 1, rotation: 0 });
             const scale = width / vp.width;
-            const scaledVp = page.getViewport({ scale, rotation });
+            const scaledVp = page.getViewport({ scale, rotation: 0 });
             const canvas = document.createElement('canvas');
             canvas.width = scaledVp.width;
             canvas.height = scaledVp.height;

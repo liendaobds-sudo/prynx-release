@@ -18,6 +18,7 @@ import { BoxParams, DielineModel, Point2D } from './types';
 import { snap } from './utils';
 import { SNAP_TOLERANCE } from './sharedGeometry';
 import { extractOuterSilhouette, OuterSilhouette } from './contourValidator';
+import { validatePlacementPositions } from './nestingCollision';
 
 interface BBox {
     width: number;
@@ -319,9 +320,10 @@ export function computeDieOutline(model: DielineModel | undefined, bbox: BBox): 
     }
 
     // Gom đoạn CUT/BLEED của khuôn (biên ngoài) — chỉ-đọc model.
-    const cutBleedSegs = model.allPaths.filter(
-        (p) => p.tag === 'CUT' || p.tag === 'BLEED',
-    );
+    const cuts = model.allPaths.filter((p) => p.tag === 'CUT');
+    const cutBleedSegs = cuts.length > 0
+        ? cuts
+        : model.allPaths.filter((p) => p.tag === 'BLEED');
 
     const silhouette = extractOuterSilhouette(cutBleedSegs);
     if (silhouette && isSilhouetteUsable(silhouette)) {
@@ -1140,9 +1142,10 @@ export function calculateNesting(
     bbox: BBox,
     config: NestingConfig,
     params?: BoxParams,
+    model: DielineModel | undefined = undefined,
 ): NestingResult {
     const { sheet, margin, gripperMargin, dieGap, rotation, sheetOrientation, nestingMode, gutter } = config;
-    const gap = nestingMode === 'smart' ? dieGap : (gutter || dieGap);
+    const gap = nestingMode === 'smart' ? dieGap : Math.max(gutter, dieGap);
 
     let sheetW = sheet.width;
     let sheetH = sheet.height;
@@ -1155,13 +1158,8 @@ export function calculateNesting(
     const dieW = bbox.width;
     const dieH = bbox.height;
 
-    // Outline thực của khuôn — tính MỘT lần (Req 5.1). `calculateNesting`
-    // không nhận `model` nên Outer_Silhouette không sẵn có ⇒ đa giác chữ nhật
-    // suy từ bbox; va chạm polygon khi đó trùng khít Bounding_Box_Gap Giai
-    // đoạn 1 cho khuôn chữ nhật (Req 8.1). Mọi keep-out trong các hàm lưới
-    // được tính bằng `offsetPolygon(rotateOutline(outline, θ), gap)` với
-    // θ ∈ {0°,90°,180°,270°} (Req 7.4, 7.5).
-    const outline = computeDieOutline(undefined, { width: dieW, height: dieH });
+    const rawOutline = computeDieOutline(model, { width: dieW, height: dieH });
+    const outline = rawOutline.map((p) => ({ x: p.x - (model?.boundingBox.minX || 0), y: p.y - (model?.boundingBox.minY || 0) }));
 
     const calcForSheet = (sw: number, sh: number) => {
         const { areaW, areaH, offsetX, offsetY } = calcPrintableArea(sw, sh, margin, gripperMargin);
@@ -1183,7 +1181,24 @@ export function calculateNesting(
             }
         }
 
-        return { ...best, sheetW: sw, sheetH: sh, areaW, areaH };
+        if (!model) return { ...best, sheetW: sw, sheetH: sh, areaW, areaH };
+        const printable = { left: offsetX, top: offsetY, right: offsetX + areaW, bottom: offsetY + areaH };
+        const checkLayout = (layout: LayoutResult): LayoutResult => {
+            const checked = validatePlacementPositions(layout.positions, outline, gap, printable);
+            return {
+                ...layout,
+                positions: checked.positions,
+                label: checked.removed > 0 ? `${layout.label} · loại ${checked.removed} vị trí va chạm` : layout.label,
+            };
+        };
+        let validated = checkLayout(best);
+        if (nestingMode === 'smart') {
+            const grid0 = checkLayout(calcGridNone(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, outline));
+            const grid90 = checkLayout(calcGrid90(dieW, dieH, gap, areaW, areaH, offsetX, offsetY, outline));
+            const grid = grid0.positions.length >= grid90.positions.length ? grid0 : grid90;
+            if (grid.positions.length > validated.positions.length) validated = grid;
+        }
+        return { ...validated, sheetW: sw, sheetH: sh, areaW, areaH };
     };
 
     let result;

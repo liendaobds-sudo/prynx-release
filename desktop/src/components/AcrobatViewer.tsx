@@ -548,13 +548,14 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 const pageNum = i + 1;
                 // Warmup cache base CHƯA xoay (rot=0): rotation giờ theo instance-id, không
                 // map vào bare pageNum. Thumbnail áp góc xoay qua CSS ở ThumbSidebar.
-                await generateThumb(thumbPdfRef, pageNum, 0, 400);
+                // width = thumbBaseWidth để cache key khớp MemoThumbItem (không còn hardcode 400).
+                await generateThumb(thumbPdfRef, pageNum, 0, thumbBaseWidth);
                 await new Promise(r => setTimeout(r, 10));
             }
         };
         genSequential();
         return () => { cancelled = true; };
-    }, [thumbPdfRef, file, numPages, pageRotations, generateThumb, isThumbMenuOpen]);
+    }, [thumbPdfRef, file, numPages, pageRotations, generateThumb, isThumbMenuOpen, thumbBaseWidth]);
 
     // PageTools event listener
     useEffect(() => {

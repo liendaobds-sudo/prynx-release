@@ -6,6 +6,9 @@ mod layers;
 mod imposition;
 mod image_compare;
 mod nfp_solver;
+mod dieline_engine;
+mod dieline_license;
+mod dieline_request;
 
 use pyo3::prelude::*;
 
@@ -63,6 +66,10 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Image Compare
     image_compare::register_module(m)?;
     nfp_solver::register_module(m)?;
+
+    // Packaging engine runs outside the WebView and is exposed only through
+    // the feature-gated sidecar route.
+    m.add_function(wrap_pyfunction!(dieline_engine::generate_dieline_json, m)?)?;
     
     Ok(())
 }

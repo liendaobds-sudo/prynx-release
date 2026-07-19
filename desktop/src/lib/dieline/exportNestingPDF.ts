@@ -14,6 +14,10 @@ import 'svg2pdf.js';
 import { toast } from 'sonner';
 import { saveJsPdfDoc } from './saveJsPdfDoc';
 import i18n, { tv } from '../../i18n';
+import { validateClosedContours } from './contourValidator';
+import { svgPlacementTransform } from './placementTransform';
+import { splitTrayDieline } from './trayParts';
+import { savePdfBlob } from './savePdfBlob';
 
 /** Tolerance cho so sánh điểm (0.01mm) */
 function ptEq(a: Point2D, b: Point2D): boolean {
@@ -89,23 +93,7 @@ function chainToSvgD(chain: PathSegment[]): string {
 }
 
 /** Tính SVG transform cho 1 vị trí khuôn */
-function dielineTransformAttr(
-    pos: { x: number; y: number; rotation: number },
-    bb: { minX: number; minY: number; width: number; height: number },
-): string {
-    const { x, y, rotation } = pos;
-    switch (rotation) {
-        case 180:
-            return `translate(${x + bb.width - bb.minX}, ${y + bb.height - bb.minY}) rotate(180)`;
-        case 90:
-            return `translate(${x - bb.minY}, ${y + bb.width - bb.minX}) rotate(-90)`;
-        case 270:
-            return `translate(${x + bb.height - bb.minY}, ${y - bb.minX}) rotate(90)`;
-        case 0:
-        default:
-            return `translate(${x - bb.minX}, ${y - bb.minY})`;
-    }
-}
+const dielineTransformAttr = svgPlacementTransform;
 
 /**
  * Build SVG string cho nesting layout.
@@ -204,7 +192,7 @@ function buildSpecBlock(model: DielineModel, result: NestingResult, config: Nest
     lines.push(i18n.t('lib.exportNestingPDF:to_actualsheet_width_actualsheet_height', { width: actualSheet.width, height: actualSheet.height }));
     lines.push(i18n.t('lib.exportNestingPDF:khuon_to_result_countpersheet_result', { count: result.countPerSheet, cols: result.cols, rows: result.rows }));
     lines.push(i18n.t('lib.exportNestingPDF:su_dung_result_utilization', { utilization: result.utilization }));
-    lines.push(i18n.t('lib.exportNestingPDF:ho_dao_be_config_gutter_config_diegap', { gutter: config.gutter || config.dieGap }));
+    lines.push(i18n.t('lib.exportNestingPDF:ho_dao_be_config_gutter_config_diegap', { gutter: Math.max(config.gutter, config.dieGap) }));
 
     const blockH = lines.length * lineH + 6;
 
@@ -236,6 +224,11 @@ export async function downloadNestingPDF(
     filename?: string,
 ): Promise<void> {
     const toastId = toast.loading(tv('Đang tạo PDF xếp khuôn...'));
+    const validation = validateClosedContours(model);
+    if (!validation.allClosed) {
+        toast.error(tv('Không thể xuất PDF: đường cắt đang hở.'));
+        return;
+    }
 
     try {
         const { actualSheet } = result;
@@ -290,6 +283,10 @@ export async function buildNestingPdfBlob(
     config: NestingConfig,
 ): Promise<Blob> {
     const { actualSheet } = result;
+    const validation = validateClosedContours(model);
+    if (!validation.allClosed) {
+        throw new Error('Không thể tạo PDF xếp khuôn vì đường cắt đang hở.');
+    }
     const pageW = actualSheet.width;
     const pageH = actualSheet.height;
 
@@ -307,4 +304,100 @@ export async function buildNestingPdfBlob(
     await (doc as any).svg(svgElement, { x: 0, y: 0, width: pageW, height: pageH });
 
     return doc.output('blob');
+}
+
+function combinedTraySvg(
+    tray: DielineModel,
+    trayResult: NestingResult,
+    sleeve: DielineModel,
+    sleeveResult: NestingResult,
+    config: NestingConfig,
+): string {
+    const base = buildNestingSvg(tray, trayResult, config);
+    const overlay = buildNestingSvg(sleeve, sleeveResult, config)
+        .replaceAll('dieline-template', 'sleeve-dieline-template')
+        .replace(/chain(\d+)/g, 'sleeve-chain$1');
+    const defs = overlay.match(/<defs>([\s\S]*?)<\/defs>/)?.[1];
+    const placed = overlay.match(/<!-- Các khuôn bế -->\s*([\s\S]*?)\s*<!-- Info bottom -->/)?.[1];
+    if (!defs || !placed) throw new Error('Không thể ghép bản xếp khay và vỏ.');
+    return base
+        .replace('</defs>', `${defs}\n  </defs>`)
+        .replace('<!-- Info bottom -->', `${placed}\n  <!-- Info bottom -->`);
+}
+
+async function renderSvgPage(
+    doc: jsPDF,
+    svgString: string,
+    width: number,
+    height: number,
+): Promise<void> {
+    const parsed = new DOMParser().parseFromString(svgString, 'image/svg+xml');
+    if (parsed.querySelector('parsererror')) throw new Error('SVG xếp khuôn không hợp lệ.');
+    await (doc as any).svg(parsed.documentElement, { x: 0, y: 0, width, height });
+}
+
+/** Build the correct one-page combined or two-page split tray/sleeve proof PDF. */
+export async function buildTrayNestingPdfBlob(
+    model: DielineModel,
+    trayResult: NestingResult,
+    sleeveResult: NestingResult,
+    config: NestingConfig,
+): Promise<Blob> {
+    const parts = splitTrayDieline(model);
+    if (!parts) throw new Error('Không tìm thấy đủ khuôn khay và vỏ.');
+    for (const part of [parts.tray, parts.sleeve]) {
+        if (!validateClosedContours(part).allClosed) {
+            throw new Error('Không thể tạo PDF xếp khuôn vì đường cắt đang hở.');
+        }
+    }
+
+    const traySheet = trayResult.actualSheet;
+    const doc = new jsPDF({
+        orientation: traySheet.width > traySheet.height ? 'landscape' : 'portrait',
+        unit: 'mm',
+        format: [traySheet.width, traySheet.height],
+    });
+
+    if (config.trayNestingMode === 'combined') {
+        if (traySheet.width !== sleeveResult.actualSheet.width || traySheet.height !== sleeveResult.actualSheet.height) {
+            throw new Error('Khay và vỏ chung tờ nhưng kích thước tờ không khớp.');
+        }
+        await renderSvgPage(
+            doc,
+            combinedTraySvg(parts.tray, trayResult, parts.sleeve, sleeveResult, config),
+            traySheet.width,
+            traySheet.height,
+        );
+    } else {
+        await renderSvgPage(doc, buildNestingSvg(parts.tray, trayResult, config), traySheet.width, traySheet.height);
+        const sleeveSheet = sleeveResult.actualSheet;
+        doc.addPage(
+            [sleeveSheet.width, sleeveSheet.height],
+            sleeveSheet.width > sleeveSheet.height ? 'landscape' : 'portrait',
+        );
+        const sleeveConfig = { ...config, sheet: config.sleeveSheet };
+        await renderSvgPage(
+            doc,
+            buildNestingSvg(parts.sleeve, sleeveResult, sleeveConfig),
+            sleeveSheet.width,
+            sleeveSheet.height,
+        );
+    }
+    return doc.output('blob');
+}
+
+export async function downloadTrayNestingPDF(
+    model: DielineModel,
+    trayResult: NestingResult,
+    sleeveResult: NestingResult,
+    config: NestingConfig,
+): Promise<void> {
+    try {
+        const blob = await buildTrayNestingPdfBlob(model, trayResult, sleeveResult, config);
+        const pages = config.trayNestingMode === 'split' ? '_2pages' : '';
+        const filename = `nesting_${model.standardCode}_tray_sleeve${pages}.pdf`;
+        if ((await savePdfBlob(blob, filename)).kind === 'saved') toast.success(tv('Đã xuất PDF xếp khuôn'));
+    } catch (error) {
+        toast.error(error instanceof Error ? error.message : String(error));
+    }
 }

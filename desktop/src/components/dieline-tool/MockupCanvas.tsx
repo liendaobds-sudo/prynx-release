@@ -95,6 +95,8 @@ export default function MockupCanvas({
         >
             <Canvas
                 shadows
+                frameloop="demand"
+                dpr={[1, 1.5]}
                 camera={camera}
                 style={{ background }}
                 gl={{

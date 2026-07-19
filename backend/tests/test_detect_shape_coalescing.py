@@ -140,6 +140,35 @@ def test_master_die_inheritance_propagates_circle():
     assert out.shapes[2].trim.w == 50.0
 
 
+def test_batch_single_mold_master_one_type():
+    """28× CIRCLE → master = trang đầu có type; nhiều type → None."""
+    pages = [
+        {"page_idx": 0, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50},
+        {"page_idx": 1, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50},
+        {"page_idx": 2, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50.5, "item_h": 50},
+    ]
+    m = imposition._batch_single_mold_master(pages)
+    assert m is not None
+    assert m["page_idx"] == 0
+    assert m["shape_type"] == "CIRCLE_ELLIPSE"
+
+
+def test_batch_single_mold_master_multi_type_none():
+    pages = [
+        {"page_idx": 0, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50},
+        {"page_idx": 1, "shape_type": "HEXAGON", "item_w": 50, "item_h": 50},
+    ]
+    assert imposition._batch_single_mold_master(pages) is None
+
+
+def test_batch_single_mold_master_dim_mismatch_none():
+    pages = [
+        {"page_idx": 0, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50},
+        {"page_idx": 1, "shape_type": "CIRCLE_ELLIPSE", "item_w": 80, "item_h": 50},
+    ]
+    assert imposition._batch_single_mold_master(pages) is None
+
+
 def test_master_die_inheritance_skips_when_two_masters():
     from app.workers.die_detection import (
         DetectionResult, DetectedShape, Trim, PageDetectionStatus,

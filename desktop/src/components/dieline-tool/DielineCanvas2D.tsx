@@ -46,6 +46,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
     const artworkUrl = outerUrl ?? mockupTextureUrl;
     const [showArtwork, setShowArtwork] = useState(true);
     const dragArtRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+    const pointerMoveFrameRef = useRef<number | null>(null);
 
     const onUploadArtwork = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
         const f = e.target.files?.[0];
@@ -223,11 +224,17 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
 
     const handleMouseMove = useCallback((e: React.MouseEvent) => {
         const drag = dragArtRef.current;
+        if (pointerMoveFrameRef.current !== null) return;
+        const clientX = e.clientX;
+        const clientY = e.clientY;
+        pointerMoveFrameRef.current = requestAnimationFrame(() => {
+        pointerMoveFrameRef.current = null;
+
         if (drag && dieline) {
             const bb = dieline.boundingBox;
             const sc = (artTransform.scalePct || 100) / 100 || 1;
-            const dxPx = e.clientX - drag.sx;
-            const dyPx = e.clientY - drag.sy;
+            const dxPx = clientX - drag.sx;
+            const dyPx = clientY - drag.sy;
             // px → mm (chia zoom) → chuẩn hoá theo bbox → offsetPct (chia tỉ lệ ảnh).
             const dOffX = (((dxPx / transform.scale) / bb.width) / sc) * 100;
             // Màn hình kéo xuống (dyPx+) ⇒ khuôn −y ⇒ offset Y giảm.
@@ -242,11 +249,16 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
         if (isPanning) {
             setTransform((prev) => ({
                 ...prev,
-                x: e.clientX - panStart.x,
-                y: e.clientY - panStart.y,
+                x: clientX - panStart.x,
+                y: clientY - panStart.y,
             }));
         }
+        });
     }, [isPanning, panStart, dieline, artTransform, transform.scale, setArtTransform]);
+
+    useEffect(() => () => {
+        if (pointerMoveFrameRef.current !== null) cancelAnimationFrame(pointerMoveFrameRef.current);
+    }, []);
 
     const handleMouseUp = useCallback(() => {
         setIsPanning(false);

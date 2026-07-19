@@ -34,14 +34,10 @@ export interface NestingConfig {
     /** Lề cắn nhíp — 1 cạnh dài, máy in offset (mm) */
     gripperMargin: number;
     /**
-     * Khoảng hở dao bế (mm) — lượng offset polygon thực áp dụng cho từng cạnh
-     * của đường biên (outline) mỗi khuôn.
-     *
-     * `nestingEngine.ts` hiện thực `dieGap` như phép offset polygon thực: đẩy mỗi
-     * cạnh của đường biên (Die_Outline) ra ngoài theo pháp tuyến một lượng đúng
-     * bằng `dieGap` (mm), tạo vùng keep-out để lồng khuôn sát theo hình dạng thực
-     * thay vì giãn cách theo bounding box. Với khuôn chữ nhật, mỗi chiều tăng
-     * `2 × dieGap`; giá trị âm được kẹp về 0 (không thu nhỏ đường biên).
+     * Khoảng hở dao bế tối thiểu (mm) giữa hai đường CUT thực.
+     * Kết quả heuristic luôn được kiểm tra lại trên silhouette thực; với khuôn
+     * chữ nhật, bước xếp bằng `cạnh + dieGap` (không phải 2 × dieGap).
+     * Giá trị âm bị từ chối ở biên API.
      */
     dieGap: number;
     /** Chế độ xoay: none (0°), 90°, auto (tối ưu 0° vs 90°) */

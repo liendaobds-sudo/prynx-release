@@ -373,6 +373,11 @@ export async function downloadPDF(
  */
 export async function buildDielinePdfBlob(model: DielineModel): Promise<Blob | null> {
     try {
+    const validation = validateClosedContours(model);
+    if (!validation.allClosed) {
+        console.error('buildDielinePdfBlob: open CUT contour', validation.openContours);
+        return null;
+    }
         const { boundingBox } = model;
         const margin = 10;
         const dimExtra = 35;

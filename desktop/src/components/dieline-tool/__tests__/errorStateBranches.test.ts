@@ -117,13 +117,23 @@ describe('Yêu cầu 3.6 — trạng thái nạp HDRI', () => {
 
 describe('Yêu cầu 7.4 — preset nền/sàn', () => {
     it('đổi backgroundPreset cập nhật và lưu giá trị mới', () => {
-        const initial = store().backgroundPreset; // mặc định 'studio-dark'
+        const initial = store().backgroundPreset; // mặc định studio trắng sạch
         // Đổi sang một preset KHÁC mặc định để kiểm tra cập nhật & khác giá trị đầu.
-        store().setBackgroundPreset('studio-white');
-        expect(store().backgroundPreset).toBe('studio-white');
+        store().setBackgroundPreset('studio-dark');
+        expect(store().backgroundPreset).toBe('studio-dark');
         expect(store().backgroundPreset).not.toBe(initial);
     });
 
+    it('mockup mặc định sạch và chỉ hiện lớp kỹ thuật khi người dùng bật', () => {
+        expect(store().backgroundPreset).toBe('studio-white');
+        expect(store().showTechnicalLines).toBe(false);
+        expect(store().showFloorGrid).toBe(false);
+
+        store().setShowTechnicalLines(true);
+        store().setShowFloorGrid(true);
+        expect(store().showTechnicalLines).toBe(true);
+        expect(store().showFloorGrid).toBe(true);
+    });
     it('backgroundPreset giữ nguyên cho đến khi chọn preset khác', () => {
         store().setBackgroundPreset('gradient-gray');
         // Thay đổi state khác không ảnh hưởng nền.

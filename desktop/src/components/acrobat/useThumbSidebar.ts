@@ -34,6 +34,8 @@ export function useThumbSidebar({
     const isThumbResizing = useRef(false);
 
     const [isResizing, setIsResizing] = useState(false);
+    // Width panel trong lúc kéo handle (null = dùng store). Clamp thumb theo giá trị này (T7).
+    const [livePanelWidth, setLivePanelWidth] = useState<number | null>(null);
 
     // DND Page Order State
     const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
@@ -86,7 +88,9 @@ export function useThumbSidebar({
 
             const newSel = new Set(marqueeInitialSelection);
 
-            const thumbItems = document.querySelectorAll('.acro-thumb-item');
+            // Scope trong sidebar tab này — tránh multi-tab querySelectorAll global (T9).
+            const root = sidebarRef.current || document;
+            const thumbItems = root.querySelectorAll('.acro-thumb-item');
             thumbItems.forEach((el) => {
                 const rect = el.getBoundingClientRect();
                 const intersects = !(
@@ -193,12 +197,16 @@ export function useThumbSidebar({
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (!sidebarRef.current?.contains(document.activeElement)) return;
-            if (e.ctrlKey && e.key.toLowerCase() === 'a') {
-                e.preventDefault();
-                const newSel = new Set(pageOrder.map((_, i) => i));
-                setSelectedIndices(newSel);
-            }
+            if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'a') return;
+            // Focus trong sidebar HOẶC pointer đang hover sidebar (click thumb có focus,
+            // nhưng dễ miss nếu focus rơi sang main viewer ngay sau click — T8).
+            const ae = document.activeElement;
+            const overSidebar = sidebarRef.current?.contains(ae as Node)
+                || sidebarRef.current?.matches(':hover');
+            if (!overSidebar) return;
+            e.preventDefault();
+            const newSel = new Set(pageOrder.map((_, i) => i));
+            setSelectedIndices(newSel);
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
@@ -262,12 +270,29 @@ export function useThumbSidebar({
         const startWidth = thumbWidth;
 
         const sidebarEl = sidebarRef.current;
+        // rAF throttle: clamp live mỗi frame, không spam setState mỗi mousemove pixel.
+        let rafId = 0;
+        let pendingWidth = startWidth;
+
+        const applyLiveWidth = (newWidth: number) => {
+            pendingWidth = newWidth;
+            if (rafId) return;
+            rafId = requestAnimationFrame(() => {
+                rafId = 0;
+                if (!isThumbResizing.current) return;
+                // Chỉ cập nhật live width → displayThumbBase clamp theo panel (T7).
+                // KHÔNG fire prynx-thumb-panel-resized ở đây: event đó Math.min vĩnh viễn
+                // thumbBaseWidth → kéo hẹp rồi mở rộng trong cùng gesture sẽ mất size ưa thích.
+                setLivePanelWidth(pendingWidth);
+            });
+        };
 
         const handleMouseMove = (me: MouseEvent) => {
             if (!isThumbResizing.current || !sidebarEl) return;
             // Min 160: cho phép thu gọn hơn trước (260) mà thumb vẫn scale fit (clamp ở ThumbSidebar).
             const newWidth = Math.max(160, Math.min(800, startWidth + (me.clientX - startX)));
-            sidebarEl.style.width = `${newWidth}px`;
+            // Không ghi style.width tay nữa — React style dùng livePanelWidth (đồng bộ clamp).
+            applyLiveWidth(newWidth);
         };
 
         const handleMouseUp = (me: MouseEvent) => {
@@ -276,8 +301,13 @@ export function useThumbSidebar({
             document.body.style.cursor = '';
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = 0;
+            }
 
             const finalWidth = Math.max(160, Math.min(800, startWidth + (me.clientX - startX)));
+            setLivePanelWidth(null);
             setThumbWidth(finalWidth);
             // Báo zoom hook clamp thumbBaseWidth theo panel mới (event tùy chọn)
             window.dispatchEvent(new CustomEvent('prynx-thumb-panel-resized', { detail: { width: finalWidth } }));
@@ -687,6 +717,7 @@ export function useThumbSidebar({
 
     return {
         thumbWidth,
+        livePanelWidth,
         isResizing,
         draggedIndex,
         hoverTargetIndex,

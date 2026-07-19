@@ -68,6 +68,10 @@ export default function MockupPanel() {
     const setExplodedFactor = useMockupStore((s) => s.setExplodedFactor);
     const showDimensions = useMockupStore((s) => s.showDimensions);
     const setShowDimensions = useMockupStore((s) => s.setShowDimensions);
+    const showTechnicalLines = useMockupStore((s) => s.showTechnicalLines);
+    const setShowTechnicalLines = useMockupStore((s) => s.setShowTechnicalLines);
+    const showFloorGrid = useMockupStore((s) => s.showFloorGrid);
+    const setShowFloorGrid = useMockupStore((s) => s.setShowFloorGrid);
     const exportScale = useMockupStore((s) => s.exportScale);
     const setExportScale = useMockupStore((s) => s.setExportScale);
     const exportTransparent = useMockupStore((s) => s.exportTransparent);
@@ -159,6 +163,30 @@ export default function MockupPanel() {
                 >
                     {t('dieline.mockup:canh_khung_dat_lai_goc_nhin')}
                 </button>
+
+                <div
+                    className="dt-param-cell"
+                    style={{ cursor: 'pointer', marginTop: '0.5rem' }}
+                    onClick={() => setShowTechnicalLines(!showTechnicalLines)}
+                    title={t('dieline.mockup:duong_ky_thuat_mo_ta')}
+                >
+                    <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
+                        {t('dieline.mockup:duong_ky_thuat')}
+                    </label>
+                    <input type="checkbox" checked={showTechnicalLines} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
+                </div>
+
+                <div
+                    className="dt-param-cell"
+                    style={{ cursor: 'pointer', marginTop: '0.5rem' }}
+                    onClick={() => setShowFloorGrid(!showFloorGrid)}
+                    title={t('dieline.mockup:luoi_san_mo_ta')}
+                >
+                    <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
+                        {t('dieline.mockup:luoi_san')}
+                    </label>
+                    <input type="checkbox" checked={showFloorGrid} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
+                </div>
             </CollapsibleSection>
 
             {/* ─── Exploded view + overlay kích thước ─── */}
