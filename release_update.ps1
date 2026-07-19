@@ -22,6 +22,12 @@ $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
 $CONF_PATH = "$ROOT\desktop\src-tauri\tauri.conf.json"
 
+# Release Free/Pro phai luon bien dich lai sidecar. Tai su dung binary cu co the
+# bo sot feature gate moi va tao mot ban cai ma UI khoa nhung backend van mo.
+if ($SkipNuitka) {
+    throw "-SkipNuitka khong duoc phep khi phat hanh. Hay build lai sidecar de dam bao quyen Free/Pro dong bo."
+}
+
 # ---- NGUON CHAN LY DUY NHAT cho repo phat hanh ----
 # App khach da nung cung endpoint updater trong tauri.conf.json; bao mat/cap nhat chi chay
 # neu PHAT HANH dung repo do. Vi vay suy repo tu chinh endpoint, thay vi go tay (de nham
@@ -76,24 +82,42 @@ Write-Host "  [OK] Da nap khoa ky updater." -ForegroundColor Green
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $confPath = "$ROOT\desktop\src-tauri\tauri.conf.json"
-$conf = Get-Content $confPath -Raw
+$conf = [System.IO.File]::ReadAllText($confPath, [System.Text.Encoding]::UTF8)
 $conf = [regex]::Replace($conf, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
 [System.IO.File]::WriteAllText($confPath, $conf.TrimStart([char]0xFEFF), $utf8NoBom)
 Write-Host "  [OK] Da dat version=$Version trong tauri.conf.json." -ForegroundColor Green
 
 $pkgPath = "$ROOT\desktop\package.json"
-$pkg = Get-Content $pkgPath -Raw
+$pkg = [System.IO.File]::ReadAllText($pkgPath, [System.Text.Encoding]::UTF8)
 $pkg = [regex]::Replace($pkg, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
 [System.IO.File]::WriteAllText($pkgPath, $pkg.TrimStart([char]0xFEFF), $utf8NoBom)
+
+$pkgLockPath = "$ROOT\desktop\package-lock.json"
+$pkgLock = [System.IO.File]::ReadAllText($pkgLockPath, [System.Text.Encoding]::UTF8)
+$pkgLock = [regex]::Replace(
+    $pkgLock,
+    '("name"\s*:\s*"prynx"\s*,\s*"version"\s*:\s*")[^"]*(")',
+    ('${1}' + $Version + '${2}')
+)
+[System.IO.File]::WriteAllText($pkgLockPath, $pkgLock.TrimStart([char]0xFEFF), $utf8NoBom)
 
 # Cargo.toml: dong bo version cho file properties cua PrynX.exe (Windows resource).
 # Cargo chap nhan SemVer prerelease truc tiep (1.0.0-beta.9). Replace lan-dau CHI trung
 # [package] version (dong dau), KHONG dung version cua tauri-build dependency ben duoi.
 $cargoPath = "$ROOT\desktop\src-tauri\Cargo.toml"
-$cargo = Get-Content $cargoPath -Raw
+$cargo = [System.IO.File]::ReadAllText($cargoPath, [System.Text.Encoding]::UTF8)
 $cargo = [regex]::Replace($cargo, '(?m)^(version\s*=\s*")[^"]*(")', "`${1}$Version`${2}", 1)
 [System.IO.File]::WriteAllText($cargoPath, $cargo.TrimStart([char]0xFEFF), $utf8NoBom)
-Write-Host "  [OK] Da dat version=$Version trong package.json + Cargo.toml." -ForegroundColor Green
+
+$cargoLockPath = "$ROOT\desktop\src-tauri\Cargo.lock"
+$cargoLock = [System.IO.File]::ReadAllText($cargoLockPath, [System.Text.Encoding]::UTF8)
+$cargoLock = [regex]::Replace(
+    $cargoLock,
+    '(?ms)(\[\[package\]\]\s*name = "pdf-inspector"\s*version = ")[^"]*(")',
+    ('${1}' + $Version + '${2}')
+)
+[System.IO.File]::WriteAllText($cargoLockPath, $cargoLock.TrimStart([char]0xFEFF), $utf8NoBom)
+Write-Host "  [OK] Da dat version=$Version trong npm + Cargo (gom ca lockfiles)." -ForegroundColor Green
 
 # ---- 3. Build day du + ky updater ----
 if ($SkipNuitka) {

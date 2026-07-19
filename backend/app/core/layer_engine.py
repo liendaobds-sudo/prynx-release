@@ -64,7 +64,7 @@ class LayerEngine:
 
     # ─── READ ────────────────────────────────────────────────────
 
-    def get_layer_tree(self, pdf_path: str) -> dict:
+    def get_layer_tree(self, pdf_path: str | bytes, *, original_only: bool = False) -> dict:
         """
         Parse OCG layers from PDF into a hierarchical tree.
         Returns: { layers: [...], total: int }
@@ -84,7 +84,8 @@ class LayerEngine:
             '#ec4899', '#06b6d4', '#f97316', '#6366f1', '#14b8a6',
         ]
 
-        doc = pikepdf.Pdf.open(pdf_path)
+        source = pdf_path if isinstance(pdf_path, (str, os.PathLike)) else io.BytesIO(pdf_path)
+        doc = pikepdf.Pdf.open(source)
         layers = []
 
         try:
@@ -124,15 +125,33 @@ class LayerEngine:
                 except Exception:
                     pass
 
-            # OFF layer obj numbers
+            # Initial OCG state follows the default configuration: BaseState first,
+            # then explicit /ON and /OFF overrides. /OFF wins for malformed files
+            # that put the same OCG in both arrays.
+            on_objnums = set()
             off_objnums = set()
-            for item in d_dict.get("/OFF", []):
+            for key, target in (("/ON", on_objnums), ("/OFF", off_objnums)):
+                for item in d_dict.get(key, []):
+                    try:
+                        target.add(item.objgen[0] if hasattr(item, 'objgen') else int(item))
+                    except Exception:
+                        pass
+            base_state = str(d_dict.get("/BaseState", "/ON"))
+            catalog_ids = set()
+            for item in all_ocgs:
                 try:
-                    off_objnums.add(item.objgen[0] if hasattr(item, 'objgen') else int(item))
+                    if hasattr(item, 'objgen') and not bool(item.get("/PrynXInternal", False)):
+                        catalog_ids.add(item.objgen[0])
                 except Exception:
-                    pass
+                    continue
+            visible_ids = set() if base_state == "/OFF" else set(catalog_ids)
+            visible_ids.update(on_objnums)
+            visible_ids.difference_update(off_objnums)
 
-            logger.info(f"[LAYER DEBUG] locked_ids={locked_ids}, off_objnums={off_objnums}")
+            logger.info(
+                f"[LAYER DEBUG] locked_ids={locked_ids}, base_state={base_state}, "
+                f"on_objnums={on_objnums}, off_objnums={off_objnums}"
+            )
 
             # Try hierarchical /D/Order first
             order = d_dict.get("/Order")
@@ -150,40 +169,8 @@ class LayerEngine:
                             logger.info(f"[LAYER DEBUG]   Order[{i}]: type={item_type}, value='{item}'")
                     except Exception as e:
                         logger.info(f"[LAYER DEBUG]   Order[{i}]: type={item_type}, ERROR: {e}")
-                layers = self._parse_order_tree(order, locked_ids, off_objnums, LAYER_COLORS, depth=0)
+                layers = self._parse_order_tree(order, locked_ids, visible_ids, LAYER_COLORS, depth=0)
                 
-                # Supplement: add OCGs not present in /D/Order
-                existing_ids = set()
-                def _collect_ids(items):
-                    for item in items:
-                        if item.get('id', 0) > 0:
-                            existing_ids.add(item['id'])
-                        if item.get('children'):
-                            _collect_ids(item['children'])
-                _collect_ids(layers)
-                
-                all_ocgs_flat = oc_props.get("/OCGs", [])
-                color_idx = len(existing_ids)
-                for ocg_ref in all_ocgs_flat:
-                    try:
-                        obj_num = ocg_ref.objgen[0] if hasattr(ocg_ref, 'objgen') else None
-                        if obj_num and obj_num not in existing_ids:
-                            resolved = ocg_ref.resolve() if hasattr(ocg_ref, 'resolve') else ocg_ref
-                            name = str(resolved.get("/Name", f"Layer {obj_num}"))
-                            layers.append({
-                                "id": obj_num,
-                                "name": name,
-                                "visible": obj_num not in off_objnums,
-                                "locked": obj_num in locked_ids,
-                                "depth": 0,
-                                "children": [],
-                                "color": LAYER_COLORS[color_idx % len(LAYER_COLORS)],
-                            })
-                            logger.info(f"[LAYER DEBUG]   Added missing OCG: objnum={obj_num}, name='{name}'")
-                            existing_ids.add(obj_num)
-                            color_idx += 1
-                    except Exception:
-                        pass
             else:
                 logger.info("[LAYER DEBUG] No /D/Order, using flat /OCGs list")
                 # Flat list from /OCGs
@@ -191,13 +178,15 @@ class LayerEngine:
                 for i, ocg_ref in enumerate(ocgs):
                     try:
                         ocg_obj = ocg_ref.resolve() if hasattr(ocg_ref, 'resolve') else ocg_ref
+                        if bool(ocg_obj.get("/PrynXInternal", False)):
+                            continue
                         obj_num = ocg_ref.objgen[0] if hasattr(ocg_ref, 'objgen') else i
                         name = str(ocg_obj.get("/Name", f"Layer {i}"))
 
                         layers.append({
                             "id": obj_num,
                             "name": name,
-                            "visible": obj_num not in off_objnums,
+                            "visible": obj_num in visible_ids,
                             "locked": obj_num in locked_ids,
                             "depth": 0,
                             "children": [],
@@ -215,25 +204,37 @@ class LayerEngine:
         except Exception as e:
             logger.warning(f"OCG parsing failed: {e}")
 
-        # Enrich layers with object counts from content streams
-        try:
-            self._enrich_layers_with_objects(doc, layers)
-        except Exception as e:
-            logger.debug(f"Object enrichment failed (non-fatal): {e}")
+        # The Edit PDF layer panel needs only the document-level OCG catalog. Scanning
+        # every page for objects and synthesizing page layers is much more expensive and
+        # belongs to the page-scoped Components panel instead.
+        if not original_only:
+            try:
+                self._enrich_layers_with_objects(doc, layers)
+            except Exception as e:
+                logger.debug(f"Object enrichment failed (non-fatal): {e}")
 
-        # Create virtual layers for pages WITHOUT OCG content (print pages)
-        try:
-            self._add_virtual_page_layers(doc, layers)
-        except Exception as e:
-            logger.debug(f"Virtual page layers failed (non-fatal): {e}")
-        # Post-process: parse pipe-encoded names, rename items, nest groups
-        try:
-            self._post_process_layer_groups(layers)
-        except Exception as e:
-            logger.debug(f"Layer group post-processing failed (non-fatal): {e}")
+            # Create virtual layers for pages WITHOUT OCG content (print pages)
+            try:
+                self._add_virtual_page_layers(doc, layers)
+            except Exception as e:
+                logger.debug(f"Virtual page layers failed (non-fatal): {e}")
+        # Legacy object-layer mode keeps its pipe-name conventions. The original-only
+        # OCG panel must preserve names and hierarchy exactly as declared by the PDF.
+        if not original_only:
+            try:
+                self._post_process_layer_groups(layers)
+            except Exception as e:
+                logger.debug(f"Layer group post-processing failed (non-fatal): {e}")
+
+        def _count_real_ocgs(items):
+            return sum(
+                (1 if item.get("id", 0) > 0 else 0) + _count_real_ocgs(item.get("children", []))
+                for item in items
+            )
 
         doc.close()
-        return {"layers": layers, "total": len(layers)}
+        total = _count_real_ocgs(layers) if original_only else len(layers)
+        return {"layers": layers, "total": total}
 
     def _post_process_layer_groups(self, layers):
         """
@@ -797,8 +798,8 @@ class LayerEngine:
         for ocg_id in block_counter:
             logger.info(f"[LAYER DEBUG] _parse: Page {page_num}, OCG {ocg_id}: {block_counter[ocg_id]} objects")
 
-    def _parse_order_tree(self, order_arr, locked_ids, off_objnums, colors, depth=0, counter=None):
-        """Recursively parse /D/Order array into nested layer tree."""
+    def _parse_order_tree(self, order_arr, locked_ids, visible_ids, colors, depth=0, counter=None):
+        """Parse the default configuration /Order exactly as an Acrobat layer tree."""
         if counter is None:
             counter = [0]
 
@@ -807,48 +808,22 @@ class LayerEngine:
         while i < len(order_arr):
             item = order_arr[i]
 
-            # OCG reference
-            if hasattr(item, 'objgen') or (hasattr(item, 'resolve') and not isinstance(item, (str, pikepdf.String, pikepdf.Name))):
-                try:
-                    resolved = item.resolve() if hasattr(item, 'resolve') else item
-                    obj_num = item.objgen[0] if hasattr(item, 'objgen') else counter[0]
-                    name = str(resolved.get("/Name", f"Layer {counter[0]}"))
-
-                    layer = {
-                        "id": obj_num,
-                        "name": name,
-                        "visible": obj_num not in off_objnums,
-                        "locked": obj_num in locked_ids,
-                        "depth": depth,
-                        "children": [],
-                        "color": colors[counter[0] % len(colors)],
-                    }
-
-                    # Check if next item is nested children array
-                    if i + 1 < len(order_arr) and isinstance(order_arr[i + 1], (list, pikepdf.Array)):
-                        layer["children"] = self._parse_order_tree(
-                            order_arr[i + 1], locked_ids, off_objnums, colors, depth + 1, counter
-                        )
-                        i += 1
-
-                    layers.append(layer)
-                    counter[0] += 1
-                except Exception as e:
-                    logger.debug(f"Failed to parse Order item: {e}")
-
-            # Nested array (group children)
-            elif isinstance(item, (list, pikepdf.Array)):
-                children = self._parse_order_tree(
-                    item, locked_ids, off_objnums, colors, depth + 1, counter
+            # Arrays must be classified before indirect objects: pikepdf arrays can
+            # also expose objgen/resolve and were previously mistaken for OCGs.
+            if isinstance(item, (list, pikepdf.Array)):
+                layers.extend(
+                    self._parse_order_tree(
+                        item, locked_ids, visible_ids, colors, depth + 1, counter
+                    )
                 )
-                layers.extend(children)
+                i += 1
+                continue
 
-            # String label (group header)
-            elif isinstance(item, (str, pikepdf.String, pikepdf.Name)):
-                label = str(item)
+            # A string followed by an array is a non-toggleable UI label group.
+            if isinstance(item, (str, pikepdf.String, pikepdf.Name)):
                 group_layer = {
                     "id": -1 * (counter[0] + 1000),
-                    "name": label,
+                    "name": str(item),
                     "visible": True,
                     "locked": False,
                     "depth": depth,
@@ -858,21 +833,51 @@ class LayerEngine:
                 }
                 if i + 1 < len(order_arr) and isinstance(order_arr[i + 1], (list, pikepdf.Array)):
                     group_layer["children"] = self._parse_order_tree(
-                        order_arr[i + 1], locked_ids, off_objnums, colors, depth + 1, counter
+                        order_arr[i + 1], locked_ids, visible_ids, colors, depth + 1, counter
                     )
                     i += 1
                 layers.append(group_layer)
                 counter[0] += 1
+                i += 1
+                continue
+
+            try:
+                resolved = item.resolve() if hasattr(item, "resolve") else item
+                if not hasattr(resolved, "get") or str(resolved.get("/Type", "")) != "/OCG":
+                    i += 1
+                    continue
+                if bool(resolved.get("/PrynXInternal", False)):
+                    i += 1
+                    continue
+
+                obj_num = item.objgen[0] if hasattr(item, "objgen") else counter[0]
+                layer = {
+                    "id": obj_num,
+                    "name": str(resolved.get("/Name", f"Layer {counter[0]}")),
+                    "visible": obj_num in visible_ids,
+                    "locked": obj_num in locked_ids,
+                    "depth": depth,
+                    "children": [],
+                    "color": colors[counter[0] % len(colors)],
+                }
+                if i + 1 < len(order_arr) and isinstance(order_arr[i + 1], (list, pikepdf.Array)):
+                    layer["children"] = self._parse_order_tree(
+                        order_arr[i + 1], locked_ids, visible_ids, colors, depth + 1, counter
+                    )
+                    i += 1
+                layers.append(layer)
+                counter[0] += 1
+            except Exception as exc:
+                logger.debug(f"Failed to parse Order item: {exc}")
 
             i += 1
 
         return layers
-
     # ─── RENDER ──────────────────────────────────────────────────
 
     def render_with_visibility(
         self,
-        pdf_path: str,
+        pdf_path: str | bytes,
         page: int,
         hidden_layer_ids: list[int],
         dpi: int = 200,
@@ -885,12 +890,15 @@ class LayerEngine:
         hidden_object_keys: list of 'layerId-objectIndex' strings, e.g. ['4-2', '4-5']
         """
         # Cache: qua lại giữa 2 trạng thái (ẩn A → hiện → ẩn lại) trả tức thì.
-        _ck = _preview_cache_key(pdf_path, page, hidden_layer_ids, hidden_object_keys, dpi)
-        _cached = _preview_cache_get(_ck)
-        if _cached is not None:
-            return _cached
+        _ck = (_preview_cache_key(pdf_path, page, hidden_layer_ids, hidden_object_keys, dpi)
+               if isinstance(pdf_path, (str, os.PathLike)) else None)
+        if _ck is not None:
+            _cached = _preview_cache_get(_ck)
+            if _cached is not None:
+                return _cached
 
-        doc = pikepdf.Pdf.open(pdf_path)
+        source = pdf_path if isinstance(pdf_path, (str, os.PathLike)) else io.BytesIO(pdf_path)
+        doc = pikepdf.Pdf.open(source)
 
         if page < 1 or page > len(doc.pages):
             doc.close()
@@ -957,7 +965,8 @@ class LayerEngine:
             b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
 
             result = f"data:image/jpeg;base64,{b64}"
-            _preview_cache_put(_ck, result)
+            if _ck is not None:
+                _preview_cache_put(_ck, result)
             return result
         finally:
             pdf_render.close()
@@ -1461,8 +1470,10 @@ class LayerEngine:
                 # Fallback: render to raster via pypdfium2 + rebuild PDF
                 logger.warning(f"GS flatten failed ({proc.returncode}), using raster fallback")
                 return self._flatten_raster_fallback(pdf_path, output_path)
-        except FileNotFoundError:
-            logger.warning("Ghostscript not found, using raster fallback")
+        except Exception as exc:
+            # Đường dẫn Ghostscript có thể trống, executable có thể thiếu hoặc tiến trình timeout.
+            # Trong mọi trường hợp này vẫn tạo được Working File bằng renderer nội bộ.
+            logger.warning("Ghostscript flatten unavailable (%s), using raster fallback", exc)
             return self._flatten_raster_fallback(pdf_path, output_path)
 
         return output_path

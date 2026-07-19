@@ -147,7 +147,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         pdfOcgLayers, setPdfOcgLayers,
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
         setLockedObjectIds,
-        hiddenOcgLayerIds, setHiddenOcgLayerIds,
+        hiddenOcgLayerIds, setHiddenOcgLayerIds, setLockedOcgLayerIds,
         selectionFileId, setSelectionFileId, vdpFields, setVdpFields,
         selectedVdpFieldIds, setSelectedVdpFieldIds,
         showCloseConfirm, setShowCloseConfirm,
@@ -172,7 +172,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         pdfOcgLayers: state.pdfOcgLayers, setPdfOcgLayers: state.setPdfOcgLayers,
         selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
         setLockedObjectIds: state.setLockedObjectIds,
-        hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds,
+        hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds, setLockedOcgLayerIds: state.setLockedOcgLayerIds,
         selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields,
         selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
@@ -767,42 +767,55 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             globalPdfObjectCache.setPageObjects(currentPdfUrl, pageNum, Array.isArray(objects) ? objects : objects.objects || []);
             setPdfObjectsVersion(prev => prev + 1);
 
-            // OCG layers (kept for now, though OCG support is limited)
-            if (store!.getState().pdfOcgLayers.length === 0) {
-                try {
-                    const layerRes = await authenticatedFetch(`${getApiUrl()}/preflight/layers/${fid}`);
-                    if (layerRes.ok) {
-                        const layerData = await layerRes.json();
-                        store!.getState().setPdfOcgLayers(layerData.layers || []);
-                    }
-                } catch (e) {
-                    console.warn("Failed to fetch OCG layers", e);
-                }
-            }
+
         } catch (err: any) {
             setError(err.message || t('tabs.imposition:loi_tai_object_trang_n', { n: pageNum }));
         }
     }, [file, setError, setPdfObjectsVersion, store]);
 
-    // Refresh OCG layers on demand (from Layer Panel actions)
+    // Load OCG layers independently from the object cache. A previous PDF can leave
+    // virtual layers in the store, so checking only pdfOcgLayers.length is not safe.
     useEffect(() => {
+        let cancelled = false;
+
         const handleRefreshLayers = async () => {
             const fid = selectionFileId;
-            if (!fid) return;
+            if (!fid) {
+                setPdfOcgLayers([]);
+                setHiddenOcgLayerIds([]);
+                setLockedOcgLayerIds([]);
+                return;
+            }
             try {
-                const layerRes = await authenticatedFetch(`${getApiUrl()}/preflight/layers/${fid}`);
-                if (layerRes.ok) {
-                    const layerData = await layerRes.json();
-                    setPdfOcgLayers(layerData.layers || []);
-                }
+                const layerRes = await authenticatedFetch(`${getApiUrl()}/preflight/layers/${fid}?original_only=true`);
+                if (!layerRes.ok) return;
+                const layerData = await layerRes.json();
+                if (cancelled) return;
+                const layers = layerData.layers || [];
+                const hidden: number[] = [];
+                const locked: number[] = [];
+                const walk = (items: any[]) => items.forEach((layer: any) => {
+                    if (layer.visible === false) hidden.push(layer.id);
+                    if (layer.locked === true) locked.push(layer.id);
+                    if (Array.isArray(layer.children)) walk(layer.children);
+                });
+                walk(layers);
+                setPdfOcgLayers(layers);
+                setHiddenOcgLayerIds(hidden);
+                setLockedOcgLayerIds(locked);
             } catch (e) {
-                console.warn("Failed to refresh OCG layers", e);
+                if (!cancelled) console.warn("Failed to refresh OCG layers", e);
             }
         };
-        window.addEventListener('refresh-ocg-layers', handleRefreshLayers);
-        return () => window.removeEventListener('refresh-ocg-layers', handleRefreshLayers);
-    }, [selectionFileId, setPdfOcgLayers]);
 
+        // Initial load for every new working file; do not wait for an edit action.
+        void handleRefreshLayers();
+        window.addEventListener('refresh-ocg-layers', handleRefreshLayers);
+        return () => {
+            cancelled = true;
+            window.removeEventListener('refresh-ocg-layers', handleRefreshLayers);
+        };
+    }, [selectionFileId, setPdfOcgLayers, setHiddenOcgLayerIds, setLockedOcgLayerIds]);
 
 
     const handleDeleteObjects = useCallback(async (objs: any[], pageNum: number) => {
@@ -2371,9 +2384,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             </button>
                                                         )}
 
-                                                        {(isObjectEditMode ? editSession.canUndo : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (
+                                                        {(isObjectEditMode ? (editSession.canUndo || editHistory.canUndo) : history.length > 0) && activeDashboardTool !== 'bgremover' && activeDashboardTool !== 'upscale' && (
                                                             <button
-                                                                onClick={() => { if (isObjectEditMode) void editSession.undo(); else handleUndo(); }}
+                                                                onClick={() => { if (isObjectEditMode) { if (editSession.canUndo) void editSession.undo(); else editHistory.undo(); } else handleUndo(); }}
                                                                 className="w-7 h-7 flex items-center justify-center hover:bg-amber-100 dark:hover:bg-amber-900/40 text-amber-600 dark:text-amber-500 rounded transition-colors"
                                                                 title={t('tabs.imposition:hoan_tac_thao_tac_truoc_ctrl_z')}
                                                                 aria-label={t('tabs.imposition:hoan_tac_thao_tac_truoc')}
@@ -2401,9 +2414,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         <EditLayersPanel
                                                             // Unified OCG + Components panel for Edit PDF upgrade
                                                             handleDeleteObjects={handleDeleteObjects}
-                                                            fetchPdfObjectsForPage={fetchPdfObjectsForPage}
                                                             editObjects={currentEditObjects || []}
                                                             isEditMode={isObjectEditMode}
+                                                            editSession={editSession}
                                                         />
                                                     ) : rightPanelKind === 'datamerge' ? (
                                                         <DataMergeTool

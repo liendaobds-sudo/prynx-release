@@ -17,6 +17,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import List, Optional, Any
 import pikepdf
@@ -667,17 +668,31 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
         db.close()
 
 @router.get("/preflight/layers/{file_id}")
-async def get_ocg_layers(file_id: str):
-    """Trích xuất danh sách OCG Layers (cấu trúc cây F7-style) của PDF."""
+async def get_ocg_layers(file_id: str, original_only: bool = False):
+    """Đọc cây OCG từ live session nếu đang sửa, nếu không đọc file đã upload."""
     from app.core.layer_engine import LayerEngine
-    pdf_path = _get_file_path(file_id)
-    engine = LayerEngine()
-    try:
-        result = engine.get_layer_tree(pdf_path)
-        return result
-    except Exception as e:
-        raise_http(e, "Lỗi khi trích xuất OCG layers")
+    import app.core.edit_session as edit_session
+    from io import BytesIO
 
+    pdf_path = _get_file_path(file_id)
+
+    def _read() -> dict:
+        session = edit_session.get_active_session(file_id)
+        if session:
+            with session.lock:
+                live_bytes = session.live_bytes
+                if live_bytes is None:
+                    buf = BytesIO()
+                    session.pdf.save(buf, compress_streams=False)
+                    live_bytes = buf.getvalue()
+                    session.live_bytes = live_bytes
+            return LayerEngine().get_layer_tree(live_bytes, original_only=original_only)
+        return LayerEngine().get_layer_tree(pdf_path, original_only=original_only)
+
+    try:
+        return await run_in_threadpool(_read)
+    except Exception as exc:
+        raise_http(exc, "Lỗi khi trích xuất OCG layers")
 
 class PreviewLayersRequest(BaseModel):
     file_id: str
@@ -686,44 +701,32 @@ class PreviewLayersRequest(BaseModel):
 
 @router.post("/preflight/preview-layers")
 async def preview_layers_pdf(req: PreviewLayersRequest):
-    """Tạo ảnh preview Base64 của trang với các OCG layers bị ẩn (pikepdf + pypdfium2).
-    Ưu tiên dùng EditSession live bytes nếu đang mở (để phản ánh thay đổi OCG chưa commit).
-    """
+    """Render preview OCG ngoài event loop; dùng bytes live-session, không ghi file tạm."""
     from app.core.layer_engine import LayerEngine
     import app.core.edit_session as edit_session
     from io import BytesIO
+
     pdf_path = _get_file_path(req.file_id)
-    engine = LayerEngine()
-    try:
-        # Prefer live session bytes for accurate current OCG state (edit mode)
+
+    def _render() -> str:
+        engine = LayerEngine()
         session = edit_session.get_active_session(req.file_id)
         if session:
-            buf = BytesIO()
             with session.lock:
-                session.pdf.save(buf, compress_streams=False)
-            live_bytes = buf.getvalue()
-            # Layer engine render accepts path or we can temp save? Use bytes path via temp or extend.
-            # For simplicity, use a temp file from live bytes (fast, then deleted by engine flow)
-            import tempfile, os
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp.write(live_bytes)
-                tmp_path = tmp.name
-            try:
-                preview_b64 = engine.render_with_visibility(tmp_path, req.page, req.hidden_layer_ids)
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError as _e:
-                    logger.debug("Không xoá được temp %s: %s", tmp_path, _e)
-        else:
-            preview_b64 = engine.render_with_visibility(pdf_path, req.page, req.hidden_layer_ids)
-        return {
-            "success": True,
-            "preview_b64": preview_b64,
-        }
-    except Exception as e:
-        raise_http(e, "Lỗi khi tạo ảnh preview layers")
+                live_bytes = session.live_bytes
+                if live_bytes is None:
+                    buf = BytesIO()
+                    session.pdf.save(buf, compress_streams=False)
+                    live_bytes = buf.getvalue()
+                    session.live_bytes = live_bytes
+            return engine.render_with_visibility(live_bytes, req.page, req.hidden_layer_ids, dpi=150)
+        return engine.render_with_visibility(pdf_path, req.page, req.hidden_layer_ids, dpi=150)
 
+    try:
+        preview_b64 = await run_in_threadpool(_render)
+        return {"success": True, "preview_b64": preview_b64}
+    except Exception as exc:
+        raise_http(exc, "Lỗi khi tạo ảnh preview layers")
 
 class RenameLayerRequest(BaseModel):
     file_id: str

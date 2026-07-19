@@ -66,8 +66,10 @@ const panelArb = fc
         // Tâm lỗ tách xa nhau dọc trục x, bán kính nhỏ ⇒ nằm trong outline & không chồng nhau.
         const holeCenters: Array<[number, number]> = [
             [0, 0],
-            [-baseR * 0.35, 0],
-            [baseR * 0.35, 0],
+            // 0.25R keeps the largest generated holes strictly inside the
+            // worst-case triangular outline and leaves a gap between two holes.
+            [-baseR * 0.25, 0],
+            [baseR * 0.25, 0],
         ];
         if (holeCount === 1) {
             holes.push(regularPolygon(0, 0, holeR, holeN, [0]));

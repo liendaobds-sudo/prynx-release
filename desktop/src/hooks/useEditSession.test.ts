@@ -136,6 +136,41 @@ describe('useEditSession', () => {
         expect(opBody.op).toMatchObject({ kind: 'move', targetIds: ['obj-1'] });
     });
 
+    it('OCG-only: layer đi qua op chung để có undo/redo', async () => {
+        routeByPath((path) => {
+            if (path === '/open') return okJson({ session_id: 'sess-layer', page_count: 1 });
+            if (path === '/op') return okJson({
+                success: true, preview: '', clipRect: null, full: true, page: 0,
+                opResult: { kind: 'layerVisibility' }, canUndo: true, canRedo: false,
+            });
+            return okJson({});
+        });
+
+        const refreshLayers = vi.fn();
+        const refreshObjects = vi.fn();
+        window.addEventListener('refresh-ocg-layers', refreshLayers);
+        window.addEventListener('edit-session-objects-changed', refreshObjects);
+
+        const { result } = renderHook(() => useEditSession());
+        await act(async () => {
+            await result.current.openSession('fid-layer');
+            await result.current.applyOp({
+                page: 0, kind: 'layerVisibility', targetIds: [], layerId: 42, visible: false,
+            });
+        });
+
+        expect(result.current.dirty).toBe(true);
+        expect(result.current.canUndo).toBe(true);
+        expect(refreshLayers).toHaveBeenCalledTimes(1);
+        expect(refreshObjects).not.toHaveBeenCalled();
+        window.removeEventListener('refresh-ocg-layers', refreshLayers);
+        window.removeEventListener('edit-session-objects-changed', refreshObjects);
+        const call = fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/op'));
+        expect(JSON.parse(call![1].body)).toMatchObject({
+            session_id: 'sess-layer',
+            op: { kind: 'layerVisibility', layerId: 42, visible: false },
+        });
+    });
     it('commit: trả result và đặt dirty=false', async () => {
         routeByPath((path) => {
             if (path === '/open') return okJson({ session_id: 'sess-2', page_count: 1 });
@@ -239,7 +274,7 @@ describe('useEditSession', () => {
         });
 
         // Hai op → hai lớp preview; KHÔNG commit tự động (không có call /commit nào).
-        expect(result.current.previews).toHaveLength(2);
+        expect(result.current.previews).toHaveLength(1);
         expect(result.current.previews[0]).toMatchObject({ url: 'data:image/png;base64,BBBB', page: 0, full: false });
         expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/commit'))).toBe(false);
         expect(result.current.dirty).toBe(true);
@@ -247,5 +282,73 @@ describe('useEditSession', () => {
         // clearPreviews xóa hết (gọi sau khi tile thật vào).
         act(() => { result.current.clearPreviews(); });
         expect(result.current.previews).toHaveLength(0);
+    });
+
+    it('flatten: tạo Working File mới, dọn preview và báo onCommit', async () => {
+        const onCommit = vi.fn();
+        routeByPath((path) => {
+            if (path === '/open') return okJson({ session_id: 'sess-flat', page_count: 1 });
+            if (path === '/op') return okJson({
+                success: true, preview: 'data:image/png;base64,CCCC',
+                clipRect: null, full: true, page: 0, opResult: {},
+                canUndo: true, canRedo: false,
+            });
+            if (path === '/flatten') return okJson({
+                success: true,
+                output_fid: 'fid-flat',
+                output_url: '/results/edit_output/flat.pdf',
+                output_path: '/tmp/flat.pdf',
+                output_filename: 'flat.pdf',
+            });
+            return okJson({});
+        });
+
+        const { result } = renderHook(() => useEditSession({ onCommit }));
+        await act(async () => {
+            await result.current.openSession('fid-source');
+            await result.current.applyOp(MOVE_OP);
+        });
+        expect(result.current.previews).toHaveLength(1);
+
+        await act(async () => {
+            await result.current.flatten();
+        });
+
+        expect(result.current.dirty).toBe(false);
+        expect(result.current.canUndo).toBe(false);
+        expect(result.current.previews).toHaveLength(0);
+        expect(onCommit).toHaveBeenCalledWith(expect.objectContaining({
+            success: true, output_fid: 'fid-flat', output_filename: 'flat.pdf',
+        }));
+    });
+
+    it('phát tín hiệu nạp lại Thành phần sau apply/undo/redo', async () => {
+        routeByPath((path) => {
+            if (path === '/open') return okJson({ session_id: 'sess-refresh', page_count: 1 });
+            return okJson({
+                success: true, preview: '', clipRect: null, full: false, page: 0,
+                opResult: { kind: path === '/op' ? 'move' : path.slice(1) },
+                canUndo: true, canRedo: true,
+            });
+        });
+        const received: Array<{ page: number; path: string }> = [];
+        const listener = (event: Event) => received.push((event as CustomEvent).detail);
+        window.addEventListener('edit-session-objects-changed', listener);
+        try {
+            const { result } = renderHook(() => useEditSession());
+            await act(async () => {
+                await result.current.openSession('fid-refresh');
+                await result.current.applyOp(MOVE_OP);
+                await result.current.undo();
+                await result.current.redo();
+            });
+            expect(received).toEqual([
+                { page: 0, path: '/op' },
+                { page: 0, path: '/undo' },
+                { page: 0, path: '/redo' },
+            ]);
+        } finally {
+            window.removeEventListener('edit-session-objects-changed', listener);
+        }
     });
 });

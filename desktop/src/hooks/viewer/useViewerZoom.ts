@@ -40,6 +40,18 @@ export function useViewerZoom(props: UseViewerZoomProps) {
     const [isZoomReady, setIsZoomReady] = useState(false);
     const [thumbBaseWidth, setThumbBaseWidth] = useState(110);
 
+    // Khi user kéo thu hẹp panel thumbnail → clamp base width để không cắt nửa phải.
+    useEffect(() => {
+        const onPanelResize = (e: Event) => {
+            const w = (e as CustomEvent).detail?.width as number | undefined;
+            if (!w || w < 40) return;
+            const maxByPanel = Math.max(50, Math.floor((w - 52) * 0.72));
+            setThumbBaseWidth(prev => Math.min(prev, maxByPanel));
+        };
+        window.addEventListener('prynx-thumb-panel-resized', onPanelResize);
+        return () => window.removeEventListener('prynx-thumb-panel-resized', onPanelResize);
+    }, []);
+
     const currentZoomRef = useRef(zoom);
     useEffect(() => { currentZoomRef.current = zoom; }, [zoom]);
 
@@ -221,9 +233,12 @@ export function useViewerZoom(props: UseViewerZoomProps) {
                 e.stopPropagation();
 
                 if (sidebarRef.current && sidebarRef.current.contains(e.target as Node)) {
+                    // Clamp theo bề rộng panel hiện tại — tránh thumb lớn hơn panel → cắt nửa phải.
+                    const panelW = sidebarRef.current.clientWidth || 256;
+                    const maxByPanel = Math.max(50, Math.floor((panelW - 52) * 0.72));
                     setThumbBaseWidth(w => {
                         const newW = w + e.deltaY * -0.1;
-                        return Math.max(50, Math.min(400, newW));
+                        return Math.max(50, Math.min(400, maxByPanel, newW));
                     });
                 } else {
                     if (internalScrollRef.current) {

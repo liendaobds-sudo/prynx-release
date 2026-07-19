@@ -37,6 +37,7 @@ import PresetSelector from './PresetSelector';
 import { FlipbookDialog } from '../flipbook/FlipbookDialog';
 import { SheetViewerDialog } from '../flipbook/SheetViewerDialog';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
+import { previewPerfLog } from '../../lib/previewPerfLog';
 import { MergeSettings, defaultMergeSettings } from '../preprocess-tools/MergeTool';
 import MergeTool from '../preprocess-tools/MergeTool';
 
@@ -372,6 +373,11 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             setDetectedDimensionsByPage({});
             setDetectedShapeParamsByPage({});
             setIsDetectingShape(true);
+            const _tDetect = performance.now();
+            void previewPerfLog('detect-shape START', {
+                tool: activeTool,
+                via: reqBody.path ? 'path' : 'fileId',
+            });
             try {
                 const res = await authenticatedFetch(`${getApiUrl()}/imposition/detect-shape`, {
                     method: 'POST',
@@ -408,9 +414,23 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                             console.warn(t('imposition.imposerDashboard:detect_shape_trang_loi_custom'), failed);
                         }
                     }
+                    void previewPerfLog('detect-shape OK', {
+                        ms: Math.round(performance.now() - _tDetect),
+                        pages: data.shapes.length,
+                        shapes: data.shapes.slice(0, 12).join(','),
+                    });
+                } else if (!cancelled) {
+                    void previewPerfLog('detect-shape EMPTY/FAIL', {
+                        ms: Math.round(performance.now() - _tDetect),
+                        status: res.status,
+                        ok: res.ok,
+                    });
                 }
             } catch (err: any) {
-                if (err?.name !== 'AbortError') console.error('Auto shape detection failed:', err);
+                if (err?.name !== 'AbortError') {
+                    console.error('Auto shape detection failed:', err);
+                    void previewPerfLog('detect-shape ERROR', { err: String(err?.message || err).slice(0, 120) });
+                }
             }
             finally { if (!cancelled) setIsDetectingShape(false); }
         };
@@ -722,15 +742,27 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 const controller = new AbortController();
                 batchCapAbortRef.current = controller;
 
+                const _tBatch = performance.now();
+                void previewPerfLog('batch-capacity START', { pages: pages.length });
                 const res = await authenticatedFetch(`${getApiUrl()}/imposition/preview-layouts-batch`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
                     signal: controller.signal,
                 });
-                if (cancelled || !res.ok) return;
+                if (cancelled || !res.ok) {
+                    void previewPerfLog('batch-capacity FAIL', {
+                        ms: Math.round(performance.now() - _tBatch),
+                        status: res.status,
+                    });
+                    return;
+                }
                 const data = await res.json();
                 if (cancelled || !data?.success || !data.capacities) return;
+                void previewPerfLog('batch-capacity OK', {
+                    ms: Math.round(performance.now() - _tBatch),
+                    keys: Object.keys(data.capacities || {}).length,
+                });
 
                 // Merge (không đè key trang đang xem do single preview vừa ghi — cùng hàm
                 // nên KHỚP; merge để không mất số đã có nếu batch trang nào lỗi = 0).

@@ -66,7 +66,7 @@ export function hasFeatureAccess(featureId: FeatureId, plan: LicensePlan | strin
   return PLAN_RANK[have] >= PLAN_RANK[FEATURE_MIN_PLAN[featureId]];
 }
 
-export function canUse(featureId: FeatureId, plan: LicensePlan | string = 'pro', features: readonly string[] | null = null): boolean {
+export function canUse(featureId: FeatureId, plan: LicensePlan | string = 'free', features: readonly string[] | null = null): boolean {
   return !FEATURE_GATING_ENABLED || hasFeatureAccess(featureId, plan, features);
 }
 

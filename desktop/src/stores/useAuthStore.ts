@@ -354,7 +354,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   session: null,
   licenseKey: loadStoredKeySync(),
   licenseToken: null,
-  licensePlan: 'pro',
+  licensePlan: 'free',
   licenseFeatures: null,
   remainingDays: null,
   licenseExpiresAt: null,
@@ -408,7 +408,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       user: null, session: null, licenseValid: false, lastValidated: 0,
       remainingDays: null, licenseExpiresAt: null, licenseToken: null,
-      licensePlan: 'pro', licenseFeatures: null,
+      licensePlan: 'free', licenseFeatures: null,
       isRevoking: false, revokeDeadline: null, revokeReason: '',
     });
   },
@@ -435,7 +435,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           const claims = readLicenseTokenClaims(persistedToken);
           set({
             licenseToken: persistedToken,
-            licensePlan: claims?.plan ? normalizePlan(claims.plan) : 'pro',
+            licensePlan: claims?.plan ? normalizePlan(claims.plan) : 'free',
             licenseFeatures: claims?.features ?? null,
           });
         } else if (persistedToken) {
@@ -628,7 +628,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
               const claims = readLicenseTokenClaims(freshToken);
               set({
                 licenseToken: freshToken,
-                licensePlan: normalizePlan((tokData as any)?.plan || claims?.plan || 'pro'),
+                licensePlan: normalizePlan((tokData as any)?.plan || claims?.plan || 'free'),
                 licenseFeatures: Array.isArray((tokData as any)?.features)
                   ? (tokData as any).features
                   : (claims?.features ?? null),

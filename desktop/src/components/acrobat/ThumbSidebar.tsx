@@ -122,7 +122,7 @@ const MemoThumbItem = React.memo((props: any) => {
             data-thumb-index={index}
             title={tooltipText}
             onContextMenu={(e) => onContextMenu(e, index, logicalPageLabel)}
-            className={`acro-thumb-item flex flex-col items-center py-2 px-3 rounded-md cursor-pointer transition-colors relative touch-none
+            className={`acro-thumb-item flex flex-col items-center py-2 px-1.5 rounded-md cursor-pointer transition-colors relative touch-none max-w-full
                 ${isSelected ? 'bg-blue-500/10 dark:bg-blue-900/40' : 'hover:bg-black/5 dark:hover:bg-white/5'}
                 ${isDragged ? 'opacity-30' : 'opacity-100'}
                 ${hoverTargetState}
@@ -292,6 +292,17 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         }
     });
 
+    // Khi thu hẹp panel / Ctrl+wheel phóng to thumb: ảnh (thumbBaseWidth) có thể RỘNG HƠN
+    // panel → overflow cắt mất nửa phải. Clamp bề rộng hiển thị theo panel (trừ padding + scrollbar).
+    // Trang xoay 90° footprint = chiều cao gốc ≈ base×ratio — chừa thêm margin 0.72.
+    const THUMB_H_PAD = 52; // px-2 list + px-3 item + outline + scrollbar (~12)
+    const maxFootprintW = Math.max(48, thumbWidth - THUMB_H_PAD);
+    const fittedThumbBase = Math.min(
+        thumbBaseWidth,
+        Math.floor(maxFootprintW * 0.72), // 0.72 ≈ 1/1.4 — an toàn cho portrait sau xoay 90°
+    );
+    const displayThumbBase = Math.max(40, fittedThumbBase);
+
     // ═══ Lazy-load thumbnails ═══
     // Chỉ tải tile cho thumbnail đang nằm trong tầm nhìn (IntersectionObserver), kết hợp
     // cổng "trang chính hiển thị trước". Tránh việc mở file nhiều trang fire hàng loạt
@@ -410,11 +421,11 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                     onMouseDown={handleMarqueeMouseDown}
                 >
                     <div
-                        className="acro-thumb-scroll w-full h-full overflow-y-auto"
+                        className="acro-thumb-scroll w-full h-full overflow-y-auto overflow-x-hidden"
                         data-pdf-url={pdfUrl || undefined}
                         data-file-name={file?.name || undefined}
                     >
-                        <div className="flex flex-wrap gap-4 justify-center px-2 py-4">
+                        <div className="flex flex-wrap gap-4 justify-center px-2 py-4 w-full max-w-full box-border">
                             {pageOrder.slice(0, 1000).map((originalPageNum, index) => {
                                 const logicalPageLabel = index + 1;
                                 const isSelected = selectedIndices.has(index);
@@ -437,7 +448,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         hoverTargetState={hoverTargetState}
                                         rot={pageInstanceIds[index] ? (pageRotations[pageInstanceIds[index]] || 0) : 0}
                                         localDim={allPageDims[originalPageNum]}
-                                        thumbBaseWidth={thumbBaseWidth}
+                                        thumbBaseWidth={displayThumbBase}
                                         pdfUrl={pdfUrl}
                                         file={file}
                                         isLoadable={thumbsGateOpen && visibleThumbs.has(index)}

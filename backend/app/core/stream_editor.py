@@ -238,7 +238,45 @@ def _still_referenced(instructions: list, name: str) -> bool:
     return False
 
 
-def delete_objects(page, obj_metas, pdf: pikepdf.Pdf) -> DeleteResult:
+def _meta_value(meta, field: str, default=None):
+    return meta.get(field, default) if isinstance(meta, dict) else getattr(meta, field, default)
+
+
+def _has_overlapping_object_sibling(meta, all_obj_metas) -> bool:
+    """True when PDFium exposes fill/stroke as separate objects on the same shape."""
+    if not all_obj_metas or _meta_value(meta, "type") not in {"vector", "image"}:
+        return False
+    bbox = _meta_value(meta, "bbox")
+    if not bbox or len(bbox) != 4:
+        return False
+    a = normalize_bbox(list(bbox))
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    if area_a <= 0:
+        return False
+    meta_id = _meta_value(meta, "id")
+    for other in all_obj_metas:
+        if _meta_value(other, "id") == meta_id or _meta_value(other, "type") != _meta_value(meta, "type"):
+            continue
+        other_bbox = _meta_value(other, "bbox")
+        if not other_bbox or len(other_bbox) != 4:
+            continue
+        b = normalize_bbox(list(other_bbox))
+        area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+        inter = max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(
+            0.0, min(a[3], b[3]) - max(a[1], b[1])
+        )
+        if area_b > 0 and inter / min(area_a, area_b) >= 0.9:
+            return True
+    return False
+
+
+def delete_objects(
+    page,
+    obj_metas,
+    pdf: pikepdf.Pdf,
+    *,
+    all_obj_metas=None,
+) -> DeleteResult:
     """
     Xóa đúng tập object mục tiêu khỏi content stream của một trang (color-safe).
 
@@ -285,7 +323,12 @@ def delete_objects(page, obj_metas, pdf: pikepdf.Pdf) -> DeleteResult:
         else:
             # Gộp fill+stroke: xóa 1 object (vẽ nhiều lượt cùng path) phải xóa HẾT
             # các span của nó. map_object_spans trả mọi span cùng bbox; rỗng → HỦY.
-            obj_spans = map_object_spans(pg, meta, pdf=pdf)
+            obj_spans = map_object_spans(
+                pg,
+                meta,
+                pdf=pdf,
+                separate_same_bbox=_has_overlapping_object_sibling(meta, all_obj_metas),
+            )
             if not obj_spans:
                 meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
                 raise ObjectMapError(

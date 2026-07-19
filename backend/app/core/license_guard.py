@@ -377,9 +377,9 @@ def _read_verified_entitlements(token: str) -> dict:
     try:
         payload_b64 = token.split(".", 1)[0]
         payload = json.loads(_b64url_decode(payload_b64))
-        plan = str(payload.get("plan") or "pro").strip().lower()
+        plan = str(payload.get("plan") or "free").strip().lower()
         if plan not in ("free", "pro", "dev"):
-            plan = "pro"
+            plan = "free"
         features = payload.get("features")
         if not isinstance(features, list):
             features = None
@@ -387,16 +387,16 @@ def _read_verified_entitlements(token: str) -> dict:
             features = [item for item in features if isinstance(item, str)]
         return {"plan": plan, "features": features}
     except Exception:
-        return {"plan": "pro", "features": None}
+        return {"plan": "free", "features": None}
 
 
 def _license_context(license_key: str, hwid: str, verified: bool, entitlements: dict | None = None) -> dict:
-    rights = entitlements or {"plan": "pro", "features": None}
+    rights = entitlements or {"plan": "free", "features": None}
     return {
         "license_key": license_key,
         "hwid": hwid,
         "verified": verified,
-        "plan": rights.get("plan") or "pro",
+        "plan": rights.get("plan") or "free",
         "features": rights.get("features"),
     }
 
@@ -445,7 +445,7 @@ async def require_license(request: Request) -> dict:
     # Token do edge function Supabase ký; sidecar verify bằng public key nhúng sẵn.
     # Rollout an toàn: nếu CHƯA bật cưỡng chế thì chỉ verify-nếu-có (log), không chặn.
     lic_token = request.headers.get("X-License-Token", "").strip()
-    token_entitlements = {"plan": "pro", "features": None}
+    token_entitlements = {"plan": "free", "features": None}
     if _enforce_license_token():
         tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)
         if not tok_ok:

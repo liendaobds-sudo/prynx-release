@@ -397,3 +397,170 @@ def test_open_twice_closes_old(text_session_pdf):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-q", "--tb=line"])
+
+def test_ocg_actions_share_apply_undo_redo_history():
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(200, 200))
+    layer_a = pdf.make_indirect(pikepdf.Dictionary(Type=pikepdf.Name('/OCG'), Name=pikepdf.String('A')))
+    layer_b = pdf.make_indirect(pikepdf.Dictionary(Type=pikepdf.Name('/OCG'), Name=pikepdf.String('B')))
+    pdf.Root['/OCProperties'] = pikepdf.Dictionary(
+        OCGs=pikepdf.Array([layer_a, layer_b]),
+        D=pikepdf.Dictionary(Order=pikepdf.Array([layer_a, layer_b])),
+    )
+    buf = BytesIO()
+    pdf.save(buf)
+    baseline = buf.getvalue()
+    pdf.close()
+    live_pdf = pikepdf.Pdf.open(BytesIO(baseline))
+    layer_a_id = live_pdf.Root['/OCProperties']['/OCGs'][0].objgen[0]
+    session = EditSession(
+        session_id='ocg-history-test', source_fid='fid-ocg-history', source_path='unused.pdf',
+        pdf=live_pdf, baseline_bytes=baseline,
+    )
+    SESSIONS[session.session_id] = session
+    by_fid[session.source_fid] = session.session_id
+
+    try:
+        result = apply_op(session, EditOp(
+            page=0, kind='layerVisibility', targetIds=[],
+            layerId=layer_a_id, visible=False,
+        ))
+        assert result['kind'] == 'layerVisibility'
+        assert result['canUndo'] is True
+        assert [ref.objgen[0] for ref in session.pdf.Root['/OCProperties']['/D']['/OFF']] == [layer_a_id]
+
+        undo_result = undo(session, scale=0.5)
+        assert undo_result['kind'] == 'layerVisibility'
+        assert list(session.pdf.Root['/OCProperties']['/D'].get('/OFF', [])) == []
+        assert undo_result['canRedo'] is True
+
+        redo_result = redo(session, scale=0.5)
+        assert redo_result['kind'] == 'layerVisibility'
+        assert [ref.objgen[0] for ref in session.pdf.Root['/OCProperties']['/D']['/OFF']] == [layer_a_id]
+
+        apply_op(session, EditOp(
+            page=0, kind='layerRename', targetIds=[],
+            layerId=layer_a_id, layerName='Artwork',
+        ))
+        current_a = next(
+            ref for ref in session.pdf.Root['/OCProperties']['/OCGs']
+            if ref.objgen[0] == layer_a_id
+        )
+        assert str(current_a['/Name']) == 'Artwork'
+
+        undo(session, scale=0.5)
+        current_a = next(
+            ref for ref in session.pdf.Root['/OCProperties']['/OCGs']
+            if ref.objgen[0] == layer_a_id
+        )
+        assert str(current_a['/Name']) == 'A'
+    finally:
+        close_session(session.session_id)
+
+
+def test_flatten_creates_new_working_file_without_overwriting_source(tmp_path, monkeypatch):
+    from app.api.routes import edit as edit_routes
+    from app.core.layer_engine import LayerEngine
+
+    source = tmp_path / 'source.pdf'
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(200, 200))
+    pdf.save(source)
+    pdf.close()
+    baseline = source.read_bytes()
+    live_pdf = pikepdf.Pdf.open(BytesIO(baseline))
+    session = EditSession(
+        session_id='flatten-test', source_fid='fid-flatten-source', source_path=str(source),
+        pdf=live_pdf, baseline_bytes=baseline, dirty=True,
+    )
+    SESSIONS[session.session_id] = session
+    by_fid[session.source_fid] = session.session_id
+    expected_output = tmp_path / 'source_flattened.pdf'
+
+    def fake_flatten(_self, input_path):
+        engine_output = tmp_path / 'engine-output.pdf'
+        engine_output.write_bytes(Path(input_path).read_bytes())
+        return str(engine_output)
+
+    monkeypatch.setattr(LayerEngine, 'flatten_visible', fake_flatten)
+    monkeypatch.setattr(edit_session, '_resolve_original_name', lambda _fid: 'source.pdf')
+    monkeypatch.setattr(
+        edit_session.edit_io, 'build_working_file_path',
+        lambda *_args, **_kwargs: str(expected_output),
+    )
+    monkeypatch.setattr(edit_routes, '_register_working_file', lambda _path, _name: 'fid-flattened')
+
+    try:
+        result = edit_session.flatten(session)
+        assert result['success'] is True
+        assert result['output_fid'] == 'fid-flattened'
+        assert Path(result['output_path']) == expected_output
+        assert expected_output.exists()
+        assert source.read_bytes() == baseline
+        assert session.dirty is False
+    finally:
+        close_session(session.session_id)
+
+def test_virtual_layer_eye_materializes_ocg_and_delete_removes_artwork():
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(200, 200))
+    page.obj['/Contents'] = pdf.make_stream(b'0 0 50 50 re f\n')
+    buf = BytesIO()
+    pdf.save(buf)
+    pdf.close()
+
+    baseline = buf.getvalue()
+    live_pdf = pikepdf.Pdf.open(BytesIO(baseline))
+    session = EditSession(
+        session_id='virtual-layer-history', source_fid='fid-virtual-layer',
+        source_path='unused.pdf', pdf=live_pdf, baseline_bytes=baseline,
+    )
+    SESSIONS[session.session_id] = session
+    by_fid[session.source_fid] = session.session_id
+
+    try:
+        from app.api.routes.edit import _render_clip_blocking
+        before_render, _, _ = _render_clip_blocking(baseline, 0, 0.5, None)
+        apply_op(session, EditOp(
+            page=0, kind='layerVisibility', targetIds=[],
+            layerId=-1, visible=False,
+        ))
+        after_render, _, _ = _render_clip_blocking(session.live_bytes, 0, 0.5, None)
+        assert after_render != before_render
+
+        oc_props = session.pdf.Root['/OCProperties']
+        assert len(oc_props['/OCGs']) == 1
+        live_layer_id = oc_props['/OCGs'][0].objgen[0]
+        assert [ref.objgen[0] for ref in oc_props['/D']['/OFF']] == [live_layer_id]
+        from app.core.layer_engine import LayerEngine
+        layer_tree = LayerEngine().get_layer_tree(session.live_bytes)
+        visible_layer = next(layer for layer in layer_tree['layers'] if layer['name'] == 'print_page_1')
+        assert visible_layer['visible'] is False
+        assert all(not layer.get('isVirtual') for layer in layer_tree['layers'])
+
+        # Lần bấm mắt tiếp theo dùng ID từ bytes/viewer, không phải objgen của live PDF.
+        apply_op(session, EditOp(
+            page=0, kind='layerVisibility', targetIds=[],
+            layerId=visible_layer['id'], visible=True,
+        ))
+        assert list(session.pdf.Root['/OCProperties']['/D']['/OFF']) == []
+
+        undo(session, scale=0.5)  # trở lại trạng thái ẩn
+        undo(session, scale=0.5)  # trở lại baseline chưa có OCG
+        assert session.pdf.Root.get('/OCProperties') is None
+
+        redo(session, scale=0.5)
+        replay_tree = LayerEngine().get_layer_tree(session.live_bytes)
+        view_layer_id = next(layer['id'] for layer in replay_tree['layers'] if layer['name'] == 'print_page_1')
+        apply_op(session, EditOp(
+            page=0, kind='layerDelete', targetIds=[], layerId=view_layer_id,
+        ))
+        instructions = list(pikepdf.parse_content_stream(session.pdf.pages[0]))
+        assert all(str(inst.operator) != 're' for inst in instructions)
+        assert len(session.pdf.Root['/OCProperties']['/OCGs']) == 0
+
+        undo(session, scale=0.5)
+        instructions = list(pikepdf.parse_content_stream(session.pdf.pages[0]))
+        assert any(str(inst.operator) == 're' for inst in instructions)
+    finally:
+        close_session(session.session_id)

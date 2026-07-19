@@ -67,7 +67,11 @@ def test_move_text_inside_clip_stays_visible():
             res = move_objects(pdf.pages[0], metas, 80.0, 0.0, pdf)
             assert res.changed is True
             raw = bytes(pdf.pages[0].Contents.read_bytes())
-            assert b"CLIPPED" in raw
+            shown_text = [
+                bytes(args[0]) for args, op in pikepdf.parse_content_stream(pdf.pages[0])
+                if str(op) == "Tj" and args
+            ]
+            assert b"CLIPPED" in shown_text
             # Clip group + text phải được bọc cm (page-space), không chỉ ghim Tm.
             assert b"1 0 0 1 80" in raw or b"1 0 0 1 80.0" in raw
             pdf.save(out)

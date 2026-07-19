@@ -27,6 +27,7 @@ import {
 } from './editGeometry';
 import { formatPageNumber, applyTokens, effectiveLR } from '../../lib/stampFormat';
 import { useTranslation } from 'react-i18next';
+import { findNearestVerticalScrollContainer, scrollElementVerticallyIntoView } from './verticalScroll';
 
 // ─── Edit PDF Object (task 10.1) ─────────────────────────────────────────────
 // Object do GET /edit/objects trả về, SAU khi đã convert bbox PDF (bottom-left)
@@ -36,6 +37,8 @@ interface EditCanvasObj {
     id: string;
     drawIndex: number;
     type: ObjType;
+    ocgIds?: number[];
+    ocgNames?: string[];
     bbox: BBox; // top-left origin, đơn vị point
     matrix?: number[];
     content?: string; // nội dung text gốc (type='text') để điền sẵn editor
@@ -43,6 +46,11 @@ interface EditCanvasObj {
     fontName?: string; // tên font gốc (BaseFont) để gợi ý/khớp font hệ thống
 }
 
+function isNonPaintingPointTextObject(obj: any): boolean {
+    if (obj?.type !== 'text' || !Array.isArray(obj?.bbox) || obj.bbox.length !== 4) return false;
+    return Math.abs(Number(obj.bbox[2]) - Number(obj.bbox[0])) <= 0.01
+        && Math.abs(Number(obj.bbox[3]) - Number(obj.bbox[1])) <= 0.01;
+}
 // ─── Edit PDF Object — move/resize/rotate (task 10.2) ────────────────────────
 // Hệ handle nw/ne/sw/se được TÁI DÙNG từ `vdpInteraction`, THÊM handle xoay.
 type EditHandle = 'nw' | 'ne' | 'sw' | 'se';
@@ -549,7 +557,7 @@ export const LivePageFrame = (props: any) => {
     const isActiveFrame = isActivePage !== false;
 
     const {
-        isObjectEditMode, setCurrentEditObjects, pdfObjectsVersion, selectionFileId, hiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds,
+        isObjectEditMode, setCurrentEditObjects, selectionFileId, hiddenObjectIds, setHiddenObjectIds, lockedObjectIds, hiddenOcgLayerIds,
         separationPlates, vdpFields, selectedVdpFieldIds,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
         pdfUrl, setSelectedVdpFieldIds, selectedObjectIds, setSelectedObjectIds,
@@ -559,11 +567,11 @@ export const LivePageFrame = (props: any) => {
         editAddMode: state.editAddMode,
         setEditAddMode: state.setEditAddMode,
         setCurrentEditObjects: state.setCurrentEditObjects,
-        pdfObjectsVersion: state.pdfObjectsVersion,
         selectionFileId: state.selectionFileId,
         selectedObjectIds: state.selectedObjectIds,
         setSelectedObjectIds: state.setSelectedObjectIds,
         hiddenObjectIds: state.hiddenObjectIds,
+        setHiddenObjectIds: state.setHiddenObjectIds,
         lockedObjectIds: state.lockedObjectIds,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds,
         separationPlates: state.separationPlates,
@@ -834,6 +842,19 @@ export const LivePageFrame = (props: any) => {
     // bám vị trí MỚI + danh sách object cập nhật cho add/delete, không chờ commit.
     const [editObjectsVersion, setEditObjectsVersion] = useState(0);
 
+    // apply/undo/redo sống ở hook cấp Viewer, nên frame cần một tín hiệu chung để
+    // bỏ cache và nạp lại danh sách Thành phần từ đúng Live_Document hiện tại.
+    useEffect(() => {
+        const refreshObjects = (event: Event) => {
+            const changedPage = Number((event as CustomEvent)?.detail?.page);
+            if (!isObjectEditMode || !selectionFileId || changedPage !== originalPageNum - 1) return;
+            clearEditObjectsCache();
+            setEditObjectsVersion(version => version + 1);
+        };
+        window.addEventListener('edit-session-objects-changed', refreshObjects);
+        return () => window.removeEventListener('edit-session-objects-changed', refreshObjects);
+    }, [isObjectEditMode, selectionFileId, originalPageNum]);
+
     // ─── Edit PDF Object — Hit-test + overlay (task 10.1) ────────────────────
     // Nguồn dữ liệu object lấy từ GET /edit/objects (Geometry_Reader, PDFium read-only).
     // Tách biệt khỏi globalPdfObjectCache (luồng /preflight) vì khác hệ tọa độ + khác
@@ -981,6 +1002,9 @@ export const LivePageFrame = (props: any) => {
                 if (!res.ok) throw new Error(`/edit/objects HTTP ${res.status}`);
                 const data = await res.json();
                 if (cancelled) return;
+                if (isActiveFrame && Array.isArray(data.hiddenObjectIds)) {
+                    setHiddenObjectIds(data.hiddenObjectIds);
+                }
                 // CropBox offset: object bbox từ PDFium ở hệ user-space NATIVE. Trang
                 // hiển thị (tile) render theo CropBox → cần TRỪ gốc CropBox (bx0,by0)
                 // để overlay khớp ảnh. File thường có gốc (0,0) → no-op; file Illustrator
@@ -989,12 +1013,16 @@ export const LivePageFrame = (props: any) => {
                 const bx0 = pb ? Number(pb[0]) || 0 : 0;
                 const by0 = pb ? Number(pb[1]) || 0 : 0;
                 editCropOriginRef.current = [bx0, by0];
-                const objs: EditCanvasObj[] = (data.objects || []).map((o: any) => {
+                const objs: EditCanvasObj[] = (data.objects || [])
+                    .filter((o: any) => !isNonPaintingPointTextObject(o))
+                    .map((o: any) => {
                     const cbbox = objectBboxNativeToCanvas(o.bbox as BBox, pageHeightPt, bx0, by0);
                     return {
                         id: o.id,
                         drawIndex: o.drawIndex,
                         type: o.type as ObjType,
+                        ocgIds: Array.isArray(o.ocgIds) ? o.ocgIds.map(Number).filter(Number.isFinite) : [],
+                        ocgNames: Array.isArray(o.ocgNames) ? o.ocgNames.map(String) : [],
                         bbox: cbbox,
                         matrix: o.matrix ?? undefined,
                         content: o.content ?? undefined,
@@ -1034,7 +1062,7 @@ export const LivePageFrame = (props: any) => {
             }
         })();
         return () => { cancelled = true; };
-    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h, editObjectsVersion]);
+    }, [isObjectEditMode, originalPageNum, selectionFileId, pageDim?.h, editObjectsVersion, isActiveFrame, setHiddenObjectIds]);
 
     // ─── Edit PDF Object: đồng bộ object của TRANG ACTIVE lên panel (fix tắt mắt) ─
     // Panel "Thành phần" đọc store `currentEditObjects`. Vì danh sách trang là ảo
@@ -1118,7 +1146,22 @@ export const LivePageFrame = (props: any) => {
 
     // Fetch preview image when hidden objects OR hidden OCG layers change
     useEffect(() => {
+        if (!isActiveFrame) {
+            setPreviewImageUrl(null);
+            setIsPreviewLoading(false);
+            return;
+        }
+
         if (hiddenObjectIds.length === 0 && hiddenOcgLayerIds.length === 0) {
+            setPreviewImageUrl(null);
+            setIsPreviewLoading(false);
+            return;
+        }
+
+        // Layer trong Edit PDF đã được render từ live session và hiển thị qua session preview.
+        // Không gọi thêm preview-layers từ file nguồn vì sẽ tạo hai full-page render chồng nhau
+        // (nhấp nháy/giật) và có thể phủ lên trạng thái layer mới.
+        if (isObjectEditMode) {
             setPreviewImageUrl(null);
             setIsPreviewLoading(false);
             return;
@@ -1127,19 +1170,21 @@ export const LivePageFrame = (props: any) => {
         if (!selectionFileId) return;
 
         let isMounted = true;
+        const controller = new AbortController();
         setIsPreviewLoading(true);
 
         const fetchPreview = async () => {
             try {
                 // If there are hidden OCG layers, fetch the layer preview
-                if (hiddenOcgLayerIds.length > 0) {
+                if (hiddenOcgLayerIds.length > 0 && !isObjectEditMode) {
                     const res = await authenticatedFetch(`${getApiUrl()}/preflight/preview-layers`, {
                         method: 'POST',
+                        signal: controller.signal,
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             file_id: selectionFileId,
                             page: originalPageNum,
-                            hidden_layer_numbers: hiddenOcgLayerIds
+                            hidden_layer_ids: hiddenOcgLayerIds
                         })
                     });
                     if (!res.ok) throw new Error('Preview layer fetch failed');
@@ -1158,6 +1203,7 @@ export const LivePageFrame = (props: any) => {
                 if (isObjectEditMode) {
                     const res = await authenticatedFetch(`${getApiUrl()}/edit/preview-hide`, {
                         method: 'POST',
+                        signal: controller.signal,
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             fid: selectionFileId,
@@ -1198,7 +1244,7 @@ export const LivePageFrame = (props: any) => {
                     setPreviewImageUrl(data.preview_b64);
                 }
             } catch (err) {
-                console.error("Failed to fetch hidden layer preview:", err);
+                if ((err as any)?.name !== 'AbortError') console.error("Failed to fetch hidden layer preview:", err);
                 if (isMounted) setPreviewImageUrl(null);
             } finally {
                 if (isMounted) setIsPreviewLoading(false);
@@ -1212,9 +1258,10 @@ export const LivePageFrame = (props: any) => {
 
         return () => {
             isMounted = false;
+            controller.abort();
             clearTimeout(timeoutId);
         };
-    }, [hiddenObjectIds, hiddenOcgLayerIds, selectionFileId, originalPageNum, pdfObjectsVersion, isObjectEditMode]);
+    }, [hiddenObjectIds, hiddenOcgLayerIds, selectionFileId, originalPageNum, isObjectEditMode, isActiveFrame]);
     
     //#endregion
 
@@ -1421,7 +1468,10 @@ export const LivePageFrame = (props: any) => {
         const node = containerRef.current?.querySelector(`[data-obj-id="${firstId}"]`);
         if (node) {
             lastScrolledIdRef.current = firstId;
-            node.scrollIntoView({ block: 'center', inline: 'center' });
+            const scrollContainer = findNearestVerticalScrollContainer(node as HTMLElement);
+            if (scrollContainer) {
+                scrollElementVerticallyIntoView(node as HTMLElement, scrollContainer, 'center');
+            }
         }
     }, [selectedObjectIds, isObjectEditMode]);
 
@@ -1523,8 +1573,7 @@ export const LivePageFrame = (props: any) => {
 
             // Refetch /edit/objects (session-aware → đọc Live_Document) để khung chọn bám
             // vị trí MỚI + danh sách cập nhật (add/delete). Cache clear để chắc chắn miss.
-            clearEditObjectsCache();
-            setEditObjectsVersion(v => v + 1);
+            // useEditSession phát edit-session-objects-changed để mọi frame đồng bộ một lần.
             return outcome;
         } finally {
             setEditBusy(false);
@@ -2120,7 +2169,7 @@ export const LivePageFrame = (props: any) => {
                  <img 
                      src={previewImageUrl} 
                      alt=""
-                     className="absolute top-0 left-0 z-[15] pointer-events-none"
+                     className="absolute top-0 left-0 z-[17] pointer-events-none"
                      style={{ width: '100%', height: '100%', objectFit: 'fill' }}
                  />
              )}

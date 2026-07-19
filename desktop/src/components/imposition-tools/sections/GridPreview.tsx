@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { authenticatedFetch, getApiUrl, uploadPDF } from "../../../lib/api";
+import { previewPerfLog } from "../../../lib/previewPerfLog";
 import type { NupSettings } from "../types";
 import { useTranslation } from 'react-i18next';
 
@@ -987,7 +988,16 @@ export default function GridPreview(props: GridPreviewProps) {
       abortRef.current = controller;
 
       try {
+        const _tPrev = performance.now();
         const previewSrc = await resolvePreviewSource();
+        void previewPerfLog("preview-layout START", {
+          taskMode: taskMode || "",
+          isDieCut: !!isDieCut,
+          grouping: groupingStrategy || "",
+          imposerMode: imposerMode || "",
+          pageIdx,
+          hasPath: !!(previewSrc.path || filePath),
+        });
         // Convert ALL dimensions from mm → points to match shapeParams units
         const body = {
           usable_w: usableW * MM_TO_PT,
@@ -1085,6 +1095,10 @@ export default function GridPreview(props: GridPreviewProps) {
             "Response:",
             errText,
           );
+          void previewPerfLog("preview-layout FAIL", {
+            ms: Math.round(performance.now() - _tPrev),
+            status: res.status,
+          });
           if (gen === previewGenRef.current) {
             setLayoutResult(null);
             setIsLoading(false);
@@ -1094,6 +1108,12 @@ export default function GridPreview(props: GridPreviewProps) {
         }
 
         const data: BackendLayoutResult = await res.json();
+        void previewPerfLog("preview-layout OK", {
+          ms: Math.round(performance.now() - _tPrev),
+          items: data.totalItems ?? (data.cells?.length ?? 0),
+          strategy: data.strategyUsed || "",
+          mixed: !!(data as any).isMixedPreview,
+        });
 
         // Only apply if this request wasn't aborted AND still latest generation
         if (!controller.signal.aborted && gen === previewGenRef.current) {

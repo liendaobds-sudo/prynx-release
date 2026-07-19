@@ -28,3 +28,9 @@ def test_normalize_plan():
     assert normalize_plan("PROFESSIONAL") == "pro"
     assert normalize_plan("admin") == "dev"
     assert normalize_plan(None) == "free"
+
+
+def test_compiled_sidecar_forces_gate_on(monkeypatch):
+    monkeypatch.setattr(entitlements.sys, "frozen", True, raising=False)
+    monkeypatch.setenv("PRYNX_FEATURE_GATING_ENABLED", "false")
+    assert entitlements._feature_gating_enabled() is True

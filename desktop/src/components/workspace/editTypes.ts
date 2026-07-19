@@ -24,7 +24,8 @@ export type Matrix = [number, number, number, number, number, number];
 export type ResizeAnchor = 'nw' | 'ne' | 'sw' | 'se';
 
 /** Loại thao tác sửa hỗ trợ. */
-export type EditKind = 'delete' | 'move' | 'resize' | 'rotate' | 'editText' | 'add';
+export type EditKind = 'delete' | 'move' | 'resize' | 'rotate' | 'editText' | 'add' | 'objectVisibility'
+    | 'layerVisibility' | 'layerLock' | 'layerRename' | 'layerReorder' | 'layerDelete';
 
 /**
  * Metadata của một PDF_Object do Geometry_Reader trả về.
@@ -35,6 +36,10 @@ export interface ObjMeta {
     id: string;
     drawIndex: number;
     type: ObjType;
+    /** OCG object IDs chứa object trên trang hiện tại. */
+    ocgIds?: number[];
+    /** Tên marked-content do PDFium đọc; dùng làm fallback cho Form XObject. */
+    ocgNames?: string[];
     bbox: BBox;
     matrix?: Matrix;
 }
@@ -84,4 +89,9 @@ export interface EditOp {
     rotateDeg?: number;
     text?: EditTextPayload;
     image?: EditImagePayload;
+    layerId?: number;
+    visible?: boolean;
+    locked?: boolean;
+    layerName?: string;
+    layerOrder?: number[];
 }

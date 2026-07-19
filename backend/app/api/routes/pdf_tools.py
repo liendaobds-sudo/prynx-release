@@ -16,7 +16,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, D
 from fastapi.responses import FileResponse
 from typing import List, Optional
 import json
-from app.core.license_guard import require_license, require_feature
+from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.config import settings
 from app.utils.errors import raise_http
 
@@ -227,7 +227,7 @@ async def trim_shift_endpoint(
     file: UploadFile = File(...),
     apply_to: str = Form("all"),
     config: str = Form("{}"),
-    license_info: dict = Depends(require_license),
+    license_info: dict = Depends(require_feature("pdf.trim_shift")),
 ):
     """Trim & Shift — chỉnh box từng cạnh + dịch nội dung (binding/creep).
 
@@ -412,6 +412,8 @@ async def optimize_pdf_endpoint(
     original_size = os.path.getsize(source_path)
     do_strip = strip_metadata.lower() in ("true", "1", "yes")
     do_gray = grayscale.lower() in ("true", "1", "yes")
+    if preset == "custom" or do_gray:
+        enforce_feature("pdf.optimize_advanced", license_info)
 
     # Build Ghostscript command
     gs_path = settings.GHOSTSCRIPT_PATH
@@ -706,6 +708,7 @@ async def office_convert_file_endpoint(
     file: Optional[UploadFile] = File(None),
     file_path: str = Form(""),
     excel_layout: str = Form("preserve"),
+    batch_mode: bool = Form(False),
     license_info: dict = Depends(require_license),
 ):
     """Convert Word/Excel/… → PDF.
@@ -714,6 +717,8 @@ async def office_convert_file_endpoint(
     Tauri path-stub Files. Fallback: multipart upload ``file``.
     """
     from app.workers.office_convert_engine import convert_office_file, OFFICE_EXTENSIONS
+    if batch_mode:
+        enforce_feature("pdf.office_batch", license_info)
 
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"converted_{job_id}.pdf")
@@ -826,11 +831,14 @@ async def office_convert_resize_output(
     target_h: float = Form(...),
     auto_orientation: bool = Form(True),
     license_info: dict = Depends(require_license),
+    batch_mode: bool = Form(False),
 ):
     """Fit a batch PDF onto a standard paper size without rasterizing or overwriting."""
     from fastapi.concurrency import run_in_threadpool
     from app.workers.pdf_tools_engine import resize_pages
 
+    if batch_mode:
+        enforce_feature("pdf.resize_batch", license_info)
     if not (10.0 <= target_w <= 5000.0 and 10.0 <= target_h <= 5000.0):
         raise HTTPException(status_code=400, detail="Kích thước PDF phải từ 10 đến 5000 mm.")
 

@@ -1,17 +1,21 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Button } from '../Button';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
-import { authenticatedFetch, getApiUrl } from '../../lib/api';
 import { Lock, LockOpen, Eye, EyeOff, Trash2, FolderOpen, Plus, Image as ImageIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useShallow } from 'zustand/react/shallow';
+import type { UseEditSession } from '../../hooks/useEditSession';
+import { confirmDialog } from '../ui/confirmDialog';
+import { assignComponentsToDeepestLayers } from './layerComponentTree';
+import { scrollElementVerticallyIntoView } from './verticalScroll';
 
 // ═══════════════════════════════════════════════════════════
 //  Edit PDF Layers & Components Panel (unified)
 //  Repurposed for Object Edit mode (isObjectEditMode).
 //  Uses accurate editObjects from /edit/objects (PDFium) for "thành phần".
 //  OCG layers use real /edit/ocg/visibility when in edit (live session).
-//  Search, icons, hide/show (ẩn hiện), reorder, delete wired.
+//  Search, icons, hide/show (ẩn hiện), and delete are wired; OCG reorder is intentionally disabled.
 // ═══════════════════════════════════════════════════════════
 
 interface OcgLayer {
@@ -23,147 +27,180 @@ interface OcgLayer {
     children: OcgLayer[];
     color: string;
     isGroup?: boolean;
+    isVirtual?: boolean;
+    isPageLayer?: boolean;
+    parentOcgId?: number;
+    pageNum?: number;
 }
 
 interface EditLayersPanelProps {
     handleDeleteObjects: (objs: any[], pageNum: number) => void;
-    fetchPdfObjectsForPage: (pageNum: number) => Promise<void>;
     // For edit PDF upgrade: pass accurate current page objects from edit system for "thành phần"
     editObjects?: any[];
     isEditMode?: boolean;
+    editSession?: UseEditSession;
 }
 
 export default function EditLayersPanel({
     handleDeleteObjects,
-    fetchPdfObjectsForPage,
     editObjects,
     isEditMode,
+    editSession,
 }: EditLayersPanelProps) {
   const { t } = useTranslation();
-    const { 
-        pdfUrl, pdfObjectsVersion, selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
+    const {
+        pdfUrl, selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
         lockedObjectIds, setLockedObjectIds,
         pdfOcgLayers, hiddenOcgLayerIds, setHiddenOcgLayerIds,
         lockedOcgLayerIds, setLockedOcgLayerIds,
         expandedOcgLayerIds, setExpandedOcgLayerIds,
-        selectionFileId, viewerNumPages,
-        setPdfObjectsVersion,
-        setViewerDirty,
+        viewerActivePage, setError,
         editAddMode, setEditAddMode,
-    } = useWorkspaceStore();
+    } = useWorkspaceStore(useShallow(state => ({
+        pdfUrl: state.pdfUrl,
+        selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds,
+        hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
+        lockedObjectIds: state.lockedObjectIds, setLockedObjectIds: state.setLockedObjectIds,
+        pdfOcgLayers: state.pdfOcgLayers, hiddenOcgLayerIds: state.hiddenOcgLayerIds,
+        setHiddenOcgLayerIds: state.setHiddenOcgLayerIds,
+        lockedOcgLayerIds: state.lockedOcgLayerIds, setLockedOcgLayerIds: state.setLockedOcgLayerIds,
+        expandedOcgLayerIds: state.expandedOcgLayerIds, setExpandedOcgLayerIds: state.setExpandedOcgLayerIds,
+        viewerActivePage: state.viewerActivePage,
+        setError: state.setError, editAddMode: state.editAddMode, setEditAddMode: state.setEditAddMode,
+    })));
 
     const [searchTerm, setSearchTerm] = useState(''); // Search for components (thành phần)
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number; layer: OcgLayer } | null>(null);
     const [renamingId, setRenamingId] = useState<number | null>(null);
     const [renameValue, setRenameValue] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [dragOverId, setDragOverId] = useState<number | null>(null);
-    const dragIdRef = useRef<number | null>(null);
     const renameInputRef = useRef<HTMLInputElement>(null);
-    const [isScanningAll, setIsScanningAll] = useState(false);
-    const [scanProgress, setScanProgress] = useState(0);
 
+    // Layer PDF chỉ gồm OCG thật. Các nhóm trang/layer ảo do PrynX suy ra được
+    // quản lý ở khu vực Thành phần, không giả làm layer gốc của Illustrator/Corel.
+    const realOcgLayers = useMemo(() => {
+        const onlyReal = (items: OcgLayer[]): OcgLayer[] => items
+            .filter(layer => !layer.isVirtual && !layer.isPageLayer)
+            .map(layer => ({ ...layer, children: onlyReal(layer.children || []) }));
+        return onlyReal(pdfOcgLayers || []);
+    }, [pdfOcgLayers]);
+    const realOcgCount = useMemo(() => {
+        const count = (items: OcgLayer[]): number => items.reduce(
+            (total, layer) => total + (layer.id > 0 ? 1 : 0) + count(layer.children || []),
+            0,
+        );
+        return count(realOcgLayers);
+    }, [realOcgLayers]);
+
+    const componentRows = useMemo(() => {
+        const sourceObjects = isEditMode
+            ? (editObjects || [])
+            : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
+        const topmostFirst = [...sourceObjects].sort((a: any, b: any) =>
+            (Number(b.drawIndex) || 0) - (Number(a.drawIndex) || 0)
+        );
+        const counters: Record<string, number> = { text: 0, image: 0, vector: 0 };
+        const labeled = topmostFirst.map((obj: any) => {
+            const type = String(obj.type || 'vector');
+            counters[type] = (counters[type] || 0) + 1;
+            const content = String(obj.content || '').trim().replace(/\s+/g, ' ');
+            const displayName = type === 'text'
+                ? (content
+                    ? t('misc.selectionLayers:text_noi_dung', { content: content.slice(0, 40) })
+                    : t('misc.selectionLayers:text_n', { n: counters[type] }))
+                : type === 'image'
+                    ? t('misc.selectionLayers:anh_n', { n: counters[type] })
+                    : t('misc.selectionLayers:vector_n', { n: counters[type] });
+            return { ...obj, _displayName: displayName };
+        });
+        const query = searchTerm.trim().toLowerCase();
+        return labeled.filter((obj: any) =>
+            !query || `${obj._displayName} ${obj.content || ''} ${obj.type || ''}`.toLowerCase().includes(query)
+        );
+    }, [isEditMode, editObjects, pdfUrl, searchTerm, t]);
+
+    const { byLayerId: componentsByLayerId, unlayered: unlayeredComponents } = useMemo(
+        () => assignComponentsToDeepestLayers(realOcgLayers, componentRows),
+        [realOcgLayers, componentRows],
+    );
+    const allComponentIds = useMemo(() => {
+        const source = isEditMode
+            ? (editObjects || [])
+            : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
+        return source.map((obj: any) => String(obj.id));
+    }, [isEditMode, editObjects, pdfUrl]);
+    const allComponentsSelected = allComponentIds.length > 0
+        && allComponentIds.every(id => selectedObjectIds.includes(id));
     // Canvas → panel: khi selection đổi (vd click object trên canvas), cuộn dòng
     // tương ứng vào tầm nhìn. Chỉ ĐỌC selectedObjectIds + gọi scroll → không set lại
     // → không có feedback loop. Object không thuộc trang active không có ref → bỏ qua
     // (danh sách "Thành phần" chỉ chứa object trang đang xem). (gộp F7↔edit 2026-07-07)
     const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
     useEffect(() => {
+        const syncVisibility = (event: Event) => {
+            const detail = (event as CustomEvent).detail || {};
+            if (Number(detail.page) !== Math.max(0, viewerActivePage - 1)) return;
+            const ids: string[] = Array.isArray(detail.targetIds) ? detail.targetIds : [];
+            setHiddenObjectIds(prev => detail.visible
+                ? prev.filter(id => !ids.includes(id))
+                : Array.from(new Set([...prev, ...ids]))
+            );
+        };
+        window.addEventListener('edit-object-visibility-changed', syncVisibility);
+        return () => window.removeEventListener('edit-object-visibility-changed', syncVisibility);
+    }, [viewerActivePage, setHiddenObjectIds]);
+    useEffect(() => {
         const firstId = selectedObjectIds[0];
         if (firstId == null) return;
         const el = itemRefs.current[firstId];
-        if (el) el.scrollIntoView({ block: 'nearest' });
-    }, [selectedObjectIds]);
-
-    const handleScanAllPages = async () => {
-        if (!viewerNumPages || isScanningAll) return;
-        setIsScanningAll(true);
-        setScanProgress(0);
-        try {
-            // Scan sequentially to avoid overwhelming the backend
-            for (let i = 1; i <= viewerNumPages; i++) {
-                await fetchPdfObjectsForPage(i);
-                setScanProgress(Math.round((i / viewerNumPages) * 100));
-            }
-        } catch (err) {
-            console.error('Scan all pages failed:', err);
-        } finally {
-            setIsScanningAll(false);
-            setScanProgress(0);
+        const scrollContainer = el?.closest<HTMLElement>('[data-layer-scroll]');
+        if (el && scrollContainer) {
+            scrollElementVerticallyIntoView(el, scrollContainer, 'nearest');
         }
-    };
+    }, [selectedObjectIds]);
 
     // ─── Toggle Eye (Visibility) ───────────────────────────
     const handleToggleVisibility = useCallback(async (layerId: number) => {
-        const isHidden = hiddenOcgLayerIds.includes(layerId);
-        const newHidden = isHidden
+        const wasHidden = hiddenOcgLayerIds.includes(layerId);
+        const nextHidden = wasHidden
             ? hiddenOcgLayerIds.filter(id => id !== layerId)
             : [...hiddenOcgLayerIds, layerId];
-        
-        setHiddenOcgLayerIds(newHidden);
-        
-        // Edit PDF upgrade: prefer real OCG on live edit session (byte-level)
-        // Legacy preflight only for non-edit flows.
-        if (selectionFileId) {
-            try {
-                if (isEditMode) {
-                    // Real apply: mutate session.pdf /OCProperties/D/OFF → next renders use it
-                    await authenticatedFetch(`${getApiUrl()}/edit/ocg/visibility`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            fid: selectionFileId,
-                            layer_id: layerId,
-                            visible: isHidden, // was hidden → now visible
-                        }),
-                    });
-                    // Bump to encourage LivePageFrame / objects effects to re-eval (list from live bytes)
-                    setPdfObjectsVersion((v: any) => ((v || 0) + 1));
-                    // Mark dirty to nudge full viewer / tile refresh path where possible
-                    setViewerDirty(true);
-                } else {
-                    await authenticatedFetch(`${getApiUrl()}/preflight/preview-layers`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            file_id: selectionFileId,
-                            page: 1,
-                            hidden_layer_ids: newHidden,
-                        }),
-                    });
-                }
-            } catch (err) {
-                console.error('Layer visibility update failed:', err);
-            }
-        }
-    }, [hiddenOcgLayerIds, setHiddenOcgLayerIds, selectionFileId, isEditMode]);
 
+        // Optimistic UI; rollback nếu live session từ chối thao tác.
+        setHiddenOcgLayerIds(nextHidden);
+        if (!isEditMode) return;
+
+        try {
+            if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng, vui lòng thử lại.');
+            const outcome = await editSession.applyOp({
+                page: Math.max(0, viewerActivePage - 1), kind: 'layerVisibility', targetIds: [],
+                layerId, visible: wasHidden,
+            });
+            if (!outcome) throw new Error('Không thể cập nhật layer.');
+        } catch (err: any) {
+            setHiddenOcgLayerIds(hiddenOcgLayerIds);
+            setError(err?.message || 'Không thể thay đổi trạng thái layer.');
+        }
+    }, [hiddenOcgLayerIds, setHiddenOcgLayerIds, isEditMode, editSession, viewerActivePage, setError]);
     // ─── Toggle Lock ───────────────────────────────────────
     const handleToggleLock = useCallback(async (layerId: number) => {
-        const isLocked = lockedOcgLayerIds.includes(layerId);
-        const newLocked = isLocked
+        const wasLocked = lockedOcgLayerIds.includes(layerId);
+        const nextLocked = wasLocked
             ? lockedOcgLayerIds.filter(id => id !== layerId)
             : [...lockedOcgLayerIds, layerId];
-        
-        setLockedOcgLayerIds(newLocked);
-        
-        if (selectionFileId) {
-            try {
-                await authenticatedFetch(`${getApiUrl()}/preflight/layers/toggle-lock`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        file_id: selectionFileId,
-                        layer_id: layerId,
-                        locked: !isLocked,
-                    }),
-                });
-            } catch (err) {
-                console.error('Toggle lock failed:', err);
-            }
+        setLockedOcgLayerIds(nextLocked);
+        try {
+            if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
+            const outcome = await editSession.applyOp({
+                page: Math.max(0, viewerActivePage - 1), kind: 'layerLock', targetIds: [],
+                layerId, locked: !wasLocked,
+            });
+            if (!outcome) throw new Error('Không thể khóa/mở khóa layer.');
+        } catch (err: any) {
+            setLockedOcgLayerIds(lockedOcgLayerIds);
+            setError(err?.message || 'Không thể khóa/mở khóa layer.');
         }
-    }, [lockedOcgLayerIds, setLockedOcgLayerIds, selectionFileId]);
-
+    }, [lockedOcgLayerIds, setLockedOcgLayerIds, editSession, viewerActivePage, setError]);
     // ─── Toggle Expand/Collapse ────────────────────────────
     const handleToggleExpand = useCallback((layerId: number) => {
         setExpandedOcgLayerIds(prev =>
@@ -182,148 +219,191 @@ export default function EditLayersPanel({
     }, []);
 
     const commitRename = useCallback(async () => {
-        if (!renamingId || !renameValue.trim() || !selectionFileId) {
+        if (!renamingId || !renameValue.trim()) {
             setRenamingId(null);
             return;
         }
-        
         try {
             setIsLoading(true);
-            await authenticatedFetch(`${getApiUrl()}/preflight/layers/rename`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    file_id: selectionFileId,
-                    layer_id: renamingId,
-                    new_name: renameValue.trim(),
-                }),
+            if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
+            const outcome = await editSession.applyOp({
+                page: Math.max(0, viewerActivePage - 1), kind: 'layerRename', targetIds: [],
+                layerId: renamingId, layerName: renameValue.trim(),
             });
-            // Refresh layers
-            window.dispatchEvent(new CustomEvent('refresh-ocg-layers'));
-        } catch (err) {
-            console.error('Rename failed:', err);
+            if (!outcome) throw new Error('Không thể đổi tên layer.');
+        } catch (err: any) {
+            setError(err?.message || 'Không thể đổi tên layer.');
         } finally {
             setIsLoading(false);
             setRenamingId(null);
         }
-    }, [renamingId, renameValue, selectionFileId]);
-
+    }, [renamingId, renameValue, editSession, viewerActivePage, setError]);
     // ─── Delete Layer ──────────────────────────────────────
     const handleDeleteLayer = useCallback(async (layerId: number) => {
         setContextMenu(null);
-        if (!selectionFileId) return;
-        
         try {
             setIsLoading(true);
-            await authenticatedFetch(`${getApiUrl()}/preflight/layers/delete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    file_id: selectionFileId,
-                    layer_id: layerId,
-                }),
+            if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
+            const outcome = await editSession.applyOp({
+                page: Math.max(0, viewerActivePage - 1), kind: 'layerDelete', targetIds: [], layerId,
             });
-            window.dispatchEvent(new CustomEvent('refresh-ocg-layers'));
-        } catch (err) {
-            console.error('Delete layer failed:', err);
+            if (!outcome) throw new Error('Không thể xóa layer.');
+            setHiddenOcgLayerIds(prev => prev.filter(id => id !== layerId));
+            setLockedOcgLayerIds(prev => prev.filter(id => id !== layerId));
+        } catch (err: any) {
+            setError(err?.message || 'Không thể xóa layer.');
         } finally {
             setIsLoading(false);
         }
-    }, [selectionFileId]);
-
+    }, [editSession, setHiddenOcgLayerIds, setLockedOcgLayerIds, viewerActivePage, setError]);
     // ─── Flatten ───────────────────────────────────────────
     const handleFlatten = useCallback(async () => {
         setContextMenu(null);
-        if (!selectionFileId) return;
-        
+        const confirmed = await confirmDialog({
+            title: 'Gộp toàn bộ layer?',
+            message: 'PrynX sẽ tạo một Working File mới từ trạng thái layer đang hiển thị. File hiện tại vẫn được giữ lại để bạn có thể Ctrl+Z quay về.\n\nNếu máy không có Ghostscript, bản dự phòng có thể raster hóa nội dung.',
+            confirmText: 'Tạo file Flatten',
+            cancelText: 'Hủy',
+            danger: true,
+        });
+        if (!confirmed) return;
+
         try {
             setIsLoading(true);
-            await authenticatedFetch(`${getApiUrl()}/preflight/layers/flatten`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: selectionFileId }),
-            });
-            window.dispatchEvent(new CustomEvent('refresh-ocg-layers'));
-        } catch (err) {
-            console.error('Flatten failed:', err);
+            if (!editSession?.sessionId) {
+                throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
+            }
+            const result = await editSession.flatten();
+            if (!result?.success || !result.output_fid) {
+                throw new Error('Không thể tạo Working File Flatten.');
+            }
+        } catch (err: any) {
+            setError(err?.message || 'Flatten layer thất bại.');
         } finally {
             setIsLoading(false);
         }
-    }, [selectionFileId]);
-
-    // ─── Drag & Drop Reorder ───────────────────────────────
-    const handleDragStart = useCallback((layerId: number) => {
-        dragIdRef.current = layerId;
-    }, []);
-
-    const handleDragOver = useCallback((e: React.DragEvent, layerId: number) => {
-        e.preventDefault();
-        setDragOverId(layerId);
-    }, []);
-
-    const handleDrop = useCallback(async (e: React.DragEvent, targetId: number) => {
-        e.preventDefault();
-        setDragOverId(null);
-        
-        const sourceId = dragIdRef.current;
-        if (!sourceId || sourceId === targetId || !selectionFileId) return;
-        
-        // Build new order by moving sourceId before targetId
-        const flatIds = flattenLayerIds(pdfOcgLayers);
-        const filtered = flatIds.filter(id => id !== sourceId);
-        const targetIdx = filtered.indexOf(targetId);
-        filtered.splice(targetIdx, 0, sourceId);
-        
-        try {
-            setIsLoading(true);
-            await authenticatedFetch(`${getApiUrl()}/preflight/layers/reorder`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    file_id: selectionFileId,
-                    new_order: filtered,
-                }),
-            });
-            window.dispatchEvent(new CustomEvent('refresh-ocg-layers'));
-        } catch (err) {
-            console.error('Reorder failed:', err);
-        } finally {
-            setIsLoading(false);
-            dragIdRef.current = null;
-        }
-    }, [pdfOcgLayers, selectionFileId]);
-
+    }, [editSession, setError]);
     // ─── Context Menu ──────────────────────────────────────
     const handleContextMenu = useCallback((e: React.MouseEvent, layer: OcgLayer) => {
         e.preventDefault();
         setContextMenu({ x: e.clientX, y: e.clientY, layer });
     }, []);
 
+    const renderComponentItem = (obj: any, keyPrefix: string = 'component') => {
+        const isSelected = selectedObjectIds.includes(obj.id);
+        const isHidden = hiddenObjectIds.includes(obj.id);
+        const isLocked = lockedObjectIds.includes(obj.id);
+        return (
+            <div
+                key={`${keyPrefix}-${obj.id}`}
+                ref={el => { itemRefs.current[obj.id] = el; }}
+                className={`flex items-center gap-1.5 px-2 py-1.5 text-xs cursor-pointer border-b border-slate-100 dark:border-zinc-700/50 hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${isHidden ? 'opacity-50' : ''} ${isLocked ? 'opacity-60' : ''}`}
+            >
+                <button
+                    onClick={async (e) => {
+                        e.stopPropagation();
+                        const wasHidden = hiddenObjectIds.includes(obj.id);
+                        setHiddenObjectIds(prev => wasHidden
+                            ? prev.filter(id => id !== obj.id)
+                            : [...prev, obj.id]
+                        );
+                        if (!isEditMode) return;
+                        try {
+                            if (!editSession?.sessionId) throw new Error('Phiên chỉnh sửa chưa sẵn sàng.');
+                            const outcome = await editSession.applyOp({
+                                page: Math.max(0, viewerActivePage - 1),
+                                kind: 'objectVisibility',
+                                targetIds: [obj.id],
+                                visible: wasHidden,
+                            });
+                            if (!outcome) throw new Error('Không thể đổi hiển thị thành phần.');
+                        } catch (err: any) {
+                            setHiddenObjectIds(prev => wasHidden
+                                ? Array.from(new Set([...prev, obj.id]))
+                                : prev.filter(id => id !== obj.id)
+                            );
+                            setError(err?.message || 'Không thể đổi hiển thị thành phần.');
+                        }
+                    }}
+                    className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isHidden ? 'text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
+                    title={isHidden ? t('misc.selectionLayers:hien_thanh_phan') : t('misc.selectionLayers:an_thanh_phan')}
+                    aria-label={isHidden ? t('misc.selectionLayers:hien_thanh_phan') : t('misc.selectionLayers:an_thanh_phan')}
+                >
+                    {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setLockedObjectIds(prev =>
+                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                        );
+                        setSelectedObjectIds(prev => prev.filter(id => id !== obj.id));
+                    }}
+                    className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isLocked ? 'text-amber-500' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
+                    title={isLocked ? t('misc.selectionLayers:mo_khoa_thanh_phan') : t('misc.selectionLayers:khoa_thanh_phan')}
+                    aria-label={isLocked ? t('misc.selectionLayers:mo_khoa_thanh_phan') : t('misc.selectionLayers:khoa_thanh_phan')}
+                >
+                    {isLocked ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
+                </button>
+                <input
+                    type="checkbox"
+                    checked={isSelected}
+                    readOnly
+                    disabled={isLocked}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        if (isLocked) return;
+                        setSelectedObjectIds(prev =>
+                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                        );
+                    }}
+                    className={`rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3 h-3 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                />
+                <span className={`font-mono text-[9px] w-8 shrink-0 ${{
+                    text: 'text-blue-500',
+                    image: 'text-purple-500',
+                    vector: 'text-yellow-600',
+                }[obj.type as string] || 'text-slate-500'}`}>
+                    {obj.type === 'text' ? 'T' : obj.type === 'image' ? '🖼' : obj.type === 'vector' ? '✏️' : '•'}
+                </span>
+                <span
+                    className={`truncate flex-1 text-[11px] ${isHidden ? 'line-through text-slate-400' : ''} ${isLocked ? 'italic text-slate-400' : ''}`}
+                    title={obj._displayName}
+                    onClick={() => {
+                        if (isLocked) return;
+                        setSelectedObjectIds(prev =>
+                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
+                        );
+                    }}
+                >
+                    {obj._displayName}
+                </span>
+            </div>
+        );
+    };
     // ─── Render Layer Tree Item ────────────────────────────
     const renderLayerItem = (layer: OcgLayer, depth: number = 0) => {
-        const isHidden = hiddenOcgLayerIds.includes(layer.id);
-        const isLocked = lockedOcgLayerIds.includes(layer.id);
+        const actionLayerId = layer.parentOcgId ?? layer.id;
+        const isSyntheticPageLayer = !!layer.isPageLayer;
+        const isLabelGroup = !!layer.isGroup && actionLayerId < 0;
+        const isHidden = !isLabelGroup && hiddenOcgLayerIds.includes(actionLayerId);
+        const isLocked = !isLabelGroup && lockedOcgLayerIds.includes(actionLayerId);
         const isExpanded = expandedOcgLayerIds.includes(layer.id);
-        const hasChildren = layer.children && layer.children.length > 0;
+        const layerComponents = layer.id > 0 ? (componentsByLayerId.get(layer.id) || []) : [];
+        const hasChildren = (layer.children && layer.children.length > 0) || layerComponents.length > 0;
         const isRenaming = renamingId === layer.id;
-        const isDragOver = dragOverId === layer.id;
 
         return (
             <div key={`layer-${layer.id}`}>
                 <div
                     className={`flex items-center gap-1 py-1 px-1.5 rounded-md text-[12px] transition-all cursor-pointer group/layer
                         ${isHidden ? 'opacity-40' : ''} 
-                        ${isDragOver ? 'bg-blue-100 dark:bg-blue-900/30 ring-1 ring-blue-400' : 'hover:bg-slate-50 dark:hover:bg-zinc-700/50'}
+                        hover:bg-slate-50 dark:hover:bg-zinc-700/50
                         ${isLocked ? 'bg-amber-50/50 dark:bg-amber-900/10' : ''}
                     `}
                     style={{ paddingLeft: `${depth * 16 + 4}px` }}
-                    draggable={!layer.isGroup}
-                    onDragStart={() => handleDragStart(layer.id)}
-                    onDragOver={(e) => handleDragOver(e, layer.id)}
-                    onDrop={(e) => handleDrop(e, layer.id)}
-                    onDragLeave={() => setDragOverId(null)}
-                    onContextMenu={(e) => handleContextMenu(e, layer)}
-                    onDoubleClick={() => !layer.isGroup && startRename(layer)}
+                    onContextMenu={(e) => { if (!isSyntheticPageLayer && !isLabelGroup) handleContextMenu(e, layer); }}
+                    onDoubleClick={() => !layer.isGroup && !isSyntheticPageLayer && startRename(layer)}
                 >
                     {/* Expand/Collapse Arrow */}
                     {hasChildren ? (
@@ -342,13 +422,14 @@ export default function EditLayersPanel({
 
                     {/* Color Dot */}
                     <div 
-                        className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-black/10"
+                        className={`w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-black/10 ${isLabelGroup ? 'invisible' : ''}`}
                         style={{ backgroundColor: layer.color || '#3b82f6' }}
                     />
 
                     {/* Eye Toggle */}
+                    {!isLabelGroup && (
                     <button
-                        onClick={(e) => { e.stopPropagation(); handleToggleVisibility(layer.id); }}
+                        onClick={(e) => { e.stopPropagation(); handleToggleVisibility(actionLayerId); }}
                         className={`w-5 h-5 flex items-center justify-center rounded transition-colors shrink-0 ${
                             isHidden 
                                 ? 'text-slate-300 dark:text-zinc-600 hover:text-slate-500' 
@@ -368,10 +449,12 @@ export default function EditLayersPanel({
                             </svg>
                         )}
                     </button>
+                    )}
 
                     {/* Lock Toggle */}
+                    {!isLabelGroup && (
                     <button
-                        onClick={(e) => { e.stopPropagation(); handleToggleLock(layer.id); }}
+                        onClick={(e) => { e.stopPropagation(); handleToggleLock(actionLayerId); }}
                         className={`w-5 h-5 flex items-center justify-center rounded transition-colors shrink-0 ${
                             isLocked 
                                 ? 'text-amber-500 hover:text-amber-600' 
@@ -390,6 +473,7 @@ export default function EditLayersPanel({
                             </svg>
                         )}
                     </button>
+                    )}
 
                     {/* Layer Name */}
                     {isRenaming ? (
@@ -405,6 +489,7 @@ export default function EditLayersPanel({
                             }}
                         />
                     ) : (
+                        <>
                         <span className={`truncate flex-1 ${
                             isHidden ? 'text-slate-400 dark:text-zinc-500 line-through' : 
                             layer.isGroup ? 'text-slate-600 dark:text-zinc-300 font-bold italic' : 
@@ -412,22 +497,21 @@ export default function EditLayersPanel({
                         }`}>
                             {layer.isGroup ? (<><FolderOpen className="w-3 h-3 inline-block mr-1 -mt-0.5" />{layer.name}</>) : layer.name}
                         </span>
+                        {layerComponents.length > 0 && (
+                            <span className="text-[9px] min-w-5 px-1 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 text-center shrink-0">
+                                {layerComponents.length}
+                            </span>
+                        )}
+                        </>
                     )}
 
-                    {/* Drag Handle (visible on hover) */}
-                    {!layer.isGroup && (
-                        <div className="w-4 h-4 flex items-center justify-center text-slate-300 dark:text-zinc-600 opacity-0 group-hover/layer:opacity-100 cursor-grab shrink-0">
-                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                                <path d="M7 2a2 2 0 10.001 4.001A2 2 0 007 2zm0 6a2 2 0 10.001 4.001A2 2 0 007 8zm0 6a2 2 0 10.001 4.001A2 2 0 007 14zm6-8a2 2 0 10.001-4.001A2 2 0 0013 6zm0 2a2 2 0 10.001 4.001A2 2 0 0013 8zm0 6a2 2 0 10.001 4.001A2 2 0 0013 14z" />
-                            </svg>
-                        </div>
-                    )}
                 </div>
 
                 {/* Children */}
                 {hasChildren && isExpanded && (
                     <div className="border-l border-slate-200 dark:border-zinc-700 ml-3">
                         {layer.children.map(child => renderLayerItem(child, depth + 1))}
+                        {layerComponents.map((obj: any) => renderComponentItem(obj, 'layer-' + layer.id))}
                     </div>
                 )}
             </div>
@@ -437,7 +521,7 @@ export default function EditLayersPanel({
     return (
         <div className="flex flex-col h-full gap-3">
             {/* Unified OCG + Thành phần view for Edit PDF upgrade */}
-            <div className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 px-1">{t('misc.selectionLayers:lop_thanh_phan_edit_pdf')}</div>
+            <div className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 px-1">{t('misc.selectionLayers:layer_pdf')}</div>
 
             {/* Loading Overlay */}
             {isLoading && (
@@ -449,6 +533,30 @@ export default function EditLayersPanel({
                 </div>
             )}
 
+                    <div className="flex items-center justify-between shrink-0 bg-white dark:bg-zinc-800 p-2 rounded-md border border-slate-200 dark:border-zinc-700">
+                        <span className="font-medium text-[13px] text-slate-700 dark:text-zinc-300">{t('misc.selectionLayers:da_chon')} <strong className="text-blue-600 dark:text-blue-400">{selectedObjectIds.length}</strong></span>
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                placeholder={t('misc.selectionLayers:tim_thanh_phan')}
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                className="text-[11px] px-2 py-0.5 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800"
+                            />
+                            <button
+                                onClick={() => setSelectedObjectIds(allComponentsSelected ? [] : allComponentIds)}
+                                className="text-[11px] bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-2 py-1 rounded transition-colors text-slate-600 dark:text-zinc-300"
+                            >
+                                {allComponentsSelected ? t('misc.selectionLayers:bo_chon') : t('misc.selectionLayers:chon_tat_ca')}
+                            </button>
+                        </div>
+                    </div>
+
+            {searchTerm.trim() && componentRows.length === 0 && (
+                <div className="shrink-0 px-2 py-1 text-[11px] text-slate-400 italic">
+                    {t('misc.selectionLayers:khong_co_thanh_phan_khop_tim_kiem')}
+                </div>
+            )}
             {/* OCG Layers Section */}
             <>
                     {/* Toolbar */}
@@ -465,21 +573,21 @@ export default function EditLayersPanel({
                         </button>
                         <div className="flex-1" />
                         <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono">
-                            {pdfOcgLayers.length} layers
+                            {realOcgCount} layers
                         </span>
                     </div>
 
                     {/* Layer Tree */}
-                    <div className="flex-1 overflow-y-auto border border-slate-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 scroller-thin p-1">
-                        {pdfOcgLayers && pdfOcgLayers.length > 0 ? (
+                    <div data-layer-scroll className="flex-1 overflow-y-auto border border-slate-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 scroller-thin p-1">
+                        {realOcgLayers.length > 0 ? (
                             <div className="flex flex-col gap-0.5">
-                                {pdfOcgLayers.map((layer: OcgLayer) => renderLayerItem(layer))}
+                                {realOcgLayers.map((layer: OcgLayer) => renderLayerItem(layer))}
                             </div>
                         ) : (
                             <div className="p-6 text-center">
                                 <div className="text-3xl mb-2 opacity-30">🎨</div>
                                 <p className="text-slate-400 dark:text-zinc-500 italic text-xs">
-                                    {t('misc.selectionLayers:khong_tim_thay_lop_ocg_nao_trong_file')}
+                                    {t('misc.selectionLayers:file_khong_co_layer_goc')}
                                 </p>
                                 <p className="text-slate-300 dark:text-zinc-600 text-[10px] mt-1">
                                     {t('misc.selectionLayers:file_can_co_cau_truc_ocg_optional')}
@@ -493,7 +601,7 @@ export default function EditLayersPanel({
                         <span className="flex items-center gap-1"><Eye className="w-3 h-3" /> {t('misc.selectionLayers:an_hien')}</span>
                         <span className="flex items-center gap-1"><Lock className="w-3 h-3" /> {t('misc.selectionLayers:khoa')}</span>
                         <span>{t('misc.selectionLayers:2x_click_doi_ten')}</span>
-                        <span>{t('misc.selectionLayers:keo_sap_xep')}</span>
+                        <span>{t('misc.selectionLayers:thu_tu_layer_theo_file_goc')}</span>
                     </div>
                 </>
 
@@ -518,127 +626,26 @@ export default function EditLayersPanel({
                         </div>
                     )}
 
-            {/* Components (Thành phần) Section - using editObjects for accuracy */}
-                    <div className="flex items-center justify-between shrink-0 bg-white dark:bg-zinc-800 p-2 rounded-md border border-slate-200 dark:border-zinc-700">
-                        <span className="font-medium text-[13px] text-slate-700 dark:text-zinc-300">{t('misc.selectionLayers:da_chon')} <strong className="text-blue-600 dark:text-blue-400">{selectedObjectIds.length}</strong></span>
-                        <div className="flex gap-2">
-                            <input
-                                type="text"
-                                placeholder={t('misc.selectionLayers:tim_thanh_phan')}
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="text-[11px] px-2 py-0.5 rounded border border-slate-300 dark:border-zinc-600 bg-white dark:bg-zinc-800"
-                            />
-                            <button
-                                onClick={() => {
-                                    const source = editObjects && editObjects.length > 0 ? editObjects : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
-                                    const allIds = source.map((o: any) => o.id);
-                                    if (selectedObjectIds.length === allIds.length) {
-                                        setSelectedObjectIds([]);
-                                    } else {
-                                        setSelectedObjectIds(allIds);
-                                    }
-                                }}
-                                className="text-[11px] bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 px-2 py-1 rounded transition-colors text-slate-600 dark:text-zinc-300"
-                            >
-                                {selectedObjectIds.length > 0 ? t('misc.selectionLayers:bo_chon') : t('misc.selectionLayers:chon_tat_ca')}
-                            </button>
-                        </div>
+            {unlayeredComponents.length > 0 && (
+                <>
+                    <div className="flex items-center gap-2 px-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
+                        <span className="flex-1">{t('misc.selectionLayers:khong_thuoc_layer_pdf')}</span>
+                        <span className="text-[9px] min-w-5 px-1 py-0.5 rounded-full bg-slate-200 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300 text-center">
+                            {unlayeredComponents.length}
+                        </span>
                     </div>
-
-                    <div className="flex-1 overflow-y-auto border border-slate-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 scroller-thin">
-                        {(() => {
-                            const sourceObjects = isEditMode && editObjects && editObjects.length > 0 ? editObjects : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
-                            const filtered = sourceObjects.filter((obj: any) => 
-                                !searchTerm || (obj.content || obj.type || '').toLowerCase().includes(searchTerm.toLowerCase())
-                            );
-                            if (filtered.length === 0) {
-                                return <div className="p-4 text-center text-slate-400 italic text-xs">{t('misc.selectionLayers:khong_co_thanh_phan_khop_tim_kiem')}</div>;
-                            }
-                            return filtered.map((obj: any) => {
-                                const isSelected = selectedObjectIds.includes(obj.id);
-                                const isHidden = hiddenObjectIds.includes(obj.id);
-                                const isLocked = lockedObjectIds.includes(obj.id);
-                                return (
-                                    <div
-                                        key={obj.id}
-                                        ref={el => { itemRefs.current[obj.id] = el; }}
-                                        className={`flex items-center gap-1.5 p-2 text-xs cursor-pointer border-b border-slate-100 dark:border-zinc-700/50 hover:bg-slate-50 dark:hover:bg-zinc-700/50 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-900/20' : ''} ${isHidden ? 'opacity-50' : ''} ${isLocked ? 'opacity-60' : ''}`}
-                                    >
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                setHiddenObjectIds(prev =>
-                                                    prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
-                                                );
-                                            }}
-                                            className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isHidden ? 'text-red-400' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
-                                            title={isHidden ? t('misc.selectionLayers:hien_thanh_phan') : t('misc.selectionLayers:an_thanh_phan')}
-                                            aria-label={isHidden ? t('misc.selectionLayers:hien_thanh_phan') : t('misc.selectionLayers:an_thanh_phan')}
-                                        >
-                                            {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                                        </button>
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                setLockedObjectIds(prev =>
-                                                    prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
-                                                );
-                                                // Khi khóa object đang được chọn → nhả chọn để không thể transform
-                                                setSelectedObjectIds(prev => prev.filter(id => id !== obj.id));
-                                            }}
-                                            className={`w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-zinc-600 transition-colors shrink-0 ${isLocked ? 'text-amber-500' : 'text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200'}`}
-                                            title={isLocked ? t('misc.selectionLayers:mo_khoa_thanh_phan') : t('misc.selectionLayers:khoa_thanh_phan')}
-                                            aria-label={isLocked ? t('misc.selectionLayers:mo_khoa_thanh_phan') : t('misc.selectionLayers:khoa_thanh_phan')}
-                                        >
-                                            {isLocked ? <Lock className="w-3.5 h-3.5" /> : <LockOpen className="w-3.5 h-3.5" />}
-                                        </button>
-                                        <input
-                                            type="checkbox"
-                                            checked={isSelected}
-                                            readOnly
-                                            disabled={isLocked}
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                if (isLocked) return;
-                                                setSelectedObjectIds(prev =>
-                                                    prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
-                                                );
-                                            }}
-                                            className={`rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3 h-3 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-                                        />
-                                        <span className={`font-mono text-[9px] w-8 shrink-0 ${{
-                                            'text': 'text-blue-500',
-                                            'image': 'text-purple-500',
-                                            'vector': 'text-yellow-600'
-                                        }[obj.type as string] || 'text-slate-500'}`}>
-                                            {obj.type === 'text' ? 'T' : obj.type === 'image' ? '🖼' : obj.type === 'vector' ? '✏️' : '•'}
-                                        </span>
-                                        <span
-                                            className={`truncate flex-1 text-[11px] ${isHidden ? 'line-through text-slate-400' : ''} ${isLocked ? 'italic text-slate-400' : ''}`}
-                                            title={obj.content || obj.type}
-                                            onClick={() => {
-                                                if (isLocked) return;
-                                                setSelectedObjectIds(prev =>
-                                                    prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
-                                                );
-                                            }}
-                                        >
-                                            {obj.content || `[${obj.type}]`}
-                                        </span>
-                                    </div>
-                                );
-                            });
-                        })()}
+                    <div data-layer-scroll className="max-h-[35%] overflow-y-auto border border-slate-200 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-800 scroller-thin">
+                        {unlayeredComponents.map((obj: any) => renderComponentItem(obj, 'unlayered'))}
                     </div>
-
+                </>
+            )}
                     <div className="shrink-0 pt-2">
                         <Button
                             variant="primary"
                             className="w-full bg-red-600 hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700 border-transparent text-white shadow-md flex justify-center items-center gap-2"
                             disabled={selectedObjectIds.length === 0}
                             onClick={() => {
-                                const source = (editObjects && editObjects.length > 0) ? editObjects : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
+                                const source = isEditMode ? (editObjects || []) : Object.values(globalPdfObjectCache.getAllObjects(pdfUrl || '')).flat();
                                 const objectsToDelete = source.filter((o: any) => selectedObjectIds.includes(o.id));
                                 if (objectsToDelete.length > 0) {
                                     handleDeleteObjects(objectsToDelete, 1);
@@ -689,16 +696,4 @@ export default function EditLayersPanel({
             )}
         </div>
     );
-}
-
-// ─── Helpers ────────────────────────────────────────────────
-function flattenLayerIds(layers: OcgLayer[]): number[] {
-    const result: number[] = [];
-    for (const layer of layers) {
-        if (!layer.isGroup) result.push(layer.id);
-        if (layer.children?.length) {
-            result.push(...flattenLayerIds(layer.children));
-        }
-    }
-    return result;
 }

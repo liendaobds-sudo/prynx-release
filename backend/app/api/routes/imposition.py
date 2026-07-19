@@ -22,6 +22,37 @@ RESULTS_DIR = settings.RESULTS_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+def _setting_value(settings, *names, default=None):
+    """Read a setting from either the JSON body or a Pydantic request."""
+    for name in names:
+        if isinstance(settings, dict) and name in settings:
+            return settings[name]
+        if hasattr(settings, name):
+            return getattr(settings, name)
+    return default
+
+
+def _imposition_feature(settings) -> str:
+    """Map an execution/preview request to its exact entitlement."""
+    imposer_mode = str(_setting_value(
+        settings, "imposerMode", "imposer_mode", default=""
+    ) or "").strip().lower()
+    task_mode = str(_setting_value(
+        settings, "taskMode", "task_mode", default=""
+    ) or "").strip().lower()
+    is_diecut = bool(_setting_value(
+        settings, "isDieCutMode", "is_die_cut", default=False
+    ))
+
+    # CNC also carries isDieCutMode=true, so it must be checked first.
+    if imposer_mode == "cnc" or task_mode in ("cnc", "cnc_imposer"):
+        return "impo.cnc"
+    if task_mode == "booklet":
+        return "impo.booklet"
+    if is_diecut or imposer_mode in ("diecut", "sticker", "sticker_imposer"):
+        return "impo.diecut"
+    return "impo.nup"
+
 # ── Allowed directories for file path inputs ──
 # Desktop (Tauri) chạy loopback-only như chính người dùng → mặc định cho phép mọi
 # .pdf local hợp lệ. Khi deploy web/đa người dùng, đặt env IMPOSITION_RESTRICT_PATHS=1
@@ -125,6 +156,7 @@ async def unlock_pdf(file: UploadFile = File(...), license_info: dict = Depends(
 async def execute_plan_imposition(
     file: UploadFile = File(...),
     plan_json: str = Form(...),
+    license_info: dict = Depends(require_feature("impo.booklet")),
 ):
     """
     Execute an imposition plan from a JSON Instruction Set (multipart form).
@@ -164,7 +196,7 @@ async def execute_plan_imposition(
         raise_http(e, "Thực thi kế hoạch bình thất bại")
 
 @router.post("/execute-plan-json")
-async def execute_plan_json(body: dict):
+async def execute_plan_json(body: dict, license_info: dict = Depends(require_feature("impo.booklet"))):
     """
     Execute an imposition plan from a JSON Instruction Set (JSON body).
     
@@ -541,8 +573,11 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
     import numpy as np
     import base64
     import zlib
+    import time as _t
     from app.workers.die_detection import build_shape_from_raster
+    from app.utils.preview_perf_log import log as _perf
 
+    _t0 = _t.perf_counter()
     try:
         sep_result = await engine.extract_separations(
             file_path, page_num=page_idx + 1,
@@ -550,6 +585,7 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
         )
     except Exception as e:
         _logger.warning(f"Spot extraction on page {page_idx + 1} failed: {e}")
+        _perf("DETECT", "raster_fallback FAIL", page=page_idx, ms=(_t.perf_counter() - _t0) * 1000, err=str(e)[:80])
         return None
 
     plates = [
@@ -585,30 +621,55 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
             dpi = config.raster_fallback_dpi
             spot_w = float((xs.max() - xs.min()) * 72.0 / dpi)
             spot_h = float((ys.max() - ys.min()) * 72.0 / dpi)
-            return build_shape_from_raster(page_idx, mask, spot_w, spot_h)
+            shape = build_shape_from_raster(page_idx, mask, spot_w, spot_h)
+            _perf(
+                "DETECT", "raster_fallback OK",
+                page=page_idx, ms=(_t.perf_counter() - _t0) * 1000,
+                plate=str(p.get("name", ""))[:40],
+            )
+            return shape
         except Exception as e:
             _logger.warning(f"Raster classify page {page_idx + 1} failed: {e}")
             continue
+    _perf("DETECT", "raster_fallback none", page=page_idx, ms=(_t.perf_counter() - _t0) * 1000)
     return None
 
 
 async def _compute_detect_response(file_path, config, detect_logger):
     """Run vector detection plus raster fallback and return the legacy response."""
+    import time as _t
     from app.workers import pdf_wrapper as pdf_lib
     from app.workers.die_detection import detect_die_shapes, to_legacy_response
     from app.core.separations import SeparationEngine
+    from app.utils.preview_perf_log import log as _perf, mark as _pmark
+
+    _t0 = _t.perf_counter()
+    _fname = os.path.basename(file_path)
+    _perf("DETECT", "compute_start", file=_fname)
 
     doc = pdf_lib.open(file_path)
+    _pmark("DETECT", "open_doc", _t0, file=_fname, pages=getattr(doc, "page_count", "?"))
     try:
         result = detect_die_shapes(doc, config)
+        _src_counts: dict[str, int] = {}
+        for s in result.shapes:
+            _src_counts[s.source] = _src_counts.get(s.source, 0) + 1
+        _pmark(
+            "DETECT", "vector_done", _t0,
+            pages=result.total_pages, sources=str(_src_counts),
+        )
         engine = SeparationEngine()
+        raster_tries = 0
+        raster_hits = 0
         for i, shape in enumerate(result.shapes):
             if shape.source != "custom" or not result.statuses[i].ok:
                 continue
+            raster_tries += 1
             fallback = await _raster_fallback_shape(
                 engine, file_path, shape.page, config, detect_logger
             )
             if fallback is not None:
+                raster_hits += 1
                 result.shapes[i] = fallback
                 result.statuses[i] = type(result.statuses[i])(
                     page=fallback.page,
@@ -616,6 +677,12 @@ async def _compute_detect_response(file_path, config, detect_logger):
                     source=fallback.source,
                     error=None,
                 )
+        _pmark(
+            "DETECT", "compute_done", _t0,
+            file=_fname, pages=result.total_pages,
+            raster_tries=raster_tries, raster_hits=raster_hits,
+            sources=str(_src_counts),
+        )
     finally:
         try:
             doc.close()
@@ -623,6 +690,19 @@ async def _compute_detect_response(file_path, config, detect_logger):
             pass
 
     return to_legacy_response(result)
+
+
+@router.post("/perf-beacon")
+async def preview_perf_beacon(body: dict, license_info: dict = Depends(require_license)):
+    """FE gửi mốc timeline (detect/preview/batch) → ghi logs/preview_perf.log."""
+    from app.utils.preview_perf_log import log as _perf
+    msg = str((body or {}).get("msg") or "beacon")[:200]
+    fields = {
+        k: v for k, v in (body or {}).items()
+        if k != "msg" and isinstance(v, (str, int, float, bool))
+    }
+    _perf("FE", msg, **fields)
+    return {"ok": True}
 
 
 @router.post("/detect-shape")
@@ -688,14 +768,24 @@ async def api_detect_shape(body: dict):
         except Exception as _e:
             _detect_logger.warning(f"[DETECT_SHAPE] override config bỏ qua: {_e}")
 
+        from app.utils.preview_perf_log import log as _perf, reset_session, Span
+
+        _fname = os.path.basename(file_path)
+        reset_session(f"detect:{_fname}")
+        _span = Span("DETECT", "api_detect_shape", file=_fname)
+
         _cache_key = _make_detect_cache_key(file_path, config)
         if _cache_key is not None:
             _cached = _DETECT_CACHE.get(_cache_key)
             if _cached is not None:
                 _detect_logger.info("[DETECT_SHAPE] cache hit")
+                n_shapes = len(_cached.get("shapes") or [])
+                _perf("DETECT", "CACHE_HIT", file=_fname, pages=n_shapes)
+                _span.done(cache="hit", pages=n_shapes)
                 return _cached
             if _cache_key in _DETECT_INFLIGHT:
                 _detect_logger.info("[DETECT_SHAPE] joining in-flight detection")
+                _perf("DETECT", "JOIN_INFLIGHT", file=_fname)
 
         async def _work():
             response = await _compute_detect_response(file_path, config, _detect_logger)
@@ -705,11 +795,20 @@ async def api_detect_shape(body: dict):
                 _DETECT_CACHE[_cache_key] = response
             return response
 
-        return await _run_shared_detection(_cache_key, _work)
+        response = await _run_shared_detection(_cache_key, _work)
+        n_shapes = len((response or {}).get("shapes") or [])
+        shapes_summary = ",".join(str(s) for s in ((response or {}).get("shapes") or [])[:12])
+        _span.done(cache="miss", pages=n_shapes, shapes=shapes_summary)
+        return response
 
     except Exception as e:
         import traceback
         _detect_logger.error(f"Failed to detect shape: {e}\n{traceback.format_exc()}")
+        try:
+            from app.utils.preview_perf_log import log as _perf
+            _perf("DETECT", "api_FAIL", err=str(e)[:120])
+        except Exception:
+            pass
         # Lỗi cấp file (vd không mở được PDF) — vẫn giữ contract cũ.
         return {"shapes": ["CUSTOM"], "dimensions": [], "shapeParams": [],
                 "perPage": [], "success": False, "error": str(e)}
@@ -764,6 +863,7 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     source_path = _validate_file_path(body.get("source_path"))
     settings = body.get("settings", {})
 
+    enforce_feature(_imposition_feature(settings), license_info or {})
     # Inject license info for stealth watermark (hashed in watermark module)
     if license_info:
         settings["_license_key"] = license_info.get("license_key", "")
@@ -807,18 +907,17 @@ async def start_impose_job(body: dict, license_info: dict = Depends(require_lice
     Expects body: { "source_path": "...", "settings": {...} }
     """
     is_diecut = bool(body.get("settings", {}).get("isDieCutMode", False))
-    enforce_feature("impo.diecut" if is_diecut else "impo.nup", license_info)
     return _launch_impose_job(body, "sticker" if is_diecut else "nup", license_info)
 
 
 @router.post("/nup-start")
-async def start_nup_job(body: dict, license_info: dict = Depends(require_feature("impo.nup"))):
+async def start_nup_job(body: dict, license_info: dict = Depends(require_license)):
     """Alias tương thích ngược — dùng /impose-start. (Task 18)"""
     return _launch_impose_job(body, "nup", license_info)
 
 
 @router.post("/sticker-start")
-async def start_sticker_job(body: dict, license_info: dict = Depends(require_feature("impo.diecut"))):
+async def start_sticker_job(body: dict, license_info: dict = Depends(require_license)):
     """Alias tương thích ngược — dùng /impose-start. (Task 18)"""
     return _launch_impose_job(body, "sticker", license_info)
 
@@ -1125,11 +1224,12 @@ def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h:
 
 
 @router.post("/preview-layout")
-async def preview_layout(req: PreviewLayoutRequest):
+async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(require_license)):
     """
     Preview sticker layout — uses the SAME compute function as nup_engine
     to guarantee preview ≡ output.
     """
+    enforce_feature(_imposition_feature(req), license_info)
     
     if req.file_id or req.path:
         # ═══ SINGLE SOURCE OF TRUTH PATH ═══
@@ -1141,12 +1241,28 @@ async def preview_layout(req: PreviewLayoutRequest):
             from app.workers.sticker_imposer_pkg.layout_compute import compute_sticker_layout_for_page
             from app.workers.imposition_finalize import finalize_placements, resolve_pont_collisions_on_placements
 
-            # ── TIMING TẠM (chẩn đoán preview chậm) — mốc thời gian theo giai đoạn ──
+            # ── TIMING (chẩn đoán preview chậm) → logger + file logs/preview_perf.log ──
             import time as _t_mod
+            from app.utils.preview_perf_log import log as _perf, mark as _pmark
             _T_PREVIEW_START = _t_mod.perf_counter()
             def _plog(_lbl):
-                logger.warning("[PREVIEW-TIMING] %-32s +%7.1fms",
-                               _lbl, (_t_mod.perf_counter() - _T_PREVIEW_START) * 1000.0)
+                elapsed = (_t_mod.perf_counter() - _T_PREVIEW_START) * 1000.0
+                logger.warning("[PREVIEW-TIMING] %-32s +%7.1fms", _lbl, elapsed)
+                _perf("PREVIEW", _lbl, ms_from_start=elapsed)
+
+            _perf(
+                "PREVIEW", "api_start",
+                path=os.path.basename(str(req.path or req.file_id or "")),
+                task_mode=getattr(req, "task_mode", None),
+                layout_type=getattr(req, "layout_type", None),
+                is_die_cut=getattr(req, "is_die_cut", None),
+                imposer_mode=getattr(req, "imposer_mode", None),
+                grouping=getattr(req, "grouping_strategy", None),
+                strategy=req.strategy,
+                shape=req.shape_type,
+                page_idx=getattr(req, "page_idx", 0),
+                target_qty=getattr(req, "target_quantity", 0),
+            )
 
             logger.debug("[PREVIEW] file_id=%s path=%s usable=%.2fx%.2f item=%.2fx%.2f gap=%.2fx%.2f strategy=%s shape=%s props=%s",
                          req.file_id, req.path, req.usable_w, req.usable_h, req.item_w, req.item_h,
@@ -2838,10 +2954,24 @@ class PreviewLayoutBatchRequest(BaseModel):
     tile_gap_y: float = 0
 
 @router.post("/preview-layouts-batch")
-async def preview_layouts_batch(req: PreviewLayoutBatchRequest):
+async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = Depends(require_license)):
+    enforce_feature(_imposition_feature(req), license_info)
+    import time as _t_mod
     from app.workers import pdf_wrapper as pdf_lib
     from app.database import SessionLocal
     from app.models.job import UploadedFile as UploadedFileModel
+    from app.utils.preview_perf_log import log as _perf, mark as _pmark
+
+    _t0 = _t_mod.perf_counter()
+    _n_pages_req = len(getattr(req, "pages", None) or [])
+    _perf(
+        "BATCH", "api_start",
+        path=os.path.basename(str(req.path or req.file_id or "")),
+        pages_req=_n_pages_req,
+        is_die_cut=getattr(req, "is_die_cut", None),
+        task_mode=getattr(req, "task_mode", None),
+        grouping=getattr(req, "grouping_strategy", None),
+    )
 
     # ── Resolve file (desktop: path trực tiếp; web: file_id → DB) ──
     if req.path:
@@ -2857,6 +2987,7 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest):
         file_path = None
 
     if not file_path or not os.path.exists(file_path):
+        _perf("BATCH", "file_not_found")
         raise HTTPException(status_code=404, detail=f"File not found: {req.file_id or req.path}")
 
     bleed_pt = req.bleed or 0
@@ -2966,4 +3097,12 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest):
     finally:
         doc.close()
 
+    _hits = sum(1 for _ in results)  # computed or cached results count
+    _pmark(
+        "BATCH", "api_done", _t0,
+        file=os.path.basename(file_path),
+        pages_out=len(results),
+        pages_req=_n_pages_req,
+        capacities=str({k: results[k] for k in sorted(results)[:8]}),
+    )
     return {"success": True, "capacities": results}

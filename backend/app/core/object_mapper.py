@@ -360,6 +360,66 @@ def _text_cluster_bbox(
     return [x0, y0, x1, y1]
 
 
+def _ocg_ids_from_value(value, seen=None) -> set[int]:
+    """Resolve OCG IDs from an OCG, OCMD (/OCGs or /VE), or nested array."""
+    if value is None:
+        return set()
+    if seen is None:
+        seen = set()
+    try:
+        resolved = value
+        identity = _object_identity(resolved)
+        if identity is not None:
+            if identity in seen:
+                return set()
+            seen.add(identity)
+        if isinstance(resolved, (list, pikepdf.Array)):
+            result: set[int] = set()
+            for item in resolved:
+                result.update(_ocg_ids_from_value(item, seen))
+            return result
+        if not hasattr(resolved, "get"):
+            return set()
+        kind = str(resolved.get("/Type", ""))
+        if kind == "/OCG":
+            if bool(resolved.get("/PrynXInternal", False)):
+                return set()
+            oid = (_object_identity(value) or _object_identity(resolved) or (0, 0))[0]
+            return {int(oid)} if oid else set()
+        if kind == "/OCMD":
+            result = _ocg_ids_from_value(resolved.get("/OCGs"), seen)
+            result.update(_ocg_ids_from_value(resolved.get("/VE"), seen))
+            return result
+    except Exception:
+        return set()
+    return set()
+
+
+def _page_property_ocg_ids(page, operand) -> set[int]:
+    try:
+        page_obj = page.obj if hasattr(page, "obj") else page
+        if isinstance(operand, pikepdf.Name):
+            resources = page_obj.get("/Resources") or pikepdf.Dictionary()
+            properties = resources.get("/Properties") or pikepdf.Dictionary()
+            return _ocg_ids_from_value(properties.get(operand))
+        return _ocg_ids_from_value(operand)
+    except Exception:
+        return set()
+
+
+def _xobject_ocg_ids(page, resource_name: str | None) -> set[int]:
+    if not resource_name:
+        return set()
+    try:
+        page_obj = page.obj if hasattr(page, "obj") else page
+        resources = page_obj.get("/Resources") or pikepdf.Dictionary()
+        xobjects = resources.get("/XObject") or pikepdf.Dictionary()
+        ref = xobjects.get(pikepdf.Name("/" + resource_name))
+        resolved = ref
+        return _ocg_ids_from_value(resolved.get("/OC") if hasattr(resolved, "get") else None)
+    except Exception:
+        return set()
+
 def segment_ops(instructions: list, page=None) -> list[OpSpan]:
     """
     Quét tuyến tính danh sách instruction, mô phỏng graphics-state machine và
@@ -387,6 +447,7 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
     font_size = 1.0
     leading = 0.0
     text_glyph_boxes: list[list[float]] = []
+    text_ocg_ids: set[int] = set()
 
     # Trạng thái path (vector).
     in_path = False
@@ -395,6 +456,12 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
 
     # Đếm lần xuất hiện của từng tên XObject (phân biệt lần thứ k).
     do_occurrence: dict[str, int] = {}
+
+    # Active optional-content membership inherited through nested BDC/BMC blocks.
+    ocg_stack: list[set[int]] = [set()]
+
+    def _active_ocg_ids() -> list[int]:
+        return sorted(ocg_stack[-1])
 
     def _record_glyph(num_chars: int) -> None:
         """Tính hộp gần đúng cho một text-show op tại trạng thái text hiện tại
@@ -429,6 +496,7 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
                     ctm=list(ctm),
                     bbox=bbox,
                     resource_name=None,
+                    ocgIds=_active_ocg_ids(),
                 )
             )
         in_path = False
@@ -438,6 +506,18 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
     for i, instr in enumerate(instructions):
         op = str(instr.operator)
         operands = list(instr.operands)
+
+        # ----- Optional-content stack -----
+        if op in ("BDC", "BMC"):
+            inherited = set(ocg_stack[-1])
+            if op == "BDC" and len(operands) >= 2 and str(operands[-2]) == "/OC":
+                inherited.update(_page_property_ocg_ids(page, operands[-1]))
+            ocg_stack.append(inherited)
+            continue
+        if op == "EMC":
+            if len(ocg_stack) > 1:
+                ocg_stack.pop()
+            continue
 
         # ----- Graphics-state stack -----
         if op == "q":
@@ -466,6 +546,7 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
                     ctm=list(ctm),
                     bbox=_unit_square_bbox(ctm),
                     resource_name=None,
+                    ocgIds=_active_ocg_ids(),
                 )
             )
             continue
@@ -477,6 +558,7 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
             tm = list(IDENTITY)
             tlm = list(IDENTITY)
             text_glyph_boxes = []
+            text_ocg_ids = set(ocg_stack[-1])
             continue
         if op == "ET":
             if in_text:
@@ -491,6 +573,7 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
                             ctm=list(ctm),
                             bbox=bbox,
                             resource_name=None,
+                            ocgIds=sorted(text_ocg_ids),
                         )
                     )
             in_text = False
@@ -532,6 +615,7 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
                 tm = list(tlm)
                 continue
             if op in _TEXT_SHOW_OPS:
+                text_ocg_ids.update(ocg_stack[-1])
                 if op in ("'", '"'):
                     # ' và " xuống dòng trước khi show.
                     tlm = mult_matrix([1.0, 0.0, 0.0, 1.0, 0.0, -leading], tlm)
@@ -564,6 +648,7 @@ def segment_ops(instructions: list, page=None) -> list[OpSpan]:
                             ctm=list(ctm),
                             bbox=_unit_square_bbox(ctm),
                             resource_name=name,
+                            ocgIds=sorted(set(_active_ocg_ids()) | _xobject_ocg_ids(page, name)),
                         )
                     )
             continue
@@ -710,7 +795,14 @@ def _text_bbox_overlaps(span_bbox: list[float], meta_bbox: list[float]) -> bool:
     return overlap_ratio >= _TEXT_OVERLAP_RATIO_THRESHOLD
 
 
-def map_object(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> OpSpan | None:
+def map_object(
+    page,
+    obj_meta,
+    pdf: pikepdf.Pdf | None = None,
+    *,
+    allow_same_bbox_order: bool = False,
+    prebuilt_spans: list[OpSpan] | None = None,
+) -> OpSpan | None:
     """
     Đối khớp MỘT `ObjMeta` (Geometry_Reader / PDFium: type + bbox + matrix +
     drawIndex) với MỘT `OpSpan` (từ `build_op_spans`).
@@ -749,7 +841,7 @@ def map_object(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> OpSpan | None:
     if obj_type is None or obj_bbox is None or len(obj_bbox) != 4:
         return None
 
-    spans = build_op_spans(page, pdf=pdf)
+    spans = prebuilt_spans if prebuilt_spans is not None else build_op_spans(page, pdf=pdf)
 
     # Ứng viên: type khớp + tiêu chí khớp bbox theo từng loại object.
     #   - image/vector: bbox PDFium CHÍNH XÁC ⇒ khớp cạnh-theo-cạnh ≤ 1.0pt.
@@ -792,13 +884,23 @@ def map_object(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> OpSpan | None:
     # drawIndex tách được theo thứ tự, nhưng nếu á quân nằm gần như cùng vị trí
     # (bbox trong tolerance của ứng viên đầu) thì không phân biệt chắc chắn bằng
     # hình học → an toàn màu: hủy (None).
-    if bbox_within_tolerance(best_span.bbox, second_span.bbox, BBOX_TOLERANCE_PT):
+    if (
+        not allow_same_bbox_order
+        and bbox_within_tolerance(best_span.bbox, second_span.bbox, BBOX_TOLERANCE_PT)
+    ):
         return None
 
     return best_span
 
 
-def map_object_spans(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> list[OpSpan]:
+def map_object_spans(
+    page,
+    obj_meta,
+    pdf: pikepdf.Pdf | None = None,
+    *,
+    separate_same_bbox: bool = False,
+    prebuilt_spans: list[OpSpan] | None = None,
+) -> list[OpSpan]:
     """
     Như `map_object` nhưng trả về TẤT CẢ span thuộc cùng MỘT object khi object đó
     được vẽ bằng NHIỀU painting-op có CÙNG hình (bbox trùng khít trong tolerance).
@@ -825,9 +927,10 @@ def map_object_spans(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> list[OpS
 
     if obj_type is None or obj_bbox is None or len(obj_bbox) != 4:
         return []
+    spans = prebuilt_spans if prebuilt_spans is not None else build_op_spans(page, pdf=pdf)
     if obj_type == "text":
         # Text không dùng gộp fill+stroke; giữ hành vi map_object đơn.
-        span = map_object(page, obj_meta, pdf=pdf)
+        span = map_object(page, obj_meta, pdf=pdf, prebuilt_spans=spans)
         return [span] if span is not None else []
 
     # CỔNG DIỆN TÍCH (chặn TRƯỚC MỌI nhánh gom): object siêu nhỏ (mark li ti box
@@ -836,10 +939,9 @@ def map_object_spans(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> list[OpS
     # nhận). Với object nhỏ hơn ngưỡng, KHÔNG gom: về thẳng map_object (single span,
     # hành vi gốc an toàn — 409 nếu thật sự đa nghĩa). Chỉ hình đủ lớn mới gom.
     if _bbox_area(normalize_bbox(list(obj_bbox))) < _IOU_MIN_OBJ_AREA_PT2:
-        span = map_object(page, obj_meta, pdf=pdf)
+        span = map_object(page, obj_meta, pdf=pdf, prebuilt_spans=spans)
         return [span] if span is not None else []
 
-    spans = build_op_spans(page, pdf=pdf)
     candidates: list[OpSpan] = []
     for span in spans:
         if span.kind != obj_type:
@@ -850,7 +952,10 @@ def map_object_spans(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> list[OpS
     # 0 ứng viên tolerance: lớp B điển hình — stroke-object box NỞ theo nửa nét vẽ
     # nên lệch >1pt so với MỌI span (tọa độ path thuần). Thử khớp theo IoU.
     if not candidates:
-        return _map_spans_by_iou(spans, obj_type, normalize_bbox(list(obj_bbox)))
+        return _map_spans_by_iou(
+            spans, obj_type, normalize_bbox(list(obj_bbox)),
+            separate_same_bbox=separate_same_bbox, draw_index=_meta_field(obj_meta, "drawIndex"),
+        )
     if len(candidates) == 1:
         return candidates
 
@@ -860,11 +965,16 @@ def map_object_spans(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> list[OpS
         bbox_within_tolerance(c.bbox, first.bbox, BBOX_TOLERANCE_PT) for c in candidates
     )
     if all_same:
+        if separate_same_bbox:
+            span = map_object(
+                page, obj_meta, pdf=pdf, allow_same_bbox_order=True, prebuilt_spans=spans
+            )
+            return [span] if span is not None else []
         # Cùng một hình vẽ nhiều lượt → biến đổi tất cả cùng nhau (theo thứ tự vẽ).
         return sorted(candidates, key=lambda s: s.start)
 
     # bbox khác nhau thật trong nhóm tolerance → nhờ map_object phân giải duy nhất.
-    span = map_object(page, obj_meta, pdf=pdf)
+    span = map_object(page, obj_meta, pdf=pdf, prebuilt_spans=spans)
     if span is not None:
         return [span]
 
@@ -874,8 +984,192 @@ def map_object_spans(page, obj_meta, pdf: pikepdf.Pdf | None = None) -> list[OpS
     # với object; CHỈ nhận khi các span đó cùng thuộc MỘT hình (chồng khít lẫn
     # nhau) — fill+stroke của cùng path. Nếu ứng viên tách thành nhiều cụm rời
     # (hình khác nhau / mơ hồ thật) → HỦY (trả []), giữ nguyên bảo toàn màu.
-    return _map_spans_by_iou(spans, obj_type, normalize_bbox(list(obj_bbox)))
+    return _map_spans_by_iou(
+        spans, obj_type, normalize_bbox(list(obj_bbox)),
+        separate_same_bbox=separate_same_bbox, draw_index=_meta_field(obj_meta, "drawIndex"),
+    )
 
+
+def _object_identity(value) -> tuple[int, int] | None:
+    """Return a stable indirect-object identity, or None for direct objects."""
+    try:
+        objgen = getattr(value, "objgen", (0, 0))
+        if objgen and objgen != (0, 0):
+            return int(objgen[0]), int(objgen[1])
+    except Exception:
+        pass
+    return None
+
+
+def _ocg_name_id_pairs(value, seen=None) -> list[tuple[str, int]]:
+    """Resolve public (OCG name, object id) pairs through OCG/OCMD/VE values."""
+    if value is None:
+        return []
+    if seen is None:
+        seen = set()
+    try:
+        identity = _object_identity(value)
+        if identity is not None:
+            if identity in seen:
+                return []
+            seen.add(identity)
+        resolved = value
+        if isinstance(resolved, (list, pikepdf.Array)):
+            pairs: list[tuple[str, int]] = []
+            for item in resolved:
+                pairs.extend(_ocg_name_id_pairs(item, seen))
+            return pairs
+        if not hasattr(resolved, "get"):
+            return []
+        kind = str(resolved.get("/Type", ""))
+        if kind == "/OCG":
+            if bool(resolved.get("/PrynXInternal", False)):
+                return []
+            oid = (_object_identity(value) or _object_identity(resolved) or (0, 0))[0]
+            name = str(resolved.get("/Name", "")).strip()
+            return [(name, oid)] if name and oid else []
+        if kind == "/OCMD":
+            pairs = _ocg_name_id_pairs(resolved.get("/OCGs"), seen)
+            pairs.extend(_ocg_name_id_pairs(resolved.get("/VE"), seen))
+            return pairs
+    except Exception:
+        return []
+    return []
+
+
+def _merge_ocg_name_map(target: dict[str, set[int]], value) -> None:
+    for name, oid in _ocg_name_id_pairs(value):
+        target.setdefault(name, set()).add(oid)
+
+
+def _resource_ocg_name_map(page) -> dict[str, set[int]]:
+    """Collect OCG names reachable from this page, including nested Form XObjects."""
+    page_obj = page.obj if hasattr(page, "obj") else page
+    result: dict[str, set[int]] = {}
+    seen_resources: set[tuple[int, int]] = set()
+    seen_xobjects: set[tuple[int, int]] = set()
+
+    def visit_resources(resources) -> None:
+        if resources is None or not hasattr(resources, "get"):
+            return
+        resource_identity = _object_identity(resources)
+        if resource_identity is not None:
+            if resource_identity in seen_resources:
+                return
+            seen_resources.add(resource_identity)
+
+        properties = resources.get("/Properties")
+        if properties is not None:
+            try:
+                for _, value in properties.items():
+                    _merge_ocg_name_map(result, value)
+            except Exception:
+                pass
+
+        xobjects = resources.get("/XObject")
+        if xobjects is None:
+            return
+        try:
+            values = [value for _, value in xobjects.items()]
+        except Exception:
+            return
+        for xobject in values:
+            xobject_identity = _object_identity(xobject)
+            if xobject_identity is not None:
+                if xobject_identity in seen_xobjects:
+                    continue
+                seen_xobjects.add(xobject_identity)
+            try:
+                resolved = xobject
+                if not hasattr(resolved, "get"):
+                    continue
+                _merge_ocg_name_map(result, resolved.get("/OC"))
+                if str(resolved.get("/Subtype", "")) == "/Form":
+                    visit_resources(resolved.get("/Resources"))
+            except Exception:
+                continue
+
+    visit_resources(page_obj.get("/Resources") if hasattr(page_obj, "get") else None)
+    return result
+
+
+def _catalog_ocg_name_map(pdf: pikepdf.Pdf | None) -> dict[str, set[int]]:
+    result: dict[str, set[int]] = {}
+    if pdf is None:
+        return result
+    try:
+        oc_props = pdf.Root.get("/OCProperties")
+        if oc_props is None:
+            return result
+        for ocg in list(oc_props.get("/OCGs", [])):
+            _merge_ocg_name_map(result, ocg)
+    except Exception:
+        pass
+    return result
+
+
+def enrich_object_ocg_memberships(page, objects: list, pdf: pikepdf.Pdf | None = None) -> list:
+    """Attach public OCG IDs to PDFium objects for the current page only.
+
+    PDFium mark names are the fast path and handle Form XObjects well. Content-stream
+    spans are a precise fallback for OCMD and nested BDC membership. Ambiguous duplicate
+    names are never guessed.
+    """
+    if not objects:
+        return objects
+
+    page_name_map = _resource_ocg_name_map(page)
+    catalog_name_map = _catalog_ocg_name_map(pdf)
+    unresolved: list = []
+
+    for obj in objects:
+        ids: set[int] = set()
+        names = list(_meta_field(obj, "ocgNames") or [])
+        for name in names:
+            candidates = page_name_map.get(name)
+            if not candidates:
+                candidates = catalog_name_map.get(name)
+            if candidates and len(candidates) == 1:
+                ids.update(candidates)
+        if ids:
+            if isinstance(obj, dict):
+                obj["ocgIds"] = sorted(ids)
+            else:
+                obj.ocgIds = sorted(ids)
+        else:
+            unresolved.append(obj)
+
+    # Only parse streams if the page actually exposes optional-content resources.
+    # This keeps ordinary/unlayered pages at O(N), while still supporting OCMD.
+    if not unresolved or (not page_name_map and not catalog_name_map):
+        return objects
+
+    try:
+        spans = build_op_spans(page, pdf=pdf, coalesce=False)
+        layered_spans = [span for span in spans if span.ocgIds]
+    except Exception as exc:  # metadata is best-effort; object editing must still load
+        logger.warning("Không đọc được OCG membership trong content stream: %s", exc)
+        return objects
+    if not layered_spans:
+        return objects
+
+    for obj in unresolved:
+        try:
+            matched = map_object_spans(
+                page,
+                obj,
+                pdf=pdf,
+                separate_same_bbox=True,
+                prebuilt_spans=layered_spans,
+            )
+            ids = sorted({oid for span in matched for oid in span.ocgIds})
+            if isinstance(obj, dict):
+                obj["ocgIds"] = ids
+            else:
+                obj.ocgIds = ids
+        except Exception:
+            continue
+    return objects
 
 def _iou(a: list[float], b: list[float]) -> float:
     """IoU (intersection-over-union) của hai bbox đã normalize; 0 nếu rời nhau."""
@@ -897,7 +1191,14 @@ _IOU_SAME_SHAPE: float = 0.5
 _IOU_MIN_OBJ_AREA_PT2: float = 100.0
 
 
-def _map_spans_by_iou(spans, obj_type: str, obj_bbox: list[float]) -> list[OpSpan]:
+def _map_spans_by_iou(
+    spans,
+    obj_type: str,
+    obj_bbox: list[float],
+    *,
+    separate_same_bbox: bool = False,
+    draw_index: int | None = None,
+) -> list[OpSpan]:
     """
     Khớp object→span theo IoU khi tolerance cạnh-theo-cạnh thất bại (lớp B:
     stroke-object box nở theo nét vẽ). Trả HẾT span cùng một hình, hoặc [] nếu mơ hồ.
@@ -921,6 +1222,12 @@ def _map_spans_by_iou(spans, obj_type: str, obj_bbox: list[float]) -> list[OpSpa
         return []
     if len(cands) == 1:
         return cands
+    if separate_same_bbox and draw_index is not None:
+        positions = [(idx, span) for idx, span in enumerate(spans) if span in cands]
+        scored = sorted(positions, key=lambda item: abs(item[0] - int(draw_index)))
+        if len(scored) == 1 or abs(scored[0][0] - int(draw_index)) < abs(scored[1][0] - int(draw_index)):
+            return [scored[0][1]]
+        return []
 
     # Mọi ứng viên phải chồng khít LẪN NHAU (cùng hình). Nếu có cặp IoU thấp →
     # chúng là hình khác nhau → mơ hồ → HỦY.

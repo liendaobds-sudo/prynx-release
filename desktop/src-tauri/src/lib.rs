@@ -1533,7 +1533,12 @@ pub fn run() {
                         // Client bị crack không giả được token → không gọi được backend.
                         ("PRYNX_ENFORCE_LICENSE_TOKEN", "true"),
                         // Rollout Free/Pro độc lập; mặc định false để key cũ không bị khóa trước khi server migrate.
-                        ("PRYNX_FEATURE_GATING_ENABLED", option_env!("PRYNX_FEATURE_GATING_ENABLED").unwrap_or("false")),
+                        (
+                            "PRYNX_FEATURE_GATING_ENABLED",
+                            option_env!("PRYNX_FEATURE_GATING_ENABLED").unwrap_or(
+                                if cfg!(debug_assertions) { "false" } else { "true" }
+                            ),
+                        ),
                         // Cận chống-lùi-giờ PHẢI ≥ TTL token edge function cấp (hiện 7 ngày).
                         // Set qua env để override default compiled cũ mà KHÔNG cần recompile Nuitka.
                         // 8 ngày = 8*24*60*60 = 691200s (7 ngày TTL + 1 ngày dư).

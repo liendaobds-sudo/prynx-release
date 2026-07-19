@@ -265,7 +265,8 @@ export function useThumbSidebar({
 
         const handleMouseMove = (me: MouseEvent) => {
             if (!isThumbResizing.current || !sidebarEl) return;
-            const newWidth = Math.max(260, Math.min(800, startWidth + (me.clientX - startX)));
+            // Min 160: cho phép thu gọn hơn trước (260) mà thumb vẫn scale fit (clamp ở ThumbSidebar).
+            const newWidth = Math.max(160, Math.min(800, startWidth + (me.clientX - startX)));
             sidebarEl.style.width = `${newWidth}px`;
         };
 
@@ -276,8 +277,10 @@ export function useThumbSidebar({
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
 
-            const finalWidth = Math.max(260, Math.min(800, startWidth + (me.clientX - startX)));
+            const finalWidth = Math.max(160, Math.min(800, startWidth + (me.clientX - startX)));
             setThumbWidth(finalWidth);
+            // Báo zoom hook clamp thumbBaseWidth theo panel mới (event tùy chọn)
+            window.dispatchEvent(new CustomEvent('prynx-thumb-panel-resized', { detail: { width: finalWidth } }));
         };
 
         window.addEventListener('mousemove', handleMouseMove);

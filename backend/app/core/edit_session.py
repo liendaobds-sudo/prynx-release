@@ -24,8 +24,11 @@ _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 import os
+import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -37,7 +40,9 @@ import pikepdf
 from pydantic import BaseModel
 
 from app.core import edit_io, geometry_reader
+from app.core.object_mapper import contents_coalesce, map_object_spans, map_text_show_op, parse_page_ops
 from app.core.stream_editor import (
+    _has_overlapping_object_sibling,
     GlyphCoverageError,
     ObjectMapError,
     add_image,
@@ -399,7 +404,8 @@ def _serialize_result(result) -> dict | list:
     return _jsonable(result)
 
 
-def _apply_op_to_pdf(pdf: pikepdf.Pdf, op: EditOp, by_id: dict[str, ObjMeta]):
+def _apply_op_to_pdf(pdf: pikepdf.Pdf, op: EditOp, by_id: dict[str, ObjMeta],
+                     layer_view_bytes: bytes | None = None):
     """
     Áp một `EditOp` lên `pdf` (pikepdf ĐANG MỞ) IN-PLACE qua `stream_editor.*` —
     TÁI DÙNG đúng logic phân nhánh của các endpoint Legacy (delete/transform/text/add),
@@ -412,12 +418,19 @@ def _apply_op_to_pdf(pdf: pikepdf.Pdf, op: EditOp, by_id: dict[str, ObjMeta]):
     Returns:
         Kết quả op (Delete/Move/.../AddResult) do `stream_editor.*` trả về.
     """
-    pg = _page_or_raise(pdf, op.page)
     kind = op.kind
+    if kind in LAYER_EDIT_KINDS:
+        normalized_op = _normalize_layer_op_ids(pdf, op, layer_view_bytes)
+        return _apply_layer_edit_op(pdf, normalized_op)
+
+    pg = _page_or_raise(pdf, op.page)
+
+    if kind == OBJECT_VISIBILITY_KIND:
+        return _apply_object_visibility(pdf, op, by_id)
 
     if kind == "delete":
         metas = _resolve_targets(by_id, op.page, op.targetIds)
-        return delete_objects(pg, metas, pdf)
+        return delete_objects(pg, metas, pdf, all_obj_metas=list(by_id.values()))
 
     if kind == "move":
         metas = _resolve_targets(by_id, op.page, op.targetIds)
@@ -472,6 +485,9 @@ def _compute_new_bbox(op: EditOp, op_result, post_bytes: bytes,
         (bbox_chính | None, danh_sách_bbox_mới_theo_target)
     """
     kind = op.kind
+
+    if kind in LAYER_EDIT_KINDS:
+        return None, []
 
     if kind == "add":
         bbox = list(getattr(op_result, "bbox", []) or []) or None
@@ -545,14 +561,16 @@ def apply_op(session: EditSession, op: EditOp) -> dict:
         pre_bytes = pre_buf.getvalue()
 
         try:
-            by_id = _list_objects_from_bytes(pre_bytes, op.page)
-            # ObjMeta cũ của target (cho clip vùng CŨ + tính bbox fallback).
             old_metas: list[ObjMeta] = []
-            if op.kind != "add":
-                old_metas = _resolve_targets(by_id, op.page, op.targetIds)
+            if op.kind in LAYER_EDIT_KINDS:
+                by_id = {}
+            else:
+                by_id = _list_objects_from_bytes(pre_bytes, op.page)
+                if op.kind != "add":
+                    old_metas = _resolve_targets(by_id, op.page, op.targetIds)
 
-            # 2) Áp op IN-PLACE qua stream_editor (pikepdf = đường ghi color-safe).
-            op_result = _apply_op_to_pdf(session.pdf, op, by_id)
+            # 2) Áp op IN-PLACE qua stream_editor/OCG editor.
+            op_result = _apply_op_to_pdf(session.pdf, op, by_id, pre_bytes)
         except Exception:
             # 3) Lỗi map/glyph/tham số (hoặc bất kỳ) → KHÔI PHỤC Live_Document từ
             #    bytes pre-op để giữ nguyên trạng thái; KHÔNG ghi op_log (Yêu cầu 10.2, 10.3).
@@ -655,6 +673,497 @@ def set_ocg_visibility(session: EditSession, layer_id: int, visible: bool) -> di
 
         return {"layer_id": layer_id, "visible": visible, "success": True}
 
+
+OBJECT_VISIBILITY_KIND = "objectVisibility"
+_INTERNAL_OBJECT_KEY = "/PrynXObjectKey"
+_INTERNAL_FLAG = "/PrynXInternal"
+
+
+def _object_visibility_key(page: int, object_id: str) -> str:
+    return f"{page}:{object_id}"
+
+
+def _find_internal_object_ocg(pdf: pikepdf.Pdf, key: str):
+    oc_props = pdf.Root.get("/OCProperties") or {}
+    for ref in list(oc_props.get("/OCGs", [])):
+        try:
+            if bool(ref.get(_INTERNAL_FLAG, False)) and str(ref.get(_INTERNAL_OBJECT_KEY, "")) == key:
+                return ref
+        except Exception:
+            continue
+    return None
+
+
+def _set_internal_ocg_state(pdf: pikepdf.Pdf, target, visible: bool) -> None:
+    _, d_dict = _ensure_ocg_config(pdf)
+    target_id = _ocg_obj_id(target)
+    off_refs = [ref for ref in list(d_dict.get("/OFF", [])) if _ocg_obj_id(ref) != target_id]
+    on_refs = [ref for ref in list(d_dict.get("/ON", [])) if _ocg_obj_id(ref) != target_id]
+    (on_refs if visible else off_refs).append(target)
+    d_dict["/OFF"] = pikepdf.Array(off_refs)
+    d_dict["/ON"] = pikepdf.Array(on_refs)
+
+
+def _is_nonpainting_point_text_meta(meta: ObjMeta) -> bool:
+    """True for PDFium whitespace/control text that paints no visible area."""
+    if meta.type != "text" or len(meta.bbox) != 4:
+        return False
+    return (
+        abs(meta.bbox[2] - meta.bbox[0]) <= 0.01
+        and abs(meta.bbox[3] - meta.bbox[1]) <= 0.01
+    )
+
+def _apply_object_visibility(
+    pdf: pikepdf.Pdf,
+    op: EditOp,
+    by_id: dict[str, ObjMeta],
+) -> dict:
+    """Persist object visibility with internal OCGs that are omitted from the layer UI."""
+    page = _page_or_raise(pdf, op.page)
+    visible = bool(op.visible)
+    oc_props, _ = _ensure_ocg_config(pdf)
+
+    # Existing wrappers only need an ON/OFF state change. New hidden targets are
+    # mapped before any insertion so every OpSpan index uses one content snapshot.
+    to_wrap: list[tuple[str, ObjMeta, pikepdf.Name, object]] = []
+    for object_id in op.targetIds:
+        key = _object_visibility_key(op.page, object_id)
+        target = _find_internal_object_ocg(pdf, key)
+        if target is not None:
+            _set_internal_ocg_state(pdf, target, visible)
+            continue
+        if visible:
+            continue
+        meta = by_id.get(object_id)
+        if meta is None:
+            raise ObjectMapError(f"Không tìm thấy thành phần '{object_id}' để ẩn.")
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        prop_name = pikepdf.Name(f"/PrynXObj{digest}")
+        target = pdf.make_indirect(pikepdf.Dictionary(
+            Type=pikepdf.Name("/OCG"),
+            Name=pikepdf.String(f"PrynX hidden object {object_id}"),
+        ))
+        target[_INTERNAL_FLAG] = True
+        target[_INTERNAL_OBJECT_KEY] = pikepdf.String(key)
+        oc_props["/OCGs"] = pikepdf.Array([*list(oc_props.get("/OCGs", [])), target])
+        if _is_nonpainting_point_text_meta(meta):
+            # Whitespace/control text has no pixels and usually shares a TJ operator
+            # with neighbouring glyphs. Record the eye state without wrapping that TJ,
+            # which would otherwise hide visible text beside it.
+            _set_internal_ocg_state(pdf, target, False)
+            continue
+        to_wrap.append((object_id, meta, prop_name, target))
+
+    if to_wrap:
+        contents_coalesce(pdf, page)
+        instructions = parse_page_ops(page)
+        all_metas = list(by_id.values())
+        prefixes: dict[int, list] = {}
+        suffixes: dict[int, list] = {}
+
+        resources = page.obj.get("/Resources")
+        if not resources:
+            resources = pikepdf.Dictionary()
+            page.obj["/Resources"] = resources
+        properties = resources.get("/Properties")
+        if not properties:
+            properties = pikepdf.Dictionary()
+            resources["/Properties"] = properties
+
+        for object_id, meta, prop_name, target in to_wrap:
+            if meta.type == "text":
+                span = map_text_show_op(page, meta, pdf=pdf)
+                spans = [span] if span is not None else []
+            else:
+                spans = map_object_spans(
+                    page,
+                    meta,
+                    pdf=pdf,
+                    separate_same_bbox=_has_overlapping_object_sibling(meta, all_metas),
+                )
+            if not spans:
+                raise ObjectMapError(f"Không thể ánh xạ thành phần '{object_id}' để đổi hiển thị.")
+            properties[prop_name] = target
+            _set_internal_ocg_state(pdf, target, False)
+            for span in spans:
+                prefixes.setdefault(span.start, []).append(
+                    pikepdf.ContentStreamInstruction(
+                        [pikepdf.Name("/OC"), prop_name], pikepdf.Operator("BDC")
+                    )
+                )
+                suffixes.setdefault(span.end - 1, []).append(
+                    pikepdf.ContentStreamInstruction([], pikepdf.Operator("EMC"))
+                )
+
+        rewritten = []
+        for index, instruction in enumerate(instructions):
+            rewritten.extend(prefixes.get(index, []))
+            rewritten.append(instruction)
+            rewritten.extend(suffixes.get(index, []))
+        page.obj["/Contents"] = pdf.make_stream(pikepdf.unparse_content_stream(rewritten))
+
+    return {
+        "changed": True,
+        "visible": visible,
+        "target_ids": list(op.targetIds),
+    }
+
+
+def hidden_object_ids(pdf: pikepdf.Pdf, page: int) -> list[str]:
+    """Return persisted hidden object IDs for one page."""
+    oc_props = pdf.Root.get("/OCProperties") or {}
+    d_dict = oc_props.get("/D") or {}
+    off_ids = {_ocg_obj_id(ref) for ref in list(d_dict.get("/OFF", []))}
+    prefix = f"{page}:"
+    result: list[str] = []
+    for ref in list(oc_props.get("/OCGs", [])):
+        try:
+            key = str(ref.get(_INTERNAL_OBJECT_KEY, ""))
+            if bool(ref.get(_INTERNAL_FLAG, False)) and _ocg_obj_id(ref) in off_ids and key.startswith(prefix):
+                result.append(key[len(prefix):])
+        except Exception:
+            continue
+    return result
+
+LAYER_EDIT_KINDS = {
+    "layerVisibility", "layerLock", "layerRename", "layerReorder", "layerDelete",
+}
+
+
+def _ocg_obj_id(ref) -> int:
+    return ref.objgen[0] if hasattr(ref, "objgen") else -1
+
+
+def _ensure_ocg_config(pdf: pikepdf.Pdf) -> tuple[pikepdf.Dictionary, pikepdf.Dictionary]:
+    oc_props = pdf.Root.get("/OCProperties")
+    if not oc_props:
+        oc_props = pikepdf.Dictionary(
+            OCGs=pikepdf.Array(),
+            D=pikepdf.Dictionary(
+                BaseState=pikepdf.Name("/ON"),
+                Order=pikepdf.Array(),
+            ),
+        )
+        pdf.Root["/OCProperties"] = oc_props
+    d_dict = oc_props.get("/D")
+    if not d_dict:
+        d_dict = pikepdf.Dictionary(BaseState=pikepdf.Name("/ON"), Order=pikepdf.Array())
+        oc_props["/D"] = d_dict
+    if not d_dict.get("/BaseState"):
+        d_dict["/BaseState"] = pikepdf.Name("/ON")
+    return oc_props, d_dict
+
+
+def _materialize_virtual_page_layer(pdf: pikepdf.Pdf, virtual_id: int):
+    """Chuyển layer ảo id=-page thành OCG thật và bọc toàn bộ content của trang."""
+    page_num = -int(virtual_id)
+    if page_num < 1 or page_num > len(pdf.pages):
+        raise ValueError(f"Virtual layer {virtual_id} does not map to a valid page")
+
+    oc_props, d_dict = _ensure_ocg_config(pdf)
+    page = pdf.pages[page_num - 1]
+    prop_key = pikepdf.Name(f"/PrynXPage{page_num}")
+
+    resources = page.obj.get("/Resources")
+    if not resources:
+        resources = pikepdf.Dictionary()
+        page.obj["/Resources"] = resources
+    properties = resources.get("/Properties")
+    if not properties:
+        properties = pikepdf.Dictionary()
+        resources["/Properties"] = properties
+
+    existing = properties.get(prop_key)
+    if existing is not None and _ocg_obj_id(existing) > 0:
+        return existing
+
+    ocg = pdf.make_indirect(pikepdf.Dictionary(
+        Type=pikepdf.Name("/OCG"),
+        Name=pikepdf.String(f"print_page_{page_num}"),
+    ))
+    ocgs = list(oc_props.get("/OCGs", []))
+    ocgs.append(ocg)
+    oc_props["/OCGs"] = pikepdf.Array(ocgs)
+
+    order = list(d_dict.get("/Order", []))
+    order.append(ocg)
+    d_dict["/Order"] = pikepdf.Array(order)
+    properties[prop_key] = ocg
+
+    contents = page.obj.get("/Contents")
+    if contents is not None:
+        prefix = pdf.make_stream(f"/OC {prop_key} BDC\n".encode("ascii"))
+        suffix = pdf.make_stream(b"\nEMC\n")
+        if isinstance(contents, pikepdf.Array):
+            page.obj["/Contents"] = pikepdf.Array([prefix, *list(contents), suffix])
+        else:
+            page.obj["/Contents"] = pikepdf.Array([prefix, contents, suffix])
+    return ocg
+
+
+def _property_targets_ocg(value, layer_id: int) -> bool:
+    if _ocg_obj_id(value) == layer_id:
+        return True
+    try:
+        resolved = value.resolve() if hasattr(value, "resolve") else value
+        ocgs = resolved.get("/OCGs") if hasattr(resolved, "get") else None
+        if isinstance(ocgs, pikepdf.Array):
+            return any(_ocg_obj_id(ref) == layer_id for ref in ocgs)
+        return _ocg_obj_id(ocgs) == layer_id
+    except Exception:
+        return False
+
+
+def _remove_ocg_content(pdf: pikepdf.Pdf, layer_id: int) -> int:
+    """Xóa marked-content/XObject thuộc OCG khỏi mọi trang; trả số instruction đã xóa."""
+    removed_total = 0
+    for page in pdf.pages:
+        resources = page.obj.get("/Resources") or pikepdf.Dictionary()
+        properties = resources.get("/Properties") or pikepdf.Dictionary()
+        target_props = {
+            str(name) for name, value in properties.items()
+            if _property_targets_ocg(value, layer_id)
+        }
+        xobjects = resources.get("/XObject") or pikepdf.Dictionary()
+
+        def xobject_oc(value):
+            try:
+                resolved = value.resolve() if hasattr(value, "resolve") else value
+                return resolved.get("/OC") if hasattr(resolved, "get") else None
+            except Exception:
+                return None
+
+        target_xobjects = {
+            str(name) for name, value in xobjects.items()
+            if _property_targets_ocg(xobject_oc(value), layer_id)
+        }
+        if not target_props and not target_xobjects:
+            continue
+
+        instructions = list(pikepdf.parse_content_stream(page))
+        kept = []
+        skip_depth = 0
+        for instruction in instructions:
+            op_name = str(instruction.operator)
+            operands = list(getattr(instruction, "operands", []))
+
+            if skip_depth:
+                removed_total += 1
+                if op_name in ("BDC", "BMC"):
+                    skip_depth += 1
+                elif op_name == "EMC":
+                    skip_depth -= 1
+                continue
+
+            starts_target = (
+                op_name == "BDC"
+                and len(operands) >= 2
+                and str(operands[-2]) == "/OC"
+                and (
+                    str(operands[-1]) in target_props
+                    or _property_targets_ocg(operands[-1], layer_id)
+                )
+            )
+            removes_target_xobject = (
+                op_name == "Do"
+                and operands
+                and str(operands[-1]) in target_xobjects
+            )
+            if starts_target:
+                skip_depth = 1
+                removed_total += 1
+                continue
+            if removes_target_xobject:
+                removed_total += 1
+                continue
+            kept.append(instruction)
+
+        page.obj["/Contents"] = pdf.make_stream(pikepdf.unparse_content_stream(kept))
+        for name in target_props:
+            key = pikepdf.Name(name)
+            if key in properties:
+                del properties[key]
+        for name in target_xobjects:
+            key = pikepdf.Name(name)
+            if key in xobjects:
+                del xobjects[key]
+    return removed_total
+
+
+def _apply_ocg_action_to_pdf(pdf: pikepdf.Pdf, action: str, **payload) -> dict:
+    """Áp OCG/layer lên PDF đang mở; hỗ trợ cả layer thật và layer ảo id=-page."""
+    raw_layer_id = payload.get("layer_id")
+    layer_id = int(raw_layer_id) if raw_layer_id is not None else None
+
+    # Xóa layer ảo nghĩa là xóa toàn bộ artwork của trang đó. Undo/Redo vẫn replay từ baseline.
+    if action == "delete" and layer_id is not None and layer_id < 0:
+        page_num = -layer_id
+        if page_num < 1 or page_num > len(pdf.pages):
+            raise ValueError(f"Virtual layer {layer_id} does not map to a valid page")
+        pdf.pages[page_num - 1].obj["/Contents"] = pdf.make_stream(b"")
+        return {
+            "success": True, "action": action, "layer_id": layer_id,
+            "changed": True, "removed_instructions": -1,
+        }
+
+    mapped_order = None
+    if action == "reorder":
+        mapped_order = []
+        for item in (payload.get("new_order") or []):
+            item_id = int(item)
+            if item_id < 0:
+                item_id = _ocg_obj_id(_materialize_virtual_page_layer(pdf, item_id))
+            mapped_order.append(item_id)
+    elif layer_id is not None and layer_id < 0:
+        layer_id = _ocg_obj_id(_materialize_virtual_page_layer(pdf, layer_id))
+
+    oc_props, d_dict = _ensure_ocg_config(pdf)
+    ocgs = list(oc_props.get("/OCGs", []))
+    target = next((ref for ref in ocgs if _ocg_obj_id(ref) == layer_id), None)
+
+    if action == "visibility":
+        if target is None:
+            raise ValueError(f"Layer ID {layer_id} not found")
+        off_refs = [r for r in list(d_dict.get("/OFF", [])) if _ocg_obj_id(r) != layer_id]
+        on_refs = [r for r in list(d_dict.get("/ON", [])) if _ocg_obj_id(r) != layer_id]
+        if bool(payload.get("visible")):
+            on_refs.append(target)
+        else:
+            off_refs.append(target)
+        d_dict["/OFF"] = pikepdf.Array(off_refs)
+        d_dict["/ON"] = pikepdf.Array(on_refs)
+    elif action == "lock":
+        if target is None:
+            raise ValueError(f"Layer ID {layer_id} not found")
+        refs = [r for r in list(d_dict.get("/Locked", [])) if _ocg_obj_id(r) != layer_id]
+        if bool(payload.get("locked")):
+            refs.append(target)
+        d_dict["/Locked"] = pikepdf.Array(refs)
+    elif action == "rename":
+        if target is None:
+            raise ValueError(f"Layer ID {layer_id} not found")
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("Layer name cannot be empty")
+        target["/Name"] = pikepdf.String(name)
+    elif action == "reorder":
+        by_id = {_ocg_obj_id(ref): ref for ref in ocgs}
+        order = mapped_order or []
+        internal_refs = [ref for ref in ocgs if bool(ref.get(_INTERNAL_FLAG, False))]
+        public_refs = [ref for ref in ocgs if not bool(ref.get(_INTERNAL_FLAG, False))]
+        reordered_public = [
+            by_id[x] for x in order if x in by_id and by_id[x] in public_refs
+        ]
+        reordered_public.extend(ref for ref in public_refs if _ocg_obj_id(ref) not in order)
+        # Internal per-object OCGs persist but never enter the user-facing layer order.
+        oc_props["/OCGs"] = pikepdf.Array([*reordered_public, *internal_refs])
+        d_dict["/Order"] = pikepdf.Array(reordered_public)
+    elif action == "delete":
+        if target is None:
+            raise ValueError(f"Layer ID {layer_id} not found")
+        removed_instructions = _remove_ocg_content(pdf, layer_id)
+        oc_props["/OCGs"] = pikepdf.Array(
+            [r for r in ocgs if _ocg_obj_id(r) != layer_id]
+        )
+        for key in ("/OFF", "/ON", "/Locked"):
+            d_dict[key] = pikepdf.Array(
+                [r for r in list(d_dict.get(key, [])) if _ocg_obj_id(r) != layer_id]
+            )
+
+        def clean_order(items):
+            cleaned = []
+            for item in items:
+                if _ocg_obj_id(item) == layer_id:
+                    continue
+                if isinstance(item, (list, pikepdf.Array)):
+                    child = clean_order(item)
+                    if child:
+                        cleaned.append(pikepdf.Array(child))
+                else:
+                    cleaned.append(item)
+            return cleaned
+
+        if d_dict.get("/Order"):
+            d_dict["/Order"] = pikepdf.Array(clean_order(d_dict["/Order"]))
+        return {
+            "success": True, "action": action, "layer_id": layer_id,
+            "changed": True, "removed_instructions": removed_instructions,
+        }
+    else:
+        raise ValueError(f"Unsupported OCG action: {action}")
+
+    return {"success": True, "action": action, "layer_id": layer_id, "changed": True}
+
+def _normalize_layer_op_ids(
+    pdf: pikepdf.Pdf,
+    op: EditOp,
+    view_bytes: bytes | None,
+) -> EditOp:
+    """
+    Map ID OCG mà UI đọc từ bytes đã serialize về objgen của pikepdf.Pdf đang sống.
+    pikepdf có thể đánh lại số object mới tạo khi save (đặc biệt layer ảo vừa materialize).
+    """
+    positive_layer = op.layerId is not None and op.layerId > 0
+    positive_order = any(item > 0 for item in (op.layerOrder or []))
+    if not positive_layer and not positive_order:
+        return op
+
+    if view_bytes is None:
+        buf = BytesIO()
+        pdf.save(buf, compress_streams=False)
+        view_bytes = buf.getvalue()
+
+    live_props = pdf.Root.get("/OCProperties") or {}
+    live_ocgs = list(live_props.get("/OCGs", []))
+    view_pdf = pikepdf.Pdf.open(BytesIO(view_bytes))
+    try:
+        view_props = view_pdf.Root.get("/OCProperties") or {}
+        view_ocgs = list(view_props.get("/OCGs", []))
+        mapping: dict[int, int] = {}
+        # Thứ tự /OCGs được bảo toàn khi save; tên được kiểm tra để tránh map nhầm.
+        for view_ref, live_ref in zip(view_ocgs, live_ocgs):
+            try:
+                view_name = str(view_ref.get("/Name", ""))
+                live_name = str(live_ref.get("/Name", ""))
+                if view_name == live_name:
+                    mapping[_ocg_obj_id(view_ref)] = _ocg_obj_id(live_ref)
+            except Exception:
+                continue
+    finally:
+        view_pdf.close()
+
+    updates = {}
+    if positive_layer:
+        updates["layerId"] = mapping.get(op.layerId, op.layerId)
+    if op.layerOrder is not None:
+        updates["layerOrder"] = [
+            mapping.get(item, item) if item > 0 else item
+            for item in op.layerOrder
+        ]
+    return op.model_copy(update=updates) if updates else op
+
+def _apply_layer_edit_op(pdf: pikepdf.Pdf, op: EditOp) -> dict:
+    action = {
+        "layerVisibility": "visibility",
+        "layerLock": "lock",
+        "layerRename": "rename",
+        "layerReorder": "reorder",
+        "layerDelete": "delete",
+    }[op.kind]
+    return _apply_ocg_action_to_pdf(
+        pdf, action, layer_id=op.layerId, visible=op.visible, locked=op.locked,
+        name=op.layerName, new_order=op.layerOrder,
+    )
+
+
+def apply_ocg_action(session: EditSession, action: str, **payload) -> dict:
+    """Compatibility path; new UI sends layer actions through apply_op for Undo/Redo."""
+    with session.lock:
+        result = _apply_ocg_action_to_pdf(session.pdf, action, **payload)
+        session.dirty = True
+        session.last_access = time.monotonic()
+        session.live_bytes = None
+        return result
 
 # ── Render tăng tiến theo vùng clip ──────────────────────────────────────────
 def _read_page_box(pdf: pikepdf.Pdf, page_index: int) -> list[float] | None:
@@ -830,8 +1339,15 @@ def _replay_ops(baseline_bytes: bytes, ops: list[EditOp]) -> pikepdf.Pdf:
         for op in ops:
             buf = BytesIO()
             pdf.save(buf, compress_streams=False)
-            by_id = _list_objects_from_bytes(buf.getvalue(), op.page)
-            _apply_op_to_pdf(pdf, op, by_id)
+            view_bytes = buf.getvalue()
+            if op.kind in LAYER_EDIT_KINDS:
+                by_id = {}
+            else:
+                by_id = _list_objects_from_bytes(view_bytes, op.page)
+            _apply_op_to_pdf(
+                pdf, op, by_id,
+                view_bytes if op.kind in LAYER_EDIT_KINDS else None,
+            )
     except Exception:
         # Replay thất bại → đóng pdf dở dang, re-raise để caller GIỮ NGUYÊN phiên.
         try:
@@ -951,7 +1467,7 @@ def undo(session: EditSession, scale: float = 2.0, clip_pad: float = 8.0) -> dic
         session.last_access = time.monotonic()
 
         # BBox cho clip: MỚI = vị trí khôi phục; CŨ = vị trí trước undo (ghost).
-        target_ids = [] if undone_op.kind == "add" else list(undone_op.targetIds)
+        target_ids = [] if undone_op.kind == "add" or undone_op.kind in LAYER_EDIT_KINDS else list(undone_op.targetIds)
         new_bboxes = _bboxes_for_targets(post_bytes, undone_op.page, target_ids)
         old_bboxes = _bboxes_for_targets(pre_undo_bytes, undone_op.page, target_ids)
         primary_bbox = new_bboxes[0] if new_bboxes else None
@@ -965,7 +1481,10 @@ def undo(session: EditSession, scale: float = 2.0, clip_pad: float = 8.0) -> dic
             "bbox": primary_bbox,
             "bboxes": new_bboxes,
             "oldBboxes": old_bboxes,
-            "detail": {},
+            "detail": (
+                {"visible": not bool(undone_op.visible), "target_ids": list(undone_op.targetIds)}
+                if undone_op.kind == OBJECT_VISIBILITY_KIND else {}
+            ),
             "canUndo": len(session.op_log) > 0,
             "canRedo": len(session.redo_stack) > 0,
         }
@@ -1024,11 +1543,14 @@ def redo(session: EditSession, scale: float = 2.0, clip_pad: float = 8.0) -> dic
         pre_bytes = pre_buf.getvalue()
 
         try:
-            by_id = _list_objects_from_bytes(pre_bytes, op.page)
             old_metas: list[ObjMeta] = []
-            if op.kind != "add":
-                old_metas = _resolve_targets(by_id, op.page, op.targetIds)
-            op_result = _apply_op_to_pdf(session.pdf, op, by_id)
+            if op.kind in LAYER_EDIT_KINDS:
+                by_id = {}
+            else:
+                by_id = _list_objects_from_bytes(pre_bytes, op.page)
+                if op.kind != "add":
+                    old_metas = _resolve_targets(by_id, op.page, op.targetIds)
+            op_result = _apply_op_to_pdf(session.pdf, op, by_id, pre_bytes)
         except Exception:
             # Khôi phục Live_Document; op VẪN trong redo_stack để thử lại.
             try:
@@ -1189,6 +1711,71 @@ def commit(session: EditSession) -> dict:
         }
 
 
+def flatten(session: EditSession) -> dict:
+    """Flatten trạng thái layer hiện tại ra một Working File mới, không ghi đè file nguồn."""
+    from app.api.routes.edit import EDIT_OUTPUT_SUBDIR, _register_working_file
+    from app.core.layer_engine import LayerEngine
+
+    if session.session_id not in SESSIONS:
+        raise SessionNotFoundError(
+            f"Phiên '{session.session_id}' không tồn tại hoặc đã hết hạn."
+        )
+
+    temp_input: str | None = None
+    engine_output: str | None = None
+    final_path: str | None = None
+    with session.lock:
+        if session.session_id not in SESSIONS:
+            raise SessionNotFoundError(
+                f"Phiên '{session.session_id}' không tồn tại hoặc đã hết hạn."
+            )
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                temp_input = tmp.name
+            session.pdf.save(temp_input, compress_streams=False)
+
+            engine_output = LayerEngine().flatten_visible(temp_input)
+            original_name = _resolve_original_name(session.source_fid)
+            final_path = edit_io.build_working_file_path(
+                session.source_path,
+                original_name,
+                suffix="flattened",
+                output_subdir=EDIT_OUTPUT_SUBDIR,
+            )
+            Path(final_path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(engine_output, final_path)
+            engine_output = None
+
+            filename = Path(final_path).name
+            output_fid = _register_working_file(final_path, filename)
+        except Exception:
+            if final_path:
+                try:
+                    Path(final_path).unlink(missing_ok=True)
+                except Exception:
+                    logger.warning("Không thể dọn Working File flatten lỗi: %s", final_path)
+            logger.exception("Flatten phiên %s thất bại.", session.session_id)
+            raise
+        finally:
+            for disposable in (temp_input, engine_output):
+                if disposable:
+                    try:
+                        Path(disposable).unlink(missing_ok=True)
+                    except Exception:
+                        logger.warning("Không thể dọn file tạm flatten: %s", disposable)
+
+        abs_output_path = os.path.abspath(final_path)
+        session.last_commit_path = abs_output_path
+        session.dirty = False
+        session.last_access = time.monotonic()
+        return {
+            "success": True,
+            "output_filename": filename,
+            "output_url": f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}",
+            "output_path": abs_output_path,
+            "output_fid": output_fid,
+        }
+
 __all__ = [
     "EditSession",
     "SessionNotFoundError",
@@ -1199,11 +1786,13 @@ __all__ = [
     "get_session",
     "get_active_session",
     "list_objects_from_session",
+    "hidden_object_ids",
     "apply_op",
     "render_clip",
     "undo",
     "redo",
     "commit",
+    "flatten",
     "close_session",
     "sweep_expired",
 ]

@@ -491,6 +491,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                     if (!isPdf) {
                         const formData = new FormData();
                         formData.append('file_path', item.path);
+                        formData.append('batch_mode', 'true');
                         if (isExcelName(item.name)) formData.append('excel_layout', excelLayout);
                         const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/office-convert/file`, {
                             method: 'POST',
@@ -512,6 +513,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                         resizeForm.append('target_w', String(resizeTarget.width));
                         resizeForm.append('target_h', String(resizeTarget.height));
                         resizeForm.append('auto_orientation', 'true');
+                        resizeForm.append('batch_mode', 'true');
                         const resizeResponse = await authenticatedFetch(`${getApiUrl()}/pdf-tools/office-convert/resize-output`, {
                             method: 'POST',
                             body: resizeForm,

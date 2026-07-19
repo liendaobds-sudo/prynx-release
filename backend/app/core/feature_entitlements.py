@@ -2,9 +2,18 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Optional
 
-FEATURE_GATING_ENABLED = os.getenv("PRYNX_FEATURE_GATING_ENABLED", "false").lower() == "true"
+def _feature_gating_enabled() -> bool:
+    # A compiled production sidecar must never allow an environment override to
+    # disable entitlements when it is launched outside the Tauri host.
+    if "__compiled__" in globals() or getattr(sys, "frozen", False):
+        return True
+    return os.getenv("PRYNX_FEATURE_GATING_ENABLED", "false").lower() == "true"
+
+
+FEATURE_GATING_ENABLED = _feature_gating_enabled()
 _PLAN_RANK = {"free": 1, "pro": 2, "dev": 99}
 FREE_FEATURES = {
     "pdf.shuffle", "pdf.resize", "pdf.split", "pdf.pages", "pdf.merge",

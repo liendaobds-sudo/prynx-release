@@ -45,7 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.core import edit_session, geometry_reader
+from app.core import edit_session, geometry_reader, object_mapper
 from app.core.edit_io import apply_and_save
 from app.core.edit_session import SessionNotFoundError, get_active_session, list_objects_from_session
 from app.core.license_guard import require_license
@@ -72,6 +72,7 @@ router = APIRouter(dependencies=[Depends(require_license)])
 # → trả 504 rõ ràng; vì apply_and_save chỉ ghi ra Working_File MỚI nên file gốc
 # KHÔNG bao giờ bị đè dù thao tác bị bỏ dở.
 EDIT_TIMEOUT_SECONDS: float = 120.0
+FLATTEN_TIMEOUT_SECONDS: float = 300.0
 
 # Thư mục con (dưới RESULTS_DIR) chứa Working_File của tính năng edit. Đồng bộ với
 # DEFAULT_EDIT_OUTPUT_SUBDIR ở edit_io; được mount tĩnh qua "/results".
@@ -231,6 +232,19 @@ class SessionRefReq(BaseModel):
     render_scale: float = Field(default=2.0, description="px/point để render preview (≈ zoom×dpr)")
     clip_pad_pt: float = Field(default=8.0, description="lề an toàn quanh clip (point)")
 
+
+class SessionOcgActionReq(BaseModel):
+    session_id: str
+    action: str
+    layer_id: int | None = None
+    name: str | None = None
+    locked: bool | None = None
+    new_order: list[int] | None = None
+
+class SessionOcgVisibilityReq(BaseModel):
+    session_id: str = Field(description="Session_Id của Edit_Session đang sống")
+    layer_id: int
+    visible: bool
 
 class SessionCommitReq(BaseModel):
     """Yêu cầu Commit Live_Document hiện tại ra một Working_File mới."""
@@ -613,6 +627,14 @@ def _render_clip_blocking(
             # Cap scale theo cạnh dài VÙNG CLIP (không phải cả trang).
             longest_pt = max(region_w_pt, region_h_pt)
             eff_scale = min(scale, _MAX_EDGE_PX / longest_pt) if longest_pt > 0 else scale
+            # Align crop edges to the same pixel grid used by a full-page render.
+            # Without this, fractional scales can shift PDFium antialiasing by a
+            # sub-pixel and the incremental preview visibly flickers at its seam.
+            x0 = round(x0 * eff_scale) / eff_scale
+            x1 = round(x1 * eff_scale) / eff_scale
+            y0 = round(y0 * eff_scale) / eff_scale
+            y1 = round(y1 * eff_scale) / eff_scale
+
             # Render CHỈ vùng clip: `crop=(left, bottom, right, top)` theo point tính từ
             # mép trang (đã kiểm thực nghiệm khớp full-render + PIL-crop, diff ~0.0002).
             # clip_rect là Page_Box-relative, gốc DƯỚI-TRÁI → left=x0, bottom=y0,
@@ -671,6 +693,65 @@ def _render_preview_blocking(pdf_path: str, op: EditOp) -> PreviewResponse:
         page=op.page,
     )
 
+
+def _render_hide_preview_blocking(
+    pdf_bytes: bytes,
+    page: int,
+    target_ids: list[str],
+) -> PreviewResponse:
+    """Hide selected live objects in-memory and render the resulting full page."""
+    import pikepdf
+
+    all_metas = geometry_reader.list_objects(pdf_bytes, page)
+    wanted = set(target_ids)
+    targets = [meta for meta in all_metas if meta.id in wanted]
+    if targets:
+        with pikepdf.Pdf.open(BytesIO(pdf_bytes)) as pdf:
+            if page < 0 or page >= len(pdf.pages):
+                raise IndexError(f"Trang {page} ngoài phạm vi (0..{len(pdf.pages) - 1}).")
+            delete_objects(
+                pdf.pages[page], targets, pdf, all_obj_metas=all_metas
+            )
+            out = BytesIO()
+            pdf.save(out, compress_streams=False)
+            pdf_bytes = out.getvalue()
+
+    b64, width, height = _render_clip_blocking(
+        pdf_bytes, page, PREVIEW_DPI / 72.0, None
+    )
+    return PreviewResponse(
+        success=True,
+        image=f"data:image/png;base64,{b64}",
+        width=int(width),
+        height=int(height),
+        page=page,
+    )
+
+
+async def _execute_hide_preview(
+    pdf_bytes: bytes,
+    page: int,
+    target_ids: list[str],
+) -> PreviewResponse:
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(
+                None, _render_hide_preview_blocking, pdf_bytes, page, target_ids
+            ),
+            timeout=EDIT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Tạo preview vượt thời gian xử lý an toàn.")
+    except ObjectMapError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except IndexError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Tạo preview ẩn thành phần thất bại")
+        raise HTTPException(status_code=500, detail=f"Tạo preview ẩn thành phần thất bại: {exc}")
 
 def _render_full_page_blocking(pdf_path: str, page: int) -> PreviewResponse:
     """
@@ -764,7 +845,7 @@ async def _execute_preview(pdf_path: str, op: EditOp) -> PreviewResponse:
         raise HTTPException(status_code=500, detail=f"Tạo preview thất bại: {exc}")
 
 
-async def _execute_session(blocking_fn):
+async def _execute_session(blocking_fn, timeout_seconds: float = EDIT_TIMEOUT_SECONDS):
     """
     Chạy một thao tác PHIÊN (đồng bộ, đụng `pikepdf`/PDFium) trong threadpool với
     TRẦN THỜI GIAN an toàn (Yêu cầu 10.1) và map lỗi domain → HTTP status RÕ RÀNG
@@ -782,7 +863,7 @@ async def _execute_session(blocking_fn):
     loop = asyncio.get_event_loop()
     try:
         return await asyncio.wait_for(
-            loop.run_in_executor(None, blocking_fn), timeout=EDIT_TIMEOUT_SECONDS
+            loop.run_in_executor(None, blocking_fn), timeout=timeout_seconds
         )
     except asyncio.TimeoutError:
         # Timeout: thao tác bị HỦY. apply_op/undo/redo chỉ append op_log SAU khi áp
@@ -791,7 +872,7 @@ async def _execute_session(blocking_fn):
             status_code=504,
             detail=(
                 "Thao tác phiên vượt thời gian xử lý an toàn "
-                f"({EDIT_TIMEOUT_SECONDS:.0f}s). Đã HỦY — giữ nguyên trạng thái phiên "
+                f"({timeout_seconds:.0f}s). Đã HỦY — giữ nguyên trạng thái phiên "
                 "(Yêu cầu 10.1)."
             ),
         )
@@ -842,13 +923,22 @@ async def list_page_objects(fid: str, page: int):
     try:
         session = edit_session.get_active_session(fid)
         if session:
-            objects_list = edit_session.list_objects_from_session(
-                session, page, include_text_props=False
-            )
+            with session.lock:
+                objects_list = edit_session.list_objects_from_session(
+                    session, page, include_text_props=False
+                )
+                object_mapper.enrich_object_ocg_memberships(
+                    session.pdf.pages[page], objects_list, session.pdf
+                )
         else:
             objects_list = geometry_reader.list_objects(
                 pdf_path, page, include_text_props=False
             )
+            import pikepdf
+            with pikepdf.Pdf.open(pdf_path) as source_pdf:
+                object_mapper.enrich_object_ocg_memberships(
+                    source_pdf.pages[page], objects_list, source_pdf
+                )
     except IndexError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -870,9 +960,22 @@ async def list_page_objects(fid: str, page: int):
     except Exception:  # noqa: BLE001 - đọc box best-effort
         page_box = None
 
+    hidden_ids: list[str] = []
+    try:
+        if session:
+            with session.lock:
+                hidden_ids = edit_session.hidden_object_ids(session.pdf, page)
+        else:
+            import pikepdf
+            with pikepdf.Pdf.open(pdf_path) as source_pdf:
+                hidden_ids = edit_session.hidden_object_ids(source_pdf, page)
+    except Exception:  # visibility metadata is best-effort; object listing still succeeds
+        hidden_ids = []
+
     payload = {
         "objects": [o.model_dump() for o in objects_list],
         "pageBox": page_box,
+        "hiddenObjectIds": hidden_ids,
     }
     _set_cached_objects(fid, page, payload)
     return payload
@@ -1092,49 +1195,25 @@ async def edit_preview(req: EditRequest):
 
 @router.post("/edit/preview-hide", response_model=PreviewResponse)
 async def edit_preview_hide(req: PreviewHideReq):
-    """
-    Render ảnh preview (PNG base64) của trang SAU KHI ẨN (xóa hình thật) tập object
-    `targetIds` — phục vụ tính năng "Ẩn đối tượng" (tắt mắt) ở chế độ Edit.
-
-    Đường đi giống `/edit/preview` với op delete: pikepdf áp xóa IN-MEMORY (color-
-    safe) → `pdf.save(BytesIO)` → PDFium render READ-ONLY → PNG base64. KHÔNG ghi
-    file, KHÔNG đè file gốc (Yêu cầu 12.2).
-
-    Xử lý targetIds an toàn:
-      - LỌC trước các id còn tồn tại trên trang (qua Geometry_Reader). Id đã bị
-        xóa/đổi sẽ bị BỎ QUA thay vì làm hỏng cả preview bằng 404/409.
-      - Nếu sau khi lọc danh sách RỖNG (hoặc đầu vào rỗng) → render TRANG BÌNH
-        THƯỜNG (không áp op). Lý do: `EditOp(kind='delete')` từ chối targetIds rỗng
-        ở tầng validator, nên ta render full-page trực tiếp thay vì dựng op.
-    """
+    """Render the current live page with only the requested components hidden."""
     pdf_path, _ = _get_file_info(req.fid)
+    session = edit_session.get_active_session(req.fid)
+    if session is not None:
+        with session.lock:
+            pdf_bytes = session.live_bytes
+            if pdf_bytes is None:
+                out = BytesIO()
+                session.pdf.save(out, compress_streams=False)
+                pdf_bytes = out.getvalue()
+                session.live_bytes = pdf_bytes
+    else:
+        with open(pdf_path, "rb") as source:
+            pdf_bytes = source.read()
 
-    # Lọc id còn tồn tại để tránh 404/409 làm hỏng preview (bỏ qua id đã mất).
-    existing_ids: list[str] = []
-    if req.targetIds:
-        try:
-            metas = geometry_reader.list_objects(pdf_path, req.page)
-            present = {m.id for m in metas}
-            existing_ids = [tid for tid in req.targetIds if tid in present]
-        except IndexError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        except Exception as exc:  # noqa: BLE001 - lọc best-effort; lỗi → render full
-            logger.warning("preview-hide: liệt kê object để lọc thất bại: %s", exc)
-            existing_ids = []
-
-    # Không còn gì để ẩn → render trang bình thường (full page).
-    if not existing_ids:
-        return await _execute_full_page_preview(pdf_path, req.page)
-
-    op = EditOp(page=req.page, kind="delete", targetIds=existing_ids)
-    return await _execute_preview(pdf_path, op)
+    return await _execute_hide_preview(pdf_bytes, req.page, req.targetIds)
 
 
-# ── Session endpoints `/edit/session/*` (`pdf-edit-session`) ─────────────────
-# Phương án "C": giữ một pikepdf.Pdf SỐNG theo phiên trong RAM, áp Edit_Op
-# in-memory, render tăng tiến theo vùng clip, chỉ Commit ra đĩa khi cần. Tất cả
-# handler chạy trong threadpool qua `_execute_session` (timeout + map lỗi → HTTP).
-# Các endpoint Legacy ở trên GIỮ NGUYÊN để Legacy_Commit_Flow fallback (Yêu cầu 11.3).
+# Session endpoints `/edit/session/*` (`pdf-edit-session`)
 @router.post("/edit/session/open", response_model=SessionOpenResp)
 async def session_open(req: SessionOpenReq, license_info: dict = Depends(require_license)):
     """
@@ -1180,6 +1259,32 @@ async def session_op(req: SessionOpReq, license_info: dict = Depends(require_lic
 
     return await _execute_session(_do)
 
+
+@router.post("/edit/session/ocg-action")
+async def session_ocg_action(
+    req: SessionOcgActionReq,
+    license_info: dict = Depends(require_license),
+):
+    def _do() -> dict:
+        session = edit_session.get_session(req.session_id)
+        return edit_session.apply_ocg_action(
+            session, req.action, layer_id=req.layer_id, name=req.name,
+            locked=req.locked, new_order=req.new_order,
+        )
+
+    return await _execute_session(_do)
+
+@router.post("/edit/session/ocg-visibility")
+async def session_ocg_visibility(
+    req: SessionOcgVisibilityReq,
+    license_info: dict = Depends(require_license),
+):
+    """Đổi visibility OCG trong live session; thay đổi sẽ được commit cùng phiên."""
+    def _do() -> dict:
+        session = edit_session.get_session(req.session_id)
+        return edit_session.set_ocg_visibility(session, req.layer_id, req.visible)
+
+    return await _execute_session(_do)
 
 @router.post("/edit/session/undo", response_model=SessionOpResp)
 async def session_undo(req: SessionRefReq, license_info: dict = Depends(require_license)):
@@ -1260,6 +1365,23 @@ async def session_commit(req: SessionCommitReq, license_info: dict = Depends(req
 
     return await _execute_session(_do)
 
+
+@router.post("/edit/session/flatten", response_model=EditResponse)
+async def session_flatten(req: SessionCommitReq, license_info: dict = Depends(require_license)):
+    """Flatten layer hiện tại ra Working File mới; file nguồn và phiên gốc không bị ghi đè."""
+    def _do() -> EditResponse:
+        session = edit_session.get_session(req.session_id)
+        result = edit_session.flatten(session)
+        _invalidate_object_cache(session.source_fid)
+        return EditResponse(
+            success=bool(result.get("success", True)),
+            output_filename=result["output_filename"],
+            output_url=result["output_url"],
+            output_path=result["output_path"],
+            output_fid=result["output_fid"],
+        )
+
+    return await _execute_session(_do, timeout_seconds=FLATTEN_TIMEOUT_SECONDS)
 
 @router.delete("/edit/session/{sid}")
 async def session_close(sid: str, license_info: dict = Depends(require_license)):

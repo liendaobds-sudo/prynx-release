@@ -11,7 +11,7 @@
 #    .\build_production.ps1 -NuitkaOnly      # Only compile Python
 #    .\build_production.ps1 -Release         # Build updater artifacts (needs signing key)
 #    .\build_production.ps1 -SkipPreflightQA # Emergency build without pytest gate
-#    .\build_production.ps1 -Version 1.0.0-beta.12  # Bump version before build
+#    .\build_production.ps1 -Version 1.0.0-beta.13  # Bump version before build
 #
 # ============================================================
 
@@ -24,7 +24,7 @@ param(
     [string]$Version = ""
 )
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
 Write-Host ""
@@ -39,7 +39,28 @@ $SIDECAR_NAME = "pdf-inspector-backend"
 
 $TAURI_CONF = "$ROOT\desktop\src-tauri\tauri.conf.json"
 $PKG_JSON = "$ROOT\desktop\package.json"
+$PKG_LOCK = "$ROOT\desktop\package-lock.json"
 $CARGO_TOML = "$ROOT\desktop\src-tauri\Cargo.toml"
+$CARGO_LOCK = "$ROOT\desktop\src-tauri\Cargo.lock"
+
+function Copy-DirectoryWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePattern,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [int]$MaxAttempts = 5
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Copy-Item -Path $SourcePattern -Destination $Destination -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -eq $MaxAttempts) { throw }
+            Write-Host "  Resource file busy; retry $attempt/$MaxAttempts..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 1
+        }
+    }
+}
+
 
 # ---- Optional: bump version from -Version (Build NỘI BỘ / CLI) ----
 # Trước đây chỉ release_update.ps1 ghi version; build nội bộ đọc tauri.conf cũ
@@ -52,22 +73,40 @@ if (-not [string]::IsNullOrWhiteSpace($Version)) {
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     if (Test-Path $TAURI_CONF) {
-        $conf = Get-Content $TAURI_CONF -Raw
+        $conf = [System.IO.File]::ReadAllText($TAURI_CONF, [System.Text.Encoding]::UTF8)
         $conf = [regex]::Replace($conf, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
         [System.IO.File]::WriteAllText($TAURI_CONF, $conf.TrimStart([char]0xFEFF), $utf8NoBom)
     }
     if (Test-Path $PKG_JSON) {
-        $pkg = Get-Content $PKG_JSON -Raw
+        $pkg = [System.IO.File]::ReadAllText($PKG_JSON, [System.Text.Encoding]::UTF8)
         $pkg = [regex]::Replace($pkg, '("version"\s*:\s*")[^"]*(")', "`${1}$Version`${2}", 1)
         [System.IO.File]::WriteAllText($PKG_JSON, $pkg.TrimStart([char]0xFEFF), $utf8NoBom)
     }
+    if (Test-Path $PKG_LOCK) {
+        $pkgLock = [System.IO.File]::ReadAllText($PKG_LOCK, [System.Text.Encoding]::UTF8)
+        $pkgLock = [regex]::Replace(
+            $pkgLock,
+            '("name"\s*:\s*"prynx"\s*,\s*"version"\s*:\s*")[^"]*(")',
+            ('${1}' + $Version + '${2}')
+        )
+        [System.IO.File]::WriteAllText($PKG_LOCK, $pkgLock.TrimStart([char]0xFEFF), $utf8NoBom)
+    }
     if (Test-Path $CARGO_TOML) {
-        $cargo = Get-Content $CARGO_TOML -Raw
+        $cargo = [System.IO.File]::ReadAllText($CARGO_TOML, [System.Text.Encoding]::UTF8)
         # Chi dong [package] version dau file, khong dong dependency
         $cargo = [regex]::Replace($cargo, '(?m)^(version\s*=\s*")[^"]*(")', "`${1}$Version`${2}", 1)
         [System.IO.File]::WriteAllText($CARGO_TOML, $cargo.TrimStart([char]0xFEFF), $utf8NoBom)
     }
-    Write-Host "  [OK] Da dat version=$Version (tauri.conf + package.json + Cargo.toml)" -ForegroundColor Green
+    if (Test-Path $CARGO_LOCK) {
+        $cargoLock = [System.IO.File]::ReadAllText($CARGO_LOCK, [System.Text.Encoding]::UTF8)
+        $cargoLock = [regex]::Replace(
+            $cargoLock,
+            '(?ms)(\[\[package\]\]\s*name = "pdf-inspector"\s*version = ")[^"]*(")',
+            ('${1}' + $Version + '${2}')
+        )
+        [System.IO.File]::WriteAllText($CARGO_LOCK, $cargoLock.TrimStart([char]0xFEFF), $utf8NoBom)
+    }
+    Write-Host "  [OK] Da dat version=$Version (Tauri + npm + Cargo, gom ca lockfiles)" -ForegroundColor Green
 }
 
 # ---- Derive version from tauri.conf.json (single source of truth) ----
@@ -97,9 +136,26 @@ Write-Host "  App version: $APP_VERSION (Windows resource: $NUMERIC_VERSION)" -F
 # Validate venv exists
 if (-not (Test-Path $VENV_PYTHON)) {
     Write-Host "ERROR: Python venv not found at $VENV_PYTHON" -ForegroundColor Red
+
     Write-Host "  Run run_dev.bat first to create the venv." -ForegroundColor Yellow
     exit 1
 }
+
+# A stale venv can leave python.exe present while its base interpreter was removed.
+& $VENV_PYTHON --version *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Python venv exists but cannot start: $VENV_PYTHON" -ForegroundColor Red
+    Write-Host "  Recreate backend\venv before building." -ForegroundColor Yellow
+    exit 1
+}
+
+# Production builds must enforce the same Free/Pro entitlements in both layers.
+# Explicit values here avoid silently shipping an unrestricted build when local
+# .env files omit the rollout flags.
+$env:VITE_FEATURE_GATING_ENABLED = "true"
+$env:PRYNX_FEATURE_GATING_ENABLED = "true"
+Write-Host "  Free/Pro feature gating: ENABLED (frontend + backend)" -ForegroundColor Green
+
 
 # ---- Step 0: Preflight QA gate (runs before Nuitka/Tauri) ----
 if (-not $SkipPreflightQA) {
@@ -111,8 +167,16 @@ if (-not $SkipPreflightQA) {
         exit 1
     }
     Write-Host "  Preflight QA passed." -ForegroundColor Green
+    Write-Host "  Running Free-token entitlement E2E..." -ForegroundColor Yellow
+    & "$ROOT\backend\scripts\run_free_token_e2e.ps1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Free-token E2E failed. Production build is blocked." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  Free-token entitlement E2E passed." -ForegroundColor Green
+
 } else {
-    Write-Host "[0/5] Skipped Preflight QA (-SkipPreflightQA)." -ForegroundColor DarkGray
+    Write-Host "[0/5] Skipped Preflight QA + Free-token E2E (-SkipPreflightQA)." -ForegroundColor DarkGray
 }
 
 # ---- Step 1: Nuitka compile backend ----
@@ -123,15 +187,41 @@ if (-not $SkipNuitka) {
     & $VENV_PYTHON -m pip show nuitka *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  Installing Nuitka + dependencies..." -ForegroundColor DarkGray
-        & $VENV_PYTHON -m pip install nuitka ordered-set zstandard
+        & $VENV_PYTHON -m pip install Nuitka==4.1.2 ordered-set==4.1.0 zstandard==0.25.0
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: Failed to install Nuitka" -ForegroundColor Red
             exit 1
         }
     }
 
-    # ---- Step 1a: GPU (DirectML) onnxruntime cho ban Windows ship ----
+    # ---- Step 1a: Build the Rust/Python native extension ----
+
+    # Rebuild the Rust/Python extension for the active Python ABI on every full
+    # production build. Reusing an extension from an older venv can make Nuitka
+    # fail or silently ship stale native PDF logic.
+    & $VENV_PYTHON -m pip show maturin *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Installing Maturin..." -ForegroundColor DarkGray
+        & $VENV_PYTHON -m pip install maturin==1.13.3
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to install Maturin" -ForegroundColor Red
+            exit 1
+        }
+    }
+    Write-Host "  Building pdfcompare_native for the active Python..." -ForegroundColor DarkGray
+    $previousVirtualEnv = $env:VIRTUAL_ENV
+    $env:VIRTUAL_ENV = "$ROOT\backend\venv"
+    & $VENV_PYTHON -m maturin develop --release --manifest-path "$ROOT\native\Cargo.toml"
+    $nativeExit = $LASTEXITCODE
+    if ($null -eq $previousVirtualEnv) { Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue }
+    else { $env:VIRTUAL_ENV = $previousVirtualEnv }
+    if ($nativeExit -ne 0) {
+        Write-Host "ERROR: Failed to build/install pdfcompare_native" -ForegroundColor Red
+        exit 1
+    }
+
     # requirements.txt pin onnxruntime CPU (CI Ubuntu + dev da nen -- directml
+    # ---- Step 1b: GPU (DirectML) onnxruntime cho ban Windows ship ----
     # KHONG co wheel Linux). Ban Windows ship can DirectML de TU bat GPU (DX12:
     # NVIDIA/AMD/Intel), CPU fallback tu dong -- KHONG can khach cai CUDA/cuDNN.
     # Do thuc (RTX 3060, 1024x1024): isnet ~10x, birefnet-lite ~1.7x so voi CPU.
@@ -318,7 +408,7 @@ if ($GS_SRC -and (Test-Path $GS_SRC)) {
     Write-Host "  Ghostscript detected: $GS_SRC" -ForegroundColor DarkGray
     Write-Host "  Copying Ghostscript..." -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $GS_DEST | Out-Null
-    Copy-Item -Recurse -Force "$GS_SRC\*" $GS_DEST
+    Copy-DirectoryWithRetry -SourcePattern "$GS_SRC\*" -Destination $GS_DEST
     # Loai doc/examples (~25MB) -- chi la tai lieu, runtime GS khong dung.
     foreach ($sub in @("doc", "examples")) {
         $p = Join-Path $GS_DEST $sub
@@ -338,7 +428,7 @@ $TESS_DEST = "$SIDECAR_DIR\tesseract"
 if (Test-Path $TESS_SRC) {
     Write-Host "  Copying Tesseract-OCR..." -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $TESS_DEST | Out-Null
-    Copy-Item -Recurse -Force "$TESS_SRC\*" $TESS_DEST
+    Copy-DirectoryWithRetry -SourcePattern "$TESS_SRC\*" -Destination $TESS_DEST
     # Prune training/utility tools: app chi CHAY OCR (tesseract.exe), khong huan luyen.
     # Xoa ~42MB exe training (lstmtraining, text2image, mftraining...) + uninstaller.
     # GIU tesseract.exe + moi DLL (libtesseract, leptonica, icu) + tessdata/.

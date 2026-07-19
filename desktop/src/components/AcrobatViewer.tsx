@@ -262,16 +262,45 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // liên tục, reset op_log, phá undo). Giữ qua ref; key effect theo primitive ổn định.
     const editSessionRef = useRef(editSession);
     editSessionRef.current = editSession;
+    const editSessionLifecycleRef = useRef<Promise<void>>(Promise.resolve());
     useEffect(() => {
-        const es = editSessionRef.current;
-        if (!es || !isObjectEditMode || !selectionFileId) return;
-        void es.openSession(selectionFileId);
+        let cancelled = false;
+        const targetFid = selectionFileId;
+
+        // Tuần tự hóa đóng/mở: đổi Working File nhanh không được để cleanup phiên cũ
+        // chạy chồng và đóng nhầm phiên mới vừa mở.
+        editSessionLifecycleRef.current = editSessionLifecycleRef.current
+            .catch(() => { /* cho phép chuỗi lifecycle tiếp tục sau lỗi trước đó */ })
+            .then(async () => {
+                const current = editSessionRef.current;
+                if (!current) return;
+
+                if (current.sessionId) {
+                    try {
+                        if (current.dirty) await current.commit();
+                    } finally {
+                        await current.closeSession();
+                    }
+                }
+
+                if (!cancelled && isObjectEditMode && targetFid) {
+                    await editSessionRef.current?.openSession(targetFid);
+                }
+            });
+
         return () => {
-            // Thoát/đổi fid: commit gộp nếu có thay đổi (onCommit swap pdfUrl), rồi đóng.
-            void (async () => {
-                try { if (es.dirty) await es.commit(); } catch { /* giữ phiên nếu commit lỗi */ }
-                await es.closeSession();
-            })();
+            cancelled = true;
+            editSessionLifecycleRef.current = editSessionLifecycleRef.current
+                .catch(() => { /* vẫn phải dọn phiên khi bước trước lỗi */ })
+                .then(async () => {
+                    const current = editSessionRef.current;
+                    if (!current?.sessionId) return;
+                    try {
+                        if (current.dirty) await current.commit();
+                    } finally {
+                        await current.closeSession();
+                    }
+                });
         };
     }, [isObjectEditMode, selectionFileId]);
 
@@ -379,16 +408,18 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         // pdfUrl) KHÔNG còn dùng cho edit-object — session là đường DUY NHẤT.
         isObjectEditMode,
         onEditUndo: () => {
-            if (!editSession) return;
+            if (!editSession?.canUndo) return objectEdit.undo();
             const cssScale = pageDim?.w ? (actualWidth100 * zoom) / (pageDim.w * 72 / 96) : 2;
             const dpr = window.devicePixelRatio || 1;
             void editSession.undo(Math.max(0.5, cssScale * dpr));
+            return true;
         },
         onEditRedo: () => {
-            if (!editSession) return;
+            if (!editSession?.canRedo) return objectEdit.redo();
             const cssScale = pageDim?.w ? (actualWidth100 * zoom) / (pageDim.w * 72 / 96) : 2;
             const dpr = window.devicePixelRatio || 1;
             void editSession.redo(Math.max(0.5, cssScale * dpr));
+            return true;
         },
     });
 

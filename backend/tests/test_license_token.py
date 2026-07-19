@@ -231,3 +231,26 @@ def test_clock_guard_dev_bypass(monkeypatch):
     monkeypatch.setattr(lg, "_is_dev_mode", lambda: True)
     ok, _ = lg._clock_guard()
     assert ok
+
+
+def test_missing_or_invalid_plan_falls_back_to_free(signing):
+    missing = _make_token(signing, _payload())
+    invalid_payload = _payload()
+    invalid_payload["plan"] = "mystery"
+    invalid = _make_token(signing, invalid_payload)
+
+    assert lg._read_verified_entitlements(missing)["plan"] == "free"
+    assert lg._read_verified_entitlements(invalid)["plan"] == "free"
+
+
+def test_explicit_pro_plan_is_preserved(signing):
+    payload = _payload()
+    payload["plan"] = "pro"
+    token = _make_token(signing, payload)
+    assert lg._read_verified_entitlements(token)["plan"] == "pro"
+
+
+def test_license_context_without_entitlements_is_free():
+    context = lg._license_context("KEY", "HWID", True)
+    assert context["plan"] == "free"
+    assert context["features"] is None

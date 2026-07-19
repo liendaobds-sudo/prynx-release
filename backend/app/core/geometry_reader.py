@@ -38,6 +38,18 @@ logger = logging.getLogger(__name__)
 # nhưng ta vẫn áp trần cứng để tránh treo vô hạn với file bất thường.
 MAX_OBJECTS_PER_PAGE: int = 50_000
 
+# PDFium can expose whitespace/control text as a page object with a point bbox.
+# Such an object paints no pixels and cannot be edited independently from its TJ run.
+_POINT_TEXT_EPSILON_PT = 0.01
+
+
+def _is_nonpainting_point_text(obj_type: str, bbox: list[float]) -> bool:
+    return (
+        obj_type == "text"
+        and abs(bbox[2] - bbox[0]) <= _POINT_TEXT_EPSILON_PT
+        and abs(bbox[3] - bbox[1]) <= _POINT_TEXT_EPSILON_PT
+    )
+
 # Ánh xạ hằng số type PDFium → nhãn type của ObjMeta.
 _TYPE_MAP = {
     pdfium_c.FPDF_PAGEOBJ_TEXT: "text",
@@ -153,6 +165,42 @@ def _extract_fill_color(obj) -> list[int] | None:
         return None
 
 
+def _pdfium_wide_string(call, *args) -> str | None:
+    """Read a UTF-16LE string returned by a PDFium two-pass buffer API."""
+    try:
+        size = ctypes.c_ulong(0)
+        call(*args, None, 0, ctypes.byref(size))
+        if size.value <= 0:
+            return None
+        buffer = ctypes.create_string_buffer(size.value)
+        if not call(*args, buffer, size.value, ctypes.byref(size)):
+            return None
+        return bytes(buffer[:size.value]).decode("utf-16-le", errors="replace").rstrip("\x00") or None
+    except Exception:  # noqa: BLE001 - optional metadata only
+        return None
+
+
+def _extract_ocg_names(obj) -> list[str]:
+    """Read public OCG names attached to a PDFium page object via /OC marks."""
+    names: list[str] = []
+    try:
+        mark_count = int(pdfium_c.FPDFPageObj_CountMarks(obj))
+        for index in range(mark_count):
+            mark = pdfium_c.FPDFPageObj_GetMark(obj, index)
+            if not mark:
+                continue
+            tag = _pdfium_wide_string(pdfium_c.FPDFPageObjMark_GetName, mark)
+            if tag != "OC":
+                continue
+            name = _pdfium_wide_string(
+                pdfium_c.FPDFPageObjMark_GetParamStringValue, mark, b"Name"
+            )
+            if name and name not in names:
+                names.append(name)
+    except Exception:  # noqa: BLE001 - membership is enriched again from pikepdf
+        pass
+    return names
+
 def list_objects(pdf_path: str, page_index: int, include_text_props: bool = True) -> list[ObjMeta]:
     """
     Liệt kê tất cả PDF_Object của một trang kèm type + bbox chính xác (read-only).
@@ -251,6 +299,12 @@ def list_objects(pdf_path: str, page_index: int, include_text_props: bool = True
                 float(top.value),
             ]
 
+            # A zero-area text object is normally a whitespace/control glyph inside a
+            # larger TJ/Tj run. Exposing it as an editable component leads to a row that
+            # has no visible pixels and cannot be safely hidden on its own.
+            if _is_nonpainting_point_text(obj_type, bbox):
+                logger.debug("Bỏ qua text object không vẽ #%d (point bbox).", i)
+                continue
             # ── Matrix (CTM) của object nếu có ─────────────────────────────
             matrix: list[float] | None = None
             fs_matrix = pdfium_c.FS_MATRIX()
@@ -276,6 +330,7 @@ def list_objects(pdf_path: str, page_index: int, include_text_props: bool = True
                     id=f"{obj_type}-{i}",
                     drawIndex=i,
                     type=obj_type,
+                    ocgNames=_extract_ocg_names(obj),
                     bbox=bbox,
                     matrix=matrix,
                     content=content,

@@ -63,6 +63,8 @@ class ObjMeta(BaseModel):
     id: str
     drawIndex: int = Field(ge=0, description="Chỉ số thứ tự vẽ từ PDFium (gợi ý map)")
     type: ObjType
+    ocgIds: list[int] = Field(default_factory=list, description="OCG IDs chứa object trên trang")
+    ocgNames: list[str] = Field(default_factory=list, description="Tên OCG do PDFium đọc từ marked content")
     bbox: list[float] = Field(description="[x0, y0, x1, y1] theo point")
     matrix: list[float] | None = Field(
         default=None, description="CTM affine 6 phần tử [a, b, c, d, e, f] nếu có"
@@ -161,7 +163,10 @@ class ImagePayload(BaseModel):
         return normalize_bbox(v)
 
 
-EditKind = Literal["delete", "move", "resize", "rotate", "editText", "add"]
+EditKind = Literal[
+    "delete", "move", "resize", "rotate", "editText", "add", "objectVisibility",
+    "layerVisibility", "layerLock", "layerRename", "layerReorder", "layerDelete",
+]
 
 
 class EditOp(BaseModel):
@@ -188,10 +193,18 @@ class EditOp(BaseModel):
     text: TextPayload | None = None
     image: ImagePayload | None = None
 
+    # Tham số cho thao tác OCG/layer (dùng chung op_log để Undo/Redo đúng thứ tự).
+    layerId: int | None = None
+    visible: bool | None = None
+    locked: bool | None = None
+    layerName: str | None = None
+    layerOrder: list[int] | None = None
+
     @model_validator(mode="after")
     def _check_required_params(self) -> "EditOp":
         # delete/move/resize/rotate/editText cần targetIds; add thì không bắt buộc.
-        if self.kind != "add" and not self.targetIds:
+        object_target_kinds = {"delete", "move", "resize", "rotate", "editText", "objectVisibility"}
+        if self.kind in object_target_kinds and not self.targetIds:
             raise ValueError(f"Thao tác '{self.kind}' yêu cầu ít nhất một targetIds")
 
         if self.kind == "move" and self.delta is None:
@@ -204,6 +217,18 @@ class EditOp(BaseModel):
             raise ValueError("Thao tác 'editText' yêu cầu trường 'text'")
         if self.kind == "add" and self.text is None and self.image is None:
             raise ValueError("Thao tác 'add' yêu cầu 'text' hoặc 'image'")
+        if self.kind in {"layerVisibility", "layerLock", "layerRename", "layerDelete"} and self.layerId is None:
+            raise ValueError(f"Thao tác '{self.kind}' yêu cầu layerId")
+        if self.kind == "objectVisibility" and self.visible is None:
+            raise ValueError("Thao tác objectVisibility yêu cầu visible")
+        if self.kind == "layerVisibility" and self.visible is None:
+            raise ValueError("Thao tác layerVisibility yêu cầu visible")
+        if self.kind == "layerLock" and self.locked is None:
+            raise ValueError("Thao tác layerLock yêu cầu locked")
+        if self.kind == "layerRename" and not (self.layerName or "").strip():
+            raise ValueError("Thao tác layerRename yêu cầu layerName")
+        if self.kind == "layerReorder" and self.layerOrder is None:
+            raise ValueError("Thao tác layerReorder yêu cầu layerOrder")
         return self
 
 
@@ -224,6 +249,7 @@ class OpSpan(BaseModel):
     ctm: list[float] = Field(description="CTM affine 6 phần tử [a, b, c, d, e, f]")
     bbox: list[float] = Field(description="[x0, y0, x1, y1] theo point")
     resource_name: str | None = None
+    ocgIds: list[int] = Field(default_factory=list)
 
     @field_validator("ctm")
     @classmethod

@@ -103,6 +103,8 @@ export interface UseEditSession {
     applyOp: (op: EditOp, scale?: number) => Promise<SessionOpOutcome | null>;
     undo: (scale?: number) => Promise<SessionOpOutcome | null>;
     redo: (scale?: number) => Promise<SessionOpOutcome | null>;
+    /** Flatten layer hiện tại ra Working File mới và chuyển viewer sang file đó. */
+    flatten: () => Promise<SessionCommitResult | null>;
     /** Commit Live_Document ra Working_File mới (ghi đĩa). Gọi KHI THOÁT edit mode. */
     commit: () => Promise<SessionCommitResult | null>;
     /** Xóa mọi lớp preview (gọi khi tile thật đã vào sau commit). */
@@ -261,15 +263,43 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             setCanUndo(outcome.canUndo);
             setCanRedo(outcome.canRedo);
             setDirtyFlag(true);
-            // Đẩy lớp overlay: op áp trong RAM → render vùng clip. KHÔNG auto-commit ở
+            const outcomeKind = String(outcome.opResult?.kind || outcome.opResult?.action || "");
+            const isLayerOp = outcomeKind.startsWith("layer");
+            if (isLayerOp) {
+                window.dispatchEvent(new CustomEvent("refresh-ocg-layers"));
+            }
+            if (outcomeKind === "objectVisibility") {
+                const detail = outcome.opResult?.detail || {};
+                window.dispatchEvent(new CustomEvent("edit-object-visibility-changed", {
+                    detail: {
+                        page: outcome.page,
+                        targetIds: detail.target_ids || [],
+                        visible: !!detail.visible,
+                    },
+                }));
+            } else if (!isLayerOp || outcomeKind === "layerDelete") {
+                // Hình học và xóa layer làm object/ID/membership đổi. Các thao tác layer khác chỉ refresh cây OCG.
+                window.dispatchEvent(new CustomEvent("edit-session-objects-changed", {
+                    detail: { page: outcome.page, path },
+                }));
+            }            // Đẩy lớp overlay: op áp trong RAM → render vùng clip. KHÔNG auto-commit ở
             // đây (trước kia debounce-commit sinh fid mới GIỮA lúc sửa → reopen session
             // reset op_log + swap tile reload → chính cái lag ta gỡ). Commit CHỈ khi
             // THOÁT edit mode / Lưu (commit-on-exit). Session sống suốt phiên sửa.
             if (outcome.preview) {
-                setPreviews(prev => [...prev, {
-                    url: outcome.preview, clipRect: outcome.clipRect,
-                    full: outcome.full, page: outcome.page,
-                }]);
+                setPreviews(prev => {
+                    // Full-page mới thay thế toàn bộ overlay cũ của trang; clip trùng nhau
+                    // cũng thay thế thay vì tích lũy ảnh Base64/DOM vô hạn.
+                    const sameClip = (a: BBox | null, b: BBox | null) =>
+                        a === b || (!!a && !!b && a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 0.01));
+                    const kept = prev.filter(p => outcome.full
+                        ? p.page !== outcome.page
+                        : p.page !== outcome.page || p.full || !sameClip(p.clipRect, outcome.clipRect));
+                    return [...kept, {
+                        url: outcome.preview, clipRect: outcome.clipRect,
+                        full: outcome.full, page: outcome.page,
+                    }];
+                });
             }
             return outcome;
         } catch (e) {
@@ -293,6 +323,33 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
         [runOp]);
 
     // ── Commit thủ công (người dùng Lưu / thoát edit mode — commit-on-exit) ─────
+    const flatten = useCallback(async (): Promise<SessionCommitResult | null> => {
+        const sid = sessionIdRef.current;
+        if (!sid || committingRef.current) return null;
+        committingRef.current = true;
+        try {
+            const data = await request('/flatten', jsonPost({ session_id: sid }));
+            const result: SessionCommitResult = {
+                success: !!data?.success,
+                output_fid: data?.output_fid,
+                output_url: data?.output_url,
+                output_path: data?.output_path,
+                output_filename: data?.output_filename,
+            };
+            setDirtyFlag(false);
+            setCanUndo(false);
+            setCanRedo(false);
+            setPreviews([]);
+            try { optsRef.current.onCommit?.(result); } catch { /* callback best-effort */ }
+            return result;
+        } catch (e) {
+            if (e instanceof SessionGoneError) { markFailed(); return null; }
+            throw e;
+        } finally {
+            committingRef.current = false;
+        }
+    }, [request, jsonPost, setDirtyFlag, markFailed]);
+
     const commit = useCallback(async (): Promise<SessionCommitResult | null> => {
         if (!sessionIdRef.current) return null;
         return doCommit();
@@ -328,6 +385,7 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
         applyOp,
         undo,
         redo,
+        flatten,
         commit,
         clearPreviews,
         closeSession,

@@ -191,28 +191,15 @@ def resize_pages(source_path: str, output_path: str,
                         except Exception:
                             pass
 
-                # 1) Quyết định src size TRƯỚC khi đụng CropBox.
-                # Crop “mềm” (chỉ CropBox, MediaBox còn gốc): dùng CropBox.
-                # File thường / đã sync MediaBox=CropBox: dùng MediaBox (giữ bleed).
-                use_crop_as_source = False
+                # Resize for print production always uses the full MediaBox. CropBox is a
+                # viewing boundary and must not discard bleed/marks outside that boundary.
+                # A destructive crop already synchronizes MediaBox to the cropped size.
                 try:
                     mb = src_page.mediabox
-                    mb_w = float(mb[2] - mb[0])
-                    mb_h = float(mb[3] - mb[1])
-                    cb = src_page.cropbox
-                    cb_w = float(cb[2] - cb[0])
-                    cb_h = float(cb[3] - cb[1])
-                    if (
-                        cb_w > 1 and cb_h > 1
-                        and (cb_w * cb_h) < (mb_w * mb_h) * 0.99
-                    ):
-                        src_w, src_h = cb_w, cb_h
-                        use_crop_as_source = True
-                    else:
-                        src_w, src_h = mb_w, mb_h
+                    src_w = float(mb[2] - mb[0])
+                    src_h = float(mb[3] - mb[1])
                 except Exception:
                     src_w, src_h = 595.28, 841.89
-                    use_crop_as_source = False
 
                 page_target_w, page_target_h = target_w, target_h
                 orientation_w, orientation_h = src_w, src_h
@@ -226,14 +213,11 @@ def resize_pages(source_path: str, output_path: str,
                 # Create the destination only after choosing its per-page orientation.
                 new_page = out_doc.add_blank_page(page_size=(page_target_w, page_target_h))
 
-                # 2) Chuẩn bị form BBox rồi mới as_form_xobject.
-                # - use_crop: GIỮ CropBox → form = vùng đã cắt (đúng sau Crop UI).
-                # - else: ép CropBox=MediaBox → form gồm trọn bleed (hành vi cũ).
-                if not use_crop_as_source:
-                    try:
-                        src_page.CropBox = src_page.MediaBox
-                    except Exception:
-                        pass
+                # Force the form BBox to the full MediaBox so bleed remains renderable.
+                try:
+                    src_page.CropBox = src_page.MediaBox
+                except Exception:
+                    pass
 
                 # Copy foreign the source page as an XObject
                 xobj = src_page.as_form_xobject()
