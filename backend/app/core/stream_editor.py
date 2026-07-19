@@ -97,6 +97,16 @@ class MoveResult:
 
 
 @dataclass
+class AffineResult:
+    """Kết quả biến đổi affine chung cho một hoặc nhiều object."""
+
+    changed: bool
+    transformed_spans: list[OpSpan] = field(default_factory=list)
+    matrix: list[float] = field(default_factory=lambda: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+    wrapped_count: int = 0
+    message: str = ""
+
+@dataclass
 class ResizeResult:
     """
     Kết quả của một thao tác thay đổi kích thước (resize / scale).
@@ -189,6 +199,28 @@ class AddResult:
     image_size_px: tuple[int, int] | None = None
     message: str = ""
 
+
+@dataclass
+class ReplaceImageResult:
+    """Result of replacing one image XObject while preserving its drawing transform."""
+
+    changed: bool
+    bbox: list[float] = field(default_factory=list)
+    old_resource_name: str = ""
+    new_resource_name: str = ""
+    image_size_px: tuple[int, int] | None = None
+    message: str = ""
+
+
+@dataclass
+class ClipImageResult:
+    """Result of applying or removing an editable vector frame around one image."""
+
+    changed: bool
+    bbox: list[float] = field(default_factory=list)
+    shape: str = "none"
+    radius: float = 0.0
+    message: str = ""
 
 @dataclass
 class DeleteResult:
@@ -468,6 +500,15 @@ def _rotated_text_tm(tm: list[float], ctm: list[float], deg: float, cx: float, c
     return mult_matrix(m2, ctm_inv)
 
 
+
+
+def _affine_text_tm(tm: list[float], ctm: list[float], matrix: list[float]) -> list[float]:
+    """Áp ma trận page-space lên một text run nhưng không làm xê dịch run lân cận."""
+    transformed = mult_matrix(mult_matrix(tm, ctm), matrix)
+    ctm_inv = inverse_matrix(ctm)
+    if ctm_inv is None:
+        return mult_matrix(tm, matrix)
+    return mult_matrix(transformed, ctm_inv)
 
 def _enclosing_q_indices(instructions: list, index: int) -> tuple[int, int] | None:
     """
@@ -928,6 +969,129 @@ def move_objects(
         ),
     )
 
+
+
+def affine_transform_objects(
+    page,
+    obj_metas,
+    matrix: list[float],
+    pdf: pikepdf.Pdf,
+) -> AffineResult:
+    """
+    Áp một ma trận affine page-space CHUNG cho toàn bộ selection trong một lần parse/ghi.
+
+    Translation thuần tái dùng move_objects để giữ nguyên cơ chế mở rộng clip đã kiểm chứng.
+    Scale/rotate hỗn hợp ghim Tm riêng cho text run và bọc q/cm/Q cho image/vector.
+    """
+    values = [float(v) for v in matrix]
+    if len(values) != 6 or not all(math.isfinite(v) for v in values):
+        raise ValueError("matrix affine phải gồm 6 số hữu hạn")
+    if abs(values[0] * values[3] - values[1] * values[2]) < 1e-9:
+        raise ValueError("matrix affine suy biến không được phép")
+    if all(abs(values[i] - expected) < 1e-9 for i, expected in enumerate(
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    )):
+        return AffineResult(changed=False, matrix=values, message="Affine identity - không thay đổi.")
+
+    # Dịch thuần đi qua đường move đã xử lý clip text Illustrator/InDesign.
+    if (
+        abs(values[0] - 1.0) < 1e-9
+        and abs(values[1]) < 1e-9
+        and abs(values[2]) < 1e-9
+        and abs(values[3] - 1.0) < 1e-9
+    ):
+        moved = move_objects(page, obj_metas, values[4], values[5], pdf)
+        return AffineResult(
+            changed=moved.changed,
+            transformed_spans=moved.moved_spans,
+            matrix=values,
+            wrapped_count=moved.wrapped_count,
+            message=moved.message,
+        )
+
+    if not obj_metas:
+        return AffineResult(changed=False, matrix=values, message="Không có object mục tiêu.")
+
+    pg = _as_page(page)
+    try:
+        contents_coalesce(pdf, pg)
+    except Exception as exc:
+        logger.warning("contents_coalesce thất bại trong affine, tiếp tục: %s", exc)
+
+    nontext_spans: list[OpSpan] = []
+    text_infos: list[dict] = []
+    transformed_spans: list[OpSpan] = []
+    for meta in obj_metas:
+        meta_type = _meta_value(meta, "type")
+        meta_id = _meta_value(meta, "id", "?")
+        if meta_type == "text":
+            info = text_show_op_for_move(pg, meta, pdf=pdf)
+            if info is None:
+                raise ObjectMapError(
+                    f"Không thể ánh xạ text '{meta_id}' sang show-op duy nhất cho affine."
+                )
+            text_infos.append(info)
+            ti = info["target_index"]
+            transformed_spans.append(OpSpan(
+                start=ti, end=ti + 1, kind="text",
+                ctm=[1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                bbox=list(_meta_value(meta, "bbox", [0.0, 0.0, 0.0, 0.0])),
+                resource_name=None,
+            ))
+        else:
+            spans = map_object_spans(pg, meta, pdf=pdf)
+            if not spans:
+                raise ObjectMapError(
+                    f"Không thể ánh xạ object '{meta_id}' cho affine; hủy để bảo toàn PDF."
+                )
+            nontext_spans.extend(spans)
+            transformed_spans.extend(spans)
+
+    instructions = parse_page_ops(pg)
+    n = len(instructions)
+    prefix: dict[int, list] = {}
+    suffix: dict[int, list] = {}
+
+    # Dedupe fill/stroke cùng span để không bọc lồng ma trận hai lần.
+    seen_ranges: set[tuple[int, int]] = set()
+    for span in nontext_spans:
+        start = max(0, span.start)
+        end = min(n, span.end)
+        key = (start, end)
+        if start >= end or key in seen_ranges:
+            continue
+        seen_ranges.add(key)
+        prefix.setdefault(start, []).extend([_q_instruction(), _cm_instruction(values)])
+        suffix.setdefault(end - 1, []).append(_Q_instruction())
+
+    # Ghim lại tất cả show-op cùng cluster; chỉ target được áp affine.
+    target_indices = {info["target_index"] for info in text_infos}
+    cluster_show: dict[int, tuple[list[float], list[float]]] = {}
+    for info in text_infos:
+        for show in info["cluster"]:
+            cluster_show[show["index"]] = (show["tm"], show["ctm"])
+    for idx, (tm_abs, ctm_abs) in cluster_show.items():
+        tm_use = _affine_text_tm(tm_abs, ctm_abs, values) if idx in target_indices else tm_abs
+        prefix.setdefault(idx, []).append(_Tm_instruction(tm_use))
+
+    new_instructions: list = []
+    for i, instr in enumerate(instructions):
+        if i in prefix:
+            new_instructions.extend(prefix[i])
+        new_instructions.append(instr)
+        if i in suffix:
+            new_instructions.extend(suffix[i])
+
+    pg.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        pikepdf.unparse_content_stream(new_instructions)
+    )
+    return AffineResult(
+        changed=True,
+        transformed_spans=transformed_spans,
+        matrix=values,
+        wrapped_count=len(seen_ranges) + len(target_indices),
+        message=f"Đã áp affine cho {len(obj_metas)} object trong một lần ghi stream.",
+    )
 
 def _cm_instruction(matrix: list[float]) -> pikepdf.ContentStreamInstruction:
     """
@@ -2246,15 +2410,19 @@ def _ensure_xobject_resource(pg: pikepdf.Page, xobj, base_name: str) -> str:
     return name
 
 
-def _build_image_xobject(pdf: pikepdf.Pdf, image_source):
+def _build_image_xobject(
+    pdf: pikepdf.Pdf,
+    image_source,
+    *,
+    target_size: tuple[int, int] | None = None,
+):
     """
-    Dựng một XObject ảnh (`/Subtype /Image`) từ `image_source` (đường dẫn file
-    hoặc bytes). Trả về `(xobj, width_px, height_px)`.
+    Build an Image XObject from a path or bytes.
 
-    - JPEG  → nhúng nguyên bytes với `/DCTDecode` (giữ dữ liệu gốc, ColorSpace
-              theo mode: RGB→DeviceRGB, CMYK→DeviceCMYK, L→DeviceGray).
-    - Khác  → giải mã bằng PIL, chuyển RGB (hoặc giữ Gray nếu mode 'L'), nén
-              `zlib` rồi nhúng raw với `/FlateDecode`.
+    ``target_size`` is used by Replace Image when the original XObject owns a
+    pixel mask. Matching the original pixel grid is required for /SMask and
+    image /Mask resources to clip the replacement exactly like the source.
+    PNG/WEBP alpha is retained as a PDF soft mask.
     """
     import io
     import zlib
@@ -2263,16 +2431,55 @@ def _build_image_xobject(pdf: pikepdf.Pdf, image_source):
 
     if isinstance(image_source, (bytes, bytearray)):
         raw_input = bytes(image_source)
-        img = Image.open(io.BytesIO(raw_input))
     else:
         with open(image_source, "rb") as fh:
             raw_input = fh.read()
-        img = Image.open(io.BytesIO(raw_input))
 
-    fmt = (img.format or "").upper()
+    source = Image.open(io.BytesIO(raw_input))
+    source.load()
+    img = source.copy()
+    fmt = (source.format or "").upper()
+    source.close()
+
     width, height = img.size
+    resized = False
+    if target_size is not None:
+        target_width, target_height = int(target_size[0]), int(target_size[1])
+        if target_width <= 0 or target_height <= 0:
+            raise ValueError("Kích thước pixel ảnh đích phải lớn hơn 0.")
+        if target_width * target_height > 64_000_000:
+            raise ValueError(
+                "Ảnh gốc có mask vượt quá 64 triệu pixel; từ chối thay ảnh để tránh hết bộ nhớ."
+            )
+        if (width, height) != (target_width, target_height):
+            img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+            width, height = img.size
+            resized = True
 
-    if fmt in ("JPEG", "JPG"):
+    def _raw_stream(image, colorspace: str):
+        compressed = zlib.compress(image.tobytes())
+        stream = pdf.make_stream(compressed)
+        stream[pikepdf.Name("/Type")] = pikepdf.Name("/XObject")
+        stream[pikepdf.Name("/Subtype")] = pikepdf.Name("/Image")
+        stream[pikepdf.Name("/Width")] = int(width)
+        stream[pikepdf.Name("/Height")] = int(height)
+        stream[pikepdf.Name("/ColorSpace")] = pikepdf.Name(colorspace)
+        stream[pikepdf.Name("/BitsPerComponent")] = 8
+        stream[pikepdf.Name("/Filter")] = pikepdf.Name("/FlateDecode")
+        return stream
+
+    # Preserve transparency supplied by the replacement itself. When the
+    # original image owns a mask, replace_image overrides this /SMask below.
+    has_alpha = img.mode in {"RGBA", "LA"} or "transparency" in img.info
+    if has_alpha:
+        rgba = img.convert("RGBA")
+        color_stream = _raw_stream(rgba.convert("RGB"), "/DeviceRGB")
+        alpha_stream = _raw_stream(rgba.getchannel("A"), "/DeviceGray")
+        color_stream[pikepdf.Name("/SMask")] = alpha_stream
+        return color_stream, width, height
+
+    # Keep JPEG bytes verbatim only when no resize was needed.
+    if fmt in ("JPEG", "JPG") and not resized:
         cs_map = {"RGB": "/DeviceRGB", "CMYK": "/DeviceCMYK", "L": "/DeviceGray"}
         colorspace = cs_map.get(img.mode, "/DeviceRGB")
         stream = pdf.make_stream(raw_input)
@@ -2285,28 +2492,352 @@ def _build_image_xobject(pdf: pikepdf.Pdf, image_source):
         stream[pikepdf.Name("/Filter")] = pikepdf.Name("/DCTDecode")
         return stream, width, height
 
-    # Đường raw: giải mã pixel → nén zlib → FlateDecode.
     if img.mode == "L":
+        color_image = img
         colorspace = "/DeviceGray"
     elif img.mode == "CMYK":
+        color_image = img
         colorspace = "/DeviceCMYK"
     else:
-        if img.mode != "RGB":
-            img = img.convert("RGB")
+        color_image = img.convert("RGB")
         colorspace = "/DeviceRGB"
+    return _raw_stream(color_image, colorspace), width, height
 
-    pixel_bytes = img.tobytes()
-    compressed = zlib.compress(pixel_bytes)
-    stream = pdf.make_stream(compressed)
-    stream[pikepdf.Name("/Type")] = pikepdf.Name("/XObject")
-    stream[pikepdf.Name("/Subtype")] = pikepdf.Name("/Image")
-    stream[pikepdf.Name("/Width")] = int(width)
-    stream[pikepdf.Name("/Height")] = int(height)
-    stream[pikepdf.Name("/ColorSpace")] = pikepdf.Name(colorspace)
-    stream[pikepdf.Name("/BitsPerComponent")] = 8
-    stream[pikepdf.Name("/Filter")] = pikepdf.Name("/FlateDecode")
-    return stream, width, height
 
+def _original_image_mask_kind(original_xobj) -> str | None:
+    soft_mask = original_xobj.get("/SMask")
+    if soft_mask is not None and str(soft_mask) != "/None":
+        return "soft"
+    hard_mask = original_xobj.get("/Mask")
+    if hard_mask is not None and not isinstance(hard_mask, pikepdf.Array):
+        return "hard"
+    return None
+
+
+def _preserve_original_image_presentation(original_xobj, replacement_xobj) -> str | None:
+    """Copy mask/layer presentation metadata that belongs to the original image."""
+    for key in ("/OC", "/Interpolate", "/Intent"):
+        value = original_xobj.get(key)
+        if value is not None:
+            replacement_xobj[pikepdf.Name(key)] = value
+
+    mask_kind = _original_image_mask_kind(original_xobj)
+    soft_mask = original_xobj.get("/SMask")
+    if mask_kind == "soft":
+        replacement_xobj[pikepdf.Name("/SMask")] = soft_mask
+        if pikepdf.Name("/Mask") in replacement_xobj:
+            del replacement_xobj[pikepdf.Name("/Mask")]
+        return "soft"
+
+    hard_mask = original_xobj.get("/Mask")
+    # A stream /Mask is a reusable image mask. A color-key array belongs to
+    # the old pixel values and must not be copied to unrelated replacement RGB.
+    if mask_kind == "hard":
+        if pikepdf.Name("/SMask") in replacement_xobj:
+            del replacement_xobj[pikepdf.Name("/SMask")]
+        replacement_xobj[pikepdf.Name("/Mask")] = hard_mask
+        return "hard"
+    return None
+
+
+def _frame_path_instruction(operator: str, *operands: float):
+    return pikepdf.ContentStreamInstruction(
+        [float(value) for value in operands], pikepdf.Operator(operator)
+    )
+
+
+def _image_frame_path(shape: str, span: OpSpan, radius: float) -> list:
+    """Build a closed clipping path in the image's unit-square coordinate space."""
+
+    def closed_polygon(points: list[tuple[float, float]]) -> list:
+        if len(points) < 3:
+            raise ValueError("A clipping polygon needs at least three points")
+        instructions = [_frame_path_instruction("m", *points[0])]
+        instructions.extend(_frame_path_instruction("l", *point) for point in points[1:])
+        instructions.append(_frame_path_instruction("h"))
+        return instructions
+
+    def regular_polygon(sides: int) -> list:
+        points = [
+            (
+                0.5 + 0.5 * math.cos(math.pi / 2.0 - (2.0 * math.pi * index / sides)),
+                0.5 + 0.5 * math.sin(math.pi / 2.0 - (2.0 * math.pi * index / sides)),
+            )
+            for index in range(sides)
+        ]
+        return closed_polygon(points)
+
+    if shape == "rectangle":
+        return [_frame_path_instruction("re", 0.0, 0.0, 1.0, 1.0)]
+    if shape == "triangle":
+        return closed_polygon([(0.5, 1.0), (1.0, 0.0), (0.0, 0.0)])
+    if shape == "diamond":
+        return closed_polygon([(0.5, 1.0), (1.0, 0.5), (0.5, 0.0), (0.0, 0.5)])
+    if shape == "pentagon":
+        return regular_polygon(5)
+    if shape == "hexagon":
+        return regular_polygon(6)
+    if shape == "octagon":
+        return regular_polygon(8)
+    if shape == "star":
+        points = []
+        for index in range(10):
+            radius_value = 0.5 if index % 2 == 0 else 0.22
+            angle = math.pi / 2.0 - (math.pi * index / 5.0)
+            points.append(
+                (
+                    0.5 + radius_value * math.cos(angle),
+                    0.5 + radius_value * math.sin(angle),
+                )
+            )
+        return closed_polygon(points)
+    if shape == "cross":
+        return closed_polygon(
+            [
+                (0.35, 1.0), (0.65, 1.0), (0.65, 0.65), (1.0, 0.65),
+                (1.0, 0.35), (0.65, 0.35), (0.65, 0.0), (0.35, 0.0),
+                (0.35, 0.35), (0.0, 0.35), (0.0, 0.65), (0.35, 0.65),
+            ]
+        )
+    if shape == "heart":
+        return [
+            _frame_path_instruction("m", 0.5, 0.05),
+            _frame_path_instruction("c", 0.42, 0.2, 0.08, 0.42, 0.08, 0.7),
+            _frame_path_instruction("c", 0.08, 0.93, 0.36, 0.99, 0.5, 0.79),
+            _frame_path_instruction("c", 0.64, 0.99, 0.92, 0.93, 0.92, 0.7),
+            _frame_path_instruction("c", 0.92, 0.42, 0.58, 0.2, 0.5, 0.05),
+            _frame_path_instruction("h"),
+        ]
+
+    ctm = list(span.ctm or [1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+    width = max(1e-6, math.hypot(ctm[0], ctm[1]))
+    height = max(1e-6, math.hypot(ctm[2], ctm[3]))
+    kappa = 0.5522847498307936
+
+    if shape in {"circle", "ellipse"}:
+        if shape == "circle":
+            physical_radius = min(width, height) / 2.0
+            rx = min(0.5, physical_radius / width)
+            ry = min(0.5, physical_radius / height)
+        else:
+            rx = ry = 0.5
+        cx = cy = 0.5
+        return [
+            _frame_path_instruction("m", cx + rx, cy),
+            _frame_path_instruction("c", cx + rx, cy + kappa * ry, cx + kappa * rx, cy + ry, cx, cy + ry),
+            _frame_path_instruction("c", cx - kappa * rx, cy + ry, cx - rx, cy + kappa * ry, cx - rx, cy),
+            _frame_path_instruction("c", cx - rx, cy - kappa * ry, cx - kappa * rx, cy - ry, cx, cy - ry),
+            _frame_path_instruction("c", cx + kappa * rx, cy - ry, cx + rx, cy - kappa * ry, cx + rx, cy),
+            _frame_path_instruction("h"),
+        ]
+
+    if shape == "rounded":
+        physical_radius = max(0.0, min(0.5, float(radius))) * min(width, height)
+        rx = min(0.5, physical_radius / width)
+        ry = min(0.5, physical_radius / height)
+        return [
+            _frame_path_instruction("m", rx, 0.0),
+            _frame_path_instruction("l", 1.0 - rx, 0.0),
+            _frame_path_instruction("c", 1.0 - rx + kappa * rx, 0.0, 1.0, ry - kappa * ry, 1.0, ry),
+            _frame_path_instruction("l", 1.0, 1.0 - ry),
+            _frame_path_instruction("c", 1.0, 1.0 - ry + kappa * ry, 1.0 - rx + kappa * rx, 1.0, 1.0 - rx, 1.0),
+            _frame_path_instruction("l", rx, 1.0),
+            _frame_path_instruction("c", rx - kappa * rx, 1.0, 0.0, 1.0 - ry + kappa * ry, 0.0, 1.0 - ry),
+            _frame_path_instruction("l", 0.0, ry),
+            _frame_path_instruction("c", 0.0, ry - kappa * ry, rx - kappa * rx, 0.0, rx, 0.0),
+            _frame_path_instruction("h"),
+        ]
+    raise ValueError(f"Unsupported image frame: {shape!r}")
+def _existing_prynx_image_clip_bounds(instructions: list, do_index: int) -> tuple[int, int] | None:
+    pair = _enclosing_q_indices(instructions, do_index)
+    if pair is None:
+        return None
+    q_index, q_end = pair
+    if q_index <= 0 or q_end + 1 >= len(instructions):
+        return None
+    marker = instructions[q_index - 1]
+    if str(marker.operator) not in {"BMC", "BDC"} or not marker.operands:
+        return None
+    if _name_str(marker.operands[0]) != "PrynXImageClip":
+        return None
+    if str(instructions[q_end + 1].operator) != "EMC":
+        return None
+    return q_index - 1, q_end + 2
+
+
+def clip_image(
+    page,
+    obj_meta,
+    shape: str,
+    radius: float,
+    pdf: pikepdf.Pdf,
+) -> ClipImageResult:
+    """Apply/change/remove a PrynX-owned vector clipping frame around one image."""
+    pg = _as_page(page)
+    meta_id = _meta_value(obj_meta, "id", "?")
+    if _meta_value(obj_meta, "type") != "image":
+        raise ValueError(f"Object '{meta_id}' is not an image.")
+
+    try:
+        contents_coalesce(pdf, pg)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("contents_coalesce failed before clip_image: %s", exc)
+
+    spans = [span for span in map_object_spans(pg, obj_meta, pdf=pdf) if span.kind == "image"]
+    if len(spans) != 1 or not spans[0].resource_name:
+        raise ObjectMapError(
+            f"Cannot map image '{meta_id}' to one normal XObject for a frame."
+        )
+    span = spans[0]
+    instructions = parse_page_ops(pg)
+    do_indices = [
+        index
+        for index in range(max(0, span.start), min(len(instructions), span.end))
+        if str(instructions[index].operator) == "Do"
+        and instructions[index].operands
+        and _name_str(instructions[index].operands[0]) == span.resource_name
+    ]
+    if len(do_indices) != 1:
+        raise ObjectMapError(
+            f"Image '{meta_id}' does not resolve to one unique Do operator for a frame."
+        )
+
+    do_index = do_indices[0]
+    do_instruction = instructions[do_index]
+    existing = _existing_prynx_image_clip_bounds(instructions, do_index)
+    start, end = existing if existing is not None else (do_index, do_index + 1)
+
+    if shape == "none":
+        replacement = [do_instruction]
+    else:
+        path = _image_frame_path(shape, span, radius)
+        replacement = [
+            pikepdf.ContentStreamInstruction(
+                [pikepdf.Name("/PrynXImageClip")], pikepdf.Operator("BMC")
+            ),
+            _q_instruction(),
+            *path,
+            pikepdf.ContentStreamInstruction([], pikepdf.Operator("W")),
+            pikepdf.ContentStreamInstruction([], pikepdf.Operator("n")),
+            do_instruction,
+            _Q_instruction(),
+            pikepdf.ContentStreamInstruction([], pikepdf.Operator("EMC")),
+        ]
+
+    instructions[start:end] = replacement
+    pg.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        pikepdf.unparse_content_stream(instructions)
+    )
+    bbox = normalize_bbox(list(_meta_value(obj_meta, "bbox", [])))
+    return ClipImageResult(
+        changed=True,
+        bbox=bbox,
+        shape=shape,
+        radius=float(radius),
+        message=f"Applied image frame '{shape}' to '{meta_id}' without rasterizing.",
+    )
+
+def replace_image(
+    page,
+    obj_meta,
+    image_source,
+    pdf: pikepdf.Pdf,
+) -> ReplaceImageResult:
+    """
+    Replace one normal Image XObject without changing the original placement block.
+
+    A fresh XObject resource is registered and only the target Do operand is changed.
+    If the image is inline, ambiguous, or cannot be mapped to exactly one Do, the
+    operation is rejected so the session rollback keeps the PDF untouched.
+    """
+    pg = _as_page(page)
+    meta_type = _meta_value(obj_meta, "type")
+    meta_id = _meta_value(obj_meta, "id", "?")
+    if meta_type != "image":
+        raise ValueError(f"Object '{meta_id}' is not an image.")
+
+    try:
+        contents_coalesce(pdf, pg)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("contents_coalesce failed before replace_image: %s", exc)
+
+    spans = map_object_spans(pg, obj_meta, pdf=pdf)
+    image_spans = [span for span in spans if span.kind == "image"]
+    if len(image_spans) != 1:
+        raise ObjectMapError(
+            f"Cannot map image '{meta_id}' to one unique image span for replacement."
+        )
+    span = image_spans[0]
+    if not span.resource_name:
+        raise ObjectMapError(
+            f"Image '{meta_id}' is inline and cannot be replaced safely."
+        )
+
+    instructions = parse_page_ops(pg)
+    do_indices: list[int] = []
+    for index in range(max(0, span.start), min(len(instructions), span.end)):
+        instruction = instructions[index]
+        if str(instruction.operator) != "Do" or not instruction.operands:
+            continue
+        if _name_str(instruction.operands[0]) == span.resource_name:
+            do_indices.append(index)
+    if len(do_indices) != 1:
+        raise ObjectMapError(
+            f"Image '{meta_id}' does not resolve to one unique Do operator."
+        )
+
+    xobjects = _xobject_dict(pg)
+    old_key = pikepdf.Name("/" + span.resource_name)
+    if xobjects is None or old_key not in xobjects:
+        raise ObjectMapError(
+            f"Image resource '/{span.resource_name}' is missing from the page."
+        )
+    original_xobj = xobjects[old_key]
+    if str(original_xobj.get("/Subtype")) != "/Image":
+        raise ObjectMapError(
+            f"Resource '/{span.resource_name}' is not a normal Image XObject."
+        )
+    if bool(original_xobj.get("/ImageMask", False)):
+        raise ObjectMapError(
+            f"Image '{meta_id}' is a stencil mask and cannot be replaced safely."
+        )
+
+    original_width = int(original_xobj.get("/Width", 0) or 0)
+    original_height = int(original_xobj.get("/Height", 0) or 0)
+    original_mask_kind = _original_image_mask_kind(original_xobj)
+    # Only a pixel mask requires identical Width/Height. Without one, retain
+    # the replacement's native resolution for maximum print quality.
+    target_size = (
+        (original_width, original_height)
+        if original_mask_kind and original_width > 0 and original_height > 0
+        else None
+    )
+    xobj, width_px, height_px = _build_image_xobject(
+        pdf, image_source, target_size=target_size
+    )
+    preserved_mask = _preserve_original_image_presentation(original_xobj, xobj)
+    new_name = _ensure_xobject_resource(pg, xobj, "ImgReplace")
+    do_index = do_indices[0]
+    instructions[do_index] = pikepdf.ContentStreamInstruction(
+        [pikepdf.Name("/" + new_name)], pikepdf.Operator("Do")
+    )
+    pg.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+        pikepdf.unparse_content_stream(instructions)
+    )
+
+    bbox = normalize_bbox(list(_meta_value(obj_meta, "bbox", [])))
+    return ReplaceImageResult(
+        changed=True,
+        bbox=bbox,
+        old_resource_name=span.resource_name,
+        new_resource_name=new_name,
+        image_size_px=(int(width_px), int(height_px)),
+        message=(
+            f"Replaced image '{meta_id}' with {width_px}x{height_px}px resource "
+            f"'{new_name}' while preserving its original transform"
+            f" and {preserved_mask + ' mask' if preserved_mask else 'page clipping'}."
+        ),
+    )
 
 def add_image(
     page,
@@ -2432,6 +2963,8 @@ __all__ = [
     "DeleteResult",
     "move_objects",
     "MoveResult",
+    "affine_transform_objects",
+    "AffineResult",
     "resize_objects",
     "ResizeResult",
     "rotate_objects",
@@ -2440,6 +2973,10 @@ __all__ = [
     "EditTextResult",
     "add_text",
     "add_image",
+    "replace_image",
+    "ReplaceImageResult",
+    "clip_image",
+    "ClipImageResult",
     "add_object",
     "AddResult",
     "ObjectMapError",

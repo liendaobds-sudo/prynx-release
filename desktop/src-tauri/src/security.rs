@@ -241,44 +241,47 @@ pub fn get_hardware_id() -> Result<String, String> {
 
 use std::sync::Mutex;
 
-// In-memory cache of validated license keys (session-scoped)
-static VALIDATED_KEYS: std::sync::LazyLock<Mutex<HashMap<String, u64>>> =
+#[derive(Clone)]
+struct ValidatedLicense {
+    validated_at: u64,
+    hardware_id: String,
+    license_token_hash: String,
+}
+
+// In-memory cache of native-verified license bindings (session-scoped).
+static VALIDATED_KEYS: std::sync::LazyLock<Mutex<HashMap<String, ValidatedLicense>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Called by frontend after successful Supabase RPC validation
 /// to register the key in Rust's in-memory cache.
 ///
-/// F2 (defense-in-depth): nếu kèm `token` (Ed25519 do server ký) thì Rust TỰ verify
-/// trước khi cache → biến "Rust gate" từ theater thành lớp kiểm THẬT, độc lập với sidecar.
-/// Kẻ crack patch mỗi frontend không đủ: phải qua cả Rust (đây) lẫn sidecar.
-/// Token rỗng khi PRYNX_ENFORCE_LICENSE_TOKEN=true → từ chối, không cache.
-/// Token rỗng khi enforce=false (rollout/dev) → vẫn cache; sidecar là backstop.
+/// Release builds always verify the server-signed Ed25519 token before caching.
+/// Debug builds may run without a token unless production-equivalent enforcement
+/// is explicitly enabled.
 #[command]
-pub fn register_validated_key(
-    license_key: String,
-    hwid: Option<String>,
-    token: Option<String>,
-) -> Result<(), String> {
+pub fn register_validated_key(license_key: String, token: Option<String>) -> Result<(), String> {
     let tok = token.unwrap_or_default();
-    let enforce = std::env::var("PRYNX_ENFORCE_LICENSE_TOKEN")
-        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
-        .unwrap_or(false);
+    // Release builds always fail closed. The environment switch is retained only
+    // so a debug build can opt into production-equivalent enforcement.
+    let enforce = !cfg!(debug_assertions)
+        || std::env::var("PRYNX_ENFORCE_LICENSE_TOKEN")
+            .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
+            .unwrap_or(false);
+    let hw = get_hardware_id()?;
     if tok.is_empty() {
         if enforce {
             return Err("License token required but not provided (enforce mode)".to_string());
         }
         // enforce=false: cache mà không verify (rollout grace / dev mode)
     } else {
-        let hw = hwid.unwrap_or_default();
-        // F2 (defense-in-depth) → ADVISORY: token verify lỗi thì CHỈ log, KHÔNG chặn cache.
-        // Cache này chỉ gate việc ký SIDECAR token (chứng minh request đến từ frontend hợp lệ).
-        // License THẬT vẫn được backend cưỡng chế độc lập qua X-License-Token (Ed25519) + Supabase.
-        // Nếu chặn cache ở đây khi token phụ trục trặc (rate-limit/grace/edge hiccup) thì toàn bộ
-        // giao tiếp frontend↔backend chết (403 "invalid sidecar token") dù user đã đăng nhập hợp lệ.
-        if let Err(e) = verify_license_token_internal(&tok, &hw, &license_key) {
-            log::warn!("[SECURITY] register_validated_key: license-token verify failed (advisory, vẫn cache): {}", e);
-        }
+        // Never trust a hardware id supplied by the WebView. A patched frontend
+        // could otherwise make every installation impersonate the same activated
+        // machine. Rust derives the fingerprint itself and rejects any mismatch.
+        verify_license_token_internal(&tok, &hw, &license_key)
+            .map_err(|e| format!("License token rejected by native gate: {}", e))?;
     }
+    use sha2::{Digest, Sha256};
+    let license_token_hash = hex::encode(Sha256::digest(tok.as_bytes()));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -286,13 +289,20 @@ pub fn register_validated_key(
     let mut cache = VALIDATED_KEYS
         .lock()
         .map_err(|e| format!("Lock error: {}", e))?;
-    cache.insert(license_key, now);
+    cache.insert(
+        license_key,
+        ValidatedLicense {
+            validated_at: now,
+            hardware_id: hw,
+            license_token_hash,
+        },
+    );
     Ok(())
 }
 
-/// Xoá sạch cache key đã xác thực → sign_api_request lập tức từ chối ký request mới
-/// (backend trả 403 "invalid sidecar token"). Gọi khi license bị thu hồi/khóa để
-/// chặn quyền dùng NGAY trong phiên, không chờ TTL 2h của cache tự hết.
+/// Xoá sạch cache key đã xác thực → sign_api_request lập tức từ chối ký request mới.
+/// Gọi khi license bị thu hồi/khóa để chặn quyền dùng NGAY trong phiên, không chờ
+/// cache hết TTL.
 /// Best-effort: lỗi lock chỉ trả về String, không panic.
 #[command]
 pub fn clear_validated_keys() -> Result<(), String> {
@@ -753,8 +763,8 @@ pub fn set_sidecar_token(token: &str) {
 }
 
 /// Frontend calls this to get signed headers for API requests.
-/// The token + hash algorithm NEVER leave Rust.
-/// Also gates on license validation: if license not in cache, refuses to sign.
+/// The sidecar secret never leaves Rust; only a short-lived timestamp + HMAC do.
+/// Also gates on license validation: if license is not in cache, refuses to sign.
 #[command]
 pub fn sign_api_request(
     url_path: String,
@@ -766,22 +776,13 @@ pub fn sign_api_request(
         .unwrap()
         .as_secs();
 
-    {
+    let binding = {
         let cache = VALIDATED_KEYS.lock().map_err(|e| format!("Lock: {}", e))?;
-        let is_valid = if let Some(&validated_at) = cache.get(&license_key) {
-            now_secs - validated_at < 28800 // 8h cache — đồng bộ heartbeat 30 phút (16 cơ hội re-register)
-        } else {
-            false
-        };
-
-        if !is_valid {
-            // F1 FIX: từ chối ký khi license CHƯA validate trong cache — KỂ CẢ key rỗng.
-            // Trước đây điều kiện `!is_valid && !license_key.is_empty()` cho key="" lọt qua.
-            // An toàn: getLicenseHeaders (api.ts) bắt lỗi này êm → dev (backend DEV_MODE) vẫn
-            // chạy không cần header ký; release từ chối đúng (không license = không truy cập).
-            return Err("License not validated in Rust cache".to_string());
+        match cache.get(&license_key) {
+            Some(value) if now_secs.saturating_sub(value.validated_at) < 28800 => value.clone(),
+            _ => return Err("License not validated in Rust cache".to_string()),
         }
-    }
+    };
 
     // Gate 2: Decrypt token from encrypted memory (VECTOR #14)
     let token_str = {
@@ -793,9 +794,14 @@ pub fn sign_api_request(
         decrypted
     }; // enc lock released here
 
-    // Gate 3: Compute HMAC-SHA256 signature (industry standard)
+    // Gate 3: Bind the proof to the native-verified license and hardware id.
+    // A patched WebView cannot substitute different entitlement headers after
+    // obtaining a signature with a valid Free license.
     let timestamp = now_secs.to_string();
-    let sign_payload = format!("{}:{}", timestamp, url_path);
+    let sign_payload = format!(
+        "{}:{}:{}:{}:{}",
+        timestamp, url_path, license_key, binding.hardware_id, binding.license_token_hash
+    );
 
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -807,7 +813,8 @@ pub fn sign_api_request(
     let signature = hex::encode(mac.finalize().into_bytes());
 
     let mut headers = HashMap::new();
-    headers.insert("X-PrynX-Token".to_string(), token_str);
+    headers.insert("X-License-Key".to_string(), license_key);
+    headers.insert("X-Hardware-Id".to_string(), binding.hardware_id);
     headers.insert("X-PrynX-Timestamp".to_string(), timestamp);
     headers.insert("X-PrynX-Signature".to_string(), signature);
 

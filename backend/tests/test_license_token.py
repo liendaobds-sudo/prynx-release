@@ -97,8 +97,15 @@ import hashlib
 import hmac as _hmac
 
 
+BOUND_KEY = "ABCDE-FGHIJ-KLMNO"
+BOUND_HWID = "HW123"
+BOUND_LICENSE_TOKEN = "SIGNED_LICENSE_TOKEN"
+
+
 def _sign(token: str, ts: str, path: str) -> str:
-    return _hmac.new(token.encode(), f"{ts}:{path}".encode(), hashlib.sha256).hexdigest()
+    token_hash = hashlib.sha256(BOUND_LICENSE_TOKEN.encode()).hexdigest()
+    payload = f"{ts}:{path}:{BOUND_KEY}:{BOUND_HWID}:{token_hash}"
+    return _hmac.new(token.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
 @pytest.fixture
@@ -112,28 +119,37 @@ def sidecar(monkeypatch):
 def test_sidecar_signature_valid(sidecar):
     ts = str(int(time.time()))
     path = "/api/upload"
-    ok, reason = lg.verify_sidecar_signature(path, sidecar, ts, _sign(sidecar, ts, path))
+    ok, reason = lg.verify_sidecar_signature(path, ts, _sign(sidecar, ts, path), BOUND_KEY, BOUND_HWID, BOUND_LICENSE_TOKEN)
     assert ok, reason
 
+
+def test_sidecar_signature_rejects_credential_substitution(sidecar):
+    ts = str(int(time.time()))
+    path = "/api/upload"
+    signature = _sign(sidecar, ts, path)
+    ok, reason = lg.verify_sidecar_signature(
+        path, ts, signature, "STOLEN-PRO-KEY", BOUND_HWID, BOUND_LICENSE_TOKEN
+    )
+    assert not ok and "signature" in reason.lower()
 
 def test_sidecar_signature_wrong_token(sidecar):
     ts = str(int(time.time()))
     path = "/api/upload"
-    ok, _ = lg.verify_sidecar_signature(path, "WRONG_TOKEN", ts, _sign("WRONG_TOKEN", ts, path))
+    ok, _ = lg.verify_sidecar_signature(path, ts, _sign("WRONG_TOKEN", ts, path), BOUND_KEY, BOUND_HWID, BOUND_LICENSE_TOKEN)
     assert not ok  # token không khớp _SIDECAR_TOKEN
 
 
 def test_sidecar_signature_expired_ts(sidecar):
     old_ts = str(int(time.time()) - 120)  # quá 30s
     path = "/api/upload"
-    ok, reason = lg.verify_sidecar_signature(path, sidecar, old_ts, _sign(sidecar, old_ts, path))
+    ok, reason = lg.verify_sidecar_signature(path, old_ts, _sign(sidecar, old_ts, path), BOUND_KEY, BOUND_HWID, BOUND_LICENSE_TOKEN)
     assert not ok and "expired" in reason.lower()
 
 
 def test_sidecar_signature_bad_sig(sidecar):
     ts = str(int(time.time()))
     path = "/api/upload"
-    ok, reason = lg.verify_sidecar_signature(path, sidecar, ts, "deadbeef" * 8)
+    ok, reason = lg.verify_sidecar_signature(path, ts, "deadbeef" * 8, BOUND_KEY, BOUND_HWID, BOUND_LICENSE_TOKEN)
     assert not ok and "signature" in reason.lower()
 
 
@@ -141,14 +157,14 @@ def test_sidecar_signature_path_mismatch(sidecar):
     """Chữ ký ký cho path khác → reject (chống tái dùng chữ ký sang endpoint khác)."""
     ts = str(int(time.time()))
     sig = _sign(sidecar, ts, "/api/upload")
-    ok, reason = lg.verify_sidecar_signature("/api/admin", sidecar, ts, sig)
+    ok, reason = lg.verify_sidecar_signature("/api/admin", ts, sig, BOUND_KEY, BOUND_HWID, BOUND_LICENSE_TOKEN)
     assert not ok and "signature" in reason.lower()
 
 
 def test_sidecar_dev_mode_bypass(monkeypatch):
     """Dev mode: bỏ qua kiểm tra (chạy backend thủ công khi phát triển)."""
     monkeypatch.setattr(lg, "_is_dev_mode", lambda: True)
-    ok, _ = lg.verify_sidecar_signature("/api/x", "", "", "")
+    ok, _ = lg.verify_sidecar_signature("/api/x", "", "", "", "", "")
     assert ok
 
 

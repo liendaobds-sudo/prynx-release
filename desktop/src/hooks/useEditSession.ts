@@ -280,7 +280,12 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             } else if (!isLayerOp || outcomeKind === "layerDelete") {
                 // Hình học và xóa layer làm object/ID/membership đổi. Các thao tác layer khác chỉ refresh cây OCG.
                 window.dispatchEvent(new CustomEvent("edit-session-objects-changed", {
-                    detail: { page: outcome.page, path },
+                    detail: {
+                        page: outcome.page,
+                        path,
+                        kind: String((body.op as EditOp | undefined)?.kind || ''),
+                        targetIds: (body.op as EditOp | undefined)?.targetIds || [],
+                    },
                 }));
             }            // Đẩy lớp overlay: op áp trong RAM → render vùng clip. KHÔNG auto-commit ở
             // đây (trước kia debounce-commit sinh fid mới GIỮA lúc sửa → reopen session

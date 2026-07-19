@@ -937,19 +937,213 @@ export default function GridPreview(props: GridPreviewProps) {
 
   // Generation id — chặn response cũ (10 trang) ghi đè response mới (4 trang).
   const previewGenRef = useRef(0);
+  /** Cache layout theo khóa ổn định — cuộn trang view KHÔNG đụng cache/API. */
+  const layoutKeyRef = useRef("");
+  const layoutCacheRef = useRef<BackendLayoutResult | null>(null);
 
-  // Chia cụm (cluster_tile): backend tính bố cục cho MỌI trang cùng lúc
-  // (duyệt doc.page_count), KHÔNG dùng page_idx → cuộn đổi trang view KHÔNG được
-  // fetch lại. Ghim pageIdx dep về 0 cho mode này để tránh tính lại bố cục oan.
-  // Gồm cả bế (die-cut) LẪN bình cắt xén (guillotine) — cả hai đi nhánh cluster.
+  // ── Khi nào cuộn trang view KHÔNG được refetch layout ──
+  // • 1 khuôn (mọi trang cùng type / master inherit) → 1 layout, cuộn chỉ xem.
+  // • Multi-pack (ratio_stack / sequential / cluster / CNC) → 1 tờ xếp nhiều loại.
+  // • MỖI TEM MỘT KHUÔN khác nhau + step_repeat/repeat → PHẢI tính theo trang view
+  //   (die size/type khác → capacity khác). Không gộp với case 1 khuôn.
   const _isClusterPreview = groupingStrategy === "cluster_tile";
-  const _pageIdxDep = _isClusterPreview ? 0 : pageIdx;
-  // shapeType/itemW/itemH lấy theo TRANG ĐANG XEM (detectedShapesByPage[pageIdx]).
-  // Cluster mode backend duyệt MỌI trang, KHÔNG dùng các giá trị "trang hiện tại" này
-  // → ghim để cuộn đổi trang không refetch bố cục oan.
-  const _shapeTypeDep = _isClusterPreview ? "__cluster__" : shapeType;
-  const _itemWDep = _isClusterPreview ? 0 : itemW;
-  const _itemHDep = _isClusterPreview ? 0 : itemH;
+  const _multiPage =
+    typeof sourceTotalPages === "number" && sourceTotalPages > 1;
+  const _uniqueDieTypes = useMemo(() => {
+    const set = new Set<string>();
+    if (shapesByPage && typeof shapesByPage === "object") {
+      for (const k of Object.keys(shapesByPage)) {
+        const v = String((shapesByPage as any)[k] || "").toUpperCase();
+        if (v && v !== "CUSTOM") set.add(v);
+      }
+    }
+    if (set.size === 0 && shapeType && shapeType !== "CUSTOM") {
+      set.add(String(shapeType).toUpperCase());
+    }
+    return set;
+  }, [shapesByPage, shapeType]);
+  /** 0–1 loại khuôn đã nhận diện (sau inherit = 1) → coi là 1 khuôn / cùng family. */
+  const _singleMoldFamily =
+    !!isDieCut && _multiPage && _uniqueDieTypes.size <= 1;
+  /** Xếp nhiều mẫu trên 1 (hoặc N) tờ — page view không đổi geometry layout. */
+  const _multiPackLayout =
+    _isClusterPreview ||
+    (_multiPage &&
+      (layoutType === "ratio_stack" ||
+        layoutType === "sequential" ||
+        layoutType === "cut_stacks")) ||
+    (_multiPage && imposerMode === "cnc") ||
+    // Die-cut multi nhưng không phải step_repeat “một loại/tờ”: pack chung
+    (_multiPage &&
+      !!isDieCut &&
+      taskMode !== "step_repeat" &&
+      layoutType !== "repeat");
+  const _layoutIgnoresViewPage =
+    _singleMoldFamily || _multiPackLayout;
+
+  const _pageIdxDep = _layoutIgnoresViewPage ? 0 : pageIdx;
+  const _shapesByPageKey = useMemo(() => {
+    if (!shapesByPage || typeof shapesByPage !== "object") return "";
+    try {
+      return JSON.stringify(shapesByPage);
+    } catch {
+      return "";
+    }
+  }, [shapesByPage]);
+  const _shapeParamsByPageKey = useMemo(() => {
+    if (!shapeParamsByPage || typeof shapeParamsByPage !== "object") return "";
+    try {
+      return JSON.stringify(shapeParamsByPage);
+    } catch {
+      return "";
+    }
+  }, [shapeParamsByPage]);
+  // Master shape fingerprint (page 0 / first non-CUSTOM) — không theo trang view.
+  const _masterShapeKey = useMemo(() => {
+    if (!_layoutIgnoresViewPage) return `${shapeType}|${itemW}|${itemH}|${shapeParams || ""}`;
+    let st = "CUSTOM";
+    if (shapesByPage) {
+      const v0 = (shapesByPage as any)[0] ?? (shapesByPage as any)["0"];
+      if (v0 && v0 !== "CUSTOM") st = String(v0);
+      else {
+        for (const k of Object.keys(shapesByPage)) {
+          const v = (shapesByPage as any)[k];
+          if (v && v !== "CUSTOM") {
+            st = String(v);
+            break;
+          }
+        }
+      }
+    } else if (shapeType && shapeType !== "CUSTOM") st = shapeType;
+    return `${st}|${_shapesByPageKey}|${_shapeParamsByPageKey}`;
+  }, [
+    _layoutIgnoresViewPage,
+    shapeType,
+    itemW,
+    itemH,
+    shapeParams,
+    shapesByPage,
+    _shapesByPageKey,
+    _shapeParamsByPageKey,
+  ]);
+
+  const _shapeTypeDep = _layoutIgnoresViewPage ? _masterShapeKey : shapeType;
+  const _shapeParamsDep = _layoutIgnoresViewPage ? _shapeParamsByPageKey : shapeParams;
+  const _itemWDep = _layoutIgnoresViewPage ? 0 : itemW;
+  const _itemHDep = _layoutIgnoresViewPage ? 0 : itemH;
+  const _pageIdxForRequest = _layoutIgnoresViewPage ? 0 : pageIdx;
+
+  /** Khóa layout: mọi thứ ảnh hưởng xếp tem — KHÔNG gồm pageIdx view. */
+  const layoutFetchKey = useMemo(() => {
+    return JSON.stringify({
+      uw: Math.round(usableW * 100) / 100,
+      uh: Math.round(usableH * 100) / 100,
+      iw: _layoutIgnoresViewPage ? 0 : Math.round(itemW * 100) / 100,
+      ih: _layoutIgnoresViewPage ? 0 : Math.round(itemH * 100) / 100,
+      gx: gapX,
+      gy: gapY,
+      sg: splitGap,
+      gs: gridStrategy,
+      cols: columns,
+      rows: rows,
+      st: _shapeTypeDep,
+      sp: _shapeParamsDep,
+      pont: pontType,
+      pontC: pontType && pontType !== "none" ? pontConfig : null,
+      tm: taskMode,
+      lt: layoutType,
+      df: duplexFlow,
+      die: !!isDieCut,
+      n: sourceTotalPages || 0,
+      sw: sheetWidth,
+      sh: sheetHeight,
+      ml: marginLeft,
+      mb: marginBottom,
+      mr: marginRight,
+      mt: marginTop,
+      al: align,
+      fid: fileId || "",
+      fp: filePath || "",
+      bl: bleed,
+      grp: groupingStrategy,
+      ccm: clusterCombineMode,
+      csm: clusterSizingMode,
+      cc: clusterCols,
+      cr: clusterRows,
+      ctw: clusterTileW,
+      cth: clusterTileH,
+      tgx: tileGapX,
+      tgy: tileGapY,
+      cm: clusterMode,
+      ccnt: clusterCount,
+      cg: clusterGap,
+      cd: clusterDistribution,
+      tq: targetQuantity,
+      tqbp: targetQuantitiesByPage || {},
+      im: imposerMode || "",
+      c2: !!cncTwoSided,
+      cfe: cncFlipEdge || "",
+      ct: cutType || "",
+      fbg: fillBlockGap,
+      dsm: dieSizeMode,
+      dom: dieOffsetMm,
+      psk: previewSourceKey || "",
+    });
+  }, [
+    usableW,
+    usableH,
+    _layoutIgnoresViewPage,
+    itemW,
+    itemH,
+    gapX,
+    gapY,
+    splitGap,
+    gridStrategy,
+    columns,
+    rows,
+    _shapeTypeDep,
+    _shapeParamsDep,
+    pontType,
+    pontConfig,
+    taskMode,
+    layoutType,
+    duplexFlow,
+    isDieCut,
+    sourceTotalPages,
+    sheetWidth,
+    sheetHeight,
+    marginLeft,
+    marginBottom,
+    marginRight,
+    marginTop,
+    align,
+    fileId,
+    filePath,
+    bleed,
+    groupingStrategy,
+    clusterCombineMode,
+    clusterSizingMode,
+    clusterCols,
+    clusterRows,
+    clusterTileW,
+    clusterTileH,
+    tileGapX,
+    tileGapY,
+    clusterMode,
+    clusterCount,
+    clusterGap,
+    clusterDistribution,
+    targetQuantity,
+    targetQuantitiesByPage,
+    imposerMode,
+    cncTwoSided,
+    cncFlipEdge,
+    cutType,
+    fillBlockGap,
+    dieSizeMode,
+    dieOffsetMm,
+    previewSourceKey,
+  ]);
 
   useEffect(() => {
     // Clear any pending debounce
@@ -957,14 +1151,28 @@ export default function GridPreview(props: GridPreviewProps) {
       clearTimeout(debounceRef.current);
     }
 
-    // Don't fetch if dimensions are invalid
-    if (usableW <= 0 || usableH <= 0 || itemW <= 0 || itemH <= 0) {
-      setLayoutResult(null);
+    // Multi-sheet: không require itemW/itemH trang view (có thể 0 lúc scroll chưa detect).
+    if (usableW <= 0 || usableH <= 0) {
+      return;
+    }
+    if (!_layoutIgnoresViewPage && (itemW <= 0 || itemH <= 0)) {
       return;
     }
 
-    // Xóa ngay preview cũ khi đổi số trang / order — tránh vẫn vẽ 10 loại trong lúc debounce.
-    setLayoutResult(null);
+    // ── CACHE HIT: cùng khuôn/settings → giữ nguyên layout, 0 API, 0 loading ──
+    if (
+      layoutKeyRef.current === layoutFetchKey &&
+      layoutCacheRef.current
+    ) {
+      setIsLoading(false);
+      setLayoutResult((prev) =>
+        prev === layoutCacheRef.current ? prev : layoutCacheRef.current,
+      );
+      return;
+    }
+
+    // Stale-while-revalidate: GIỮ preview cũ trên màn hình, chỉ bật loading nhẹ.
+    // KHÔNG setLayoutResult(null) → hết giật trắng khi detect/settings đổi.
     setIsLoading(true);
     const gen = ++previewGenRef.current;
 
@@ -995,9 +1203,34 @@ export default function GridPreview(props: GridPreviewProps) {
           isDieCut: !!isDieCut,
           grouping: groupingStrategy || "",
           imposerMode: imposerMode || "",
-          pageIdx,
+          pageIdx: _pageIdxForRequest,
+          ignoreViewPage: _layoutIgnoresViewPage,
           hasPath: !!(previewSrc.path || filePath),
         });
+        // Multi-sheet: shape/props theo master (trang 0 / fingerprint), không theo trang view.
+        const _reqShapeType = (() => {
+          if (!_layoutIgnoresViewPage) {
+            return shapeType && shapeType !== "CUSTOM" ? shapeType : "CUSTOM";
+          }
+          if (shapesByPage && typeof shapesByPage === "object") {
+            const v0 = (shapesByPage as any)[0] ?? (shapesByPage as any)["0"];
+            if (v0 && v0 !== "CUSTOM") return String(v0);
+            for (const k of Object.keys(shapesByPage)) {
+              const v = (shapesByPage as any)[k];
+              if (v && v !== "CUSTOM") return String(v);
+            }
+          }
+          return shapeType && shapeType !== "CUSTOM" ? shapeType : "CUSTOM";
+        })();
+        const _reqShapeProps = (() => {
+          if (!_layoutIgnoresViewPage) return shapePropsParsed || {};
+          if (shapeParamsByPage && typeof shapeParamsByPage === "object") {
+            const p0 =
+              (shapeParamsByPage as any)[0] ?? (shapeParamsByPage as any)["0"];
+            if (p0 && typeof p0 === "object") return p0;
+          }
+          return shapePropsParsed || {};
+        })();
         // Convert ALL dimensions from mm → points to match shapeParams units
         const body = {
           usable_w: usableW * MM_TO_PT,
@@ -1009,9 +1242,8 @@ export default function GridPreview(props: GridPreviewProps) {
           strategy: gridStrategy || "optimal_auto",
           cols: columns || 0,
           rows: rows || 0,
-          shape_type:
-            shapeType && shapeType !== "CUSTOM" ? shapeType : "CUSTOM",
-          shape_props: shapePropsParsed || {},
+          shape_type: _reqShapeType,
+          shape_props: _reqShapeProps,
           pont_config: pontType && pontType !== "none" ? pontConfig : null,
           sheet_w: sheetWidth * MM_TO_PT,
           sheet_h: sheetHeight * MM_TO_PT,
@@ -1029,7 +1261,7 @@ export default function GridPreview(props: GridPreviewProps) {
                 : fileId
                   ? { file_id: fileId }
                   : {}),
-          page_idx: pageIdx,
+          page_idx: _pageIdxForRequest,
           bleed: bleed * MM_TO_PT, // bleed in points to match nup_engine
           cut_type: cutType || "default",
           fill_block_gap: fillBlockGap ?? 0,
@@ -1203,6 +1435,8 @@ export default function GridPreview(props: GridPreviewProps) {
                 : undefined,
             };
             setActiveSheet(0);
+            layoutKeyRef.current = layoutFetchKey;
+            layoutCacheRef.current = convertedResult;
             setLayoutResult(convertedResult);
             if (onCapacityChangeRef.current)
               onCapacityChangeRef.current(convertedResult.totalItems);
@@ -1260,65 +1494,9 @@ export default function GridPreview(props: GridPreviewProps) {
         clearTimeout(debounceRef.current);
       }
     };
-  }, [
-    usableW,
-    usableH,
-    _itemWDep,
-    _itemHDep,
-    gapX,
-    gapY,
-    splitGap,
-    gridStrategy,
-    columns,
-    rows,
-    _shapeTypeDep,
-    shapeParams,
-    pontConfig,
-    pontType,
-    taskMode,
-    layoutType,
-    duplexFlow,
-    isDieCut,
-    sourceTotalPages,
-    sheetWidth,
-    sheetHeight,
-    marginLeft,
-    marginBottom,
-    marginRight,
-    marginTop,
-    align,
-    fileId,
-    filePath,
-    _pageIdxDep,
-    bleed,
-    groupingStrategy,
-    clusterCombineMode,
-    clusterSizingMode,
-    clusterCols,
-    clusterRows,
-    clusterTileW,
-    clusterTileH,
-    tileGapX,
-    tileGapY,
-    clusterMode,
-    clusterCount,
-    clusterGap,
-    clusterDistribution,
-    targetQuantity,
-    targetQuantitiesByPage,
-    shapesByPage,
-    shapeParamsByPage,
-    imposerMode,
-    cncTwoSided,
-    cncFlipEdge,
-    cutType,
-    fillBlockGap,
-    dieSizeMode,
-    dieOffsetMm,
-    // getWorkingFile: đọc qua getWorkingFileRef (không đưa vào dep) — parent tạo mới
-    // reference mỗi render (kéo resize panel → re-render) khiến fetch lại bố cục OAN.
-    previewSourceKey,
-  ]);
+    // Một khóa layoutFetchKey gộp toàn bộ input xếp tem (không gồm pageIdx view).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional single-key cache
+  }, [layoutFetchKey]);
 
   // LƯU Ý: kiểm tra sheetWidth/sheetHeight <= 0 được dời xuống SAU svgCells useMemo
   // (hook cuối) để không gọi hook có điều kiện → tránh React #300 crash.

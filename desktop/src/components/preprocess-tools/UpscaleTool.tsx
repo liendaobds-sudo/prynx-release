@@ -68,7 +68,7 @@ async function processBatch(tabId: string) {
                 throw new Error(tv('Không tìm thấy file gốc'));
             }
             formData.append('engine', 'general');
-            // authenticatedFetch: router /pdf-tools yêu cầu X-PrynX-Token + chữ ký HMAC
+            // authenticatedFetch: router /pdf-tools yêu cầu license + chữ ký HMAC
             // ở bản đóng gói. Raw fetch thiếu header → 403 (chỉ dev mới lọt).
             const res = await authenticatedFetch(`${apiUrl}/pdf-tools/upscale`, { method: 'POST', body: formData });
             if (!res.ok) {

@@ -1250,7 +1250,28 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                     return (viewerActivePage || 1) - 1;
                                 };
                                 const safePageIdx = safeGetPageIdx();
-                                
+                                // Shape props cho preview:
+                                // • 1 khuôn (mọi trang cùng type, hoặc chỉ 1 trang có khuôn) → master
+                                // • Mỗi tem 1 khuôn khác nhau → trang đang xem (safePageIdx)
+                                const shapePageIdx = (() => {
+                                    if (!stickerLike || s.cutType === 'one_dao' || sourceTotalPages <= 1) {
+                                        return safePageIdx;
+                                    }
+                                    const types = new Set<string>();
+                                    let firstDie = -1;
+                                    for (let i = 0; i < sourceTotalPages; i++) {
+                                        const t = detectedShapesByPage[i];
+                                        if (t && t !== 'CUSTOM') {
+                                            types.add(String(t));
+                                            if (firstDie < 0) firstDie = i;
+                                        }
+                                    }
+                                    // Nhiều loại khuôn thật → mỗi trang dùng shape của chính nó
+                                    if (types.size > 1) return safePageIdx;
+                                    // 0–1 loại (1 khuôn / homogeneous inherit) → master
+                                    return firstDie >= 0 ? firstDie : 0;
+                                })();
+
                                 let effMarginTop = s.marginTop || 0;
                                 let effMarginBottom = s.marginBottom || 0;
                                 let effMarginLeft = s.marginLeft || 0;
@@ -1318,34 +1339,33 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 sheetHeight={resolvePressSheetDims().h}
                                 marginTop={effMarginTop} marginBottom={effMarginBottom} marginLeft={effMarginLeft} marginRight={effMarginRight}
                                 align={s.align}
-                                // 1 Dao: luôn chữ nhật (khớp backend). Không đưa CIRCLE/CUSTOM
-                                // từ detect-shape → tránh hex nest / outline cong trên preview.
+                                // 1 Dao: luôn chữ nhật. Multi tem: shape/kích thước MASTER (shapePageIdx).
                                 shapeType={
                                     stickerLike
                                         ? (s.cutType === 'one_dao'
                                             ? 'RECTANGLE'
-                                            : (detectedShapesByPage[safePageIdx] || 'CUSTOM'))
+                                            : (detectedShapesByPage[shapePageIdx] || 'CUSTOM'))
                                         : 'RECTANGLE'
                                 }
                                 itemW={(() => {
                                     if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
-                                        const dim = s.sourcePageDims?.[safePageIdx] || s.sourcePageDim;
+                                        const dim = s.sourcePageDims?.[shapePageIdx] || s.sourcePageDim;
                                         const off = (s.dieOffsetMm || 0) * 2;
                                         const w = dim?.w;
                                         return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 + off : 90;
                                     }
-                                    const dim = detectedDimensionsByPage[safePageIdx];
+                                    const dim = detectedDimensionsByPage[shapePageIdx];
                                     const w = dim?.w ?? s.sourcePageDim?.w;
                                     return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 : 90;
                                 })()}
                                 itemH={(() => {
                                     if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
-                                        const dim = s.sourcePageDims?.[safePageIdx] || s.sourcePageDim;
+                                        const dim = s.sourcePageDims?.[shapePageIdx] || s.sourcePageDim;
                                         const off = (s.dieOffsetMm || 0) * 2;
                                         const h = dim?.h;
                                         return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 + off : 55;
                                     }
-                                    const dim = detectedDimensionsByPage[safePageIdx];
+                                    const dim = detectedDimensionsByPage[shapePageIdx];
                                     const h = dim?.h ?? s.sourcePageDim?.h;
                                     return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 : 55;
                                 })()}
@@ -1360,7 +1380,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                     s.cutType === 'one_dao'
                                         ? null
                                         : (() => {
-                                            const params = detectedShapeParamsByPage[safePageIdx];
+                                            const params = detectedShapeParamsByPage[shapePageIdx];
                                             return params ? JSON.stringify(params) : null;
                                         })()
                                 }
@@ -1372,11 +1392,29 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 }
                                 isDetectingShape={isDetectingShape}
                                 pontType={s.pontType} pontConfig={(stickerLike && s.pontType !== 'none') ? s.pontConfig : null}
-                                onCapacityChange={(cap) => { s.setPreviewCapacity(cap); s.setPreviewCapacities({ ...s.previewCapacities, [safePageIdx]: cap }); }}
+                                onCapacityChange={(cap) => {
+                                    s.setPreviewCapacity(cap);
+                                    // Chỉ broadcast capacity khi 1 khuôn (cùng type).
+                                    // Mỗi tem 1 khuôn → ghi theo trang đang xem.
+                                    const types = new Set<string>();
+                                    if (stickerLike && sourceTotalPages > 1) {
+                                        for (let i = 0; i < sourceTotalPages; i++) {
+                                            const t = detectedShapesByPage[i];
+                                            if (t && t !== 'CUSTOM') types.add(String(t));
+                                        }
+                                    }
+                                    if (stickerLike && sourceTotalPages > 1 && types.size <= 1) {
+                                        const all: Record<number, number> = {};
+                                        for (let i = 0; i < sourceTotalPages; i++) all[i] = cap;
+                                        s.setPreviewCapacities(all);
+                                    } else {
+                                        s.setPreviewCapacities({ ...s.previewCapacities, [safePageIdx]: cap });
+                                    }
+                                }}
                                 onMixedPlacedByPage={(m) => s.setMixedPlacedByPage(m)}
                                 fileId={stickerLike ? selectionFileId : undefined}
                                 filePath={((window as any).__TAURI_INTERNALS__) ? ((pdfFile as any)?.path || undefined) : undefined}
-                                pageIdx={safePageIdx}
+                                pageIdx={shapePageIdx}
                                 bleed={s.bleed}
                                 cutType={s.cutType}
                                 dieSizeMode={s.dieSizeMode}

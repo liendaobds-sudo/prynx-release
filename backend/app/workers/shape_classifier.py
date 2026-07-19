@@ -309,13 +309,12 @@ def _ellipse_fit_residual(samples) -> float:
     return (sum((e - me) ** 2 for e in es) / len(es)) ** 0.5
 
 
-# Ngưỡng std elip-fit: elip thật (kể cả xoay/egg) ~0–0.003; blob bù-xén bo mạnh ≥0.03.
-# 0.02 tách sạch (giữa 0.003 egg vs 0.030 blob trơn nhất gặp thực tế).
+# Ngưỡng elip-fit (tham chiếu / test). Cổng nhận hình dùng SCORE đa tín hiệu
+# (`_ellipse_likeness`) — không còn AND cứng residual∧radial∧n_curves.
 _ELLIPSE_FIT_MAX_STD = 0.02
 
-# Bát giác đều xấp xỉ tròn: residual ~0.05 (không đạt 0.02). Chỉ chấp nhận khi
-# cạnh ĐỀU + lồi + residual < ngưỡng nới (0.07). 8-cạnh LỆCH (res~0.12) → CUSTOM.
-_OCTAGON_AS_CIRCLE_MAX_RES = 0.07
+# Bát giác đều xấp xỉ tròn: residual thường ~0.04–0.06.
+_OCTAGON_AS_CIRCLE_MAX_RES = 0.08
 _REGULAR_POLY_SIDE_CV_MAX = 0.12  # CV độ dài cạnh — đều vs lệch
 
 # Tỉ lệ TỐI THIỂU (cạnh thẳng / chu vi) để được xét là ĐA GIÁC. Đa giác thật (tam giác,
@@ -323,8 +322,14 @@ _REGULAR_POLY_SIDE_CV_MAX = 0.12  # CV độ dài cạnh — đều vs lệch
 # Dưới ngưỡng → cong chiếm ưu thế → không ép vào đa giác (chống "octagon giả").
 _MIN_STRAIGHT_COVERAGE = 0.5
 
-# CV bán kính sau chuẩn hoá PCA→đơn vị: elip/tròn thật ~0; blob méo ≥~0.06.
+# CV bán kính sau chuẩn hoá PCA (tham chiếu). Score nới mềm hơn cổng AND cũ 0.05.
 _ELLIPSE_RADIAL_CV_MAX = 0.05
+
+# Score tối thiểu để nhận CIRCLE_ELLIPSE (0..1). ~0.52: tròn/elip PDF hơi nhiễu vẫn qua;
+# blob sao bù-xén (res cao) thường ≤0.4.
+_ELLIPSE_ACCEPT_SCORE = 0.52
+# Residual tuyệt đối: trên mức này không bao giờ gọi là tròn (sao/blob méo nặng).
+_ELLIPSE_RESIDUAL_HARD_REJECT = 0.055
 
 
 def _side_length_cv(edges) -> float:
@@ -388,23 +393,112 @@ def _radial_cv_after_pca(samples) -> float:
     return (var ** 0.5) / mean_r
 
 
-def _accept_ellipse_like(samples, *, n_curve_segments: int = 0) -> bool:
-    """Cổng CHẶT nhận CIRCLE_ELLIPSE — chống tem bo tròn / 8-cạnh lệch / blob bù-xén.
+def _shoelace_area_ratio(samples, total_w: float, total_h: float) -> float:
+    """Diện tích contour / bbox — elip/tròn lý tưởng ≈ π/4 ≈ 0.785."""
+    if total_w <= 0 or total_h <= 0 or len(samples) < 3:
+        return 0.0
+    n = len(samples)
+    a = 0.0
+    for i in range(n):
+        x1, y1 = samples[i]
+        x2, y2 = samples[(i + 1) % n]
+        a += x1 * y2 - x2 * y1
+    return abs(a) / 2.0 / (total_w * total_h)
 
-    1) residual PCA elip-fit < 0.02
-    2) CV bán kính chuẩn hoá < 0.05 (đều theo phương hướng)
-    3) Cấu trúc path: 0 (polyline/test) hoặc ≤ 6 cubic (elip PDF = 4; bù-xén ≥ 8)
+
+def _ellipse_likeness(
+    samples,
+    *,
+    n_curve_segments: int = 0,
+    area_ratio: Optional[float] = None,
+) -> Tuple[float, dict]:
+    """Điểm 0..1: càng cao càng giống tròn/elip. Kết hợp nhiều tín hiệu (không veto AND).
+
+    Tín hiệu:
+      - residual PCA elip-fit (chính)
+      - CV bán kính sau chuẩn hoá (méo hướng)
+      - area/bbox gần π/4
+      - số cubic: 4 = elip PDF chuẩn; 0 = polyline; >10 = contour phức tạp (phạt nhẹ)
     """
+    details: dict = {}
     if len(samples) < 8:
+        return 0.0, {"reason": "too_few_samples"}
+
+    res = _ellipse_fit_residual(samples)
+    rcv = _radial_cv_after_pca(samples)
+    details["residual"] = round(res, 4) if res != float("inf") else None
+    details["radial_cv"] = round(rcv, 4) if rcv != float("inf") else None
+
+    if res == float("inf") or rcv == float("inf"):
+        return 0.0, details
+
+    # Map residual → [0,1]: 0→1, 0.02→~0.67, 0.04→0.33, 0.06→0
+    score_res = max(0.0, 1.0 - res / 0.06)
+    # Radial CV: 0→1, 0.05→~0.58, 0.12→0
+    score_rcv = max(0.0, 1.0 - rcv / 0.12)
+
+    if area_ratio is None:
+        score_area = 0.55  # trung tính khi caller không đo
+    else:
+        # Elip/tròn: area/bbox ≈ 0.785; blob sao / chữ nhật bo nhẹ lệch
+        score_area = max(0.0, 1.0 - abs(area_ratio - 0.785398) / 0.40)
+        details["area_ratio"] = round(area_ratio, 4)
+
+    # Cấu trúc path: elip PDF = 4 cubic; AI đôi khi 5–8; bù-xén phức tạp 12+
+    if n_curve_segments == 0:
+        score_struct = 0.80  # polyline / sample thuần
+    elif n_curve_segments <= 6:
+        score_struct = 1.0
+    elif n_curve_segments <= 10:
+        score_struct = 0.70
+    elif n_curve_segments <= 14:
+        score_struct = 0.45
+    else:
+        score_struct = 0.25
+    details["n_curves"] = n_curve_segments
+
+    score = (
+        0.48 * score_res
+        + 0.28 * score_rcv
+        + 0.14 * score_area
+        + 0.10 * score_struct
+    )
+    details["score"] = round(score, 4)
+    details["score_res"] = round(score_res, 3)
+    details["score_rcv"] = round(score_rcv, 3)
+    return score, details
+
+
+def _accept_ellipse_like(
+    samples,
+    *,
+    n_curve_segments: int = 0,
+    area_ratio: Optional[float] = None,
+) -> bool:
+    """Nhận CIRCLE_ELLIPSE theo điểm tín hiệu — nới tròn/elip thật, chặn blob.
+
+    Không còn AND cứng (res<0.02 ∧ cv<0.05 ∧ curves≤6) — cổng đó loại oan tem
+    tròn PDF hơi nhiễu / tách cubic / elip dẹt đo residual nhẹ.
+    """
+    score, details = _ellipse_likeness(
+        samples, n_curve_segments=n_curve_segments, area_ratio=area_ratio
+    )
+    res = details.get("residual")
+    if res is None:
         return False
-    if _ellipse_fit_residual(samples) >= _ELLIPSE_FIT_MAX_STD:
+    # Sàn tuyệt đối: residual quá tệ = không bao giờ tròn (sao bù-xén amp lớn).
+    if res >= _ELLIPSE_RESIDUAL_HARD_REJECT:
         return False
-    if _radial_cv_after_pca(samples) >= _ELLIPSE_RADIAL_CV_MAX:
-        return False
-    # Elip chuẩn PDF = 4 cubic; cho phép tách 5–6. Contour bù-xén phức tạp ≥ 8.
-    if n_curve_segments > 6:
-        return False
-    return True
+    # Elip/tròn sạch: residual rất tốt → nhận ngay (kể cả radial hơi cao do sample).
+    if res <= 0.022 and details.get("radial_cv", 1.0) <= 0.10:
+        return True
+    # Biên: residual trung bình nhưng các tín hiệu khác ủng hộ.
+    if res <= 0.040 and score >= _ELLIPSE_ACCEPT_SCORE:
+        return True
+    # Score tổng thể đủ cao (path AI phức tạp nhưng hình vẫn elip).
+    if score >= (_ELLIPSE_ACCEPT_SCORE + 0.08):
+        return True
+    return False
 
 
 def _edges_have_reflex(edges) -> bool:
@@ -451,38 +545,38 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
     _coverage = (_straight_len / _perim) if _perim > 0 else 0.0
 
     if _coverage < _MIN_STRAIGHT_COVERAGE and len(samples) >= 8:
-        # Cong chiếm ưu thế: chỉ nhận TRÒN/ELIP qua cổng chặt (residual+radial+cấu trúc).
-        # Trước: chỉ residual → blob/bù-xén bo tròn nhầm CIRCLE (audit 2026-07).
-        bbox_area = total_w * total_h
-        ratio = 0.0
-        if bbox_area > 0:
-            _ra = 0.0
-            for _i in range(_ns):
-                _x1, _y1 = samples[_i]
-                _x2, _y2 = samples[(_i + 1) % _ns]
-                _ra += _x1 * _y2 - _x2 * _y1
-            ratio = abs(_ra) / 2.0 / bbox_area
-        if _accept_ellipse_like(samples, n_curve_segments=_n_curve_segments):
-            return ShapeType.CIRCLE_ELLIPSE, {'area_ratio': ratio}
+        # Cong chiếm ưu thế: nhận TRÒN/ELIP qua score đa tín hiệu (không AND cứng).
+        ratio = _shoelace_area_ratio(samples, total_w, total_h)
+        if _accept_ellipse_like(
+            samples, n_curve_segments=_n_curve_segments, area_ratio=ratio
+        ):
+            _sc, _det = _ellipse_likeness(
+                samples, n_curve_segments=_n_curve_segments, area_ratio=ratio
+            )
+            return ShapeType.CIRCLE_ELLIPSE, {
+                "area_ratio": ratio,
+                "ellipse_score": _sc,
+                **{k: v for k, v in _det.items() if k in ("residual", "radial_cv")},
+            }
         return None, None
 
     # Count horizontal edges (normalized tolerance ~2 deg)
-    h_count = sum(1 for e in merged if abs(e['dy'] / e['length']) < 0.035)
+    h_count = sum(1 for e in merged if abs(e["dy"] / e["length"]) < 0.035)
 
-    # 0 straight edges → circle/ellipse (cổng chặt residual + radial CV + cấu trúc path)
+    # 0 straight edges → circle/ellipse (score đa tín hiệu)
     if n_edges == 0 and len(samples) >= 4:
-        real_area = 0.0
-        n = len(samples)
-        for i in range(n):
-            x1, y1 = samples[i]
-            x2, y2 = samples[(i + 1) % n]
-            real_area += x1 * y2 - x2 * y1
-        real_area = abs(real_area) / 2.0
-        bbox_area = total_w * total_h
-        if bbox_area > 0:
-            ratio = real_area / bbox_area
-            if _accept_ellipse_like(samples, n_curve_segments=_n_curve_segments):
-                return ShapeType.CIRCLE_ELLIPSE, {'area_ratio': ratio}
+        ratio = _shoelace_area_ratio(samples, total_w, total_h)
+        if ratio > 0 and _accept_ellipse_like(
+            samples, n_curve_segments=_n_curve_segments, area_ratio=ratio
+        ):
+            _sc, _det = _ellipse_likeness(
+                samples, n_curve_segments=_n_curve_segments, area_ratio=ratio
+            )
+            return ShapeType.CIRCLE_ELLIPSE, {
+                "area_ratio": ratio,
+                "ellipse_score": _sc,
+                **{k: v for k, v in _det.items() if k in ("residual", "radial_cv")},
+            }
         # Don't return CUSTOM here — let width profile try trapezoid ramp detection
         return None, None
 
@@ -565,32 +659,39 @@ def _classify_polygon_core(edges, samples, s_min_x, s_max_x, s_min_y, s_max_y, t
             return ShapeType.ARROW, {'note': 'heptagon_arrow'}
         return ShapeType.CUSTOM, {'reason': '7_edge_convex'}
 
-    # 8 edges → chữ nhật vát góc HOẶC bát giác đều (≈ tròn) HOẶC CUSTOM.
-    # BUG (gần đây lộ rõ): mọi 8-cạnh (kể cả LỆCH) đều → CIRCLE_ELLIPSE → tem bo góc /
-    # khuôn 8 cạnh méo bị xếp như tròn. Chỉ bát giác ĐỀU + residual xấp xỉ tròn mới
-    # map CIRCLE; còn lại CUSTOM (layout bbox an toàn).
+    # 8 edges → chữ nhật vát góc HOẶC bát giác ≈ tròn HOẶC CUSTOM.
+    # Không map mọi 8-cạnh → tròn; ưu tiên: (1) chamfered rect (2) đều/gần elip (3) score.
     if n_edges == 8:
-        lengths = sorted((e['length'] for e in merged), reverse=True)
+        lengths = sorted((e["length"] for e in merged), reverse=True)
         avg_long = sum(lengths[:4]) / 4.0
         avg_short = sum(lengths[4:]) / 4.0
         if avg_short > 1e-6 and (avg_long / avg_short) > 2.0:
-            long_edges = sorted(merged, key=lambda e: e['length'], reverse=True)[:4]
+            long_edges = sorted(merged, key=lambda e: e["length"], reverse=True)[:4]
             par = _find_parallel_groups(long_edges)
             if len(par) == 2:
                 g1, g2 = par[0][0], par[1][0]
-                n1x, n1y = g1['dx'] / g1['length'], g1['dy'] / g1['length']
-                n2x, n2y = g2['dx'] / g2['length'], g2['dy'] / g2['length']
+                n1x, n1y = g1["dx"] / g1["length"], g1["dy"] / g1["length"]
+                n2x, n2y = g2["dx"] / g2["length"], g2["dy"] / g2["length"]
                 if abs(n1x * n2x + n1y * n2y) < 0.08:  # 2 cặp song song ~vuông góc
-                    return ShapeType.RECTANGLE, {'note': 'chamfered_rect'}
-        if _is_regularish_polygon(merged):
-            res = _ellipse_fit_residual(samples) if len(samples) >= 8 else float('inf')
-            if res < _OCTAGON_AS_CIRCLE_MAX_RES:
-                return ShapeType.CIRCLE_ELLIPSE, {
-                    'note': 'regular_octagon',
-                    'ellipse_residual': round(res, 4),
-                    'side_cv': round(_side_length_cv(merged), 4),
-                }
-        return ShapeType.CUSTOM, {'reason': '8_edge_irregular'}
+                    return ShapeType.RECTANGLE, {"note": "chamfered_rect"}
+        res = _ellipse_fit_residual(samples) if len(samples) >= 8 else float("inf")
+        ratio8 = _shoelace_area_ratio(samples, total_w, total_h)
+        if _is_regularish_polygon(merged) and res < _OCTAGON_AS_CIRCLE_MAX_RES:
+            return ShapeType.CIRCLE_ELLIPSE, {
+                "note": "regular_octagon",
+                "ellipse_residual": round(res, 4) if res != float("inf") else None,
+                "side_cv": round(_side_length_cv(merged), 4),
+            }
+        # 8-cạnh gần tròn (AI export) — score elip, không cần đều tuyệt đối
+        if _accept_ellipse_like(
+            samples, n_curve_segments=_n_curve_segments, area_ratio=ratio8
+        ):
+            return ShapeType.CIRCLE_ELLIPSE, {
+                "note": "octagon_ellipse_like",
+                "ellipse_residual": round(res, 4) if res != float("inf") else None,
+                "area_ratio": ratio8,
+            }
+        return ShapeType.CUSTOM, {"reason": "8_edge_irregular"}
 
     return None, None  # Unresolved → need width profile
 

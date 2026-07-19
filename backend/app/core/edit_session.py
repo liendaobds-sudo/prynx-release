@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -47,9 +48,12 @@ from app.core.stream_editor import (
     ObjectMapError,
     add_image,
     add_text,
+    affine_transform_objects,
+    clip_image,
     delete_objects,
     edit_text,
     move_objects,
+    replace_image,
     resize_objects,
     rotate_objects,
 )
@@ -286,6 +290,7 @@ def open_session(fid: str) -> EditSession:
         baseline_bytes=baseline_bytes,
         last_access=time.monotonic(),
         dirty=False,
+        live_bytes=baseline_bytes,
     )
 
     with _STORE_LOCK:
@@ -436,6 +441,22 @@ def _apply_op_to_pdf(pdf: pikepdf.Pdf, op: EditOp, by_id: dict[str, ObjMeta],
         metas = _resolve_targets(by_id, op.page, op.targetIds)
         return move_objects(pg, metas, op.delta.dx, op.delta.dy, pdf)
 
+    if kind == "affine":
+        metas = _resolve_targets(by_id, op.page, op.targetIds)
+        return affine_transform_objects(pg, metas, op.affine or [], pdf)
+    if kind == "replaceImage":
+        metas = _resolve_targets(by_id, op.page, op.targetIds)
+        if len(metas) != 1:
+            raise ValueError("replaceImage chỉ hỗ trợ đúng một ảnh mỗi thao tác.")
+        if op.image is None:
+            raise ValueError("replaceImage yêu cầu dữ liệu ảnh.")
+        image_source = _decode_image_source(op.image.dataRef)
+        return replace_image(pg, metas[0], image_source, pdf)
+    if kind == "clipImage":
+        metas = _resolve_targets(by_id, op.page, op.targetIds)
+        if len(metas) != 1 or op.clip is None:
+            raise ValueError("clipImage yêu cầu đúng một ảnh và cấu hình khung.")
+        return clip_image(pg, metas[0], op.clip.shape, op.clip.radius, pdf)
     if kind == "resize":
         metas = _resolve_targets(by_id, op.page, op.targetIds)
         return resize_objects(pg, metas, op.scale.sx, op.scale.sy, op.scale.anchor, pdf)
@@ -463,10 +484,50 @@ def _apply_op_to_pdf(pdf: pikepdf.Pdf, op: EditOp, by_id: dict[str, ObjMeta],
             return add_text(pg, op.text.content, op.text.bbox, pdf, font_size=font_size,
                             chosen_font_path=op.text.font or None)
         image_source = _decode_image_source(op.image.dataRef)
+        if op.image.bbox is None:
+            raise ValueError("Thêm ảnh yêu cầu image.bbox.")
         return add_image(pg, image_source, op.image.bbox, pdf)
 
     raise ValueError(f"op.kind không hỗ trợ: {kind!r}")
 
+
+
+def _bbox_after_matrix(bbox: list[float], matrix: list[float]) -> list[float]:
+    x0, y0, x1, y1 = normalize_bbox(list(bbox))
+    a, b, c, d, e, f = [float(v) for v in matrix]
+    points = [
+        (x0 * a + y0 * c + e, x0 * b + y0 * d + f),
+        (x1 * a + y0 * c + e, x1 * b + y0 * d + f),
+        (x1 * a + y1 * c + e, x1 * b + y1 * d + f),
+        (x0 * a + y1 * c + e, x0 * b + y1 * d + f),
+    ]
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def _resize_bbox_fast(bbox: list[float], sx: float, sy: float, anchor: str) -> list[float]:
+    x0, y0, x1, y1 = normalize_bbox(list(bbox))
+    anchors = {
+        "nw": (x0, y1), "ne": (x1, y1),
+        "sw": (x0, y0), "se": (x1, y0),
+    }
+    ax, ay = anchors[anchor]
+    matrix = [sx, 0.0, 0.0, sy, ax * (1.0 - sx), ay * (1.0 - sy)]
+    return _bbox_after_matrix([x0, y0, x1, y1], matrix)
+
+
+def _rotate_bbox_fast(bbox: list[float], degrees: float) -> list[float]:
+    x0, y0, x1, y1 = normalize_bbox(list(bbox))
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    angle = math.radians(float(degrees))
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    matrix = [
+        cos_a, sin_a, -sin_a, cos_a,
+        cx - cx * cos_a + cy * sin_a,
+        cy - cx * sin_a - cy * cos_a,
+    ]
+    return _bbox_after_matrix([x0, y0, x1, y1], matrix)
 
 def _compute_new_bbox(op: EditOp, op_result, post_bytes: bytes,
                       old_metas: list[ObjMeta]) -> tuple[list[float] | None, list[list[float]]]:
@@ -496,6 +557,40 @@ def _compute_new_bbox(op: EditOp, op_result, post_bytes: bytes,
     if kind == "delete":
         return None, []
 
+    # Transform hình học có kết quả xác định từ bbox cũ; tính trực tiếp để không chạy
+    # PDFium lần hai trong backend. Frontend vẫn refetch đúng một lần sau op.
+    if kind == "move":
+        delta = op.delta
+        new_bboxes = [
+            [m.bbox[0] + delta.dx, m.bbox[1] + delta.dy,
+             m.bbox[2] + delta.dx, m.bbox[3] + delta.dy]
+            for m in old_metas
+        ]
+        return (new_bboxes[0] if new_bboxes else None), new_bboxes
+
+    if kind == "affine":
+        new_bboxes = [_bbox_after_matrix(meta.bbox, op.affine or []) for meta in old_metas]
+        return (new_bboxes[0] if new_bboxes else None), new_bboxes
+    if kind in {"replaceImage", "clipImage"}:
+        new_bboxes = [normalize_bbox(list(meta.bbox)) for meta in old_metas]
+        return (new_bboxes[0] if new_bboxes else None), new_bboxes
+
+    if kind == "resize":
+        new_bboxes = [
+            _resize_bbox_fast(meta.bbox, op.scale.sx, op.scale.sy, op.scale.anchor)
+            for meta in old_metas
+        ]
+        return (new_bboxes[0] if new_bboxes else None), new_bboxes
+
+    if kind == "rotate":
+        new_bboxes = [_rotate_bbox_fast(meta.bbox, op.rotateDeg or 0.0) for meta in old_metas]
+        return (new_bboxes[0] if new_bboxes else None), new_bboxes
+
+    if kind == OBJECT_VISIBILITY_KIND:
+        new_bboxes = [normalize_bbox(list(meta.bbox)) for meta in old_metas]
+        return (new_bboxes[0] if new_bboxes else None), new_bboxes
+
+    # editText có thể đổi metrics/font nên vẫn re-resolve trên post-op bytes.
     # move / resize / rotate / editText → re-resolve target trên post-op bytes.
     try:
         post_by_id = _list_objects_from_bytes(post_bytes, op.page)
@@ -556,10 +651,14 @@ def apply_op(session: EditSession, op: EditOp) -> dict:
 
         # 1) Snapshot BYTES pre-op: vừa để resolve target nhất quán trạng thái phiên,
         #    vừa là điểm KHÔI PHỤC nếu op lỗi (đảm bảo giữ nguyên Live_Document).
-        pre_buf = BytesIO()
-        session.pdf.save(pre_buf, compress_streams=False)
-        pre_bytes = pre_buf.getvalue()
-
+        # live_bytes là snapshot thành công gần nhất. Tái dùng nó làm rollback và
+        # nguồn PDFium, tránh serialize toàn bộ PDF thêm một lần ở đầu mỗi thao tác.
+        pre_bytes = session.live_bytes
+        if pre_bytes is None:
+            pre_buf = BytesIO()
+            session.pdf.save(pre_buf, compress_streams=False)
+            pre_bytes = pre_buf.getvalue()
+            session.live_bytes = pre_bytes
         try:
             old_metas: list[ObjMeta] = []
             if op.kind in LAYER_EDIT_KINDS:

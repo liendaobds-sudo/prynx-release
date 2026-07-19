@@ -14,6 +14,7 @@ Quy ước:
 
 _Requirements: 1.4 (định danh ổn định / data model ánh xạ), 6.5 (từ chối resize ≤ 0)._
 """
+import math
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -105,6 +106,13 @@ class MoveDelta(BaseModel):
     dx: float
     dy: float
 
+    @field_validator("dx", "dy")
+    @classmethod
+    def _finite_delta(cls, v: float) -> float:
+        if not math.isfinite(v):
+            raise ValueError("Độ dịch chuyển phải là số hữu hạn")
+        return v
+
 
 ResizeAnchor = Literal["nw", "ne", "sw", "se"]
 
@@ -153,21 +161,48 @@ class ImagePayload(BaseModel):
     """Tham chiếu ảnh + BBox đặt ảnh cho thao tác add (Yêu cầu 9.2)."""
 
     dataRef: str
-    bbox: list[float]
+    bbox: list[float] | None = None
 
     @field_validator("bbox")
     @classmethod
-    def _check_bbox(cls, v: list[float]) -> list[float]:
+    def _check_bbox(cls, v: list[float] | None) -> list[float] | None:
+        if v is None:
+            return None
         if len(v) != 4:
             raise ValueError("bbox phải gồm đúng 4 giá trị [x0, y0, x1, y1]")
         return normalize_bbox(v)
 
 
-EditKind = Literal[
-    "delete", "move", "resize", "rotate", "editText", "add", "objectVisibility",
-    "layerVisibility", "layerLock", "layerRename", "layerReorder", "layerDelete",
+ImageClipShape = Literal[
+    "none",
+    "rectangle",
+    "rounded",
+    "circle",
+    "ellipse",
+    "triangle",
+    "diamond",
+    "pentagon",
+    "hexagon",
+    "octagon",
+    "star",
+    "heart",
+    "cross",
 ]
 
+
+class ImageClipPayload(BaseModel):
+    """Khung vector cắt ảnh; radius là tỉ lệ bán kính bo trên cạnh ngắn."""
+
+    shape: ImageClipShape
+    radius: float = Field(default=0.15, ge=0.0, le=0.5)
+
+
+EditKind = Literal[
+    "delete", "move", "affine", "resize", "rotate", "editText", "replaceImage",
+    "clipImage", "add",
+    "objectVisibility", "layerVisibility", "layerLock", "layerRename", "layerReorder",
+    "layerDelete",
+]
 
 class EditOp(BaseModel):
     """
@@ -188,10 +223,12 @@ class EditOp(BaseModel):
 
     # Tham số theo từng kind (đều optional ở mức field; ràng buộc bằng model_validator).
     delta: MoveDelta | None = None
+    affine: list[float] | None = None
     scale: ResizeScale | None = None
     rotateDeg: float | None = None
     text: TextPayload | None = None
     image: ImagePayload | None = None
+    clip: ImageClipPayload | None = None
 
     # Tham số cho thao tác OCG/layer (dùng chung op_log để Undo/Redo đúng thứ tự).
     layerId: int | None = None
@@ -200,15 +237,36 @@ class EditOp(BaseModel):
     layerName: str | None = None
     layerOrder: list[int] | None = None
 
+    @field_validator("affine")
+    @classmethod
+    def _check_affine(cls, v: list[float] | None) -> list[float] | None:
+        if v is None:
+            return None
+        if len(v) != 6 or not all(math.isfinite(x) for x in v):
+            raise ValueError("affine phải gồm 6 số hữu hạn [a,b,c,d,e,f]")
+        if abs(v[0] * v[3] - v[1] * v[2]) < 1e-9:
+            raise ValueError("affine suy biến không được phép")
+        return v
+
     @model_validator(mode="after")
     def _check_required_params(self) -> "EditOp":
-        # delete/move/resize/rotate/editText cần targetIds; add thì không bắt buộc.
-        object_target_kinds = {"delete", "move", "resize", "rotate", "editText", "objectVisibility"}
+        # Các thao tác object cần targetIds; add thì không bắt buộc.
+        object_target_kinds = {
+            "delete", "move", "affine", "resize", "rotate", "replaceImage",
+            "clipImage", "editText", "objectVisibility",
+        }
         if self.kind in object_target_kinds and not self.targetIds:
             raise ValueError(f"Thao tác '{self.kind}' yêu cầu ít nhất một targetIds")
 
         if self.kind == "move" and self.delta is None:
             raise ValueError("Thao tác 'move' yêu cầu trường 'delta' (dx, dy)")
+        if self.kind == "affine" and self.affine is None:
+            raise ValueError("Thao tác 'affine' yêu cầu ma trận affine")
+        if self.kind == "replaceImage":
+            if self.image is None or not self.image.dataRef:
+                raise ValueError("Thao tác 'replaceImage' yêu cầu dữ liệu ảnh thay thế")
+        if self.kind == "clipImage" and self.clip is None:
+            raise ValueError("Thao tác 'clipImage' yêu cầu cấu hình khung ảnh")
         if self.kind == "resize" and self.scale is None:
             raise ValueError("Thao tác 'resize' yêu cầu trường 'scale' (sx, sy, anchor)")
         if self.kind == "rotate" and self.rotateDeg is None:
@@ -217,6 +275,8 @@ class EditOp(BaseModel):
             raise ValueError("Thao tác 'editText' yêu cầu trường 'text'")
         if self.kind == "add" and self.text is None and self.image is None:
             raise ValueError("Thao tác 'add' yêu cầu 'text' hoặc 'image'")
+        if self.kind == "add" and self.image is not None and self.image.bbox is None:
+            raise ValueError("Thêm ảnh yêu cầu image.bbox")
         if self.kind in {"layerVisibility", "layerLock", "layerRename", "layerDelete"} and self.layerId is None:
             raise ValueError(f"Thao tác '{self.kind}' yêu cầu layerId")
         if self.kind == "objectVisibility" and self.visible is None:

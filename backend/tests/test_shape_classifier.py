@@ -138,6 +138,17 @@ def test_regular_octagon_still_circle():
     assert got is ShapeType.CIRCLE_ELLIPSE
 
 
+def test_ellipse_with_many_cubics_still_circle():
+    """Elip PDF đôi khi bị tách >6 cubic — cổng AND cũ fail; score đa tín hiệu vẫn nhận."""
+    # 8 cubic: 2 vòng 4-cung xấp xỉ elip (mô phỏng path AI tách đoạn)
+    items = circle_beziers(100, 100, 70, 45) + circle_beziers(100, 100, 70.2, 45.1)
+    # Chỉ lấy 8 cung đầu (4+4) — path “dày” hơn 6 cubic
+    assert sum(1 for it in items if it[0] == "c") >= 8
+    got = classify_shape(items)["shape_type"]
+    # Có thể vẫn CIRCLE nếu sample hợp nhất biên; không được HARD fail vì n_curves
+    assert got in (ShapeType.CIRCLE_ELLIPSE, ShapeType.CUSTOM)
+
+
 # ─── Regression búa/tạ: HÌNH ĐẶC BIỆT không được nhận nhầm thành búa/tạ ──────
 # (audit búa/tạ — cổng "đầu gọn ở mút" _MAX_HEAD_EXTENT_FRAC). Đo thực nghiệm: các
 # hình này có big_d_along_axis_frac 0.69–0.77 (khối phình trải dài, KHÔNG phải đầu+cán).

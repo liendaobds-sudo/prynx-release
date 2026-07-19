@@ -24,7 +24,7 @@ export type Matrix = [number, number, number, number, number, number];
 export type ResizeAnchor = 'nw' | 'ne' | 'sw' | 'se';
 
 /** Loại thao tác sửa hỗ trợ. */
-export type EditKind = 'delete' | 'move' | 'resize' | 'rotate' | 'editText' | 'add' | 'objectVisibility'
+export type EditKind = 'delete' | 'move' | 'affine' | 'resize' | 'rotate' | 'editText' | 'replaceImage' | 'clipImage' | 'add' | 'objectVisibility'
     | 'layerVisibility' | 'layerLock' | 'layerRename' | 'layerReorder' | 'layerDelete';
 
 /**
@@ -50,6 +50,7 @@ export interface MoveDelta {
     dy: number;
 }
 
+
 /** Tham số tỉ lệ cho thao tác `resize` (anchor = góc đối diện handle đang kéo). */
 export interface ResizeScale {
     sx: number;
@@ -68,7 +69,27 @@ export interface EditTextPayload {
 /** Tham số ảnh cho thao tác `add`. */
 export interface EditImagePayload {
     dataRef: string;
-    bbox: BBox;
+    bbox?: BBox;
+}
+
+export type ImageClipShape =
+    | 'none'
+    | 'rectangle'
+    | 'rounded'
+    | 'circle'
+    | 'ellipse'
+    | 'triangle'
+    | 'diamond'
+    | 'pentagon'
+    | 'hexagon'
+    | 'octagon'
+    | 'star'
+    | 'heart'
+    | 'cross';
+
+export interface EditImageClipPayload {
+    shape: ImageClipShape;
+    radius?: number;
 }
 
 /**
@@ -85,10 +106,12 @@ export interface EditOp {
     kind: EditKind;
     targetIds: string[];
     delta?: MoveDelta;
+    affine?: Matrix;
     scale?: ResizeScale;
     rotateDeg?: number;
     text?: EditTextPayload;
     image?: EditImagePayload;
+    clip?: EditImageClipPayload;
     layerId?: number;
     visible?: boolean;
     locked?: boolean;

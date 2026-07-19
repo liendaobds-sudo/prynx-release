@@ -18,20 +18,25 @@ router = APIRouter()
 async def job_progress_ws(
     websocket: WebSocket,
     job_id: str,
-    token: str = Query(default=""),
     ts: str = Query(default=""),
     sig: str = Query(default=""),
+    license_key: str = Query(default=""),
+    hwid: str = Query(default=""),
+    license_token: str = Query(default=""),
 ):
     """
     WebSocket endpoint for real-time progress updates.
 
-    SECURITY: xác thực bằng sidecar token + chữ ký HMAC (giống require_license),
-    nhận qua query param (?token=&ts=&sig=) vì WebSocket trình duyệt không gửi được
-    custom header. Bỏ qua ở dev mode. Chữ ký ký trên path "/ws/jobs/{job_id}/progress".
+    SECURITY: xác thực chữ ký HMAC đã ràng buộc license key, HWID và license token
+    (giống require_license). WebSocket nhận credentials qua query param vì trình
+    duyệt không gửi được custom headers. Bỏ qua ở dev mode. Chữ ký ký trên path
+    "/ws/jobs/{job_id}/progress".
     """
     from app.core.license_guard import verify_sidecar_signature
     url_path = f"/ws/jobs/{job_id}/progress"
-    ok, _reason = verify_sidecar_signature(url_path, token, ts, sig)
+    ok, _reason = verify_sidecar_signature(
+        url_path, ts, sig, license_key, hwid, license_token
+    )
     if not ok:
         await websocket.close(code=4001, reason="Unauthorized")
         return

@@ -3,13 +3,13 @@ License Guard Middleware for PrynX Backend.
 
 Security model:
 1. Every API request must include headers:
-   - X-PrynX-Token: A shared secret between Tauri desktop and the Python sidecar.
-     This prevents external callers from using the API.
+   - X-PrynX-Timestamp + X-PrynX-Signature: a short-lived HMAC proof generated
+     by the Tauri host. The shared secret is never exposed to the WebView.
    - X-License-Key: The user's license key (for watermarking/audit trail).
    - X-Hardware-Id: The machine's HWID (for watermarking/audit trail).
 
 2. The shared token is generated at app startup by the Tauri host and passed
-   to the sidecar as an environment variable (PRYNX_SIDECAR_TOKEN).
+   to the sidecar through its stdin pipe.
    External callers cannot know this token.
 
 3. For an extra layer, we can optionally verify the license key against
@@ -167,12 +167,21 @@ def _hash_credentials(license_key: str, hwid: str) -> str:
     return hashlib.sha256(f"{license_key}:{hwid}".encode()).hexdigest()
 
 
-def verify_sidecar_signature(url_path: str, token: str, ts: str, sig: str) -> tuple[bool, str]:
+def verify_sidecar_signature(
+    url_path: str,
+    ts: str,
+    sig: str,
+    license_key: str,
+    hwid: str,
+    license_token: str,
+) -> tuple[bool, str]:
     """
     Nguồn chân lý duy nhất để xác thực một request đến từ Tauri host (không phải caller ngoài).
     Dùng chung cho HTTP (require_license) lẫn WebSocket (ws.py).
 
-    Kiểm tra: shared sidecar token + chữ ký HMAC-SHA256 trên f"{ts}:{url_path}" (cửa sổ 30s).
+    Kiểm tra chữ ký HMAC-SHA256 trên timestamp, path và hash của bộ credentials
+    đã được Rust xác minh (cửa sổ 30s). Shared secret chỉ tồn tại trong Rust host
+    và Python sidecar; WebView không bao giờ nhận secret.
     Trả về (ok, reason). Bỏ qua hoàn toàn ở dev mode.
     """
     # Dev mode: không ép token/chữ ký (chạy backend thủ công khi phát triển).
@@ -183,11 +192,10 @@ def verify_sidecar_signature(url_path: str, token: str, ts: str, sig: str) -> tu
         logger.warning("[LICENSE_GUARD] PRYNX_SIDECAR_TOKEN not set — rejecting request")
         return False, "Server configuration error: missing sidecar token."
 
-    if not token or not hmac_mod.compare_digest(token, _SIDECAR_TOKEN):
-        return False, "Access denied: invalid sidecar token."
-
     if not ts or not sig:
         return False, "Missing request signature"
+    if not license_key or not hwid or not license_token:
+        return False, "Missing signed license credentials"
 
     try:
         ts_int = int(ts)
@@ -198,7 +206,8 @@ def verify_sidecar_signature(url_path: str, token: str, ts: str, sig: str) -> tu
     if abs(now - ts_int) > 30:  # 30-second window — chống replay
         return False, "Request expired (timestamp too old)"
 
-    sign_payload = f"{ts}:{url_path}"
+    token_hash = hashlib.sha256(license_token.encode()).hexdigest()
+    sign_payload = f"{ts}:{url_path}:{license_key}:{hwid}:{token_hash}"
     expected_hex = hmac_mod.new(
         _SIDECAR_TOKEN.encode(), sign_payload.encode(), hashlib.sha256
     ).hexdigest()
@@ -412,13 +421,21 @@ async def require_license(request: Request) -> dict:
             # license_info contains {"license_key": "...", "hwid": "...", "verified": True}
             ...
     """
-    # ── Step 1: Verify sidecar token + HMAC signature (skipped in dev mode) ──
+    # Read the credential binding before checking the HMAC. Rust signs these exact
+    # values, so the WebView cannot swap a registered Free identity for a stolen
+    # Pro token after obtaining a valid sidecar signature.
+    license_key = request.headers.get("X-License-Key", "").strip()
+    hwid = request.headers.get("X-Hardware-Id", "").strip()
+    lic_token = request.headers.get("X-License-Token", "").strip()
+    # ── Step 1: Verify credential-bound HMAC signature (skipped in dev mode) ──
     # VECTOR #1/#4 FIX: dùng nguồn chân lý duy nhất verify_sidecar_signature().
     ok, reason = verify_sidecar_signature(
         request.url.path,
-        request.headers.get("X-PrynX-Token", ""),
         request.headers.get("X-PrynX-Timestamp", ""),
         request.headers.get("X-PrynX-Signature", ""),
+        license_key,
+        hwid,
+        lic_token,
     )
     if not ok:
         raise HTTPException(status_code=403, detail=reason)
@@ -431,9 +448,6 @@ async def require_license(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="Clock manipulation detected")
     
     # ── Step 2: Extract license credentials ──
-    license_key = request.headers.get("X-License-Key", "").strip()
-    hwid = request.headers.get("X-Hardware-Id", "").strip()
-    
     if not license_key or not hwid:
         # In dev mode, allow requests without credentials but log a warning
         if _is_dev_mode():
@@ -444,7 +458,6 @@ async def require_license(request: Request) -> dict:
     # ── Step 2b: Verify server-signed license token (chống client tự phong hợp lệ) ──
     # Token do edge function Supabase ký; sidecar verify bằng public key nhúng sẵn.
     # Rollout an toàn: nếu CHƯA bật cưỡng chế thì chỉ verify-nếu-có (log), không chặn.
-    lic_token = request.headers.get("X-License-Token", "").strip()
     token_entitlements = {"plan": "free", "features": None}
     if _enforce_license_token():
         tok_ok, tok_reason = verify_license_token(lic_token, hwid, license_key)

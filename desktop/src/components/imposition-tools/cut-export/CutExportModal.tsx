@@ -311,10 +311,15 @@ export default function CutExportModal(props: CutExportModalProps) {
           )}
 
           {useFileSource && (
-            <div className="h-[200px] rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-zinc-900/50 flex items-center justify-center overflow-hidden [&>div>svg]:max-w-full [&>div>svg]:max-h-full">
+            <div className="h-[200px] rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-zinc-900/50 flex items-center justify-center overflow-hidden">
               {previewing && <span className="text-[13px] text-slate-400">{t('imposition.cutExport:dang_dung_xem_truoc')}</span>}
               {!previewing && preview?.ok && previewSvg && (
-                <div className="w-full h-full flex items-center justify-center p-2" dangerouslySetInnerHTML={{ __html: previewSvg }} />
+                <img
+                  className="w-full h-full object-contain p-2"
+                  src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(previewSvg)}`}
+                  alt=""
+                  draggable={false}
+                />
               )}
               {!previewing && preview && !preview.ok && (
                 <span className="text-[13px] text-red-500 px-3 text-center">{preview.error || t('imposition.cutExport:khong_xem_truoc_duoc')}</span>

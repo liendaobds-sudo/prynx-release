@@ -13,13 +13,12 @@ export const getApiUrl = () => `${API_BASE}/api`;
 /**
  * Get license credential headers for authenticated API calls.
  * 
- * SECURITY: Token and signature are computed INSIDE Rust native code.
- * JS never sees the token or knows the hash algorithm.
+ * SECURITY: The sidecar secret and signature are handled inside Rust.
+ * JS receives only a short-lived timestamp + HMAC, never the shared secret.
  * Rust also gates signing on license validation — if license isn't
  * validated in Rust cache, it refuses to sign.
  */
-// Cache hardware ID and Tauri module to avoid repeated IPC calls
-let _cachedHwid: string | null = null;
+// Cache the Tauri module to avoid repeated dynamic imports.
 let _cachedTauriCore: any = null;
 let _tauriAvailable: boolean | null = null;
 
@@ -56,16 +55,6 @@ async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
     
     const { invoke } = _cachedTauriCore;
     
-    // Cache hardware ID (never changes during session)
-    if (!_cachedHwid) {
-      try {
-        _cachedHwid = await invoke('get_hardware_id') as string;
-      } catch {
-        _tauriAvailable = false;
-        return headers;
-      }
-    }
-    headers['X-Hardware-Id'] = _cachedHwid;
     
     // Sign request (must be per-request due to timestamp)
     const urlPath = new URL(url).pathname;
@@ -84,10 +73,8 @@ async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
         const key = useAuthStore.getState().licenseKey || '';
         if (key) {
           // Re-register key trong Rust cache
-          let hwid = '';
-          try { hwid = await invoke('get_hardware_id') as string; } catch {}
           const token = useAuthStore.getState().licenseToken || '';
-          await invoke('register_validated_key', { licenseKey: key, hwid, token });
+          await invoke('register_validated_key', { licenseKey: key, token });
           // Thử ký lại
           const retryHeaders = await invoke('sign_api_request', {
             urlPath,
@@ -122,9 +109,9 @@ export async function authenticatedFetch(url: string, init?: RequestInit): Promi
 //
 // Lý do: nhiều nơi trong app gọi backend bằng `fetch` TRẦN (vd usePdfLoader fallback
 // /imposition/pdf-meta, pdfImposer, LayerPanel...) → ở bản release (DEV_MODE=false,
-// bắt buộc sidecar token) sẽ bị 403 "invalid sidecar token". Thay vì sửa từng call
-// site (dễ sót), ta chặn ở 1 chỗ: bất kỳ fetch nào trỏ tới backend host mà CHƯA có
-// header X-PrynX-Token thì tự đính header ký (qua getLicenseHeaders → Rust sign).
+// bắt buộc chữ ký sidecar) sẽ bị 403 nếu gọi fetch thô. Thay vì sửa từng call
+// site (dễ sót), interceptor tự đính bộ header ký cho mọi request tới backend
+// (qua getLicenseHeaders → Rust sign).
 // An toàn: chỉ chạm URL backend; lỗi gì cũng fallback fetch gốc; không ký 2 lần.
 // ─────────────────────────────────────────────────────────────────────────────
 let _backendFetchPatched = false;
@@ -144,7 +131,7 @@ export function installBackendFetchAuth(): void {
 
       if (isBackendUrl(url)) {
         if (input instanceof Request) {
-          if (!input.headers.has('X-PrynX-Token')) {
+          if (!input.headers.has('X-PrynX-Signature')) {
             const auth = await getLicenseHeaders(url);
             const merged = new Headers(input.headers);
             for (const k in auth) if (!merged.has(k)) merged.set(k, auth[k]);
@@ -152,7 +139,7 @@ export function installBackendFetchAuth(): void {
           }
         } else {
           const merged = new Headers((init?.headers as HeadersInit) || undefined);
-          if (!merged.has('X-PrynX-Token')) {
+          if (!merged.has('X-PrynX-Signature')) {
             const auth = await getLicenseHeaders(url);
             for (const k in auth) if (!merged.has(k)) merged.set(k, auth[k]);
             return origFetch(url, { ...init, headers: merged });

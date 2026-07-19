@@ -319,6 +319,43 @@ def _block_only_serves_image(
     return True
 
 
+def _prynx_image_clip_bounds(instructions: list, do_index: int) -> tuple[int, int] | None:
+    """Return the full marked-content wrapper for a PrynX image frame."""
+    block = _enclosing_q_block(instructions, do_index)
+    if block is None:
+        return None
+    q_index, q_end = block
+    if q_index <= 0 or q_end + 1 >= len(instructions):
+        return None
+    marker = instructions[q_index - 1]
+    marker_op = str(marker.operator)
+    if marker_op not in {"BMC", "BDC"} or not marker.operands:
+        return None
+    if _name_str(marker.operands[0]) != "PrynXImageClip":
+        return None
+    if str(instructions[q_end + 1].operator) != "EMC":
+        return None
+
+    start, end = q_index - 1, q_end + 2
+    # Include surrounding image-only q/cm/Q placement or prior affine wrappers.
+    # This keeps the frame and image together through repeated move/resize/rotate.
+    while True:
+        outer = _enclosing_q_block(instructions, start)
+        if outer is None:
+            break
+        outer_q, outer_end = outer
+        only_serves_clip = True
+        for index in range(outer_q + 1, outer_end):
+            if start <= index < end:
+                continue
+            if str(instructions[index].operator) != "cm":
+                only_serves_clip = False
+                break
+        if not only_serves_clip:
+            break
+        start, end = outer_q, outer_end + 1
+    return start, end
+
 def _image_span_bounds(instructions: list, do_index: int) -> tuple[int, int]:
     """
     Tính ranh giới `[start, end)` cho span ảnh tại `Do`/`INLINE IMAGE` ở
@@ -332,6 +369,10 @@ def _image_span_bounds(instructions: list, do_index: int) -> tuple[int, int]:
       - Nếu không có cm liền trước và không có khối cô lập → giữ nguyên span chỉ
         gồm `Do` (`[do_index, do_index+1)`), không đổi hành vi cũ.
     """
+    marked_clip = _prynx_image_clip_bounds(instructions, do_index)
+    if marked_clip is not None:
+        # Transform/delete must include both the clip path and the image Do.
+        return marked_clip
     block = _enclosing_q_block(instructions, do_index)
     if block is not None:
         q_index, Q_index = block

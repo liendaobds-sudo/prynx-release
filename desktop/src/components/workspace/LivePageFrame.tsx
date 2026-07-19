@@ -9,10 +9,10 @@ import { globalPdfObjectCache } from '../../stores/pdfObjectCache';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
-import type { ObjType, BBox, EditOp } from './editTypes';
+import type { ObjType, BBox, EditOp, ImageClipShape } from './editTypes';
 import type { SessionOpOutcome } from '../../hooks/useEditSession';
 import { FontSelector } from '../preprocess-tools/FontSelector';
-import { Lock, Check, X, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Lock, Check, X, RotateCcw, RotateCw, AlertTriangle, ImageUp, Trash2, Type, Shapes, Square, Circle, Triangle, Diamond, Pentagon, Hexagon, Octagon, Star, Heart, Plus } from 'lucide-react';
 import {
     pageWidthPtFromDim,
     pageHeightPtFromDim,
@@ -22,12 +22,12 @@ import {
     addBboxCanvasToNative,
     moveDeltaCanvasToPdf,
     snapRotation,
-    rotationScreenToPdf,
     pickFontForName as pickFontForNameUtil,
 } from './editGeometry';
 import { formatPageNumber, applyTokens, effectiveLR } from '../../lib/stampFormat';
 import { useTranslation } from 'react-i18next';
 import { findNearestVerticalScrollContainer, scrollElementVerticallyIntoView } from './verticalScroll';
+import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
 
 // ─── Edit PDF Object (task 10.1) ─────────────────────────────────────────────
 // Object do GET /edit/objects trả về, SAU khi đã convert bbox PDF (bottom-left)
@@ -40,6 +40,7 @@ interface EditCanvasObj {
     ocgIds?: number[];
     ocgNames?: string[];
     bbox: BBox; // top-left origin, đơn vị point
+    nativeBbox?: BBox; // PDF user-space, bottom-left origin
     matrix?: number[];
     content?: string; // nội dung text gốc (type='text') để điền sẵn editor
     color?: number[]; // màu tô RGB 0..255 (type='text') để editor khớp màu gốc
@@ -846,14 +847,19 @@ export const LivePageFrame = (props: any) => {
     // bỏ cache và nạp lại danh sách Thành phần từ đúng Live_Document hiện tại.
     useEffect(() => {
         const refreshObjects = (event: Event) => {
-            const changedPage = Number((event as CustomEvent)?.detail?.page);
+            const detail = (event as CustomEvent)?.detail || {};
+            const changedPage = Number(detail.page);
             if (!isObjectEditMode || !selectionFileId || changedPage !== originalPageNum - 1) return;
+            const requestedIds = Array.isArray(detail.targetIds) ? detail.targetIds.map(String) : [];
+            if (detail.kind !== 'delete') {
+                pendingReselectIdsRef.current = requestedIds.length ? requestedIds : [...selectedObjectIds];
+            }
             clearEditObjectsCache();
             setEditObjectsVersion(version => version + 1);
         };
         window.addEventListener('edit-session-objects-changed', refreshObjects);
         return () => window.removeEventListener('edit-session-objects-changed', refreshObjects);
-    }, [isObjectEditMode, selectionFileId, originalPageNum]);
+    }, [isObjectEditMode, selectionFileId, originalPageNum, selectedObjectIds]);
 
     // ─── Edit PDF Object — Hit-test + overlay (task 10.1) ────────────────────
     // Nguồn dữ liệu object lấy từ GET /edit/objects (Geometry_Reader, PDFium read-only).
@@ -873,6 +879,8 @@ export const LivePageFrame = (props: any) => {
     // lưu transform hiện tại để handleMouseUp đọc khi commit (thay cho state).
     const editGhostRef = useRef<HTMLDivElement>(null);
     const editLiveTransformRef = useRef<EditLiveTransform | null>(null);
+    const editNudgeDeltaRef = useRef({ dx: 0, dy: 0 });
+    const editNudgeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // Gốc CropBox (bx0,by0) point của TRANG hiện tại — dùng cho add-text/image.
     const editCropOriginRef = useRef<[number, number]>([0, 0]);
     // GIỮ ghost ở vị trí vừa thả tới khi overlay cập nhật vị trí MỚI (sau commit)
@@ -885,6 +893,7 @@ export const LivePageFrame = (props: any) => {
     // Ref cho listener window (tránh stale closure khi pointermove).
     const editInteractionRef = useRef(editInteraction);
     useEffect(() => { editInteractionRef.current = editInteraction; }, [editInteraction]);
+    useEffect(() => { setShowImageFrameMenu(false); }, [selectedObjectIds, isObjectEditMode]);
 
     // Ẩn ghost + xóa transform tạm; dùng chung cho commit/refetch/timeout an toàn.
     const hideEditGhost = React.useCallback(() => {
@@ -906,6 +915,9 @@ export const LivePageFrame = (props: any) => {
     // gửi /edit/add. editFileInputRef: input file ẩn để chọn ảnh khi thêm image.
     const [editAddDraft, setEditAddDraft] = useState<{ xPt: number; yPt: number } | null>(null);
     const editFileInputRef = useRef<HTMLInputElement>(null);
+    const editReplaceImageInputRef = useRef<HTMLInputElement>(null);
+    const pendingReplaceImageIdRef = useRef<string | null>(null);
+    const [showImageFrameMenu, setShowImageFrameMenu] = useState(false);
 
     const observerRef = useRef<IntersectionObserver | null>(null);
 
@@ -1100,9 +1112,9 @@ export const LivePageFrame = (props: any) => {
                     targetIds: [...selectedObjectIds],
                 };
                 const idsToClear = [...selectedObjectIds];
-                void sendEditAndPreview(op).then(() => {
-                    // Bỏ chọn sau khi đã commit (object cũ không còn trên trang mới).
-                    setSelectedObjectIds(prev => prev.filter(id => !idsToClear.includes(id)));
+                void sendEditAndPreview(op).then((success) => {
+                    // Chỉ bỏ chọn khi backend đã xóa thật; op lỗi vẫn giữ selection để thử lại.
+                    if (success) setSelectedObjectIds(prev => prev.filter(id => !idsToClear.includes(id)));
                 });
             } else if (e.key === 'Escape') {
                 setSelectedObjectIds([]);
@@ -1594,10 +1606,8 @@ export const LivePageFrame = (props: any) => {
         if (!lt || !selectionFileId || !pageDim?.w || selectedObjectIds.length === 0) {
             return;
         }
-        // Guard an toàn: nếu MỌI object đang chọn đều bị khóa → KHÔNG transform.
-        if (selectedObjectIds.every(id => lockedObjectIds.includes(id))) {
-            return;
-        }
+        const transformIds = selectedObjectIds.filter(id => !lockedObjectIds.includes(id));
+        if (!transformIds.length) return;
         const scale = calcEditScale(displayWidth, pageWidthPtFromDim(pageDim.w)); // px canvas / POINT
         const page = originalPageNum - 1;       // /edit dùng 0-based
         let op: EditOp | null = null;
@@ -1625,17 +1635,43 @@ export const LivePageFrame = (props: any) => {
                 hideEditGhost();
                 return;
             }
-            op = { page, kind: 'move', targetIds: selectedObjectIds, delta };
-        } else if (lt.kind === 'resize') {
-            if (Math.abs(lt.sx - 1) < 0.002 && Math.abs(lt.sy - 1) < 0.002) { return; }
-            op = { page, kind: 'resize', targetIds: selectedObjectIds, scale: { sx: lt.sx, sy: lt.sy, anchor: lt.anchor } };
+            op = { page, kind: 'move', targetIds: transformIds, delta };
         } else {
-            if (Math.abs(lt.rotateDeg) < 0.5) { return; }
-            op = { page, kind: 'rotate', targetIds: selectedObjectIds, rotateDeg: rotationScreenToPdf(lt.rotateDeg) };
+            if (lt.kind === 'resize'
+                && Math.abs(lt.sx - 1) < 0.002 && Math.abs(lt.sy - 1) < 0.002) return;
+            if (lt.kind === 'rotate' && Math.abs(lt.rotateDeg) < 0.5) return;
+
+            const targets = editObjects.filter(obj => transformIds.includes(obj.id));
+            const bounds = selectionBounds(targets);
+            if (!bounds) return;
+            let [x0, y0, x1, y1] = bounds;
+            if (lt.kind === 'resize') {
+                const nextWidth = (x1 - x0) * lt.sx;
+                const nextHeight = (y1 - y0) * lt.sy;
+                if (lt.anchor.includes('e')) x0 = x1 - nextWidth;
+                else x1 = x0 + nextWidth;
+                if (lt.anchor.includes('s')) y0 = y1 - nextHeight;
+                else y1 = y0 + nextHeight;
+            }
+            const [cropX, cropY] = editCropOriginRef.current;
+            const matrix = buildPropertyAffine(targets, {
+                widthPt: pageWidthPtFromDim(pageDim.w),
+                heightPt: pageHeightPtFromDim(pageDim.h),
+                cropX,
+                cropY,
+            }, {
+                xMm: ptToMm(x0),
+                yMm: ptToMm(y0),
+                widthMm: ptToMm(x1 - x0),
+                heightMm: ptToMm(y1 - y0),
+                rotateDeg: lt.kind === 'rotate' ? lt.rotateDeg : 0,
+            });
+            if (!matrix) return;
+            op = { page, kind: 'affine', targetIds: transformIds, affine: matrix };
         }
 
         // Giữ selection id qua vòng refetch objects (khung chọn bám vị trí MỚI).
-        pendingReselectIdsRef.current = [...selectedObjectIds];
+        pendingReselectIdsRef.current = [...transformIds];
         try {
             const outcome = await applyOpViaSession(op);
             if (!outcome) {
@@ -1664,11 +1700,93 @@ export const LivePageFrame = (props: any) => {
     // font-fallback (đọc từ `outcome.opResult.detail`) + map lỗi 409/422 sang thông
     // báo thân thiện. `endpoint` không còn dùng (session lo mọi kind) — giữ signature
     // để tối thiểu thay đổi caller.
-    const sendEditAndPreview = async (op: EditOp) => {
-        if (!selectionFileId) return;
+    // Arrow-key nudge: preview is updated directly in the DOM. Repeated key events
+    // are accumulated and committed as one edit operation after the key is released.
+    useEffect(() => {
+        if (!isObjectEditMode || isVdpMode || !isActiveFrame) return;
+
+        const flushNudge = async () => {
+            const delta = editNudgeDeltaRef.current;
+            editNudgeDeltaRef.current = { dx: 0, dy: 0 };
+            editNudgeTimerRef.current = null;
+            const targetIds = selectedObjectIds.filter(id => !lockedObjectIds.includes(id));
+            if (!targetIds.length || (Math.abs(delta.dx) < 1e-9 && Math.abs(delta.dy) < 1e-9)) {
+                hideEditGhost();
+                return;
+            }
+            pendingReselectIdsRef.current = [...targetIds];
+            editGhostHoldRef.current = true;
+            try {
+                await applyOpViaSession({
+                    page: originalPageNum - 1,
+                    kind: 'move',
+                    targetIds,
+                    delta,
+                });
+            } catch (error) {
+                console.warn('Edit nudge failed', error);
+            } finally {
+                hideEditGhost();
+            }
+        };
+
+        const scheduleFlush = (delay: number) => {
+            if (editNudgeTimerRef.current) clearTimeout(editNudgeTimerRef.current);
+            editNudgeTimerRef.current = setTimeout(() => { void flushNudge(); }, delay);
+        };
+
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+            const target = event.target as HTMLElement | null;
+            if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+            if (editBusy || !selectionFileId || !pageDim?.w || selectedObjectIds.length === 0) return;
+
+            const step = mmToPt(0.1 * (event.shiftKey ? 10 : 1));
+            const next = editNudgeDeltaRef.current;
+            if (event.key === 'ArrowLeft') next.dx -= step;
+            if (event.key === 'ArrowRight') next.dx += step;
+            if (event.key === 'ArrowUp') next.dy += step;
+            if (event.key === 'ArrowDown') next.dy -= step;
+            event.preventDefault();
+
+            const scale = calcEditScale(displayWidth, pageWidthPtFromDim(pageDim.w));
+            const ghost = editGhostRef.current;
+            if (ghost) {
+                ghost.style.transformOrigin = 'center center';
+                ghost.style.transform = 'translate(' + (next.dx * scale) + 'px, ' + (-next.dy * scale) + 'px)';
+                ghost.style.display = 'block';
+            }
+            scheduleFlush(150);
+        };
+
+        const onKeyUp = (event: KeyboardEvent) => {
+            if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+                && (Math.abs(editNudgeDeltaRef.current.dx) > 0 || Math.abs(editNudgeDeltaRef.current.dy) > 0)) {
+                scheduleFlush(45);
+            }
+        };
+
+        window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('keyup', onKeyUp);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('keyup', onKeyUp);
+            if (editNudgeTimerRef.current) clearTimeout(editNudgeTimerRef.current);
+            editNudgeTimerRef.current = null;
+            editNudgeDeltaRef.current = { dx: 0, dy: 0 };
+        };
+    }, [
+        isObjectEditMode, isVdpMode, isActiveFrame, selectedObjectIds, lockedObjectIds,
+                editBusy, selectionFileId, pageDim?.w, displayWidth,
+        originalPageNum,
+        // applyOpViaSession is intentionally omitted: recreating this listener on every
+        // render could discard an accumulated key-repeat delta before it is committed.
+    ]);
+    const sendEditAndPreview = async (op: EditOp): Promise<boolean> => {
+        if (!selectionFileId) return false;
         try {
             const outcome = await applyOpViaSession(op);
-            if (!outcome) return; // phiên hỏng/410 — onSessionFailed đã báo lỗi.
+            if (!outcome) return false; // phiên hỏng/410 — onSessionFailed đã báo lỗi.
             // Cảnh báo khi KHÔNG giữ được font gốc và người dùng CHƯA chọn font →
             // đã âm thầm dùng font dự phòng (DejaVuSans). detail = serialize op_result.
             const r: any = (outcome as any).opResult?.detail;
@@ -1677,6 +1795,7 @@ export const LivePageFrame = (props: any) => {
                 setEditNotice(t('misc.livePageFrame:khong_giu_duoc_font_goc_da_dung_font_du'));
                 setTimeout(() => setEditNotice(null), 6000);
             }
+            return true;
         } catch (err) {
             console.warn(t('misc.livePageFrame:edit_thao_tac_that_bai'), err);
             const msg = err instanceof Error ? err.message : String(err);
@@ -1693,6 +1812,7 @@ export const LivePageFrame = (props: any) => {
             }
             setEditNotice(friendly);
             setTimeout(() => setEditNotice(null), 7000);
+            return false;
         }
     };
 
@@ -1738,6 +1858,32 @@ export const LivePageFrame = (props: any) => {
             targetIds: [], image: { dataRef: dataUrl, bbox },
         };
         await sendEditAndPreview(op);
+    };
+
+    // Thay nội dung của một image XObject nhưng giữ nguyên q/cm/Q nên vị trí,
+    // kích thước và góc của ảnh trên trang không đổi.
+    const commitReplaceImageObject = async (objId: string, dataUrl: string) => {
+        if (!selectionFileId || !dataUrl) return;
+        pendingReselectIdsRef.current = [objId];
+        const op: EditOp = {
+            page: originalPageNum - 1,
+            kind: 'replaceImage',
+            targetIds: [objId],
+            image: { dataRef: dataUrl },
+        };
+        await sendEditAndPreview(op);
+    };
+
+    const commitImageFrame = async (objId: string, shape: ImageClipShape) => {
+        if (!selectionFileId) return;
+        pendingReselectIdsRef.current = [objId];
+        const success = await sendEditAndPreview({
+            page: originalPageNum - 1,
+            kind: 'clipImage',
+            targetIds: [objId],
+            clip: { shape, radius: 0.16 },
+        });
+        if (success) setShowImageFrameMenu(false);
     };
 
     const handleMouseDown = (e: React.MouseEvent) => {
@@ -1859,7 +2005,23 @@ export const LivePageFrame = (props: any) => {
                     setEditAddMode(null);
                     return;
                 }
-                setSelectedObjectIds([]); return;
+                const editScale = calcEditScale(displayWidth, pageWidthPtFromDim(pageDim?.w));
+                const hit = pickTopmostObjectAtPoint(
+                    editObjects,
+                    curX / editScale,
+                    curY / editScale,
+                    [...lockedObjectIds, ...hiddenObjectIds],
+                );
+                if (!hit) {
+                    setSelectedObjectIds([]);
+                } else if (e.shiftKey) {
+                    setSelectedObjectIds(prev => prev.includes(hit.id)
+                        ? prev.filter(id => id !== hit.id)
+                        : [...prev, hit.id]);
+                } else {
+                    setSelectedObjectIds([hit.id]);
+                }
+                return;
             }
             if (isVdpMode) {
                 setSelectedVdpFieldIds([]);
@@ -1888,6 +2050,25 @@ export const LivePageFrame = (props: any) => {
         }
     };
 
+    const handleEditDoubleClick = (e: React.MouseEvent) => {
+        if (!isObjectEditMode || isVdpMode || !containerRef.current || !pageDim?.w) return;
+        const target = e.target as HTMLElement | null;
+        if (target?.closest('[data-edit-ui]')) return;
+        const rect = containerRef.current.getBoundingClientRect();
+        const coords = getUnrotatedCoords(e.clientX, e.clientY, rect);
+        const scale = calcEditScale(displayWidth, pageWidthPtFromDim(pageDim.w));
+        const hit = pickTopmostObjectAtPoint(
+            editObjects,
+            coords.x / scale,
+            coords.y / scale,
+            [...lockedObjectIds, ...hiddenObjectIds],
+        );
+        if (hit?.type === 'text') {
+            e.preventDefault();
+            setSelectedObjectIds([hit.id]);
+            openTextEditor(hit);
+        }
+    };
     // Edit drag: listener WINDOW (giống VDP) — kéo ra ngoài khung vẫn cập nhật ghost
     // và pointerup vẫn commit. Trước đây chỉ onMouseMove/Up trên container + mouseleave
     // HỦY → dễ mất thao tác / ghost biến mất giữa chừng.
@@ -2011,6 +2192,7 @@ export const LivePageFrame = (props: any) => {
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
+            onDoubleClick={handleEditDoubleClick}
             onMouseLeave={handleMouseLeave}
         >
             <div style={{
@@ -2276,7 +2458,8 @@ export const LivePageFrame = (props: any) => {
                  return (
                      <>
                          {[...editObjects]
-                            .filter(obj => !hiddenObjectIds.includes(obj.id))
+                            .filter(obj => !hiddenObjectIds.includes(obj.id)
+                                && (selectedObjectIds.includes(obj.id) || editingTextId === obj.id))
                             .sort((a, b) => {
                              const areaA = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
                              const areaB = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
@@ -2301,7 +2484,7 @@ export const LivePageFrame = (props: any) => {
                                      // Màu theo loại object truyền qua biến CSS `--obj` (bộ ba RGB), rồi
                                      // class hover Tailwind arbitrary dựng viền + nền nhạt từ biến đó.
                                      // CHỈ áp hover khi KHÔNG chọn & KHÔNG khóa; khi rời chuột CSS tự gỡ.
-                                     className={`absolute pointer-events-auto transition-colors border border-transparent ${isLocked ? 'cursor-not-allowed' : 'cursor-pointer'} ${isSelected ? 'z-[33]' : 'z-30'} ${(!isSelected && !isLocked) ? 'hover:border-[rgb(var(--obj))] hover:bg-[rgba(var(--obj),0.06)]' : ''}`}
+                                     className={`absolute ${editingTextId === obj.id ? 'pointer-events-auto' : 'pointer-events-none'} transition-colors border border-transparent ${isLocked ? 'cursor-not-allowed' : 'cursor-pointer'} ${isSelected ? 'z-[33]' : 'z-30'} ${(!isSelected && !isLocked) ? 'hover:border-[rgb(var(--obj))] hover:bg-[rgba(var(--obj),0.06)]' : ''}`}
                                      style={{
                                          // Biến CSS cho hover (xem className). vd '59,130,246'.
                                          ['--obj' as string]: typeRgb,
@@ -2520,6 +2703,33 @@ export const LivePageFrame = (props: any) => {
                      reader.readAsDataURL(file);
                  }}
              />
+             <input
+                 ref={editReplaceImageInputRef}
+                 type="file"
+                 accept="image/*"
+                 className="hidden"
+                 onChange={(e) => {
+                     const file = e.target.files?.[0];
+                     const objId = pendingReplaceImageIdRef.current;
+                     e.target.value = ''; // cho phép chọn lại đúng file vừa chọn
+                     if (!file || !objId) {
+                         pendingReplaceImageIdRef.current = null;
+                         return;
+                     }
+                     const reader = new FileReader();
+                     reader.onload = () => {
+                         const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+                         pendingReplaceImageIdRef.current = null;
+                         if (dataUrl) void commitReplaceImageObject(objId, dataUrl);
+                     };
+                     reader.onerror = () => {
+                         pendingReplaceImageIdRef.current = null;
+                         setEditNotice(t('misc.livePageFrame:khong_doc_duoc_anh_thay_the'));
+                         setTimeout(() => setEditNotice(null), 5000);
+                     };
+                     reader.readAsDataURL(file);
+                 }}
+             />
 
              {/* Edit PDF Object (10.2): hộp transform + handle nw/ne/sw/se (tái dùng
                  từ vdpInteraction) + handle XOAY. Ghost dashed cập nhật theo THỜI GIAN
@@ -2532,8 +2742,146 @@ export const LivePageFrame = (props: any) => {
                  if (!box) return null;
                  const accent = 'rgb(16,185,129)';
                  const accentRgb = '16,185,129';
+                 const selectedObject = selectedObjectIds.length === 1
+                     ? editObjects.find(o => o.id === selectedObjectIds[0])
+                     : undefined;
+                 const toolbarWidth = selectedObject?.type === 'image' ? 190 : 154;
+                 const toolbarLeft = Math.max(4, Math.min(box.left, displayWidth - toolbarWidth - 4));
+                 const toolbarTop = box.top + box.height + 48 <= displayHeight
+                     ? box.top + box.height + 8
+                     : Math.max(4, box.top - 44);
+                 const frameMenuBelow = toolbarTop + 176 <= displayHeight;
+                 const frameMenuAlignRight = toolbarLeft + 308 > displayWidth;
+                 const toolbarButtonClass = 'inline-flex h-8 w-8 items-center justify-center rounded text-slate-100 transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40';
                  return (
                      <>
+                         {/* Thanh công cụ ngữ cảnh kiểu Acrobat: xuất hiện sát selection,
+                             thao tác trực tiếp bằng chuột và không chiếm chỗ trong panel phải. */}
+                         <div
+                             data-edit-ui="1"
+                             className="absolute z-[55] inline-flex items-center gap-1 rounded-md bg-slate-900/95 p-1 shadow-xl ring-1 ring-black/20 backdrop-blur"
+                             style={{ left: toolbarLeft, top: toolbarTop }}
+                             onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                             onPointerDown={(e) => e.stopPropagation()}
+                             onDoubleClick={(e) => e.stopPropagation()}
+                         >
+                             <button
+                                 type="button"
+                                 className={toolbarButtonClass}
+                                 disabled={editBusy}
+                                 title={t('misc.livePageFrame:xoay_90_nguoc_chieu_kim_dong_ho')}
+                                 aria-label={t('misc.livePageFrame:xoay_90_nguoc_chieu_kim_dong_ho')}
+                                 onClick={() => void commitEditTransform({ kind: 'rotate', rotateDeg: -90 })}
+                             >
+                                 <RotateCcw className="h-4 w-4" />
+                             </button>
+                             <button
+                                 type="button"
+                                 className={toolbarButtonClass}
+                                 disabled={editBusy}
+                                 title={t('misc.livePageFrame:xoay_90_theo_chieu_kim_dong_ho')}
+                                 aria-label={t('misc.livePageFrame:xoay_90_theo_chieu_kim_dong_ho')}
+                                 onClick={() => void commitEditTransform({ kind: 'rotate', rotateDeg: 90 })}
+                             >
+                                 <RotateCw className="h-4 w-4" />
+                             </button>
+                             {selectedObject?.type === 'text' && (
+                                 <button
+                                     type="button"
+                                     className={toolbarButtonClass}
+                                     disabled={editBusy}
+                                     title={t('misc.livePageFrame:sua_chu')}
+                                     aria-label={t('misc.livePageFrame:sua_chu')}
+                                     onClick={() => openTextEditor(selectedObject)}
+                                 >
+                                     <Type className="h-4 w-4" />
+                                 </button>
+                             )}
+                             {selectedObject?.type === 'image' && (
+                                 <button
+                                     type="button"
+                                     className={`${toolbarButtonClass} ${showImageFrameMenu ? 'bg-white/15' : ''}`}
+                                     disabled={editBusy}
+                                     title={t('misc.livePageFrame:khung_anh')}
+                                     aria-label={t('misc.livePageFrame:khung_anh')}
+                                     aria-expanded={showImageFrameMenu}
+                                     onClick={() => setShowImageFrameMenu(value => !value)}
+                                 >
+                                     <Shapes className="h-4 w-4" />
+                                 </button>
+                             )}
+                             {selectedObject?.type === 'image' && (
+                                 <button
+                                     type="button"
+                                     className={toolbarButtonClass}
+                                     disabled={editBusy}
+                                     title={t('misc.livePageFrame:thay_anh')}
+                                     aria-label={t('misc.livePageFrame:thay_anh')}
+                                     onClick={() => {
+                                         pendingReplaceImageIdRef.current = selectedObject.id;
+                                         editReplaceImageInputRef.current?.click();
+                                     }}
+                                 >
+                                     <ImageUp className="h-4 w-4" />
+                                 </button>
+                             )}
+                             <button
+                                 type="button"
+                                 className={`${toolbarButtonClass} hover:bg-red-500/80`}
+                                 disabled={editBusy}
+                                 title={t('misc.livePageFrame:xoa_doi_tuong')}
+                                 aria-label={t('misc.livePageFrame:xoa_doi_tuong')}
+                                 onClick={() => {
+                                     const idsToDelete = selectedObjectIds.filter(id => !lockedObjectIds.includes(id));
+                                     if (!idsToDelete.length) return;
+                                     void sendEditAndPreview({
+                                         page: originalPageNum - 1,
+                                         kind: 'delete',
+                                         targetIds: idsToDelete,
+                                     }).then((success) => {
+                                         if (success) setSelectedObjectIds(prev => prev.filter(id => !idsToDelete.includes(id)));
+                                     });
+                                 }}
+                             >
+                                 <Trash2 className="h-4 w-4" />
+                             </button>
+                             {selectedObject?.type === 'image' && showImageFrameMenu && (
+                                 <div
+                                     className={`absolute z-[60] grid w-[300px] grid-cols-5 gap-1 rounded-md bg-slate-900/95 p-2 shadow-2xl ring-1 ring-black/25 ${frameMenuBelow ? 'top-full mt-1' : 'bottom-full mb-1'} ${frameMenuAlignRight ? 'right-0' : 'left-0'}`}
+                                     role="menu"
+                                     aria-label={t('misc.livePageFrame:khung_anh')}
+                                 >
+                                     {[
+                                         { shape: 'rectangle' as const, label: t('misc.livePageFrame:khung_chu_nhat'), icon: <Square className="h-4 w-4" /> },
+                                         { shape: 'rounded' as const, label: t('misc.livePageFrame:khung_bo_goc'), icon: <span className="h-4 w-4 rounded-[5px] border border-current" /> },
+                                         { shape: 'circle' as const, label: t('misc.livePageFrame:khung_tron'), icon: <Circle className="h-4 w-4" /> },
+                                         { shape: 'ellipse' as const, label: t('misc.livePageFrame:khung_ellipse'), icon: <span className="h-3 w-5 rounded-[50%] border border-current" /> },
+                                         { shape: 'triangle' as const, label: t('misc.livePageFrame:khung_tam_giac'), icon: <Triangle className="h-4 w-4" /> },
+                                         { shape: 'diamond' as const, label: t('misc.livePageFrame:khung_kim_cuong'), icon: <Diamond className="h-4 w-4" /> },
+                                         { shape: 'pentagon' as const, label: t('misc.livePageFrame:khung_ngu_giac'), icon: <Pentagon className="h-4 w-4" /> },
+                                         { shape: 'hexagon' as const, label: t('misc.livePageFrame:khung_luc_giac'), icon: <Hexagon className="h-4 w-4" /> },
+                                         { shape: 'octagon' as const, label: t('misc.livePageFrame:khung_bat_giac'), icon: <Octagon className="h-4 w-4" /> },
+                                         { shape: 'star' as const, label: t('misc.livePageFrame:khung_ngoi_sao'), icon: <Star className="h-4 w-4" /> },
+                                         { shape: 'heart' as const, label: t('misc.livePageFrame:khung_trai_tim'), icon: <Heart className="h-4 w-4" /> },
+                                         { shape: 'cross' as const, label: t('misc.livePageFrame:khung_dau_cong'), icon: <Plus className="h-4 w-4" /> },
+                                         { shape: 'none' as const, label: t('misc.livePageFrame:bo_khung_anh'), icon: <X className="h-4 w-4" /> },
+                                     ].map(item => (
+                                         <button
+                                             key={item.shape}
+                                             type="button"
+                                             role="menuitem"
+                                             disabled={editBusy}
+                                             className="flex min-w-0 flex-col items-center gap-1 rounded px-1 py-1.5 text-slate-100 hover:bg-white/15 disabled:opacity-40"
+                                             title={item.label}
+                                             onClick={() => void commitImageFrame(selectedObject.id, item.shape)}
+                                         >
+                                             {item.icon}
+                                             <span className="w-full truncate text-center text-[9px] leading-tight">{item.label}</span>
+                                         </button>
+                                     ))}
+                                 </div>
+                             )}
+                         </div>
                          {/* Ghost: xem trước vị trí/kích thước/góc dự kiến (real-time).
                              LUÔN render khi có lựa chọn; handleMouseMove cập nhật trực tiếp
                              style.transform/transformOrigin/display qua editGhostRef (KHÔNG

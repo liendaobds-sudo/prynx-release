@@ -8,6 +8,7 @@ Requirements: 3.3 (đường cắt là path, phân lớp theo dao), 3.5 (1:1 mm)
 from __future__ import annotations
 
 from collections import defaultdict
+from xml.sax.saxutils import quoteattr
 
 from app.workers.cut_export.cut_model import CutModel
 
@@ -48,8 +49,10 @@ class SvgEmitter:
             groups[p.tool_tag or "shared"].append(p)
 
         for tag, paths in groups.items():
-            out.append(f'<g id="cut-{tag}" fill="none" '
-                       f'stroke="{self.stroke}" stroke-width="{self.stroke_width_mm:.4f}">')
+            safe_id = quoteattr(f"cut-{tag}")
+            safe_stroke = quoteattr(str(self.stroke))
+            out.append(f'<g id={safe_id} fill="none" '
+                       f'stroke={safe_stroke} stroke-width="{self.stroke_width_mm:.4f}">')
             for p in paths:
                 out.append(f'<path d="{self._path_d(p.points, p.closed, h)}"/>')
             out.append("</g>")

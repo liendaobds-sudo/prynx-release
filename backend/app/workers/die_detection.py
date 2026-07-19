@@ -247,6 +247,88 @@ def to_legacy_response(result: DetectionResult) -> dict[str, Any]:
     }
 
 
+def _shape_has_die_geometry(shape: DetectedShape) -> bool:
+    """Trang có khuôn nhận diện được (vector/spot), không phải CUSTOM trống."""
+    if shape is None or shape.type is ShapeType.CUSTOM:
+        return False
+    return shape.source in ("vector", "separation", "xobject", "raster_fallback")
+
+
+def apply_master_die_inheritance(result: DetectionResult) -> DetectionResult:
+    """Tem không có đường bế kế thừa hình học từ ĐÚNG 1 trang master (homogeneous UI).
+
+    Product: file 1 khuôn + nhiều artwork — trang 0 có CutContour → Tròn/Elip; trang
+    sau không path bế vẫn phải hiển thị cùng loại + trim master (không 'Đặc biệt').
+    Khớp quy tắc sticker_homogeneous.detect_homogeneous (đúng 1 master, ≥2 trang).
+
+    Không đụng khi 0 hoặc ≥2 trang có khuôn riêng.
+    """
+    shapes = list(result.shapes or [])
+    statuses = list(result.statuses or [])
+    n = len(shapes)
+    if n < 2 or len(statuses) != n:
+        return result
+
+    master_idxs = [i for i, s in enumerate(shapes) if _shape_has_die_geometry(s)]
+    if len(master_idxs) != 1:
+        return result
+
+    mi = master_idxs[0]
+    master = shapes[mi]
+    inherited = 0
+    new_shapes: list[DetectedShape] = []
+    new_statuses: list[PageDetectionStatus] = []
+
+    for i, s in enumerate(shapes):
+        st = statuses[i]
+        if i == mi or _shape_has_die_geometry(s):
+            new_shapes.append(s)
+            new_statuses.append(st)
+            continue
+        # Trang không khuôn / CUSTOM → copy type, props, poly, trim từ master.
+        props = dict(master.props or {})
+        props["inheritedFromPage"] = int(master.page)
+        new_shapes.append(
+            DetectedShape(
+                page=s.page,
+                type=master.type,
+                props=props,
+                trim=Trim(master.trim.w, master.trim.h),
+                poly=tuple(master.poly or ()),
+                # Giữ nguồn 'vector' để raster fallback không quét lại 20+ trang.
+                source="vector",
+                confidence=max(0.5, min(0.95, float(master.confidence or 0.8) * 0.9)),
+            )
+        )
+        new_statuses.append(
+            PageDetectionStatus(
+                page=s.page,
+                ok=True,
+                source="vector",
+                error=None,
+            )
+        )
+        inherited += 1
+
+    if inherited == 0:
+        return result
+
+    logger.info(
+        "[DETECT] master die inheritance: master_page=%s type=%s → %d content page(s)",
+        master.page, master.type.name, inherited,
+    )
+    failed = tuple(
+        st.page + 1 for st in new_statuses if not st.ok
+    )  # 1-based if any
+    return DetectionResult(
+        shapes=new_shapes,
+        statuses=new_statuses,
+        total_pages=result.total_pages,
+        success_pages=sum(1 for st in new_statuses if st.ok),
+        failed_pages=failed,
+    )
+
+
 class LegacyMappingError(ValueError):
     """Lỗi ánh xạ dữ liệu legacy từ frontend → DetectedShape (R14.3)."""
 

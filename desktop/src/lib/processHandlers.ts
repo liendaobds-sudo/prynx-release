@@ -6,7 +6,7 @@
  */
 
 import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
-import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
+import { imposeCatalogBatchViaBackend, ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
 import { getImposerCapability } from '../components/imposition-tools/types';
 import { applyRule, executeShuffle, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
@@ -197,7 +197,7 @@ export async function runProcessEngine(
                     }
                 }
             }
-        } else if (settings.impositionMode === ImpositionMode.Booklet || settings.impositionMode === ImpositionMode.NUp) {
+        } else {
             // P2-T01: Prefer backend (imposition_core + pikepdf) for imposition to keep client as dumb assembler.
             // Sticker and other modes may use activeDashboardTool or separate paths.
             setProcessStatus(i18n.t('lib.processHandlers:dang_xu_ly_du_lieu_qua_backend_unified'));
@@ -217,17 +217,6 @@ export async function runProcessEngine(
                 }
             } else {
                 setReportMsg(i18n.t('lib.processHandlers:file_da_duoc_luu_tren_server_result', { outputPath: result.outputPath, report: result.report }));
-            }
-        } else {
-            const imposedOut = await imposePdf(file, settings, setProcessStatus);
-            const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
-
-            if (spawnNewTab && onSpawnTab) {
-                onSpawnTab(new File([imposedOut.blob], newFileName, { type: 'application/pdf' }), { report: imposedOut.report });
-                setProcessStatus('');
-            } else {
-                commitWorkingFile(imposedOut.blob, newFileName);
-                if (imposedOut.report) setReportMsg(imposedOut.report);
             }
         }
     } catch (e: any) {
@@ -268,7 +257,9 @@ export async function runCatalogPlan(
         // Tuân thủ kết quả cuối cùng: bình catalog trên file đã áp dụng sửa đổi trang.
         const workingBytes = await ctx.getWorkingBytes();
         const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
-        const batchResults = await imposeCatalogBatch(workingFile, planResult.jobs, sheetSettings, setProcessStatus);
+        const { uploadFileForNup } = await import('../lib/api');
+        const serverPath = await uploadFileForNup(workingFile);
+        const batchResults = await imposeCatalogBatchViaBackend(serverPath, planResult.jobs, sheetSettings, setProcessStatus, 'results');
         const successCount = batchResults.filter(r => r.blob.size > 0).length;
 
 

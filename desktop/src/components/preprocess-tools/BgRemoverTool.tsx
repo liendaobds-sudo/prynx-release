@@ -47,7 +47,7 @@ async function processBatch(tabId: string) {
             formData.append('custom_hex', options.customHex);
             formData.append('auto_crop', options.autoCrop ? 'true' : 'false');
             // PHẢI dùng authenticatedFetch: router /pdf-tools có Depends(require_license)
-            // → ở production cần X-PrynX-Token + chữ ký HMAC (Rust sign_api_request).
+            // → ở production cần bộ header license + chữ ký HMAC từ Rust.
             // Raw fetch thiếu các header này → 403 trên bản đóng gói (chỉ dev mới lọt).
             const res = await authenticatedFetch(`${apiUrl}/pdf-tools/remove-background`, { method: 'POST', body: formData });
             if (!res.ok) {

@@ -761,7 +761,7 @@ export const imposeCatalogBatchViaBackend = async (
             );
 
             results.push({
-                blob: new Blob(), // Không giữ Blob trong RAM — file đã ở ổ cứng
+                blob: result.blob,
                 filename: job.filename,
                 label: job.label,
                 report: result.report,

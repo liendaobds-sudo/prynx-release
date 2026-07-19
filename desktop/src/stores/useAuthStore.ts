@@ -70,24 +70,22 @@ async function deleteFromDPAPI(): Promise<void> {
 }
 
 // ── Nạp license key vào cache VALIDATED_KEYS của Rust ──
-// sign_api_request (Rust) CHỈ ký SIDECAR token khi key đã có trong cache này. Phải gọi ở
+// sign_api_request (Rust) CHỈ ký request khi key đã có trong cache này. Phải gọi ở
 // MỌI nhánh mà app coi license là dùng được (VALID / RATE_LIMITED / grace offline) — nếu
-// không, app vào được nhưng mọi request backend bị 403 "invalid sidecar token".
-// Best-effort: không có Tauri (dev/web) thì bỏ qua êm.
+// không, app vào được nhưng mọi request backend production sẽ bị từ chối.
+// Web dev không có Tauri thì bỏ qua; native production luôn fail-closed.
 async function ensureKeyRegisteredInRust(licenseKey: string): Promise<void> {
   if (!licenseKey) return;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    let hwid = '';
-    try {
-      hwid = await invoke('get_hardware_id') as string;
-      if (hwid) localStorage.setItem(HWID_STORAGE_KEY, hwid);
-    } catch {
-      hwid = localStorage.getItem(HWID_STORAGE_KEY) || '';
-    }
     const token = useAuthStore.getState().licenseToken || '';
-    await invoke('register_validated_key', { licenseKey, hwid, token });
-  } catch { /* ignore (dev/web mode) */ }
+    await invoke('register_validated_key', { licenseKey, token });
+  } catch (error) {
+    const nativeRuntime = typeof window !== 'undefined'
+      && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__PRYNX_INVOKE__);
+    if (nativeRuntime) throw error;
+    // Browser/dev mode has no native gate; its backend runs with DEV_MODE=true.
+  }
 }
 
 // ── DPAPI-backed license TOKEN storage (C-1) ──
@@ -117,7 +115,7 @@ async function deleteTokenFromDPAPI(): Promise<void> {
   } catch { /* ignore */ }
 }
 
-// ── Xoá cache VALIDATED_KEYS phía Rust (chặn ký sidecar token → backend 403) ──
+// ── Xoá cache VALIDATED_KEYS phía Rust (chặn ký request → backend 403) ──
 // Gọi khi khóa cứng/thu hồi/đăng xuất. Nếu KHÔNG gọi, dù UI đã khóa, sign_api_request
 // (Rust) vẫn ký request hợp lệ tới hết TTL cache (2h) → backend vẫn xử lý PDF.
 // Best-effort: không có Tauri (dev/web) thì bỏ qua êm.
@@ -568,7 +566,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
         
         // Within 24h grace period
-        // Nạp cache Rust để sidecar token được ký kể cả khi offline/grace (dùng token đã
+        // Nạp cache Rust để request được ký kể cả khi offline/grace (dùng token đã
         // lưu DPAPI). Không có cái này → vào app được nhưng backend 403.
         await ensureKeyRegisteredInRust(licenseKey);
         set({ licenseValid: true, lastValidated: Date.now() });
@@ -613,33 +611,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (get().isRevoking) {
           get().cancelRevocation();
         }
+        // Lấy token ngắn hạn do server ký TRƯỚC (để Rust verify Ed25519 khi register).
+        // Browser dev có thể tiếp tục; native production sẽ fail-closed khi thiếu token.
+        let freshToken = '';
         try {
-          const { invoke } = await import('@tauri-apps/api/core');
-
-          // Lấy token ngắn hạn do server ký TRƯỚC (để Rust verify Ed25519 khi register).
-          // Best-effort: thất bại không chặn xác thực (token=null; sidecar chỉ chặn khi enforce).
-          let freshToken = '';
-          try {
-            const { data: tokData } = await supabase.functions.invoke('license-verify', {
-              body: { license_key: licenseKey, machine_id: hwid, product_id: 'prynx' },
+          const { data: tokData } = await supabase.functions.invoke('license-verify', {
+            body: { license_key: licenseKey, machine_id: hwid, product_id: 'prynx' },
+          });
+          if ((tokData as any)?.token) {
+            freshToken = (tokData as any).token as string;
+            const claims = readLicenseTokenClaims(freshToken);
+            set({
+              licenseToken: freshToken,
+              licensePlan: normalizePlan((tokData as any)?.plan || claims?.plan || 'free'),
+              licenseFeatures: Array.isArray((tokData as any)?.features)
+                ? (tokData as any).features
+                : (claims?.features ?? null),
             });
-            if ((tokData as any)?.token) {
-              freshToken = (tokData as any).token as string;
-              const claims = readLicenseTokenClaims(freshToken);
-              set({
-                licenseToken: freshToken,
-                licensePlan: normalizePlan((tokData as any)?.plan || claims?.plan || 'free'),
-                licenseFeatures: Array.isArray((tokData as any)?.features)
-                  ? (tokData as any).features
-                  : (claims?.features ?? null),
-              });
-              void saveTokenToDPAPI(freshToken);
-            }
-          } catch { /* ignore — token optional during rollout */ }
+            void saveTokenToDPAPI(freshToken);
+          }
+        } catch (error) {
+          console.warn('[AUTH] Could not refresh signed license token:', error);
+        }
 
-          // F2: register kèm token+hwid → Rust TỰ verify Ed25519 (lớp gate thứ 2, độc lập sidecar).
-          await invoke('register_validated_key', { licenseKey, hwid, token: freshToken });
-        } catch { /* ignore in dev/web mode */ }
+        await ensureKeyRegisteredInRust(licenseKey);
         void flushPendingSecurityEvents();
       }
       set({
@@ -698,6 +693,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           offlineHours: Math.round(offlineMs/3600000),
         });
         set({ licenseValid: false, isLicenseLocked: true, lockReason: reason });
+        return false;
+      }
+      try {
+        await ensureKeyRegisteredInRust(licenseKey);
+      } catch {
+        set({
+          licenseValid: false,
+          isLicenseLocked: true,
+          lockReason: 'Không có token bản quyền hợp lệ cho máy này. Vui lòng kết nối mạng để xác minh lại.',
+        });
         return false;
       }
       set({ licenseValid: true, lastValidated: Date.now() });
@@ -790,17 +795,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         };
       }
 
-      // P2-A: gỡ máy khỏi key CŨ (best-effort) — giải phóng seat max_activations.
-      // Phải gọi TRƯỚC setLicenseKey; lỗi RPC không chặn đổi key local (key B đã VALID).
-      if (current) {
+      // Release the old seat only through the token-verifying Edge Function.
+      // A public client can no longer call the SECURITY DEFINER RPC directly.
+      const releaseToken = get().licenseToken || await loadTokenFromDPAPI() || '';
+      if (current && releaseToken) {
         try {
-          await supabase.rpc('release_machine_activation', {
-            p_license_key: current,
-            p_machine_id: hwid,
-            p_product_id: PRODUCT_ID,
+          const { error: releaseError } = await supabase.functions.invoke('license-release', {
+            body: {
+              license_key: current,
+              machine_id: hwid,
+              product_id: PRODUCT_ID,
+            },
+            headers: { 'X-License-Token': releaseToken },
           });
+          if (releaseError) {
+            console.warn('[AUTH] license-release rejected (best-effort):', releaseError);
+          }
         } catch (releaseErr) {
-          console.warn('[AUTH] release_machine_activation (best-effort):', releaseErr);
+          console.warn('[AUTH] license-release failed (best-effort):', releaseErr);
         }
       }
 

@@ -7,7 +7,7 @@ import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useEditSession } from '../hooks/useEditSession';
-import { imposePdf, imposeCatalogBatch, ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
+import { ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
 import { Button } from './Button';
 import { Printer, Scissors, Settings, Star } from 'lucide-react';

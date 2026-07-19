@@ -49,13 +49,14 @@ def _make_free_token(signing_key: Ed25519PrivateKey) -> str:
 
 def _headers(path: str, license_token: str) -> dict[str, str]:
     timestamp = str(int(time.time()))
+    token_hash = hashlib.sha256(license_token.encode()).hexdigest()
+    payload = f"{timestamp}:{path}:{LICENSE_KEY}:{HARDWARE_ID}:{token_hash}"
     signature = hmac.new(
         SIDECAR_TOKEN.encode(),
-        f"{timestamp}:{path}".encode(),
+        payload.encode(),
         hashlib.sha256,
     ).hexdigest()
     return {
-        "X-PrynX-Token": SIDECAR_TOKEN,
         "X-PrynX-Timestamp": timestamp,
         "X-PrynX-Signature": signature,
         "X-License-Key": LICENSE_KEY,

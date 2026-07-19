@@ -635,6 +635,75 @@ async def _raster_fallback_shape(engine, file_path, page_idx, config, _logger):
     return None
 
 
+def _raster_fallback_budget(
+    shapes,
+    statuses,
+    *,
+    max_tries=None,
+    fail_streak_stop: int = 2,
+) -> dict:
+    """Quyết định có chạy Ghostscript raster fallback không / bao nhiêu trang.
+
+    Log thực tế (tron.pdf 28 trang): vector xong ~16ms (1 separation + 27 custom),
+    rồi 27× GS @144dpi hits=0 → 9–27s. Budget:
+      - Đã có ≥1 trang vector/separation/xobject → chỉ probe 1 trang custom;
+        miss → dừng (file homogeneous: khuôn ở 1 trang, còn lại artwork).
+      - Toàn custom → tối đa max_tries (mặc định 3), dừng sau fail_streak_stop miss liên tiếp.
+      - Hard cap max_tries luôn áp dụng.
+    """
+    import os as _os
+
+    if max_tries is None:
+        try:
+            max_tries = int((_os.environ.get("PRYNX_DETECT_RASTER_MAX") or "3").strip())
+        except ValueError:
+            max_tries = 3
+    max_tries = max(0, min(max_tries, 50))
+
+    candidates: list[int] = []
+    vector_ok = 0
+    for i, shape in enumerate(shapes):
+        src = getattr(shape, "source", None) or ""
+        st = statuses[i] if i < len(statuses) else None
+        ok = bool(getattr(st, "ok", True)) if st is not None else True
+        if src in ("vector", "separation", "xobject"):
+            vector_ok += 1
+            continue
+        if src == "custom" and ok:
+            candidates.append(i)
+
+    if not candidates or max_tries == 0:
+        return {
+            "indices": [],
+            "max_tries": 0,
+            "fail_streak_stop": fail_streak_stop,
+            "reason": "none_or_disabled",
+            "vector_ok": vector_ok,
+            "custom_n": len(candidates),
+        }
+
+    # Đã có khuôn vector: raster hiếm khi cứu 20+ trang CUSTOM (hits=0 trên tron.pdf).
+    if vector_ok >= 1:
+        budget = min(1, max_tries, len(candidates))
+        reason = "probe_only_has_vector_master"
+    else:
+        budget = min(max_tries, len(candidates))
+        reason = "all_custom_capped"
+
+    return {
+        "indices": candidates[:budget] if budget else [],
+        # allow early-stop within the candidate list up to budget
+        "max_tries": budget,
+        "fail_streak_stop": fail_streak_stop,
+        "reason": reason,
+        "vector_ok": vector_ok,
+        "custom_n": len(candidates),
+        # full candidate list for streak logic (we only *start* raster on first `budget`
+        # pages, but if first hits we can expand — see loop below)
+        "all_custom_indices": candidates,
+    }
+
+
 async def _compute_detect_response(file_path, config, detect_logger):
     """Run vector detection plus raster fallback and return the legacy response."""
     import time as _t
@@ -650,6 +719,8 @@ async def _compute_detect_response(file_path, config, detect_logger):
     doc = pdf_lib.open(file_path)
     _pmark("DETECT", "open_doc", _t0, file=_fname, pages=getattr(doc, "page_count", "?"))
     try:
+        from app.workers.die_detection import apply_master_die_inheritance
+
         result = detect_die_shapes(doc, config)
         _src_counts: dict[str, int] = {}
         for s in result.shapes:
@@ -658,11 +729,61 @@ async def _compute_detect_response(file_path, config, detect_logger):
             "DETECT", "vector_done", _t0,
             pages=result.total_pages, sources=str(_src_counts),
         )
+
+        # 1 khuôn master + N artwork → trang không bế kế thừa type/trim (UI Tròn/Elip).
+        # Chạy TRƯỚC raster để không tốn Ghostscript cho 27 trang CUSTOM (tron.pdf).
+        _before_custom = sum(1 for s in result.shapes if s.type.name == "CUSTOM")
+        result = apply_master_die_inheritance(result)
+        _after_custom = sum(1 for s in result.shapes if s.type.name == "CUSTOM")
+        if _after_custom != _before_custom:
+            _src_counts = {}
+            for s in result.shapes:
+                _src_counts[s.source] = _src_counts.get(s.source, 0) + 1
+            _perf(
+                "DETECT", "master_inherit",
+                before_custom=_before_custom, after_custom=_after_custom,
+                sources=str(_src_counts),
+            )
+
+        budget = _raster_fallback_budget(result.shapes, result.statuses)
+        _perf(
+            "DETECT", "raster_budget",
+            reason=budget.get("reason"),
+            max_tries=budget.get("max_tries"),
+            vector_ok=budget.get("vector_ok"),
+            custom_n=budget.get("custom_n"),
+        )
+
         engine = SeparationEngine()
         raster_tries = 0
         raster_hits = 0
-        for i, shape in enumerate(result.shapes):
-            if shape.source != "custom" or not result.statuses[i].ok:
+        fail_streak = 0
+        max_tries = int(budget.get("max_tries") or 0)
+        fail_stop = int(budget.get("fail_streak_stop") or 2)
+        # Khi đã có vector master: chỉ probe 1 trang. Khi all-custom: thử tối đa max_tries,
+        # dừng sớm nếu fail_streak đạt ngưỡng (GS không có plate trên file này).
+        custom_indices = list(budget.get("all_custom_indices") or budget.get("indices") or [])
+
+        for i in custom_indices:
+            if raster_tries >= max_tries:
+                _perf("DETECT", "raster_skip_cap", tried=raster_tries, left=len(custom_indices) - raster_tries)
+                break
+            if fail_streak >= fail_stop and raster_hits == 0:
+                _perf(
+                    "DETECT", "raster_skip_fail_streak",
+                    fail_streak=fail_streak, tried=raster_tries,
+                    skipped=len(custom_indices) - raster_tries,
+                )
+                break
+            # Sau khi đã có ≥1 hit raster, cho phép nới budget tới max(3, max_tries) trang
+            # (file một phần chỉ có spot raster). Không bao giờ quét hết 28 trang mặc định.
+            if raster_hits > 0 and raster_tries >= max(max_tries, 3):
+                _perf("DETECT", "raster_skip_after_hits", hits=raster_hits, tried=raster_tries)
+                break
+
+            shape = result.shapes[i]
+            # Đã có type (kể cả kế thừa master) → không cần GS.
+            if shape.source != "custom" or shape.type.name != "CUSTOM":
                 continue
             raster_tries += 1
             fallback = await _raster_fallback_shape(
@@ -670,6 +791,7 @@ async def _compute_detect_response(file_path, config, detect_logger):
             )
             if fallback is not None:
                 raster_hits += 1
+                fail_streak = 0
                 result.shapes[i] = fallback
                 result.statuses[i] = type(result.statuses[i])(
                     page=fallback.page,
@@ -677,11 +799,15 @@ async def _compute_detect_response(file_path, config, detect_logger):
                     source=fallback.source,
                     error=None,
                 )
+            else:
+                fail_streak += 1
+
         _pmark(
             "DETECT", "compute_done", _t0,
             file=_fname, pages=result.total_pages,
             raster_tries=raster_tries, raster_hits=raster_hits,
             sources=str(_src_counts),
+            raster_reason=budget.get("reason"),
         )
     finally:
         try:
