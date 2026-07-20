@@ -22,6 +22,7 @@ import { useAuthStore } from './stores/useAuthStore';
 import LoginScreen from './components/auth/LoginScreen';
 import LicenseLockOverlay from './components/auth/LicenseLockOverlay';
 import TrialExpiryBanner from './components/auth/TrialExpiryBanner';
+import SplashScreen from './components/SplashScreen';
 import { supabase } from './lib/supabase';
 import { ToastViewport, toast } from './components/ui/Toast';
 import { ConfirmDialogHost } from './components/ui/confirmDialog';
@@ -140,8 +141,17 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
   );
 }
 
+/** Minimum time to keep brand intro visible (~animation + short hold). */
+const SPLASH_MIN_MS = 4800;
+
 export default function App() {
   const { user, licenseKey, isChecking, checkSession, setUser, isLicenseLocked } = useAuthStore();
+  const [splashMinElapsed, setSplashMinElapsed] = useState(false);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setSplashMinElapsed(true), SPLASH_MIN_MS);
+    return () => window.clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     checkSession();
@@ -155,7 +165,8 @@ export default function App() {
     };
   }, [checkSession, setUser]);
 
-  if (isChecking) {
+  // Hold splash until session check finishes AND intro animation can complete.
+  if (isChecking || !splashMinElapsed) {
     return <SplashScreen />;
   }
 
@@ -170,37 +181,6 @@ export default function App() {
       <ToastViewport />
       <ConfirmDialogHost />
     </FileProvider>
-  );
-}
-
-function SplashScreen() {
-  return (
-    <div className="h-screen w-screen flex flex-col items-center justify-center bg-[#1a1a1a] overflow-hidden relative select-none">
-
-      {/* Main Content */}
-      <div className="relative z-10 flex flex-col items-center animate-in fade-in zoom-in-95 duration-1000 ease-out fill-mode-both">
-        <div className="w-24 h-24 mb-8 rounded-3xl bg-gradient-to-br from-white via-slate-100 to-slate-300 flex items-center justify-center shadow-[0_0_70px_rgba(255,255,255,0.25)] ring-1 ring-white/40 relative overflow-hidden">
-           <div className="absolute inset-0 bg-black/5"></div>
-           <img 
-              src="/logo.png" 
-              alt="Logo" 
-              className="relative z-10 w-16 h-16 object-contain drop-shadow-md"
-              onError={(e) => {
-                (e.target as HTMLElement).outerHTML = '<span class="text-[52px] drop-shadow-md relative z-10">📄</span>';
-              }}
-           />
-        </div>
-        
-        <h1 className="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-100 to-slate-400 tracking-tight mb-2">
-          Hi, I'm PrynX
-        </h1>
-        
-        <p className="text-slate-400 text-xs font-semibold tracking-[0.2em] uppercase mt-8 flex items-center gap-3">
-          <span className="w-3.5 h-3.5 border-[2px] border-slate-500/30 border-t-slate-300 rounded-full animate-spin inline-block"></span>
-          GETTING READY...
-        </p>
-      </div>
-    </div>
   );
 }
 
