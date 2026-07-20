@@ -147,6 +147,8 @@ const SPLASH_MIN_MS = 4800;
 export default function App() {
   const { user, licenseKey, isChecking, checkSession, setUser, isLicenseLocked } = useAuthStore();
   const [splashMinElapsed, setSplashMinElapsed] = useState(false);
+  const [splashExiting, setSplashExiting] = useState(false);
+  const [splashDone, setSplashDone] = useState(false);
 
   useEffect(() => {
     const t = window.setTimeout(() => setSplashMinElapsed(true), SPLASH_MIN_MS);
@@ -165,9 +167,24 @@ export default function App() {
     };
   }, [checkSession, setUser]);
 
-  // Hold splash until session check finishes AND intro animation can complete.
-  if (isChecking || !splashMinElapsed) {
-    return <SplashScreen />;
+  // When session is ready and min intro time elapsed → play exit cinematic.
+  useEffect(() => {
+    if (!isChecking && splashMinElapsed && !splashExiting && !splashDone) {
+      setSplashExiting(true);
+    }
+  }, [isChecking, splashMinElapsed, splashExiting, splashDone]);
+
+  const handleSplashExitComplete = useCallback(() => {
+    setSplashDone(true);
+  }, []);
+
+  if (!splashDone) {
+    return (
+      <SplashScreen
+        exiting={splashExiting}
+        onExitComplete={handleSplashExitComplete}
+      />
+    );
   }
 
   const isAuthenticated = user && licenseKey;

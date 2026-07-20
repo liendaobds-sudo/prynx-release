@@ -1,4 +1,12 @@
-/* PRYNX logo intro — matches prynx-logo-animation (offline, no GSAP CDN) */
+/* PRYNX logo intro — brand purple reveal + ambient breath + exit cinematic */
+
+:root {
+  --prynx-brand: #863bff;
+  --prynx-brand-soft: #b48aff;
+  --prynx-brand-glow: rgba(134, 59, 255, 0.28);
+  --prynx-ink: #231f20;
+  --prynx-gray: #bdbec1;
+}
 
 .prynx-intro {
   position: fixed;
@@ -10,10 +18,12 @@
   justify-content: center;
   overflow: hidden;
   user-select: none;
-  background: radial-gradient(ellipse at center, #ffffff 0%, #f0f0f2 70%);
+  /* Base field + breathing white core */
+  background: radial-gradient(ellipse at center, #ffffff 0%, #f0f0f2 55%, #e8e6ef 100%);
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
+/* Ambient grain fade-in */
 .prynx-intro::before {
   content: '';
   position: absolute;
@@ -25,12 +35,92 @@
     radial-gradient(1px 1px at 50% 50%, rgba(35, 31, 32, 0.03), transparent);
   opacity: 0;
   animation: prynx-bg-fade 2s ease forwards 0.3s;
+  z-index: 0;
+}
+
+/* Ambient breath — soft violet halo scales/pulses forever */
+.prynx-intro::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 48%;
+  width: min(70vw, 560px);
+  height: min(70vw, 560px);
+  transform: translate(-50%, -50%) scale(0.85);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    var(--prynx-brand-glow) 0%,
+    rgba(134, 59, 255, 0.08) 38%,
+    transparent 68%
+  );
+  pointer-events: none;
+  opacity: 0;
+  z-index: 0;
+  animation:
+    prynx-glow-in 1.2s ease 1.8s forwards,
+    prynx-breath 4.2s ease-in-out 2.8s infinite;
 }
 
 @keyframes prynx-bg-fade {
   to {
     opacity: 1;
   }
+}
+
+@keyframes prynx-glow-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes prynx-breath {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(0.92);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.08);
+    opacity: 0.95;
+  }
+}
+
+/* Extra soft glow disc under logo */
+.prynx-intro__glow {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: clamp(120px, 22vw, 220px);
+  height: clamp(120px, 22vw, 220px);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(134, 59, 255, 0.22), transparent 70%);
+  filter: blur(8px);
+  opacity: 0;
+  z-index: 0;
+  pointer-events: none;
+  animation: prynx-glow-in 0.8s ease 2s forwards, prynx-breath-soft 3.6s ease-in-out 2.6s infinite;
+}
+
+@keyframes prynx-breath-soft {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translate(-50%, -50%) scale(0.95);
+  }
+  50% {
+    opacity: 0.75;
+    transform: translate(-50%, -50%) scale(1.12);
+  }
+}
+
+.prynx-intro__stage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 /* ── Logo group ── */
@@ -49,8 +139,11 @@
   height: clamp(60px, 8vw, 120px);
   position: relative;
   overflow: visible;
-  animation: prynx-icon-pulse 0.7s ease both;
-  animation-delay: 3.6s;
+  filter: drop-shadow(0 0 0 transparent);
+  /* Soft purple glow after color reveal + settle pulse */
+  animation:
+    prynx-icon-pulse 0.7s ease 3.6s both,
+    prynx-icon-glow 1s ease 2.1s forwards;
 }
 
 .prynx-intro__icon svg {
@@ -68,40 +161,45 @@
 }
 
 .prynx-intro .draw-path-gray {
-  stroke: #bdbec1;
+  stroke: var(--prynx-gray);
 }
 
 .prynx-intro .draw-path-dark {
-  stroke: #231f20;
+  stroke: var(--prynx-ink);
 }
 
 .prynx-intro .fill-shape {
   opacity: 0;
-  animation: prynx-fill-in 0.4s ease both;
 }
 
 .prynx-intro .fill-gray {
-  fill: #bdbec1;
+  fill: var(--prynx-gray);
+  animation:
+    prynx-fill-in 0.4s ease both,
+    prynx-color-reveal-gray 0.7s ease both;
 }
 
 .prynx-intro .fill-dark {
-  fill: #231f20;
+  fill: var(--prynx-ink);
+  animation:
+    prynx-fill-in 0.4s ease both,
+    prynx-color-reveal-dark 0.7s ease both;
 }
 
 .prynx-intro .fill-shape:nth-of-type(1) {
-  animation-delay: 1.35s;
+  animation-delay: 1.35s, 2.05s;
 }
 
 .prynx-intro .fill-shape:nth-of-type(2) {
-  animation-delay: 1.41s;
+  animation-delay: 1.41s, 2.12s;
 }
 
 .prynx-intro .fill-shape:nth-of-type(3) {
-  animation-delay: 1.47s;
+  animation-delay: 1.47s, 2.18s;
 }
 
 .prynx-intro .fill-shape:nth-of-type(4) {
-  animation-delay: 1.53s;
+  animation-delay: 1.53s, 2.24s;
 }
 
 /* Path draw — only after dash lengths set via .paths-ready */
@@ -152,15 +250,43 @@
   }
 }
 
+/* Gray/black → brand purple (matches app logo.png) */
+@keyframes prynx-color-reveal-dark {
+  from {
+    fill: #231f20;
+  }
+  to {
+    fill: #863bff;
+  }
+}
+
+@keyframes prynx-color-reveal-gray {
+  from {
+    fill: #bdbec1;
+  }
+  to {
+    fill: #b48aff;
+  }
+}
+
 @keyframes prynx-icon-pulse {
   0% {
     transform: scale(1);
   }
   40% {
-    transform: scale(1.04);
+    transform: scale(1.05);
   }
   100% {
     transform: scale(1);
+  }
+}
+
+@keyframes prynx-icon-glow {
+  from {
+    filter: drop-shadow(0 0 0 transparent);
+  }
+  to {
+    filter: drop-shadow(0 4px 14px rgba(134, 59, 255, 0.35));
   }
 }
 
@@ -180,7 +306,11 @@
   display: inline-block;
   opacity: 0;
   transform: translateY(30px);
-  animation: prynx-letter-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  animation:
+    prynx-letter-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards,
+    prynx-letter-tint 0.8s ease forwards;
+  /* --letter-delay from inline style; tint after letters land */
+  animation-delay: var(--letter-delay, 1.6s), 2.3s;
 }
 
 @keyframes prynx-letter-in {
@@ -190,7 +320,17 @@
   }
 }
 
-/* ── Light sweep ── */
+/* Subtle ink → deep slate; keeps PRYNX readable, pairs with purple icon */
+@keyframes prynx-letter-tint {
+  from {
+    color: #231f20;
+  }
+  to {
+    color: #1a1228;
+  }
+}
+
+/* ── Light sweep (slight purple sheen) ── */
 .prynx-intro__sweep {
   position: absolute;
   top: -20%;
@@ -201,11 +341,11 @@
     105deg,
     transparent 0%,
     transparent 35%,
-    rgba(189, 190, 193, 0.12) 42%,
-    rgba(189, 190, 193, 0.3) 48%,
-    rgba(255, 255, 255, 0.6) 50%,
-    rgba(189, 190, 193, 0.3) 52%,
-    rgba(189, 190, 193, 0.12) 58%,
+    rgba(180, 138, 255, 0.1) 42%,
+    rgba(180, 138, 255, 0.28) 48%,
+    rgba(255, 255, 255, 0.65) 50%,
+    rgba(180, 138, 255, 0.28) 52%,
+    rgba(180, 138, 255, 0.1) 58%,
     transparent 65%,
     transparent 100%
   );
@@ -241,7 +381,7 @@
   }
 }
 
-/* ── Accent line ── */
+/* ── Accent line (brand-tinted) ── */
 .prynx-intro__accent {
   position: absolute;
   bottom: 15%;
@@ -252,10 +392,13 @@
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(35, 31, 32, 0.2),
+    rgba(134, 59, 255, 0.15),
+    rgba(35, 31, 32, 0.22),
+    rgba(134, 59, 255, 0.15),
     transparent
   );
   animation: prynx-accent 0.7s cubic-bezier(0.65, 0, 0.35, 1) 3.2s forwards;
+  z-index: 1;
 }
 
 @keyframes prynx-accent {
@@ -287,8 +430,8 @@
 .prynx-intro__spinner {
   width: 12px;
   height: 12px;
-  border: 2px solid rgba(35, 31, 32, 0.12);
-  border-top-color: #231f20;
+  border: 2px solid rgba(134, 59, 255, 0.15);
+  border-top-color: var(--prynx-brand);
   border-radius: 50%;
   animation: prynx-spin 0.7s linear infinite;
 }
@@ -302,6 +445,54 @@
 @keyframes prynx-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* ── Exit cinematic: scale + fade + slight rise ── */
+.prynx-intro--exit {
+  animation: prynx-exit 0.55s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  pointer-events: none;
+}
+
+.prynx-intro--exit .prynx-intro__stage {
+  animation: prynx-exit-stage 0.55s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.prynx-intro--exit .prynx-intro__status,
+.prynx-intro--exit .prynx-intro__accent {
+  animation: prynx-exit-fade 0.35s ease forwards;
+}
+
+@keyframes prynx-exit {
+  to {
+    opacity: 0;
+    background: radial-gradient(ellipse at center, #ffffff 0%, #f5f5f7 100%);
+  }
+}
+
+@keyframes prynx-exit-stage {
+  to {
+    opacity: 0;
+    transform: scale(1.06) translateY(-12px);
+    filter: blur(2px);
+  }
+}
+
+@keyframes prynx-exit-fade {
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prynx-intro::after,
+  .prynx-intro__glow {
+    animation: none !important;
+    opacity: 0.4;
+  }
+
+  .prynx-intro--exit {
+    animation-duration: 0.15s;
   }
 }
 
