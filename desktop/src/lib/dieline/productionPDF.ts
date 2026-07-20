@@ -1,4 +1,5 @@
 import { DielineModel, PathSegment, PathTag, Point2D } from './types';
+import { withBleedPaths } from './bleedContours';
 import { NestingResult } from './nestingTypes';
 import { validateClosedContours } from './contourValidator';
 import { savePdfBlob } from './savePdfBlob';
@@ -76,10 +77,11 @@ function assertProductionReady(model: DielineModel): void {
 export function buildProductionDielinePdf(model: DielineModel): Blob {
     assertProductionReady(model);
     const margin = 5;
+    const renderModel = withBleedPaths(model);
     const bb = model.boundingBox;
     const map: Mapper = (p) => ({ x: p.x - bb.minX + margin, y: p.y - bb.minY + margin });
     return makePdf(bb.width + margin * 2, bb.height + margin * 2,
-        model.allPaths.map((segment) => segmentCommands(segment, map)).filter(Boolean));
+        renderModel.allPaths.map((segment) => segmentCommands(segment, map)).filter(Boolean));
 }
 
 function nestingMapper(model: DielineModel, pos: { x: number; y: number; rotation: number }, pageHeight: number): Mapper {
@@ -91,10 +93,11 @@ function nestingMapper(model: DielineModel, pos: { x: number; y: number; rotatio
 }
 
 function placementCommands(model: DielineModel, result: NestingResult): string[] {
+    const renderModel = withBleedPaths(model);
     const commands: string[] = [];
     for (const position of result.positions) {
         const map = nestingMapper(model, position, result.actualSheet.height);
-        for (const segment of model.allPaths) commands.push(segmentCommands(segment, map));
+        for (const segment of renderModel.allPaths) commands.push(segmentCommands(segment, map));
     }
     return commands.filter(Boolean);
 }

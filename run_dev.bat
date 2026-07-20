@@ -101,6 +101,17 @@ FOR /F "tokens=5" %%a IN ('netstat -aon ^| findstr :8321 ^| findstr LISTENING') 
 )
 
 echo.
+echo [*] Dong bo bundle engine khuon tu source TypeScript...
+cd desktop
+call npm.cmd run build:dieline-sidecar
+if errorlevel 1 (
+    cd ..
+    echo *** LOI: Khong the build bundle engine khuon. Dung khoi dong de tranh chay code cu. ***
+    exit /b 1
+)
+cd ..
+
+echo.
 echo [*] Build + cai module Rust (imposition_core / pdfcompare_native) vao venv backend...
 :: Dam bao cargo co trong PATH
 where cargo >nul 2>&1 || set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"

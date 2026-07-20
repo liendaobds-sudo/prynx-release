@@ -9,6 +9,7 @@ import { useMockupStore } from '../../store/useMockupStore';
 import { DielineModel, PathSegment, Panel } from '../../lib/dieline/types';
 import { buildChains, chainToSvgD, computeEnvelopeDims, deriveLegendTags } from '../../lib/dieline/sharedGeometry';
 import { tracePerimeter } from '../../lib/dieline/tracePerimeter';
+import { computeBleedContours, DEFAULT_DIELINE_BLEED_MM } from '../../lib/dieline/bleedContours';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 // Desktop: no auth/settings needed — all features available
@@ -18,7 +19,7 @@ import { tv } from '../../i18n';
 const PATH_STYLES: Record<string, { stroke: string; dashArray: string; width: number; label: string }> = {
     CUT: { stroke: 'var(--dt-cut-color, #ffffff)', dashArray: 'none', width: 0.8, label: 'Cắt' },
     CREASE: { stroke: '#ff4444', dashArray: '3,2', width: 0.5, label: 'Cấn' },
-    BLEED: { stroke: '#4488ff', dashArray: '1,1', width: 0.3, label: 'Tràn lề' },
+    BLEED: { stroke: '#16a34a', dashArray: '4,2', width: 1.1, label: 'Tràn lề' },
 };
 
 /** Nút debug (tên mặt / đoạn cắt / chú thích điểm) chỉ hiện khi dev. */
@@ -43,16 +44,49 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
     const artTransform = useMockupStore((s) => s.artwork.outer.transform);
     const setArtTransform = useMockupStore((s) => s.setOuterArtworkTransform);
     const setOuterArtworkUrl = useMockupStore((s) => s.setOuterArtworkUrl);
+    const showBleedSafe = useMockupStore((s) => s.artwork.showBleedSafe);
+    const setShowBleedSafe = useMockupStore((s) => s.setShowBleedSafe);
     const artworkUrl = outerUrl ?? mockupTextureUrl;
+    const storedArtworkAspect = useMockupStore((s) => s.artwork.outer.aspectRatio);
+    const [detectedArtworkAspect, setDetectedArtworkAspect] = useState<number | null>(null);
     const [showArtwork, setShowArtwork] = useState(true);
     const dragArtRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
     const pointerMoveFrameRef = useRef<number | null>(null);
 
     const onUploadArtwork = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-        const f = e.target.files?.[0];
-        if (f) setOuterArtworkUrl(URL.createObjectURL(f));
+        const file = e.target.files?.[0];
+        if (file) {
+            const url = URL.createObjectURL(file);
+            const image = new Image();
+            image.onload = () => setOuterArtworkUrl(url, image.naturalWidth / image.naturalHeight);
+            image.onerror = () => URL.revokeObjectURL(url);
+            image.src = url;
+        }
         e.target.value = '';
     }, [setOuterArtworkUrl]);
+
+    // Resolve quick-upload/legacy URLs too. Normal uploads retain the intrinsic
+    // ratio in the store so both the 2D and 3D renderers use the same geometry.
+    useEffect(() => {
+        if (!artworkUrl) {
+            setDetectedArtworkAspect(null);
+            return;
+        }
+        if (Number.isFinite(storedArtworkAspect) && storedArtworkAspect! > 0) {
+            setDetectedArtworkAspect(storedArtworkAspect);
+            return;
+        }
+        let cancelled = false;
+        const image = new Image();
+        image.onload = () => {
+            if (!cancelled && image.naturalWidth > 0 && image.naturalHeight > 0) {
+                setDetectedArtworkAspect(image.naturalWidth / image.naturalHeight);
+            }
+        };
+        image.onerror = () => { if (!cancelled) setDetectedArtworkAspect(null); };
+        image.src = artworkUrl;
+        return () => { cancelled = true; };
+    }, [artworkUrl, storedArtworkAspect]);
 
     // Hình chữ nhật vùng ảnh (toạ độ mm khuôn) khớp ánh xạ UV aligned-to-dieline.
     const artRect = useMemo(() => {
@@ -61,12 +95,15 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
         const sc = (artTransform.scalePct || 100) / 100;
         const offX = (artTransform.offsetXPct || 0) / 100;
         const offY = (artTransform.offsetYPct || 0) / 100;
-        const w = sc * bb.width;
-        const h = sc * bb.height;
-        const cx = bb.minX + (0.5 + sc * offX) * bb.width;
-        const cy = bb.minY + (0.5 + sc * offY) * bb.height;
+        const aspect = detectedArtworkAspect;
+        const preserveAspect = Number.isFinite(aspect) && aspect! > 0 && bb.width > 0 && bb.height > 0;
+        const coverHeight = preserveAspect ? Math.max(bb.width / aspect!, bb.height) : bb.height;
+        const w = (preserveAspect ? aspect! * coverHeight : bb.width) * sc;
+        const h = coverHeight * sc;
+        const cx = bb.minX + bb.width / 2 + offX * w;
+        const cy = bb.minY + bb.height / 2 + offY * h;
         return { x: cx - w / 2, y: cy - h / 2, w, h, cx, cy, rot: artTransform.rotationDeg || 0 };
-    }, [dieline, artworkUrl, artTransform]);
+    }, [dieline, artworkUrl, artTransform, detectedArtworkAspect]);
 
     // Đa giác clip = vùng phủ của MỌI mặt khuôn. Panel nào không khai báo
     // `outline` (tai bụi, đáy, tai đút…) thì DÒ chu vi từ `paths` (giống lớp 3D)
@@ -85,6 +122,12 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
         return polys;
     }, [dieline]);
 
+    const bleedContours = useMemo(
+        () => (dieline && showBleedSafe
+            ? computeBleedContours(dieline, DEFAULT_DIELINE_BLEED_MM)
+            : []),
+        [dieline, showBleedSafe],
+    );
     // ── Gizmo biến đổi trực tiếp trên ảnh (kéo/scale/xoay như editor VDP) ──
     // Toạ độ gizmo tính ở KHÔNG GIAN MÀN HÌNH (px svg-local) để núm có kích
     // thước cố định, không bị zoom. Chiếu điểm mm→px: (tx+mx·s, ty−my·s).
@@ -212,7 +255,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
         if (!svg) return;
         svg.addEventListener('wheel', handleWheel, { passive: false });
         return () => svg.removeEventListener('wheel', handleWheel);
-    }, [handleWheel]);
+    }, [handleWheel, dieline]);
 
     // Pan
     const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -276,6 +319,13 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                 <button onClick={() => setShowDimensions(!showDimensions)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:hien_thi_kich_thuoc')}>
                     📏 {showDimensions ? t('dieline.dielineCanvas2D:an') : t('dieline.dielineCanvas2D:hien')} {t('dieline.dielineCanvas2D:kich_thuoc')}
                 </button>
+                <button
+                    onClick={() => setShowBleedSafe(!showBleedSafe)}
+                    className={`dt-toolbar-btn ${showBleedSafe ? 'active' : ''}`}
+                    title={t('dieline.mockupArtwork:hien_duong_bien_vung_tran_le_bleed_va')}
+                >
+                    🩸 Bleed {DEFAULT_DIELINE_BLEED_MM} mm
+                </button>
                 {IS_DEV && (
                     <>
                         <button onClick={() => setShowPanelLabels(!showPanelLabels)} className="dt-toolbar-btn" title={t('dieline.dielineCanvas2D:dev_hien_thi_ten_cac_mat')}>
@@ -295,7 +345,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                 </span>
                 {/* Legend — chỉ hiển thị tag thực sự có trong file (phương án B) */}
                 <div className="dt-legend">
-                    {[...deriveLegendTags(dieline)].map((tag) => {
+                    {[...new Set([...deriveLegendTags(dieline), ...(showBleedSafe ? ['BLEED' as const] : [])])].map((tag) => {
                         const style = PATH_STYLES[tag];
                         if (!style) return null;
                         return (
@@ -389,7 +439,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                                         y={artRect.y}
                                         width={artRect.w}
                                         height={artRect.h}
-                                        preserveAspectRatio="none"
+                                        preserveAspectRatio="xMidYMid slice"
                                         opacity={0.95}
                                         style={{ cursor: 'move' }}
                                         onMouseDown={(e) => {
@@ -405,6 +455,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
                         </>
                     )}
 
+                    {showBleedSafe && <BleedContourRenderer contours={bleedContours} />}
                     <ChainedPathRenderer paths={dieline.allPaths} />
 
                     {/* Dimension Annotations */}
@@ -488,6 +539,25 @@ function PreviewThumbnail({ boxType }: { boxType: string }) {
 
 // ── Chain helpers: dùng chung từ sharedGeometry.ts (buildChains / chainToSvgD) ──
 
+function BleedContourRenderer({ contours }: { contours: { x: number; y: number }[][] }) {
+    const style = PATH_STYLES.BLEED;
+    return (
+        <g className="dt-bleed-contours" pointerEvents="none">
+            {contours.map((points, index) => (
+                <polygon
+                    key={index}
+                    points={points.map((point) => `${point.x},${point.y}`).join(' ')}
+                    fill="none"
+                    stroke={style.stroke}
+                    strokeWidth={style.width}
+                    strokeDasharray={style.dashArray}
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                />
+            ))}
+        </g>
+    );
+}
 /** Renderer liền mạch — gom segments cùng tag + endpoint trùng thành 1 SVG path */
 function ChainedPathRenderer({ paths }: { paths: PathSegment[] }) {
     const chains = React.useMemo(() => buildChains(paths), [paths]);
@@ -680,7 +750,7 @@ function SegmentLabels({ dieline, scale }: { dieline: DielineModel; scale: numbe
                 my = (seg.points[0].y + seg.points[seg.points.length - 1].y) / 2;
             } else continue;
             const color = seg.tag === 'CREASE' ? 'rgba(255,120,120,0.8)'
-                : seg.tag === 'BLEED' ? 'rgba(100,160,255,0.8)' : 'rgba(0,255,150,0.9)';
+                : seg.tag === 'BLEED' ? 'rgba(22,163,74,0.9)' : 'rgba(0,255,150,0.9)';
             out.push({ label, mx, my, color });
         }
         return out;

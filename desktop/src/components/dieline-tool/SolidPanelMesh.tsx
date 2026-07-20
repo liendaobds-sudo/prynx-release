@@ -51,7 +51,7 @@ import { buildPanelSolid, buildFoldFilletGeometry, clampThickness, normalizeEdge
 import { buildConeFrustumGeometry, buildConeGluePatchGeometry, buildConeOutlineGeometries, type ConeWarpParams } from '../../lib/mockup3d/cupSleeveCone';
 import { tracePerimeter } from '../../lib/dieline/tracePerimeter';
 import { clampArtworkTransform, computePanelUV } from '../../lib/mockup3d/artworkMapping';
-import { getFinish } from '../../lib/mockup3d/materialLibrary';
+import { clampEmbossHeight, getFinish, SPOT_UV_GLOSS_ROUGHNESS } from '../../lib/mockup3d/materialLibrary';
 import { applyFoldCompensation } from '../../lib/mockup3d/foldCompensation';
 import { applyExplodedOffset, type Vec3 } from '../../lib/mockup3d/explodedView';
 import { useDisposableResource } from './useDisposeResources';
@@ -103,6 +103,16 @@ const MAT_INNER = 2; // cap mặt trong (−Z)
 /** Ngưỡng |pháp tuyến.z| để coi một tam giác là cap (mặt phẳng) thay vì tường. */
 const CAP_NORMAL_Z_THRESHOLD = 0.7;
 
+const SPOT_UV_SHADER_TARGET = 'roughnessFactor *= texelRoughness.g;';
+
+/** Chuyển mask Spot-UV trắng thành vùng bóng, thay vì phép nhân roughness mặc định. */
+export function patchSpotUvRoughnessShader(fragmentShader: string): string {
+    return fragmentShader.replace(
+        SPOT_UV_SHADER_TARGET,
+        `roughnessFactor = texelRoughness.g > 0.5 ? ${SPOT_UV_GLOSS_ROUGHNESS.toFixed(4)} : roughnessFactor;`,
+    );
+}
+
 // ─── Props ───────────────────────────────────────────────────────────────────
 
 export interface SolidPanelMeshProps {
@@ -124,6 +134,14 @@ export interface SolidPanelMeshProps {
     texture?: THREE.Texture | null;
     /** Texture ảnh nghệ thuật mặt trong (khi bật in mặt trong); `null` = giấy bồi. */
     innerTexture?: THREE.Texture | null;
+    /** Mặt vật lý nhận artwork ngoài. Pizza gấp về +Z nên mặt ngoài là cap −Z. */
+    outerFaceNegativeZ?: boolean;
+    /** Chọn cấu hình artwork cho mẫu thường, khay hoặc vỏ hộp diêm. */
+    artworkPart?: 'default' | 'tray' | 'sleeve';
+    /** Mask tuyến tính điều khiển vùng bóng cục bộ khi chọn finish Spot-UV. */
+    spotUvTexture?: THREE.Texture | null;
+    /** Mask tuyến tính dùng làm bump map khi chọn finish Emboss. */
+    embossTexture?: THREE.Texture | null;
     /** Khoảng cách tách rời cơ sở (mm) cho 1 đơn vị hệ số; mặc định 40mm. */
     explodeSpacing?: number;
     /**
@@ -271,6 +289,7 @@ function applySolidPanelUV(
     globalBBox: BBox,
     outerImageAspect?: number,
     innerImageAspect?: number,
+    outerFaceNegativeZ = false,
 ): void {
     const position = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
     if (!position || position.count === 0) {
@@ -300,14 +319,21 @@ function applySolidPanelUV(
     const pseudoPanel = { ...panel, outline: points } as Panel;
 
     // Mặt ngoài / mặt trong dùng transform ĐỘC LẬP (Yêu cầu 5.4).
-    const outerUV = computePanelUV(pseudoPanel, mode, outerTransform, globalBBox, 'outer', outerImageAspect);
-    const innerUV = computePanelUV(pseudoPanel, mode, innerTransform, globalBBox, 'inner', innerImageAspect);
+    const outerUV = computePanelUV(
+        pseudoPanel, mode, outerTransform, globalBBox,
+        outerFaceNegativeZ ? 'inner' : 'outer', outerImageAspect,
+    );
+    const innerUV = computePanelUV(
+        pseudoPanel, mode, innerTransform, globalBBox,
+        outerFaceNegativeZ ? 'outer' : 'inner', innerImageAspect,
+    );
 
     const uv = new Float32Array(count * 2);
     for (let i = 0; i < count; i++) {
         const z = flatZ ? flatZ[i] : position.getZ(i);
         // Mặt ở phía Z+ coi là mặt ngoài; phía Z- là mặt trong.
-        const src = z >= midZ ? outerUV : innerUV;
+        const positiveCapIsOuter = !outerFaceNegativeZ;
+        const src = (z >= midZ) === positiveCapIsOuter ? outerUV : innerUV;
         uv[i * 2] = src[i * 2];
         uv[i * 2 + 1] = src[i * 2 + 1];
     }
@@ -430,7 +456,7 @@ function applyConeArtworkUV(
 }
 /** Đọc đúng tỷ lệ pixel của ảnh đã giải mã trong THREE.Texture. */
 function textureImageAspect(texture: THREE.Texture | null): number | undefined {
-    const image = texture?.image as {
+    const image = (texture?.source?.data ?? texture?.image) as {
         naturalWidth?: number;
         naturalHeight?: number;
         videoWidth?: number;
@@ -479,6 +505,10 @@ export default function SolidPanelMesh({
     globalBBox,
     texture = null,
     innerTexture = null,
+    outerFaceNegativeZ = false,
+    artworkPart = 'default',
+    spotUvTexture = null,
+    embossTexture = null,
     explodeSpacing = DEFAULT_EXPLODE_SPACING_MM,
     coneWarp = null,
     conePaths = null,
@@ -493,13 +523,31 @@ export default function SolidPanelMesh({
     const edgeColor = useMockupStore((s) => s.edgeColor);
     const explodedFactor = useMockupStore((s) => s.explodedFactor);
     const artworkMode = useMockupStore((s) => s.artwork.mode);
-    const outerTransform = useMockupStore((s) => s.artwork.outer.transform);
+    const defaultOuter = useMockupStore((s) => s.artwork.outer);
+    const trayOuter = useMockupStore((s) => s.artwork.trayOuter);
+    const sleeveOuter = useMockupStore((s) => s.artwork.sleeveOuter);
     const innerTransform = useMockupStore((s) => s.artwork.inner.transform);
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
-    const outerUrl = useMockupStore((s) => s.artwork.outer.url);
-    const setOuterArtworkTransform = useMockupStore((s) => s.setOuterArtworkTransform);
-    const outerImageAspect = textureImageAspect(texture);
-    const innerImageAspect = textureImageAspect(innerTexture);
+    const embossHeightMm = useMockupStore((s) => s.artwork.embossHeightMm);
+    const storedInnerImageAspect = useMockupStore((s) => s.artwork.inner.aspectRatio);
+    const setDefaultArtworkTransform = useMockupStore((s) => s.setOuterArtworkTransform);
+    const setTrayArtworkTransform = useMockupStore((s) => s.setTrayArtworkTransform);
+    const setSleeveArtworkTransform = useMockupStore((s) => s.setSleeveArtworkTransform);
+    const outerConfig = artworkPart === 'tray'
+        ? trayOuter
+        : artworkPart === 'sleeve' ? sleeveOuter : defaultOuter;
+    const outerTransform = outerConfig.transform;
+    const outerUrl = outerConfig.url;
+    const storedOuterImageAspect = outerConfig.aspectRatio;
+    const setOuterArtworkTransform = artworkPart === 'tray'
+        ? setTrayArtworkTransform
+        : artworkPart === 'sleeve' ? setSleeveArtworkTransform : setDefaultArtworkTransform;
+    const outerImageAspect = Number.isFinite(storedOuterImageAspect) && storedOuterImageAspect! > 0
+        ? storedOuterImageAspect!
+        : textureImageAspect(texture);
+    const innerImageAspect = Number.isFinite(storedInnerImageAspect) && storedInnerImageAspect! > 0
+        ? storedInnerImageAspect!
+        : textureImageAspect(innerTexture);
 
     // Độ dày hiển thị đã chuẩn hóa (mm) — dùng cho canh giữa Z và đặt line overlay.
     const depth = clampThickness(thickness);
@@ -584,8 +632,9 @@ export default function SolidPanelMesh({
             globalBBox,
             outerImageAspect,
             innerImageAspect,
+            outerFaceNegativeZ,
         );
-    }, [geometry, panel, artworkMode, outerTransform, innerTransform, globalBBox, coneWarp, outerImageAspect, innerImageAspect]);
+    }, [geometry, panel, artworkMode, outerTransform, innerTransform, globalBBox, coneWarp, outerImageAspect, innerImageAspect, outerFaceNegativeZ]);
 
     // ── 3. Vật liệu: mặt ngoài (finish/ảnh) ≠ mặt trong (giấy bồi) ≠ tường cạnh.
     //    Thứ tự material khớp chỉ số nhóm: [MAT_OUTER, MAT_WALL, MAT_INNER]
@@ -602,13 +651,27 @@ export default function SolidPanelMesh({
         // cách nhau bằng độ dày giấy (rất mỏng) — nguyên nhân gây nhấp nháy
         // (Z-fighting) trên toàn bề mặt khi xoay. Cap ngoài hướng +Z, cap
         // trong hướng −Z, tường cạnh hướng ra ngoài → FrontSide hiển thị đúng.
+        const spotUvEnabled = finish.id === 'spot-uv' && !!spotUvTexture;
+        const embossEnabled = finish.id === 'emboss' && !!embossTexture && embossHeightMm > 0;
         const outerMaterial = new THREE.MeshStandardMaterial({
             color: texture ? '#ffffff' : baseColor,
             map: texture ?? null,
+            roughnessMap: spotUvEnabled ? spotUvTexture : null,
+            bumpMap: embossEnabled ? embossTexture : null,
+            bumpScale: embossEnabled ? clampEmbossHeight(embossHeightMm) : 0,
             roughness: finish.roughness,
             metalness: finish.metalness,
             side: THREE.FrontSide,
         });
+        if (spotUvEnabled) {
+            // Mask trắng (>50%) = vùng phủ UV bóng; vùng đen giữ roughness nền.
+            // Patch đúng shader chunk của Three để không phải sinh thêm texture/canvas.
+            outerMaterial.onBeforeCompile = (shader) => {
+                shader.fragmentShader = patchSpotUvRoughnessShader(shader.fragmentShader);
+
+            };
+            outerMaterial.customProgramCacheKey = () => 'prynx-spot-uv-threshold-v1';
+        }
         if (texture) {
             texture.colorSpace = THREE.SRGBColorSpace;
         }
@@ -646,10 +709,19 @@ export default function SolidPanelMesh({
                 mat.polygonOffsetUnits = off;
             }
         }
-        return [outerMaterial, wallMaterial, innerMaterial];
+        return outerFaceNegativeZ
+            ? [innerMaterial, wallMaterial, outerMaterial]
+            : [outerMaterial, wallMaterial, innerMaterial];
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [finishId, edgeColor, texture, innerTexture, panel.stackZ]);
+    }, [finishId, edgeColor, texture, innerTexture, spotUvTexture, embossTexture, panel.stackZ, outerFaceNegativeZ]);
 
+    // Slider emboss chỉ cập nhật uniform bumpScale, không dựng lại geometry/material
+    // trên mọi panel. Nhờ đó kéo chỉnh vẫn mượt với khuôn có nhiều mặt.
+    useEffect(() => {
+        const outerMaterial = materials[outerFaceNegativeZ ? MAT_INNER : MAT_OUTER];
+        const enabled = finishId === 'emboss' && !!embossTexture && embossHeightMm > 0;
+        outerMaterial.bumpScale = enabled ? clampEmbossHeight(embossHeightMm) : 0;
+    }, [materials, finishId, embossTexture, embossHeightMm, outerFaceNegativeZ]);
     // Material riêng cho dải bo nếp gập: màu giấy mặt ngoài, 2 mặt (DoubleSide)
     // để hiện đúng dù chiều winding nào.
     const filletMaterial = useDisposableResource<THREE.MeshStandardMaterial>(() => {

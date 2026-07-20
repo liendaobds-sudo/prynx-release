@@ -24,6 +24,11 @@ from app.workers.nup_artwork import place_one_artwork, compute_block_bbox
 MM_TO_PTS = 2.83465
 logger = logging.getLogger(__name__)
 
+
+def _should_recompute_repeat_layout(layout_type, precalculated_placements):
+    return layout_type == 'repeat' and precalculated_placements is None
+
+
 def _strip_color_from_stream(page_or_xobj, target_color):
     import pikepdf
     try:
@@ -121,7 +126,7 @@ def process_chunk(args):
 
     import os, tempfile, math
 
-    from app.workers.nup_layout_solver import get_src_page_idx, solve_optimal_layout
+    from app.workers.nup_layout_solver import get_src_page_idx, solve_manual, solve_optimal_layout
 
     from app.workers.nup_engine import compute_sticker_layout_for_page, _find_largest_die_path
     from app.workers.nup_diecut import resolve_one_dao_trim
@@ -135,7 +140,7 @@ def process_chunk(args):
      sheet_usable_w, sheet_usable_h, align, cx_count, cy_count, cluster_gap,
      active_grid_w, active_grid_h, super_grid_w, super_grid_h,
      prog_file, total_page_count, layout_type, is_die_cut, pont_config, strategy, detected_shapes_by_page, target_quantity, detected_shape_params_by_page, sheet_mapping, chunk_precalc_placements,
-     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, die_size_mode, die_offset_mm, homogeneous_mode, homogeneous_master_idx) = args
+     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, die_size_mode, die_offset_mm, target_quantities_by_page, manual_cols, manual_rows, homogeneous_mode, homogeneous_master_idx) = args
 
     src_doc = pdf_lib.open(source_path)
 
@@ -163,14 +168,17 @@ def process_chunk(args):
     _layout_cache = {}      # Cache compute_sticker_layout_for_page result per src_page_idx
     _base_poly_cache = {}   # Cache (base_poly, base_rect_pts) cho collision theo src_page_idx (mẫu)
 
-    # ── Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup) ──
-    # Cache bbox vùng mực thật của từng trang nội dung (vector-first) để registration
-    # (clip+co-khít+căn-tâm) mà KHÔNG dò lại mỗi ô. Trang rỗng (None) → bỏ ô an toàn.
+    # ── Khuôn master (homogeneous trộn mẫu HOẶC single-mold Bình trang) ──
+    # Seed đường bế master để: (1) vẽ cutline trên trang nội dung không path bế,
+    # (2) map artwork theo rect khuôn master thay vì MediaBox cả trang.
+    # Registration clip+co-khít (artwork_bbox) CHỈ khi homogeneous_mode=True.
     _artwork_bbox_cache = {}
     _hom_master_die = None  # (items, rect, color, width) của khuôn master → vẽ đường bế mỗi ô
-    if homogeneous_mode and homogeneous_master_idx is not None:
+    _sh_mod = None
+    if homogeneous_master_idx is not None:
         try:
-            from app.workers import sticker_homogeneous as _sh_mod
+            if homogeneous_mode:
+                from app.workers import sticker_homogeneous as _sh_mod
             _mp = src_doc[homogeneous_master_idx]
             _m_path = _find_largest_die_path(_mp)
             if _m_path:
@@ -181,11 +189,48 @@ def process_chunk(args):
                     'width': _m_path.get('width', 0.5),
                     'spot_name': _m_path.get('spot_name'),
                 }
+                # Pre-seed cache cho trang KHÔNG có path bế THẬT: geom + items = master.
+                # page_has_die (kênh/spot) đáng tin hơn _find_largest_die_path (dễ dính artwork).
+                # place_one_artwork / vẽ cutline dùng cache này → không rơi về trimbox trang.
+                try:
+                    from app.workers.sticker_homogeneous import page_has_die as _page_has_die
+                except Exception:
+                    _page_has_die = None
+                _mr = _m_path['rect']
+                _seeded_n = 0
+                for _pi in range(page_count):
+                    if _pi == homogeneous_master_idx:
+                        continue
+                    _sp = src_doc[_pi]
+                    _has_own = False
+                    if _page_has_die is not None:
+                        try:
+                            _has_own = bool(_page_has_die(_sp))
+                        except Exception:
+                            _has_own = _find_largest_die_path(_sp) is not None
+                    else:
+                        _has_own = _find_largest_die_path(_sp) is not None
+                    if _has_own:
+                        continue  # trang có khuôn riêng — giữ path của nó
+                    _ck = f"{job_id}_{_pi}"
+                    _sx0, _sy0, _sx1, _sy1 = _sp.rect
+                    # Cùng hệ toạ độ với master (file 1 khuôn multi-art thường cùng MediaBox).
+                    _diecut_geom_cache[_ck] = (
+                        _sx0, _sy0, _sx1, _sy1,
+                        _mr.x0, _mr.y0, _mr.x1, _mr.y1,
+                    )
+                    _die_items_cache[_ck] = dict(_hom_master_die)
+                    _die_path_cache[_pi] = _m_path
+                    _seeded_n += 1
+                logger.info(
+                    "[SINGLE-MOLD/HOM] seed master die p=%s → %d content page(s)",
+                    homogeneous_master_idx, _seeded_n,
+                )
         except Exception as _e_hm:
-            logger.debug(f"[HOMOGENEOUS] seed master die failed: {_e_hm}", flush=True)
+            logger.debug(f"[MASTER-DIE] seed master die failed: {_e_hm}", flush=True)
             _hom_master_die = None
-    else:
-        _sh_mod = None
+            if not homogeneous_mode:
+                _sh_mod = None
 
     _MAX_GEOM_CACHE = 200  # Giới hạn để tránh memory leak
 
@@ -235,9 +280,15 @@ def process_chunk(args):
 
         cur_super_base_y = super_base_y
 
-        if layout_type == 'repeat':
+        if _should_recompute_repeat_layout(layout_type, chunk_precalc_placements):
 
-            src_page_idx = sheet_idx // sheets_per_page if sheets_per_page > 0 else sheet_idx
+            # Repeat sheets are not uniformly distributed when each page has its
+            # own size/quantity. sheet_mapping is the source of truth built by
+            # nup_engine; deriving from sheet_idx selects another page's geometry.
+            if sheet_mapping and sheet_idx < len(sheet_mapping):
+                src_page_idx = int(sheet_mapping[sheet_idx])
+            else:
+                src_page_idx = sheet_idx // sheets_per_page if sheets_per_page > 0 else sheet_idx
 
             if src_page_idx < page_count:
 
@@ -354,7 +405,16 @@ def process_chunk(args):
                         _uw_solve = (sheet_usable_w - cluster_gap * (cx_count - 1)) / cx_count
                     if cy_count >= 2:
                         _uh_solve = (sheet_usable_h - cluster_gap * (cy_count - 1)) / cy_count
-                    cur_layout = solve_optimal_layout(_uw_solve, _uh_solve, cur_trim_w, cur_trim_h, gap_x, gap_y, strategy, main_secondary_gap)
+                    if strategy == 'manual' and manual_cols > 0 and manual_rows > 0:
+                        cur_layout = solve_manual(
+                            cur_trim_w, cur_trim_h, gap_x, gap_y,
+                            manual_cols, manual_rows,
+                        )
+                    else:
+                        cur_layout = solve_optimal_layout(
+                            _uw_solve, _uh_solve, cur_trim_w, cur_trim_h,
+                            gap_x, gap_y, strategy, main_secondary_gap,
+                        )
 
                     cur_cells = cur_layout['cells']
 
@@ -400,7 +460,7 @@ def process_chunk(args):
 
                 placements = chunk_precalc_placements[str(sheet_idx)]
 
-            logger.warning(
+            logger.debug(
                 "[ROT-AUDIT][phase1][sheet=%d] source=PRECALC n=%d layout=%s",
                 sheet_idx, len(placements), layout_type,
             )
@@ -444,7 +504,7 @@ def process_chunk(args):
                     page_count=page_count,
                     sheet_mapping=_sm,
                 )
-                logger.warning(
+                logger.debug(
                     "[ROT-AUDIT][phase1][sheet=%d] source=RUST_COMPUTE_PLACEMENTS n=%d "
                     "layout=%s cx=%d cy=%d active_grid=%.1fx%.1f super_base=(%.1f,%.1f)",
                     sheet_idx, len(placements), layout_type, cx_count, cy_count,
@@ -518,6 +578,34 @@ def process_chunk(args):
                                 'original_cell_y': cell_y
 
                             })
+
+        # Repeat quantities are exact. The final sheet for a page may only need
+        # part of the geometric capacity; trim the generated full-grid placement
+        # list using the same per-page quantity that built sheet_mapping.
+        if layout_type == 'repeat' and sheet_mapping and placements:
+            try:
+                if isinstance(sheet_mapping, dict):
+                    _repeat_src_idx = int(sheet_mapping.get(sheet_idx, sheet_mapping.get(str(sheet_idx))))
+                    _mapping_value = lambda _idx: sheet_mapping.get(_idx, sheet_mapping.get(str(_idx)))
+                else:
+                    _repeat_src_idx = int(sheet_mapping[sheet_idx])
+                    _mapping_value = lambda _idx: sheet_mapping[_idx]
+                _repeat_qty_raw = (target_quantities_by_page or {}).get(
+                    str(_repeat_src_idx),
+                    (target_quantities_by_page or {}).get(_repeat_src_idx, target_quantity),
+                )
+                _repeat_qty = int(_repeat_qty_raw or 0)
+                if _repeat_qty > 0:
+                    _page_sheet_ordinal = sum(
+                        1 for _idx in range(sheet_idx)
+                        if int(_mapping_value(_idx)) == _repeat_src_idx
+                    )
+                    _sheet_capacity = max(1, int(cur_capacity) * int(cx_count) * int(cy_count))
+                    _remaining = _repeat_qty - _page_sheet_ordinal * _sheet_capacity
+                    placements = placements[:max(0, min(len(placements), _remaining))]
+            except (KeyError, IndexError, TypeError, ValueError):
+                # Invalid legacy mapping: preserve the old full-sheet behavior.
+                pass
 
         # --- Duplex Mirroring ---
         if duplex_flow == 'double' and sheet_idx % 2 == 1:
@@ -987,18 +1075,22 @@ def process_chunk(args):
 
         # ═══ SEPARATE CUT PAGE ═══
         # After rendering the artwork page, generate a second page with only die-cut paths.
-        # Non-homogeneous: 1 trang khuôn / tờ (GIỮ NGUYÊN).
-        # Homogeneous (chung 1 khuôn master): mọi tờ dùng CÙNG khuôn + CÙNG vị trí ô →
+        # Multi-mold: 1 trang khuôn / tờ (GIỮ NGUYÊN).
+        # Shared master (homogeneous mixed HOẶC single-mold Bình trang): mọi tờ dùng
+        # CÙNG khuôn + CÙNG vị trí ô →
         # các trang khuôn giống hệt nhau. Tờ ĐẦU (sheet 0) luôn ĐẦY ĐỦ ô (nội dung rải
         # round-robin lấp tờ đầu trước); tờ cuối có thể thiếu ô. → CHỈ sinh trang khuôn
         # cho tờ 0, gắn marker /PSHomogCut để nup_engine chuyển xuống CUỐI file sau ghép
         # (kết quả: đúng 1 trang khuôn duy nhất, đầy đủ mọi ô, ở cuối file).
+        _shared_master_cut = homogeneous_mode or (
+            layout_type == 'repeat' and homogeneous_master_idx is not None
+        )
         _emit_cut = separate_cut_page and is_die_cut and placements
-        if _emit_cut and homogeneous_mode and sheet_idx != 0:
+        if _emit_cut and _shared_master_cut and sheet_idx != 0:
             _emit_cut = False
         if _emit_cut:
             out_page_cut = out_doc.new_page(width=sheet_w, height=sheet_h)
-            if homogeneous_mode:
+            if _shared_master_cut:
                 # Marker để nup_engine nhận diện + dời xuống cuối file (xoá marker sau đó).
                 out_page_cut._page.obj['/PSHomogCut'] = True
 

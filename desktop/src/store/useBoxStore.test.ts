@@ -56,6 +56,26 @@ describe('useBoxStore generation consistency', () => {
         });
     });
 
+    it('skips nesting for preview updates and requests it only when needed', async () => {
+        generateDielineRemote.mockResolvedValue(response({ ...DEFAULT_PARAMS, L: 123 }, 'preview'));
+        useBoxStore.getState().setParam('L', 123);
+        await vi.advanceTimersByTimeAsync(70);
+
+        expect(generateDielineRemote).toHaveBeenLastCalledWith(
+            expect.objectContaining({ changedKey: 'L', includeNesting: false }),
+            expect.any(AbortSignal),
+        );
+
+        generateDielineRemote.mockResolvedValue(response(DEFAULT_PARAMS, 'nesting'));
+        useBoxStore.getState().regenerate(true);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(generateDielineRemote).toHaveBeenLastCalledWith(
+            expect.objectContaining({ includeNesting: true }),
+            expect.any(AbortSignal),
+        );
+    });
+
     it('accepts only the latest response when requests finish out of order', async () => {
         const first = deferred<ReturnType<typeof response>>();
         const second = deferred<ReturnType<typeof response>>();

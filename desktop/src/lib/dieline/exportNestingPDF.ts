@@ -8,6 +8,7 @@
 // ============================================================
 
 import { DielineModel, PathSegment, Point2D, PathTag } from './types';
+import { withBleedPaths } from './bleedContours';
 import { NestingResult, NestingConfig } from './nestingTypes';
 import { jsPDF } from 'jspdf';
 import 'svg2pdf.js';
@@ -47,7 +48,7 @@ function segmentContinuation(seg: PathSegment): string {
 const TAG_STYLES: Record<string, { stroke: string; width: number; dashArray?: string }> = {
     CUT: { stroke: '#000000', width: 0.25 },
     CREASE: { stroke: '#ff0000', width: 0.15, dashArray: '2,1' },
-    BLEED: { stroke: '#0000ff', width: 0.1, dashArray: '1,1' },
+    BLEED: { stroke: '#16a34a', width: 0.1, dashArray: '1,1' },
 };
 
 /** Gom segments nối tiếp → chains liên tục */
@@ -105,11 +106,12 @@ function buildNestingSvg(
     config: NestingConfig,
 ): string {
     const { actualSheet, positions } = result;
+    const renderModel = withBleedPaths(model);
     const bb = model.boundingBox;
     const effectiveBottom = Math.max(config.margin.bottom, config.gripperMargin);
 
     // Build dieline path elements (dùng lại cho mỗi vị trí)
-    const chains = buildChains(model.allPaths);
+    const chains = buildChains(renderModel.allPaths);
     let pathDefs = '';
     chains.forEach((chain, ci) => {
         const style = TAG_STYLES[chain.tag] || TAG_STYLES.CUT;

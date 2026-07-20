@@ -58,6 +58,8 @@ const h = vi.hoisted(() => ({
     fakeTexture: { colorSpace: '', generateMipmaps: false, minFilter: 0, flipY: false } as any,
     /** Props mà SolidPanelMesh (mock) nhận được (để kiểm wiring từ dieline). */
     solidPanelProps: [] as any[],
+    /** Props của bốn miếng góc khay để kiểm tra công tắc đường kỹ thuật. */
+    gussetProps: [] as any[],
     /** Kết quả parseAsync của GLTFExporter mock. */
     glbResult: null as unknown,
     /** Cho phép GLTFExporter.parseAsync reject để kiểm nhánh lỗi. */
@@ -124,6 +126,12 @@ vi.mock('../SolidPanelMesh', () => ({
         return null;
     },
 }));
+vi.mock('../GussetMesh', () => ({
+    default: (props: any) => {
+        h.gussetProps.push(props);
+        return null;
+    },
+}));
 
 // ─── Import sau khi mock đã đăng ký ─────────────────────────────────────────
 
@@ -151,6 +159,7 @@ function makeFakeGl(toBlobImpl?: (cb: (b: Blob | null) => void) => void) {
         setPixelRatio: vi.fn(),
         setSize: vi.fn(),
         render: vi.fn(),
+        capabilities: { getMaxAnisotropy: vi.fn(() => 16) },
         // renderToBlob (useSceneExport) lưu/khôi phục clear color cho nhánh
         // nền trong suốt; stub các API này để khớp renderer thật.
         getClearColor: vi.fn((target: THREE.Color) => {
@@ -186,9 +195,11 @@ beforeEach(() => {
     h.canvasProps.length = 0;
     h.frameCallbacks.length = 0;
     h.solidPanelProps.length = 0;
+    h.gussetProps.length = 0;
     h.glbReject = false;
     h.glbResult = null;
     h.threeState = makeFakeThreeState();
+    Object.assign(h.fakeTexture, { colorSpace: '', generateMipmaps: false, minFilter: 0, flipY: false });
 
     const params = { ...DEFAULT_PARAMS };
     useBoxStore.setState({
@@ -293,6 +304,64 @@ describe('DielineScene3D — composition wiring (Yêu cầu 3.1, 3.5, 7.2)', () 
         expect(h.frameCallbacks.length).toBeGreaterThan(0);
     });
 
+    it('pizza giữ cơ cấu gấp và chuyển artwork ngoài sang cap âm Z', async () => {
+        const params = { ...DEFAULT_PARAMS, boxType: 'pizza' as const, L: 300, W: 300, D: 40, T: 1.5 };
+        useBoxStore.setState({ params, dieline: generateDieline(params), isModelCurrent: true });
+
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+
+        expect(h.solidPanelProps.length).toBeGreaterThan(0);
+        expect(h.solidPanelProps.every((props) => props.outerFaceNegativeZ === true)).toBe(true);
+    });
+    it('hộp diêm tách texture và vùng UV của khay khỏi vỏ hộp', async () => {
+        const params = { ...DEFAULT_PARAMS, boxType: 'tray' as const, L: 200, W: 150, D: 40, T: 1 };
+        useBoxStore.setState({ params, dieline: generateDieline(params), isModelCurrent: true });
+        useMockupStore.getState().setTrayArtworkUrl('data:image/png;base64,tray-only', 2);
+
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+
+        const trayProps = h.solidPanelProps.filter((props) => !props.panel.name.startsWith('sleeve_'));
+        const sleeveProps = h.solidPanelProps.filter((props) => props.panel.name.startsWith('sleeve_'));
+        expect(trayProps.length).toBeGreaterThan(0);
+        expect(sleeveProps.length).toBeGreaterThan(0);
+        expect(trayProps.every((props) => props.artworkPart === 'tray' && props.texture === h.fakeTexture)).toBe(true);
+        expect(sleeveProps.every((props) => props.artworkPart === 'sleeve' && props.texture === null)).toBe(true);
+        expect(trayProps[0].globalBBox).not.toEqual(sleeveProps[0].globalBBox);
+        expect(h.solidPanelProps.every((props) => props.outerFaceNegativeZ === true)).toBe(true);
+        expect(h.gussetProps).toHaveLength(4);
+        expect(h.gussetProps.every((props) => props.hideCadLines === true)).toBe(true);
+    });
+    it('nối mask Spot-UV tuyến tính tới mọi panel 3D', async () => {
+        useMockupStore.getState().setFinishId('spot-uv');
+        useMockupStore.getState().setSpotUvMaskUrl('data:image/png;base64,spot-mask');
+
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+
+        expect(h.solidPanelProps.length).toBeGreaterThan(0);
+        expect(h.solidPanelProps.every((props) => props.spotUvTexture === h.fakeTexture)).toBe(true);
+        expect(h.fakeTexture.colorSpace).toBe(THREE.NoColorSpace);
+        expect(h.fakeTexture.anisotropy).toBe(8);
+    });
+    it('nối mask emboss đã tải tới mọi panel 3D', async () => {
+        useMockupStore.getState().setFinishId('emboss');
+        useMockupStore.getState().setEmbossMaskUrl('data:image/png;base64,mask');
+        useMockupStore.getState().setEmbossHeightMm(1.2);
+
+        await act(async () => {
+            render(e(DielineScene3D, null));
+        });
+
+        expect(h.solidPanelProps.length).toBeGreaterThan(0);
+        expect(h.solidPanelProps.every((props) => props.embossTexture === h.fakeTexture)).toBe(true);
+        expect(h.fakeTexture.colorSpace).toBe(THREE.NoColorSpace);
+        expect(h.fakeTexture.anisotropy).toBe(8);
+    });
     it('không rơi vào fallback HDRI khi vừa mount (EnvironmentRig còn cấp IBL)', async () => {
         await act(async () => {
             render(e(DielineScene3D, null));

@@ -39,31 +39,20 @@ export type DisposableInput =
 // ─── Tiện ích giải phóng thuần (không phụ thuộc React) ──────────────────────
 
 /**
- * Giải phóng mọi texture được tham chiếu bởi một material.
+ * Giải phóng material nhưng không tự hủy các texture đang được tham chiếu.
  *
- * Material PBR (`MeshStandardMaterial`, …) giữ texture qua nhiều khe
- * khác nhau (`map`, `normalMap`, `roughnessMap`, …). Ta duyệt toàn
- * bộ thuộc tính của material và dispose mọi giá trị là `THREE.Texture`,
- * sau đó dispose chính material. An toàn với material đã dispose vì
- * `.dispose()` của three idempotent ở mức thực dụng.
+ * Texture từ `useLoader` được chia sẻ giữa nhiều panel và thuộc quyền quản lý
+ * của lớp loader/scene. Nếu một panel hủy texture cùng material, các panel còn
+ * lại hoặc lần đổi finish kế tiếp sẽ dùng phải tài nguyên GPU đã dispose.
+ * Texture độc lập vẫn được giải phóng bằng `disposeResource(texture)` tại nơi
+ * sở hữu nó.
  *
  * @param material Material cần giải phóng (đơn hoặc mảng).
  */
 export function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
     const materials = Array.isArray(material) ? material : [material];
-
     for (const mat of materials) {
-        if (!mat) continue;
-
-        // Giải phóng mọi texture đính trong các khe của material.
-        for (const key of Object.keys(mat) as (keyof typeof mat)[]) {
-            const value = mat[key];
-            if (value instanceof THREE.Texture) {
-                value.dispose();
-            }
-        }
-
-        mat.dispose();
+        mat?.dispose();
     }
 }
 
@@ -202,7 +191,7 @@ export function useDisposeOnChange(
 export const useDisposeResources = {
     /** Giải phóng đệ quy một tài nguyên/mảng tài nguyên. */
     dispose: disposeResource,
-    /** Giải phóng material + texture của nó. */
+    /** Giải phóng material; không hủy texture dùng chung. */
     disposeMaterial,
     /** Hook cấp phát có dispose tài nguyên cũ. */
     useDisposableResource,

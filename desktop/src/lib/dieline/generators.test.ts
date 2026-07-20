@@ -145,6 +145,20 @@ describe('generateSnapLockBottom', () => {
         // Crash-lock bottom extends downward, width should be >= RTE
         expect(slb.boundingBox.width).toBeGreaterThanOrEqual(rte.boundingBox.width);
     });
+
+    it('uses the same single top-tuck crease geometry as RTE', () => {
+        const params = make({ boxType: 'slb', L: 100, W: 60, D: 200, T: 0.5 });
+        const slb = generateSnapLockBottom(params);
+        const rte = generateReverseTuckEnd({ ...params, boxType: 'rte' });
+        const slbTuck = slb.panels.find(panel => panel.name === 'tuck_top');
+        const rteTuck = rte.panels.find(panel => panel.name === 'tuck_top');
+
+        expect(slbTuck).toBeDefined();
+        expect(rteTuck).toBeDefined();
+        expect(slbTuck!.paths.filter(path => path.tag === 'CREASE')).toHaveLength(0);
+        expect(slbTuck!.paths).toEqual(rteTuck!.paths);
+        expect(slbTuck!.pivotEdge).toEqual(rteTuck!.pivotEdge);
+    });
 });
 
 // ─── Pizza Box (FEFCO 0426) ─────────────────────────────────

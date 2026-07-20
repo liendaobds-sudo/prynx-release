@@ -47,6 +47,8 @@ export interface GussetMeshProps {
     depthMap: Map<string, number>;
     maxD: number;
     thickness: number;
+    /** Ẩn toàn bộ nét CUT/CREASE khi người dùng tắt đường kỹ thuật. */
+    hideCadLines?: boolean;
 }
 
 /**
@@ -60,6 +62,7 @@ export default function GussetMesh({
     depthMap,
     maxD,
     thickness,
+    hideCadLines = false,
 }: GussetMeshProps) {
     const finishId = useMockupStore((s) => s.finishId);
     const edgeColor = useMockupStore((s) => s.edgeColor);
@@ -149,7 +152,7 @@ export default function GussetMesh({
             <mesh geometry={surface} material={innerMaterial} castShadow receiveShadow />
 
             {/* Nét khuôn (cắt/nhấn) — vẽ 2 mặt như SolidPanelMesh. */}
-            {hasCut && (
+            {!hideCadLines && hasCut && (
                 <>
                     <lineSegments geometry={cutOuter}>
                         <lineBasicMaterial color="#23272e" transparent opacity={0.45} depthWrite={false} />
@@ -159,7 +162,7 @@ export default function GussetMesh({
                     </lineSegments>
                 </>
             )}
-            {hasCrease && (
+            {!hideCadLines && hasCrease && (
                 <>
                     <lineSegments geometry={creaseOuter}>
                         <lineBasicMaterial color="#e23b3b" transparent opacity={0.45} depthWrite={false} />

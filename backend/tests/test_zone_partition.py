@@ -112,6 +112,19 @@ class TestZoneRatioSlots:
         assert slots.count(0) == 3
         assert slots.count(1) == 1
 
+    def test_extreme_ratio_is_bounded(self):
+        page_infos = [(0, 1, 40.0, 40.0), (1, 10000, 40.0, 40.0)]
+        slots = _zone_type_slots(page_infos, 'zone_ratio')
+        assert len(slots) <= 16
+        assert slots.count(1) > slots.count(0) >= 1
+
+        sheets = run_zone_partition_sheets(
+            page_infos, _make_grid_zone_fn(40.0, 40.0),
+            sheet_w=400.0, sheet_h=400.0, gap_x=0, gap_y=0,
+            mode='zone_ratio', zone_cols=2, zone_rows=2,
+        )
+        assert len(sheets) <= 4
+
     def test_ratio_bigger_qty_more_sheets_share(self):
         # Loại 0 SL lớn → nhiều slot → chiếm nhiều vùng hơn tổng thể.
         page_infos = [(0, 400, 40.0, 40.0), (1, 100, 40.0, 40.0)]

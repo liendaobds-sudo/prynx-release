@@ -37,6 +37,7 @@
     "@turf/union": "^7.3.5",
     "@types/pako": "^2.0.4",
     "class-variance-authority": "^0.7.1",
+    "clipper-lib": "^6.4.2",
     "clsx": "^2.1.1",
     "diff": "^8.0.4",
     "i18next": "^26.3.6",

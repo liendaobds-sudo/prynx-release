@@ -21,7 +21,7 @@ interface BoxStore {
 
     setParam: (key: keyof BoxParams, value: BoxParams[keyof BoxParams]) => void;
     setParams: (updates: Partial<BoxParams>) => void;
-    regenerate: () => void;
+    regenerate: (includeNesting?: boolean) => void;
     setFoldProgress: (value: number) => void;
     setViewMode: (mode: '2d' | '3d' | 'split') => void;
     setIsAnimating: (v: boolean) => void;
@@ -38,16 +38,27 @@ let generationTimer: ReturnType<typeof setTimeout> | null = null;
 let generationVersion = 0;
 let activeController: AbortController | null = null;
 
+interface GenerationOptions {
+    changedKey?: keyof BoxParams;
+    delayMs?: number;
+    includeNesting?: boolean;
+}
+
 function scheduleGeneration(
     set: StoreSet,
     get: StoreGet,
-    changedKey?: keyof BoxParams,
-    delayMs = 70,
+    options: GenerationOptions = {},
 ): void {
+    const { changedKey, delayMs = 70, includeNesting = false } = options;
     if (generationTimer) clearTimeout(generationTimer);
     activeController?.abort();
     const version = ++generationVersion;
-    set({ isGenerating: true, isModelCurrent: false, generationError: null });
+    set({
+        isGenerating: true,
+        isModelCurrent: false,
+        generationError: null,
+        ...(!includeNesting ? { nestingResult: null, sleeveNestingResult: null } : {}),
+    });
 
     generationTimer = setTimeout(async () => {
         generationTimer = null;
@@ -59,6 +70,7 @@ function scheduleGeneration(
                 params: snapshot.params,
                 nestingConfig: snapshot.nestingConfig,
                 changedKey,
+                includeNesting,
             }, controller.signal);
             if (version !== generationVersion) return;
             const forceRerender = changedKey === 'boxType';
@@ -151,13 +163,13 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
             ? applyBoxTypeDefaults(prev, value)
             : { ...prev, [key]: value };
         set({ params });
-        scheduleGeneration(set, get, key);
+        scheduleGeneration(set, get, { changedKey: key });
     },
     setParams: (updates) => {
         set({ params: { ...get().params, ...updates } });
         scheduleGeneration(set, get);
     },
-    regenerate: () => scheduleGeneration(set, get, undefined, 0),
+    regenerate: (includeNesting = false) => scheduleGeneration(set, get, { delayMs: 0, includeNesting }),
     setFoldProgress: (value) => set({ foldProgress: value }),
     setViewMode: (mode) => set({ viewMode: mode }),
     setIsAnimating: (v) => set({ isAnimating: v }),
@@ -168,7 +180,7 @@ export const useBoxStore = create<BoxStore>((set, get) => ({
             set({ generationError: error instanceof Error ? error.message : String(error), isModelCurrent: false });
             return;
         }
-        scheduleGeneration(set, get);
+        scheduleGeneration(set, get, { includeNesting: true });
     },
     setMockupTextureUrl: (url) => set({ mockupTextureUrl: url }),
 }));

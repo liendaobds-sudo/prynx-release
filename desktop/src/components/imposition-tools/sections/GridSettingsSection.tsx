@@ -120,6 +120,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
       setShowBleedView: state.setShowBleedView,
     })),
   );
+  const quantityApplies = !(taskMode === "nup" && s.layoutType === "cut_stacks");
+
 
   // Derived variables for shape selector
   const actualIndex = viewerPageOrder
@@ -611,19 +613,22 @@ export default function GridSettingsSection(props: GridSettingsProps) {
               <input
                 type="number"
                 min="0"
-                value={targetQuantity === 0 ? "" : targetQuantity}
+                value={quantityApplies ? (targetQuantity === 0 ? "" : targetQuantity) : ""}
+                disabled={!quantityApplies}
                 onChange={(e) =>
                   setTargetQuantity(Math.max(0, parseInt(e.target.value) || 0))
                 }
-                className="flex-1 min-w-0 h-8 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                className="flex-1 min-w-0 h-8 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                 style={{ paddingLeft: "9px", paddingRight: "8px" }}
                 placeholder={
-                  taskMode === "nup" || taskMode === "sticker_imposer"
+                  !quantityApplies
+                    ? "Kh\u00f4ng \u00e1p d\u1ee5ng cho X\u1ebfp ch\u1ed3ng"
+                    : taskMode === "nup" || taskMode === "sticker_imposer"
                     ? t('imposition.gridSettings:trong_tu_dong_lap_day_1_to')
                     : t('imposition.gridSettings:0_xep_toi_da_tren_1_to')
                 }
               />
-              {sourceTotalPages > 1 ? (
+              {sourceTotalPages > 1 && quantityApplies ? (
                 <button
                   onClick={() => setShowPageQuantities(!showPageQuantities)}
                   className={`shrink-0 w-8 h-8 rounded flex items-center justify-center transition-colors ${showPageQuantities ? "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400" : "bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"}`}
@@ -649,7 +654,12 @@ export default function GridSettingsSection(props: GridSettingsProps) {
             </div>
           </div>
 
-          {showPageQuantities && sourceTotalPages > 1 && (
+          {!quantityApplies && (
+            <div className="pl-[107px] text-[11px] leading-snug text-slate-500 dark:text-zinc-400">
+              {"X\u1ebfp ch\u1ed3ng d\u00f9ng m\u1ed7i trang PDF \u0111\u00fang m\u1ed9t l\u1ea7n; s\u1ed1 l\u01b0\u1ee3ng kh\u00f4ng \u00e1p d\u1ee5ng."}
+            </div>
+          )}
+          {quantityApplies && showPageQuantities && sourceTotalPages > 1 && (
             <div className="mt-1 animate-in slide-in-from-top-2 duration-200">
               <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-white/10 rounded-lg space-y-2 max-h-60 overflow-y-auto custom-scrollbar">
                 {/* Dán cột số lượng từ Excel → điền theo thứ tự trang (bỏ gõ tay từng ô) */}

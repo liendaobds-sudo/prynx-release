@@ -442,12 +442,12 @@ export function generateSnapLockBottom(params: BoxParams): DielineModel {
     const tuckR = snap(Math.min(3, tuckW * 0.05));
 
 
-    const tuckTopBase = snap(closureTopY + closureH);
+    // The tuck root must coincide with the closure's real fold line. Using
+    // closureTopY + closureH shifts it by T and creates a second false crease.
+    const tuckTopBase = tuckTopCreaseY;
     const tuckTopPaths: PathSegment[] = buildTuckFlap(
         xFrontL + tuckInset, tuckTopBase, tuckW, tuckH, tuckR, 1
     );
-    // Add base crease to close the loop for 3D tracing
-    tuckTopPaths.push(line(pt(xFrontL + tuckInset, tuckTopBase), pt(snap(xFrontL + tuckInset + tuckW), tuckTopBase), 'CREASE'));
     allPaths.push(...tuckTopPaths);
     panels.push({
         name: 'tuck_top',

@@ -39,6 +39,8 @@ describe('useMockupStore blob resource lifecycle', () => {
     it('releases every live object URL on reset without revoking duplicates twice', () => {
         const store = useMockupStore.getState();
         store.setOuterArtworkUrl('blob:outer');
+        useMockupStore.getState().setTrayArtworkUrl('blob:tray');
+        useMockupStore.getState().setSleeveArtworkUrl('blob:sleeve');
         useMockupStore.getState().setInnerArtworkUrl('blob:inner');
         useMockupStore.getState().setSpotUvMaskUrl('blob:mask');
         revoke.mockReset();
@@ -46,7 +48,7 @@ describe('useMockupStore blob resource lifecycle', () => {
         useMockupStore.getState().resetMockup();
         vi.runOnlyPendingTimers();
         expect(new Set(revoke.mock.calls.map(([url]) => url))).toEqual(
-            new Set(['blob:outer', 'blob:inner', 'blob:mask']),
+            new Set(['blob:outer', 'blob:tray', 'blob:sleeve', 'blob:inner', 'blob:mask']),
         );
     });
 });

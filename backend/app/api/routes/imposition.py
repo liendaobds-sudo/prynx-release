@@ -316,9 +316,9 @@ async def quick_color_space(body: dict):
                     # ' k' or ' K' (CMYK), ' rg' or ' RG' (RGB)
                     # This is a heuristic but very effective for simple vectors
                     import re
-                    if re.search(b'(?:\s|^)[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[kK](?:\s|$)', contents):
+                    if re.search(br'(?:\s|^)[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[kK](?:\s|$)', contents):
                         cmyk += 1
-                    elif re.search(b'(?:\s|^)[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[rgRG](?:\s|$)', contents):
+                    elif re.search(br'(?:\s|^)[0-9.]+\s+[0-9.]+\s+[0-9.]+\s+[rgRG](?:\s|$)', contents):
                         rgb += 1
                 except Exception:
                     pass
@@ -445,8 +445,8 @@ async def get_pdf_meta(body: dict):
         max_w = 0.0
         max_h = 0.0
         
-        # For huge files (VDP outputs), only scan first few pages
-        scan_limit = min(page_count, 10) if page_count > 200 else page_count
+        # Page sizes can differ after resize; return metadata for every page.
+        scan_limit = page_count
         
         _PT_TO_MM = 1.0 / 2.83465
         detected_bleed_mm = 0.0  # bleed suy ra từ (MediaBox - TrimBox)/2 của trang đầu
@@ -1140,6 +1140,7 @@ class PreviewLayoutRequest(BaseModel):
     grouping_strategy: str = "none"
     cluster_sizing_mode: str = "dims"
     cluster_combine_mode: str = "replicate_mixed"
+    cluster_nesting: bool = True
     cluster_cols: int = 2
     cluster_rows: int = 2
     cluster_w: float = 0
@@ -1355,6 +1356,12 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
     Preview sticker layout — uses the SAME compute function as nup_engine
     to guarantee preview ≡ output.
     """
+    if req.strategy == 'manual' and (req.cols <= 0 or req.rows <= 0):
+        raise HTTPException(
+            status_code=422,
+            detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng c\u1ea7n s\u1ed1 c\u1ed9t v\u00e0 s\u1ed1 d\u00f2ng l\u1edbn h\u01a1n 0.",
+        )
+
     enforce_feature(_imposition_feature(req), license_info)
     
     if req.file_id or req.path:
@@ -1373,7 +1380,7 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
             _T_PREVIEW_START = _t_mod.perf_counter()
             def _plog(_lbl):
                 elapsed = (_t_mod.perf_counter() - _T_PREVIEW_START) * 1000.0
-                logger.warning("[PREVIEW-TIMING] %-32s +%7.1fms", _lbl, elapsed)
+                logger.debug("[PREVIEW-TIMING] %-32s +%7.1fms", _lbl, elapsed)
                 _perf("PREVIEW", _lbl, ms_from_start=elapsed)
 
             _perf(
@@ -1436,8 +1443,17 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
             doc = pdf_lib.open(file_path)
             _plog(f"open doc ({file_path.split(chr(92))[-1]}, {doc.page_count}p)")
             src_page_count = doc.page_count
+            # SSOT số mẫu đang có trên dải thumbnail. PDF vật lý có thể vẫn chỉ
+            # có 1 trang trong lúc các bản nhân đang được materialize.
+            _live_preview_page_count = int(getattr(req, 'total_pages', 0) or 0)
+            if _live_preview_page_count <= 0:
+                _live_preview_page_count = int(doc.page_count or 0)
 
-            page_idx = min(req.page_idx, doc.page_count - 1) if getattr(req, 'page_idx', 0) >= 0 else 0
+            # Tách vị trí loại đang xem khỏi chỉ số trang vật lý. Với thumbnail
+            # nhân bản, viewer có thể đang ở loại 3 trong khi PDF fallback còn 1 trang.
+            _requested_page_idx = max(0, int(getattr(req, 'page_idx', 0) or 0))
+            _viewer_page_idx = min(_requested_page_idx, max(0, _live_preview_page_count - 1))
+            page_idx = min(_viewer_page_idx, max(0, doc.page_count - 1))
             page = doc[page_idx]
             
             # ── N-Up MULTI-PAGE PREVIEW: bin-pack all pages together ──
@@ -1451,12 +1467,15 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
             # is_nup_multi để không bị bin-pack trộn nuốt.
             # cluster_tile chạy cho CẢ die-cut (bế/CNC, nest NFP) LẪN guillotine (bình
             # cắt xén, nest grid solve_optimal_layout). _cluster_is_die phân nhánh nest.
-            _is_cluster_req = (getattr(req, 'grouping_strategy', None) == 'cluster_tile')
+            _is_cluster_req = (
+                getattr(req, 'grouping_strategy', None) == 'cluster_tile'
+                and _lt != 'repeat'
+            )
             _cluster_is_die = bool(getattr(req, 'is_die_cut', False))
             is_nup_multi = (
                 _tm in ('nup', 'booklet', 'sticker_imposer')
                 and _lt != 'repeat'
-                and doc.page_count > 1
+                and _live_preview_page_count > 1
                 and (_tm == 'sticker_imposer' or bool(getattr(req, 'is_die_cut', False)))
                 and not _is_cluster_req
             )
@@ -1481,7 +1500,7 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                 # Guillotine cluster (bình cắt xén, KHÔNG bế): nest trong vùng bằng
                 # grid solver, KHÔNG NFP/đường bế → khớp export (_gui_zone_layout_fn).
                 _is_gui_cluster = not bool(getattr(req, 'is_die_cut', False))
-                from app.workers.nup_layout_solver import solve_optimal_layout as _sol_c
+                from app.workers.nup_layout_solver import solve_manual as _sm_c, solve_optimal_layout as _sol_c
                 _uw = req.usable_w
                 _uh = req.usable_h
                 _ml = getattr(req, 'margin_left', 0) or 0
@@ -1506,6 +1525,7 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                 # outline chuẩn hoá vào bbox (méo).
                 page_infos_c = []
                 _die_geo_by_page_c = {}
+                _genuine_die_idxs_c = []
                 from app.workers.nup_diecut import resolve_one_dao_trim as _r1d_cl
                 _dsm_cl = getattr(req, 'die_size_mode', 'die')
                 _dom_cl = getattr(req, 'die_offset_mm', 0)
@@ -1525,6 +1545,8 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                     lp = _find_largest_die_path(pg)
                     # 1 Dao + "theo kích thước trang": trim = mediabox ± offset (chung export).
                     _odt = _r1d_cl(pg, _ct_cl, _dsm_cl, _dom_cl)
+                    if lp and _odt is None:
+                        _genuine_die_idxs_c.append(pi)
                     if _odt is not None:
                         # page mode: cắt là chữ nhật theo trang → KHÔNG gắn contour thật
                         # (tránh preview vẽ đường bế bo góc trong khi cắt thẳng).
@@ -1537,6 +1559,25 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                         tw_c = pg.rect.width - 2 * bleed_pt
                         th_c = pg.rect.height - 2 * bleed_pt
                     page_infos_c.append((pi, _qty_c(pi), tw_c, th_c))
+
+                # Cluster dùng cùng master context với S&R/homogeneous. Chỉ đúng
+                # một page có geometry thật mới được kế thừa; multi-mold no-op.
+                _single_mold_master_c = None
+                if (not _is_gui_cluster and doc.page_count >= 2
+                        and len(_genuine_die_idxs_c) == 1):
+                    _single_mold_master_c = _genuine_die_idxs_c[0]
+                    _master_info_c = next(
+                        info for info in page_infos_c
+                        if info[0] == _single_mold_master_c
+                    )
+                    _master_geo_c = _die_geo_by_page_c.get(_single_mold_master_c)
+                    page_infos_c = [
+                        (pi, qty, _master_info_c[2], _master_info_c[3])
+                        for pi, qty, _tw, _th in page_infos_c
+                    ]
+                    if _master_geo_c is not None:
+                        for pi in range(doc.page_count):
+                            _die_geo_by_page_c[pi] = _master_geo_c
 
                 # PARITY với export (nup_engine): CHỈ replicate_mixed sort theo kích
                 # thước (gom mọi loại vào 1 cụm). zone_per_type / zone_ratio giữ THỨ TỰ
@@ -1567,10 +1608,17 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                 _zc_fp = os.path.abspath(file_path)
 
                 def _zone_layout_fn_c(p_idx, zone_w, zone_h):
-                    _ps = _shapes.get(str(p_idx)) or _shapes.get(p_idx)
-                    _pp = _sprops.get(str(p_idx)) or _sprops.get(p_idx) or {}
+                    _geometry_idx_c = (
+                        _single_mold_master_c
+                        if _single_mold_master_c is not None
+                        else p_idx
+                    )
+                    _ps = (_shapes.get(str(_geometry_idx_c))
+                           or _shapes.get(_geometry_idx_c))
+                    _pp = (_sprops.get(str(_geometry_idx_c))
+                           or _sprops.get(_geometry_idx_c) or {})
                     _ck = (
-                        _zc_fp, _zc_mtime, p_idx,
+                        _zc_fp, _zc_mtime, _geometry_idx_c,
                         round(zone_w, 1), round(zone_h, 1),
                         round(req.gap_x, 2), round(req.gap_y, 2),
                         req.strategy, _ps or None,
@@ -1579,12 +1627,13 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                         round(_sg_c, 2) if _sg_c is not None else None,
                         _is_gui_cluster,
                         _ct_cl, _dsm_cl, round(float(_dom_cl or 0), 3),
+                        int(req.cols or 0), int(req.rows or 0),
                     )
                     _hit = _ZONE_NEST_CACHE.get(_ck)
                     if _hit is not None:
                         _ZONE_NEST_CACHE.move_to_end(_ck)
                         return _hit
-                    _pg = doc[p_idx]
+                    _pg = doc[_geometry_idx_c]
                     _t_n = _time_c.perf_counter()
                     if _is_gui_cluster:
                         # Guillotine: grid solver trong vùng (khớp _gui_zone_layout_fn export).
@@ -1595,8 +1644,19 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                             _tw_g = _pg.rect.width - 2 * bleed_pt
                             _th_g = _pg.rect.height - 2 * bleed_pt
                         try:
-                            _sol = _sol_c(zone_w, zone_h, _tw_g, _th_g,
-                                          req.gap_x, req.gap_y, req.strategy, _sg_c)
+                            if req.strategy == 'manual':
+                                _sol = _sm_c(
+                                    _tw_g, _th_g, req.gap_x, req.gap_y,
+                                    req.cols, req.rows,
+                                )
+                                if (_sol.get('overallWidth', 0) > zone_w + 0.01
+                                        or _sol.get('overallHeight', 0) > zone_h + 0.01):
+                                    raise ValueError("Manual grid exceeds cluster area")
+                            else:
+                                _sol = _sol_c(
+                                    zone_w, zone_h, _tw_g, _th_g,
+                                    req.gap_x, req.gap_y, req.strategy, _sg_c,
+                                )
                             _r = {'items': [{
                                 'x': _c['x'], 'y': _c['y'],
                                 'width': _c['width'], 'height': _c['height'],
@@ -1669,8 +1729,8 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                     tile_gap_x=_tgx,
                     tile_gap_y=_tgy,
                     combine_mode=combine_mode,
-                    cluster_nesting=True,
-                    is_die_cut=True,
+                    cluster_nesting=bool(getattr(req, 'cluster_nesting', True)),
+                    is_die_cut=_cluster_is_die,
                     zone_cols=max(1, req.cluster_cols or 2),
                     zone_rows=max(1, req.cluster_rows or 1),
                 )
@@ -1976,11 +2036,22 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                     _det_shapes = getattr(req, 'detected_shapes_by_page', None) or {}
                     _det_params = getattr(req, 'detected_shape_params_by_page', None) or {}
                     _adapters = []
-                    for _p in range(doc.page_count):
+                    # total_pages is the live thumbnail count. The physical PDF may
+                    # still be the original file while duplicated thumbnails are
+                    # being materialized, so homogeneous preview must not derive the
+                    # number of content samples only from doc.page_count.
+                    _logical_hom_pages = int(getattr(req, 'total_pages', 0) or 0)
+                    if _logical_hom_pages <= 0:
+                        _logical_hom_pages = doc.page_count
+                    _fallback_trim = _trim_by_page.get(0, (
+                        float(getattr(req, 'item_w', 0) or 0),
+                        float(getattr(req, 'item_h', 0) or 0),
+                    ))
+                    for _p in range(_logical_hom_pages):
                         # Page-sized 1 Dao bỏ qua mọi khuôn có sẵn; không được dùng
                         # khuôn cũ làm master/clip homogeneous trong preview.
                         _page_sized_one_dao_pv = (_ct_b == 'one_dao' and _dsm_b == 'page')
-                        _hd = (False if _page_sized_one_dao_pv
+                        _hd = (False if _page_sized_one_dao_pv or _p >= doc.page_count
                                else _genuine_die_by_page.get(_p, False))
                         if _hd:
                             _s = (_det_shapes.get(str(_p)) or _det_shapes.get(_p))
@@ -1990,7 +2061,7 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                                 _stype = _ShapeType.CUSTOM
                         else:
                             _stype = _ShapeType.CUSTOM
-                        _tw, _th = _trim_by_page.get(_p, (0.0, 0.0))
+                        _tw, _th = _trim_by_page.get(_p, _fallback_trim)
                         _poly = (((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th))
                                  if _hd else ())
                         _props = (_det_params.get(str(_p)) or _det_params.get(_p) or {})
@@ -2023,7 +2094,8 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                     _content_qtys_pv = [
                         _qty_for_page(_cp) for _cp in homogeneous_plan.content_pages
                     ]
-                    _use_per_type_pv = any(q > 1 for q in _content_qtys_pv)
+                    # Non-repeat homogeneous luôn là dàn nhiều mẫu, kể cả fixed qty.
+                    _use_per_type_pv = False
                     _hom_layout = _sh.build_homogeneous_layout(
                         master_page=None,
                         plan=homogeneous_plan,
@@ -2033,9 +2105,8 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                         gap_y=req.gap_y,
                         bleed_pt=bleed_pt,
                         secondary_gap=None,
-                        quantities=None if _use_per_type_pv else (
-                            _content_qtys_pv if any(q > 0 for q in _content_qtys_pv) else None
-                        ),
+                        quantities=(_content_qtys_pv
+                                    if any(q > 0 for q in _content_qtys_pv) else None),
                         layout_fn=(lambda *_a, **_k: _master_layout),
                     )
 
@@ -2106,6 +2177,32 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                         ov_w = max(ov_w, _ax + _w)
                         ov_h = max(ov_h, _ay + _h)
 
+                    # Trả MỌI tờ để frontend lật 1/N. Khi 45 mẫu nhưng sức chứa
+                    # chỉ 28, top-level vẫn là tờ 1 (28 ô), còn sheets[1] là 17 ô.
+                    # Hình học mọi tờ dùng cùng layout master; chỉ pageIdx thay đổi.
+                    _sheets_out_h = []
+                    if _use_per_type_pv:
+                        _sheets_out_h.append({
+                            "cells": [dict(_c) for _c in cells],
+                            "overallWidth": ov_w, "overallHeight": ov_h,
+                            "totalItems": len(cells),
+                        })
+                    else:
+                        for _si_h in range(max(1, _hom_layout.num_sheets)):
+                            _by_cell_h = {
+                                _cc.cell_index: _cc.src_page_idx
+                                for _cc in _hom_layout.cell_contents
+                                if _cc.sheet_index == _si_h
+                            }
+                            _cells_h = [
+                                {**cells[_ci_h], "pageIdx": _src_h}
+                                for _ci_h, _src_h in sorted(_by_cell_h.items())
+                                if 0 <= _ci_h < len(cells)
+                            ]
+                            _sheets_out_h.append({
+                                "cells": _cells_h, "overallWidth": ov_w,
+                                "overallHeight": ov_h, "totalItems": len(_cells_h),
+                            })
                     logger.info(
                         "[HOMOGENEOUS PREVIEW] master=trang %d, shape=%s, %d ô (tờ 0, perType=%s)",
                         _master_idx, homogeneous_plan.shape_type.name, len(cells),
@@ -2116,11 +2213,17 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                         "cells": cells,
                         "overallWidth": ov_w,
                         "overallHeight": ov_h,
-                        "totalItems": len(cells),
+                        # Sức chứa HÌNH HỌC tối đa của khuôn trên một tờ, không phải
+                        # số mẫu hiện có đang được rải trên tờ đầu.
+                        "totalItems": _hom_layout.cells_per_sheet,
                         "strategyUsed": "homogeneous",
                         "isMixedPreview": True,
                         "absPlacement": True,
                         "isHomogeneousPreview": True,
+                        "sheets": _sheets_out_h,
+                        # Tổng số mẫu của toàn bộ job, không chỉ số mẫu nằm trên tờ 1.
+                        "totalContentItems": len(homogeneous_plan.content_pages),
+                        "sheetsNeeded": _hom_layout.num_sheets,
                         # Mọi ô = hình MASTER → map mỗi trang nội dung → đường bế master.
                         "diePolygonsByPage": (
                             {str(_cp): _die_poly_by_page.get(_master_idx)
@@ -2419,6 +2522,13 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                 _uw_ce = max(_trim_w_ce, _uw_ce)
                 _uh_ce = max(_trim_h_ce, _uh_ce)
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
+                    if (_lay_ce.get('overallWidth', 0) > _uw_ce + 0.01
+                            or _lay_ce.get('overallHeight', 0) > _uh_ce + 0.01):
+                        doc.close()
+                        raise HTTPException(
+                            status_code=422,
+                            detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng v\u01b0\u1ee3t v\u00f9ng gi\u1ea5y s\u1eed d\u1ee5ng.",
+                        )
                     _lay_ce = _sm_ce(_trim_w_ce, _trim_h_ce, req.gap_x, req.gap_y, req.cols, req.rows)
                 else:
                     _lay_ce = _sol_ce(
@@ -2492,9 +2602,29 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
             # ── MULTI-PAGE N-Up guillotine PREVIEW: sequential | cut_stacks | ratio_stack ──
             # Trước đây chỉ ratio_stack có preview mixed → sequential/cut_stacks rơi single-page
             # (mọi ô cùng 1 trang) → user thấy "sai sai". Tờ 0 + pageIdx từng ô.
+            # A straight guillotine grid cannot safely combine different trim
+            # sizes. Export rejects this too; preview must not scale every page
+            # to the first page's dimensions.
+            if (not getattr(req, 'is_die_cut', False)
+                    and _lt in ('sequential', 'cut_stacks', 'ratio_stack')):
+                _page_trim_sizes = []
+                for _dpi in range(doc.page_count):
+                    _drect = doc[_dpi].rect
+                    _page_trim_sizes.append((
+                        max(0.0, float(_drect.width) - 2 * (req.bleed or 0)),
+                        max(0.0, float(_drect.height) - 2 * (req.bleed or 0)),
+                    ))
+                if len(_page_trim_sizes) > 1:
+                    _dw0, _dh0 = _page_trim_sizes[0]
+                    if any(abs(_dw - _dw0) > 0.5 or abs(_dh - _dh0) > 0.5 for _dw, _dh in _page_trim_sizes[1:]):
+                        doc.close()
+                        raise HTTPException(
+                            status_code=422,
+                            detail="D\u00e0n nhi\u1ec1u m\u1eabu c\u1eaft x\u00e9n ch\u1ec9 h\u1ed7 tr\u1ee3 c\u00e1c trang c\u00f9ng k\u00edch th\u01b0\u1edbc.",
+                        )
             if (not getattr(req, 'is_die_cut', False)
                     and _lt in ('sequential', 'cut_stacks', 'ratio_stack')
-                    and doc.page_count > 1
+                    and _live_preview_page_count > 1
                     and _tm in ('nup', 'step_repeat', 'booklet')):
                 from app.workers.nup_layout_solver import (
                     solve_optimal_layout, solve_manual, compute_ratio_stack_alloc,
@@ -2505,6 +2635,13 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                 _trim_h_mp = max(req.item_h - 2 * _bleed_mp, 1.0)
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
                     _mp_layout = solve_manual(_trim_w_mp, _trim_h_mp, req.gap_x, req.gap_y, req.cols, req.rows)
+                    if (_mp_layout.get('overallWidth', 0) > req.usable_w + 0.01
+                            or _mp_layout.get('overallHeight', 0) > req.usable_h + 0.01):
+                        doc.close()
+                        raise HTTPException(
+                            status_code=422,
+                            detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng v\u01b0\u1ee3t v\u00f9ng gi\u1ea5y s\u1eed d\u1ee5ng.",
+                        )
                 else:
                     _mp_layout = solve_optimal_layout(
                         usable_w=req.usable_w, usable_h=req.usable_h,
@@ -2514,13 +2651,7 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                     )
                 _mp_cells = _mp_layout.get('cells', [])
                 _mp_cap = len(_mp_cells)
-                _tp_mp = int(getattr(req, 'total_pages', 0) or 0)
-                _doc_n_mp = int(doc.page_count or 0)
-                if _tp_mp > 0:
-                    _n_src = _tp_mp if not (_doc_n_mp > 0 and _doc_n_mp < _tp_mp) else _doc_n_mp
-                else:
-                    _n_src = _doc_n_mp
-                _n_src = max(1, int(_n_src))
+                _n_src = max(1, _live_preview_page_count)
                 _tqbp_mp = getattr(req, 'target_quantities_by_page', None) or {}
                 _gq_mp = getattr(req, 'target_quantity', 0) or 0
 
@@ -2714,6 +2845,13 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                 _split_gap_val = getattr(req, 'split_gap', None)
                 if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
                     result = solve_manual(trim_w, trim_h, req.gap_x, req.gap_y, req.cols, req.rows)
+                    if (result.get('overallWidth', 0) > compute_w + 0.01
+                            or result.get('overallHeight', 0) > compute_h + 0.01):
+                        doc.close()
+                        raise HTTPException(
+                            status_code=422,
+                            detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng v\u01b0\u1ee3t v\u00f9ng gi\u1ea5y s\u1eed d\u1ee5ng.",
+                        )
                 else:
                     result = solve_optimal_layout(
                         usable_w=compute_w,
@@ -2750,19 +2888,28 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                     _mtime_a = os.path.getmtime(file_path)
                 except OSError:
                     _mtime_a = 0.0
-                _ck_a = (
-                    file_path, _mtime_a, page_idx,
-                    round(compute_w, 3), round(compute_h, 3),
-                    round(req.gap_x, 3), round(req.gap_y, 3),
-                    req.strategy, shape_override,
-                    _json_batch.dumps(req.shape_props or {}, sort_keys=True),
-                    round(bleed_pt, 3),
-                    round(_sg_a, 3) if _sg_a is not None else None,
-                    _ct_a, _dsm_a, round(float(_dom_a or 0), 3),
+                _ck_a = _sticker_nest_cache_key(
+                    file_path=file_path,
+                    mtime=_mtime_a,
+                    page_idx=page_idx,
+                    compute_w=compute_w,
+                    compute_h=compute_h,
+                    gap_x=req.gap_x,
+                    gap_y=req.gap_y,
+                    strategy=req.strategy,
+                    shape_override=shape_override,
+                    shape_props=req.shape_props or {},
+                    bleed_pt=bleed_pt,
+                    secondary_gap=_sg_a,
+                    cut_type=_ct_a,
+                    die_size_mode=_dsm_a,
+                    die_offset_mm=_dom_a,
                 )
-                _hit_a = _NEST_A_CACHE.get(_ck_a)
+                with _NEST_CACHE_LOCK:
+                    _hit_a = _NEST_A_CACHE.get(_ck_a)
+                    if _hit_a is not None:
+                        _NEST_A_CACHE.move_to_end(_ck_a)
                 if _hit_a is not None:
-                    _NEST_A_CACHE.move_to_end(_ck_a)
                     result = _copy_mod.deepcopy(_hit_a)
                     _plog("compute layout done (nest CACHE HIT)")
                 else:
@@ -2790,9 +2937,10 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                         die_offset_mm=_dom_a,
                     )
                     _plog("compute layout done (nest)")
-                    _NEST_A_CACHE[_ck_a] = _copy_mod.deepcopy(result)
-                    if len(_NEST_A_CACHE) > _NEST_A_CACHE_MAX:
-                        _NEST_A_CACHE.popitem(last=False)
+                    with _NEST_CACHE_LOCK:
+                        _NEST_A_CACHE[_ck_a] = _copy_mod.deepcopy(result)
+                        if len(_NEST_A_CACHE) > _NEST_A_CACHE_MAX:
+                            _NEST_A_CACHE.popitem(last=False)
 
             base_poly = _build_pont_base_poly_for_preview(page, result, req, shape_override)
 
@@ -2862,6 +3010,10 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                     _auto_fill = (_gq == 0) and not any(int(v or 0) > 0 for v in _tqbp.values())
                     if not _auto_fill:
                         items = items[:min(src_page_count, _capacity)]
+                elif _tm == 'step_repeat':
+                    # Bình trang cắt xén: mọi ô là loại thumbnail đang chọn.
+                    # Không có pageIdx, frontend mặc định 0 nên luôn hiện loại 1.
+                    items = [{**item, 'pageIdx': _viewer_page_idx} for item in items]
                 _plog(f"RETURN branch E (relative grid, {_capacity} items)")
                 return {
                     "success": True,
@@ -2956,6 +3108,12 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
         if not getattr(req, 'is_die_cut', False) and _tm in ('nup', 'step_repeat', 'booklet'):
             from app.workers.nup_layout_solver import solve_optimal_layout, solve_manual
             if req.strategy == 'manual' and getattr(req, 'cols', 0) > 0 and getattr(req, 'rows', 0) > 0:
+                if (result.get('overallWidth', 0) > req.usable_w + 0.01
+                        or result.get('overallHeight', 0) > req.usable_h + 0.01):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng v\u01b0\u1ee3t v\u00f9ng gi\u1ea5y s\u1eed d\u1ee5ng.",
+                    )
                 result = solve_manual(trim_w, trim_h, req.gap_x, req.gap_y, req.cols, req.rows)
             else:
                 result = solve_optimal_layout(
@@ -3027,8 +3185,76 @@ _ZONE_NEST_CACHE_MAX = 2048
 # _ZONE_NEST_CACHE nhưng cho luồng preview 1 trang. Key = mọi arg của
 # compute_sticker_layout_for_page + (file, mtime, page_idx). deepcopy vào/ra.
 import copy as _copy_mod
+import threading as _threading_batch
 _NEST_A_CACHE: "_OrderedDict_batch[tuple, dict]" = _OrderedDict_batch()
 _NEST_A_CACHE_MAX = 1024
+_NEST_CACHE_LOCK = _threading_batch.RLock()
+
+
+def _sticker_nest_cache_key(
+    *, file_path, mtime, page_idx, compute_w, compute_h, gap_x, gap_y,
+    strategy, shape_override, shape_props, bleed_pt, secondary_gap,
+    cut_type, die_size_mode, die_offset_mm,
+):
+    """Một cache key dùng chung cho batch capacity và preview từng trang."""
+    return (
+        file_path, mtime, int(page_idx),
+        round(float(compute_w), 3), round(float(compute_h), 3),
+        round(float(gap_x), 3), round(float(gap_y), 3),
+        strategy, shape_override,
+        _json_batch.dumps(shape_props or {}, sort_keys=True),
+        round(float(bleed_pt), 3),
+        round(float(secondary_gap), 3) if secondary_gap is not None else None,
+        cut_type, die_size_mode, round(float(die_offset_mm or 0), 3),
+    )
+
+
+def _batch_geometry_fingerprint(
+    page: dict,
+    cut_type: str = 'default',
+    die_size_mode: str = 'die',
+):
+    """Fingerprint bảo thủ để chỉ tái dùng CAPACITY giữa khuôn thật sự tương đương.
+
+    CUSTOM và one-dao/page luôn theo page vì layout còn phụ thuộc contour/MediaBox.
+    Với primitive, shape + trim + props nhận dạng quyết định layout; màu/spot/path
+    của từng khuôn vẫn được giữ riêng lúc render và preview chi tiết.
+    """
+    try:
+        page_idx = int(page.get('page_idx'))
+    except (TypeError, ValueError):
+        page_idx = -1
+    shape = str(page.get('shape_type') or '').strip().upper()
+    if not shape or shape == 'CUSTOM':
+        return ('page', page_idx)
+    if cut_type == 'one_dao' and die_size_mode == 'page':
+        return ('page', page_idx)
+    try:
+        item_w = round(float(page.get('item_w') or 0), 3)
+        item_h = round(float(page.get('item_h') or 0), 3)
+    except (TypeError, ValueError):
+        return ('page', page_idx)
+    if item_w <= 0 or item_h <= 0:
+        return ('page', page_idx)
+    props = dict(page.get('shape_props') or {})
+    props.pop('inheritedFromPage', None)
+    return (
+        'geometry', shape, item_w, item_h,
+        _json_batch.dumps(props, sort_keys=True),
+    )
+
+
+def _group_batch_pages(
+    pages: list,
+    cut_type: str = 'default',
+    die_size_mode: str = 'die',
+) -> list[list[dict]]:
+    """Giữ thứ tự nguồn, gom các primitive có fingerprint bố cục giống hệt."""
+    groups: "_OrderedDict_batch[tuple, list[dict]]" = _OrderedDict_batch()
+    for page in pages:
+        key = _batch_geometry_fingerprint(page, cut_type, die_size_mode)
+        groups.setdefault(key, []).append(page)
+    return list(groups.values())
 
 # Cache nest branch A (preview 1 loại die-cut/sticker, /preview-layout) — CÙNG bản chất
 # _ZONE_NEST_CACHE nhưng cho preview đơn (không chia cụm). compute_sticker_layout_for_page
@@ -3053,6 +3279,8 @@ class PreviewLayoutBatchRequest(BaseModel):
     gap_x: float
     gap_y: float
     strategy: str = "optimal_auto"
+    cols: int = 0
+    rows: int = 0
     # Mỗi phần tử: {page_idx:int, shape_type?:str, shape_props?:dict, item_w?:float, item_h?:float}
     pages: List[Dict[str, Any]]
     file_id: Optional[str] = None
@@ -3080,35 +3308,53 @@ class PreviewLayoutBatchRequest(BaseModel):
     tile_gap_y: float = 0
 
 def _batch_single_mold_master(pages: list) -> Optional[dict]:
-    """1 khuôn → trả entry master để nest 1 lần; nhiều khuôn → None (nest từng trang).
+    """Chỉ bật fast path khi metadata detect chỉ rõ đúng một master inheritance.
 
-    Điều kiện:
-      - ≥2 trang
-      - Đúng 1 shape_type ≠ CUSTOM trong toàn batch (sau inherit FE: 28× CIRCLE)
-      - item_w/item_h các trang không lệch > 2pt so với master (tránh copy nhầm die size)
+    Không suy single-mold từ ``shape_type``: nhiều genuine CIRCLE khác kích thước
+    vẫn là multi-mold. Content pages do detect inherit mang ``inheritedFromPage``.
     """
     if not pages or len(pages) < 2:
         return None
-    types: set[str] = set()
-    master: Optional[dict] = None
+
+    by_idx: dict[int, dict] = {}
+    inherited_sources: set[int] = set()
     for p in pages:
         if not isinstance(p, dict):
             continue
-        st = str(p.get("shape_type") or "").strip().upper()
-        if st and st != "CUSTOM":
-            types.add(st)
-            if master is None:
-                master = p
-    if len(types) != 1 or master is None:
+        try:
+            page_idx = int(p.get("page_idx"))
+        except (TypeError, ValueError):
+            continue
+        by_idx[page_idx] = p
+        raw_source = (p.get("shape_props") or {}).get("inheritedFromPage")
+        if isinstance(raw_source, int) and not isinstance(raw_source, bool):
+            inherited_sources.add(raw_source)
+
+    if len(inherited_sources) != 1:
         return None
+    master_idx = next(iter(inherited_sources))
+    master = by_idx.get(master_idx)
+    if master is None:
+        return None
+    master_type = str(master.get("shape_type") or "").strip().upper()
+    if not master_type or master_type == "CUSTOM":
+        return None
+
+    # Mọi page trừ master phải khai cùng inheritance source; thiếu/mâu thuẫn →
+    # fallback full nest an toàn.
+    for page_idx, p in by_idx.items():
+        if page_idx == master_idx:
+            continue
+        raw_source = (p.get("shape_props") or {}).get("inheritedFromPage")
+        if raw_source != master_idx:
+            return None
+
     try:
         mw = float(master.get("item_w") or 0)
         mh = float(master.get("item_h") or 0)
     except (TypeError, ValueError):
         mw, mh = 0.0, 0.0
-    for p in pages:
-        if not isinstance(p, dict):
-            continue
+    for p in by_idx.values():
         try:
             w = float(p.get("item_w") or 0)
             h = float(p.get("item_h") or 0)
@@ -3122,8 +3368,14 @@ def _batch_single_mold_master(pages: list) -> Optional[dict]:
 
 
 @router.post("/preview-layouts-batch")
-async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = Depends(require_license)):
+def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = Depends(require_license)):
     enforce_feature(_imposition_feature(req), license_info)
+    if req.strategy == 'manual' and (req.cols <= 0 or req.rows <= 0):
+        raise HTTPException(
+            status_code=422,
+            detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng c\u1ea7n s\u1ed1 c\u1ed9t v\u00e0 s\u1ed1 d\u00f2ng l\u1edbn h\u01a1n 0.",
+        )
+
     import time as _t_mod
     from app.workers import pdf_wrapper as pdf_lib
     from app.database import SessionLocal
@@ -3161,7 +3413,11 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: di
     bleed_pt = req.bleed or 0
 
     # ── cluster_tile: kích thước ô cụm dùng để nesting (mirror single preview 1922-1947) ──
-    is_cluster = (req.grouping_strategy == 'cluster_tile') and bool(req.is_die_cut)
+    is_cluster = (
+        req.grouping_strategy == 'cluster_tile'
+        and bool(req.is_die_cut)
+        and req.task_mode != 'step_repeat'
+    )
     compute_w = req.usable_w
     compute_h = req.usable_h
     if is_cluster:
@@ -3196,6 +3452,19 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: di
     results: dict = {}
     pages_in = [p for p in (req.pages or []) if isinstance(p, dict)]
     # 1 khuôn (die-cut): nest 1 trang master, copy capacity — nhiều khuôn: full loop.
+    if not _use_sticker:
+        invalid_pages = []
+        for p in pages_in:
+            try:
+                _iw = float(p.get("item_w") or 0)
+                _ih = float(p.get("item_h") or 0)
+            except (TypeError, ValueError):
+                _iw, _ih = 0.0, 0.0
+            if _iw <= 2 * bleed_pt or _ih <= 2 * bleed_pt:
+                invalid_pages.append(p.get("page_idx"))
+        if invalid_pages:
+            raise HTTPException(status_code=422, detail="K\u00edch th\u01b0\u1edbc trang ch\u01b0a s\u1eb5n s\u00e0ng; ch\u01b0a th\u1ec3 t\u00ednh b\u1ed1 c\u1ee5c.")
+
     _mold_master = _batch_single_mold_master(pages_in) if _use_sticker else None
     if _mold_master is not None:
         _perf(
@@ -3208,21 +3477,51 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: di
     def _nest_one_page(p: dict, page_idx: int, doc) -> int:
         _shape = p.get("shape_type")
         shape_override = _shape if (_shape and _shape != 'CUSTOM') else ('CUSTOM' if _shape == 'CUSTOM' else None)
-        _ck = (
-            file_path, _mtime, page_idx, _use_sticker,
-            round(compute_w, 3), round(compute_h, 3),
-            round(req.gap_x, 3), round(req.gap_y, 3),
-            req.strategy, shape_override,
-            json.dumps(p.get("shape_props") or {}, sort_keys=True),
-            round(bleed_pt, 3),
-            round(_secondary_gap, 3) if _secondary_gap is not None else None,
-            req.cut_type, req.die_size_mode, round(float(req.die_offset_mm or 0), 3),
-            round(p.get("item_w", 0) or 0, 3), round(p.get("item_h", 0) or 0, 3),
-        )
-        _cached = _BATCH_CAP_CACHE.get(_ck)
-        if _cached is not None:
-            _BATCH_CAP_CACHE.move_to_end(_ck)
-            return int(_cached)
+        _layout_ck = None
+        _batch_ck = None
+        if _use_sticker:
+            _layout_ck = _sticker_nest_cache_key(
+                file_path=file_path,
+                mtime=_mtime,
+                page_idx=page_idx,
+                compute_w=compute_w,
+                compute_h=compute_h,
+                gap_x=req.gap_x,
+                gap_y=req.gap_y,
+                strategy=req.strategy,
+                shape_override=shape_override,
+                shape_props=p.get("shape_props") or {},
+                bleed_pt=bleed_pt,
+                secondary_gap=_secondary_gap,
+                cut_type=req.cut_type,
+                die_size_mode=req.die_size_mode,
+                die_offset_mm=req.die_offset_mm,
+            )
+            with _NEST_CACHE_LOCK:
+                _cached_layout = _NEST_A_CACHE.get(_layout_ck)
+                if _cached_layout is not None:
+                    _NEST_A_CACHE.move_to_end(_layout_ck)
+            if _cached_layout is not None:
+                return len(_cached_layout.get("items", []))
+        else:
+            _batch_ck = (
+                file_path, _mtime, page_idx, _use_sticker,
+                round(compute_w, 3), round(compute_h, 3),
+                round(req.gap_x, 3), round(req.gap_y, 3),
+                req.strategy, shape_override,
+                json.dumps(p.get("shape_props") or {}, sort_keys=True),
+                round(bleed_pt, 3),
+                round(_secondary_gap, 3) if _secondary_gap is not None else None,
+                req.cut_type, req.die_size_mode, round(float(req.die_offset_mm or 0), 3),
+                round(p.get("item_w", 0) or 0, 3), round(p.get("item_h", 0) or 0, 3),
+                int(req.cols or 0), int(req.rows or 0),
+            )
+            with _NEST_CACHE_LOCK:
+                _cached = _BATCH_CAP_CACHE.get(_batch_ck)
+                if _cached is not None:
+                    _BATCH_CAP_CACHE.move_to_end(_batch_ck)
+            if _cached is not None:
+                return int(_cached)
         try:
             if _use_sticker:
                 from app.workers.nup_sticker import compute_sticker_layout_for_page
@@ -3242,24 +3541,43 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: di
                     die_offset_mm=getattr(req, 'die_offset_mm', 0),
                 )
                 _cap = len(result.get("items", []))
+                with _NEST_CACHE_LOCK:
+                    _NEST_A_CACHE[_layout_ck] = _copy_mod.deepcopy(result)
+                    _NEST_A_CACHE.move_to_end(_layout_ck)
+                    if len(_NEST_A_CACHE) > _NEST_A_CACHE_MAX:
+                        _NEST_A_CACHE.popitem(last=False)
             else:
-                from app.workers.nup_layout_solver import solve_optimal_layout
-                trim_w = max((p.get("item_w", 0) or 0) - 2 * bleed_pt, 1.0)
-                trim_h = max((p.get("item_h", 0) or 0) - 2 * bleed_pt, 1.0)
-                res = solve_optimal_layout(
-                    usable_w=compute_w,
-                    usable_h=compute_h,
-                    orig_w=trim_w,
-                    orig_h=trim_h,
-                    gap_x=req.gap_x,
-                    gap_y=req.gap_y,
-                    strategy=req.strategy,
-                    secondary_gap=_secondary_gap,
-                )
+                from app.workers.nup_layout_solver import solve_manual, solve_optimal_layout
+                trim_w = float(p.get("item_w") or 0) - 2 * bleed_pt
+                trim_h = float(p.get("item_h") or 0) - 2 * bleed_pt
+                if req.strategy == 'manual':
+                    if req.cols <= 0 or req.rows <= 0:
+                        raise ValueError("Manual grid requires positive columns and rows")
+                    res = solve_manual(
+                        trim_w, trim_h, req.gap_x, req.gap_y,
+                        req.cols, req.rows,
+                    )
+                    if (res.get('overallWidth', 0) > compute_w + 0.01
+                            or res.get('overallHeight', 0) > compute_h + 0.01):
+                        raise ValueError("Manual grid exceeds usable sheet area")
+                else:
+                    res = solve_optimal_layout(
+                        usable_w=compute_w,
+                        usable_h=compute_h,
+                        orig_w=trim_w,
+                        orig_h=trim_h,
+                        gap_x=req.gap_x,
+                        gap_y=req.gap_y,
+                        strategy=req.strategy,
+                        secondary_gap=_secondary_gap,
+                    )
                 _cap = len(res.get('cells', []))
-            _BATCH_CAP_CACHE[_ck] = _cap
-            if len(_BATCH_CAP_CACHE) > _BATCH_CAP_CACHE_MAX:
-                _BATCH_CAP_CACHE.popitem(last=False)
+            if not _use_sticker and _batch_ck is not None:
+                with _NEST_CACHE_LOCK:
+                    _BATCH_CAP_CACHE[_batch_ck] = _cap
+                    _BATCH_CAP_CACHE.move_to_end(_batch_ck)
+                    if len(_BATCH_CAP_CACHE) > _BATCH_CAP_CACHE_MAX:
+                        _BATCH_CAP_CACHE.popitem(last=False)
             return int(_cap)
         except Exception as e:
             logger.warning("[BATCH CAPACITY] page %s failed: %s", page_idx, e)
@@ -3288,8 +3606,58 @@ async def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: di
                 "BATCH", "single_mold_done",
                 master_page=m_idx, cap=_cap, pages_out=len(results),
             )
-        else:
+        elif _use_sticker:
             # ── FULL PATH: nhiều khuôn / N-Up xén → nest từng trang ──
+            groups = _group_batch_pages(pages_in, req.cut_type, req.die_size_mode)
+            valid_groups = []
+            for group in groups:
+                valid_group = []
+                for p in group:
+                    try:
+                        page_idx = int(p.get("page_idx"))
+                    except (TypeError, ValueError):
+                        continue
+                    if 0 <= page_idx < doc.page_count:
+                        valid_group.append((p, page_idx))
+                if valid_group:
+                    valid_groups.append(valid_group)
+
+            workers = min(4, len(valid_groups))
+            _perf(
+                "BATCH", "geometry_groups",
+                pages=sum(len(group) for group in valid_groups),
+                groups=len(valid_groups),
+                reused=sum(max(0, len(group) - 1) for group in valid_groups),
+                workers=workers,
+            )
+
+            def _nest_group(valid_group):
+                p, page_idx = valid_group[0]
+                local_doc = pdf_lib.open(file_path)
+                try:
+                    return _nest_one_page(p, page_idx, local_doc)
+                finally:
+                    local_doc.close()
+
+            if workers <= 1:
+                for valid_group in valid_groups:
+                    cap = _nest_group(valid_group)
+                    for _, page_idx in valid_group:
+                        results[page_idx] = cap
+            else:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    pending = {pool.submit(_nest_group, group): group for group in valid_groups}
+                    for future in as_completed(pending):
+                        valid_group = pending[future]
+                        try:
+                            cap = future.result()
+                        except Exception as exc:
+                            logger.warning("[BATCH CAPACITY] geometry group failed: %s", exc)
+                            cap = 0
+                        for _, page_idx in valid_group:
+                            results[page_idx] = cap
+        else:
             for p in pages_in:
                 page_idx = p.get("page_idx")
                 if page_idx is None:

@@ -10,7 +10,6 @@
 //   - Preset HDRI studio (≥3) (Yêu cầu 3.2)
 //   - Preset camera (4 preset) + nút Fit/Reset góc nhìn (Yêu cầu 7.1)
 //   - Preset nền/sàn (≥2) (Yêu cầu 7.3)
-//   - Hệ số tách exploded view + toggle overlay kích thước (Yêu cầu 7.5, 7.7)
 //   - Hệ số xuất (1x/2x/4x — Yêu cầu 6.2) + nút xuất PNG/GLB (Yêu cầu 6.1, 6.6)
 //
 // _Requirements: 4.1, 6.1, 6.2, 6.6, 7.3_
@@ -26,10 +25,6 @@ import {
 } from '../../lib/mockup3d';
 import { HDRI_PRESETS } from './EnvironmentRig';
 import { BACKGROUND_PRESETS } from './ShadowFloor';
-import {
-    EXPLODED_FACTOR_MIN,
-    EXPLODED_FACTOR_MAX,
-} from '../../store/useMockupStore';
 import CollapsibleSection from './CollapsibleSection';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -64,10 +59,6 @@ export default function MockupPanel() {
     const requestCameraReset = useMockupStore((s) => s.requestCameraReset);
     const backgroundPreset = useMockupStore((s) => s.backgroundPreset);
     const setBackgroundPreset = useMockupStore((s) => s.setBackgroundPreset);
-    const explodedFactor = useMockupStore((s) => s.explodedFactor);
-    const setExplodedFactor = useMockupStore((s) => s.setExplodedFactor);
-    const showDimensions = useMockupStore((s) => s.showDimensions);
-    const setShowDimensions = useMockupStore((s) => s.setShowDimensions);
     const showTechnicalLines = useMockupStore((s) => s.showTechnicalLines);
     const setShowTechnicalLines = useMockupStore((s) => s.setShowTechnicalLines);
     const showFloorGrid = useMockupStore((s) => s.showFloorGrid);
@@ -186,44 +177,6 @@ export default function MockupPanel() {
                         {t('dieline.mockup:luoi_san')}
                     </label>
                     <input type="checkbox" checked={showFloorGrid} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
-                </div>
-            </CollapsibleSection>
-
-            {/* ─── Exploded view + overlay kích thước ─── */}
-            <CollapsibleSection title={t('dieline.mockup:tach_roi_kich_thuoc')}>
-                <div className="dt-param-slider">
-                    <div className="dt-param-header">
-                        <label className="dt-param-label">{t('dieline.mockup:tach_roi_exploded')}</label>
-                        <span className="dt-param-value">{explodedFactor.toFixed(1)}×</span>
-                    </div>
-                    <input
-                        type="range"
-                        min={EXPLODED_FACTOR_MIN}
-                        max={EXPLODED_FACTOR_MAX}
-                        step={0.1}
-                        value={explodedFactor}
-                        className="dt-param-range"
-                        style={{ accentColor: 'var(--dt-accent)', width: '100%' }}
-                        onChange={(e) => setExplodedFactor(parseFloat(e.target.value))}
-                        title={t('dieline.mockup:tach_cac_mat_theo_phap_tuyen_de_xem_cau')}
-                    />
-                </div>
-
-                <div
-                    className="dt-param-cell"
-                    style={{ cursor: 'pointer', marginTop: '0.5rem' }}
-                    onClick={() => setShowDimensions(!showDimensions)}
-                    title={t('dieline.mockup:hien_nhan_kich_thuoc_dai_rong_cao')}
-                >
-                    <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
-                        {t('dieline.mockup:hien_kich_thuoc_l_w_h')}
-                    </label>
-                    <input
-                        type="checkbox"
-                        checked={showDimensions}
-                        readOnly
-                        style={{ accentColor: 'var(--dt-accent)' }}
-                    />
                 </div>
             </CollapsibleSection>
 

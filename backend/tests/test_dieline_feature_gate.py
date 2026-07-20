@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,30 @@ def test_pro_plan_reaches_native_engine(monkeypatch):
     assert response.json() == expected
 
 
+def test_native_engine_reuses_one_dedicated_worker(monkeypatch):
+    expected = {
+        "params": {"boxType": "rte"}, "dieline": {}, "nestingResult": None,
+        "sleeveNestingResult": None, "wasClamped": False,
+    }
+    worker_ids: list[int] = []
+
+    def record_worker(*_: str) -> str:
+        worker_ids.append(threading.get_ident())
+        return json.dumps(expected)
+
+    monkeypatch.setattr(dieline, "_generate_native", record_worker)
+    app.dependency_overrides[require_license] = lambda: {
+        "license_key": "PRO", "hwid": "TEST", "verified": True,
+        "plan": "pro", "features": [],
+    }
+    with TestClient(app) as client:
+        assert client.post("/api/dieline/generate", json=REQUEST).status_code == 200
+        assert client.post("/api/dieline/generate", json=REQUEST).status_code == 200
+
+    assert len(worker_ids) == 2
+    assert len(set(worker_ids)) == 1
+
+
 def test_custom_free_entitlement_can_use_dieline(monkeypatch):
     expected = {
         "params": {}, "dieline": {}, "nestingResult": None,
@@ -81,6 +106,7 @@ def test_custom_free_entitlement_can_use_dieline(monkeypatch):
     lambda request: request["params"].__setitem__("L", float("inf")),
     lambda request: request["params"].__setitem__("boxType", "unknown"),
     lambda request: request["nestingConfig"]["sheet"].__setitem__("width", 1e308),
+    lambda request: request.__setitem__("includeNesting", "yes"),
 ])
 def test_invalid_payload_is_rejected_before_native(monkeypatch, mutate):
     request = json.loads(json.dumps(REQUEST))

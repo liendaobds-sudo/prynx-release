@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -130,6 +130,12 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         reportOrderCode: state.reportOrderCode, setReportOrderCode: state.setReportOrderCode,
         saveByReport: state.saveByReport, setSaveByReport: state.setSaveByReport,
     })));
+
+    useEffect(() => {
+        if (s.taskMode === 'step_repeat' && s.groupingStrategy !== 'none') {
+            s.setGroupingStrategy('none');
+        }
+    }, [s.taskMode, s.groupingStrategy, s.setGroupingStrategy]);
 
     const [isExpanded, setIsExpanded] = useState(false);
     // CNC dùng chung profile die-cut với Bế tem (report, nesting; ẩn dấu xén/guillotine/căn lề).
@@ -753,13 +759,13 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                     <>
                                         <option value="maximize_area">{t('imposition.advancedSettings:chia_deu_dien_tich')}</option>
                                         <option value="strict_ratio">{t('imposition.advancedSettings:chia_deu_so_luong')}</option>
+                                        <option value="cluster_tile">{t('imposition.advancedSettings:cum_nhan_ban_cluster_tile')}</option>
                                     </>
                                 )}
-                                <option value="cluster_tile">{t('imposition.advancedSettings:cum_nhan_ban_cluster_tile')}</option>
                             </select>
 
                             {/* Cluster Tile Settings */}
-                            {s.groupingStrategy === 'cluster_tile' && (
+                            {s.taskMode !== 'step_repeat' && s.groupingStrategy === 'cluster_tile' && (
                                 <div className="mt-2 flex flex-col gap-3 p-3 bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-white/10 rounded-lg">
                                     {/* Kiểu ghép cụm */}
                                     <div className="flex items-center gap-2">
@@ -1040,7 +1046,14 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                 </div>
                                 <select
                                     value={s.markType}
-                                    onChange={e => s.setMarkType(e.target.value as any)}
+                                    onChange={e => {
+                                        const nextMark = e.target.value as any;
+                                        s.setMarkType(nextMark);
+                                        if (!stickerLike && nextMark !== 'guillotine') {
+                                            s.setGroupingStrategy('none');
+                                            s.setClusterMode('none');
+                                        }
+                                    }}
                                     className="w-full h-8 px-2 border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium appearance-auto transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     <option value="none">{t('imposition.advancedSettings:khong_ve_dau_xen')}</option>

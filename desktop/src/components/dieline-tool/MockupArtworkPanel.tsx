@@ -256,11 +256,16 @@ function ArtworkUploader(props: {
 export default function MockupArtworkPanel() {
   const { t } = useTranslation();
     const artwork = useMockupStore((s) => s.artwork);
+    const setFinishId = useMockupStore((s) => s.setFinishId);
     const setArtworkMode = useMockupStore((s) => s.setArtworkMode);
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
     const setArtworkEditMode = useMockupStore((s) => s.setArtworkEditMode);
     const setOuterArtworkUrl = useMockupStore((s) => s.setOuterArtworkUrl);
     const setOuterArtworkTransform = useMockupStore((s) => s.setOuterArtworkTransform);
+    const setTrayArtworkUrl = useMockupStore((s) => s.setTrayArtworkUrl);
+    const setTrayArtworkTransform = useMockupStore((s) => s.setTrayArtworkTransform);
+    const setSleeveArtworkUrl = useMockupStore((s) => s.setSleeveArtworkUrl);
+    const setSleeveArtworkTransform = useMockupStore((s) => s.setSleeveArtworkTransform);
     const setInnerArtworkEnabled = useMockupStore((s) => s.setInnerArtworkEnabled);
     const setInnerArtworkUrl = useMockupStore((s) => s.setInnerArtworkUrl);
     const setInnerArtworkTransform = useMockupStore((s) => s.setInnerArtworkTransform);
@@ -286,10 +291,14 @@ export default function MockupArtworkPanel() {
 
     // Tên file đã tải (hiển thị cạnh thumbnail).
     const [outerName, setOuterName] = React.useState<string | null>(null);
+    const [trayName, setTrayName] = React.useState<string | null>(null);
+    const [sleeveName, setSleeveName] = React.useState<string | null>(null);
     const [innerName, setInnerName] = React.useState<string | null>(null);
 
     // Thông báo lỗi cục bộ cho từng loại tải lên.
     const [outerError, setOuterError] = React.useState<string | null>(null);
+    const [trayError, setTrayError] = React.useState<string | null>(null);
+    const [sleeveError, setSleeveError] = React.useState<string | null>(null);
     const [innerError, setInnerError] = React.useState<string | null>(null);
     const [maskError, setMaskError] = React.useState<string | null>(null);
 
@@ -313,7 +322,7 @@ export default function MockupArtworkPanel() {
 
     async function handleArtworkUpload(
         file: File,
-        setUrl: (url: string | null) => void,
+        setUrl: (url: string | null, aspectRatio?: number | null) => void,
         setTransform: (transform: ArtworkTransform) => void,
         setError: (msg: string | null) => void,
         setName: (n: string | null) => void,
@@ -321,31 +330,31 @@ export default function MockupArtworkPanel() {
         setError(null);
         try {
             const info = await loadImageFile(file);
-            setUrl(info.url);
+            setUrl(info.url, info.width / info.height);
             // Ảnh mới luôn bắt đầu từ đúng 100%, không thừa hưởng scale/offset
             // của ảnh trước khiến người dùng tưởng ảnh vừa tải đã bị sai.
             setTransform({ ...DEFAULT_TRANSFORM });
             setName(file.name);
         } catch {
-            setUrl(null);
+            setUrl(null, null);
             setName(null);
             setError(t('dieline.mockupArtwork:khong_nap_duoc_anh_be_mat_giu_vat_lieu'));
         }
     }
 
     // ── Tải mặt nạ spot-UV / emboss với xác thực (Yêu cầu 4.6) ──
-    async function handleMaskUpload(file: File, setMaskUrl: (url: string | null) => void) {
+    async function handleMaskUpload(file: File, setMaskUrl: (url: string | null) => void): Promise<boolean> {
         setMaskError(null);
         if (!surface) {
             setMaskError(t('dieline.mockupArtwork:chua_co_khuon_be_de_xac_dinh_kich_thuoc'));
-            return;
+            return false;
         }
         let info: LoadedImageInfo;
         try {
             info = await loadImageFile(file);
         } catch {
             setMaskError(t('dieline.mockupArtwork:khong_nap_duoc_mat_na_anh_hong_hoac_sai'));
-            return;
+            return false;
         }
         const result = validateMask(
             { width: info.width, height: info.height, format: info.format },
@@ -355,14 +364,20 @@ export default function MockupArtworkPanel() {
         if (!result.valid) {
             URL.revokeObjectURL(info.url);
             setMaskError(result.reason ?? t('dieline.mockupArtwork:mat_na_khong_hop_le'));
-            return;
+            return false;
         }
         setMaskUrl(info.url);
         // Lệch kích thước → KHÔNG chặn, chỉ thông báo sẽ co giãn theo bề mặt.
         if (info.width !== surface.width || info.height !== surface.height) {
             setMaskError(t('dieline.mockupArtwork:mat_na_se_duoc_co_gian', { iw: info.width, ih: info.height, sw: surface.width, sh: surface.height }));
         }
+        return true;
     }
+
+    const isMatchbox = dieline?.params.boxType === 'tray';
+    const hasEditableOuterArtwork = isMatchbox
+        ? !!(artwork.trayOuter.url || artwork.sleeveOuter.url)
+        : !!artwork.outer.url;
 
     const placementModes: { id: PlacementMode; label: string; hint: string }[] = [
         { id: 'per-face', label: t('dieline.mockupArtwork:theo_tung_mat'), hint: t('dieline.mockupArtwork:moi_mat_anh_xa_anh_doc_lap_theo_bbox') },
@@ -395,46 +410,77 @@ export default function MockupArtworkPanel() {
                 </button>
             </div>
 
-            {/* ─── Ảnh mặt ngoài (mở sẵn) ─── */}
-            <CollapsibleSection title={t('dieline.mockupArtwork:anh_mat_ngoai')} defaultOpen badge={artwork.outer.url ? '●' : undefined}>
-                <ArtworkUploader
-                    label={t('dieline.mockupArtwork:anh_mat_ngoai')}
-                    url={artwork.outer.url}
-                    fileName={outerName}
-                    onFile={(f) => handleArtworkUpload(f, setOuterArtworkUrl, setOuterArtworkTransform, setOuterError, setOuterName)}
-                    onClear={() => { setOuterArtworkUrl(null); setOuterError(null); setOuterName(null); }}
-                />
-                {outerError && (
-                    <div className="dt-warning" style={{ marginTop: '0.5rem' }}>
-                        <span style={{ fontSize: '1rem' }}>⚠️</span>
-                        {outerError}
-                    </div>
-                )}
-                <TransformControls transform={artwork.outer.transform} onChange={setOuterArtworkTransform} />
-                <div
-                    className={`dt-param-cell ${artworkEditMode ? 'active-edit' : ''}`}
-                    style={{ cursor: artwork.outer.url ? 'pointer' : 'not-allowed', marginTop: '0.5rem', opacity: artwork.outer.url ? 1 : 0.5 }}
-                    onClick={() => { if (artwork.outer.url) setArtworkEditMode(!artworkEditMode); }}
-                    title={t('dieline.mockupArtwork:bat_de_keo_anh_truc_tiep_tren_mat_3d')}
-                >
-                    <label className="dt-param-cell-label" style={{ cursor: 'inherit' }}>
-                        {t('dieline.mockupArtwork:keo_anh_tren_mo_hinh_3d')}
-                    </label>
-                    <input
-                        type="checkbox"
-                        checked={artworkEditMode}
-                        readOnly
-                        style={{ accentColor: 'var(--dt-accent)' }}
+            {/* Artwork ngoài: hộp diêm tách riêng khay và vỏ; mẫu khác dùng một ảnh chung. */}
+            {isMatchbox ? (
+                <>
+                    <CollapsibleSection
+                        title={t('dieline.mockupArtwork:anh_khay', { defaultValue: 'Ảnh khay' })}
+                        defaultOpen
+                        badge={artwork.trayOuter.url ? '●' : undefined}
+                    >
+                        <ArtworkUploader
+                            label={t('dieline.mockupArtwork:anh_khay', { defaultValue: 'Ảnh khay' })}
+                            url={artwork.trayOuter.url}
+                            fileName={trayName}
+                            onFile={(f) => handleArtworkUpload(f, setTrayArtworkUrl, setTrayArtworkTransform, setTrayError, setTrayName)}
+                            onClear={() => { setTrayArtworkUrl(null); setTrayError(null); setTrayName(null); }}
+                        />
+                        {trayError && <div className="dt-warning" style={{ marginTop: '0.5rem' }}>{trayError}</div>}
+                        <TransformControls transform={artwork.trayOuter.transform} onChange={setTrayArtworkTransform} />
+                    </CollapsibleSection>
+                    <CollapsibleSection
+                        title={t('dieline.mockupArtwork:anh_vo_hop', { defaultValue: 'Ảnh vỏ hộp' })}
+                        defaultOpen
+                        badge={artwork.sleeveOuter.url ? '●' : undefined}
+                    >
+                        <ArtworkUploader
+                            label={t('dieline.mockupArtwork:anh_vo_hop', { defaultValue: 'Ảnh vỏ hộp' })}
+                            url={artwork.sleeveOuter.url}
+                            fileName={sleeveName}
+                            onFile={(f) => handleArtworkUpload(f, setSleeveArtworkUrl, setSleeveArtworkTransform, setSleeveError, setSleeveName)}
+                            onClear={() => { setSleeveArtworkUrl(null); setSleeveError(null); setSleeveName(null); }}
+                        />
+                        {sleeveError && <div className="dt-warning" style={{ marginTop: '0.5rem' }}>{sleeveError}</div>}
+                        <TransformControls transform={artwork.sleeveOuter.transform} onChange={setSleeveArtworkTransform} />
+                    </CollapsibleSection>
+                </>
+            ) : (
+                <CollapsibleSection title={t('dieline.mockupArtwork:anh_mat_ngoai')} defaultOpen badge={artwork.outer.url ? '●' : undefined}>
+                    <ArtworkUploader
+                        label={t('dieline.mockupArtwork:anh_mat_ngoai')}
+                        url={artwork.outer.url}
+                        fileName={outerName}
+                        onFile={(f) => handleArtworkUpload(f, setOuterArtworkUrl, setOuterArtworkTransform, setOuterError, setOuterName)}
+                        onClear={() => { setOuterArtworkUrl(null); setOuterError(null); setOuterName(null); }}
                     />
-                </div>
-                {artworkEditMode && (
-                    <p className="dt-param-desc">
-                        {t('dieline.mockupArtwork:dang_bat_keo_chuot_tren_mat_hop_de_doi')}
-                    </p>
-                )}
-            </CollapsibleSection>
+                    {outerError && (
+                        <div className="dt-warning" style={{ marginTop: '0.5rem' }}>
+                            <span style={{ fontSize: '1rem' }}>⚠️</span>
+                            {outerError}
+                        </div>
+                    )}
+                    <TransformControls transform={artwork.outer.transform} onChange={setOuterArtworkTransform} />
+                </CollapsibleSection>
+            )}
 
-            {/* ─── Chế độ đặt ảnh ─── */}
+            <div
+                className={artworkEditMode ? 'dt-param-cell active-edit' : 'dt-param-cell'}
+                style={{ cursor: hasEditableOuterArtwork ? 'pointer' : 'not-allowed', marginTop: '0.5rem', opacity: hasEditableOuterArtwork ? 1 : 0.5 }}
+                onClick={() => { if (hasEditableOuterArtwork) setArtworkEditMode(!artworkEditMode); }}
+                title={t('dieline.mockupArtwork:bat_de_keo_anh_truc_tiep_tren_mat_3d')}
+            >
+                <label className="dt-param-cell-label" style={{ cursor: 'inherit' }}>
+                    {t('dieline.mockupArtwork:keo_anh_tren_mo_hinh_3d')}
+                </label>
+                <input type="checkbox" checked={artworkEditMode} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
+            </div>
+            {artworkEditMode && (
+                <p className="dt-param-desc">
+                    {t('dieline.mockupArtwork:dang_bat_keo_chuot_tren_mat_hop_de_doi')}
+                </p>
+            )}
+
+            {/* Chế độ đặt ảnh */}
             <CollapsibleSection title={t('dieline.mockupArtwork:che_do_dat_anh')}>
                 <div className="dt-glue-side-toggle">
                     {placementModes.map((m) => (
@@ -529,7 +575,11 @@ export default function MockupArtworkPanel() {
                             style={{ display: 'none' }}
                             onChange={(e) => {
                                 const file = e.target.files?.[0];
-                                if (file) handleMaskUpload(file, setSpotUvMaskUrl);
+                                if (file) {
+                                    void handleMaskUpload(file, setSpotUvMaskUrl).then((loaded) => {
+                                        if (loaded) setFinishId('spot-uv');
+                                    });
+                                }
                                 e.target.value = '';
                             }}
                         />
@@ -555,7 +605,13 @@ export default function MockupArtworkPanel() {
                             style={{ display: 'none' }}
                             onChange={(e) => {
                                 const file = e.target.files?.[0];
-                                if (file) handleMaskUpload(file, setEmbossMaskUrl);
+                                if (file) {
+                                    void handleMaskUpload(file, setEmbossMaskUrl).then((loaded) => {
+                                        if (!loaded) return;
+                                        setFinishId('emboss');
+                                        if (artwork.embossHeightMm <= 0) setEmbossHeightMm(0.5);
+                                    });
+                                }
                                 e.target.value = '';
                             }}
                         />

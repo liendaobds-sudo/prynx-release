@@ -57,6 +57,13 @@ pub fn validate_request_json(request_json: &str) -> Result<Value, String> {
     one_of(params.get("envFlapShape"), "params.envFlapShape", &["straight", "pointed", "rounded"])?;
     one_of(params.get("envStyle"), "params.envStyle", &["wallet", "pocket"])?;
 
+    if root
+        .get("includeNesting")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err("includeNesting must be boolean".to_string());
+    }
+
     let nesting = root.get("nestingConfig").and_then(Value::as_object)
         .ok_or_else(|| "Nesting config is required".to_string())?;
     let sheet = nesting.get("sheet").and_then(Value::as_object)
@@ -95,6 +102,9 @@ mod tests {
         assert!(super::validate_request_json(&value.to_string()).is_err());
         let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
         value["nestingConfig"]["sheet"]["width"] = serde_json::json!(1e100);
+        assert!(super::validate_request_json(&value.to_string()).is_err());
+        let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
+        value["includeNesting"] = serde_json::json!("yes");
         assert!(super::validate_request_json(&value.to_string()).is_err());
     }
 }

@@ -18,11 +18,14 @@ Returns:
 """
 
 import logging
+from math import gcd
 from typing import List, Tuple, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
 MM_TO_PTS = 2.83465
+
+MAX_ZONE_RATIO_REPS_PER_TYPE = 8
 
 
 def run_cluster_tile(
@@ -438,10 +441,27 @@ def _zone_type_slots(page_infos, mode: str) -> List[int]:
         return []
     if mode == 'zone_ratio':
         qtys = [max(1, pi[1]) for pi in page_infos]
-        base = min(qtys)
+        common = 0
+        for qty in qtys:
+            common = gcd(common, int(qty))
+        common = max(1, common)
+        reps_by_type = [max(1, int(qty) // common) for qty in qtys]
+
+        # Quantity là production count, không phải số unique layout cần vật hoá.
+        # Giữ ratio nguyên khi nhỏ; ratio cực đoan được scale về trần hữu hạn và
+        # phần số lần in được xử lý ở report/export thay vì tạo hàng nghìn tờ mẫu.
+        max_reps = max(reps_by_type)
+        if max_reps > MAX_ZONE_RATIO_REPS_PER_TYPE:
+            reps_by_type = [
+                max(1, round(rep * MAX_ZONE_RATIO_REPS_PER_TYPE / max_reps))
+                for rep in reps_by_type
+            ]
+            logger.warning(
+                "[ZONE_RATIO] raw ratio %s capped to %s (max reps/type=%d)",
+                qtys, reps_by_type, MAX_ZONE_RATIO_REPS_PER_TYPE,
+            )
         slots: List[int] = []
-        for i in range(n):
-            reps = max(1, round(qtys[i] / base))
+        for i, reps in enumerate(reps_by_type):
             slots.extend([i] * reps)
         return slots
     return list(range(n))

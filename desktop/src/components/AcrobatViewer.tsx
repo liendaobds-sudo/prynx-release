@@ -85,7 +85,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         hiddenOcgLayerIds,
         separationPlates, vdpFields, selectedVdpFieldIds,
         setSelectedVdpFieldIds, setVdpFields, setIsSidebarOpen,
-        setViewerPageOrder, setViewerPageRotations, setViewerDirty,
+        setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty,
         error, setError,
         setIsProcessing, setProcessStatus,
         viewerZoom: zoom, setViewerZoom: setZoom,
@@ -112,7 +112,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         softProofImageUrl: state.softProofImageUrl, gamutWarningUrl: state.gamutWarningUrl, tacHeatmapUrl: state.tacHeatmapUrl, overprintPreviewUrl: state.overprintPreviewUrl,
         ocgPreviewUrl: state.ocgPreviewUrl,
         setVdpFields: state.setVdpFields, setIsSidebarOpen: state.setIsSidebarOpen,
-        setViewerPageOrder: state.setViewerPageOrder, setViewerPageRotations: state.setViewerPageRotations, setViewerDirty: state.setViewerDirty,
+        setViewerPageOrder: state.setViewerPageOrder, setViewerPageInstanceIds: state.setViewerPageInstanceIds, setViewerPageRotations: state.setViewerPageRotations, setViewerDirty: state.setViewerDirty,
         error: state.error, setError: state.setError,
         setIsProcessing: state.setIsProcessing, setProcessStatus: state.setProcessStatus,
         viewerZoom: state.viewerZoom, setViewerZoom: state.setViewerZoom,
@@ -165,9 +165,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         setIsCropMode(false);
         // File mới đã bake crop; bỏ edit ảo trên file cũ (order/rot).
         setViewerPageOrder(undefined);
+        setViewerPageInstanceIds(undefined);
         setViewerPageRotations(undefined);
         setViewerDirty(false);
-    }, [file, pdfUrl, setFile, setPdfUrl, setSelectionFileId, setIsCropMode, setViewerPageOrder, setViewerPageRotations, setViewerDirty]);
+    }, [file, pdfUrl, setFile, setPdfUrl, setSelectionFileId, setIsCropMode, setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty]);
     const onVdpBoxSelect = (fieldIds: string[]) => {}; // Handled directly in LivePageFrame now
     const onVdpFieldsChange = setVdpFields;
 
@@ -238,7 +239,15 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         }
         setPageOrder(newOrder);
         setPageInstanceIds(newIds);
-    }, [setPageOrder, setPageInstanceIds]);
+        // Đồng bộ NGAY sang store dùng chung của bộ bình. Trước đây chỉ dựa vào
+        // useEffect(pageOrder) bên dưới nên khi nhân bản liên tiếp, preview có thể
+        // chạy trong khe giữa hai render và vẫn lấy order cũ (vd 28 thay vì 45).
+        // setPageOrder và store đều nhận cùng một immutable array nên thumbnail,
+        // preview và file xuất luôn thấy cùng một phiên bản thứ tự trang.
+        setViewerPageOrder(newOrder);
+        setViewerPageInstanceIds(newIds);
+        setNumPages(newOrder.length);
+    }, [setPageOrder, setPageInstanceIds, setViewerPageOrder, setViewerPageInstanceIds, setNumPages]);
 
     // LƯU Ý: KHÔNG return sớm ở đây. Trước kia `if (loadError) return ...` đặt
     // TRƯỚC hàng loạt hook bên dưới (useTileRenderer, useViewerZoom, useEffect...),
@@ -439,8 +448,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     });
 
     // ═══ Sync Effects ═══
-    useEffect(() => { setViewerPageOrder?.(pageOrder); setNumPages(pageOrder.length); }, [pageOrder]);
+    // Fallback cho các thay đổi pageOrder không đi qua applyOrderChange (nạp file,
+    // undo/redo, copy liên file). Các handler trực tiếp đã đồng bộ ngay phía trên.
+    useEffect(() => { setViewerPageOrder(pageOrder); setNumPages(pageOrder.length); }, [pageOrder, setViewerPageOrder, setNumPages]);
     useEffect(() => { if (pageOrder.length > 0 && activePage > pageOrder.length) setActivePage(pageOrder.length); }, [pageOrder.length, activePage]);
+    useEffect(() => { setViewerPageInstanceIds(pageInstanceIds); }, [pageInstanceIds, setViewerPageInstanceIds]);
     // Đẩy rotation ra store dạng number[] THEO VỊ TRÍ (out[i] = góc trang ở vị trí i).
     // Trong viewer rotation keyed theo instance-id (xoay độc lập bản nhân bản), nhưng ra
     // store/backend chỉ cần góc-theo-vị-trí (thứ tự mảng đã cố định). Backend impose + bake

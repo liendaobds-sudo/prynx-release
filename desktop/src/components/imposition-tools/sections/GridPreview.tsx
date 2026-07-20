@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { authenticatedFetch, getApiUrl, uploadPDF } from "../../../lib/api";
 import { previewPerfLog } from "../../../lib/previewPerfLog";
+import { getFileArrayBuffer } from "../../../lib/utils";
 import type { NupSettings } from "../types";
+import { inheritedSingleMoldMaster } from "../shapeDetectionPolicy";
+import { materializePreviewViewerPdf, parsePreviewViewerState, resolvePreviewCellType, resolvePreviewPageCount } from "../previewSourcePolicy";
 import { useTranslation } from 'react-i18next';
 
 export interface GridPreviewProps {
@@ -29,7 +32,7 @@ export interface GridPreviewProps {
   itemH?: number;
   targetQuantity?: number | string;
   targetQuantitiesByPage?: Record<number, number>;
-  /** Tổng số trang nguồn — để N-Up vẽ preview đúng số ô thực sự lấp (mỗi trang 1 lần). */
+  /** Tổng số mẫu nguồn hiện có — dùng để phân bổ và tự động lấp đầy preview. */
   sourceTotalPages?: number;
   shapeParams?: string | null;
   shapesByPage?: Record<number, string>;
@@ -45,6 +48,7 @@ export interface GridPreviewProps {
   bleed?: number; // in mm
   groupingStrategy?: string;
   clusterCombineMode?: string;
+  clusterNesting?: boolean;
   clusterSizingMode?: string;
   clusterCols?: number;
   clusterRows?: number;
@@ -106,6 +110,10 @@ interface BackendLayoutResult {
   diePolygon?: number[][] | null;
   /** ratio_stack / CNC: số tờ logic cần in (PDF có thể chỉ 1 trang mẫu). */
   sheetsNeeded?: number;
+  /** Chế độ 1 khuôn dùng chung cho mọi trang nội dung. */
+  isHomogeneousPreview?: boolean;
+  /** Tổng số mẫu của toàn bộ job; có thể lớn hơn số ô của tờ đang xem. */
+  totalContentItems?: number;
   /** ratio_stack: chỉ số mẫu có SL>0 nhưng không đủ chỗ trên tờ. */
   ratioUnplaced?: number[];
   /** chia cụm: kiểu ghép đã dùng (replicate_mixed / zone_per_type / zone_ratio). */
@@ -759,6 +767,7 @@ export default function GridPreview(props: GridPreviewProps) {
     bleed = 0,
     groupingStrategy,
     clusterCombineMode,
+    clusterNesting,
     clusterSizingMode,
     clusterCols,
     clusterRows,
@@ -786,6 +795,7 @@ export default function GridPreview(props: GridPreviewProps) {
     null,
   );
   const [isLoading, setIsLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   // chia cụm zone modes: tờ đang xem (0-based) để lật ◄ n/N ►.
   const [activeSheet, setActiveSheet] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -815,6 +825,7 @@ export default function GridPreview(props: GridPreviewProps) {
 
   const resolvePreviewSource = async (): Promise<{ path?: string; file_id?: string }> => {
     const cacheKey = previewSourceKey ?? "default";
+    const viewerState = parsePreviewViewerState(cacheKey);
     // Đổi pageOrder (xóa/sắp trang) → bỏ cache path/fileId cũ.
     if (previewPathCacheRef.current && previewPathCacheRef.current.key !== cacheKey) {
       previewPathCacheRef.current = null;
@@ -826,20 +837,15 @@ export default function GridPreview(props: GridPreviewProps) {
     // Có xóa/sắp trang? → cố bake; nếu bake/ghi temp lỗi vẫn fallback path
     // (đúng số loại nhờ total_pages + reassign client).
     let mustBake = false;
-    try {
-      const parsed = JSON.parse(cacheKey);
-      const order: number[] | undefined = parsed?.o;
-      if (Array.isArray(order) && order.length > 0) {
-        if (order.length > maxOrderLenSeenRef.current) {
-          maxOrderLenSeenRef.current = order.length;
-        }
-        if (!order.every((p, i) => p === i + 1)) mustBake = true;
-        if (maxOrderLenSeenRef.current > 0 && order.length < maxOrderLenSeenRef.current) {
-          mustBake = true;
-        }
+    const order = viewerState.order;
+    if (order.length > 0) {
+      if (order.length > maxOrderLenSeenRef.current) {
+        maxOrderLenSeenRef.current = order.length;
       }
-    } catch {
-      /* ignore */
+      if (!order.every((p, i) => p === i + 1)) mustBake = true;
+      if (maxOrderLenSeenRef.current > 0 && order.length < maxOrderLenSeenRef.current) {
+        mustBake = true;
+      }
     }
     if (
       typeof sourceTotalPages === "number" &&
@@ -863,10 +869,18 @@ export default function GridPreview(props: GridPreviewProps) {
         // Ưu tiên materialize bytes (file bake không có .path, hoặc cần bản đã xóa trang).
         let bytes: Uint8Array<ArrayBuffer> | null = null;
         try {
-          const ab = await wf.arrayBuffer();
-          if (ab && ab.byteLength > 64) bytes = new Uint8Array(ab);
+          const sourceBuffer = await getFileArrayBuffer(wf);
+          if (nativePath && mustBake && viewerState.order.length > 0) {
+            bytes = await materializePreviewViewerPdf(sourceBuffer, viewerState) as Uint8Array<ArrayBuffer>;
+            void previewPerfLog("preview-source MATERIALIZED", {
+              pages: viewerState.order.length,
+              duplicates: viewerState.order.length - new Set(viewerState.order.filter((p) => p > 0)).size,
+            });
+          } else if (sourceBuffer && sourceBuffer.byteLength > 64) {
+            bytes = new Uint8Array(sourceBuffer);
+          }
         } catch (e) {
-          console.warn("[GridPreview] arrayBuffer failed:", e);
+          console.warn("[GridPreview] materialize source failed:", e);
         }
 
         if (bytes) {
@@ -946,25 +960,19 @@ export default function GridPreview(props: GridPreviewProps) {
   // • Multi-pack (ratio_stack / sequential / cluster / CNC) → 1 tờ xếp nhiều loại.
   // • MỖI TEM MỘT KHUÔN khác nhau + step_repeat/repeat → PHẢI tính theo trang view
   //   (die size/type khác → capacity khác). Không gộp với case 1 khuôn.
-  const _isClusterPreview = groupingStrategy === "cluster_tile";
+  const _isClusterPreview = groupingStrategy === "cluster_tile"
+    && layoutType !== "repeat"
+    && taskMode !== "step_repeat";
   const _multiPage =
     typeof sourceTotalPages === "number" && sourceTotalPages > 1;
-  const _uniqueDieTypes = useMemo(() => {
-    const set = new Set<string>();
-    if (shapesByPage && typeof shapesByPage === "object") {
-      for (const k of Object.keys(shapesByPage)) {
-        const v = String((shapesByPage as any)[k] || "").toUpperCase();
-        if (v && v !== "CUSTOM") set.add(v);
-      }
-    }
-    if (set.size === 0 && shapeType && shapeType !== "CUSTOM") {
-      set.add(String(shapeType).toUpperCase());
-    }
-    return set;
-  }, [shapesByPage, shapeType]);
-  /** 0–1 loại khuôn đã nhận diện (sau inherit = 1) → coi là 1 khuôn / cùng family. */
+  const _singleMoldMaster = useMemo(
+    () => inheritedSingleMoldMaster(shapeParamsByPage, sourceTotalPages || 0),
+    [shapeParamsByPage, sourceTotalPages],
+  );
+  const _geometryPageIdx = _singleMoldMaster ?? 0;
+  /** Chỉ inheritance tường minh mới được coi là một khuôn. */
   const _singleMoldFamily =
-    !!isDieCut && _multiPage && _uniqueDieTypes.size <= 1;
+    !!isDieCut && _multiPage && _singleMoldMaster !== null;
   /** Xếp nhiều mẫu trên 1 (hoặc N) tờ — page view không đổi geometry layout. */
   const _multiPackLayout =
     _isClusterPreview ||
@@ -981,7 +989,9 @@ export default function GridPreview(props: GridPreviewProps) {
   const _layoutIgnoresViewPage =
     _singleMoldFamily || _multiPackLayout;
 
-  const _pageIdxDep = _layoutIgnoresViewPage ? 0 : pageIdx;
+  const _pageIdxDep = _singleMoldFamily
+    ? _geometryPageIdx
+    : (_layoutIgnoresViewPage ? 0 : pageIdx);
   const _shapesByPageKey = useMemo(() => {
     if (!shapesByPage || typeof shapesByPage !== "object") return "";
     try {
@@ -998,13 +1008,14 @@ export default function GridPreview(props: GridPreviewProps) {
       return "";
     }
   }, [shapeParamsByPage]);
-  // Master shape fingerprint (page 0 / first non-CUSTOM) — không theo trang view.
+  // Master shape fingerprint — dùng đúng inherited master, không theo trang đang xem.
   const _masterShapeKey = useMemo(() => {
     if (!_layoutIgnoresViewPage) return `${shapeType}|${itemW}|${itemH}|${shapeParams || ""}`;
     let st = "CUSTOM";
     if (shapesByPage) {
-      const v0 = (shapesByPage as any)[0] ?? (shapesByPage as any)["0"];
-      if (v0 && v0 !== "CUSTOM") st = String(v0);
+      const preferred = (shapesByPage as any)[_geometryPageIdx]
+        ?? (shapesByPage as any)[String(_geometryPageIdx)];
+      if (preferred && preferred !== "CUSTOM") st = String(preferred);
       else {
         for (const k of Object.keys(shapesByPage)) {
           const v = (shapesByPage as any)[k];
@@ -1024,22 +1035,27 @@ export default function GridPreview(props: GridPreviewProps) {
     shapeParams,
     shapesByPage,
     _shapesByPageKey,
+    _geometryPageIdx,
     _shapeParamsByPageKey,
   ]);
 
   const _shapeTypeDep = _layoutIgnoresViewPage ? _masterShapeKey : shapeType;
   const _shapeParamsDep = _layoutIgnoresViewPage ? _shapeParamsByPageKey : shapeParams;
-  const _itemWDep = _layoutIgnoresViewPage ? 0 : itemW;
-  const _itemHDep = _layoutIgnoresViewPage ? 0 : itemH;
-  const _pageIdxForRequest = _layoutIgnoresViewPage ? 0 : pageIdx;
+  // Guillotine layout has no die master: resized page dimensions always affect
+  // grid capacity, including multi-design layouts that ignore active-page labels.
+  const _itemWDep = _layoutIgnoresViewPage && isDieCut ? 0 : itemW;
+  const _itemHDep = _layoutIgnoresViewPage && isDieCut ? 0 : itemH;
+  const _pageIdxForRequest = _singleMoldFamily
+    ? _geometryPageIdx
+    : (_layoutIgnoresViewPage ? 0 : pageIdx);
 
   /** Khóa layout: mọi thứ ảnh hưởng xếp tem — KHÔNG gồm pageIdx view. */
   const layoutFetchKey = useMemo(() => {
     return JSON.stringify({
       uw: Math.round(usableW * 100) / 100,
       uh: Math.round(usableH * 100) / 100,
-      iw: _layoutIgnoresViewPage ? 0 : Math.round(itemW * 100) / 100,
-      ih: _layoutIgnoresViewPage ? 0 : Math.round(itemH * 100) / 100,
+      iw: Math.round((_itemWDep || 0) * 100) / 100,
+      ih: Math.round((_itemHDep || 0) * 100) / 100,
       gx: gapX,
       gy: gapY,
       sg: splitGap,
@@ -1067,6 +1083,7 @@ export default function GridPreview(props: GridPreviewProps) {
       bl: bleed,
       grp: groupingStrategy,
       ccm: clusterCombineMode,
+      cn: clusterNesting !== false,
       csm: clusterSizingMode,
       cc: clusterCols,
       cr: clusterRows,
@@ -1093,8 +1110,8 @@ export default function GridPreview(props: GridPreviewProps) {
     usableW,
     usableH,
     _layoutIgnoresViewPage,
-    itemW,
-    itemH,
+    _itemWDep,
+    _itemHDep,
     gapX,
     gapY,
     splitGap,
@@ -1122,6 +1139,7 @@ export default function GridPreview(props: GridPreviewProps) {
     bleed,
     groupingStrategy,
     clusterCombineMode,
+    clusterNesting,
     clusterSizingMode,
     clusterCols,
     clusterRows,
@@ -1165,6 +1183,7 @@ export default function GridPreview(props: GridPreviewProps) {
       layoutCacheRef.current
     ) {
       setIsLoading(false);
+      setPreviewError(null);
       setLayoutResult((prev) =>
         prev === layoutCacheRef.current ? prev : layoutCacheRef.current,
       );
@@ -1174,18 +1193,11 @@ export default function GridPreview(props: GridPreviewProps) {
     // Stale-while-revalidate: GIỮ preview cũ trên màn hình, chỉ bật loading nhẹ.
     // KHÔNG setLayoutResult(null) → hết giật trắng khi detect/settings đổi.
     setIsLoading(true);
+    setPreviewError(null);
     const gen = ++previewGenRef.current;
 
     // Số trang viewer (SSOT cho ratio_stack) — luôn gửi, không để backend đoán từ file gốc.
-    const viewerPageCount = (() => {
-      try {
-        const p = JSON.parse(previewSourceKey ?? "{}");
-        if (Array.isArray(p?.o) && p.o.length > 0) return p.o.length;
-      } catch { /* ignore */ }
-      return typeof sourceTotalPages === "number" && sourceTotalPages > 0
-        ? sourceTotalPages
-        : 0;
-    })();
+    const viewerPageCount = resolvePreviewPageCount(previewSourceKey, sourceTotalPages || 0);
 
     debounceRef.current = setTimeout(async () => {
       // Abort previous in-flight request
@@ -1213,8 +1225,9 @@ export default function GridPreview(props: GridPreviewProps) {
             return shapeType && shapeType !== "CUSTOM" ? shapeType : "CUSTOM";
           }
           if (shapesByPage && typeof shapesByPage === "object") {
-            const v0 = (shapesByPage as any)[0] ?? (shapesByPage as any)["0"];
-            if (v0 && v0 !== "CUSTOM") return String(v0);
+            const preferred = (shapesByPage as any)[_geometryPageIdx]
+              ?? (shapesByPage as any)[String(_geometryPageIdx)];
+            if (preferred && preferred !== "CUSTOM") return String(preferred);
             for (const k of Object.keys(shapesByPage)) {
               const v = (shapesByPage as any)[k];
               if (v && v !== "CUSTOM") return String(v);
@@ -1225,9 +1238,9 @@ export default function GridPreview(props: GridPreviewProps) {
         const _reqShapeProps = (() => {
           if (!_layoutIgnoresViewPage) return shapePropsParsed || {};
           if (shapeParamsByPage && typeof shapeParamsByPage === "object") {
-            const p0 =
-              (shapeParamsByPage as any)[0] ?? (shapeParamsByPage as any)["0"];
-            if (p0 && typeof p0 === "object") return p0;
+            const preferred = (shapeParamsByPage as any)[_geometryPageIdx]
+              ?? (shapeParamsByPage as any)[String(_geometryPageIdx)];
+            if (preferred && typeof preferred === "object") return preferred;
           }
           return shapePropsParsed || {};
         })();
@@ -1269,6 +1282,7 @@ export default function GridPreview(props: GridPreviewProps) {
           die_offset_mm: dieOffsetMm ?? 0,
           grouping_strategy: groupingStrategy,
           cluster_combine_mode: clusterCombineMode,
+          cluster_nesting: clusterNesting !== false,
           cluster_sizing_mode: clusterSizingMode,
           cluster_cols: clusterCols,
           cluster_rows: clusterRows,
@@ -1319,6 +1333,14 @@ export default function GridPreview(props: GridPreviewProps) {
 
         if (!res.ok) {
           const errText = await res.text();
+          let message = `Kh\u00f4ng th\u1ec3 t\u00ednh preview (${res.status}).`;
+          try {
+            const parsed = JSON.parse(errText);
+            if (typeof parsed?.detail === "string") message = parsed.detail;
+            else if (typeof parsed?.error === "string") message = parsed.error;
+          } catch {
+            if (errText.trim()) message = errText.trim();
+          }
           console.error(
             "Preview layout API error:",
             res.status,
@@ -1334,6 +1356,7 @@ export default function GridPreview(props: GridPreviewProps) {
           if (gen === previewGenRef.current) {
             setLayoutResult(null);
             setIsLoading(false);
+            setPreviewError(message);
             if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
           }
           return;
@@ -1438,6 +1461,7 @@ export default function GridPreview(props: GridPreviewProps) {
             layoutKeyRef.current = layoutFetchKey;
             layoutCacheRef.current = convertedResult;
             setLayoutResult(convertedResult);
+            setPreviewError(null);
             if (onCapacityChangeRef.current)
               onCapacityChangeRef.current(convertedResult.totalItems);
             if (onMixedPlacedByPageRef.current) {
@@ -1476,6 +1500,7 @@ export default function GridPreview(props: GridPreviewProps) {
           } else {
             setLayoutResult(null);
             if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
+            setPreviewError(data.error || "Kh\u00f4ng th\u1ec3 t\u00ednh b\u1ed1 c\u1ee5c preview.");
           }
           setIsLoading(false);
         }
@@ -1484,6 +1509,7 @@ export default function GridPreview(props: GridPreviewProps) {
           console.error("Preview layout fetch error:", err);
           setLayoutResult(null);
           setIsLoading(false);
+          setPreviewError(err?.message || "Kh\u00f4ng th\u1ec3 t\u1ea3i preview.");
           if (onCapacityChangeRef.current) onCapacityChangeRef.current(0);
         }
       }
@@ -1506,32 +1532,34 @@ export default function GridPreview(props: GridPreviewProps) {
   //    ratio_stack: backend trả sheetsNeeded (mọi mẫu chung 1 số tờ) — ưu tiên dùng.
   const _cap = layoutResult?.totalItems ?? 0;
   const _isRatioStack = layoutType === "ratio_stack";
-  const _isNupFill = !isDieCut && taskMode === "nup" && _cap > 0 && !_isRatioStack;
+  const _isCutStacks = layoutType === "cut_stacks";
+  const _isNupFill = !isDieCut && taskMode === "nup" && _cap > 0 && !_isRatioStack && !_isCutStacks;
   const _qtyPerType = Number(targetQuantity) || 0;
   const _nupTotal = _isNupFill
     ? (() => {
         // Ưu tiên tổng SL từng trang nếu có; không thì qty global × số mẫu.
         const byPage = targetQuantitiesByPage || {};
-        const pageKeys = Object.keys(byPage);
-        if (pageKeys.length > 0) {
-          let sum = 0;
-          let any = false;
-          for (const k of pageKeys) {
-            const v = Number((byPage as any)[k]);
-            if (v > 0) {
-              sum += v;
-              any = true;
-            }
+        const count = Math.max(1, sourceTotalPages || 1);
+        let sum = 0;
+        let hasRequestedQuantity = false;
+        for (let idx = 0; idx < count; idx++) {
+          const hasOverride = Object.prototype.hasOwnProperty.call(byPage, idx);
+          const value = Number(hasOverride ? (byPage as any)[idx] : _qtyPerType);
+          if (Number.isFinite(value) && value > 0) {
+            sum += value;
+            hasRequestedQuantity = true;
+          } else if (hasOverride) {
+            // Explicit zero stays zero instead of inheriting the global value.
+            hasRequestedQuantity = true;
           }
-          if (any) return sum;
         }
-        return _qtyPerType > 0 ? _qtyPerType * Math.max(1, sourceTotalPages || 1) : _cap;
+        return hasRequestedQuantity ? sum : _cap;
       })()
     : null;
 
   let totalSheets = 1;
   if (layoutResult && layoutResult.totalItems > 0) {
-    if (_isRatioStack && layoutResult.sheetsNeeded != null && layoutResult.sheetsNeeded > 0) {
+    if (layoutResult.sheetsNeeded != null && layoutResult.sheetsNeeded > 0) {
       totalSheets = layoutResult.sheetsNeeded;
     } else if (_nupTotal != null) {
       totalSheets = Math.max(1, Math.ceil(_nupTotal / layoutResult.totalItems));
@@ -1645,7 +1673,12 @@ export default function GridPreview(props: GridPreviewProps) {
         sh: cell.height * scale,
         isRotated: !!cell.isRotated,
         is180: !!cell.isRotated180,
-        blockId: (cell as any).pageIdx ?? cell.blockId ?? 0,
+        blockId: resolvePreviewCellType(
+          (cell as any).pageIdx ?? cell.blockId,
+          pageIdx,
+          taskMode,
+          !!isDieCut,
+        ),
         // Đường bế THẬT → pixel (mm top-down * scale). Vẽ y nguyên, không xoay/lật.
         diePolylinesPx: (cell as any).diePolylines
           ? (cell as any).diePolylines.map((pl: number[][]) =>
@@ -1663,6 +1696,9 @@ export default function GridPreview(props: GridPreviewProps) {
     scale,
     pad,
     sheetHeight,
+    pageIdx,
+    taskMode,
+    isDieCut,
   ]);
 
   // Sau khi MỌI hook đã chạy mới được return sớm (xem ghi chú phía trên).
@@ -1750,17 +1786,33 @@ export default function GridPreview(props: GridPreviewProps) {
             <div className="text-slate-600 dark:text-zinc-400">
               {t('imposition.gridPreview:suc_chua')}{" "}
               <span className="font-bold text-slate-800 dark:text-zinc-200">
-                {/* Chia cụm zone đa-tờ: mỗi tờ số con KHÁC nhau → hiện số con TỜ ĐANG XEM
-                    (svgCells đã theo activeSheet), không dùng totalItems (tờ đầu). */}
-                {layoutResult.sheets && layoutResult.sheets.length > 1
-                  ? svgCells.length
-                  : _showCount < layoutResult.totalItems
-                    ? `${_showCount} / ${layoutResult.totalItems}`
-                    : layoutResult.totalItems}
+                {/* Homogeneous: totalItems là SỨC CHỨA hình học; cells.length chỉ là
+                    số mẫu hiện có. Hai khái niệm này tuyệt đối không được trộn. */}
+                {layoutResult.isHomogeneousPreview
+                  ? layoutResult.totalItems
+                  : layoutResult.sheets && layoutResult.sheets.length > 1
+                    ? svgCells.length
+                    : _showCount < layoutResult.totalItems
+                      ? `${_showCount} / ${layoutResult.totalItems}`
+                      : layoutResult.totalItems}
               </span>{" "}
               {t('imposition.gridPreview:tem_to')}
             </div>
-            {(Number(targetQuantity) > 0 ||
+            {layoutResult.isHomogeneousPreview &&
+              typeof layoutResult.totalContentItems === "number" && (
+                <>
+                  <div className="w-px h-4 bg-slate-300 dark:bg-zinc-700"></div>
+                  <div className="text-slate-600 dark:text-zinc-400">
+                    {t('imposition.gridPreview:dang_ghep')}{" "}
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                      {layoutResult.totalContentItems}
+                    </span>{" "}
+                    {t('imposition.gridPreview:mau')}
+                  </div>
+                </>
+              )}
+            {!_isCutStacks &&
+              (Number(targetQuantity) > 0 ||
               _isRatioStack ||
               Object.values(targetQuantitiesByPage || {}).some((v) => Number(v) > 0)) && (
               <>
@@ -1823,11 +1875,14 @@ export default function GridPreview(props: GridPreviewProps) {
           {(() => {
             const _isClusterType =
               _isRatioStack && clusterMode && clusterMode !== "none";
-            const _nTypes = new Set(
-              (layoutResult.cells || [])
-                .map((c) => (c as any).pageIdx)
-                .filter((p) => typeof p === "number"),
-            ).size;
+            const _nTypes = layoutResult.isHomogeneousPreview &&
+              typeof layoutResult.totalContentItems === "number"
+              ? layoutResult.totalContentItems
+              : new Set(
+                  (layoutResult.cells || [])
+                    .map((c) => (c as any).pageIdx)
+                    .filter((p) => typeof p === "number"),
+                ).size;
             if (_isClusterType && _nTypes > 0) {
               const _dir = clusterMode === "row" ? t('imposition.gridPreview:hang_ngang') : t('imposition.gridPreview:cot_doc');
               return (
@@ -2418,7 +2473,9 @@ export default function GridPreview(props: GridPreviewProps) {
         </div>
       ) : (
         <div className="text-sm text-slate-500 flex items-center gap-2">
-          {isDetectingShape ? (
+          {previewError ? (
+            <span className="text-red-600 dark:text-red-400 text-center">{previewError}</span>
+          ) : isDetectingShape ? (
             t('imposition.gridPreview:dang_nhan_dien_hinh_dang_tem')
           ) : isLoading ? (
             <>

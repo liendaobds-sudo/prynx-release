@@ -13,6 +13,10 @@ _LOG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "rot_audit.log",
 )
+_ROT_AUDIT_ENABLED = os.getenv("PRYNX_ROT_AUDIT", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
 
 
 def get_logger() -> logging.Logger:
@@ -20,6 +24,12 @@ def get_logger() -> logging.Logger:
     log.setLevel(logging.DEBUG)
     log.propagate = False
     # Tránh gắn trùng handler khi module được import nhiều lần trong cùng process.
+    # Per-placement rotation tracing is diagnostic-only. Keeping it enabled in
+    # production created multi-million-line files and slowed large impositions.
+    if not _ROT_AUDIT_ENABLED:
+        log.disabled = True
+        return log
+    log.disabled = False
     already = any(
         isinstance(h, logging.FileHandler)
         and getattr(h, "_rot_audit", False)

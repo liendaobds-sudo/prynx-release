@@ -6,6 +6,8 @@ export interface DielineGenerateRequest {
     params: BoxParams;
     nestingConfig: NestingConfig;
     changedKey?: keyof BoxParams;
+    /** Preview requests skip the expensive nesting/collision pass. */
+    includeNesting?: boolean;
 }
 
 export interface DielineGenerateResponse {

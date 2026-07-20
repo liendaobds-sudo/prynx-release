@@ -374,15 +374,16 @@ def assign_contents(content_sequence: Sequence[int], cells_per_sheet: int) -> Li
 def expand_by_quantity(content_pages: Sequence[int], quantities: Optional[Sequence[int]]) -> List[int]:
     """Giãn danh sách trang theo số lượng mỗi trang (như Dàn nhiều mẫu) (R6.1).
 
-    quantities=None hoặc tổng ≤ 0 → auto-fill: mỗi trang xuất hiện đúng 1 lần (lấp
-    đầy theo thứ tự). Ngược lại → mỗi trang lặp lại theo số lượng tương ứng, xen kẽ
-    để phân bố đều (round-robin) cho cân tờ.
+    quantities=None hoặc tổng ≤ 0 → trả chuỗi cơ sở có mỗi trang đúng 1 lần;
+    ``build_homogeneous_layout`` sẽ chia đều thành các khối mẫu liền để lấp kín tờ cuối.
+    Ngược lại → mỗi trang lặp lại theo số lượng tương ứng, xen kẽ để phân bố đều
+    (round-robin) cho cân tờ.
     """
     pages = list(content_pages)
     if not pages:
         return []
     if not quantities or sum(int(q or 0) for q in quantities) <= 0:
-        return pages  # auto-fill: 1 lần mỗi trang
+        return pages  # chuỗi cơ sở auto-fill: 1 lần mỗi trang
 
     remaining = [max(0, int(q or 0)) for q in quantities]
     # đệm/cắt cho khớp độ dài pages
@@ -461,6 +462,19 @@ def build_homogeneous_layout(
     items = tuple(result.get("items", []) or [])
     C = len(items)
     seq = expand_by_quantity(plan.content_pages, quantities)
+    is_auto_fill = not quantities or sum(int(q or 0) for q in quantities) <= 0
+    if is_auto_fill and C > 0 and seq:
+        # Mỗi mẫu phải xuất hiện ít nhất một lần và các ô cùng mẫu phải LIỀN NHAU
+        # để dễ gom thành phẩm: 1,1,1 → 2,2,2 → 3,3,3 (không xen 1,2,3,1,2,3).
+        # Chia tổng ô cân bằng nhất có thể; phần dư ưu tiên các mẫu đầu.
+        # 45 mẫu / sức chứa 60 => mẫu 1..15 mỗi mẫu 2 ô, mẫu 16..45 mỗi mẫu 1 ô.
+        full_count = ((len(seq) + C - 1) // C) * C
+        base_count, remainder = divmod(full_count, len(seq))
+        seq = [
+            src
+            for i, src in enumerate(seq)
+            for _ in range(base_count + (1 if i < remainder else 0))
+        ]
     cell_contents = tuple(assign_contents(seq, C if C > 0 else 1))
     num_sheets = 0 if not cell_contents else (cell_contents[-1].sheet_index + 1)
 

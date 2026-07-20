@@ -82,6 +82,7 @@
 
 /* --- App Layout --- */
 .dieline-tool {
+  position: relative;
   display: flex;
   height: 100%;
   overflow: hidden;
@@ -93,14 +94,125 @@
 
 /* --- Sidebar --- */
 .dt-sidebar {
+  position: relative;
   width: 280px;
-  min-width: 280px;
+  min-width: 240px;
+  max-width: min(560px, calc(100% - 16px));
   height: 100%;
+  flex: 0 0 auto;
   background: var(--dt-bg-secondary);
   border-right: 1px solid var(--dt-border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.dt-sidebar-floating {
+  position: absolute;
+  min-height: 320px;
+  max-height: calc(100% - 16px);
+  border: 1px solid var(--dt-border);
+  border-radius: var(--dt-radius-md);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.22);
+  z-index: 80;
+}
+
+.dt-sidebar-toolbar {
+  height: 36px;
+  min-height: 36px;
+  padding: 0 8px 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--dt-grad-sidebar);
+  border-bottom: 1px solid var(--dt-border);
+  color: var(--dt-text-secondary);
+  user-select: none;
+}
+
+.dt-sidebar-floating .dt-sidebar-toolbar {
+  cursor: move;
+}
+
+.dt-sidebar-toolbar-grip {
+  color: var(--dt-text-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.dt-sidebar-toolbar-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dt-sidebar-toolbar-button {
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--dt-radius-sm);
+  background: transparent;
+  color: var(--dt-text-secondary);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.dt-sidebar-toolbar-button:hover {
+  color: var(--dt-accent);
+  border-color: var(--dt-border);
+  background: var(--dt-bg-hover);
+}
+
+.dt-sidebar-resize-handle {
+  position: absolute;
+  top: 36px;
+  right: -4px;
+  bottom: 0;
+  width: 8px;
+  z-index: 3;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.dt-sidebar-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  width: 2px;
+  height: 38px;
+  border-radius: 2px;
+  background: var(--dt-border);
+  transform: translateY(-50%);
+  transition: background var(--dt-transition);
+}
+
+.dt-sidebar-resize-handle:hover::after {
+  background: var(--dt-accent);
+}
+
+.dt-sidebar-corner-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  z-index: 4;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 45%, var(--dt-border) 46%, var(--dt-border) 55%, transparent 56%);
+}
+
+body.dt-panel-interacting,
+body.dt-panel-interacting * {
+  user-select: none !important;
 }
 
 .dt-sidebar-header {
@@ -452,6 +564,19 @@
   background: var(--dt-accent);
   color: #fff;
   font-weight: 600;
+}
+
+@keyframes dt-show-generation-status {
+  to {
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
+.dt-generation-delayed {
+  opacity: 0;
+  visibility: hidden;
+  animation: dt-show-generation-status 0s linear 120ms forwards;
 }
 
 /* --- Viewport --- */
@@ -885,13 +1010,24 @@
     flex-direction: column;
   }
 
-  .dt-sidebar {
-    width: 100%;
+  .dt-sidebar:not(.dt-sidebar-floating) {
+    width: 100% !important;
     min-width: 100%;
+    max-width: 100%;
     height: auto;
     max-height: 40vh;
     border-right: none;
     border-bottom: 1px solid var(--dt-border);
+  }
+
+  .dt-sidebar:not(.dt-sidebar-floating) .dt-sidebar-resize-handle {
+    display: none;
+  }
+
+  .dt-sidebar-floating {
+    min-width: 240px;
+    max-width: calc(100% - 16px);
+    max-height: calc(100% - 16px);
   }
 }
 

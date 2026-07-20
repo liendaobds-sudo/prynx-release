@@ -50,6 +50,8 @@ export type HdriStatus = 'loading' | 'ready' | 'failed';
 /** Cấu hình ảnh nghệ thuật cho một mặt (ngoài/trong). */
 export interface ArtworkFaceConfig {
     url: string | null;
+    /** Intrinsic source width/height. Stored with the blob URL so mapping never guesses. */
+    aspectRatio: number | null;
     transform: ArtworkTransform;
 }
 
@@ -61,6 +63,10 @@ export interface ArtworkInnerConfig extends ArtworkFaceConfig {
 /** Toàn bộ cấu hình ảnh nghệ thuật của mockup. */
 export interface ArtworkConfig {
     outer: ArtworkFaceConfig;
+    /** Artwork riêng của khay trong mẫu hộp diêm. */
+    trayOuter: ArtworkFaceConfig;
+    /** Artwork riêng của vỏ bao trong mẫu hộp diêm. */
+    sleeveOuter: ArtworkFaceConfig;
     inner: ArtworkInnerConfig;
     mode: PlacementMode;
     showBleedSafe: boolean;
@@ -154,10 +160,14 @@ export interface MockupState {
     loadScenePreset: () => void;
 
     // Ảnh nghệ thuật — mặt ngoài / mặt trong độc lập (Yêu cầu 5.4)
-    setOuterArtworkUrl: (url: string | null) => void;
+    setOuterArtworkUrl: (url: string | null, aspectRatio?: number | null) => void;
     setOuterArtworkTransform: (transform: ArtworkTransform) => void;
+    setTrayArtworkUrl: (url: string | null, aspectRatio?: number | null) => void;
+    setTrayArtworkTransform: (transform: ArtworkTransform) => void;
+    setSleeveArtworkUrl: (url: string | null, aspectRatio?: number | null) => void;
+    setSleeveArtworkTransform: (transform: ArtworkTransform) => void;
     setInnerArtworkEnabled: (enabled: boolean) => void;
-    setInnerArtworkUrl: (url: string | null) => void;
+    setInnerArtworkUrl: (url: string | null, aspectRatio?: number | null) => void;
     setInnerArtworkTransform: (transform: ArtworkTransform) => void;
     setArtworkMode: (mode: PlacementMode) => void;
     setArtworkEditMode: (v: boolean) => void;
@@ -191,7 +201,10 @@ const HISTORY_COALESCE_MS = 450;
 let lastEditTs = 0;
 
 function artworkUrls(config: ArtworkConfig): (string | null)[] {
-    return [config.outer.url, config.inner.url, config.spotUvMaskUrl, config.embossMaskUrl];
+    return [
+        config.outer.url, config.trayOuter?.url, config.sleeveOuter?.url,
+        config.inner.url, config.spotUvMaskUrl, config.embossMaskUrl,
+    ];
 }
 
 function releaseArtworkResources(configs: ArtworkConfig[], keep: ArtworkConfig | null): void {
@@ -256,7 +269,9 @@ function createInitialState(): Omit<
     | 'requestCameraReset'
     | 'undoArtwork' | 'redoArtwork'
     | 'saveScenePreset' | 'loadScenePreset'
-    | 'setOuterArtworkUrl' | 'setOuterArtworkTransform' | 'setInnerArtworkEnabled'
+    | 'setOuterArtworkUrl' | 'setOuterArtworkTransform'
+    | 'setTrayArtworkUrl' | 'setTrayArtworkTransform'
+    | 'setSleeveArtworkUrl' | 'setSleeveArtworkTransform' | 'setInnerArtworkEnabled'
     | 'setInnerArtworkUrl' | 'setInnerArtworkTransform' | 'setArtworkMode'
     | 'setArtworkMode'
     | 'setArtworkEditMode'
@@ -274,10 +289,12 @@ function createInitialState(): Omit<
         showTechnicalLines: false,
         showFloorGrid: false,
         artwork: {
-            outer: { url: null, transform: { ...DEFAULT_TRANSFORM } },
-            inner: { enabled: false, url: null, transform: { ...DEFAULT_TRANSFORM } },
+            outer: { url: null, aspectRatio: null, transform: { ...DEFAULT_TRANSFORM } },
+            trayOuter: { url: null, aspectRatio: null, transform: { ...DEFAULT_TRANSFORM } },
+            sleeveOuter: { url: null, aspectRatio: null, transform: { ...DEFAULT_TRANSFORM } },
+            inner: { enabled: false, url: null, aspectRatio: null, transform: { ...DEFAULT_TRANSFORM } },
             mode: 'aligned-to-dieline',
-            showBleedSafe: false,
+            showBleedSafe: true,
             spotUvMaskUrl: null,
             embossMaskUrl: null,
             embossHeightMm: EMBOSS_HEIGHT_MIN_MM,
@@ -368,6 +385,8 @@ export const useMockupStore = create<MockupState>((set) => ({
                         showBleedSafe: state.artwork.showBleedSafe,
                         embossHeightMm: state.artwork.embossHeightMm,
                         outerTransform: state.artwork.outer.transform,
+                        trayOuterTransform: state.artwork.trayOuter.transform,
+                        sleeveOuterTransform: state.artwork.sleeveOuter.transform,
                         innerEnabled: state.artwork.inner.enabled,
                         innerTransform: state.artwork.inner.transform,
                     },
@@ -404,6 +423,8 @@ export const useMockupStore = create<MockupState>((set) => ({
                         showBleedSafe: !!a.showBleedSafe,
                         embossHeightMm: clampNumber(a.embossHeightMm, EMBOSS_HEIGHT_MIN_MM, EMBOSS_HEIGHT_MAX_MM, state.artwork.embossHeightMm),
                         outer: { ...state.artwork.outer, transform: clampArtworkTransform(a.outerTransform ?? state.artwork.outer.transform) },
+                        trayOuter: { ...state.artwork.trayOuter, transform: clampArtworkTransform(a.trayOuterTransform ?? state.artwork.trayOuter.transform) },
+                        sleeveOuter: { ...state.artwork.sleeveOuter, transform: clampArtworkTransform(a.sleeveOuterTransform ?? state.artwork.sleeveOuter.transform) },
                         inner: {
                             ...state.artwork.inner,
                             enabled: !!a.innerEnabled,
@@ -419,18 +440,62 @@ export const useMockupStore = create<MockupState>((set) => ({
         }),
 
     // ── Ảnh nghệ thuật: mặt ngoài và mặt trong cập nhật độc lập (Yêu cầu 5.4) ──
-    setOuterArtworkUrl: (url) =>
-        set((state) => replaceArtworkResources(state, { ...state.artwork, outer: { ...state.artwork.outer, url } })),
+    setOuterArtworkUrl: (url, aspectRatio) =>
+        set((state) => replaceArtworkResources(state, {
+            ...state.artwork,
+            outer: {
+                ...state.artwork.outer,
+                url,
+                aspectRatio: url && Number.isFinite(aspectRatio) && aspectRatio! > 0 ? aspectRatio! : null,
+            },
+        })),
     setOuterArtworkTransform: (transform) =>
         set((state) => withArtworkHistory(
             state,
             { ...state.artwork, outer: { ...state.artwork.outer, transform: clampArtworkTransform(transform) } },
             true,
         )),
+    setTrayArtworkUrl: (url, aspectRatio) =>
+        set((state) => replaceArtworkResources(state, {
+            ...state.artwork,
+            trayOuter: {
+                ...state.artwork.trayOuter,
+                url,
+                aspectRatio: url && Number.isFinite(aspectRatio) && aspectRatio! > 0 ? aspectRatio! : null,
+            },
+        })),
+    setTrayArtworkTransform: (transform) =>
+        set((state) => withArtworkHistory(
+            state,
+            { ...state.artwork, trayOuter: { ...state.artwork.trayOuter, transform: clampArtworkTransform(transform) } },
+            true,
+        )),
+    setSleeveArtworkUrl: (url, aspectRatio) =>
+        set((state) => replaceArtworkResources(state, {
+            ...state.artwork,
+            sleeveOuter: {
+                ...state.artwork.sleeveOuter,
+                url,
+                aspectRatio: url && Number.isFinite(aspectRatio) && aspectRatio! > 0 ? aspectRatio! : null,
+            },
+        })),
+    setSleeveArtworkTransform: (transform) =>
+        set((state) => withArtworkHistory(
+            state,
+            { ...state.artwork, sleeveOuter: { ...state.artwork.sleeveOuter, transform: clampArtworkTransform(transform) } },
+            true,
+        )),
     setInnerArtworkEnabled: (enabled) =>
         set((state) => withArtworkHistory(state, { ...state.artwork, inner: { ...state.artwork.inner, enabled } })),
-    setInnerArtworkUrl: (url) =>
-        set((state) => replaceArtworkResources(state, { ...state.artwork, inner: { ...state.artwork.inner, url } })),
+    setInnerArtworkUrl: (url, aspectRatio) =>
+        set((state) => replaceArtworkResources(state, {
+            ...state.artwork,
+            inner: {
+                ...state.artwork.inner,
+                url,
+                aspectRatio: url && Number.isFinite(aspectRatio) && aspectRatio! > 0 ? aspectRatio! : null,
+            },
+        })),
     setInnerArtworkTransform: (transform) =>
         set((state) => withArtworkHistory(
             state,

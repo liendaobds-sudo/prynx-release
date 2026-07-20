@@ -41,6 +41,7 @@ export interface WorkspaceState {
 
     // ── Viewer ──
     viewerPageOrder: number[] | undefined;
+    viewerPageInstanceIds: string[] | undefined;
     // number[] THEO VỊ TRÍ: viewerPageRotations[i] = góc trang ở vị trí i trong pageOrder
     // (KHÔNG phải keyed theo số trang gốc — đổi từ per-instance rotation 2026-07-06). Cho
     // phép mỗi bản nhân bản xoay độc lập. Consumer bake/impose lặp theo vị trí nên dùng [i].
@@ -139,6 +140,7 @@ export interface WorkspaceState {
     setShowCloseConfirm: (val: boolean) => void;
 
     setViewerPageOrder: (order: number[] | undefined) => void;
+    setViewerPageInstanceIds: (ids: string[] | undefined) => void;
     setViewerPageRotations: (rotations: number[] | undefined) => void;
     setHighlightedIssue: (issue: any) => void;
     setBleedView: (updater: any) => void;
@@ -225,6 +227,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
         showCloseConfirm: false,
 
     viewerPageOrder: undefined,
+    viewerPageInstanceIds: undefined,
     viewerPageRotations: undefined,
     highlightedIssue: null,
     bleedView: { show: false, mm: 0 },
@@ -322,6 +325,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     setShowCloseConfirm: (v) => set({ showCloseConfirm: v }),
 
     setViewerPageOrder: (order) => set({ viewerPageOrder: order }),
+    setViewerPageInstanceIds: (ids) => set({ viewerPageInstanceIds: ids }),
     setViewerPageRotations: (rotations) => set({ viewerPageRotations: rotations }),
     setHighlightedIssue: (issue) => set({ highlightedIssue: issue }),
     setBleedView: (updater) => set((state) => ({
@@ -351,48 +355,111 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
         const next = typeof v === 'function' ? v(state.isCropMode) : v;
         return { isCropMode: next };
     }),
-    setCurrentEditObjects: (updater) => set((state) => ({
-        currentEditObjects: typeof updater === 'function' ? updater(state.currentEditObjects) : updater,
-    })),
+    setCurrentEditObjects: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.currentEditObjects) : updater;
+        if (next === state.currentEditObjects) return state;
+        return { currentEditObjects: next };
+    }),
     setPdfObjectsVersion: (updater) => set((state) => ({
         pdfObjectsVersion: typeof updater === 'function' ? updater(state.pdfObjectsVersion) : updater,
     })),
-    setSelectedObjectIds: (updater) => set((state) => ({
-        selectedObjectIds: typeof updater === 'function' ? updater(state.selectedObjectIds) : updater,
-    })),
-    setHiddenObjectIds: (updater) => set((state) => ({
-        hiddenObjectIds: typeof updater === 'function' ? updater(state.hiddenObjectIds) : updater,
-    })),
-    setLockedObjectIds: (updater) => set((state) => ({
-        lockedObjectIds: typeof updater === 'function' ? updater(state.lockedObjectIds) : updater,
-    })),
-    setSelectionFileId: (id) => set({ selectionFileId: id, selectedObjectIds: [], hiddenObjectIds: [], lockedObjectIds: [] }),
+    // Idempotent: cùng nội dung mảng → giữ NGUYÊN reference (tránh "Maximum update depth"
+    // khi nhiều LivePageFrame gọi setSelectedObjectIds([]) mỗi effect).
+    setSelectedObjectIds: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.selectedObjectIds) : updater;
+        const prev = state.selectedObjectIds;
+        if (prev === next) return state;
+        if (
+            Array.isArray(prev) && Array.isArray(next)
+            && prev.length === next.length
+            && prev.every((id, i) => id === next[i])
+        ) {
+            return state;
+        }
+        return { selectedObjectIds: next };
+    }),
+    setHiddenObjectIds: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.hiddenObjectIds) : updater;
+        const prev = state.hiddenObjectIds;
+        if (prev === next) return state;
+        if (
+            Array.isArray(prev) && Array.isArray(next)
+            && prev.length === next.length
+            && prev.every((id, i) => id === next[i])
+        ) {
+            return state;
+        }
+        return { hiddenObjectIds: next };
+    }),
+    setLockedObjectIds: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.lockedObjectIds) : updater;
+        const prev = state.lockedObjectIds;
+        if (prev === next) return state;
+        if (
+            Array.isArray(prev) && Array.isArray(next)
+            && prev.length === next.length
+            && prev.every((id, i) => id === next[i])
+        ) {
+            return state;
+        }
+        return { lockedObjectIds: next };
+    }),
+    setSelectionFileId: (id) => set((state) => {
+        if (state.selectionFileId === id) return state;
+        return { selectionFileId: id, selectedObjectIds: [], hiddenObjectIds: [], lockedObjectIds: [] };
+    }),
     setEditAddMode: (updater) => set((state) => ({
         editAddMode: typeof updater === 'function' ? updater(state.editAddMode) : updater,
     })),
 
-    setPdfOcgLayers: (layers) => set({ pdfOcgLayers: layers }),
-    setHiddenOcgLayerIds: (updater) => set((state) => ({
-        hiddenOcgLayerIds: typeof updater === 'function' ? updater(state.hiddenOcgLayerIds) : updater,
-    })),
-    setLockedOcgLayerIds: (updater) => set((state) => ({
-        lockedOcgLayerIds: typeof updater === 'function' ? updater(state.lockedOcgLayerIds) : updater,
-    })),
-    setExpandedOcgLayerIds: (updater) => set((state) => ({
-        expandedOcgLayerIds: typeof updater === 'function' ? updater(state.expandedOcgLayerIds) : updater,
-    })),
-    setHiddenObjectKeys: (updater) => set((state) => ({
-        hiddenObjectKeys: typeof updater === 'function' ? updater(state.hiddenObjectKeys) : updater,
-    })),
+    setPdfOcgLayers: (layers) => set((state) => (
+        state.pdfOcgLayers === layers ? state : { pdfOcgLayers: layers }
+    )),
+    // Cùng idempotent array: LayerPanel / ImpositionTab hay clear `[]` trong effect.
+    setHiddenOcgLayerIds: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.hiddenOcgLayerIds) : updater;
+        const prev = state.hiddenOcgLayerIds;
+        if (prev === next) return state;
+        if (Array.isArray(prev) && Array.isArray(next) && prev.length === next.length && prev.every((id, i) => id === next[i])) return state;
+        return { hiddenOcgLayerIds: next };
+    }),
+    setLockedOcgLayerIds: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.lockedOcgLayerIds) : updater;
+        const prev = state.lockedOcgLayerIds;
+        if (prev === next) return state;
+        if (Array.isArray(prev) && Array.isArray(next) && prev.length === next.length && prev.every((id, i) => id === next[i])) return state;
+        return { lockedOcgLayerIds: next };
+    }),
+    setExpandedOcgLayerIds: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.expandedOcgLayerIds) : updater;
+        const prev = state.expandedOcgLayerIds;
+        if (prev === next) return state;
+        if (Array.isArray(prev) && Array.isArray(next) && prev.length === next.length && prev.every((id, i) => id === next[i])) return state;
+        return { expandedOcgLayerIds: next };
+    }),
+    setHiddenObjectKeys: (updater) => set((state) => {
+        const next = typeof updater === 'function' ? updater(state.hiddenObjectKeys) : updater;
+        const prev = state.hiddenObjectKeys;
+        if (prev === next) return state;
+        if (Array.isArray(prev) && Array.isArray(next) && prev.length === next.length && prev.every((id, i) => id === next[i])) return state;
+        return { hiddenObjectKeys: next };
+    }),
     setIsLayerPanelOpen: (updater) => set((state) => ({
         isLayerPanelOpen: typeof updater === 'function' ? updater(state.isLayerPanelOpen) : updater,
     })),
-    setOcgPreviewUrl: (url) => set({ ocgPreviewUrl: url }),
+    setOcgPreviewUrl: (url) => set((state) => (
+        state.ocgPreviewUrl === url ? state : { ocgPreviewUrl: url }
+    )),
 
     setVdpFields: (updater) => set((state) => ({
         vdpFields: typeof updater === 'function' ? updater(state.vdpFields) : updater,
     })),
-    setSelectedVdpFieldIds: (ids) => set({ selectedVdpFieldIds: ids }),
+    setSelectedVdpFieldIds: (ids) => set((state) => {
+        const prev = state.selectedVdpFieldIds;
+        if (prev === ids) return state;
+        if (Array.isArray(prev) && Array.isArray(ids) && prev.length === ids.length && prev.every((id, i) => id === ids[i])) return state;
+        return { selectedVdpFieldIds: ids };
+    }),
 
     setWatermarkPreview: (settings) => set({ watermarkPreview: settings }),
 

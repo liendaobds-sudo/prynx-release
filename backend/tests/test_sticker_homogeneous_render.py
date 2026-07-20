@@ -101,12 +101,12 @@ def test_homogeneous_end_to_end_real_render(tmp_path, monkeypatch):
     H, W = black_mask.shape
     assert black > 0, "sheet 0 phải có nội dung ĐEN được render (registration thật)"
 
-    # (3) Registration co-khít THẬT: mỗi nội dung (lệch khác nhau trên trang gốc) được
-    # clip + co ĐẦY ô khuôn 80pt. Kỳ vọng diện tích đen ≈ 3 ô × (80pt)². Tờ 200mm=567pt
-    # @72dpi ⇒ frac ≈ 3·80²/567² ≈ 0.060. Dải [0.025,0.14] bắt: ô bị DROP (thấp hơn)
-    # và registration hỏng kéo full-trang (cao hơn nhiều).
+    # (3) Auto-fill chia khối 4 mẫu (master + 3 nội dung đen) trên đủ 49 ô.
+    # Khoảng 3/4 ô là nội dung đen và mỗi nội dung được clip + co ĐẦY ô khuôn 80pt,
+    # nên tỉ lệ mực đen đo được xấp xỉ 0.70. Dải dưới bắt ô bị DROP/trắng; dải trên
+    # vẫn bắt registration hỏng kéo nội dung phủ kín toàn trang.
     frac = black / float(H * W)
-    assert 0.025 <= frac <= 0.14, (
+    assert 0.45 <= frac <= 0.90, (
         f"tỉ lệ mực đen={frac:.3f} (đo) bất thường — quá thấp=ô bị bỏ/trắng, "
         f"quá cao=registration hỏng (kéo full trang)")
 
@@ -116,7 +116,7 @@ def test_homogeneous_end_to_end_real_render(tmp_path, monkeypatch):
     span_y = (ys.max() - ys.min()) / float(H)
     assert max(span_x, span_y) >= 0.25, (
         f"nội dung co cụm bất thường (span_x={span_x:.2f}, span_y={span_y:.2f}) "
-        f"— 3 ô phải trải theo phương dàn")
+        f"— các ô auto-fill phải trải theo phương dàn")
 
 
 def _page_count(path: str) -> int:
@@ -174,3 +174,66 @@ def test_homogeneous_separate_cut_single_page_at_end(tmp_path):
     R0 = first[:, :, 0].astype(int); G0 = first[:, :, 1].astype(int); B0 = first[:, :, 2].astype(int)
     black_first = int(((R0 < 100) & (G0 < 100) & (B0 < 100)).sum())
     assert black_first > 0, "trang đầu phải là artwork (có nội dung đen)"
+
+
+def test_single_mold_repeat_has_one_cut_page_only_at_end(tmp_path):
+    """Bình trang chung một khuôn: [trang in...] + đúng một trang khuôn cuối."""
+    src = str(tmp_path / "repeat-src.pdf")
+    _make_homogeneous_pdf(src)
+
+    base_settings = {
+        "isDieCutMode": True,
+        "layoutType": "repeat",
+        "sheetWidth": 200,
+        "sheetHeight": 200,
+        "targetQuantity": 8,
+        "targetQuantitiesByPage": {"0": 8, "1": 8, "2": 8, "3": 8},
+        "exportUniqueSheets": True,
+        "detectedShapesByPage": {"0": "RECTANGLE"},
+        "gridStrategy": "optimal_auto",
+        "groupingStrategy": "none",
+        "pontType": "none",
+        "bleed": 0,
+    }
+
+    out_no_cut = str(tmp_path / "repeat-no-cut.pdf")
+    nup_engine.run_nup_engine(
+        src,
+        out_no_cut,
+        {**base_settings, "separateCutPage": False},
+        job_id="t-repeat-no-cut",
+    )
+    artwork_pages = _page_count(out_no_cut)
+    assert artwork_pages == 4
+
+    out_cut = str(tmp_path / "repeat-one-final-cut.pdf")
+    nup_engine.run_nup_engine(
+        src,
+        out_cut,
+        {**base_settings, "separateCutPage": True},
+        job_id="t-repeat-one-final-cut",
+    )
+    page_count = _page_count(out_cut)
+    assert page_count == artwork_pages + 1, (
+        "single-mold repeat phải có N trang in + đúng 1 trang khuôn; "
+        f"nhận {page_count} trang cho {artwork_pages} trang in"
+    )
+
+    # Trang in cuối vẫn là artwork, chứng minh khuôn không còn xen kẽ.
+    last_art = _raster(out_cut, artwork_pages - 1, dpi=72)
+    black_art = int((
+        (last_art[:, :, 0] < 100)
+        & (last_art[:, :, 1] < 100)
+        & (last_art[:, :, 2] < 100)
+    ).sum())
+    assert black_art > 0
+
+    # Chỉ trang cuối cùng là khuôn: có mực nét bế, không có artwork đen.
+    cut = _raster(out_cut, page_count - 1, dpi=200)
+    red = cut[:, :, 0].astype(int)
+    green = cut[:, :, 1].astype(int)
+    blue = cut[:, :, 2].astype(int)
+    black_cut = int(((red < 100) & (green < 100) & (blue < 100)).sum())
+    ink_cut = int(((red < 230) | (green < 230) | (blue < 230)).sum())
+    assert black_cut == 0
+    assert ink_cut > 0

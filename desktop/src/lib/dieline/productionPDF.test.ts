@@ -6,6 +6,7 @@ import { DEFAULT_NESTING_CONFIG, NestingResult } from './nestingTypes';
 
 import { runDielineEngine } from './engine';
 import { splitTrayDieline } from './trayParts';
+import { withBleedPaths } from './bleedContours';
 import { PDFDocument } from 'pdf-lib';
 
 function model(): DielineModel {
@@ -27,6 +28,7 @@ describe('production PDF', () => {
         const text = await buildProductionDielinePdf(model()).text();
         expect(text).toContain('/Separation /CutContour');
         expect(text).toContain('/Separation /Crease');
+        expect(text).toContain('/CSBleed CS');
         expect(text).toContain('/OP true /op true /OPM 1');
         expect(text).not.toContain(' BT');
         expect(text).not.toContain('/DeviceRGB');
@@ -71,8 +73,8 @@ describe('tray/sleeve production PDF', () => {
         expect(pdf.getPageCount()).toBe(1);
         const text = await blob.text();
         const parts = splitTrayDieline(response.dieline)!;
-        const expectedCommands = parts.tray.allPaths.length * response.nestingResult!.positions.length
-            + parts.sleeve.allPaths.length * response.sleeveNestingResult!.positions.length;
+        const expectedCommands = withBleedPaths(parts.tray).allPaths.length * response.nestingResult!.positions.length
+            + withBleedPaths(parts.sleeve).allPaths.length * response.sleeveNestingResult!.positions.length;
         expect((text.match(/\/CS(?:Cut|Crease|Bleed) CS/g) || []).length).toBe(expectedCommands);
     });
 

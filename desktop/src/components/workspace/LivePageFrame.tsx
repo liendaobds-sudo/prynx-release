@@ -29,6 +29,9 @@ import { useTranslation } from 'react-i18next';
 import { findNearestVerticalScrollContainer, scrollElementVerticallyIntoView } from './verticalScroll';
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
 
+// Mảng rỗng ỔN ĐỊNH — không tạo `[]` mới mỗi effect (tránh cascade setState).
+const EMPTY_OBJECT_IDS: string[] = [];
+
 // ─── Edit PDF Object (task 10.1) ─────────────────────────────────────────────
 // Object do GET /edit/objects trả về, SAU khi đã convert bbox PDF (bottom-left)
 // → hệ canvas top-left (point), để dùng chung công thức `x * scale` với overlay
@@ -979,7 +982,7 @@ export const LivePageFrame = (props: any) => {
             // không ở edit-mode liên tục chạy nhánh này). Dùng updater IDEMPOTENT: khi đã
             // rỗng thì giữ NGUYÊN tham chiếu → React/Zustand bail-out, không re-render thừa.
             setEditObjects(prev => (prev.length ? [] : prev));
-            setSelectedObjectIds(prev => (prev.length ? [] : prev));
+            setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
             return;
         }
         const pageIndex = originalPageNum - 1; // /edit dùng chỉ số 0-based
@@ -990,14 +993,14 @@ export const LivePageFrame = (props: any) => {
         // vẫn tôn trọng pendingReselectIdsRef.
         const cached = _editObjectsCache.get(cacheKey);
         if (cached) {
-            setEditObjects(cached);
+            setEditObjects(prev => (prev === cached ? prev : cached));
             const pending = pendingReselectIdsRef.current;
             pendingReselectIdsRef.current = null;
             if (pending && pending.length) {
                 const alive = pending.filter(id => cached.some(o => o.id === id));
-                setSelectedObjectIds(alive.length ? alive : []);
+                setSelectedObjectIds(alive.length ? alive : EMPTY_OBJECT_IDS);
             } else {
-                setSelectedObjectIds(prev => (prev.length ? [] : prev));
+                setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
             }
             editCropOriginRef.current = _editCropOriginCache.get(cacheKey) || [0, 0];
             hideEditGhost();
@@ -1051,16 +1054,16 @@ export const LivePageFrame = (props: any) => {
                 pendingReselectIdsRef.current = null;
                 if (pending && pending.length) {
                     const alive = pending.filter(id => objs.some(o => o.id === id));
-                    setSelectedObjectIds(alive.length ? alive : []);
+                    setSelectedObjectIds(alive.length ? alive : EMPTY_OBJECT_IDS);
                 } else {
-                    setSelectedObjectIds(prev => (prev.length ? [] : prev));
+                    setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
                 }
                 hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
             } catch (err) {
                 if (!cancelled) {
                     console.warn(t('misc.livePageFrame:edit_khong_tai_duoc_edit_objects'), err);
                     setEditObjects(prev => (prev.length ? [] : prev));
-                    setSelectedObjectIds(prev => (prev.length ? [] : prev));
+                    setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
                     const m = err instanceof Error ? err.message : String(err);
                     // 404 = fid/file không còn trên backend (thường sau khi RESTART
                     // server, file tải lên cũ đã mất) → hướng dẫn mở lại file.
@@ -1084,7 +1087,18 @@ export const LivePageFrame = (props: any) => {
     // thực sự ẩn object (overlay preview đắp lên trang). Bỏ chọn cũ của trang khác.
     useEffect(() => {
         if (!isObjectEditMode || !isActiveFrame || !setCurrentEditObjects) return;
-        setCurrentEditObjects(editObjects);
+        // Chỉ ghi store khi reference/nội dung đổi — tránh loop với panel Thành phần.
+        setCurrentEditObjects((prev: any) => {
+            if (prev === editObjects) return prev;
+            if (
+                Array.isArray(prev) && Array.isArray(editObjects)
+                && prev.length === editObjects.length
+                && prev.every((o: any, i: number) => o === editObjects[i] || o?.id === editObjects[i]?.id)
+            ) {
+                return prev;
+            }
+            return editObjects;
+        });
     }, [isObjectEditMode, isActiveFrame, editObjects, setCurrentEditObjects]);
 
     // ─── Edit PDF Object: Ctrl+A chọn tất cả / Esc bỏ chọn / Delete xóa (task 10.1) ─
@@ -1117,7 +1131,7 @@ export const LivePageFrame = (props: any) => {
                     if (success) setSelectedObjectIds(prev => prev.filter(id => !idsToClear.includes(id)));
                 });
             } else if (e.key === 'Escape') {
-                setSelectedObjectIds([]);
+                setSelectedObjectIds(EMPTY_OBJECT_IDS);
                 // task 10.3: thoát chế độ đặt object mới đang chờ (nếu có).
                 setEditAddMode(null);
                 setEditAddDraft(null);
@@ -1148,7 +1162,7 @@ export const LivePageFrame = (props: any) => {
         // overlay ĐÃ bake vào tile mới; giữ lại sẽ chồng đôi). Hook sở hữu previews.
         editSession?.clearPreviews?.();
         // Bỏ selection cũ (trỏ object của file/trang trước) để không highlight chéo.
-        setSelectedObjectIds(prev => (prev.length ? [] : prev));
+        setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
     }, [pdfUrl]);
 
     // LƯU Ý: KHÔNG return sớm cho originalPageNum === -1 ở đây. Trước kia khối này
@@ -2013,7 +2027,7 @@ export const LivePageFrame = (props: any) => {
                     [...lockedObjectIds, ...hiddenObjectIds],
                 );
                 if (!hit) {
-                    setSelectedObjectIds([]);
+                    setSelectedObjectIds(EMPTY_OBJECT_IDS);
                 } else if (e.shiftKey) {
                     setSelectedObjectIds(prev => prev.includes(hit.id)
                         ? prev.filter(id => id !== hit.id)

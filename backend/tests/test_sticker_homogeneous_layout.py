@@ -164,3 +164,34 @@ def test_circle_staggered_vs_rect_grid(tmp_path):
     # (Không khẳng định công thức cụ thể — chỉ cần khác lưới chữ nhật.)
     assert _items_xy(circle_items) != _items_xy(rect_items), \
         "layout tròn phải KHÁC layout chữ nhật (shape-aware, không cùng một lưới)"
+
+
+def test_thumbnail_duplicate_beyond_capacity_increases_sheet_count():
+    plan = sh.HomogeneousPlan(
+        master_page_idx=0,
+        content_pages=tuple(range(49)),
+        shape_type=ShapeType.CIRCLE_ELLIPSE,
+        trim_w=40.0, trim_h=30.0,
+        poly=((0.0, 0.0), (40.0, 0.0), (40.0, 30.0), (0.0, 30.0)),
+        die_center=(20.0, 15.0),
+        shape_props={},
+    )
+    fake_items = [{"x": i, "y": 0, "width": 1, "height": 1} for i in range(48)]
+
+    hom = sh.build_homogeneous_layout(
+        master_page=None, plan=plan,
+        sheet_usable_w=600, sheet_usable_h=800,
+        gap_x=0, gap_y=0,
+        layout_fn=lambda *_args, **_kwargs: {"items": fake_items},
+    )
+
+    assert hom.cells_per_sheet == 48
+    assert hom.num_sheets == 2
+    assert sum(c.sheet_index == 0 for c in hom.cell_contents) == 48
+    assert sum(c.sheet_index == 1 for c in hom.cell_contents) == 48
+    expected = [
+        src
+        for src in range(49)
+        for _ in range(2 if src < 47 else 1)
+    ]
+    assert [c.src_page_idx for c in hom.cell_contents] == expected

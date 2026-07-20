@@ -102,12 +102,16 @@ export function assertEngineRequest(value: unknown): asserts value is {
     params: BoxParams;
     nestingConfig: NestingConfig;
     changedKey?: keyof BoxParams;
+    includeNesting?: boolean;
 } {
     const input = requireRecord(value, 'request');
     assertBoxParams(input.params);
     normalizeNestingConfig(input.nestingConfig);
     if (input.changedKey !== undefined && !(input.changedKey as string in DEFAULT_PARAMS)) {
         throw new Error('changedKey không hợp lệ.');
+    }
+    if (input.includeNesting !== undefined && typeof input.includeNesting !== 'boolean') {
+        throw new Error('includeNesting phải là boolean.');
     }
 }
 

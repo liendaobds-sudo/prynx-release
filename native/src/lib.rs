@@ -69,6 +69,7 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Packaging engine runs outside the WebView and is exposed only through
     // the feature-gated sidecar route.
+    m.add_function(wrap_pyfunction!(dieline_engine::warm_dieline_engine, m)?)?;
     m.add_function(wrap_pyfunction!(dieline_engine::generate_dieline_json, m)?)?;
     
     Ok(())

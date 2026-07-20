@@ -18,12 +18,13 @@
 // ============================================================
 
 import React, { useMemo, useRef, useEffect } from 'react';
-import { useLoader } from '@react-three/fiber';
+import { useLoader, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube } from '@react-three/drei';
 import * as THREE from 'three';
 import { useBoxStore } from '../../store/useBoxStore';
 import { useMockupStore } from '../../store/useMockupStore';
 import { Panel } from '../../lib/dieline/types';
+import { computeBoundingBox } from '../../lib/dieline/utils';
 import MockupCanvas from './MockupCanvas';
 import EnvironmentRig from './EnvironmentRig';
 import CameraRig from './CameraRig';
@@ -78,10 +79,15 @@ function BoxScene() {
     // chỉnh được + view canh chỉnh 2D), fallback ảnh tải nhanh ở ParamPanel.
     const outerArtworkUrl = useMockupStore((s) => s.artwork.outer.url);
     const innerArtworkUrl = useMockupStore((s) => s.artwork.inner.url);
+    const trayArtworkUrl = useMockupStore((s) => s.artwork.trayOuter.url);
+    const sleeveArtworkUrl = useMockupStore((s) => s.artwork.sleeveOuter.url);
     const innerArtworkEnabled = useMockupStore((s) => s.artwork.inner.enabled);
+    const spotUvMaskUrl = useMockupStore((s) => s.artwork.spotUvMaskUrl);
+    const embossMaskUrl = useMockupStore((s) => s.artwork.embossMaskUrl);
     const showTechnicalLines = useMockupStore((s) => s.showTechnicalLines);
     const textureUrl = outerArtworkUrl ?? mockupTextureUrl;
     const innerUrl = innerArtworkEnabled ? innerArtworkUrl : null;
+    const maxAnisotropy = useThree((s) => s.gl.capabilities.getMaxAnisotropy());
 
     // Load texture (placeholder khi chưa có ảnh — giữ hook ổn định).
     const texture = useLoader(
@@ -92,6 +98,22 @@ function BoxScene() {
         THREE.TextureLoader,
         innerUrl || BLANK_TEXTURE,
     ) as THREE.Texture;
+    const trayTexture = useLoader(
+        THREE.TextureLoader,
+        trayArtworkUrl || BLANK_TEXTURE,
+    ) as THREE.Texture;
+    const sleeveTexture = useLoader(
+        THREE.TextureLoader,
+        sleeveArtworkUrl || BLANK_TEXTURE,
+    ) as THREE.Texture;
+    const spotUvTexture = useLoader(
+        THREE.TextureLoader,
+        spotUvMaskUrl || BLANK_TEXTURE,
+    ) as THREE.Texture;
+    const embossTexture = useLoader(
+        THREE.TextureLoader,
+        embossMaskUrl || BLANK_TEXTURE,
+    ) as THREE.Texture;
 
     // Setup texture color space and wrapping
     useEffect(() => {
@@ -99,17 +121,67 @@ function BoxScene() {
             texture.colorSpace = THREE.SRGBColorSpace;
             texture.generateMipmaps = true;
             texture.minFilter = THREE.LinearMipmapLinearFilter;
+            texture.anisotropy = Math.min(8, maxAnisotropy);
             texture.flipY = true;
+            texture.needsUpdate = true;
         }
-    }, [texture, textureUrl]);
+    }, [texture, textureUrl, maxAnisotropy]);
     useEffect(() => {
+        if (trayTexture && trayArtworkUrl) {
+            trayTexture.colorSpace = THREE.SRGBColorSpace;
+            trayTexture.generateMipmaps = true;
+            trayTexture.minFilter = THREE.LinearMipmapLinearFilter;
+            trayTexture.anisotropy = Math.min(8, maxAnisotropy);
+            trayTexture.flipY = true;
+            trayTexture.needsUpdate = true;
+        }
+    }, [trayTexture, trayArtworkUrl, maxAnisotropy]);
+    useEffect(() => {
+        if (sleeveTexture && sleeveArtworkUrl) {
+            sleeveTexture.colorSpace = THREE.SRGBColorSpace;
+            sleeveTexture.generateMipmaps = true;
+            sleeveTexture.minFilter = THREE.LinearMipmapLinearFilter;
+            sleeveTexture.anisotropy = Math.min(8, maxAnisotropy);
+            sleeveTexture.flipY = true;
+            sleeveTexture.needsUpdate = true;
+        }
+    }, [sleeveTexture, sleeveArtworkUrl, maxAnisotropy]);    useEffect(() => {
         if (innerTexture && innerUrl) {
             innerTexture.colorSpace = THREE.SRGBColorSpace;
             innerTexture.generateMipmaps = true;
             innerTexture.minFilter = THREE.LinearMipmapLinearFilter;
+            innerTexture.anisotropy = Math.min(8, maxAnisotropy);
             innerTexture.flipY = true;
+            innerTexture.needsUpdate = true;
         }
-    }, [innerTexture, innerUrl]);
+    }, [innerTexture, innerUrl, maxAnisotropy]);
+    useEffect(() => {
+        if (spotUvTexture && spotUvMaskUrl) {
+            spotUvTexture.colorSpace = THREE.NoColorSpace;
+            spotUvTexture.generateMipmaps = true;
+            spotUvTexture.minFilter = THREE.LinearMipmapLinearFilter;
+            spotUvTexture.magFilter = THREE.LinearFilter;
+            spotUvTexture.anisotropy = Math.min(8, maxAnisotropy);
+            spotUvTexture.wrapS = THREE.ClampToEdgeWrapping;
+            spotUvTexture.wrapT = THREE.ClampToEdgeWrapping;
+            spotUvTexture.flipY = true;
+            spotUvTexture.needsUpdate = true;
+        }
+    }, [spotUvTexture, spotUvMaskUrl, maxAnisotropy]);
+    useEffect(() => {
+        if (embossTexture && embossMaskUrl) {
+            // Mask là dữ liệu tuyến tính, không phải ảnh màu sRGB.
+            embossTexture.colorSpace = THREE.NoColorSpace;
+            embossTexture.generateMipmaps = true;
+            embossTexture.minFilter = THREE.LinearMipmapLinearFilter;
+            embossTexture.magFilter = THREE.LinearFilter;
+            embossTexture.anisotropy = Math.min(8, maxAnisotropy);
+            embossTexture.wrapS = THREE.ClampToEdgeWrapping;
+            embossTexture.wrapT = THREE.ClampToEdgeWrapping;
+            embossTexture.flipY = true;
+            embossTexture.needsUpdate = true;
+        }
+    }, [embossTexture, embossMaskUrl, maxAnisotropy]);
     useEffect(() => () => {
         if (textureUrl?.startsWith('blob:')) {
             texture.dispose();
@@ -117,17 +189,49 @@ function BoxScene() {
         }
     }, [texture, textureUrl]);
     useEffect(() => () => {
+        if (trayArtworkUrl?.startsWith('blob:')) {
+            trayTexture.dispose();
+            useLoader.clear(THREE.TextureLoader, trayArtworkUrl);
+        }
+    }, [trayTexture, trayArtworkUrl]);
+    useEffect(() => () => {
+        if (sleeveArtworkUrl?.startsWith('blob:')) {
+            sleeveTexture.dispose();
+            useLoader.clear(THREE.TextureLoader, sleeveArtworkUrl);
+        }
+    }, [sleeveTexture, sleeveArtworkUrl]);    useEffect(() => () => {
         if (innerUrl?.startsWith('blob:')) {
             innerTexture.dispose();
             useLoader.clear(THREE.TextureLoader, innerUrl);
         }
     }, [innerTexture, innerUrl]);
+    useEffect(() => () => {
+        if (spotUvMaskUrl?.startsWith('blob:')) {
+            spotUvTexture.dispose();
+            useLoader.clear(THREE.TextureLoader, spotUvMaskUrl);
+        }
+    }, [spotUvTexture, spotUvMaskUrl]);
+    useEffect(() => () => {
+        if (embossMaskUrl?.startsWith('blob:')) {
+            embossTexture.dispose();
+            useLoader.clear(THREE.TextureLoader, embossMaskUrl);
+        }
+    }, [embossTexture, embossMaskUrl]);
 
 
     // Compute depth map for auto-phasing (cần cho SolidPanelMesh / foldCompensation).
     const panels = dieline?.panels ?? [];
     const depthMap = useMemo(() => computeDepths(panels), [panels]);
     const maxD = useMemo(() => maxDepth(depthMap), [depthMap]);
+    const matchboxArtworkBBoxes = useMemo(() => {
+        if (!dieline?.nesting) return null;
+        const tray = panels.filter((panel) => !panel.name.startsWith('sleeve_'));
+        const sleeve = panels.filter((panel) => panel.name.startsWith('sleeve_'));
+        return {
+            tray: computeBoundingBox(tray.flatMap((panel) => panel.paths)),
+            sleeve: computeBoundingBox(sleeve.flatMap((panel) => panel.paths)),
+        };
+    }, [dieline?.nesting, panels]);
 
     // Bọc ly: tham số cuộn nón cụt cho panel `body` (chỉ khi là khuôn bọc ly).
     // Memo theo thông số ly để ổn định tham chiếu (tránh dựng lại geometry thừa).
@@ -190,8 +294,20 @@ function BoxScene() {
     const trayPanels = nesting ? panels.filter((p) => !isSleeve(p.name)) : panels;
     const sleevePanels = nesting ? panels.filter((p) => isSleeve(p.name)) : [];
 
-    const renderPanel = (panel: Panel) => (
-        panel.gusset ? (
+    const renderPanel = (panel: Panel) => {
+        const sleevePart = nesting && isSleeve(panel.name);
+        const artworkPart = nesting ? (sleevePart ? 'sleeve' : 'tray') : 'default';
+        const partTextureUrl = nesting
+            ? (sleevePart ? sleeveArtworkUrl : trayArtworkUrl)
+            : textureUrl;
+        const partTexture = nesting
+            ? (sleevePart ? sleeveTexture : trayTexture)
+            : texture;
+        const partBBox = matchboxArtworkBBoxes
+            ? (sleevePart ? matchboxArtworkBBoxes.sleeve : matchboxArtworkBBoxes.tray)
+            : dieline.boundingBox;
+
+        return panel.gusset ? (
             <GussetMesh
                 key={panel.name}
                 panel={panel}
@@ -200,6 +316,7 @@ function BoxScene() {
                 depthMap={depthMap}
                 maxD={maxD}
                 thickness={thickness}
+                hideCadLines={!showTechnicalLines}
             />
         ) : (
             <SolidPanelMesh
@@ -210,17 +327,21 @@ function BoxScene() {
                 depthMap={depthMap}
                 maxD={maxD}
                 thickness={thickness}
-                globalBBox={dieline.boundingBox}
-                texture={textureUrl ? texture : null}
+                globalBBox={partBBox}
+                texture={partTextureUrl ? partTexture : null}
                 innerTexture={innerUrl ? innerTexture : null}
+                outerFaceNegativeZ={dieline.params.boxType === 'pizza' || dieline.params.boxType === 'tray'}
+                artworkPart={artworkPart}
+                spotUvTexture={spotUvMaskUrl ? spotUvTexture : null}
+                embossTexture={embossMaskUrl ? embossTexture : null}
                 coneWarp={isCupSleeve ? coneWarp : null}
                 conePaths={panel.name === 'body' && isCupSleeve ? dieline.allPaths : null}
                 conePatchOnly={isCupSleeve && panel.name !== 'body'}
                 hideCadLines={!showTechnicalLines || dieline.standardCode === 'ENV'}
                 roundFolds={dieline.params.boxType === 'pizza'}
             />
-        )
-    );
+        );
+    };
 
     return (
         <group position={[-center.x, -center.y, 0]}>

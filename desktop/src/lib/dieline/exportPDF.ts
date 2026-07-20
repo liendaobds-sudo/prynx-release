@@ -10,6 +10,7 @@
 // ============================================================
 
 import { DielineModel } from './types';
+import { withBleedPaths } from './bleedContours';
 import { jsPDF } from 'jspdf';
 import 'svg2pdf.js';
 import { toast } from 'sonner';
@@ -61,7 +62,7 @@ export function decideExportGate(
 const TAG_STYLES: Record<string, { stroke: string; width: number; dashArray?: string }> = {
     CUT: { stroke: '#000000', width: 0.3 },
     CREASE: { stroke: '#ff0000', width: 0.2, dashArray: '2,1' },
-    BLEED: { stroke: '#0000ff', width: 0.15, dashArray: '1,1' },
+    BLEED: { stroke: '#16a34a', width: 0.15, dashArray: '1,1' },
 };
 
 /**
@@ -70,7 +71,8 @@ const TAG_STYLES: Record<string, { stroke: string; width: number; dashArray?: st
  * Includes dimension annotations (double-headed arrow lines).
  */
 function buildSvgString(model: DielineModel): string {
-    const { boundingBox } = model;
+    const renderModel = withBleedPaths(model);
+    const { boundingBox } = renderModel;
     const margin = 10;
 
     // Thêm margin cho dimension annotations (phải + trên)
@@ -82,7 +84,7 @@ function buildSvgString(model: DielineModel): string {
     const offsetY = margin - boundingBox.minY + dimExtra;
 
     // Gộp segments → chains liên tục
-    const chains = buildChains(model.allPaths);
+    const chains = buildChains(renderModel.allPaths);
 
     // Build SVG path elements
     let pathElements = '';

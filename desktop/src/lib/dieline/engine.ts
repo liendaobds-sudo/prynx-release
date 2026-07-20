@@ -297,6 +297,7 @@ export interface DielineEngineRequest {
     params: BoxParams;
     nestingConfig: NestingConfig;
     changedKey?: keyof BoxParams;
+    includeNesting?: boolean;
 }
 
 export interface DielineEngineResponse {
@@ -312,6 +313,16 @@ export function runDielineEngine(request: DielineEngineRequest): DielineEngineRe
     assertEngineRequest(request);
     const { params, wasClamped } = validateParams(request.params, request.changedKey);
     const dieline = generateDieline(request.params, request.changedKey);
+    if (request.includeNesting === false) {
+        return {
+            params,
+            dieline,
+            nestingResult: null,
+            sleeveNestingResult: null,
+            wasClamped,
+        };
+    }
+
     const config = normalizeNestingConfig(request.nestingConfig);
     const isTray = params.boxType === 'tray';
     const dualResult = isTray && config.trayNestingMode === 'split'

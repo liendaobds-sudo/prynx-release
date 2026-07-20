@@ -12,10 +12,11 @@
  *   - Preset callbacks (save/load/update/delete)
  *   - Layout composition (conditionally renders sections)
  */
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useShallow } from 'zustand/react/shallow';
 import { usePaperPresets, PaperSettingsDialog } from './PaperSettingsUI';
+import PaperSizeSelect from './PaperSizeSelect';
 import {
     formUsages,
     paperContextFromTool,
@@ -60,8 +61,13 @@ import type { ImpositionPreset } from '../../lib/presetManager';
 import { toast } from '../ui/Toast';
 import { useTranslation } from 'react-i18next';
 import {
+    batchCapacityDetectionReady,
     buildPageSizedShapeState,
+    inheritedSingleMoldMaster,
     shapeDetectionSourceKey,
+    projectPageRecordToViewer,
+    projectShapeParamsToViewer,
+    resolvePreviewItemDimension,
     usesPageSizedStickerShape,
 } from './shapeDetectionPolicy';
 
@@ -71,7 +77,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
 
     // ═══ Workspace State ═══
     const {
-        isProcessing, error: globalError, file: pdfFile, viewerPageOrder, viewerPageRotations,
+        isProcessing, error: globalError, file: pdfFile, viewerPageOrder, viewerPageInstanceIds, viewerPageRotations, viewerNumPages,
         setHighlightedIssue: onIssueSelect, setShowOutputPreview,
         detectedShapeType, detectedShapeParams, setDetectedShapeType, setDetectedShapeParams,
         detectedShapesByPage, setDetectedShapesByPage,
@@ -79,7 +85,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         detectedShapeParamsByPage, setDetectedShapeParamsByPage, viewerActivePage, pdfUrl,
         selectionFileId, setSelectionFileId, hiddenOcgLayerIds
     } = useWorkspaceStore(useShallow(state => ({
-        isProcessing: state.isProcessing, error: state.error, file: state.file, viewerPageOrder: state.viewerPageOrder, viewerPageRotations: state.viewerPageRotations,
+        isProcessing: state.isProcessing, error: state.error, file: state.file, viewerPageOrder: state.viewerPageOrder, viewerPageInstanceIds: state.viewerPageInstanceIds, viewerPageRotations: state.viewerPageRotations, viewerNumPages: state.viewerNumPages,
         setHighlightedIssue: state.setHighlightedIssue, setShowOutputPreview: state.setShowOutputPreview,
         detectedShapeType: state.detectedShapeType, detectedShapeParams: state.detectedShapeParams, setDetectedShapeType: state.setDetectedShapeType, setDetectedShapeParams: state.setDetectedShapeParams,
         detectedShapesByPage: state.detectedShapesByPage, setDetectedShapesByPage: state.setDetectedShapesByPage,
@@ -92,11 +98,42 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
 
     // P1-T03: activeDashboardTool from dedicated imposer store (migration in progress, dupe in workspace for now)
     const { activeDashboardTool: currentTool, setActiveDashboardTool: onActiveToolChange } = useImposerSettingsStore();
-    const sourceTotalPages = viewerPageOrder ? viewerPageOrder.length : 0;
+    // Duplication updates the order and page counter through separate UI paths.
+    // Taking the larger value prevents preview from remaining stuck at the old count.
+    const sourceTotalPages = Math.max(viewerPageOrder?.length || 0, viewerNumPages || 0);
     const onOpenOutputPreview = () => setShowOutputPreview(true);
 
     // ═══ Imposition Settings Store ═══
     const s = useImposerSettingsStore();
+
+    // Quantities follow stable thumbnail instances, not numeric positions.
+    // Reordering/deleting pages therefore moves the entered quantity with the
+    // product instead of assigning it to whichever page lands at that index.
+    const quantityPageIdsRef = useRef<string[] | undefined>(undefined);
+    useEffect(() => {
+        const current = viewerPageInstanceIds;
+        const previous = quantityPageIdsRef.current;
+        quantityPageIdsRef.current = current ? [...current] : undefined;
+        if (!current?.length || !previous?.length) return;
+        if (current.length === previous.length && current.every((id, idx) => id === previous[idx])) return;
+
+        const oldQuantities = s.targetQuantitiesByPage || {};
+        const nextQuantities: Record<number, number> = {};
+        current.forEach((id, newIdx) => {
+            const oldIdx = previous.indexOf(id);
+            if (oldIdx >= 0 && Object.prototype.hasOwnProperty.call(oldQuantities, oldIdx)) {
+                nextQuantities[newIdx] = oldQuantities[oldIdx];
+            }
+        });
+
+        const oldKeys = Object.keys(oldQuantities);
+        const nextKeys = Object.keys(nextQuantities);
+        const changed = oldKeys.length !== nextKeys.length || nextKeys.some((key) => {
+            const idx = Number(key);
+            return oldQuantities[idx] !== nextQuantities[idx];
+        });
+        if (changed) s.setTargetQuantitiesByPage(nextQuantities);
+    }, [viewerPageInstanceIds, s.targetQuantitiesByPage, s.setTargetQuantitiesByPage]);
 
     // ═══ Active Tool (local — synced with parent) ═══
     // Ưu tiên lockedMode (tab mở từ Home: tem bế / bế rớt / cắt xén) — KHÔNG để
@@ -149,6 +186,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // ═══ Merge Settings (stays local — complex sub-component) ═══
     const [mergeSettings, setMergeSettings] = useState<MergeSettings>(defaultMergeSettings);
     const [isDetectingShape, setIsDetectingShape] = useState(false);
+    const [completedShapeDetectionKey, setCompletedShapeDetectionKey] = useState('');
 
     const isTauriRuntime = !!(window as any).__TAURI_INTERNALS__;
     const shapeLocalPath = (pdfFile as any)?.path as string | undefined;
@@ -164,6 +202,29 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const pageSizedShapeStateKey = pageSizedOneDao
         ? JSON.stringify({ dims: s.sourcePageDims, fallback: s.sourcePageDim, count: sourceTotalPages })
         : '';
+    const expectedShapeDetectionKey = `${activeTool}|${detectionSourceKey}|${pageSizedOneDao ? pageSizedShapeStateKey : 'vector'}`;
+    const previewDetectedShapesByPage = useMemo(
+        () => projectPageRecordToViewer(detectedShapesByPage, viewerPageOrder),
+        [detectedShapesByPage, viewerPageOrder],
+    );
+    const previewDetectedDimensionsByPage = useMemo(
+        () => projectPageRecordToViewer(detectedDimensionsByPage, viewerPageOrder),
+        [detectedDimensionsByPage, viewerPageOrder],
+    );
+    const sourceDimensionsByPage = useMemo(
+        () => Object.fromEntries(
+            (s.sourcePageDims || []).map((dim, index) => [index, dim]),
+        ),
+        [s.sourcePageDims],
+    );
+    const previewSourceDimensionsByPage = useMemo(
+        () => projectPageRecordToViewer(sourceDimensionsByPage, viewerPageOrder),
+        [sourceDimensionsByPage, viewerPageOrder],
+    );
+    const previewDetectedShapeParamsByPage = useMemo(
+        () => projectShapeParamsToViewer(detectedShapeParamsByPage, viewerPageOrder),
+        [detectedShapeParamsByPage, viewerPageOrder],
+    );
 
     // ═══ Paper Presets ═══
     const { savedForms, handleSavePreset: _savePreset, handleUpdatePreset: _updatePreset, handleDeletePreset: _deletePreset } = usePaperPresets('printauto_saved_forms');
@@ -322,6 +383,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             return;
         }
 
+        setCompletedShapeDetectionKey('');
+
         // 1 Dao + theo kích thước trang: đường cắt là hình chữ nhật full trang.
         // Không gọi detect-shape vì không dùng đường khuôn; lấy kích thước đã đọc từ pdf-meta.
         if (pageSizedOneDao) {
@@ -335,6 +398,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             setDetectedShapeParamsByPage(pageState.params);
             setDetectedShapeType('RECTANGLE');
             setDetectedShapeParams(null);
+            setCompletedShapeDetectionKey(expectedShapeDetectionKey);
             setIsDetectingShape(false);
             return;
         }
@@ -403,6 +467,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         setDetectedShapeParamsByPage(newParams);
                     }
                     setDetectedShapesByPage(newShapes);
+                    setCompletedShapeDetectionKey(expectedShapeDetectionKey);
                     const activeIdx = (viewerPageOrder?.length
                         ? (viewerPageOrder[(viewerActivePage || 1) - 1] ?? 1) - 1
                         : (viewerActivePage || 1) - 1);
@@ -608,11 +673,11 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     useEffect(() => {
         s.setPreviewCapacities({});
         s.setFetchEpoch(e => e + 1);
-    }, [s.formsize, s.customSheetWidth, s.customSheetHeight, s.marginLeft, s.marginRight, s.marginTop, s.marginBottom, s.gapX, s.gapY, s.gridStrategy, activeTool, detectedDimensionsByPage, detectedShapesByPage, detectedShapeParamsByPage, s.pontType,
+    }, [s.formsize, s.customSheetWidth, s.customSheetHeight, s.marginLeft, s.marginRight, s.marginTop, s.marginBottom, s.gapX, s.gapY, s.gridStrategy, s.columns, s.rows, activeTool, detectedDimensionsByPage, detectedShapesByPage, detectedShapeParamsByPage, s.pontType,
         // Ảnh hưởng SỐ ô/tờ per-type (secondary_gap / bleed / cụm) → phải tính lại capacity.
         s.bleed, s.cutType, s.dieSizeMode, s.dieOffsetMm, s.fillBlockGap, s.splitGap, s.marginMode, s.markType, s.groupingStrategy,
         s.clusterSizingMode, s.clusterCols, s.clusterRows, s.clusterTileW, s.clusterTileH, s.tileGapX, s.tileGapY,
-        pdfFile, sourceTotalPages]);
+        pdfFile, sourceTotalPages, viewerPageOrder, s.sourcePageDim, s.sourcePageDims, isDetectingShape, completedShapeDetectionKey, expectedShapeDetectionKey]);
 
     // ═══ BATCH CAPACITY: SỐ TEM/TỜ cho MỌI trang (cột "Tem/tờ" bảng nhập SL) ═══
     // Live preview (GridPreview) chỉ chạy 1 trang đang xem → previewCapacities chỉ có
@@ -624,7 +689,16 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     useEffect(() => {
         const isStickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
         const isNupLike = s.taskMode === 'nup' || s.taskMode === 'step_repeat';
+        const effectiveGrouping = isStickerLike || s.markType === 'guillotine'
+            ? s.groupingStrategy : 'none';
         if ((!isStickerLike && !isNupLike) || sourceTotalPages <= 1 || !pdfFile) return;
+        if (!batchCapacityDetectionReady(
+            activeTool,
+            isDetectingShape,
+            sourceTotalPages,
+            previewDetectedShapesByPage,
+            completedShapeDetectionKey === expectedShapeDetectionKey,
+        )) return;
 
         let cancelled = false;
         const MM_TO_PT = 2.83465;
@@ -699,16 +773,27 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 // TRANG GỐC — GIỐNG single preview safePageIdx). Populate MỌI trang. ──
                 const pages = [];
                 for (let X = 0; X < sourceTotalPages; X++) {
-                    const dim = detectedDimensionsByPage[X];
+                    const dim = resolvePreviewItemDimension(
+                        activeTool,
+                        X,
+                        previewDetectedDimensionsByPage,
+                        previewSourceDimensionsByPage,
+                        s.sourcePageDim,
+                    );
                     pages.push({
                         page_idx: X,
-                        shape_type: (isStickerLike ? (detectedShapesByPage[X] || 'CUSTOM') : 'RECTANGLE'),
-                        shape_props: detectedShapeParamsByPage[X] || {},
+                        shape_type: (isStickerLike ? (previewDetectedShapesByPage[X] || 'CUSTOM') : 'RECTANGLE'),
+                        shape_props: previewDetectedShapeParamsByPage[X] || {},
                         // item_w/h (points) chỉ dùng cho nhánh N-Up xén (không đọc die từ trang).
                         item_w: (typeof dim?.w === 'number' ? dim.w : (s.sourcePageDim?.w || 0)),
                         item_h: (typeof dim?.h === 'number' ? dim.h : (s.sourcePageDim?.h || 0)),
                     });
                 }
+                if (!isStickerLike && pages.some((p) =>
+                    !Number.isFinite(p.item_w) || !Number.isFinite(p.item_h)
+                    || p.item_w <= 0 || p.item_h <= 0
+                )) return;
+
 
                 const body = {
                     usable_w: usableWmm * MM_TO_PT,
@@ -718,6 +803,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     strategy: s.gridStrategy || 'optimal_auto',
                     pages,
                     ...(srcPath ? { path: srcPath } : { file_id: srcFileId }),
+                    cols: s.columns || 0,
+                    rows: s.rows || 0,
                     bleed: (s.bleed || 0) * MM_TO_PT,
                     task_mode: s.taskMode,
                     is_die_cut: isStickerLike,
@@ -727,7 +814,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     die_offset_mm: s.dieOffsetMm ?? 0,
                     fill_block_gap: s.fillBlockGap ?? 0,
                     split_gap: splitGapMm * MM_TO_PT,
-                    grouping_strategy: s.groupingStrategy,
+                    grouping_strategy: effectiveGrouping,
                     cluster_combine_mode: s.clusterCombineMode,
                     cluster_sizing_mode: s.clusterSizingMode,
                     cluster_cols: s.clusterCols,
@@ -916,7 +1003,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             // Tem bế/CNC: LUÔN 'none' — clusterMode rò từ N-Up sẽ khiến engine chia
             // usable_h/w đôi → tem chỉ nằm 1 dải trên tờ (không lấp đầy).
             // (cluster_tile die-cut là groupingStrategy riêng, không dùng clusterMode.)
-            const _clusterAppliesNup = !stickerLike && (
+            const _clusterAppliesNup = !stickerLike && s.markType === 'guillotine' && (
                 (s.taskMode === 'nup' && s.layoutType === 'ratio_stack')
                 || s.taskMode === 'step_repeat'
             );
@@ -925,7 +1012,10 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             onStartNup({
                 layoutType: s.taskMode === 'step_repeat' ? 'repeat' : s.layoutType,
                 formsize: finalFormsize, customSheetWidth: effSheetW, customSheetHeight: effSheetH,
-                bleed: s.bleed, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy, groupingStrategy: s.groupingStrategy,
+                bleed: s.bleed, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy,
+                groupingStrategy: s.taskMode === 'step_repeat'
+                    ? 'none'
+                    : (stickerLike || s.markType === 'guillotine' ? s.groupingStrategy : 'none'),
                 clusterMode: effClusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap,
                 clusterGapMode: s.clusterGapMode, clusterDistribution: s.clusterDistribution, clusterBorder: s.clusterBorder,
                 splitGap: splitGap,
@@ -1042,45 +1132,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         {t('imposition.imposerDashboard:kho_giay')}
                     </label>
                     <div className="flex flex-1 items-center gap-2 min-w-0">
-                        <select value={s.formsize} onChange={(e) => s.setFormsize(e.target.value)}
-                            className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium">
-                            {(() => {
-                                const ctx = paperContext;
-                                const savedLabel = ctx === 'nup'
-                                    ? t('imposition.imposerDashboard:kho_da_luu_binh_bai_xen')
-                                    : ctx === 'diecut'
-                                        ? t('imposition.imposerDashboard:kho_da_luu_be_tem')
-                                        : ctx === 'offset'
-                                            ? t('imposition.imposerDashboard:kho_da_luu_in_offset')
-                                            : t('imposition.imposerDashboard:kho_da_luu_in_nhanh');
-                                const matchedForms = savedForms.filter(f => formUsages(f).includes(ctx));
-                                // ISO A series — lớn → nhỏ trong dropdown
-                                const predefinedOrder = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7'] as const;
-                                return (
-                                    <>
-                                        {showsPredefinedSheets(ctx) && (
-                                            <optgroup label={t('imposition.imposerDashboard:kho_mac_dinh_in_nhanh')}>
-                                                {predefinedOrder.map(key => {
-                                                    const ps = PREDEFINED_SIZES[key];
-                                                    if (!ps) return null;
-                                                    return (
-                                                        <option key={key} value={key}>
-                                                            {key} ({ps.w} x {ps.h} mm)
-                                                        </option>
-                                                    );
-                                                })}
-                                            </optgroup>
-                                        )}
-                                        {matchedForms.length > 0 && (
-                                            <optgroup label={savedLabel}>
-                                                {matchedForms.map(f => (<option key={f.id} value={f.id}>{f.name} ({f.w}x{f.h}mm)</option>))}
-                                            </optgroup>
-                                        )}
-                                        <optgroup label={t('imposition.imposerDashboard:khac')}><option value="custom">{t('imposition.imposerDashboard:tao_kho_giay_moi_custom')}</option></optgroup>
-                                    </>
-                                );
-                            })()}
-                        </select>
+                        <PaperSizeSelect
+                            value={s.formsize}
+                            onChange={(v) => s.setFormsize(v)}
+                            paperContext={paperContext}
+                            savedForms={savedForms}
+                        />
                         <button onClick={() => s.setShowSettings(true)} className="shrink-0 w-8 h-8 rounded border border-slate-300 dark:border-white/20 flex items-center justify-center text-slate-500 hover:text-indigo-600 hover:border-indigo-400 transition-colors bg-white dark:bg-zinc-900" title={t('imposition.imposerDashboard:thiet_lap_le_giay')}>
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                         </button>
@@ -1242,34 +1299,23 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     {(s.taskMode === 'nup' || s.taskMode === 'step_repeat' || s.taskMode === 'sticker_imposer') && (
                         <>
                             {(() => {
-                                const safeGetPageIdx = () => {
-                                    if (viewerPageOrder && viewerPageOrder.length > 0) {
-                                        const p = viewerPageOrder[viewerActivePage - 1];
-                                        if (p !== undefined && p !== null) return p - 1;
-                                    }
-                                    return (viewerActivePage || 1) - 1;
-                                };
-                                const safePageIdx = safeGetPageIdx();
+                                // Preview source is materialized in current thumbnail order, so
+                                // backend page indices must use viewer positions, not source numbers.
+                                const safePageIdx = Math.max(0, (viewerActivePage || 1) - 1);
                                 // Shape props cho preview:
                                 // • 1 khuôn (mọi trang cùng type, hoặc chỉ 1 trang có khuôn) → master
                                 // • Mỗi tem 1 khuôn khác nhau → trang đang xem (safePageIdx)
                                 const shapePageIdx = (() => {
-                                    if (!stickerLike || s.cutType === 'one_dao' || sourceTotalPages <= 1) {
+                                    if (!stickerLike
+                                        || (s.cutType === 'one_dao' && s.dieSizeMode === 'page')
+                                        || sourceTotalPages <= 1) {
                                         return safePageIdx;
                                     }
-                                    const types = new Set<string>();
-                                    let firstDie = -1;
-                                    for (let i = 0; i < sourceTotalPages; i++) {
-                                        const t = detectedShapesByPage[i];
-                                        if (t && t !== 'CUSTOM') {
-                                            types.add(String(t));
-                                            if (firstDie < 0) firstDie = i;
-                                        }
-                                    }
-                                    // Nhiều loại khuôn thật → mỗi trang dùng shape của chính nó
-                                    if (types.size > 1) return safePageIdx;
-                                    // 0–1 loại (1 khuôn / homogeneous inherit) → master
-                                    return firstDie >= 0 ? firstDie : 0;
+                                    const master = inheritedSingleMoldMaster(
+                                        previewDetectedShapeParamsByPage,
+                                        sourceTotalPages,
+                                    );
+                                    return master ?? safePageIdx;
                                 })();
 
                                 let effMarginTop = s.marginTop || 0;
@@ -1314,11 +1360,20 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 }
 
                                 // Cùng gate execute: tem bế/CNC không bao giờ chia cọc row/column.
-                                const _clusterAppliesPv = !stickerLike && (
+                                const _clusterAppliesPv = !stickerLike && s.markType === 'guillotine' && (
                                     (s.taskMode === 'nup' && s.layoutType === 'ratio_stack')
                                     || s.taskMode === 'step_repeat'
                                 );
                                 const _effClusterModePv = _clusterAppliesPv ? s.clusterMode : 'none';
+                                const _effGroupingPv = stickerLike || s.markType === 'guillotine'
+                                    ? s.groupingStrategy : 'none';
+                                const itemDim = resolvePreviewItemDimension(
+                                    activeTool,
+                                    shapePageIdx,
+                                    previewDetectedDimensionsByPage,
+                                    previewSourceDimensionsByPage,
+                                    s.sourcePageDim,
+                                );
                                 return (
                             <GridPreview
                                 taskMode={s.taskMode} gridStrategy={s.gridStrategy} columns={s.columns} rows={s.rows}
@@ -1327,8 +1382,9 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 duplexFlow={activeTool === 'sticker_imposer' ? 'normal' : s.duplexFlow}
                                 splitGap={splitGap}
                                 gapX={s.gapX} gapY={s.gapY}
-                                groupingStrategy={s.groupingStrategy}
+                                groupingStrategy={_effGroupingPv}
                                 clusterCombineMode={s.clusterCombineMode}
+                                clusterNesting={s.clusterNesting}
                                 clusterSizingMode={s.clusterSizingMode}
                                 clusterCols={s.clusterCols} clusterRows={s.clusterRows}
                                 clusterTileW={s.clusterTileW} clusterTileH={s.clusterTileH}
@@ -1344,29 +1400,25 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                     stickerLike
                                         ? (s.cutType === 'one_dao'
                                             ? 'RECTANGLE'
-                                            : (detectedShapesByPage[shapePageIdx] || 'CUSTOM'))
+                                            : (previewDetectedShapesByPage[shapePageIdx] || 'CUSTOM'))
                                         : 'RECTANGLE'
                                 }
                                 itemW={(() => {
                                     if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
-                                        const dim = s.sourcePageDims?.[shapePageIdx] || s.sourcePageDim;
                                         const off = (s.dieOffsetMm || 0) * 2;
-                                        const w = dim?.w;
+                                        const w = itemDim?.w;
                                         return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 + off : 90;
                                     }
-                                    const dim = detectedDimensionsByPage[shapePageIdx];
-                                    const w = dim?.w ?? s.sourcePageDim?.w;
+                                    const w = itemDim?.w;
                                     return (typeof w === 'number' && !isNaN(w)) ? w * 0.352778 : 90;
                                 })()}
                                 itemH={(() => {
                                     if (stickerLike && s.cutType === 'one_dao' && s.dieSizeMode === 'page') {
-                                        const dim = s.sourcePageDims?.[shapePageIdx] || s.sourcePageDim;
                                         const off = (s.dieOffsetMm || 0) * 2;
-                                        const h = dim?.h;
+                                        const h = itemDim?.h;
                                         return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 + off : 55;
                                     }
-                                    const dim = detectedDimensionsByPage[shapePageIdx];
-                                    const h = dim?.h ?? s.sourcePageDim?.h;
+                                    const h = itemDim?.h;
                                     return (typeof h === 'number' && !isNaN(h)) ? h * 0.352778 : 55;
                                 })()}
                                 targetQuantity={s.targetQuantity}
@@ -1380,30 +1432,30 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                     s.cutType === 'one_dao'
                                         ? null
                                         : (() => {
-                                            const params = detectedShapeParamsByPage[shapePageIdx];
+                                            const params = previewDetectedShapeParamsByPage[shapePageIdx];
                                             return params ? JSON.stringify(params) : null;
                                         })()
                                 }
                                 shapesByPage={
-                                    stickerLike && s.cutType !== 'one_dao' ? detectedShapesByPage : undefined
+                                    stickerLike
+                                        && !(s.cutType === 'one_dao' && s.dieSizeMode === 'page')
+                                        ? previewDetectedShapesByPage : undefined
                                 }
                                 shapeParamsByPage={
-                                    stickerLike && s.cutType !== 'one_dao' ? detectedShapeParamsByPage : undefined
+                                    stickerLike
+                                        && !(s.cutType === 'one_dao' && s.dieSizeMode === 'page')
+                                        ? previewDetectedShapeParamsByPage : undefined
                                 }
                                 isDetectingShape={isDetectingShape}
                                 pontType={s.pontType} pontConfig={(stickerLike && s.pontType !== 'none') ? s.pontConfig : null}
                                 onCapacityChange={(cap) => {
                                     s.setPreviewCapacity(cap);
-                                    // Chỉ broadcast capacity khi 1 khuôn (cùng type).
-                                    // Mỗi tem 1 khuôn → ghi theo trang đang xem.
-                                    const types = new Set<string>();
-                                    if (stickerLike && sourceTotalPages > 1) {
-                                        for (let i = 0; i < sourceTotalPages; i++) {
-                                            const t = detectedShapesByPage[i];
-                                            if (t && t !== 'CUSTOM') types.add(String(t));
-                                        }
-                                    }
-                                    if (stickerLike && sourceTotalPages > 1 && types.size <= 1) {
+                                    const master = stickerLike
+                                        ? inheritedSingleMoldMaster(
+                                            previewDetectedShapeParamsByPage, sourceTotalPages,
+                                        )
+                                        : null;
+                                    if (master !== null) {
                                         const all: Record<number, number> = {};
                                         for (let i = 0; i < sourceTotalPages; i++) all[i] = cap;
                                         s.setPreviewCapacities(all);
@@ -1421,7 +1473,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 dieOffsetMm={s.dieOffsetMm}
                                 fillBlockGap={s.fillBlockGap}
                                 getWorkingFile={getWorkingFile}
-                                previewSourceKey={JSON.stringify({ o: viewerPageOrder, r: viewerPageRotations })}
+                                previewSourceKey={JSON.stringify({ f: detectionSourceKey, o: viewerPageOrder, i: viewerPageInstanceIds, r: viewerPageRotations, d: previewSourceDimensionsByPage, n: sourceTotalPages })}
                             />
                             );
                             })()}

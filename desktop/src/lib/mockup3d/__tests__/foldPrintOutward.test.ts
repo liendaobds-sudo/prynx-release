@@ -79,7 +79,10 @@ function evaluateOutward(model: DielineModel): { inverted: string[]; sideways: s
             cy /= n;
         }
         const localC = new THREE.Vector3(cx, cy, 0).applyMatrix4(fold.matrix);
-        const worldN = new THREE.Vector3(0, 0, 1).transformDirection(fold.matrix);
+        // Pizza gấp thể tích về +Z: mặt vật lý bên ngoài là cap local −Z.
+        // Renderer đổi material/UV sang cap này, không được đảo cơ cấu foldDirection.
+        const printNormalZ = model.params.boxType === 'pizza' || model.params.boxType === 'tray' ? -1 : 1;
+        const worldN = new THREE.Vector3(0, 0, printNormalZ).transformDirection(fold.matrix);
         placed.push({ name: panel.name, pos: localC, n: worldN });
     }
 
@@ -111,7 +114,7 @@ function makeParams(partial: Partial<BoxParams> & { boxType: BoxParams['boxType'
     return { ...DEFAULT_PARAMS, ...partial } as BoxParams;
 }
 
-describe('foldPrintOutward — local +Z faces outside after full fold', () => {
+describe('foldPrintOutward — physical print face points outside after full fold', () => {
     it('RTE structural panels: print outward', () => {
         const model = generateReverseTuckEnd(makeParams({ boxType: 'rte' }));
         const r = evaluateOutward(model);
@@ -145,6 +148,29 @@ describe('foldPrintOutward — local +Z faces outside after full fold', () => {
         expect(r.ok.length).toBeGreaterThan(0);
     });
 
+    it('Pizza box keeps original fold kinematics and reaches its final pose', () => {
+        const model = generatePizzaBox(
+            makeParams({ boxType: 'pizza', L: 300, W: 300, D: 40, T: 1.5, C: 1, TH: 15 }),
+        );
+        const byName = new Map(model.panels.map((panel) => [panel.name, panel]));
+
+        expect(byName.get('front')).toMatchObject({ foldAngle: -90, foldDirection: 1 });
+        expect(byName.get('back')).toMatchObject({ foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('side_left')).toMatchObject({ foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('side_right')).toMatchObject({ foldAngle: -90, foldDirection: 1 });
+        expect(byName.get('side_left_rim')).toMatchObject({ foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('side_left_roll')).toMatchObject({ foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('side_right_rim')).toMatchObject({ foldAngle: 90, foldDirection: -1 });
+        expect(byName.get('side_right_roll')).toMatchObject({ foldAngle: 90, foldDirection: -1 });
+
+        const { depthMap, maxD } = buildDepthMap(model.panels);
+        for (const panel of model.panels) {
+            const atFinalPhase = applyFoldCompensation(panel, model.panels, 0.96, depthMap, maxD, model.params.T);
+            const atOne = applyFoldCompensation(panel, model.panels, 1, depthMap, maxD, model.params.T);
+            expect(atFinalPhase.matrix.elements, panel.name).toEqual(atOne.matrix.elements);
+        }
+    });
+
     it('Pizza box structural panels: print outward (regression áp ngược mặt)', () => {
         const model = generatePizzaBox(
             makeParams({ boxType: 'pizza', L: 300, W: 300, D: 40, T: 1.5, C: 1, TH: 15 }),
@@ -155,6 +181,20 @@ describe('foldPrintOutward — local +Z faces outside after full fold', () => {
         expect(r.ok.length).toBeGreaterThanOrEqual(5);
     });
 
+    it('Matchbox tray and sleeve keep original fold kinematics', () => {
+        const model = generateMatchboxTray(
+            makeParams({ boxType: 'tray', L: 200, W: 150, D: 40, T: 1, G: 10, TH: 15, sleeveGlue: 15 }),
+        );
+        const byName = new Map(model.panels.map((panel) => [panel.name, panel]));
+
+        expect(byName.get('front_wall')).toMatchObject({ foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('back_wall')).toMatchObject({ foldAngle: 90, foldDirection: -1 });
+        expect(byName.get('right_wall')).toMatchObject({ foldAngle: 90, foldDirection: -1 });
+        expect(byName.get('left_wall')).toMatchObject({ foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('sleeve_front')).toMatchObject({ foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('sleeve_side1')).toMatchObject({ foldAngle: 90, foldDirection: 1 });
+        expect(byName.get('sleeve_glue')).toMatchObject({ foldAngle: 90, foldDirection: -1 });
+    });
     it('Matchbox tray body structural panels: print outward', () => {
         const model = generateMatchboxTray(
             makeParams({

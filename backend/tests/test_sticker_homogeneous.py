@@ -163,7 +163,7 @@ def test_p5_assign_deterministic_and_rollover(seq, cells):
 
 def test_p5_expand_by_quantity_autofill_and_counts():
     pages = [3, 4, 5]
-    # auto-fill: mỗi trang 1 lần
+    # Chuỗi cơ sở auto-fill: mỗi trang 1 lần; build layout sẽ chia khối để kín tờ.
     assert sh.expand_by_quantity(pages, None) == [3, 4, 5]
     assert sh.expand_by_quantity(pages, [0, 0, 0]) == [3, 4, 5]
     # số lượng cụ thể: đúng tổng số lần xuất hiện mỗi trang
@@ -279,10 +279,12 @@ def test_p8_nesting_called_exactly_once(n_content, n_cells):
     )
     assert calls["n"] == 1, "nesting phải tính đúng 1 lần"
     assert layout.cells_per_sheet == n_cells
-    # mọi nội dung được gán
-    assert len(layout.cell_contents) == n_content
-    # cuốn chiếu đúng số tờ
+    # Auto-fill: mọi nội dung có ít nhất 1 lần và tờ cuối được lấp kín.
     import math as _m
+    expected_items = _m.ceil(n_content / n_cells) * n_cells
+    assert len(layout.cell_contents) == expected_items
+    assert set(c.src_page_idx for c in layout.cell_contents) == set(range(1, n_content + 1))
+    # cuốn chiếu đúng số tờ
     assert layout.num_sheets == _m.ceil(n_content / n_cells)
 
 

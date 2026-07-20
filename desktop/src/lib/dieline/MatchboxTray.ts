@@ -417,13 +417,7 @@ export function generateMatchboxTray(params: BoxParams): DielineModel {
                 foldAngle: (s.vert ? vertFoldAngles[i] : horizFoldAngles[i]),
                 // Strip ngang (left/right) bản lề dọc trục Y → cùng dấu fold cho
                 // hiệu ứng NGƯỢC so với strip dọc; đảo dấu để cả 4 vách gập LÊN.
-                // Print-outward: mockup gán in ở local +Z. Wall (i=0) + beam (i=1)
-                // cần gập volume về −Z (đảo baseDir); sec/tab (i≥2) giữ baseDir
-                // vì lớp gập kép đã đúng chiều ra ngoài.
-                foldDirection: (() => {
-                    const base = (s.vert ? s.dir : (-s.dir)) as 1 | -1;
-                    return (i <= 1 ? -base : base) as 1 | -1;
-                })(),
+                foldDirection: (s.vert ? s.dir : (-s.dir)) as 1 | -1,
                 foldPhase: (s.vert ? vertFoldPhases[i] : horizFoldPhases[i]),
             });
         }

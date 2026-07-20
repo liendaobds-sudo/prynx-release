@@ -65,6 +65,9 @@ def validate_dieline_body(body: dict[str, Any]) -> None:
     changed_key = body.get("changedKey")
     if changed_key is not None and changed_key not in ALL_PARAMS:
         _fail("changedKey không hợp lệ.")
+    include_nesting = body.get("includeNesting")
+    if include_nesting is not None and not isinstance(include_nesting, bool):
+        _fail("includeNesting phải là boolean.")
 
     sheet = nesting.get("sheet")
     margin = nesting.get("margin")

@@ -12,6 +12,7 @@ Chạy: backend/venv/Scripts/python.exe -m pytest tests/test_sticker_homogeneous
 """
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import sys
 import tempfile
@@ -30,6 +31,24 @@ from app.workers.sticker_imposer_pkg import bin_packing
 
 class _StopEngine(Exception):
     """Dừng run_nup_engine ngay sau khi dựng placements (tránh chạy merge/save)."""
+
+
+class _CaptureAllPool:
+    """Run every chunk inline so tests can inspect all precalculated sheets."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def map(self, fn, args_list):
+        for args in args_list:
+            fn(args)
+        raise _StopEngine()
 
 
 def _make_blank_pdf(path: str, n_pages: int) -> None:
@@ -143,12 +162,12 @@ def test_homogeneous_branch_routing_and_src_page_idx(monkeypatch):
     assert captured.get("homogeneous_mode") is True
     assert captured.get("master_idx") == 0
 
-    # (b) mỗi ô mang đúng src_page_idx (cuốn chiếu 0→N, master = loại đầu)
+    # (b) auto-fill chia đều thành khối liền theo mẫu; master = loại đầu.
     precalc = captured["precalc"]
     assert set(precalc.keys()) == {0}, "4 trang (gồm master) / 8 ô → đúng 1 tờ"
     sheet0 = precalc[0]
     src_pages = [pl["src_page_idx"] for pl in sheet0]
-    assert src_pages == [0, 1, 2, 3], f"src_page_idx sai/không đúng thứ tự: {src_pages}"
+    assert src_pages == [0, 0, 1, 1, 2, 2, 3, 3], f"src_page_idx sai/không đúng thứ tự: {src_pages}"
     # Master (trang 0) CŨNG là nội dung in — tem loại đầu có artwork + khuôn.
     assert 0 in src_pages
     # mỗi placement có toạ độ tuyệt đối đã căn giữa (finalize_placements)
@@ -223,12 +242,10 @@ def test_one_dao_page_mode_does_not_use_homogeneous_clip(monkeypatch):
 
 
 def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
-    """Regression: chế độ đồng nhất PHẢI chạy khi nhập SỐ LƯỢNG khác nhau (không auto-fill).
+    """Fixed quantity vẫn là dàn nhiều mẫu, không biến thành S&R từng loại.
 
     Kịch bản user: 'tạo khuôn trang đầu' rồi bình tem bế với số lượng/trang khác nhau.
-    Khi có SL > 1 → MỖI LOẠI 1 tờ đầy (S&R cùng khuôn) + exportUnique (không trộn
-    round-robin hàng trăm trang). qty page1=16, page2=8, page3=8, C=8 → 3 tờ xuất
-    (export unique), mỗi tờ thuần 1 loại.
+    qty 16/16/8/8, C=8 → 6 tờ mixed, đúng tổng quantity từng artwork.
     """
     n_pages = 4  # trang 0 = master, trang 1,2,3 = nội dung
 
@@ -270,12 +287,13 @@ def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
     captured = {}
 
     def _capture_chunk(args):
-        captured["precalc"] = args[37]
+        captured.setdefault("precalc", {}).update(args[37])
         captured["homogeneous_mode"] = args[-2]
         captured["master_idx"] = args[-1]
-        raise _StopEngine()
+        return b""
 
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _CaptureAllPool)
     # 1 core → 1 chunk (tránh ProcessPool pickle local _capture_chunk).
     monkeypatch.setattr(os, "cpu_count", lambda: 2)
 
@@ -288,7 +306,7 @@ def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
             "sheetWidth": 320,
             "sheetHeight": 450,
             "targetQuantity": 0,
-            # SL > 1 → per-type full sheets (C=8 canned). Gồm trang master (0).
+            # Fixed qty cho bốn artwork, gồm trang master (0).
             "targetQuantitiesByPage": {"0": 16, "1": 16, "2": 8, "3": 8},
             "exportUniqueSheets": True,
             "detectedShapesByPage": {"0": "CIRCLE_ELLIPSE"},
@@ -306,20 +324,21 @@ def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
     assert captured.get("master_idx") == 0
 
     pre = captured["precalc"]
-    # 4 loại (gồm master=loại đầu) → 4 tờ duy nhất.
-    assert sorted(pre.keys()) == [0, 1, 2, 3], f"phải đúng 4 tờ per-type: {list(pre.keys())}"
-    # Mỗi tờ thuần 1 loại (C=8 ô cùng src), tờ 0 = master/loại đầu.
-    assert all(pl["src_page_idx"] == 0 for pl in pre[0]), pre[0]
-    assert all(pl["src_page_idx"] == 1 for pl in pre[1]), pre[1]
-    assert all(pl["src_page_idx"] == 2 for pl in pre[2]), pre[2]
-    assert all(pl["src_page_idx"] == 3 for pl in pre[3]), pre[3]
+    assert sorted(pre.keys()) == list(range(6))
+    counts = {i: 0 for i in range(4)}
+    for placements in pre.values():
+        assert 1 <= len(placements) <= 8
+        for pl in placements:
+            counts[pl["src_page_idx"]] += 1
+    assert counts == {0: 16, 1: 16, 2: 8, 3: 8}
+    assert any(len({pl["src_page_idx"] for pl in placements}) > 1
+               for placements in pre.values())
 
 
-def test_homogeneous_per_type_uses_global_target_quantity(monkeypatch):
+def test_homogeneous_mixed_uses_global_target_quantity(monkeypatch):
     """Bug: targetQuantity global bị bỏ qua (chỉ đọc targetQuantitiesByPage).
 
-    3 loại nội dung, targetQuantity=100, C=8 → export unique = 3 tờ (mỗi loại 1),
-    không auto-fill 1 con/loại.
+    Bốn artwork × 100, C=8 → 50 tờ mixed và đúng 100 con mỗi loại.
     """
     n_pages = 4
     _call = {"n": 0}
@@ -344,10 +363,11 @@ def test_homogeneous_per_type_uses_global_target_quantity(monkeypatch):
     captured = {}
 
     def _capture_chunk(args):
-        captured["precalc"] = args[37]
-        raise _StopEngine()
+        captured.setdefault("precalc", {}).update(args[37])
+        return b""
 
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _CaptureAllPool)
     monkeypatch.setattr(os, "cpu_count", lambda: 2)
 
     with tempfile.TemporaryDirectory() as td:
@@ -369,10 +389,12 @@ def test_homogeneous_per_type_uses_global_target_quantity(monkeypatch):
             nup_engine.run_nup_engine(src, out, settings, job_id="t-hom-global-qty")
 
     pre = captured["precalc"]
-    # 4 trang (master + 3) × export unique = 4 tờ; master = loại đầu (src 0).
-    assert len(pre) == 4, f"4 loại × export unique = 4 tờ, nhận {len(pre)}"
-    for si, expected_src in enumerate([0, 1, 2, 3]):
-        assert all(pl["src_page_idx"] == expected_src for pl in pre[si])
+    assert len(pre) == 50
+    counts = {i: 0 for i in range(4)}
+    for placements in pre.values():
+        for pl in placements:
+            counts[pl["src_page_idx"]] += 1
+    assert counts == {0: 100, 1: 100, 2: 100, 3: 100}
 
 
 # ─── Property 7: Fallback an toàn (≥2 khuôn / 0 khuôn → đường cũ) ─────────────

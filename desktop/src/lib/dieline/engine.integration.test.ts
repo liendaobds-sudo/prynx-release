@@ -36,6 +36,22 @@ function expectRevalidates(model: DielineModel, result: NestingResult, dieGap: n
 describe('tray nesting safety', () => {
     const params = { ...DEFAULT_PARAMS, boxType: 'tray' as const, L: 120, W: 85, D: 25 };
 
+    it('skips the expensive nesting pass for a preview-only request', () => {
+        const response = runDielineEngine({
+            params,
+            nestingConfig: {
+                ...structuredClone(DEFAULT_NESTING_CONFIG),
+                nestingMode: 'smart',
+                trayNestingMode: 'split',
+            },
+            includeNesting: false,
+        });
+
+        expect(response.dieline.panels.length).toBeGreaterThan(0);
+        expect(response.nestingResult).toBeNull();
+        expect(response.sleeveNestingResult).toBeNull();
+    });
+
     it.each(['split', 'combined'] as const)('revalidates tray and sleeve CUT silhouettes in %s mode', (mode) => {
         const response = runDielineEngine({
             params,

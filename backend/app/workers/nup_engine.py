@@ -131,6 +131,13 @@ def _canonicalize_rotation(source_path: str) -> tuple:
         return source_path, False
 
 
+def _effective_diecut_grouping(layout_type, is_die_cut, grouping_strategy):
+    """Repeat is a hard mode boundary: cluster cannot turn S&R into mixed N-up."""
+    if is_die_cut and layout_type == 'repeat' and grouping_strategy == 'cluster_tile':
+        return 'none'
+    return grouping_strategy
+
+
 def run_nup_engine(
 
     source_path: str,
@@ -417,6 +424,16 @@ def run_nup_engine(
     strategy = settings.get('gridStrategy', 'simple_auto')
 
     grouping_strategy = settings.get('groupingStrategy', 'maximize_area')
+    # Bình trang là S&R từng source page. Grouping cũ trong preset/UI không được
+    # phép đổi mode thành cluster mixed hoặc làm skip full_layouts.
+    _requested_grouping_strategy = grouping_strategy
+    grouping_strategy = _effective_diecut_grouping(
+        layout_type, is_die_cut, grouping_strategy,
+    )
+    if grouping_strategy != _requested_grouping_strategy:
+        logger.info(
+            "   [MODE-GUARD] layoutType=repeat: ignore groupingStrategy=cluster_tile"
+        )
     cluster_combine_mode = settings.get('clusterCombineMode', 'replicate_mixed')
     logger.info("   ZONE-DEBUG grouping_strategy=%r combine=%r" % (grouping_strategy, cluster_combine_mode))
     cluster_tile_w_mm = settings.get('clusterTileW', 148.0)   # mm, default A5 width
@@ -427,6 +444,8 @@ def run_nup_engine(
 
     # Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup) — mặc định tắt; chỉ bật trong khối die-cut.
     homogeneous_master_idx = None
+    # 1 khuôn + N artwork (Bình trang): master path bế — nest/cắt kế thừa, KHÔNG trộn mẫu.
+    single_mold_master_idx = None
 
     # Report state (spec: binh-tem-be-report) — luôn tồn tại để khối finalize đọc được.
     _reports_by_sheet = {}
@@ -560,6 +579,28 @@ def run_nup_engine(
 
             logger.debug(f"   [ZONE] Page {p_idx}: qty={qty} trim={cur_trim_w:.1f}x{cur_trim_h:.1f}")
 
+        # ── 1 khuôn + N artwork (Bình trang S&R): trang 0 có path bế, trang sau không ──
+        # Nếu mỗi trang nest riêng, trang không bế rơi về MediaBox → "bình theo trang"
+        # và không có đường cắt. Đúng 1 master genuine → gán trim master + nest 1 lần.
+        single_mold_master_idx = None
+        _genuine_masters = [p for p, v in genuine_die_by_page.items() if v]
+        if len(_genuine_masters) == 1 and page_count >= 2:
+            single_mold_master_idx = _genuine_masters[0]
+            _m_tw, _m_th = trim_by_page[single_mold_master_idx]
+            _patched = []
+            for p_idx, qty, tw, th in page_infos:
+                if p_idx != single_mold_master_idx and not genuine_die_by_page.get(p_idx, False):
+                    trim_by_page[p_idx] = (_m_tw, _m_th)
+                    _patched.append((p_idx, qty, _m_tw, _m_th))
+                else:
+                    _patched.append((p_idx, qty, tw, th))
+            page_infos = _patched
+            logger.info(
+                "   [SINGLE-MOLD] master=trang %s trim=%.1fx%.1f → kế thừa %d trang nội dung",
+                single_mold_master_idx, _m_tw, _m_th,
+                sum(1 for p, v in genuine_die_by_page.items() if not v),
+            )
+
         # Sort page_infos by size ONLY when mixing multiple types on same sheet
         # (e.g. maximize_area, strict_ratio). For 'none' grouping / 'repeat' layout,
         # preserve original page order.
@@ -646,119 +687,127 @@ def run_nup_engine(
 
         # Reuse tmp_doc from Step 1 (still open)
 
-        for p_idx, qty, tw, th in (() if _skip_full_layouts else page_infos):
+        # secondary_gap: PHẢI khớp _resolve_preview_secondary_gap (preview) →
+        # one_dao+fillBlockGap → splitGap → None. Nếu bỏ splitGap ở đây, preview
+        # (dùng splitGap) sẽ lệch render (cột lấp đầy L-shape xếp khác).
+        fill_block_gap_mm = settings.get('fillBlockGap', 0)
+        cut_type = settings.get('cutType', 'default')
+        split_gap_mm = settings.get('splitGap', None)
+        if cut_type == 'one_dao' and fill_block_gap_mm > 0:
+            _secondary_gap = fill_block_gap_mm * MM_TO_PTS
+        elif split_gap_mm is not None and split_gap_mm > 0:
+            _secondary_gap = split_gap_mm * MM_TO_PTS
+        else:
+            _secondary_gap = None
 
-            page_obj = tmp_doc[p_idx]
-
+        def _nest_page_for_full_layout(p_idx, page_obj):
+            """Nest 1 trang → layout_result hoặc None."""
             p_shape = None
-
             if detected_shapes_by_page:
-
-                p_shape = (detected_shapes_by_page.get(str(p_idx)) 
-
-                          or detected_shapes_by_page.get(p_idx))
-
+                p_shape = (detected_shapes_by_page.get(str(p_idx))
+                           or detected_shapes_by_page.get(p_idx))
             p_shape_props = {}
-
             if detected_shape_params_by_page:
-
-                p_shape_props = (detected_shape_params_by_page.get(str(p_idx)) 
-
-                                or detected_shape_params_by_page.get(p_idx) or {})
-
-            try:
-                w_for_nfp = usable_w
-                h_for_nfp = usable_h
-                # Zone modes (zone_per_type/zone_ratio) re-nest theo kích thước VÙNG
-                # trong dispatch → full_layouts ở đây chỉ cần full-sheet. Chỉ replicate_mixed
-                # mới nest sẵn theo kích thước cụm.
-                if (grouping_strategy == 'cluster_tile' and settings.get('clusterNesting', True)
-                        and cluster_combine_mode == 'replicate_mixed'):
-                    cluster_sizing_mode = settings.get('clusterSizingMode', 'dims')
-                    MM = 2.83465
-                    tile_gap_x_pt = float(settings.get('tileGapX', 0.0)) * MM
-                    tile_gap_y_pt = float(settings.get('tileGapY', 0.0)) * MM
-                    if cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
-                        if cluster_sizing_mode == 'split_cols':
-                            cluster_cols = max(1, int(settings.get('clusterCols', 2)))
-                            cluster_rows = 1
-                        elif cluster_sizing_mode == 'split_rows':
-                            cluster_cols = 1
-                            cluster_rows = max(1, int(settings.get('clusterRows', 2)))
-                        else:
-                            cluster_cols = max(1, int(settings.get('clusterCols', 2)))
-                            cluster_rows = max(1, int(settings.get('clusterRows', 2)))
-                        w_for_nfp = (usable_w - (cluster_cols - 1) * tile_gap_x_pt) / cluster_cols
-                        h_for_nfp = (usable_h - (cluster_rows - 1) * tile_gap_y_pt) / cluster_rows
+                p_shape_props = (detected_shape_params_by_page.get(str(p_idx))
+                                 or detected_shape_params_by_page.get(p_idx) or {})
+            w_for_nfp = usable_w
+            h_for_nfp = usable_h
+            # Zone modes (zone_per_type/zone_ratio) re-nest theo kích thước VÙNG
+            # trong dispatch → full_layouts ở đây chỉ cần full-sheet. Chỉ replicate_mixed
+            # mới nest sẵn theo kích thước cụm.
+            if (grouping_strategy == 'cluster_tile' and settings.get('clusterNesting', True)
+                    and cluster_combine_mode == 'replicate_mixed'):
+                cluster_sizing_mode = settings.get('clusterSizingMode', 'dims')
+                MM = 2.83465
+                tile_gap_x_pt = float(settings.get('tileGapX', 0.0)) * MM
+                tile_gap_y_pt = float(settings.get('tileGapY', 0.0)) * MM
+                if cluster_sizing_mode in ('grid', 'split_cols', 'split_rows'):
+                    if cluster_sizing_mode == 'split_cols':
+                        cluster_cols = max(1, int(settings.get('clusterCols', 2)))
+                        cluster_rows = 1
+                    elif cluster_sizing_mode == 'split_rows':
+                        cluster_cols = 1
+                        cluster_rows = max(1, int(settings.get('clusterRows', 2)))
                     else:
-                        w_for_nfp = float(settings.get('clusterTileW', 148.0)) * MM
-                        h_for_nfp = float(settings.get('clusterTileH', 210.0)) * MM
-
-                # secondary_gap: PHẢI khớp _resolve_preview_secondary_gap (preview) →
-                # one_dao+fillBlockGap → splitGap → None. Nếu bỏ splitGap ở đây, preview
-                # (dùng splitGap) sẽ lệch render (cột lấp đầy L-shape xếp khác).
-                fill_block_gap_mm = settings.get('fillBlockGap', 0)
-                cut_type = settings.get('cutType', 'default')
-                split_gap_mm = settings.get('splitGap', None)
-                if cut_type == 'one_dao' and fill_block_gap_mm > 0:
-                    _secondary_gap = fill_block_gap_mm * MM_TO_PTS
-                elif split_gap_mm is not None and split_gap_mm > 0:
-                    _secondary_gap = split_gap_mm * MM_TO_PTS
+                        cluster_cols = max(1, int(settings.get('clusterCols', 2)))
+                        cluster_rows = max(1, int(settings.get('clusterRows', 2)))
+                    w_for_nfp = (usable_w - (cluster_cols - 1) * tile_gap_x_pt) / cluster_cols
+                    h_for_nfp = (usable_h - (cluster_rows - 1) * tile_gap_y_pt) / cluster_rows
                 else:
-                    _secondary_gap = None
+                    w_for_nfp = float(settings.get('clusterTileW', 148.0)) * MM
+                    h_for_nfp = float(settings.get('clusterTileH', 210.0)) * MM
 
-                logger.debug(f"   [ZONE DEBUG] w_for_nfp={w_for_nfp} h_for_nfp={h_for_nfp} gap_x={gap_x} gap_y={gap_y} bleed_pt={bleed_pt} secondary_gap={_secondary_gap}")
-                layout_result = compute_sticker_layout_for_page(
-                    page_obj,
-                    w_for_nfp,
-                    h_for_nfp,
-                    gap_x, gap_y,
-
-                    strategy='optimal_auto',
-
-                    shape_type_override=p_shape if p_shape else None,
-
-                    shape_props_override=p_shape_props if p_shape_props else None,
-
-                    bleed_pt=bleed_pt,
-
-                    secondary_gap=_secondary_gap,
-
-                    cut_type=settings.get('cutType', 'default'),
-                    die_size_mode=settings.get('dieSizeMode', 'die'),
-                    die_offset_mm=settings.get('dieOffsetMm', 0),
-
+            logger.debug(
+                f"   [ZONE DEBUG] p={p_idx} w_for_nfp={w_for_nfp} h_for_nfp={h_for_nfp} "
+                f"gap_x={gap_x} gap_y={gap_y} bleed_pt={bleed_pt} secondary_gap={_secondary_gap}"
+            )
+            layout_result = compute_sticker_layout_for_page(
+                page_obj,
+                w_for_nfp,
+                h_for_nfp,
+                gap_x, gap_y,
+                strategy='optimal_auto',
+                shape_type_override=p_shape if p_shape else None,
+                shape_props_override=p_shape_props if p_shape_props else None,
+                bleed_pt=bleed_pt,
+                secondary_gap=_secondary_gap,
+                cut_type=settings.get('cutType', 'default'),
+                die_size_mode=settings.get('dieSizeMode', 'die'),
+                die_offset_mm=settings.get('dieOffsetMm', 0),
+            )
+            try:
+                from app.workers.rot_audit_log import get_logger as _rot_get_logger
+                _items_dbg = layout_result.get('items', [])
+                _rot_get_logger().warning(
+                    "[ROT-AUDIT][solver][RENDER p_idx=%s] strategy=%s shapeType=%s shapeProps=%s "
+                    "secondary_gap=%s n=%d rot180_per_cell=%s",
+                    p_idx, layout_result.get('strategyUsed'), layout_result.get('shapeType'),
+                    layout_result.get('shapeProps'), _secondary_gap, len(_items_dbg),
+                    [int(it.get('isRotated180', False)) for it in _items_dbg],
                 )
+            except Exception:
+                pass
+            capacity = len(layout_result.get('items', []))
+            logger.debug(
+                f"   [ZONE] Page {p_idx}: full-sheet layout -> {capacity} items "
+                f"(strategy={layout_result.get('strategyUsed','?')})"
+            )
+            return layout_result
 
-                full_layouts[p_idx] = layout_result
-
-                try:
-                    from app.workers.rot_audit_log import get_logger as _rot_get_logger
-                    _items_dbg = layout_result.get('items', [])
-                    _rot_get_logger().warning(
-                        "[ROT-AUDIT][solver][RENDER p_idx=%s] strategy=%s shapeType=%s shapeProps=%s "
-                        "secondary_gap=%s n=%d rot180_per_cell=%s",
-                        p_idx, layout_result.get('strategyUsed'), layout_result.get('shapeType'),
-                        layout_result.get('shapeProps'), _secondary_gap, len(_items_dbg),
-                        [int(it.get('isRotated180', False)) for it in _items_dbg],
-                    )
-                except Exception:
-                    pass
-
-                capacity = len(layout_result.get('items', []))
-
-                logger.debug(f"   [ZONE] Page {p_idx}: full-sheet layout -> {capacity} items "
-
-                      f"(strategy={layout_result.get('strategyUsed','?')})")
-
+        if not _skip_full_layouts and single_mold_master_idx is not None:
+            # Nest 1 lần trên trang master (có path bế) → copy cho mọi loại.
+            try:
+                _ml = _nest_page_for_full_layout(
+                    single_mold_master_idx, tmp_doc[single_mold_master_idx],
+                )
+                for p_idx, _qty, _tw, _th in page_infos:
+                    full_layouts[p_idx] = _ml
+                logger.info(
+                    "   [SINGLE-MOLD] nest master p=%s → %d items, áp dụng %d loại",
+                    single_mold_master_idx,
+                    len((_ml or {}).get('items') or []),
+                    len(page_infos),
+                )
             except Exception as e:
+                logger.warning(
+                    f"   [SINGLE-MOLD] nest master p={single_mold_master_idx} failed: {e} "
+                    "→ fallback nest từng trang"
+                )
+                single_mold_master_idx = None  # fall through to per-page
 
-                logger.warning(f"   [ZONE] Layout engine failed for page {p_idx}: {e}")
-
-                full_layouts[p_idx] = None
+        if not _skip_full_layouts and not full_layouts:
+            for p_idx, qty, tw, th in page_infos:
+                page_obj = tmp_doc[p_idx]
+                try:
+                    full_layouts[p_idx] = _nest_page_for_full_layout(p_idx, page_obj)
+                except Exception as e:
+                    logger.warning(f"   [ZONE] Layout engine failed for page {p_idx}: {e}")
+                    full_layouts[p_idx] = None
 
         tmp_doc.close()  # Close after both Step 1 and Step 3 are done
-        _tlog("Step3 nest full_layouts xong (skip=%s, n=%d)" % (_skip_full_layouts, len(full_layouts)))
+        _tlog("Step3 nest full_layouts xong (skip=%s, n=%d, single_mold=%s)" % (
+            _skip_full_layouts, len(full_layouts), single_mold_master_idx,
+        ))
 
         # Step 3b: Calculate proportional items-per-sheet for each type
 
@@ -799,11 +848,10 @@ def run_nup_engine(
                 remaining_by_page = {p_idx: qty for p_idx, qty, _, _ in page_infos}
 
         # ── PHÁT HIỆN CHẾ ĐỘ ĐỒNG NHẤT (sticker-homogeneous-nup, Task 6) ──
-        # Áp dụng cho MỌI chế độ die-cut, KỂ CẢ khi nhập số lượng (không chỉ auto-fill):
-        # "1 khuôn master (trang đầu) + N trang nội dung" PHẢI xếp đồng nhất bất kể có
-        # đặt số lượng hay không — việc dùng-chung-khuôn không liên quan tới số lượng.
-        # Dựng adapter/trang từ tín hiệu has_die (đáng tin) + hình nhận diện; rồi
-        # detect_homogeneous quyết định (trả None khi ≠ đúng-1-master → giữ đường cũ).
+        # CHỈ cho "Dàn nhiều mẫu" (layout_type ≠ repeat): 1 khuôn + N artwork xếp chung.
+        # "Bình trang" (step_repeat → layoutType=repeat) = nhân bản MỘT trang đang chọn
+        # lấp tờ — KHÔNG được ép homogeneous (sẽ ra dàn 28 loại như multi-sample).
+        # Preview đã tách: is_nup_multi loại step_repeat; export trước đây bật nhầm.
         homogeneous_plan = None
         homogeneous_master_idx = None
         # 1 Dao theo kích thước trang cố ý bỏ qua đường khuôn có sẵn. Không để
@@ -813,40 +861,46 @@ def run_nup_engine(
             settings.get('cutType', 'default') == 'one_dao'
             and settings.get('dieSizeMode', 'die') == 'page'
         )
+        _allow_homogeneous = (layout_type != 'repeat')
+        if not _allow_homogeneous:
+            logger.info(
+                "   [HOMOGENEOUS] Bỏ qua (Bình trang / layoutType=repeat) — chỉ nhân bản 1 trang"
+            )
         try:
-            from app.workers import sticker_homogeneous as _sh
-            from app.workers.shape_types import ShapeType as _ShapeType, coerce_shape_type as _coerce
-            _adapters = []
-            for _p in range(page_count):
-                _hd = False if _page_sized_one_dao else genuine_die_by_page.get(_p, False)
-                if _hd:
-                    _s = (detected_shapes_by_page.get(str(_p))
-                          or detected_shapes_by_page.get(_p))
-                    try:
-                        _stype = _coerce(_s) if _s else _ShapeType.CUSTOM
-                    except Exception:
+            if _allow_homogeneous:
+                from app.workers import sticker_homogeneous as _sh
+                from app.workers.shape_types import ShapeType as _ShapeType, coerce_shape_type as _coerce
+                _adapters = []
+                for _p in range(page_count):
+                    _hd = False if _page_sized_one_dao else genuine_die_by_page.get(_p, False)
+                    if _hd:
+                        _s = (detected_shapes_by_page.get(str(_p))
+                              or detected_shapes_by_page.get(_p))
+                        try:
+                            _stype = _coerce(_s) if _s else _ShapeType.CUSTOM
+                        except Exception:
+                            _stype = _ShapeType.CUSTOM
+                    else:
                         _stype = _ShapeType.CUSTOM
-                else:
-                    _stype = _ShapeType.CUSTOM
-                _tw, _th = trim_by_page.get(_p, (0.0, 0.0))
-                _poly = ((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th)) if _hd else ()
-                _props = (detected_shape_params_by_page.get(str(_p))
-                          or detected_shape_params_by_page.get(_p) or {})
-                _adapters.append(_sh.make_shape_adapter(_stype, _poly, _tw, _th, _props, has_die=_hd))
-            homogeneous_plan = _sh.detect_homogeneous(_adapters)
-            if homogeneous_plan is not None:
-                homogeneous_master_idx = homogeneous_plan.master_page_idx
-                # Cần nesting master hợp lệ để xếp shape-aware; nếu không có → fallback.
-                if not (full_layouts.get(homogeneous_master_idx)
-                        and full_layouts[homogeneous_master_idx].get('items')):
-                    logger.info("   [HOMOGENEOUS] Master nesting trống → fallback bin-pack trộn cũ")
-                    homogeneous_plan = None
-                    homogeneous_master_idx = None
-                else:
-                    logger.info(
-                        f"   [HOMOGENEOUS] Bật chế độ đồng nhất: master=trang {homogeneous_master_idx}, "
-                        f"shape={homogeneous_plan.shape_type.name}, "
-                        f"{len(homogeneous_plan.content_pages)} trang nội dung")
+                    _tw, _th = trim_by_page.get(_p, (0.0, 0.0))
+                    _poly = ((0.0, 0.0), (_tw, 0.0), (_tw, _th), (0.0, _th)) if _hd else ()
+                    _props = (detected_shape_params_by_page.get(str(_p))
+                              or detected_shape_params_by_page.get(_p) or {})
+                    _adapters.append(_sh.make_shape_adapter(_stype, _poly, _tw, _th, _props, has_die=_hd))
+                homogeneous_plan = _sh.detect_homogeneous(_adapters)
+                if homogeneous_plan is not None:
+                    homogeneous_master_idx = homogeneous_plan.master_page_idx
+                    # Cần nesting master hợp lệ để xếp shape-aware; nếu không có → fallback.
+                    if not (full_layouts.get(homogeneous_master_idx)
+                            and full_layouts[homogeneous_master_idx].get('items')):
+                        logger.info("   [HOMOGENEOUS] Master nesting trống → fallback bin-pack trộn cũ")
+                        homogeneous_plan = None
+                        homogeneous_master_idx = None
+                    else:
+                        logger.info(
+                            f"   [HOMOGENEOUS] Bật chế độ đồng nhất: master=trang {homogeneous_master_idx}, "
+                            f"shape={homogeneous_plan.shape_type.name}, "
+                            f"{len(homogeneous_plan.content_pages)} trang nội dung")
         except Exception as _e_hom:
             logger.warning(f"   [HOMOGENEOUS] Phát hiện thất bại → giữ đường cũ: {_e_hom}")
             homogeneous_plan = None
@@ -1029,7 +1083,7 @@ def run_nup_engine(
                 p['abs_y'] = y_off + (total_content_h_s - cell['y'] - cell['height'])
                 p['original_cell_y'] = usable_h + margin_bottom + margin_top - p['abs_y'] - cell['height']
 
-        if is_die_cut and grouping_strategy == 'cluster_tile':
+        if is_die_cut and layout_type != 'repeat' and grouping_strategy == 'cluster_tile':
             # ══ CHIA CỤM (cluster_tile) — ARM ĐẦU TIÊN, chạy bất kể layout_type / số lượng ══
             # Trước đây cluster chỉ chạy ở nhánh repeat / auto_fill; layout 'sequential' +
             # nhập số lượng rơi vào 'else' (bin-pack) → cluster BỊ BỎ. Nay xử lý tập trung
@@ -1091,15 +1145,22 @@ def run_nup_engine(
             def _zone_layout_fn(p_idx, zone_w, zone_h):
                 if _zone_doc is None:
                     return {'items': []}
-                _ck = (p_idx, round(zone_w, 1), round(zone_h, 1))
+                # Một khuôn + N artwork: nest vùng bằng đúng trang master có geometry.
+                # src_page_idx của placement vẫn là p_idx nên artwork không bị trộn.
+                _geometry_idx = (
+                    single_mold_master_idx
+                    if single_mold_master_idx is not None
+                    else p_idx
+                )
+                _ck = (_geometry_idx, round(zone_w, 1), round(zone_h, 1))
                 _cached = _zone_cache.get(_ck)
                 if _cached is not None:
                     return _cached
-                _pg = _zone_doc[p_idx]
-                _ps = (detected_shapes_by_page.get(str(p_idx))
-                       or detected_shapes_by_page.get(p_idx))
-                _pp = (detected_shape_params_by_page.get(str(p_idx))
-                       or detected_shape_params_by_page.get(p_idx) or {})
+                _pg = _zone_doc[_geometry_idx]
+                _ps = (detected_shapes_by_page.get(str(_geometry_idx))
+                       or detected_shapes_by_page.get(_geometry_idx))
+                _pp = (detected_shape_params_by_page.get(str(_geometry_idx))
+                       or detected_shape_params_by_page.get(_geometry_idx) or {})
                 _t_nest = _time.perf_counter()
                 try:
                     _res = _csl(
@@ -1109,6 +1170,9 @@ def run_nup_engine(
                         shape_props_override=_pp if _pp else None,
                         bleed_pt=bleed_pt,
                         secondary_gap=_zone_secondary_gap,
+                        cut_type=settings.get('cutType', 'default'),
+                        die_size_mode=settings.get('dieSizeMode', 'die'),
+                        die_offset_mm=settings.get('dieOffsetMm', 0),
                     )
                 except Exception as _e_zl:
                     logger.warning(f"   [CLUSTER] zone_layout_fn p_idx={p_idx} lỗi: {_e_zl}")
@@ -1179,21 +1243,68 @@ def run_nup_engine(
 
             _is_zone = combine_mode in ('zone_per_type', 'zone_ratio')
             _export_unique_ct = bool(settings.get('exportUniqueSheets', True))
+            _zone_report_meta_by_sheet = {}
 
             if _is_zone:
-                # ── ĐA-TỜ: mỗi tờ 1 bộ loại khác nhau, IN 1 LẦN (bỏ qua số lượng) ──
-                # 17 loại, lưới 2×2 → 5 tờ (tờ cuối vùng thừa để trống).
-                _n_out_sheets = len(cluster_sheets)
-                for _sidx, (_pls, _cuts) in enumerate(cluster_sheets):
-                    precalculated_placements[_sidx] = _shift_cluster_placements(_pls)
-                    _scl = _shift_cut_lines(_cuts)
-                    if _scl:
-                        cluster_tile_cuts[_sidx] = _scl
+                # Zone tạo một bộ unique sheets; quantity quyết định số chu kỳ in,
+                # không được bị mất khỏi report hoặc vật hoá thành raw ratio slots.
+                _qty_by_type_zone = {
+                    pi[0]: max(0, int(pi[1] or 0)) for pi in page_infos
+                }
+                _base_counts = []
+                _cycle_counts = {}
+                for _pls, _cuts in cluster_sheets:
+                    _counts = {}
+                    for _pl in _pls:
+                        _src = _pl['src_page_idx']
+                        _counts[_src] = _counts.get(_src, 0) + 1
+                        _cycle_counts[_src] = _cycle_counts.get(_src, 0) + 1
+                    _base_counts.append(_counts)
+
+                _ratio_cycles = 1
+                if not is_auto_fill and combine_mode == 'zone_ratio':
+                    for _src, _qty in _qty_by_type_zone.items():
+                        _cnt = _cycle_counts.get(_src, 0)
+                        if _cnt > 0 and _qty > 0:
+                            _ratio_cycles = max(_ratio_cycles, math.ceil(_qty / _cnt))
+
+                _out_idx = 0
+                _sheets_needed = 0
+                for _base_idx, ((_pls, _cuts), _counts) in enumerate(
+                        zip(cluster_sheets, _base_counts)):
+                    _print_cycles = 1
+                    if not is_auto_fill:
+                        if combine_mode == 'zone_ratio':
+                            _print_cycles = _ratio_cycles
+                        else:
+                            for _src, _cnt in _counts.items():
+                                _qty = _qty_by_type_zone.get(_src, 0)
+                                if _cnt > 0 and _qty > 0:
+                                    _print_cycles = max(
+                                        _print_cycles, math.ceil(_qty / _cnt),
+                                    )
+                    _sheets_needed += _print_cycles
+                    _req_qty_sheet = sum(
+                        _qty_by_type_zone.get(_src, 0) for _src in _counts
+                    )
+                    _repeat_out = 1 if _export_unique_ct else _print_cycles
+                    for _copy_idx in range(_repeat_out):
+                        precalculated_placements[_out_idx] = _shift_cluster_placements(_pls)
+                        _zone_report_meta_by_sheet[_out_idx] = {
+                            'base_idx': _base_idx,
+                            'requested_qty': _req_qty_sheet,
+                            'print_cycles': _print_cycles,
+                        }
+                        _scl = _shift_cut_lines(_cuts)
+                        if _scl:
+                            cluster_tile_cuts[_out_idx] = _scl
+                        _out_idx += 1
                 total_items_placed = sum(len(p) for p in precalculated_placements.values())
-                _sheets_needed = _n_out_sheets
+                _n_out_sheets = len(precalculated_placements)
                 logger.info(
                     f"   [CLUSTER] mode={combine_mode} lưới → {_n_out_sheets} tờ "
-                    f"(mỗi tờ 1 lần, {len(page_infos)} loại, {total_items_placed} con tổng)"
+                    f"(cần in {_sheets_needed} tờ, exportUnique={_export_unique_ct}, "
+                    f"{len(page_infos)} loại, {total_items_placed} con output)"
                 )
             else:
                 # ── replicate_mixed: 1 tờ mẫu, nhân theo số lượng như cũ ──
@@ -1251,19 +1362,24 @@ def run_nup_engine(
                         return _nr_ct.build_report_string(_rcfg_ct, _d)
 
                     if _is_zone:
-                        # Mỗi tờ zone 1 report (số con thật của tờ đó).
+                        # Mỗi unique zone sheet mang quantity + số chu kỳ in thật.
                         _n_zone_sheets = len(precalculated_placements)
                         for _sidx in sorted(precalculated_placements.keys()):
                             _ips_s = len(precalculated_placements[_sidx])
+                            _meta_s = _zone_report_meta_by_sheet.get(_sidx, {})
+                            _base_s = int(_meta_s.get('base_idx', _sidx))
+                            _req_s = int(_meta_s.get('requested_qty', 0))
+                            _cycles_s = int(_meta_s.get('print_cycles', 1))
                             _reports_by_sheet[_sidx] = _build_report(
-                                _ips_s, 0,
-                                f"Tờ {_sidx + 1}/{_n_zone_sheets} · {combine_mode}",
-                                _n_zone_sheets,
+                                _ips_s, _req_s,
+                                f"Tờ mẫu {_base_s + 1} · {combine_mode}",
+                                _cycles_s,
                             )
                         _report_rows.append({
                             'label': _label_ct or f"{len(page_infos)} mẫu",
                             'items_per_sheet': (total_items_placed // max(1, _n_zone_sheets)),
-                            'requested_qty': 0, 'sheet_count': _n_zone_sheets,
+                            'requested_qty': sum(_qty_by_type_zone.values()),
+                            'sheet_count': _sheets_needed,
                         })
                     else:
                         _req_qty_ct = sum(max(0, int(pi[1] or 0)) for pi in page_infos) if not is_auto_fill else 0
@@ -1283,7 +1399,7 @@ def run_nup_engine(
         elif homogeneous_plan is not None:
             # ══ CHẾ ĐỘ ĐỒNG NHẤT: 1 khuôn master + N trang nội dung (Task 6) ══
             # Chạy cho cả auto-fill LẪN có-số-lượng: _quantities bên dưới đọc số lượng
-            # thật theo trang (None khi auto-fill → mỗi trang 1 lần).
+            # thật theo trang (None khi auto-fill → chia đều thành từng khối mẫu liền nhau).
             # Xếp shape-aware từ master (tái dùng nesting đã tính ở full_layouts → "1 lần"),
             # rải nội dung theo thứ tự (cuốn chiếu sang tờ), căn-giữa qua finalize_placements
             # (SSOT parity preview↔output), giải boong qua resolve_pont_collisions_on_placements.
@@ -1316,13 +1432,12 @@ def run_nup_engine(
 
             _content_pages = list(homogeneous_plan.content_pages)
             _content_qtys = [_qty_for_content_page(_cp) for _cp in _content_pages]
-            # Có SL > 1 → mỗi loại lấp ĐẦY tờ riêng (S&R + cùng khuôn) — khớp UI
-            # "Số tờ = ceil(SL/Tem/tờ)" và quy trình in (1 tờ mẫu × N bản).
-            # Tất cả ≤ 1 (số dán 1→N / auto-fill) → rải tuần tự 1 con/trang (round-robin).
-            _use_per_type = any(q > 1 for q in _content_qtys)
+            # Homogeneous thuộc "Dàn nhiều mẫu": quantity chỉ quyết định số lần mỗi
+            # artwork xuất hiện, tuyệt đối không đổi semantics thành S&R từng loại.
+            _use_per_type = False
             _export_unique_h = bool(settings.get('exportUniqueSheets', True))
 
-            # Nesting master 1 lần (items + C ô/tờ). quantities=None để chỉ lấy layout.
+            # Nesting master 1 lần, rồi rải quantity xen kẽ/cuốn chiếu qua các tờ.
             _hom_layout = _sh.build_homogeneous_layout(
                 master_page=None,
                 plan=homogeneous_plan,
@@ -1332,9 +1447,8 @@ def run_nup_engine(
                 gap_y=gap_y,
                 bleed_pt=bleed_pt,
                 secondary_gap=None,
-                quantities=None if _use_per_type else (
-                    _content_qtys if any(q > 0 for q in _content_qtys) else None
-                ),
+                quantities=(_content_qtys
+                            if any(q > 0 for q in _content_qtys) else None),
                 layout_fn=_reuse_master_layout,
             )
 
@@ -1865,6 +1979,43 @@ def run_nup_engine(
         cols_manual = int(settings.get('cols', 0) or 0)
         rows_manual = int(settings.get('rows', 0) or 0)
 
+        if strategy == 'manual' and (cols_manual <= 0 or rows_manual <= 0):
+            raise ValueError(
+                "L\u01b0\u1edbi th\u1ee7 c\u00f4ng c\u1ea7n s\u1ed1 c\u1ed9t v\u00e0 s\u1ed1 d\u00f2ng l\u1edbn h\u01a1n 0."
+            )
+
+        # Guillotine has no die geometry: keep the real trim size of every
+        # materialized source page. Mixed-size stacked layouts cannot be cut
+        # safely on one shared straight grid, so fail instead of scaling pages.
+        _guillotine_trim_by_page = {}
+        if not is_die_cut:
+            _gdoc_dims = pdf_lib.open(source_path)
+            try:
+                for _pi_dims in range(_gdoc_dims.page_count):
+                    _pg_dims = _gdoc_dims[_pi_dims]
+                    _tw_dims = max(0.0, _pg_dims.rect.width - 2 * bleed_pt)
+                    _th_dims = max(0.0, _pg_dims.rect.height - 2 * bleed_pt)
+                    _guillotine_trim_by_page[_pi_dims] = (_tw_dims, _th_dims)
+            finally:
+                _gdoc_dims.close()
+
+            if (
+                layout_type in ('sequential', 'cut_stacks', 'ratio_stack')
+                and grouping_strategy != 'cluster_tile'
+                and len(_guillotine_trim_by_page) > 1
+            ):
+                _dims_values = list(_guillotine_trim_by_page.values())
+                _w0, _h0 = _dims_values[0]
+                _mixed_dims = any(
+                    abs(_w - _w0) > 0.5 or abs(_h - _h0) > 0.5
+                    for _w, _h in _dims_values[1:]
+                )
+                if _mixed_dims:
+                    raise ValueError(
+                        "D\u00e0n nhi\u1ec1u m\u1eabu c\u1eaft x\u00e9n ch\u1ec9 h\u1ed7 tr\u1ee3 c\u00e1c trang c\u00f9ng k\u00edch th\u01b0\u1edbc. "
+                        "H\u00e3y d\u00f9ng B\u00ecnh trang ho\u1eb7c Chia c\u1ee5m theo t\u1eebng lo\u1ea1i."
+                    )
+
         logger.info(f"[NUP_ENGINE SOLVER DEBUG] usable_w={usable_w:.2f} usable_h={usable_h:.2f} "
                     f"trim_w={trim_w:.2f} trim_h={trim_h:.2f} gap_x={gap_x:.2f} gap_y={gap_y:.2f} "
                     f"strategy={strategy} secondary_gap={secondary_gap} "
@@ -1947,8 +2098,18 @@ def run_nup_engine(
                 if _hit is not None:
                     return _hit
                 _tw, _th = _gui_trim.get(p_idx, (trim_w, trim_h))
-                _sol = solve_optimal_layout(
-                    zone_w, zone_h, _tw, _th, gap_x, gap_y, strategy, secondary_gap)
+                if strategy == 'manual':
+                    _sol = solve_manual(
+                        _tw, _th, gap_x, gap_y, cols_manual, rows_manual,
+                    )
+                    if (_sol.get('overallWidth', 0) > zone_w + 0.01
+                            or _sol.get('overallHeight', 0) > zone_h + 0.01):
+                        raise ValueError("Manual grid exceeds cluster area")
+                else:
+                    _sol = solve_optimal_layout(
+                        zone_w, zone_h, _tw, _th,
+                        gap_x, gap_y, strategy, secondary_gap,
+                    )
                 _items = [{
                     'x': _c['x'], 'y': _c['y'],
                     'width': _c['width'], 'height': _c['height'],
@@ -2143,7 +2304,20 @@ def run_nup_engine(
             _uh_ct = max(trim_h, _uh_ct)
             layout = solve_optimal_layout(_uw_ct, _uh_ct, trim_w, trim_h, gap_x, gap_y, 'simple_auto', secondary_gap)
         else:
-            layout = solve_optimal_layout(usable_w, usable_h, trim_w, trim_h, gap_x, gap_y, strategy, secondary_gap)
+            layout = solve_optimal_layout(
+                usable_w, usable_h, trim_w, trim_h,
+                gap_x, gap_y, strategy, secondary_gap,
+            )
+
+        if strategy == 'manual':
+            if (
+                layout.get('overallWidth', 0) > usable_w + 0.01
+                or layout.get('overallHeight', 0) > usable_h + 0.01
+            ):
+                raise ValueError(
+                    "L\u01b0\u1edbi th\u1ee7 c\u00f4ng v\u01b0\u1ee3t v\u00f9ng gi\u1ea5y s\u1eed d\u1ee5ng. "
+                    "H\u00e3y gi\u1ea3m s\u1ed1 c\u1ed9t ho\u1eb7c s\u1ed1 d\u00f2ng."
+                )
 
         logger.debug("[NUP_ENGINE SOLVER RESULT] totalItems=%s strategy=%s",
                      layout.get('totalItems'), layout.get('strategyUsed'))
@@ -2153,6 +2327,39 @@ def run_nup_engine(
     capacity = layout['totalItems']
 
     total_capacity = capacity * cx_count * cy_count
+
+    # Repeat may contain resized pages with different capacities. Build the
+    # sheet count from each page's own geometry; process_chunk uses the same
+    # sheet_mapping to select the matching layout during render.
+    _repeat_capacity_by_page = {}
+    if layout_type == 'repeat' and not is_die_cut and precalculated_placements is None:
+        for _pi_repeat in range(page_count):
+            _tw_repeat, _th_repeat = _guillotine_trim_by_page.get(
+                _pi_repeat, (trim_w, trim_h)
+            )
+            if strategy == 'manual':
+                _repeat_layout = solve_manual(
+                    _tw_repeat, _th_repeat, gap_x, gap_y,
+                    cols_manual, rows_manual,
+                )
+                if (
+                    _repeat_layout.get('overallWidth', 0) > usable_w + 0.01
+                    or _repeat_layout.get('overallHeight', 0) > usable_h + 0.01
+                ):
+                    raise ValueError(
+                        f"L\u01b0\u1edbi th\u1ee7 c\u00f4ng v\u01b0\u1ee3t v\u00f9ng gi\u1ea5y \u1edf trang {_pi_repeat + 1}."
+                    )
+            else:
+                _repeat_layout = solve_optimal_layout(
+                    usable_w, usable_h, _tw_repeat, _th_repeat,
+                    gap_x, gap_y, strategy, secondary_gap,
+                )
+            _repeat_capacity_by_page[_pi_repeat] = int(_repeat_layout['totalItems']) * cx_count * cy_count
+            if _repeat_capacity_by_page[_pi_repeat] < 1:
+                raise ValueError(
+                    f"Trang {_pi_repeat + 1} kh\u00f4ng th\u1ec3 x\u1ebfp v\u00e0o v\u00f9ng gi\u1ea5y s\u1eed d\u1ee5ng."
+                )
+
 
     if total_capacity < 1:
 
@@ -2184,7 +2391,7 @@ def run_nup_engine(
 
             if qty > 0:
 
-                sheets = math.ceil(qty / total_capacity)
+                sheets = math.ceil(qty / max(1, _repeat_capacity_by_page.get(p, total_capacity)))
 
             else:
 
@@ -2799,12 +3006,19 @@ def run_nup_engine(
             settings.get('duplexFlow', 'single'),  # Duplex flow for mirroring back side
 
             settings.get('dieSizeMode', 'die'),  # 1 Dao: 'die' (khuôn thật) | 'page' (mediabox±offset)
-
             settings.get('dieOffsetMm', 0),  # 1 Dao mode=page: offset co(-)/mở(+) mm
+            target_quantities_by_page,
 
-            (homogeneous_master_idx is not None),  # _homogeneousMode: bật registration đồng nhất
+            int(settings.get('cols', 0) or 0),
 
-            homogeneous_master_idx,  # trang khuôn master (để vẽ đường bế master ở mỗi ô)
+            int(settings.get('rows', 0) or 0),
+
+
+
+            (homogeneous_master_idx is not None),  # _homogeneousMode: bật registration đồng nhất (trộn mẫu)
+
+            # Master path bế: homogeneous trộn mẫu HOẶC single-mold Bình trang (chỉ vẽ/geom khuôn).
+            homogeneous_master_idx if homogeneous_master_idx is not None else single_mold_master_idx,
 
         )
 
@@ -2935,14 +3149,19 @@ def run_nup_engine(
         final_doc.save(output_path)
         final_doc.close()
 
+    _shared_master_cut = (
+        homogeneous_master_idx is not None
+        or (layout_type == 'repeat' and single_mold_master_idx is not None)
+    )
+
     # ══════════════════════════════════════════════════════════════
-    # HOMOGENEOUS: dồn 1 trang khuôn duy nhất xuống CUỐI file
+    # SHARED MASTER: dồn 1 trang khuôn duy nhất xuống CUỐI file
     # ══════════════════════════════════════════════════════════════
     # Chế độ dùng chung 1 khuôn + tách trang khuôn riêng: process_chunk chỉ sinh trang
     # khuôn cho TỜ 0 (đầy đủ mọi ô) và gắn marker /PSHomogCut. Ở đây tìm trang có marker,
     # chuyển xuống CUỐI file rồi xoá marker. Kết quả: ...artwork1, artwork2, ..., khuôn.
     # Xử lý trên output_path (mọi nhánh assembly, kể cả 1-chunk ghi thẳng bytes).
-    if is_die_cut and homogeneous_master_idx is not None and settings.get('separateCutPage', False):
+    if is_die_cut and _shared_master_cut and settings.get('separateCutPage', False):
         try:
             import pikepdf
             with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as _pdf:
@@ -2962,7 +3181,7 @@ def run_nup_engine(
                         _pdf.pages.append(_cut_pg)
                         _pdf.save(output_path)
         except Exception as _e_move:
-            logger.warning(f"[HOMOGENEOUS] dời trang khuôn xuống cuối thất bại ({_e_move}); giữ nguyên vị trí.")
+            logger.warning(f"[SHARED-MASTER] dời trang khuôn xuống cuối thất bại ({_e_move}); giữ nguyên vị trí.")
 
     # ══════════════════════════════════════════════════════════════
     # SECURITY: Stealth watermark — hashed license trace in XMP + invisible text
@@ -3050,13 +3269,13 @@ def run_nup_engine(
             _rd = settings.get('reportDisplay') or {}
             # Report CHỈ vẽ trên trang IN.
             #  - Non-homogeneous + tách khuôn: xen kẽ [in, khuôn, in, khuôn…] → in ở s*2.
-            #  - Homogeneous + tách khuôn: chỉ 1 trang khuôn ở CUỐI → artwork liền 0..N-1,
+            #  - Shared-master + tách khuôn: chỉ 1 trang khuôn ở CUỐI → artwork liền 0..N-1,
             #    không xen kẽ → stamp đúng index tờ logic (s), KHÔNG *2 (bug cũ: report
             #    rơi vào trang khuôn / trượt mất tờ sau).
             #  - Không tách khuôn: 1 trang/tờ → key = s.
             _sep_cut = bool(settings.get('separateCutPage')) and is_die_cut
-            _homog_cut = _sep_cut and (homogeneous_master_idx is not None)
-            if _sep_cut and not _homog_cut:
+            _shared_cut = _sep_cut and _shared_master_cut
+            if _sep_cut and not _shared_cut:
                 _reports_to_stamp = {s_idx * 2: txt for s_idx, txt in _reports_by_sheet.items()}
             else:
                 _reports_to_stamp = _reports_by_sheet

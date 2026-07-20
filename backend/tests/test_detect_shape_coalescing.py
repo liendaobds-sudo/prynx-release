@@ -141,15 +141,18 @@ def test_master_die_inheritance_propagates_circle():
 
 
 def test_batch_single_mold_master_one_type():
-    """28× CIRCLE → master = trang đầu có type; nhiều type → None."""
+    """Master ở giữa file được chọn từ inheritedFromPage, không từ page đầu."""
     pages = [
-        {"page_idx": 0, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50},
-        {"page_idx": 1, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50},
-        {"page_idx": 2, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50.5, "item_h": 50},
+        {"page_idx": 0, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50,
+         "shape_props": {"inheritedFromPage": 1}},
+        {"page_idx": 1, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50,
+         "shape_props": {"diameter": 50}},
+        {"page_idx": 2, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50.5, "item_h": 50,
+         "shape_props": {"inheritedFromPage": 1}},
     ]
     m = imposition._batch_single_mold_master(pages)
     assert m is not None
-    assert m["page_idx"] == 0
+    assert m["page_idx"] == 1
     assert m["shape_type"] == "CIRCLE_ELLIPSE"
 
 
@@ -163,8 +166,18 @@ def test_batch_single_mold_master_multi_type_none():
 
 def test_batch_single_mold_master_dim_mismatch_none():
     pages = [
-        {"page_idx": 0, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50},
-        {"page_idx": 1, "shape_type": "CIRCLE_ELLIPSE", "item_w": 80, "item_h": 50},
+        {"page_idx": 0, "shape_type": "CIRCLE_ELLIPSE", "item_w": 50, "item_h": 50,
+         "shape_props": {}},
+        {"page_idx": 1, "shape_type": "CIRCLE_ELLIPSE", "item_w": 80, "item_h": 50,
+         "shape_props": {"inheritedFromPage": 0}},
+    ]
+    assert imposition._batch_single_mold_master(pages) is None
+
+
+def test_batch_same_shape_without_inheritance_is_multi_mold():
+    pages = [
+        {"page_idx": 0, "shape_type": "CIRCLE_ELLIPSE", "item_w": 30, "item_h": 30},
+        {"page_idx": 1, "shape_type": "CIRCLE_ELLIPSE", "item_w": 60, "item_h": 60},
     ]
     assert imposition._batch_single_mold_master(pages) is None
 
@@ -189,3 +202,39 @@ def test_master_die_inheritance_skips_when_two_masters():
     result = DetectionResult(shapes=shapes, statuses=statuses, total_pages=3, success_pages=3)
     out = apply_master_die_inheritance(result)
     assert out.shapes[2].type.name == "CUSTOM"
+
+
+def test_batch_geometry_fingerprint_is_safe_and_reuses_only_equivalents():
+    primitive_a = {
+        "page_idx": 0, "shape_type": "CIRCLE_ELLIPSE",
+        "item_w": 50, "item_h": 50, "shape_props": {"radius": 25},
+    }
+    primitive_same = {
+        "page_idx": 1, "shape_type": "CIRCLE_ELLIPSE",
+        "item_w": 50, "item_h": 50,
+        "shape_props": {"radius": 25, "inheritedFromPage": 0},
+    }
+    primitive_other_size = {**primitive_same, "page_idx": 2, "item_w": 60}
+    primitive_other_props = {
+        **primitive_same, "page_idx": 3, "shape_props": {"radius": 24},
+    }
+
+    fp = imposition._batch_geometry_fingerprint
+    assert fp(primitive_a) == fp(primitive_same)
+    assert fp(primitive_a) != fp(primitive_other_size)
+    assert fp(primitive_a) != fp(primitive_other_props)
+    assert fp({"page_idx": 4, "shape_type": "CUSTOM", "item_w": 50, "item_h": 50}) != fp(
+        {"page_idx": 5, "shape_type": "CUSTOM", "item_w": 50, "item_h": 50}
+    )
+    assert fp(primitive_a, "one_dao", "page") != fp(primitive_same, "one_dao", "page")
+
+    groups = imposition._group_batch_pages([
+        primitive_a, primitive_same, primitive_other_size, primitive_other_props,
+    ])
+    assert [[page["page_idx"] for page in group] for group in groups] == [[0, 1], [2], [3]]
+
+
+def test_batch_capacity_endpoint_is_sync_to_avoid_blocking_event_loop():
+    import inspect
+
+    assert not inspect.iscoroutinefunction(imposition.preview_layouts_batch)

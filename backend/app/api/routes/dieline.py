@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 from typing import Any
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dieline")
 
 _MAX_REQUEST_BYTES = 128 * 1024
+# A single native thread keeps Boa's thread-local JS context warm between requests.
+_DIELINE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prynx-dieline")
 
 
 def _generate_native(request_json: str, license_token: str, hwid: str, license_key: str) -> str:
@@ -23,6 +26,22 @@ def _generate_native(request_json: str, license_token: str, hwid: str, license_k
     except ImportError as exc:
         raise RuntimeError("native_engine_unavailable") from exc
     return pdfcompare_native.generate_dieline_json(request_json, license_token, hwid, license_key)
+
+
+def _warm_native_engine() -> None:
+    """Warm only the parser/runtime; generation remains license-gated."""
+    try:
+        import pdfcompare_native  # type: ignore
+        pdfcompare_native.warm_dieline_engine()
+    except ImportError:
+        # Source-only backend tests and unbuilt dev environments have no native module.
+        return
+    except Exception:
+        logger.warning("Could not warm the native dieline engine", exc_info=True)
+
+
+# Queue warmup on the same thread used for all later engine calls.
+_DIELINE_EXECUTOR.submit(_warm_native_engine)
 
 
 @router.post("/generate")
@@ -39,8 +58,11 @@ async def generate_dieline(body: dict[str, Any], license_info: dict = Depends(re
         raise HTTPException(status_code=413, detail="Dữ liệu tạo khuôn quá lớn.")
 
     try:
-        raw_result = await asyncio.to_thread(
-            _generate_native, request_json,
+        loop = asyncio.get_running_loop()
+        raw_result = await loop.run_in_executor(
+            _DIELINE_EXECUTOR,
+            _generate_native,
+            request_json,
             str(license_info.get("license_token") or ""),
             str(license_info.get("hwid") or ""),
             str(license_info.get("license_key") or ""),
