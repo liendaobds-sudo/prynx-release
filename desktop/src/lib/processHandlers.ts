@@ -21,7 +21,7 @@ export interface ProcessContext {
     onSpawnTab?: (file: File, extra?: any) => void;
     // async: playback chuỗi bytes qua commit (currentBytes cập nhật SAU await
     // blob.arrayBuffer()) → mọi call site PHẢI await, nếu không bước kế đọc bytes cũ.
-    commitWorkingFile: (blob: Blob, name: string) => void | Promise<void>;
+    commitWorkingFile: (blob: Blob, name: string, existingPath?: string) => void | Promise<void>;
     setError: (msg: string) => void;
     setIsProcessing: (v: boolean) => void;
     setProcessStatus: (msg: string) => void;
@@ -201,18 +201,42 @@ export async function runProcessEngine(
             // P2-T01: Prefer backend (imposition_core + pikepdf) for imposition to keep client as dumb assembler.
             // Sticker and other modes may use activeDashboardTool or separate paths.
             setProcessStatus(i18n.t('lib.processHandlers:dang_xu_ly_du_lieu_qua_backend_unified'));
-            const { uploadFileForNup } = await import('../lib/api');
             const { imposePdfViaBackend } = await import('../lib/pdfImposer');
-            const serverPath = await uploadFileForNup(file);
+            let serverPath: string;
+            if ((window as any).__TAURI_INTERNALS__ && (file as any)?.path) {
+                // Desktop backend runs on the same machine, so use the physical file directly.
+                // This avoids reading and uploading hundreds of MB before imposition.
+                serverPath = (file as any).path;
+            } else {
+                const { uploadFileForNup } = await import('../lib/api');
+                serverPath = await uploadFileForNup(file);
+            }
             const result = await imposePdfViaBackend(serverPath, settings, setProcessStatus);
             const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
 
-            if (result.blob && result.blob.size > 0) {
+            const nativeOutputPath = (
+                (window as any).__TAURI_INTERNALS__
+                && result.outputPath
+                && result.outputPath !== 'results'
+            ) ? result.outputPath : undefined;
+
+            if ((result.blob && result.blob.size > 0) || nativeOutputPath) {
                 if (spawnNewTab && onSpawnTab) {
-                    onSpawnTab(new File([result.blob], newFileName, { type: 'application/pdf' }));
+                    const outputFile = new File([result.blob], newFileName, { type: 'application/pdf' });
+                    if (nativeOutputPath) {
+                        Object.defineProperty(outputFile, 'path', { value: nativeOutputPath });
+                        try {
+                            const { stat } = await import('@tauri-apps/plugin-fs');
+                            const info = await stat(nativeOutputPath);
+                            Object.defineProperty(outputFile, 'size', { value: Number((info as any).size || 0) });
+                        } catch {
+                            // The physical path is sufficient for rendering even if size metadata is unavailable.
+                        }
+                    }
+                    onSpawnTab(outputFile);
                     setProcessStatus('');
                 } else {
-                    commitWorkingFile(result.blob, newFileName);
+                    await commitWorkingFile(result.blob, newFileName, nativeOutputPath);
                     if (result.report) setReportMsg(result.report);
                 }
             } else {

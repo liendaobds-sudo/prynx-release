@@ -61,6 +61,8 @@ class ComparisonResult:
     is_imposition_mode: bool = False
     total_instances: int = 0
     failed_instances: int = 0
+    match_confidence: float = 0.0
+    match_scale: float = 1.0
     # Kích thước ảnh (px) mà diff_regions/highlighted_image đang nằm trong đó. Khi
     # so có CO GIÃN (Case A) hoặc bình bài, kích thước này KHÁC ảnh đầu vào gốc →
     # caller phải chuẩn hoá toạ độ theo đây, không theo ảnh gốc (tránh lệch toạ độ).
@@ -107,6 +109,7 @@ class ImageComparator:
         h2, w2 = img2.shape[:2]
         
         is_packaging = config.get("is_packaging_mode", False) if config else False
+        document_imposition = bool((config or {}).get("document_imposition_mode", False))
 
         area1 = float(w1 * h1)
         area2 = float(w2 * h2)
@@ -116,6 +119,15 @@ class ImageComparator:
         aspect_close = abs(asp1 - asp2) <= 0.06 * max(asp1, asp2, 1e-6)
         area_ratio = (max(area1, area2) / min(area1, area2)) if min(area1, area2) > 0 else 1.0
         IMPOSITION_AREA_RATIO = 1.8
+
+        # A multi-page booklet can have the same physical sheet area as one
+        # source page (for example A4 portrait pages imposed on A4 landscape).
+        # The document pipeline knows the roles, so do not rely on area alone.
+        if document_imposition:
+            return self._compare_imposition(
+                template=img1, imposed=img2, is_packaging_mode=is_packaging,
+                tolerance=tolerance, config=config,
+            )
 
         # ── Case A: CÙNG tỉ lệ khung, KHÁC cỡ, diện tích chênh < ngưỡng N-up ──
         # Khi chênh diện tích < 1.8× thì KHÔNG thể là lưới ≥2 bản → chắc chắn là MỘT
@@ -559,8 +571,30 @@ class ImageComparator:
         """
         result = ComparisonResult()
         result.is_imposition_mode = True
+        analysis_only = bool((config or {}).get("_analysis_only", False))
         ih, iw = imposed.shape[:2]
         tol_key = (tolerance or "NORMAL").upper()
+
+        # For source-page -> booklet-sheet verification compare the finished
+        # TrimBox, not the outer bleed. If the PDF has no TrimBox, an explicit
+        # small fallback ratio may be supplied by the document pipeline.
+        trim_insets = (config or {}).get("template_trim_insets")
+        if trim_insets is None:
+            edge = float((config or {}).get("imposition_bleed_ignore_ratio", 0.0) or 0.0)
+            if edge > 0:
+                trim_insets = (edge, edge, edge, edge)
+        if trim_insets is not None:
+            try:
+                left, top, right, bottom = [max(0.0, min(0.45, float(v))) for v in trim_insets]
+                src_h, src_w = template.shape[:2]
+                x0 = int(round(src_w * left))
+                y0 = int(round(src_h * top))
+                x1 = int(round(src_w * (1.0 - right)))
+                y1 = int(round(src_h * (1.0 - bottom)))
+                if x1 - x0 >= 16 and y1 - y0 >= 16:
+                    template = template[y0:y1, x0:x1]
+            except (TypeError, ValueError):
+                logger.warning("Invalid template_trim_insets ignored: %r", trim_insets)
         thr = TOLERANCE_THRESHOLDS.get(tol_key, 13)
         # Imposition: slightly higher floor than 1:1 to absorb match-align noise,
         # but STRICT still catches small content edits on one label.
@@ -641,17 +675,21 @@ class ImageComparator:
 
         def _nms(boxes_n, scores_n, angles_n):
             if not boxes_n:
-                return [], []
+                return [], [], []
             nms_thresh = 0.85 if is_packaging_mode else 0.3
             idx = cv2.dnn.NMSBoxes(boxes_n, scores_n, score_threshold=0.82, nms_threshold=nms_thresh)
             if len(idx) == 0:
-                return [], []
+                return [], [], []
             idx = idx.flatten()
-            return [boxes_n[i] for i in idx], [angles_n[i] for i in idx]
+            return (
+                [boxes_n[i] for i in idx],
+                [angles_n[i] for i in idx],
+                [scores_n[i] for i in idx],
+            )
 
         match_scale = 1.0
         _b, _s, _a = _scan_scale(1.0)
-        matched_boxes, matched_angles = _nms(_b, _s, _a)
+        matched_boxes, matched_angles, matched_scores = _nms(_b, _s, _a)
 
         if len(matched_boxes) == 0:
             # Cỡ gốc không thấy → thử các cỡ mà k bản (k=1..6) vừa khít mỗi chiều của tờ.
@@ -665,9 +703,9 @@ class ImageComparator:
             )
             for sc in cand:
                 _b, _s, _a = _scan_scale(sc)
-                mb, ma = _nms(_b, _s, _a)
+                mb, ma, ms = _nms(_b, _s, _a)
                 if mb:
-                    matched_boxes, matched_angles, match_scale = mb, ma, sc
+                    matched_boxes, matched_angles, matched_scores, match_scale = mb, ma, ms, sc
                     logger.info(f"Imposition: tìm thấy mẫu ở tỉ lệ {sc:.3f}× ({len(mb)} bản)")
                     break
 
@@ -684,13 +722,15 @@ class ImageComparator:
         # Short-circuit if template is entirely missing from this N-up sheet
         if len(matched_boxes) == 0:
             result.similarity_score = 0.0
+            result.match_confidence = 0.0
+            result.match_scale = match_scale
             result.diff_regions = [DiffRegion(
                 x=0, y=0, width=iw, height=ih,
                 area=iw*ih, severity="high",
                 description="Không tìm thấy bản thiết kế trên tờ in này"
             )]
             result.diff_count = 1
-            result.highlighted_image = imposed.copy()
+            result.highlighted_image = None if analysis_only else imposed.copy()
             result.render_w = iw
             result.render_h = ih
             return result
@@ -733,16 +773,17 @@ class ImageComparator:
             
             clean_imposed = sub_imposed[:min_h, :min_w]
             clean_template = target_template[:min_h, :min_w]
+            if tol_key != "STRICT":
+                clean_imposed = self._align_to(clean_template, clean_imposed)
 
             # Pixel compare instance vs template — cùng threshold tolerance như 1:1
+            clean_template_gray = cv2.cvtColor(clean_template, cv2.COLOR_RGB2GRAY) if len(clean_template.shape) == 3 else clean_template
+            clean_imposed_gray = cv2.cvtColor(clean_imposed, cv2.COLOR_RGB2GRAY) if len(clean_imposed.shape) == 3 else clean_imposed
             try:
                 import pdfcompare_native
-                clean_template_gray = cv2.cvtColor(clean_template, cv2.COLOR_RGB2GRAY) if len(clean_template.shape) == 3 else clean_template
-                clean_imposed_gray = cv2.cvtColor(clean_imposed, cv2.COLOR_RGB2GRAY) if len(clean_imposed.shape) == 3 else clean_imposed
                 diff_mask = pdfcompare_native.fast_diff_mask_gray(clean_template_gray, clean_imposed_gray, thr)
             except (ImportError, AttributeError):
-                diff = cv2.absdiff(clean_template, clean_imposed)
-                diff_gray = cv2.cvtColor(diff, cv2.COLOR_RGB2GRAY) if len(diff.shape) == 3 else diff
+                diff_gray = cv2.absdiff(clean_template_gray, clean_imposed_gray)
                 _, diff_mask = cv2.threshold(diff_gray, thr, 255, cv2.THRESH_BINARY)
 
             # Apply alpha content mask for packaging interlocks (ignores neighbor box bleeds crossing corners)
@@ -763,9 +804,20 @@ class ImageComparator:
             instance_regions = []
             for cnt in contours:
                 area = cv2.contourArea(cnt)
+                rx, ry, rw, rh = cv2.boundingRect(cnt)
+                if (config or {}).get("document_imposition_mode") and tol_key != "STRICT":
+                    # Rendering an unchanged PDF page as a Form XObject can
+                    # change a very thin glyph edge by subpixels. Ignore only
+                    # tiny narrow contours in booklet mode; STRICT still reports
+                    # them and substantive artwork changes remain above this cap.
+                    dpi_scale = max(1.0, float(dpi) / 100.0)
+                    aa_thin_px = max(4, int(round(4 * dpi_scale)))
+                    aa_area_cap = max(60.0, 60.0 * dpi_scale * dpi_scale)
+                    if min(rw, rh) <= aa_thin_px and area <= aa_area_cap:
+                        cv2.drawContours(diff_mask, [cnt], -1, 0, thickness=-1)
+                        continue
                 if area < inst_min_area:
                     continue
-                rx, ry, rw, rh = cv2.boundingRect(cnt)
                 gx, gy = max(0, x) + rx, max(0, y) + ry
                 region = DiffRegion(
                     x=gx, y=gy, width=rw, height=rh,
@@ -803,12 +855,13 @@ class ImageComparator:
 
             # Tracking box: xanh = OK, đỏ = lỗi trên bản
             box_color = (255, 0, 0) if instance_has_error else (0, 255, 0)
-            cv2.rectangle(
-                combined_overlay,
-                (max(0, x), max(0, y)),
-                (min(iw, x + w), min(ih, y + h)),
-                box_color, 2,
-            )
+            if not analysis_only:
+                cv2.rectangle(
+                    combined_overlay,
+                    (max(0, x), max(0, y)),
+                    (min(iw, x + w), min(ih, y + h)),
+                    box_color, 2,
+                )
 
             if instance_has_error:
                 failed_instances += 1
@@ -823,11 +876,15 @@ class ImageComparator:
         result.similarity_score = round(100.0 - (total_diff_pixels / (iw * ih) * 100), 2)
         result.total_instances = total_instances
         result.failed_instances = failed_instances
+        result.match_confidence = round(max(matched_scores), 6) if matched_scores else 0.0
+        result.match_scale = match_scale
         result.render_w = iw
         result.render_h = ih
         
         # If there are errors, draw them and enable Spotlight GIF
-        if has_errors:
+        if analysis_only:
+            result.highlighted_image = None
+        elif has_errors:
             result.highlighted_image = combined_overlay.copy()
             for r in all_diff_regions:
                 color = (255, 0, 0) if r.severity == "high" else (255, 165, 0)

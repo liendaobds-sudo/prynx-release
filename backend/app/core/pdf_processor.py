@@ -255,6 +255,55 @@ class PDFProcessor:
         """Quick page count without full metadata extraction."""
         reader = PdfReader(pdf_path)
         return len(reader.pages)
+    def get_trim_insets(self, pdf_path: str) -> list[tuple[float, float, float, float] | None]:
+        """Return per-page TrimBox insets relative to the rendered CropBox.
+
+        Values are fractions in rendered-image order: left, top, right, bottom.
+        ``None`` means the PDF does not define a smaller TrimBox. The compare
+        pipeline uses these insets only for source-page to imposed-sheet checks,
+        where bleed outside TrimBox must not be reported as an artwork change.
+        """
+        reader = PdfReader(pdf_path)
+        result: list[tuple[float, float, float, float] | None] = []
+
+        for page in reader.pages:
+            try:
+                # An absent TrimBox inherits CropBox in PDF. Treat that as
+                # unknown rather than inventing a bleed amount.
+                if page.get("/TrimBox") is None:
+                    result.append(None)
+                    continue
+
+                crop = page.cropbox
+                trim = page.trimbox
+                cw = float(crop.right) - float(crop.left)
+                ch = float(crop.top) - float(crop.bottom)
+                if cw <= 0 or ch <= 0:
+                    result.append(None)
+                    continue
+
+                left = max(0.0, (float(trim.left) - float(crop.left)) / cw)
+                right = max(0.0, (float(crop.right) - float(trim.right)) / cw)
+                top = max(0.0, (float(crop.top) - float(trim.top)) / ch)
+                bottom = max(0.0, (float(trim.bottom) - float(crop.bottom)) / ch)
+
+                # pypdfium renders after applying /Rotate, so rotate the inset
+                # tuple into the same top-left image coordinate system.
+                rotation = int(page.get("/Rotate", 0) or 0) % 360
+                if rotation == 90:
+                    left, top, right, bottom = bottom, left, top, right
+                elif rotation == 180:
+                    left, top, right, bottom = right, bottom, left, top
+                elif rotation == 270:
+                    left, top, right, bottom = top, right, bottom, left
+
+                insets = tuple(min(0.45, value) for value in (left, top, right, bottom))
+                result.append(insets if max(insets) > 1e-4 else None)
+            except Exception as exc:
+                logger.warning("Could not read TrimBox for compare: %s", exc)
+                result.append(None)
+
+        return result
 
 
 class PDFDocumentReader:
@@ -285,6 +334,14 @@ class PDFDocumentReader:
     @property
     def page_count(self) -> int:
         return len(self._pdf) if self._pdf else 0
+    def page_size(self, page_index: int) -> tuple[float, float]:
+        """Return rendered page width/height in PDF points without rasterizing."""
+        if self._pdf is None:
+            raise RuntimeError("PDFDocumentReader is not open. Use 'with' statement.")
+        if page_index < 0 or page_index >= len(self._pdf):
+            raise IndexError(f"Page index {page_index} out of range (0-{len(self._pdf)-1})")
+        width, height = self._pdf[page_index].get_size()
+        return float(width), float(height)
 
     def render_page(self, page_index: int) -> np.ndarray:
         """Render a single page (0-indexed) to RGB numpy array."""

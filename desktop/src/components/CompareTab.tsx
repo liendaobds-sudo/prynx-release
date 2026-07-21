@@ -30,6 +30,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
   const [uploadingB, setUploadingB] = useState(false);
   const [error, setError] = useState('');
   const [scrollToPage, setScrollToPage] = useState(0);
+  const [scrollToBPage, setScrollToBPage] = useState(0);
   const [activeGif, setActiveGif] = useState<string | null>(null);
   const [gifZoom, setGifZoom] = useState(1);
   const [gifPan, setGifPan] = useState({ x: 0, y: 0 });
@@ -140,6 +141,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
         file_a_id: store.fileA.id,
         file_b_id: store.fileB.id,
         comparison_mode: store.comparisonMode,
+        page_matching_mode: store.pageMatchingMode,
         is_packaging_mode: store.isPackagingMode,
         tolerance: store.tolerance,
         dpi: store.dpi,
@@ -203,6 +205,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
     setPhase('upload');
     setError('');
     setScrollToPage(0);
+    setScrollToBPage(0);
   }, [store]);
 
   const diffRegions: DiffRegionData[] = store.results.flatMap((page) =>
@@ -275,6 +278,20 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
                 >
                   <option value={150}>150 DPI — Nhanh</option>
                   <option value={300}>{t('tabs.compare:300_dpi_chinh_xac')}</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 dark:text-zinc-400 block mb-1.5 transition-colors">
+                  {'Gh\u00e9p trang'}
+                </label>
+                <select
+                  value={store.pageMatchingMode}
+                  onChange={(e) => store.setPageMatchingMode(e.target.value as 'auto' | 'sequential' | 'imposition')}
+                  className="select-input"
+                >
+                  <option value="auto">{'T\u1ef1 \u0111\u1ed9ng'}</option>
+                  <option value="sequential">{'Theo th\u1ee9 t\u1ef1 1:1'}</option>
+                  <option value="imposition">{'B\u00ecnh b\u00e0i / Booklet'}</option>
                 </select>
               </div>
               <div className="flex flex-col gap-3 justify-end">
@@ -411,13 +428,18 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
             rightPdfUrl={getFileUrl(store.fileB.id)}
             diffRegions={diffRegions}
             scrollToPage={scrollToPage}
+            scrollToBPage={scrollToBPage}
             focusedRegion={focusedRegion}
           />
         )}
         <DiffSidebar
           results={store.results}
           summary={store.summary}
-          onPageClick={(pageNum) => setScrollToPage(pageNum)}
+          onPageClick={(pageNum) => {
+            setScrollToPage(pageNum);
+            const matched = store.results.find((page) => page.page_number === pageNum)?.matched_b_page;
+            setScrollToBPage(matched || pageNum);
+          }}
           activePage={scrollToPage}
           onPlayGif={setActiveGif}
           onRegionClick={(page, nx, ny) => {

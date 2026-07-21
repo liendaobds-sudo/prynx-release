@@ -81,6 +81,7 @@ def create_comparison_job(
         file_b_id=str(request.file_b_id),
         config={
             "comparison_mode": request.comparison_mode,
+            "page_matching_mode": request.page_matching_mode,
             "tolerance": request.tolerance,
             "dpi": request.dpi,
             "highlight_color": request.highlight_color,

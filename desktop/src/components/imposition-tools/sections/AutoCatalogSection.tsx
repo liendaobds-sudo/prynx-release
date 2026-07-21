@@ -6,11 +6,12 @@
  * Handles: printing mode toggle (Digital/Offset), auto catalog toggle,
  * cover type, master sig override, remainder placement, optimizer preview.
  */
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { Checkbox } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
+import { HIDE_OFFSET_BOOKLET } from '../../../lib/featureFocus';
 
 export default function AutoCatalogSection() {
   const { t } = useTranslation();
@@ -26,11 +27,21 @@ export default function AutoCatalogSection() {
         catalogPreview: state.catalogPreview,
     })));
 
+    // Cờ tập trung in nhanh: ép state persist cũ (localStorage 'offset') về in_nhanh
+    // để không kẹt UI offset khi nút toggle đã ẩn. Lật cờ false là khôi phục.
+    useEffect(() => {
+        if (HIDE_OFFSET_BOOKLET && s.paperClassification === 'offset') {
+            s.setPaperClassification('in_nhanh');
+            s.setAutoCatalog(false);
+        }
+    }, [s.paperClassification]);
+
     if (s.taskMode !== 'booklet') return null;
 
     return (
         <>
             {/* ═══ CHẾ ĐỘ IN (Digital / Offset Toggle) ═══ */}
+            {!HIDE_OFFSET_BOOKLET && (
             <div className="flex p-1 space-x-1 bg-slate-100 dark:bg-zinc-800/60 rounded-xl mb-6 ring-1 ring-slate-200/60 dark:ring-white/10 shadow-inner relative z-10">
                 <button
                     onClick={() => {
@@ -38,8 +49,8 @@ export default function AutoCatalogSection() {
                         s.setAutoCatalog(false);
                     }}
                     className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-[13px] font-semibold rounded-lg transition-all duration-300 ${
-                        s.paperClassification === 'in_nhanh' 
-                            ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-400 shadow-sm ring-1 ring-slate-200 dark:ring-zinc-600' 
+                        s.paperClassification === 'in_nhanh'
+                            ? 'bg-white dark:bg-zinc-700 text-indigo-600 dark:text-indigo-400 shadow-sm ring-1 ring-slate-200 dark:ring-zinc-600'
                             : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 hover:bg-slate-200/50 dark:hover:bg-zinc-700/50'
                     }`}
                 >
@@ -51,14 +62,15 @@ export default function AutoCatalogSection() {
                         s.setAutoCatalog(true);
                     }}
                     className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-[13px] font-semibold rounded-lg transition-all duration-300 ${
-                        s.paperClassification === 'offset' 
-                            ? 'bg-white dark:bg-zinc-700 text-purple-600 dark:text-purple-400 shadow-sm ring-1 ring-slate-200 dark:ring-zinc-600' 
+                        s.paperClassification === 'offset'
+                            ? 'bg-white dark:bg-zinc-700 text-purple-600 dark:text-purple-400 shadow-sm ring-1 ring-slate-200 dark:ring-zinc-600'
                             : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 hover:bg-slate-200/50 dark:hover:bg-zinc-700/50'
                     }`}
                 >
                     {t('imposition.autoCatalog:in_offset')}
                 </button>
             </div>
+            )}
 
             {/* ═══ AUTO CATALOG (Offset only) ═══ */}
             {s.paperClassification === 'offset' && (

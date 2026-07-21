@@ -8,6 +8,7 @@ import {
     type PaperUsage,
     type SavedForm,
 } from './paperUtils';
+import { HIDE_OFFSET_BOOKLET } from '../../lib/featureFocus';
 
 export type { PaperUsage, SavedForm };
 export { formUsages };
@@ -163,10 +164,12 @@ export function PaperSettingsDialog({
                                     <input type="checkbox" checked={usages.includes('in_nhanh')} onChange={() => toggleUsage('in_nhanh')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
                                     <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:binh_sach_in_nhanh_digital')}</span>
                                 </label>
+                                {!HIDE_OFFSET_BOOKLET && (
                                 <label className="flex items-center gap-2 cursor-pointer group">
                                     <input type="checkbox" checked={usages.includes('offset')} onChange={() => toggleUsage('offset')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
                                     <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:binh_sach_in_offset')}</span>
                                 </label>
+                                )}
                                 <label className="flex items-center gap-2 cursor-pointer group">
                                     <input type="checkbox" checked={usages.includes('diecut')} onChange={() => toggleUsage('diecut')} className="accent-indigo-600 w-4 h-4 cursor-pointer" />
                                     <span className="text-[13px] text-slate-700 dark:text-zinc-300 font-medium group-hover:text-indigo-600 transition-colors">{t('imposition.paperSettingsUI:be_tem_die_cut')}</span>

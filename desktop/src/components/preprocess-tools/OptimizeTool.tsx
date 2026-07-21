@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { authenticatedFetch, getApiUrl, prepareFileForUpload } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder } from '../../lib/recipe/RecipeRecorder';
-import { ToolSectionLabel, ToolCardOption, ToolCheckboxOption, ToolNumberInput, ToolInfo } from './ToolUI';
+import { ToolSectionLabel, ToolCheckboxOption, ToolNumberInput, ToolInfo } from './ToolUI';
 import { useTranslation } from 'react-i18next';
-import { tv } from '../../i18n';
+import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
+import { RichSelect } from '../imposition-tools/SharedUI';
 
 interface Props {
     pdfFile: File | null;
@@ -40,6 +41,11 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
         outputSize: number;
         ratio: number;
     } | null>(null);
+
+    // Dung lượng file hiển thị: đọc fileSizeStr từ store (được ImposerTab cập nhật
+    // sau MỌI thao tác: mở file, bù xén, xử lý xong). pdfFile.size không đáng tin —
+    // File tham chiếu path trên disk (Tauri) có size===0 sau khi qua công cụ khác.
+    const fileSizeStr = useWorkspaceStore((state) => state.fileSizeStr);
 
     const handleRun = async () => {
         if (!pdfFile) {
@@ -108,17 +114,15 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
             {/* Preset Selection */}
             <div>
                 <ToolSectionLabel>{t('preprocess.optimize:muc_nen')}</ToolSectionLabel>
-                <div className="flex flex-col gap-1.5">
-                    {PRESETS.map(opt => (
-                        <ToolCardOption
-                            key={opt.id}
-                            label={tv(opt.label)}
-                            desc={tv(opt.desc)}
-                            selected={preset === opt.id}
-                            onClick={() => setPreset(opt.id)}
-                        />
-                    ))}
-                </div>
+                <RichSelect
+                    value={preset}
+                    onChange={setPreset}
+                    options={PRESETS.map(opt => ({
+                        value: opt.id,
+                        title: opt.label,
+                        desc: opt.desc,
+                    }))}
+                />
             </div>
 
             {/* Custom DPI */}
@@ -159,7 +163,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
                 <>
                     <strong>Optimize PDF</strong> {t('preprocess.optimize:giam_dung_luong_file_bang_cach_nen')}{' '}
                     {t('preprocess.optimize:chat_luong_in')} {selectedPreset?.id === 'screen' ? t('preprocess.optimize:giam_dang_ke') : selectedPreset?.id === 'ebook' ? t('preprocess.optimize:giam_nhe') : t('preprocess.optimize:giu_nguyen')}.
-                    {pdfFile && <> {t('preprocess.optimize:file_hien_tai')} <strong>{formatSize(pdfFile.size)}</strong></>}
+                    {pdfFile && <> {t('preprocess.optimize:file_hien_tai')} <strong>{fileSizeStr || (pdfFile.size > 0 ? formatSize(pdfFile.size) : '—')}</strong></>}
                 </>
             } />
 

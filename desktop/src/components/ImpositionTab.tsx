@@ -648,6 +648,13 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 // path thật → tile native render đúng, KHÔNG ghi đè bằng blob rỗng.
                 if (existingPath) {
                     tempPath = existingPath;
+                    try {
+                        const { stat } = await import('@tauri-apps/plugin-fs');
+                        const info = await stat(existingPath);
+                        Object.defineProperty(newFile, 'size', { value: Number((info as any).size || 0) });
+                    } catch {
+                        // Native rendering only requires the path; size is display metadata.
+                    }
                 } else {
                     try {
                         const { uploadFileForNup } = await import('../lib/api');
@@ -674,7 +681,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setFile(newFile);
         if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
         setPdfUrl(URL.createObjectURL(newBlob));
-        setFileSizeStr((newBlob.size / (1024 * 1024)).toFixed(2) + ' MB');
+        setFileSizeStr((newFile.size / (1024 * 1024)).toFixed(2) + ' MB');
         setIsSaved(false);
         onTitleChange?.(displayName);
 

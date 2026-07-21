@@ -11,7 +11,7 @@ import { tv } from '../../i18n';
 
 interface Props {
     pdfFile: File | null;
-    onFileFixed?: (blob: Blob, filename: string) => void;
+    onFileFixed?: (blob: Blob, filename: string, path?: string) => void;
 }
 
 const CUT_MODES_RICH = [
@@ -145,12 +145,20 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
 
     const runOpenCVBleed = async () => {
         const targetFile = (await getWorkingFile()) || pdfFile!;
+        const localPath = (
+            (window as any).__TAURI_INTERNALS__
+            && typeof (targetFile as any).path === 'string'
+            && (targetFile as any).path.length > 0
+        ) ? (targetFile as any).path as string : undefined;
 
-        // We use uploadPDF first to bypass FastAPI multipart bugs when mixing files and text fields
-        const uploadRes = await uploadPDF(targetFile);
+        // An unchanged desktop working file already exists on the same machine as
+        // the sidecar. Use its path directly; baked page edits have no path and
+        // retain the upload fallback so their modified bytes are never skipped.
+        const uploadRes = localPath ? null : await uploadPDF(targetFile);
         
         const formData = new FormData();
-        formData.append('file_id', uploadRes.id);
+        if (localPath) formData.append('file_path', localPath);
+        else formData.append('file_id', String(uploadRes!.id));
         formData.append('cut_mode', productType === 'rectangle' ? 'none' : cutMode);
         formData.append('offset_mm', productType === 'rectangle' ? '0' : String(offsetMm));
         formData.append('corner_style', productType === 'rectangle' ? 'miter' : cornerStyle);
@@ -199,7 +207,8 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             try { setWarning(decodeURIComponent(warnHeader)); } catch { setWarning(warnHeader); }
         }
         
-        return await response.blob();
+        const outputPath = response.headers.get('X-Sticker-Output-Path') || undefined;
+        return { blob: await response.blob(), path: outputPath };
     };
 
     const handleRun = async () => {
@@ -219,17 +228,20 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
 
         try {
             let resultBlob: Blob;
-            
+            let resultPath: string | undefined;
+
             if (productType === 'rectangle' && bleedColorType === 'mirror') {
                 resultBlob = await runVectorMirror();
             } else {
-                resultBlob = await runOpenCVBleed();
+                const result = await runOpenCVBleed();
+                resultBlob = result.blob;
+                resultPath = result.path;
             }
 
             if (onFileFixed) {
                 const prefix = productType === 'rectangle' ? 'autobleed' : 'sticker';
                 const baseName = pdfFile.name.replace(/\.[^/.]+$/, "");
-                onFileFixed(resultBlob, `${prefix}_${baseName}.pdf`);
+                onFileFixed(resultBlob, `${prefix}_${baseName}.pdf`, resultPath);
                 setIsSuccess(true);
             }
         } catch (e: any) {

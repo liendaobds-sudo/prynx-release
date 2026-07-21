@@ -11,6 +11,7 @@ Mục đích chính: chặn các lỗi tích hợp toàn-luồng (vd `NameError:
 Cần deps nặng (cv2, pypdfium2, pikepdf, shapely, skimage) → đánh dấu để có thể
 bỏ qua khi môi trường thiếu, nhưng KHÔNG nuốt lỗi crash thật.
 """
+import hashlib
 import os
 import sys
 
@@ -566,6 +567,159 @@ def test_rectangle_smooth_fill_is_bounded_and_preserves_page_size():
     assert np.all(out[out.shape[0] // 2, 0] == 255)
 
 
+def test_rectangle_smooth_optimization_is_pixel_identical_to_legacy():
+    """Golden output from the former per-column cv2.remap implementation."""
+    import numpy as np
+    from app.workers.sticker_engine import _rectangle_smooth_color_fill
+
+    rng = np.random.default_rng(20260721)
+    image = rng.integers(0, 256, size=(121, 183, 3), dtype=np.uint8)
+    output = _rectangle_smooth_color_fill(
+        image, pad_px=31, edge_bite_px=2, px_per_mm=12.0
+    )
+
+    assert hashlib.sha256(output.tobytes()).hexdigest() == (
+        "36dc38a6c14b2fbc00320645dd4e277b667dee37d4748255e7e2a8555df7f4bf"
+    )
+
+
+def test_sparse_rectangle_bleed_preserves_visible_pixels_and_safety_halo():
+    import numpy as np
+    from app.workers.sticker_engine import _sparsify_rectangle_bleed
+
+    rng = np.random.default_rng(17)
+    height, width, edge = 120, 180, 14
+    colors = rng.integers(1, 256, size=(height, width, 3), dtype=np.uint8)
+    mask = np.full((height, width), 255, dtype=np.uint8)
+    mask[edge:height - edge, edge:width - edge] = 0
+
+    sparse = _sparsify_rectangle_bleed(colors, mask, edge)
+    assert np.array_equal(sparse[mask > 0], colors[mask > 0])
+    assert np.array_equal(sparse[:edge], colors[:edge])
+    assert np.array_equal(sparse[-edge:], colors[-edge:])
+    assert np.array_equal(sparse[:, :edge], colors[:, :edge])
+    assert np.array_equal(sparse[:, -edge:], colors[:, -edge:])
+    assert np.count_nonzero(sparse[edge:height - edge, edge:width - edge]) == 0
+
+    unsafe_mask = mask.copy()
+    unsafe_mask[height // 2, width // 2] = 255
+    fallback = _sparsify_rectangle_bleed(colors, unsafe_mask, edge)
+    assert fallback is colors
+
+
+def test_image_dedup_rewires_resources_without_render_change(tmp_path):
+    import zlib
+
+    import numpy as np
+    import pypdfium2 as pdfium
+    from app.workers.sticker_engine import _deduplicate_image_xobjects
+
+    before = tmp_path / "duplicate_images.pdf"
+    after = tmp_path / "deduplicated_images.pdf"
+    width, height = 300, 200
+    pixels = np.random.default_rng(42).integers(
+        0, 256, size=(height, width, 4), dtype=np.uint8
+    ).tobytes()
+    alpha = bytes([255]) * (width * height)
+
+    pdf = pikepdf.Pdf.new()
+    for _ in range(2):
+        page = pdf.add_blank_page(page_size=(300, 200))
+        smask = pikepdf.Stream(pdf, zlib.compress(alpha, 1))
+        smask.Type = pikepdf.Name.XObject
+        smask.Subtype = pikepdf.Name.Image
+        smask.Width = width
+        smask.Height = height
+        smask.ColorSpace = pikepdf.Name.DeviceGray
+        smask.BitsPerComponent = 8
+        smask.Filter = pikepdf.Name.FlateDecode
+
+        image = pikepdf.Stream(pdf, zlib.compress(pixels, 1))
+        image.Type = pikepdf.Name.XObject
+        image.Subtype = pikepdf.Name.Image
+        image.Width = width
+        image.Height = height
+        image.ColorSpace = pikepdf.Name.DeviceCMYK
+        image.BitsPerComponent = 8
+        image.Filter = pikepdf.Name.FlateDecode
+        image.SMask = smask
+        name = page.add_resource(image, pikepdf.Name.XObject)
+        page.Contents = pdf.make_stream(
+            f"q 300 0 0 200 0 0 cm {name} Do Q".encode("ascii")
+        )
+    pdf.save(before)
+    pdf.close()
+
+    with pikepdf.Pdf.open(before) as result:
+        stats = _deduplicate_image_xobjects(result)
+        assert stats["duplicates"] == 2
+        assert stats["rewired"] >= 2
+        result.save(after)
+
+    assert after.stat().st_size < before.stat().st_size * 0.60
+    with pikepdf.Pdf.open(after) as result:
+        image_refs = [
+            next(
+                page.Resources.XObject[name]
+                for name in page.Resources.XObject
+            ).objgen
+            for page in result.pages
+        ]
+        assert image_refs[0] == image_refs[1]
+
+    rendered_before = pdfium.PdfDocument(str(before))
+    rendered_after = pdfium.PdfDocument(str(after))
+    for page_index in range(2):
+        pixels_before = rendered_before[page_index].render(
+            scale=1, rev_byteorder=True
+        ).to_numpy()
+        pixels_after = rendered_after[page_index].render(
+            scale=1, rev_byteorder=True
+        ).to_numpy()
+        assert np.array_equal(pixels_before, pixels_after)
+
+def test_sticker_endpoint_uses_local_pdf_without_deleting_source(tmp_path, monkeypatch):
+    import asyncio
+    import shutil
+
+    from app.api.routes import pdf_tools
+    from app.workers import sticker_engine
+
+    source = tmp_path / "source.pdf"
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(300, 200))
+    pdf.save(source)
+    pdf.close()
+
+    class StubEngine:
+        def __init__(self, dpi=300):
+            self.dpi = dpi
+
+        def process_pdf(self, input_path, output_path, **kwargs):
+            shutil.copyfile(input_path, output_path)
+            return True, {"pages": [{"page": 1}]}
+
+    class FakeRequest:
+        async def form(self):
+            return {
+                "file_path": str(source),
+                "rectangle_mode": "true",
+                "bleed_color_type": "inpaint",
+            }
+
+    monkeypatch.setattr(sticker_engine, "StickerEngine", StubEngine)
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "_safe_watermark", lambda *args: None)
+
+    response = asyncio.run(
+        pdf_tools.sticker_dieline_endpoint(FakeRequest(), license_info={})
+    )
+
+    assert source.exists()
+    assert response.headers["X-Sticker-Output-Path"].lower().endswith(".pdf")
+    assert os.path.exists(response.path)
+
+
 def test_rectangle_smooth_fill_continues_diagonal_color_trajectory():
     """Smart smoothing should follow an oblique band better than edge extrusion."""
     import cv2
@@ -622,7 +776,13 @@ def test_rectangle_inpaint_uses_true_srgb_and_keeps_white_edge(tmp_path):
             if str(xobjects[name].get("/Subtype")) == "/Image"
             and str(xobjects[name].get("/ColorSpace")) != "/DeviceGray"
         ]
-        assert color_images
+        assert len(color_images) == 1
+        color_image = color_images[0]
+        raw_stream_size = len(color_image.read_raw_bytes())
+        uncompressed_size = (
+            int(color_image.get("/Width")) * int(color_image.get("/Height")) * 3
+        )
+        assert raw_stream_size < 0.25 * uncompressed_size
         cs = color_images[0].get("/ColorSpace")
         assert isinstance(cs, pikepdf.Array) and str(cs[0]) == "/ICCBased"
         profile_name = ImageCms.getProfileName(

@@ -109,6 +109,11 @@ export default function DiffSidebar({
               <div className="flex items-center justify-between mb-1">
                 <span className="text-sm font-medium text-slate-900 dark:text-zinc-200 transition-colors">
                   Trang {page.page_number}
+                  {page.matched_b_page && page.matched_b_page !== page.page_number && (
+                    <span className="ml-1 text-[10px] text-indigo-500">
+                      {'\u2192 T\u1edd b\u00ecnh '}{page.matched_b_page}
+                    </span>
+                  )}
                 </span>
                 <span
                   className={`badge ${

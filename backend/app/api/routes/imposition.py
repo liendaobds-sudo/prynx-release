@@ -228,6 +228,12 @@ async def execute_plan_json(body: dict, license_info: dict = Depends(require_fea
     
     try:
         output_path = await PlanExecutor.execute(plan, source_override)
+        if body.get("return_output_path"):
+            return {
+                "success": True,
+                "output_path": os.path.abspath(output_path),
+                "output_filename": os.path.basename(output_path),
+            }
         return FileResponse(
             path=output_path,
             filename="imposed_output.pdf",

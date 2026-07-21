@@ -11,9 +11,11 @@ Provides endpoints for:
 import os
 import uuid
 import shutil
+import time
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, Depends
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from typing import List, Optional
 import json
 from app.core.license_guard import require_license, require_feature, enforce_feature
@@ -23,6 +25,18 @@ from app.utils.errors import raise_http
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pdf-tools", tags=["PDF Tools"], dependencies=[Depends(require_license)])
+
+def _log_sticker_response_complete(started: float, job_id: str, output_path: str) -> None:
+    try:
+        output_mb = os.path.getsize(output_path) / (1024 * 1024)
+    except OSError:
+        output_mb = 0.0
+    logger.info(
+        "[STICKER_TIMING] response_complete job=%s total_s=%.3f output_mb=%.2f",
+        job_id,
+        time.perf_counter() - started,
+        output_mb,
+    )
 
 UPLOAD_DIR = settings.UPLOAD_DIR
 RESULTS_DIR = settings.RESULTS_DIR
@@ -56,6 +70,70 @@ def _safe_watermark(pdf_path: str, license_info: dict) -> None:
         tmp_path = None
     except Exception as e:
         logger.error(f"[WATERMARK] pdf-tools failed (non-blocking): {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _strip_pdf_metadata(pdf_path: str) -> None:
+    """Xóa metadata thật khỏi PDF: XMP (Root/Metadata) + Document Info (tác giả,
+    tiêu đề, producer, history Photoshop...).
+
+    Ghostscript KHÔNG xóa metadata — cờ -dFastWebView chỉ liên quan linearization.
+    Muốn strip thật phải hậu xử lý bằng pikepdf. Gọi TRƯỚC watermark để XMP watermark
+    (thêm sau) không bị xóa nhầm. Non-blocking: lỗi chỉ log, giữ nguyên file."""
+    import tempfile
+    import pikepdf
+    tmp_path = None
+    try:
+        with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+            # XMP metadata stream
+            if "/Metadata" in pdf.Root:
+                del pdf.Root.Metadata
+            # Document Info dictionary (tác giả/tiêu đề/producer/CreationDate...)
+            try:
+                for k in list(pdf.docinfo.keys()):
+                    del pdf.docinfo[k]
+            except Exception:
+                pass
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(pdf_path) or ".")
+            os.close(fd)
+            pdf.save(tmp_path)
+        os.replace(tmp_path, pdf_path)
+        tmp_path = None
+    except Exception as e:
+        logger.warning(f"[OPTIMIZE] strip metadata failed (non-blocking): {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _normalize_compat(pdf_path: str) -> None:
+    """Chuẩn hóa cấu trúc GS-output về xref cổ điển để pdf-lib (frontend) đọc lại
+    được khi onFileFixed nạp blob về working file.
+
+    Ghostscript pdfwrite ghi object stream + xref stream (Flate) mà pdf-lib/pako
+    không giải nén được → 'Invalid header in flate stream'. Chạy CUỐI CÙNG (sau
+    watermark) để giữ mọi nội dung. Non-blocking: lỗi chỉ log, giữ nguyên file."""
+    import tempfile
+    import pikepdf
+    from app.workers.pdf_tools_engine import save_pdf_compat
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(pdf_path) or ".")
+        os.close(fd)
+        with pikepdf.open(pdf_path) as pdf:
+            save_pdf_compat(pdf, tmp_path)
+        os.replace(tmp_path, pdf_path)
+        tmp_path = None
+    except Exception as e:
+        logger.warning(f"[OPTIMIZE] compat normalize failed (non-blocking): {e}")
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -412,8 +490,6 @@ async def optimize_pdf_endpoint(
     original_size = os.path.getsize(source_path)
     do_strip = strip_metadata.lower() in ("true", "1", "yes")
     do_gray = grayscale.lower() in ("true", "1", "yes")
-    if preset == "custom" or do_gray:
-        enforce_feature("pdf.optimize_advanced", license_info)
 
     # Build Ghostscript command
     gs_path = settings.GHOSTSCRIPT_PATH
@@ -444,20 +520,26 @@ async def optimize_pdf_endpoint(
     # Subset fonts always
     cmd += ["-dSubsetFonts=true", "-dEmbedAllFonts=true"]
 
-    # Grayscale conversion
+    # Grayscale conversion. Đặt SAU preset để thắng: preset /prepress vốn set
+    # ColorConversionStrategy=/LeaveColorUnchanged (giữ CMYK) — sẽ nuốt grayscale
+    # nếu không ghi đè. -dOverrideICC + strategy Gray ép chuyển xám kể cả prepress.
     if do_gray:
         cmd += [
             "-sProcessColorModel=DeviceGray",
             "-sColorConversionStrategy=Gray",
+            "-dOverrideICC=true",
         ]
 
-    # Strip metadata
-    if do_strip:
-        cmd += ["-dFastWebView=false"]
+    # KHÔNG strip metadata bằng Ghostscript ở đây: -dFastWebView chỉ về
+    # linearization, không xóa XMP/docinfo. Việc strip thật do _strip_pdf_metadata
+    # (pikepdf) làm ở khâu hậu xử lý bên dưới.
 
     cmd += [f"-sOutputFile={output_path}", source_path]
 
     try:
+        import time as _time
+        t0 = _time.perf_counter()
+
         def _run_gs():
             return run_hidden(
                 cmd,
@@ -467,6 +549,7 @@ async def optimize_pdf_endpoint(
             )
 
         result = await asyncio.to_thread(_run_gs)
+        t_gs = _time.perf_counter() - t0
 
         if result.returncode != 0:
             err = result.stderr.decode("utf-8", errors="ignore").strip()
@@ -475,7 +558,8 @@ async def optimize_pdf_endpoint(
         if not os.path.exists(output_path):
             raise RuntimeError("Hệ thống nén không xuất được file kết quả.")
 
-        output_size = os.path.getsize(output_path)
+        gs_size = os.path.getsize(output_path)
+        output_size = gs_size
         ratio = round((1 - output_size / original_size) * 100, 1) if original_size > 0 else 0
 
         # If output is actually larger, just return original
@@ -484,7 +568,36 @@ async def optimize_pdf_endpoint(
             output_size = original_size
             ratio = 0
 
+        # Strip metadata THẬT (pikepdf) — trước watermark để XMP watermark thêm
+        # sau không bị xóa nhầm. Chạy kể cả khi GS không nén được (đã trả file gốc)
+        # vì đây là yêu cầu riêng của user, độc lập với việc nén.
+        t1 = _time.perf_counter()
+        if do_strip:
+            _strip_pdf_metadata(output_path)
+        t_strip = _time.perf_counter() - t1
+
+        t2 = _time.perf_counter()
         _safe_watermark(output_path, license_info)
+        t_wm = _time.perf_counter() - t2
+
+        # Chuẩn hóa xref cổ điển CUỐI CÙNG để pdf-lib (frontend) mở lại được.
+        t3 = _time.perf_counter()
+        _normalize_compat(output_path)
+        t_compat = _time.perf_counter() - t3
+
+        # Kích thước có thể đổi sau hậu xử lý → cập nhật lại header cho chính xác.
+        output_size = os.path.getsize(output_path)
+        ratio = round((1 - output_size / original_size) * 100, 1) if original_size > 0 else 0
+
+        t_total = _time.perf_counter() - t0
+        logger.info(
+            "[OPTIMIZE_TIMING] job=%s preset=%s in=%.2fMB gs_out=%.2fMB final=%.2fMB "
+            "gs=%.2fs strip=%.2fs(%s) wm=%.2fs compat=%.2fs total=%.2fs",
+            job_id, preset,
+            original_size / (1024 * 1024), gs_size / (1024 * 1024), output_size / (1024 * 1024),
+            t_gs, t_strip, "on" if do_strip else "off", t_wm, t_compat, t_total,
+        )
+
         return FileResponse(
             path=output_path,
             filename=f"optimized_{file.filename}",
@@ -893,31 +1006,55 @@ async def office_convert_resize_output(
 @router.post("/sticker-dieline", dependencies=[Depends(require_feature("prepress.cutline"))])
 async def sticker_dieline_endpoint(request: Request, license_info: dict = Depends(require_license)):
     """Generate Cut Contour and Bleed for Stickers."""
+    request_started = time.perf_counter()
     from app.workers.sticker_engine import StickerEngine
     
     form = await request.form()
     
     file_id = form.get("file_id")
-    if not file_id:
-        raise HTTPException(status_code=400, detail="Missing 'file_id' field. File must be uploaded first.")
-        
-    # We query the database or just look for the file in UPLOAD_DIR
-    from app.config import settings
-    # The upload endpoint returns an integer ID, but we need the stored filename.
-    # Actually, uploadPDF returns `{ id: db_file.id, filename: stored_name, ... }`.
-    # Let's fetch it from DB to get the filename.
-    from app.database import SessionLocal
-    from app.models.job import UploadedFile as UploadedFileModel
-    
-    db = SessionLocal()
-    try:
-        db_file = db.query(UploadedFileModel).filter(UploadedFileModel.id == file_id).first()
-        if not db_file:
-            raise HTTPException(status_code=404, detail="File not found in database.")
-        source_path = db_file.file_path
-        original_name = db_file.original_name
-    finally:
-        db.close()
+    file_path = form.get("file_path")
+    source_path = None
+    delete_source = False
+    source_kind = "upload"
+
+    # Desktop files already have a real local path. Reading that path directly
+    # avoids uploading hundreds of MB to the local sidecar before processing.
+    # A baked page-order/rotation edit has no path and automatically falls back
+    # to the existing upload flow below.
+    if file_path:
+        supplied_path = str(file_path)
+        if ".." in supplied_path:
+            raise HTTPException(status_code=400, detail="Invalid path: directory traversal not allowed")
+        if os.path.islink(supplied_path):
+            raise HTTPException(status_code=400, detail="Invalid path: symbolic links not allowed")
+        real_path = os.path.realpath(supplied_path)
+        if not os.path.isfile(real_path):
+            raise HTTPException(status_code=404, detail="File not found on disk.")
+        if not real_path.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Unsupported file type")
+        source_path = real_path
+        original_name = os.path.basename(real_path)
+        source_kind = "local_path"
+    elif file_id:
+        # The upload endpoint returns a database ID; resolve its temporary copy.
+        from app.database import SessionLocal
+        from app.models.job import UploadedFile as UploadedFileModel
+
+        db = SessionLocal()
+        try:
+            db_file = db.query(UploadedFileModel).filter(UploadedFileModel.id == file_id).first()
+            if not db_file:
+                raise HTTPException(status_code=404, detail="File not found in database.")
+            source_path = db_file.file_path
+            original_name = db_file.original_name
+            delete_source = True
+        finally:
+            db.close()
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing 'file_id' or 'file_path' field.",
+        )
 
     if not os.path.exists(source_path):
         raise HTTPException(status_code=404, detail="File not found on disk.")
@@ -974,6 +1111,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             solid_bleed_color = (255, 255, 255)
                 
         engine = StickerEngine(dpi=300)
+        engine_started = time.perf_counter()
         success, meta = engine.process_pdf(
             input_path=source_path,
             output_path=output_path,
@@ -991,6 +1129,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             cut_first_page_only=do_cut_first_page_only,
             shape_mode=shape_mode,
         )
+        engine_seconds = time.perf_counter() - engine_started
         if not success or not os.path.exists(output_path):
             # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)
             biz_err = meta.get("error") if isinstance(meta, dict) else None
@@ -1000,7 +1139,9 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
 
         _safe_watermark(output_path, license_info)
 
-        headers = {}
+        headers = {
+            "X-Sticker-Output-Path": os.path.abspath(output_path),
+        }
         if meta and "width_mm" in meta and "height_mm" in meta:
             headers["X-Sticker-Width-MM"] = str(meta["width_mm"])
             headers["X-Sticker-Height-MM"] = str(meta["height_mm"])
@@ -1025,11 +1166,27 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             # Header value phải ASCII → percent-encode để giữ được tiếng Việt.
             headers["X-Sticker-Warning"] = urllib.parse.quote(meta["warning"])
             
+        logger.info(
+            "[STICKER_TIMING] output_ready job=%s engine_s=%.3f ready_s=%.3f "
+            "input_mb=%.2f output_mb=%.2f pages=%d rectangle=%s bleed_mode=%s source=%s",
+            job_id,
+            engine_seconds,
+            time.perf_counter() - request_started,
+            os.path.getsize(source_path) / (1024 * 1024),
+            os.path.getsize(output_path) / (1024 * 1024),
+            len(meta.get("pages", [])) if isinstance(meta, dict) else 0,
+            do_rectangle_mode,
+            bleed_color_type,
+            source_kind,
+        )
         return FileResponse(
             path=output_path,
             filename=f"dieline_{original_name}",
             media_type="application/pdf",
-            headers=headers
+            headers=headers,
+            background=BackgroundTask(
+                _log_sticker_response_complete, request_started, job_id, output_path
+            ),
         )
     except HTTPException:
         raise
@@ -1049,8 +1206,9 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
         )
         raise HTTPException(status_code=500, detail=detail)
     finally:
-        try: os.remove(source_path)
-        except OSError: pass
+        if delete_source and source_path:
+            try: os.remove(source_path)
+            except OSError: pass
 
 @router.post("/remove-background", dependencies=[Depends(require_feature("util.bgremover"))])
 async def remove_background_endpoint(

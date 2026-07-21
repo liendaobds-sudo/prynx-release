@@ -21,6 +21,7 @@ interface DualPDFViewerProps {
   rightPdfUrl: string;
   diffRegions: DiffRegionData[];
   scrollToPage?: number;
+  scrollToBPage?: number;
   focusedRegion?: FocusedRegion | null;
 }
 

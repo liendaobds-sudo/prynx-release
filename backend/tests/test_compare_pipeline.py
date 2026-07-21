@@ -167,3 +167,158 @@ def test_inserted_page_does_not_cascade_false_diffs(tmp_path):
     added = pages[2]
     assert added.status == "fail"
     assert "THÊM" in added.diff_regions[0]["description"]
+
+
+def _mk_booklet_source(path, changed_page=None):
+    """Create four unique source pages with an explicit 10pt bleed/TrimBox."""
+    from app.workers import pdf_wrapper as pdf_lib
+
+    doc = pdf_lib.open()
+    for index in range(4):
+        page = doc.new_page(width=300, height=400)
+        page.set_trimbox(pdf_lib.Rect(10, 10, 290, 390))
+        shape = page.new_shape()
+        # Unique, high-contrast geometry fully inside TrimBox.
+        x0 = 35 + index * 35
+        y0 = 45 + index * 55
+        shape.draw_rect(pdf_lib.Rect(x0, y0, min(x0 + 105, 270), min(y0 + 85, 365)))
+        shape.finish(color=(0, 0, 0), fill=(0.12 * index, 0.05, 0.08))
+        shape.commit()
+        page.insert_text(
+            pdf_lib.Point(35, 350),
+            text=f"SOURCE PAGE {index + 1}",
+            fontsize=18,
+            color=(0, 0, 0, 1),
+        )
+        if changed_page == index:
+            changed = page.new_shape()
+            changed.draw_rect(pdf_lib.Rect(205, 305, 260, 350))
+            changed.finish(color=(0, 0, 0), fill=(0, 0, 0))
+            changed.commit()
+    doc.save(str(path))
+    doc.close()
+
+
+def _impose_booklet(source_path, output_path):
+    """Impose [4,1] and [2,3], clipping the source bleed to TrimBox."""
+    from app.workers import pdf_wrapper as pdf_lib
+
+    source = pdf_lib.open(str(source_path))
+    output = pdf_lib.open()
+    trim = pdf_lib.Rect(10, 10, 290, 390)
+    for left_page, right_page in ((3, 0), (1, 2)):
+        sheet = output.new_page(width=560, height=380)
+        sheet.show_pdf_page(
+            pdf_lib.Rect(0, 0, 280, 380),
+            source,
+            left_page,
+            clip=trim,
+            keep_proportion=False,
+        )
+        sheet.show_pdf_page(
+            pdf_lib.Rect(280, 0, 560, 380),
+            source,
+            right_page,
+            clip=trim,
+            keep_proportion=False,
+        )
+    output.save(str(output_path))
+    output.close()
+    source.close()
+
+
+def _run_pipeline_paths(tmp_path, source_path, imposed_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.core.comparison_engine import run_comparison_pipeline
+    from app.database import Base
+    from app.models.job import ComparisonJob, PageResult, UploadedFile
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'booklet_compare.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        file_a = UploadedFile(
+            filename="source.pdf",
+            original_name="source.pdf",
+            file_path=str(source_path),
+            page_count=4,
+        )
+        file_b = UploadedFile(
+            filename="booklet.pdf",
+            original_name="booklet.pdf",
+            file_path=str(imposed_path),
+            page_count=2,
+        )
+        db.add(file_a)
+        db.add(file_b)
+        db.commit()
+        db.refresh(file_a)
+        db.refresh(file_b)
+        job = ComparisonJob(
+            file_a_id=file_a.id,
+            file_b_id=file_b.id,
+            config={
+                "comparison_mode": "full",
+                "page_matching_mode": "auto",
+                "tolerance": "NORMAL",
+                "dpi": 100,
+            },
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        run_comparison_pipeline(job.id, db)
+        db.refresh(job)
+        pages = (
+            db.query(PageResult)
+            .filter(PageResult.job_id == job.id)
+            .order_by(PageResult.page_number)
+            .all()
+        )
+        return job, pages
+    finally:
+        db.close()
+
+
+def test_booklet_reorder_and_trimbox_bleed_do_not_create_false_diffs(tmp_path):
+    source = tmp_path / "source.pdf"
+    booklet = tmp_path / "booklet.pdf"
+    _mk_booklet_source(source)
+    _impose_booklet(source, booklet)
+
+    job, pages = _run_pipeline_paths(tmp_path, source, booklet)
+
+    assert job.status == "completed"
+    assert job.result_summary["page_matching_mode"] == "imposition"
+    assert job.result_summary["page_mapping"] == [1, 2, 2, 1]
+    assert len(pages) == 4
+    assert all(page.is_imposition_mode for page in pages)
+    assert all(page.diff_count == 0 for page in pages)
+    assert all(page.status == "pass" for page in pages)
+
+    from app.api.routes.results import _build_page_response
+
+    responses = [_build_page_response(page, job.result_summary) for page in pages]
+    assert [response.matched_b_page for response in responses] == [1, 2, 2, 1]
+    assert all(response.is_imposition_mode for response in responses)
+
+
+def test_booklet_reports_only_the_source_page_with_real_artwork_change(tmp_path):
+    source = tmp_path / "source.pdf"
+    changed_source = tmp_path / "changed_source.pdf"
+    booklet = tmp_path / "booklet.pdf"
+    _mk_booklet_source(source)
+    _mk_booklet_source(changed_source, changed_page=1)
+    _impose_booklet(changed_source, booklet)
+
+    job, pages = _run_pipeline_paths(tmp_path, source, booklet)
+
+    assert job.status == "completed"
+    assert pages[1].diff_count >= 1
+    assert pages[1].status == "fail"
+    assert all(page.diff_count == 0 for page in (pages[0], pages[2], pages[3]))

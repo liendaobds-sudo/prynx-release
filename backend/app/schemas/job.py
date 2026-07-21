@@ -20,6 +20,7 @@ class CompareRequest(BaseModel):
     file_a_id: str
     file_b_id: str
     comparison_mode: str = Field(default="full", pattern="^(full|cmyk)$")
+    page_matching_mode: str = Field(default="auto", pattern="^(auto|sequential|imposition)$")
     tolerance: str = Field(default="NORMAL", pattern="^(STRICT|NORMAL|LOOSE)$")
     dpi: int = Field(default=300, ge=72, le=600)
     highlight_color: str = Field(default="#FF0000")
@@ -72,6 +73,7 @@ class PageResultResponse(BaseModel):
     highlighted_image_url: str | None = None
     gif_image_url: str | None = None
     is_imposition_mode: bool = False
+    matched_b_page: int | None = None
 
     class Config:
         from_attributes = True

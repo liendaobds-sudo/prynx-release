@@ -23,6 +23,96 @@ from app.models.job import ComparisonJob, PageResult, UploadedFile
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_document_imposition(
+    doc_a,
+    doc_b,
+    pages_a: int,
+    pages_b: int,
+    config: dict,
+    is_cmyk_mode: bool,
+) -> bool:
+    """Detect source-pages -> imposed-sheets comparison without using page order."""
+    requested = str((config or {}).get("page_matching_mode", "auto") or "auto").lower()
+    if requested == "imposition":
+        return not is_cmyk_mode and pages_a > 0 and pages_b > 0
+    if requested == "sequential" or is_cmyk_mode or pages_a < 2 or pages_b < 1:
+        return False
+
+    # Booklet output normally has fewer sheet-side pages and either more page
+    # area (2-up) or a clearly different aspect (portrait pages on landscape).
+    if pages_a / pages_b < 1.5:
+        return False
+    try:
+        aw, ah = doc_a.page_size(0)
+        bw, bh = doc_b.page_size(0)
+        if min(aw, ah, bw, bh) <= 0:
+            return False
+        area_ratio = (bw * bh) / (aw * ah)
+        aspect_a = aw / ah
+        aspect_b = bw / bh
+        aspect_ratio = max(aspect_a, aspect_b) / min(aspect_a, aspect_b)
+        return area_ratio >= 1.35 or aspect_ratio >= 1.25
+    except Exception as exc:
+        logger.warning("Could not auto-detect imposed document: %s", exc)
+        return False
+
+
+def _map_source_pages_to_sheets(
+    processor: PDFProcessor,
+    comparator: ImageComparator,
+    file_a_path: str,
+    file_b_path: str,
+    pages_a: int,
+    pages_b: int,
+    tolerance: str,
+    config: dict,
+    trim_insets: list,
+) -> dict[int, int]:
+    """Locate every source page on any imposed sheet using cheap low-DPI scans."""
+    preview_dpi = max(36, min(72, int((config or {}).get("imposition_map_dpi", 48) or 48)))
+    preview_config = dict(config or {})
+    preview_config.update({
+        "dpi": preview_dpi,
+        "document_imposition_mode": True,
+        "_analysis_only": True,
+    })
+    page_map: dict[int, int] = {}
+
+    with processor.open_document(file_a_path, dpi=preview_dpi) as preview_a, \
+         processor.open_document(file_b_path, dpi=preview_dpi) as preview_b:
+        sheet_previews = [preview_b.render_page(i) for i in range(pages_b)]
+        for a_idx in range(pages_a):
+            source_preview = preview_a.render_page(a_idx)
+            page_config = dict(preview_config)
+            if a_idx < len(trim_insets) and trim_insets[a_idx] is not None:
+                page_config["template_trim_insets"] = trim_insets[a_idx]
+
+            best_sheet = None
+            best_rank = (-1.0, -1.0, -1)
+            for b_idx, sheet_preview in enumerate(sheet_previews):
+                candidate = comparator.compare(
+                    source_preview,
+                    sheet_preview,
+                    tolerance=tolerance,
+                    config=page_config,
+                )
+                if not candidate.is_imposition_mode or candidate.total_instances <= 0:
+                    continue
+                rank = (
+                    float(getattr(candidate, "match_confidence", 0.0)),
+                    float(candidate.similarity_score),
+                    int(candidate.total_instances),
+                )
+                if rank > best_rank:
+                    best_rank = rank
+                    best_sheet = b_idx
+
+            if best_sheet is not None:
+                page_map[a_idx] = best_sheet
+
+    return page_map
+
+
 def run_comparison_pipeline(
     job_id: str,
     db: Session,
@@ -82,15 +172,52 @@ def run_comparison_pipeline(
 
         pages_a = doc_a.page_count
         pages_b = doc_b.page_count
-        total_pages = max(pages_a, pages_b)
+        document_imposition = _looks_like_document_imposition(
+            doc_a, doc_b, pages_a, pages_b, config, is_cmyk_mode
+        )
+        comparison_config = dict(config)
+        trim_insets_a = [None] * pages_a
+        if document_imposition:
+            comparison_config["document_imposition_mode"] = True
+            # If TrimBox exists, use it exactly. Otherwise ignore only a small
+            # outer band so MediaBox/bleed changes do not become fake artwork diffs.
+            comparison_config.setdefault("imposition_bleed_ignore_ratio", 0.025)
+            try:
+                trim_insets_a = processor.get_trim_insets(file_a.file_path)
+            except Exception as exc:
+                logger.warning("Could not load source TrimBox data: %s", exc)
 
+        total_pages = pages_a if document_imposition else max(pages_a, pages_b)
         job.total_pages = total_pages
         job.progress = 10
         job.status_message = None
         db.commit()
 
         notify(10, message=f"Đang so sánh {total_pages} trang...", total_pages=total_pages)
-        logger.info(f"Job {job_id}: PDF A={pages_a} pages, PDF B={pages_b} pages, comparing page-by-page...")
+        logger.info(
+            "Job %s: PDF A=%s pages, PDF B=%s pages, mode=%s",
+            job_id, pages_a, pages_b,
+            "document-imposition" if document_imposition else "sequential",
+        )
+
+        imposition_page_map: dict[int, int] = {}
+        if document_imposition:
+            notify(10, message="\u0110ang nh\u1eadn di\u1ec7n th\u1ee9 t\u1ef1 trang tr\u00ean c\u00e1c t\u1edd b\u00ecnh...", total_pages=pages_a)
+            imposition_page_map = _map_source_pages_to_sheets(
+                processor,
+                comparator,
+                file_a.file_path,
+                file_b.file_path,
+                pages_a,
+                pages_b,
+                tolerance,
+                comparison_config,
+                trim_insets_a,
+            )
+            logger.info(
+                "Job %s: mapped %s/%s source pages to imposed sheets",
+                job_id, len(imposition_page_map), pages_a,
+            )
 
         # ── Compare page by page (10-90%) ──
         # Each iteration: render 1 page from A + 1 page from B → compare → save → discard
@@ -111,7 +238,7 @@ def run_comparison_pipeline(
         # An toàn: CHỈ bật khi pages_a != pages_b và KHÔNG phải CMYK. Số trang bằng
         # nhau → giữ nguyên ghép tuần tự + hunting imposition như cũ (không đổi hành
         # vi đường phổ biến). Lỗi bất kỳ ở bước căn → fallback ghép tuần tự.
-        use_alignment = (pages_a != pages_b) and (not is_cmyk_mode) and pages_a > 0 and pages_b > 0
+        use_alignment = (not document_imposition) and (pages_a != pages_b) and (not is_cmyk_mode) and pages_a > 0 and pages_b > 0
         align_pairs = None
         if use_alignment:
             try:
@@ -165,12 +292,16 @@ def run_comparison_pipeline(
                 align_pairs = None
                 use_alignment = False
 
-        if use_alignment and align_pairs is not None:
+        if document_imposition:
+            use_alignment = False
+            work_seq = [(i, imposition_page_map.get(i)) for i in range(pages_a)]
+        elif use_alignment and align_pairs is not None:
             work_seq = align_pairs
         else:
             use_alignment = False
             work_seq = [(i, None) for i in range(total_pages)]
         total_work = len(work_seq) or 1
+        page_mapping: list[int | None] = [None] * pages_a
 
         for out_idx, (a_idx, b_idx) in enumerate(work_seq):
             page_num = out_idx + 1
@@ -184,15 +315,27 @@ def run_comparison_pipeline(
             img_a = doc_a.render_page(a_idx) if (a_idx is not None and a_idx < pages_a) else None
 
             img_b = None
-            found_b_idx = b_idx if b_idx is not None else current_b_idx
+            found_b_idx = b_idx if b_idx is not None else (-1 if document_imposition else current_b_idx)
             result = None
+            page_config = dict(comparison_config)
+            if document_imposition and a_idx is not None and a_idx < len(trim_insets_a):
+                if trim_insets_a[a_idx] is not None:
+                    page_config["template_trim_insets"] = trim_insets_a[a_idx]
 
-            if use_alignment:
+            if document_imposition:
+                # Booklet/N-up order is non-linear: compare the source page with
+                # the sheet found by the low-DPI global search, never by index.
+                if a_idx is not None and b_idx is not None:
+                    img_b = doc_b.render_page(b_idx)
+                    result = comparator.compare(
+                        img_a, img_b, tolerance=tolerance, config=page_config
+                    )
+            elif use_alignment:
                 # Cặp trang đã được căn theo nội dung → so 1:1 đúng cặp. Trang thêm/xoá
                 # (a_idx hoặc b_idx = None) rơi vào nhánh "missing" với nhãn rõ ràng.
                 if a_idx is not None and b_idx is not None:
                     img_b = doc_b.render_page(b_idx)
-                    result = comparator.compare(img_a, img_b, tolerance=tolerance, config=config)
+                    result = comparator.compare(img_a, img_b, tolerance=tolerance, config=page_config)
             elif is_cmyk_mode and img_a is not None and pages_b > 0:
                 # ── CMYK Channel-by-Channel Comparison ──
                 cmyk_a = doc_a.render_page_cmyk(page_idx)
@@ -202,7 +345,7 @@ def run_comparison_pipeline(
                 found_b_idx = b_idx
                 result = comparator.compare_cmyk(
                     cmyk_a, cmyk_b, tolerance=tolerance,
-                    rgb_a=img_a, rgb_b=img_b, config=config,
+                    rgb_a=img_a, rgb_b=img_b, config=page_config,
                 )
                 # CĂN TRANG 1:1: tiến con trỏ B sang trang kế (giống nhánh thường) —
                 # CMYK luôn so theo cặp trang, không có chế độ imposition.
@@ -210,7 +353,7 @@ def run_comparison_pipeline(
             elif img_a is not None and pages_b > 0:
                 for b_idx in range(current_b_idx, pages_b):
                     test_b = doc_b.render_page(b_idx)
-                    temp_result = comparator.compare(img_a, test_b, tolerance=tolerance, config=config)
+                    temp_result = comparator.compare(img_a, test_b, tolerance=tolerance, config=page_config)
 
                     if getattr(temp_result, "is_imposition_mode", False):
                         if temp_result.similarity_score > 0.0:
@@ -226,7 +369,7 @@ def run_comparison_pipeline(
 
                 if img_b is None:
                     img_b = doc_b.render_page(current_b_idx)
-                    result = comparator.compare(img_a, img_b, tolerance=tolerance, config=config)
+                    result = comparator.compare(img_a, img_b, tolerance=tolerance, config=page_config)
                 else:
                     # CĂN TRANG 1:1 (sửa lỗi pin-về-B[0]): chế độ thường so A[i] với B[i],
                     # nên sau khi khớp phải TIẾN con trỏ sang trang B kế tiếp. Trước đây
@@ -243,7 +386,11 @@ def run_comparison_pipeline(
 
             # Handle missing pages (out-of-range positional, hoặc trang thêm/xoá khi căn trang)
             if img_a is None or img_b is None or result is None:
-                if use_alignment and a_idx is None and b_idx is not None:
+                if document_imposition and a_idx is not None:
+                    miss_desc = (
+                        f"Kh\u00f4ng t\u00ecm th\u1ea5y trang ngu\u1ed3n {a_idx + 1} tr\u00ean b\u1ea5t k\u1ef3 t\u1edd b\u00ecnh n\u00e0o"
+                    )
+                elif use_alignment and a_idx is None and b_idx is not None:
                     miss_desc = f"Trang được THÊM (chỉ có ở bản sửa — trang {b_idx + 1})"
                 elif use_alignment and b_idx is None and a_idx is not None:
                     miss_desc = f"Trang bị XOÁ (chỉ có ở bản gốc — trang {a_idx + 1})"
@@ -255,11 +402,12 @@ def run_comparison_pipeline(
                     diff_regions=[{
                         "description": miss_desc, "severity": "high",
                         "type": "layout", "x": 0, "y": 0,
-                        "width": 1, "height": 1, "b_page": found_b_idx + 1,
+                        "width": 1, "height": 1, "b_page": (found_b_idx + 1) if found_b_idx >= 0 else None,
                         "nx": 0, "ny": 0, "nw": 1, "nh": 1,
                     }],
                     highlighted_image_path=None,
                     gif_image_path=None,
+                    is_imposition_mode=document_imposition,
                 )
                 db.add(page_result)
                 pages_fail += 1
@@ -268,6 +416,9 @@ def run_comparison_pipeline(
                 job.progress = progress
                 db.commit()
                 continue
+
+            if a_idx is not None and 0 <= a_idx < len(page_mapping) and found_b_idx >= 0:
+                page_mapping[a_idx] = found_b_idx + 1
 
             # Save highlighted image and GIF
             highlighted_url = None
@@ -334,7 +485,7 @@ def run_comparison_pipeline(
                     "nx": nx, "ny": ny,
                     "nw": diff_regions_normalized[i]["width"],
                     "nh": diff_regions_normalized[i]["height"],
-                    "b_page": found_b_idx + 1,
+                    "b_page": (found_b_idx + 1) if found_b_idx >= 0 else None,
                 })
 
             total_diff_count += result.diff_count
@@ -392,6 +543,8 @@ def run_comparison_pipeline(
         "average_similarity": round(avg_similarity, 2),
         "visual_similarity": round(avg_similarity, 2),
         "compare_method": "pixel",
+        "page_matching_mode": "imposition" if document_imposition else "sequential",
+        "page_mapping": page_mapping,
         "print_verdict": "ĐẠT" if print_ok else "KHÔNG ĐẠT",
         "verdict_detail": verdict_detail,
         "total_instances": total_imposition_instances,

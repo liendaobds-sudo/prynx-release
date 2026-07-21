@@ -33,6 +33,7 @@ interface Props {
   rightPdfUrl: string;
   diffRegions: DiffRegionData[];
   scrollToPage?: number;
+  scrollToBPage?: number;
   focusedRegion?: FocusedRegion | null;
 }
 
@@ -210,6 +211,7 @@ function DualPDFViewerInner({
   rightPdfUrl,
   diffRegions,
   scrollToPage,
+  scrollToBPage,
   focusedRegion,
 }: Props) {
   const { t } = useTranslation();
@@ -251,18 +253,19 @@ function DualPDFViewerInner({
   // Scroll to page via Virtuoso API
   useEffect(() => {
     if (scrollToPage && scrollToPage > 0) {
-      const index = scrollToPage - 1;
+      const leftIndex = scrollToPage - 1;
+      const rightIndex = (scrollToBPage && scrollToBPage > 0 ? scrollToBPage : scrollToPage) - 1;
       isProgrammaticScroll.current = true;
       if (programmaticScrollTimer.current) clearTimeout(programmaticScrollTimer.current);
       
-      leftVirtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align: 'start' });
-      rightVirtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align: 'start' });
+      leftVirtuosoRef.current?.scrollToIndex({ index: leftIndex, behavior: 'smooth', align: 'start' });
+      rightVirtuosoRef.current?.scrollToIndex({ index: rightIndex, behavior: 'smooth', align: 'start' });
       
       programmaticScrollTimer.current = setTimeout(() => {
         isProgrammaticScroll.current = false;
       }, 800); // Wait for smooth scroll to finish
     }
-  }, [scrollToPage]);
+  }, [scrollToPage, scrollToBPage]);
 
   // Scroll to precise region coordinates
   useEffect(() => {

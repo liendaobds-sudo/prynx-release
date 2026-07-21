@@ -338,7 +338,7 @@ export interface ImposerDashboardProps {
     initialFeature?: string;
     lockedMode?: 'booklet' | 'nup' | 'sticker_imposer' | 'cnc_imposer';
     onBleedUpdate?: (show: boolean, mm: number) => void;
-    onFileFixed?: (blob: Blob, name: string) => void;
+    onFileFixed?: (blob: Blob, name: string, path?: string) => void;
     systemMergeFiles?: File[];
     /** Office file → PDF (Word/Excel path-stub File). */
     officeSourceFile?: File | null;

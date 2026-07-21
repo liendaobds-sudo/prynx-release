@@ -19,6 +19,7 @@ import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { RichSelect, Checkbox, SectionLabel, Divider } from '../SharedUI';
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
+import { HIDE_OFFSET_BOOKLET } from '../../../lib/featureFocus';
 
 export default function BookletSettingsSection() {
   const { t } = useTranslation();
@@ -135,7 +136,7 @@ export default function BookletSettingsSection() {
             )}
 
             {/* ═══ FOLD PATTERN (Offset) ═══ */}
-            {!s.autoCatalog && s.paperClassification === 'offset' && (
+            {!HIDE_OFFSET_BOOKLET && !s.autoCatalog && s.paperClassification === 'offset' && (
                 <>
                     <div className="space-y-3 animate-in fade-in duration-200 relative z-[55]">
                         <SectionLabel>{t('imposition.bookletSettings:so_do_gap_offset_fold_pattern')}</SectionLabel>
@@ -166,7 +167,7 @@ export default function BookletSettingsSection() {
                     Sách sẽ hỏi người dùng chọn Cuối/Giữa. */}
 
                 {/* Interleave */}
-                {!s.autoCatalog && s.paperClassification === 'offset' && !s.foldPattern && (
+                {!HIDE_OFFSET_BOOKLET && !s.autoCatalog && s.paperClassification === 'offset' && !s.foldPattern && (
                     <div className="flex flex-col gap-2 relative z-[40]">
                         <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">{t('imposition.bookletSettings:the_phoi_sap_trang')}</label>
                         <RichSelect

@@ -50,6 +50,7 @@ import GridSettingsSection from './sections/GridSettingsSection';
 import AdvancedSettingsSection from './sections/AdvancedSettingsSection';
 import GridPreview from './sections/GridPreview';
 import ProductFirstPanel from './ProductFirstPanel';
+import { HIDE_PRODUCT_FIRST } from '../../lib/featureFocus';
 
 // Store & Types
 import { useImposerSettingsStore } from './useImposerSettingsStore';
@@ -1241,7 +1242,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     <Divider />
 
                     {/* ✨ Đề xuất theo sản phẩm — chỉ booklet + in nhanh (Phase 1) */}
-                    {s.taskMode === 'booklet' && s.paperClassification === 'in_nhanh' && (
+                    {!HIDE_PRODUCT_FIRST && s.taskMode === 'booklet' && s.paperClassification === 'in_nhanh' && (
                         <button
                             onClick={() => setShowProductFirst(v => !v)}
                             className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${showProductFirst
@@ -1255,7 +1256,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         </button>
                     )}
 
-                    {(s.taskMode === 'booklet' && s.paperClassification === 'in_nhanh' && showProductFirst) ? (
+                    {(!HIDE_PRODUCT_FIRST && s.taskMode === 'booklet' && s.paperClassification === 'in_nhanh' && showProductFirst) ? (
                         <ProductFirstPanel
                             pageCount={sourceTotalPages}
                             finishedWidthMm={s.sourcePageDim ? Math.round(s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0)) : undefined}

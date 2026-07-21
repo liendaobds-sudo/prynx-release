@@ -1,4 +1,5 @@
 import cv2
+import hashlib
 import numpy as np
 import pypdfium2 as pdfium
 import pikepdf
@@ -393,8 +394,11 @@ def _trajectory_right_strip(
 
     source_y = np.arange(h, dtype=np.float32)
     output_y = source_y.copy()
-    map_x = np.zeros((h, 1), dtype=np.float32)
-    strip = np.empty((h, amount, 3), dtype=np.uint8)
+    # Build the exact same per-column inverse maps, then run one OpenCV remap
+    # instead of ``amount`` separate 1-pixel calls. Interpolation is pixel-local,
+    # so batching the maps does not alter output colours.
+    map_x = np.zeros((h, amount), dtype=np.float32)
+    map_y_all = np.empty((h, amount), dtype=np.float32)
     for step in range(1, amount + 1):
         # Forward-warp source rows, enforce a monotone mapping to prevent local
         # trajectory crossings, then invert it for cv2.remap. This avoids pointed
@@ -404,17 +408,16 @@ def _trajectory_right_strip(
         forward_y = np.maximum.accumulate(
             forward_y - source_y * min_spacing
         ) + source_y * min_spacing
-        map_y = np.interp(
+        map_y_all[:, step - 1] = np.interp(
             output_y, forward_y, source_y, left=0.0, right=float(h - 1)
-        ).astype(np.float32)[:, None]
-        strip[:, step - 1] = cv2.remap(
-            edge,
-            map_x,
-            map_y,
-            interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REPLICATE,
-        )[:, 0]
-    return strip
+        ).astype(np.float32)
+    return cv2.remap(
+        edge,
+        map_x,
+        map_y_all,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
 
 
 def _trajectory_extend_axis(
@@ -485,10 +488,47 @@ def _rectangle_smooth_color_fill(
     # it, but partial-alpha pixels still sample this raster layer.
     out[top:top + core.shape[0], left:left + core.shape[1]] = core
 
-    # Interpolation may only mix existing colours; clamp any rounding excursion.
-    src_min = core.reshape(-1, 3).min(axis=0)
-    src_max = core.reshape(-1, 3).max(axis=0)
-    return np.clip(out, src_min, src_max).astype(np.uint8)
+    # ``core`` and OpenCV's uint8 bilinear interpolation are already bounded by
+    # their source samples. Avoid three full-canvas min/max/clip passes.
+    return out
+
+
+def _sparsify_rectangle_bleed(
+    colors: np.ndarray,
+    mask: np.ndarray,
+    perimeter_px: int,
+) -> np.ndarray:
+    """Zero only invisible centre RGB pixels to make Flate compression cheap.
+
+    The smart-bleed colours and SMask have already been calculated by the same
+    300-DPI colour-managed algorithm. The PDF still stores one full-size image at
+    the original CTM, avoiding any tile-boundary resampling. Visible pixels and a
+    safety halo remain byte-identical. If the centre unexpectedly contains alpha,
+    safely return the original image.
+    """
+    if (
+        colors is None
+        or mask is None
+        or colors.ndim != 3
+        or mask.ndim != 2
+        or colors.shape[:2] != mask.shape
+    ):
+        return colors
+
+    height, width = mask.shape
+    edge = max(1, int(perimeter_px))
+    edge = min(edge, max(1, height // 2), max(1, width // 2))
+    if height <= 2 * edge or width <= 2 * edge:
+        return colors
+
+    # The caller includes a two-pixel safety halo in ``edge``. Keep the original
+    # RGB everywhere close to non-zero alpha so PDF interpolation remains exact.
+    if np.count_nonzero(mask[edge:height - edge, edge:width - edge]) != 0:
+        return colors
+
+    sparse = colors.copy()
+    sparse[edge:height - edge, edge:width - edge] = 0
+    return sparse
 
 
 def _band_tiles(band, band_radius: int, tile: int = 1024):
@@ -632,6 +672,174 @@ def _copy_output_intents(src_pdf: pikepdf.Pdf, dst_pdf: pikepdf.Pdf) -> None:
     except Exception as exc:
         logger.warning("Cannot preserve PDF OutputIntents: %s", exc)
 
+
+def _stable_pdf_object_signature(
+    value,
+    *,
+    cache: dict | None = None,
+    active: set | None = None,
+    depth: int = 0,
+):
+    """Build an object-number-independent signature for a PDF resource.
+
+    Worker PDFs assign new object numbers to copied images. The signature includes
+    the complete stream dictionary (except /Length), nested ICC profiles and soft
+    masks, so only byte-for-byte equivalent resources can be merged. Cyclic or
+    unexpectedly deep graphs are rejected instead of being deduplicated.
+    """
+    if cache is None:
+        cache = {}
+    if active is None:
+        active = set()
+    if depth > 8:
+        raise ValueError("PDF resource graph is too deep to deduplicate safely")
+
+    if isinstance(value, pikepdf.Stream):
+        object_id = ("stream", value.objgen)
+        if value.objgen != (0, 0) and object_id in cache:
+            return cache[object_id]
+        if object_id in active:
+            raise ValueError("Cyclic PDF stream resource")
+        active.add(object_id)
+        try:
+            entries = tuple(sorted(
+                (
+                    str(key),
+                    _stable_pdf_object_signature(
+                        value.get(key), cache=cache, active=active, depth=depth + 1
+                    ),
+                )
+                for key in value.keys()
+                if str(key) != "/Length"
+            ))
+            signature = (
+                "stream",
+                entries,
+                hashlib.sha256(value.read_raw_bytes()).digest(),
+            )
+        finally:
+            active.remove(object_id)
+        if value.objgen != (0, 0):
+            cache[object_id] = signature
+        return signature
+
+    if isinstance(value, pikepdf.Array):
+        return (
+            "array",
+            tuple(
+                _stable_pdf_object_signature(
+                    item, cache=cache, active=active, depth=depth + 1
+                )
+                for item in value
+            ),
+        )
+
+    if isinstance(value, pikepdf.Dictionary):
+        object_id = ("dict", value.objgen)
+        if value.objgen != (0, 0) and object_id in cache:
+            return cache[object_id]
+        if object_id in active:
+            raise ValueError("Cyclic PDF dictionary resource")
+        active.add(object_id)
+        try:
+            signature = (
+                "dict",
+                tuple(sorted(
+                    (
+                        str(key),
+                        _stable_pdf_object_signature(
+                            value.get(key),
+                            cache=cache,
+                            active=active,
+                            depth=depth + 1,
+                        ),
+                    )
+                    for key in value.keys()
+                    if str(key) != "/Length"
+                )),
+            )
+        finally:
+            active.remove(object_id)
+        if value.objgen != (0, 0):
+            cache[object_id] = signature
+        return signature
+
+    return (type(value).__name__, str(value))
+
+
+def _deduplicate_image_xobjects(pdf: pikepdf.Pdf) -> dict:
+    """Rewire identical image resources introduced by cross-worker PDF merges."""
+    started = time.perf_counter()
+    signature_cache = {}
+    canonical_by_signature = {}
+    replacements = {}
+    duplicate_bytes = 0
+    image_count = 0
+
+    for obj in list(pdf.objects):
+        try:
+            if not (
+                isinstance(obj, pikepdf.Stream)
+                and str(obj.get("/Subtype", "")) == "/Image"
+                and obj.objgen != (0, 0)
+            ):
+                continue
+            image_count += 1
+            signature = _stable_pdf_object_signature(obj, cache=signature_cache)
+            canonical = canonical_by_signature.get(signature)
+            if canonical is None:
+                canonical_by_signature[signature] = obj
+            else:
+                replacements[obj.objgen] = canonical
+                duplicate_bytes += int(obj.get("/Length", 0) or 0)
+        except Exception as exc:
+            logger.debug("Skip unsafe image dedup candidate: %s", exc)
+
+    rewired = 0
+    if replacements:
+        for obj in list(pdf.objects):
+            try:
+                if (
+                    isinstance(obj, pikepdf.Stream)
+                    and str(obj.get("/Subtype", "")) == "/Image"
+                ):
+                    for key in ("/SMask", "/Mask"):
+                        ref = obj.get(key, None)
+                        if isinstance(ref, pikepdf.Stream):
+                            canonical = replacements.get(ref.objgen)
+                            if canonical is not None:
+                                obj[pikepdf.Name(key)] = canonical
+                                rewired += 1
+
+                if not isinstance(obj, (pikepdf.Dictionary, pikepdf.Stream)):
+                    continue
+                resources = obj.get("/Resources", None)
+                if not isinstance(resources, pikepdf.Dictionary):
+                    continue
+                xobjects = resources.get("/XObject", None)
+                if not isinstance(xobjects, pikepdf.Dictionary):
+                    continue
+                for name in list(xobjects.keys()):
+                    ref = xobjects.get(name)
+                    if not isinstance(ref, pikepdf.Stream):
+                        continue
+                    canonical = replacements.get(ref.objgen)
+                    if canonical is not None:
+                        xobjects[name] = canonical
+                        rewired += 1
+            except Exception as exc:
+                logger.debug("Cannot rewrite one PDF image resource: %s", exc)
+
+        pdf.remove_unreferenced_resources()
+
+    return {
+        "images": image_count,
+        "unique": len(canonical_by_signature),
+        "duplicates": len(replacements),
+        "rewired": rewired,
+        "candidate_bytes": duplicate_bytes,
+        "seconds": time.perf_counter() - started,
+    }
 
 def _rectangle_vector_bleed_commands(
     xobject_name,
@@ -869,6 +1077,10 @@ class StickerEngine:
             _page_list = list(_page_subset) if _page_subset is not None else list(range(_n_pages))
 
             for page_idx in _page_list:
+                page_started = time.perf_counter()
+                gs_seconds = 0.0
+                smooth_seconds = 0.0
+                compress_seconds = 0.0
                 debug_step = f"Rasterize Page {page_idx}"
                 page_in = doc_in_pdfium[page_idx]
                 page_in_pike = doc_in_pike.pages[page_idx]
@@ -915,6 +1127,7 @@ class StickerEngine:
                         and bleed_pts > 0
                     )
                     if use_color_managed_rectangle_raster:
+                        gs_started = time.perf_counter()
                         img_native = _render_page_rgb_ghostscript(
                             input_path,
                             page_idx,
@@ -922,6 +1135,7 @@ class StickerEngine:
                             max(1, int(round(float(pw_pt) * self.scale))),
                             max(1, int(round(float(ph_pt) * self.scale))),
                         )
+                        gs_seconds = time.perf_counter() - gs_started
                         if img_native is None:
                             logger.warning(
                                 "Smart rectangle bleed page %d is falling back to PDFium RGB",
@@ -1378,9 +1592,11 @@ class StickerEngine:
                                 else:
                                     bleed_colors = _nearest_color_fill(color_source_mask, padded_img)
                         elif bleed_color_type == "inpaint" and rectangle_mode:
+                            smooth_started = time.perf_counter()
                             bleed_colors = _rectangle_smooth_color_fill(
                                 img_native, pad_b, edge_bite_px, px_per_mm
                             )
+                            smooth_seconds = time.perf_counter() - smooth_started
                         elif bleed_color_type == "inpaint":
                             # 'Làm mượt thông minh' — inpaint giới hạn theo band (tile + bỏ ô ruột).
                             bleed_colors = np.zeros_like(padded_img)
@@ -1425,11 +1641,30 @@ class StickerEngine:
                         # lộ cả khi bleed trắng (255↔0 qua JPEG thành xám). Ring hẹp (bleed
                         # 1-3mm) + vùng ngoài ring = 0 nên zlib nén rất tốt, dung lượng không
                         # đáng ngại. Nhánh CMYK vốn đã né JPEG (Adobe inversion) — nay RGB cũng vậy.
-                        bleed_stream_data = zlib.compress(bleed_rgb.tobytes())
-                        img_w, img_h = bleed_rgb.shape[1], bleed_rgb.shape[0]
-                            
-                        mask_bytes_data = zlib.compress(bleed_ring.tobytes())
-                        
+                        bleed_rgb_for_storage = bleed_rgb
+                        compression_level = 6
+                        if rectangle_mode and bleed_color_type == "inpaint":
+                            # Keep the same full-size image and CTM. Only deep,
+                            # fully transparent centre RGB is zeroed so Flate can
+                            # skip it without changing any visible colour.
+                            perimeter_px = pad_b + edge_bite_px + _tuck_px + 2
+                            bleed_rgb_for_storage = _sparsify_rectangle_bleed(
+                                bleed_rgb, bleed_ring, perimeter_px
+                            )
+                            compression_level = 1
+
+                        compress_started = time.perf_counter()
+                        bleed_stream_data = zlib.compress(
+                            bleed_rgb_for_storage.tobytes(), compression_level
+                        )
+                        img_w, img_h = (
+                            bleed_rgb_for_storage.shape[1],
+                            bleed_rgb_for_storage.shape[0],
+                        )
+                        mask_bytes_data = zlib.compress(
+                            bleed_ring.tobytes(), compression_level
+                        )
+                        compress_seconds = time.perf_counter() - compress_started
                         # Save comprehensive debug images for first page
                         if page_idx == 0 and self.debug:
                             try:
@@ -1740,6 +1975,16 @@ class StickerEngine:
                     pages_no_dieline.append(page_idx + 1)
                 
                 all_pages_meta.append(page_meta)
+                if rectangle_mode and bleed_color_type == "inpaint":
+                    logger.info(
+                        "[STICKER_TIMING] page=%d gs_s=%.3f smooth_s=%.3f "
+                        "compress_s=%.3f total_s=%.3f",
+                        page_idx + 1,
+                        gs_seconds,
+                        smooth_seconds,
+                        compress_seconds,
+                        time.perf_counter() - page_started,
+                    )
 
             # CHẾ ĐỘ WORKER (song song): trả MẢNH THÔ (bytes + meta các trang của chunk
             # này + pages_no_dieline GLOBAL 1-based + cờ any_dieline) cho orchestrator gộp,
@@ -1822,6 +2067,7 @@ class StickerEngine:
         """
         import math as _math
         from concurrent.futures import ProcessPoolExecutor
+        parallel_started = time.perf_counter()
         cut_mode = kw["cut_mode"]
 
         _probe = pdfium.PdfDocument(input_path)
@@ -1863,14 +2109,17 @@ class StickerEngine:
             })
 
         # 1 chunk → chạy tại chỗ (không spawn). Nhiều chunk → pool. pool.map giữ thứ tự.
+        workers_started = time.perf_counter()
         if len(args_list) == 1:
             results = [_process_sticker_chunk(args_list[0])]
         else:
             with ProcessPoolExecutor(max_workers=n_workers) as pool:
                 results = list(pool.map(_process_sticker_chunk, args_list))
+        worker_seconds = time.perf_counter() - workers_started
 
         # Sắp theo chunk_idx (phòng thủ) rồi gộp.
         results.sort(key=lambda r: r[0])
+        merge_started = time.perf_counter()
 
         all_pages_meta = []
         pages_no_dieline = []
@@ -1890,8 +2139,30 @@ class StickerEngine:
             debug_step = "Save Merged Output"
             with pikepdf.Pdf.open(input_path) as source_catalog:
                 _copy_output_intents(source_catalog, final_doc)
+            merge_seconds = time.perf_counter() - merge_started
 
+            dedup_stats = _deduplicate_image_xobjects(final_doc)
+            save_started = time.perf_counter()
             final_doc.save(output_path)
+            save_seconds = time.perf_counter() - save_started
+            logger.info(
+                "[STICKER_TIMING] parallel pages=%d workers=%d chunks=%d "
+                "worker_s=%.3f merge_s=%.3f dedup_s=%.3f save_s=%.3f total_s=%.3f "
+                "images=%d duplicates=%d rewired=%d reclaimed_candidate_mb=%.2f output_mb=%.2f",
+                n_pages,
+                n_workers,
+                len(chunks),
+                worker_seconds,
+                merge_seconds,
+                dedup_stats["seconds"],
+                save_seconds,
+                time.perf_counter() - parallel_started,
+                dedup_stats["images"],
+                dedup_stats["duplicates"],
+                dedup_stats["rewired"],
+                dedup_stats["candidate_bytes"] / (1024 * 1024),
+                os.path.getsize(output_path) / (1024 * 1024),
+            )
         finally:
             if final_doc is not None:
                 try: final_doc.close()

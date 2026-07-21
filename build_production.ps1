@@ -9,6 +9,7 @@
 #    .\build_production.ps1 -SkipNuitka      # Skip Python compilation
 #    .\build_production.ps1 -SkipTauri       # Skip Tauri build
 #    .\build_production.ps1 -NuitkaOnly      # Only compile Python
+#    .\build_production.ps1 -NuitkaJobs 4    # Limit parallel MSVC jobs (default: 4)
 #    .\build_production.ps1 -Release         # Build updater artifacts (needs signing key)
 #    .\build_production.ps1 -SkipPreflightQA # Emergency build without automated QA
 #    .\build_production.ps1 -NoOpenExplorer  # Do not open Explorer after build
@@ -23,6 +24,8 @@ param(
     [switch]$Release,
     [switch]$SkipPreflightQA,
     [switch]$NoOpenExplorer,
+    [ValidateRange(1, 8)]
+    [int]$NuitkaJobs = 4,
     [string]$Version = ""
 )
 
@@ -177,7 +180,7 @@ if (-not $SkipPreflightQA) {
 # ---- Step 1: Nuitka compile backend ----
 if (-not $SkipNuitka) {
     Write-Host "[1/5] Compiling Python backend with Nuitka..." -ForegroundColor Yellow
-    Write-Host "  This may take 20-45 minutes for this large one-file sidecar." -ForegroundColor DarkGray
+    Write-Host "  Cache-aware build; first compile is slower. MSVC jobs: $NuitkaJobs." -ForegroundColor DarkGray
 
     & $VENV_PYTHON -m pip show nuitka *> $null
     if ($LASTEXITCODE -ne 0) {
@@ -309,13 +312,23 @@ if (-not $SkipNuitka) {
         exit 1
     }
 
-# MSVC /Ox exhausts compiler heap on some large Nuitka-generated modules (for example
-# jinja2.lexer). Append /O1 after Nuitka's /Ox only for generated Python C code.
-$previousClAppend = $env:_CL_
-$env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1" } else { "$previousClAppend /O1" }
+    # Fail fast before the expensive C backend. These are the runtime slices we
+    # intentionally keep after removing broad SciPy/ONNX helper trees.
+    Write-Host "  Verifying frozen-runtime imports..." -ForegroundColor DarkGray
+    & $VENV_PYTHON -c "import scipy.ndimage; import skimage.metrics; import skimage.measure; import onnxruntime; from fontTools import subset; from fontTools.ttLib import TTFont"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Required runtime dependency import failed before Nuitka." -ForegroundColor Red
+        Pop-Location
+        exit 1
+    }
+
+    # MSVC /Ox exhausts compiler heap on some large Nuitka-generated modules. Keep
+    # /O1 for generated Python C code and silence the expected override warning.
+    $previousClAppend = $env:_CL_
+    $env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1 /wd9025" } else { "$previousClAppend /O1 /wd9025" }
     & $VENV_PYTHON -m nuitka `
         --standalone `
-        --jobs=2 `
+        --jobs=$NuitkaJobs `
         --no-prefer-source-code `
         --onefile `
         --output-filename="$SIDECAR_NAME.exe" `
@@ -341,14 +354,16 @@ $env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1" } else 
         --include-package=aiofiles `
         --include-package=multipart `
         --include-package=shapely `
-        --include-package=skimage `
-        --include-package=scipy `
+        --include-package=skimage.metrics `
+        --include-package=skimage.measure `
+        --include-package=scipy.ndimage `
         --include-package=pdfplumber `
         --include-package=pytesseract `
         --include-package=celery `
         --include-package=pypdf `
         --include-package=uharfbuzz `
-        --include-package=onnxruntime `
+        --include-module=onnxruntime `
+        --include-package=onnxruntime.capi `
         --include-package-data=onnxruntime `
         --include-package=openpyxl `
         --include-package=serial `
@@ -362,6 +377,12 @@ $env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1" } else 
         --nofollow-import-to=pytest `
         --nofollow-import-to=hypothesis `
         --nofollow-import-to=*.tests `
+        --nofollow-import-to=sympy `
+        --nofollow-import-to=onnxruntime.tools `
+        --nofollow-import-to=scipy.special._precompute `
+        --nofollow-import-to=scipy.interpolate._interpnd_info `
+        --nofollow-import-to=sqlalchemy.testing `
+        --nofollow-import-to=fontTools.pens.momentsPen `
         --noinclude-pytest-mode=nofollow `
         --noinclude-unittest-mode=nofollow `
         --nofollow-import-to=test `
@@ -389,6 +410,15 @@ $env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1" } else 
 
     if ($nuitkaExit -ne 0) {
         Write-Host "ERROR: Nuitka compilation failed!" -ForegroundColor Red
+        $crashReport = Join-Path $ROOT "backend\nuitka-crash-report.xml"
+        if (Test-Path -LiteralPath $crashReport) {
+            $heapError = Select-String -Path $crashReport -Pattern "fatal error C1002" -SimpleMatch |
+                Select-Object -First 1
+            if ($heapError) {
+                Write-Host "  MSVC compiler heap failure detected. Do not rerun unchanged." -ForegroundColor Yellow
+                Write-Host "  Crash report: $crashReport" -ForegroundColor Yellow
+            }
+        }
         exit 1
     }
     Write-Host "  Backend compiled successfully." -ForegroundColor Green

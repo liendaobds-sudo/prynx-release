@@ -264,6 +264,7 @@ export async function createCompareJob(data: {
   file_a_id: string;
   file_b_id: string;
   comparison_mode?: string;
+  page_matching_mode?: 'auto' | 'sequential' | 'imposition';
   is_packaging_mode?: boolean;
   tolerance?: string;
   dpi?: number;
@@ -277,6 +278,7 @@ export async function createCompareJob(data: {
       tolerance: data.tolerance || 'NORMAL',
       dpi: data.dpi || 150,
       comparison_mode: data.comparison_mode || 'full',
+      page_matching_mode: data.page_matching_mode || 'auto',
       is_packaging_mode: data.is_packaging_mode || false,
       highlight_color: '#FF0000',
     }),

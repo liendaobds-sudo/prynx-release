@@ -754,12 +754,14 @@ export const imposePdfViaBackend = async (
 
     // ──── STEP 4: Gửi JSON cho Backend Python thực thi ────
     setStatus(i18n.t('lib.pdfImposer:dang_gui_ke_hoach_xu_ly'));
+    const preferNativePath = !!(window as any).__TAURI_INTERNALS__;
     const response = await fetch(`${BACKEND_API}/api/imposition/execute-plan-json`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             plan: instructionSet,
             source_pdf_path: sourcePdfPath,
+            return_output_path: preferNativePath,
         }),
     });
 
@@ -769,11 +771,25 @@ export const imposePdfViaBackend = async (
     }
 
     // ──── STEP 5: Nhận file output ────
-    const outputBlob = await response.blob();
-    // Backend đặt tên file UNIQUE (audit #C1) → KHÔNG suy đường dẫn theo tên cố định.
-    // `outputBlob` (nội dung trả về) mới là nguồn chuẩn; outputPath chỉ còn mang tính
-    // thông tin (output_dir). Caller hiện dùng blob/report, không đọc lại theo path.
-    const outputPath = instructionSet.output_dir || 'results';
+    let outputBlob: Blob;
+    let outputPath: string;
+    if (preferNativePath) {
+        const result = await response.json();
+        if (!result?.output_path) {
+            throw new Error(i18n.t('lib.pdfImposer:he_thong_xu_ly_that_bai_response_status', {
+                status: response.status,
+                errText: 'missing output_path',
+            }));
+        }
+        outputPath = result.output_path;
+        // Desktop viewer reads the backend result directly from disk. Keep only a
+        // zero-byte carrier so callers preserve the same return shape without
+        // downloading hundreds of MB into WebView memory.
+        outputBlob = new Blob([], { type: 'application/pdf' });
+    } else {
+        outputBlob = await response.blob();
+        outputPath = instructionSet.output_dir || 'results';
+    }
 
     setStatus(i18n.t('lib.pdfImposer:hoan_tat_file_kem_da_duoc_xuat_thanh'));
     return { outputPath, report, blob: outputBlob };

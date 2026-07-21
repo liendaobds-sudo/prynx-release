@@ -78,7 +78,7 @@ interface PreprocessingRouterProps {
     onStartMerge?: (settings: any) => void;
     onIssueSelect: (issue: any) => void;
     onOpenOutputPreview: () => void;
-    onFileFixed?: (blob: Blob, name: string) => void;
+    onFileFixed?: (blob: Blob, name: string, path?: string) => void;
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
 }
@@ -226,7 +226,7 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'sticker' && (
-                <StickerTool pdfFile={pdfFile} onFileFixed={(blob, name) => { if (onFileFixed) onFileFixed(blob, name); }} />
+                <StickerTool pdfFile={pdfFile} onFileFixed={(blob, name, path) => { if (onFileFixed) onFileFixed(blob, name, path); }} />
             )}
 
             {activeTool === 'bgremover' && (

@@ -368,7 +368,7 @@ def _gs_downsample(input_path: str, output_path: str, target_dpi: int) -> bool:
     mono_dpi = min(int(target_dpi) * 2, 1200)
     cmd = [
         gs_path,
-        "-dNOSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
+        "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
         "-sDEVICE=pdfwrite",
         "-dAutoRotatePages=/None",
         "-dColorConversionStrategy=/LeaveColorUnchanged",  # KHÔNG đổi màu → giữ CMYK/spot

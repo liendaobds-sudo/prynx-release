@@ -36,8 +36,12 @@ def _build_diff_regions(raw_regions: list | None) -> list[DiffRegion]:
     ]
 
 
-def _build_page_response(pr) -> PageResultResponse:
-    """Build a PageResultResponse from a PageResult ORM object."""
+def _build_page_response(pr, summary: dict | None = None) -> PageResultResponse:
+    """Build a response and expose source-page -> imposed-sheet mapping."""
+    matched_b_page = None
+    page_mapping = (summary or {}).get("page_mapping")
+    if isinstance(page_mapping, list) and 0 < pr.page_number <= len(page_mapping):
+        matched_b_page = page_mapping[pr.page_number - 1]
     return PageResultResponse(
         page_number=pr.page_number,
         status=pr.status or "unknown",
@@ -46,6 +50,8 @@ def _build_page_response(pr) -> PageResultResponse:
         diff_regions=_build_diff_regions(pr.diff_regions),
         highlighted_image_url=pr.highlighted_image_path,
         gif_image_url=pr.gif_image_path,
+        is_imposition_mode=bool(pr.is_imposition_mode),
+        matched_b_page=matched_b_page,
     )
 
 
@@ -73,7 +79,7 @@ def get_job_results(job_id: str, db: Session = Depends(get_db), license_info: di
     )
 
     # Build response
-    pages = [_build_page_response(pr) for pr in page_results]
+    pages = [_build_page_response(pr, job.result_summary) for pr in page_results]
 
     # Build file URLs
     file_a_url = f"/api/files/{job.file_a_id}/serve"
@@ -99,7 +105,8 @@ def get_page_result(job_id: str, page_num: int, db: Session = Depends(get_db), l
     if not pr:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy kết quả trang {page_num}")
 
-    return _build_page_response(pr)
+    job = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).first()
+    return _build_page_response(pr, job.result_summary if job else None)
 
 
 @router.delete("/jobs/{job_id}")

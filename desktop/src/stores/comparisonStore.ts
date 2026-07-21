@@ -4,6 +4,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+export type PageMatchingMode = 'auto' | 'sequential' | 'imposition';
+
 export interface UploadedFile {
   id: string;
   filename: string;
@@ -36,6 +38,7 @@ export interface PageResult {
   highlighted_image_url: string | null;
   gif_image_url?: string | null;
   is_imposition_mode?: boolean;
+  matched_b_page?: number | null;
 }
 
 interface ComparisonState {
@@ -65,12 +68,14 @@ interface ComparisonState {
 
   // Settings
   comparisonMode: string;
+  pageMatchingMode: PageMatchingMode;
   isPackagingMode: boolean;
   llmMode: string;
   cloudApiKey: string;
   tolerance: string;
   dpi: number;
   setComparisonMode: (mode: string) => void;
+  setPageMatchingMode: (mode: PageMatchingMode) => void;
   setIsPackagingMode: (val: boolean) => void;
   setLlmMode: (mode: string) => void;
   setCloudApiKey: (key: string) => void;
@@ -111,12 +116,14 @@ export const useComparisonStore = create<ComparisonState>()(
       setResults: (results, summary) => set({ results, summary: summary ?? null }),
 
       comparisonMode: 'full',
+      pageMatchingMode: 'auto',
       isPackagingMode: false,
       llmMode: 'off',
       cloudApiKey: '',
       tolerance: 'NORMAL',
       dpi: 300,
       setComparisonMode: (mode) => set({ comparisonMode: mode }),
+      setPageMatchingMode: (mode) => set({ pageMatchingMode: mode }),
       setIsPackagingMode: (val) => set({ isPackagingMode: val }),
       setLlmMode: (mode) => set({ llmMode: mode }),
       setCloudApiKey: (key) => set({ cloudApiKey: key }),
@@ -136,6 +143,7 @@ export const useComparisonStore = create<ComparisonState>()(
           results: [],
           summary: null,
           comparisonMode: 'full',
+          pageMatchingMode: 'auto',
           isPackagingMode: false,
         }),
     }),
@@ -143,6 +151,7 @@ export const useComparisonStore = create<ComparisonState>()(
       name: 'pdf-compare-settings',
       partialize: (state) => ({
         comparisonMode: state.comparisonMode,
+        pageMatchingMode: state.pageMatchingMode,
         isPackagingMode: state.isPackagingMode,
         llmMode: state.llmMode,
         cloudApiKey: state.cloudApiKey,
