@@ -140,7 +140,7 @@ export default function HairlinesTool({ pdfFile, onFileFixed }: Props) {
       <div>
         <button onClick={run} disabled={running}
           className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
-          {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.hairlines:dang_quet_sua')}</>) : (<>{t('preprocess.hairlines:quet_sua_net_manh')}</>)}
+          {running ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.common:run')}…</>) : (<>{t('preprocess.common:run')}</>)}
         </button>
       </div>
 

@@ -15,6 +15,7 @@ import pytest
 
 from app.workers import pdf_wrapper as pdf_lib
 from app.core.plan_executor import PlanExecutor
+from app.core.imposition_page_box import effective_imposition_box
 
 
 def _make_source(tmp_path, specs):
@@ -77,6 +78,65 @@ def test_skips_blank_padding_pages(tmp_path):
     doc = pdf_lib.open(out)
     assert doc.page_count == 1
     doc.close()
+
+
+def test_appends_separated_cover_pages_at_original_size(tmp_path):
+    src = _make_source(tmp_path, ['plain', 'plain', 'plain'])
+    out_dir = str(tmp_path / 'out')
+    plan = _plan(src, out_dir, [{
+        'sheet_index': 0, 'width_pt': 200, 'height_pt': 200,
+        'front': {'placements': [{'source_page': 1, 'x_pt': 10, 'y_pt': 10, 'scale': 1.0}], 'marks': []},
+    }])
+    plan['append_source_pages'] = [
+        {'source_page': 0, 'rotation_deg': 0},
+        {'source_page': 2, 'rotation_deg': 0},
+    ]
+    out = _run(plan, src)
+    doc = pdf_lib.open(out)
+    assert doc.page_count == 3
+    assert round(doc[1].rect.width) == 100
+    assert round(doc[1].rect.height) == 100
+    assert round(doc[2].rect.width) == 100
+    assert round(doc[2].rect.height) == 100
+    doc.close()
+
+
+def test_large_cropbox_difference_is_the_logical_booklet_page(tmp_path):
+    import pikepdf
+    pdfium = pytest.importorskip('pypdfium2')
+
+    # MediaBox contains two logical 100x100 pages. CropBox selects the right one.
+    # This mirrors exports where alternating booklet pages occupy left/right halves
+    # of one large design canvas.
+    doc = pdf_lib.open()
+    pg = doc.new_page(width=200, height=100)
+    sh = pg.new_shape()
+    sh.draw_rect(pdf_lib.Rect(100, 0, 200, 100))
+    sh.finish(color=(0, 0, 0), fill=(0, 0, 0))
+    sh.commit()
+    pg._page.CropBox = pikepdf.Array([100, 0, 200, 100])
+    src = str(tmp_path / 'split_canvas.pdf')
+    buf = io.BytesIO(); doc.save(buf); doc.close()
+    open(src, 'wb').write(buf.getvalue())
+
+    check = pdf_lib.open(src)
+    box = effective_imposition_box(check[0])
+    assert round(box.width) == 100
+    assert round(box.height) == 100
+    check.close()
+
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0, 'width_pt': 100, 'height_pt': 100,
+        'front': {'placements': [{
+            'source_page': 0, 'x_pt': 0, 'y_pt': 0, 'scale': 1.0,
+            'rotation_deg': 0, 'native_angle': 0,
+            'clip': {'x_pt': 0, 'y_pt': 0, 'w_pt': 100, 'h_pt': 100},
+        }], 'marks': []},
+    }])
+    out = _run(plan, src)
+    rendered = pdfium.PdfDocument(out)[0].render(scale=2.0).to_pil().convert('L')
+    dark_fraction = sum(rendered.histogram()[:80]) / (rendered.width * rendered.height)
+    assert dark_fraction > 0.80
 
 
 def test_page_position_and_orientation_no_yflip(tmp_path):

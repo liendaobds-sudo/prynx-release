@@ -40,7 +40,7 @@ const PARAM_LABELS: Record<string, string> = {
     // Tạo đường cắt / bù xén tem
     productType: 'Loại sản phẩm', cutMode: 'Kiểu đường cắt', offsetMm: 'Dời mép (mm)',
     cornerStyle: 'Kiểu góc', fillHoles: 'Lấp lỗ thủng', bleedMm: 'Bù xén (mm)',
-    removeWhiteBg: 'Bỏ nền trắng', trimWhiteEdge: 'Xén lề trắng',
+    removeWhiteBg: 'Bỏ nền trắng', trimWhiteEdge: 'Thiết lập cũ (đã vô hiệu)',
     bleedColorType: 'Kiểu màu bù xén', bleedColorHex: 'Màu bù xén', edgeBiteMm: 'Ăn mép (mm)',
     // Bình bài
     sheetWidth: 'Rộng tờ in (mm)', sheetHeight: 'Cao tờ in (mm)', cols: 'Số cột', rows: 'Số hàng',

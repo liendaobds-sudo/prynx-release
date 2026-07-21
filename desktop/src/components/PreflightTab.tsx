@@ -367,7 +367,7 @@ export default function PreflightTab({ onDirtyChange, tabId, isActive }: any = {
                             </div>
 
                             <Button variant="primary" className="w-full h-10 text-sm font-bold shadow-lg" onClick={runInspect} disabled={isInspecting || selectedRules.size === 0}>
-                              {t('preflight.preflight:chay_preflight_rules', { n: selectedRules.size })}
+                              {t('preprocess.common:run')}{isInspecting ? '…' : ''}
                             </Button>
                           </div>
                         )}
@@ -467,7 +467,7 @@ export default function PreflightTab({ onDirtyChange, tabId, isActive }: any = {
                               </div>
                               <Button variant="primary" className="w-full h-10 text-sm font-bold" onClick={runPipeline}
                                 disabled={selectedActions.size === 0 || !!fixingAction}>
-                                {t('preflight.preflight:thuc_thi_n', { n: selectedActions.size })}
+                                {t('preprocess.common:run')}{fixingAction ? '…' : ''}
                               </Button>
                             </div>
 

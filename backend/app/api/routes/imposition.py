@@ -435,6 +435,7 @@ async def get_pdf_meta(body: dict):
     Expects body: { "path": "C:/Users/.../catalog.pdf" }
     """
     from app.workers import pdf_wrapper as pdf_lib
+    from app.core.imposition_page_box import effective_imposition_box
     
     pdf_path = _validate_file_path(body.get("path"))
     
@@ -452,9 +453,9 @@ async def get_pdf_meta(body: dict):
         detected_bleed_mm = 0.0  # bleed suy ra từ (MediaBox - TrimBox)/2 của trang đầu
         for i in range(scan_limit):
             page = pdf[i]
-            # Dùng MediaBox = đúng kích thước file người dùng thấy (gồm cả bleed).
-            # KHÔNG ưu tiên TrimBox: tránh cắt mất phần bleed ngoài của file.
-            src_box = page.mediabox or page.cropbox or page.trimbox or page.rect
+            # MediaBox giữ bleed khi chênh lệch nhỏ; CropBox là trang logic khi
+            # MediaBox thực chất là canvas lớn chứa nhiều trang đặt cạnh nhau.
+            src_box = effective_imposition_box(page)
             w = src_box.width
             h = src_box.height
             rot = page.rotation

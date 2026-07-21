@@ -265,7 +265,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
       <div className="h-px w-full bg-slate-200 dark:bg-zinc-700" />
       <button onClick={exportPdfx} disabled={exporting}
         className="w-full px-2.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-teal-700">
-        {exporting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.savePdfx:dang_xuat')}</>) : (<>🚀 {t('preprocess.savePdfx:xuat_x', { x: standard === 'x1a' ? 'PDF/X-1a' : 'PDF/X-4' })}</>)}
+        {exporting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.common:run')}…</>) : (<>{t('preprocess.common:run')}</>)}
       </button>
 
       {/* ═══ STATUS ═══ */}

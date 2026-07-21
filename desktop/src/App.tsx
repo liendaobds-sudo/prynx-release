@@ -141,8 +141,8 @@ function TitleBar({ onOpenSettings }: { onOpenSettings: () => void }) {
   );
 }
 
-/** Minimum time to keep brand intro visible (~animation + short hold). */
-const SPLASH_MIN_MS = 4800;
+/** Minimum time to keep brand intro visible (~light animation + short hold). */
+const SPLASH_MIN_MS = 3000;
 
 export default function App() {
   const { user, licenseKey, isChecking, checkSession, setUser, isLicenseLocked } = useAuthStore();

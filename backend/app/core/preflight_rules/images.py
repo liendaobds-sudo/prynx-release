@@ -127,42 +127,36 @@ class ImageRulesMixin:
             pass
         return issues
 
-    def _get_page_images(self, page):
-        """Extract image info from page Resources/XObject using pikepdf."""
+    def _get_page_images(self, page, pdf=None):
+        """Extract image info từ MỌI resource của trang (đệ quy Form XObject + SMask).
+
+        Trước đây chỉ đọc ``page/Resources/XObject`` mức trang → bỏ sót ảnh nằm
+        trong Form XObject lồng (rất phổ biến từ AI/InDesign) và SMask. Nay duyệt
+        qua ``resource_walker.iter_images``. ColorSpace được resolve sâu để bắt cả
+        RGB dạng ``[/ICCBased <stream N=3>]`` (chuỗi thô không chứa "RGB").
+        """
+        from app.core.preflight_rules.resource_walker import iter_images
+
         images = []
+        _pdf = pdf if pdf is not None else getattr(page, "pdf", None)
         try:
-            resources = page.get("/Resources")
-            if not resources:
-                return images
-            xobjects = resources.get("/XObject")
-            if not xobjects:
-                return images
-            for name, ref in xobjects.items():
+            for name, obj in iter_images(page, _pdf):
                 try:
-                    obj = ref
-                    if hasattr(ref, 'resolve'):
-                        obj = ref.resolve() if callable(getattr(ref, 'resolve', None)) else ref
-                    subtype = str(obj.get("/Subtype", ""))
-                    if subtype != "/Image":
-                        continue
                     w = _resolve_pdf_int(obj, "/Width", 0)
                     h = _resolve_pdf_int(obj, "/Height", 0)
                     bpc = _resolve_pdf_int(obj, "/BitsPerComponent", 8)
-                    cs = str(obj.get("/ColorSpace", ""))
-                    
-                    # Check for /OPI key
+                    cs_norm = self._normalize_image_colorspace(obj)
+
                     has_opi = "/OPI" in str(obj)
-                    
-                    # Check for /Indexed (GIF-like)
-                    is_indexed = "/Indexed" in cs or "/Indexed" in str(obj.get("/ColorSpace", ""))
-                    
+                    is_indexed = "Indexed" in cs_norm
+
                     images.append({
                         "name": str(name),
                         "obj": obj,
                         "width": w,
                         "height": h,
                         "bpc": bpc,
-                        "colorspace": cs,
+                        "colorspace": cs_norm,
                         "has_opi": has_opi,
                         "is_indexed": is_indexed,
                     })
@@ -171,6 +165,74 @@ class ImageRulesMixin:
         except Exception:
             pass
         return images
+
+    @staticmethod
+    def _normalize_image_colorspace(img_obj) -> str:
+        """Resolve /ColorSpace ảnh thành chuỗi chuẩn hoá CÓ chứa tên hệ màu thật.
+
+        Bắt được RGB/CMYK/Gray dạng ICCBased (color space là mảng
+        ``[/ICCBased <stream>]`` với ``/N`` = 1/3/4 → Gray/RGB/CMYK), điều mà
+        ``str(cs)`` cũ bỏ sót (chuỗi không chứa "RGB"). Với Indexed thì cũng resolve
+        base color space để phân loại đúng.
+        """
+        def _resolve(o):
+            try:
+                if hasattr(o, "resolve") and callable(getattr(o, "resolve", None)):
+                    return o.resolve()
+            except Exception:
+                pass
+            return o
+
+        def _n_to_model(n: int) -> str:
+            return {1: "DeviceGray", 3: "DeviceRGB", 4: "DeviceCMYK"}.get(n, "")
+
+        def _describe(cs, depth=0) -> str:
+            if depth > 6 or cs is None:
+                return ""
+            cs = _resolve(cs)
+            if isinstance(cs, pikepdf.Name):
+                return str(cs)
+            if isinstance(cs, pikepdf.Array):
+                parts = []
+                try:
+                    items = list(cs)
+                except Exception:
+                    items = []
+                head = str(items[0]) if items else ""
+                parts.append(head)
+                if "ICCBased" in head and len(items) >= 2:
+                    stream = _resolve(items[1])
+                    try:
+                        n = int(stream.get("/N", 0))
+                    except Exception:
+                        n = 0
+                    model = _n_to_model(n)
+                    if model:
+                        parts.append(model)
+                    # ICC có thể ghi kèm /Alternate → mô tả luôn.
+                    alt = stream.get("/Alternate") if isinstance(stream, (pikepdf.Stream, pikepdf.Dictionary)) else None
+                    if alt is not None:
+                        parts.append(_describe(alt, depth + 1))
+                elif ("Indexed" in head or "Separation" in head or "DeviceN" in head) and len(items) >= 2:
+                    # base colorspace nằm ở phần tử phù hợp; mô tả tất cả để phân loại.
+                    for extra in items[1:]:
+                        parts.append(_describe(extra, depth + 1))
+                return " ".join(p for p in parts if p)
+            if isinstance(cs, (pikepdf.Stream, pikepdf.Dictionary)):
+                try:
+                    n = int(cs.get("/N", 0))
+                except Exception:
+                    n = 0
+                return _n_to_model(n)
+            return str(cs)
+
+        try:
+            return _describe(img_obj.get("/ColorSpace"))
+        except Exception:
+            try:
+                return str(img_obj.get("/ColorSpace", ""))
+            except Exception:
+                return ""
 
     def _check_image_resolution(self, doc, active_rules: set, page_nums: list[int] = None) -> list[PreflightIssue]:
         """Check image DPI (per placement, real CTM) + colorspace (per XObject).
@@ -188,6 +250,8 @@ class ImageRulesMixin:
         if not hasattr(self, "_has_rgb"):
             self._has_rgb = False
             self._has_spot = False
+        if not hasattr(self, "_has_cmyk"):
+            self._has_cmyk = False
 
         pdf_path = getattr(doc, "_path", None)
         want_dpi = ("IMAGE_LOW_RES" in active_rules) or ("IMAGE_HIGH_DPI" in active_rules)
@@ -202,7 +266,7 @@ class ImageRulesMixin:
             if not mb:
                 continue  # trang thiếu MediaBox → bỏ qua (Yêu cầu 4.3)
 
-            images = self._get_page_images(page)
+            images = self._get_page_images(page, doc)
 
             # ── Kiểm màu + OPI: theo từng image XObject (giữ nguyên hành vi) ──
             for img in images:
@@ -229,6 +293,8 @@ class ImageRulesMixin:
                             auto_fixable=True,
                             bbox=None,
                         ))
+                if "CMYK" in cs_str:
+                    self._has_cmyk = True
                 if "Separation" in cs_str or "DeviceN" in cs_str:
                     self._has_spot = True
                     if "COLOR_SPOT_DETECTED" in active_rules:
@@ -311,21 +377,31 @@ class ImageRulesMixin:
         return issues
 
     def _check_gif_in_pdf(self, doc, page_nums: list[int] = None) -> list[PreflightIssue]:
-        """Check for GIF images embedded in the PDF (lossy, limited palette — bad for print)."""
+        """Cảnh báo ảnh Indexed palette NGHÈO (kiểu GIF cũ), chất lượng in kém.
+
+        Code cũ gắn cờ MỌI ảnh Indexed ``bpc<=8`` → dương tính giả: PNG-8 / ảnh
+        Indexed 256 màu từ InDesign/Illustrator in vẫn tốt, không phải GIF. Nay chỉ
+        cảnh báo palette thực sự nghèo (``bpc<=4`` = tối đa 16 màu — gần như chắc là
+        đồ hoạ palette cũ), và hạ severity xuống info (gợi ý, không phải lỗi).
+        """
         issues = []
         page_count = len(doc.pages)
         target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
         for page_num in target_pages:
             page = doc.pages[page_num]
-            images = self._get_page_images(page)
+            images = self._get_page_images(page, doc)
             for img in images:
-                if img["is_indexed"] and img["bpc"] <= 8:
+                if img["is_indexed"] and 0 < img["bpc"] <= 4:
+                    max_colors = 2 ** img["bpc"]
                     issues.append(PreflightIssue(
                         rule_id="GIF_IN_PDF",
-                        severity="warning",
+                        severity="info",
                         page=page_num + 1,
                         object_ref=f"Image {img['name']}",
-                        description="Phát hiện ảnh Indexed (dạng GIF/palette). Ảnh chỉ có tối đa 256 màu, chất lượng in kém. Nên thay bằng TIFF/JPEG.",
+                        description=(
+                            f"Ảnh Indexed palette nghèo (tối đa {max_colors} màu). "
+                            "Chất lượng in có thể kém; cân nhắc thay bằng TIFF/JPEG nếu là ảnh chụp."
+                        ),
                         auto_fixable=False,
                         bbox=None,
                     ))
@@ -338,7 +414,7 @@ class ImageRulesMixin:
         target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
         for page_num in target_pages:
             page = doc.pages[page_num]
-            images = self._get_page_images(page)
+            images = self._get_page_images(page, doc)
             for img in images:
                 try:
                     obj = img["obj"]

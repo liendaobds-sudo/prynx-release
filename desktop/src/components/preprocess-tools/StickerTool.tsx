@@ -60,6 +60,14 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         const n = typeof raw === 'number' && isFinite(raw) ? raw : defaultVal;
         return Math.min(max, Math.max(min, n));
     };
+    const getSavedEdgeBite = () => {
+        const saved = getSavedNum('edgeBiteMm', 0.0, 0, 5);
+        const version = localStorage.getItem('ps_sticker_edgeBiteVersion');
+        // Migrate the former 0.4 mm default once, while preserving deliberate
+        // user values such as 0.2, 0.5 or 1.5 mm.
+        if (version !== '2' && saved === 0.4) return 0.0;
+        return saved;
+    };
 
     // UI State for Sticker
     const [cutMode, setCutMode] = useState(() => getSaved('cutMode', 'original'));
@@ -78,14 +86,11 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     // Shared State
     const [bleedMm, setBleedMm] = useState<number>(() => getSavedNum('bleedMm', 0.0, 0, 10));
     const [removeWhiteBg, setRemoveWhiteBg] = useState<boolean>(() => getSaved('removeWhiteBg', true));
-    // Tab "Xén vuông góc" dùng cờ RIÊNG: "Xóa lề trắng thừa" (auto-trim) khác hẳn
-    // ngữ nghĩa "Bỏ nền trắng" (lọc mask dò viền) của tab Bế tem. Không dùng chung.
-    const [trimWhiteEdge, setTrimWhiteEdge] = useState<boolean>(() => getSaved('trimWhiteEdge', true));
     const [bleedColorType, setBleedColorType] = useState(() => getSaved('bleedColorType', 'image')); // 'mirror', 'image', 'inpaint', 'solid'
     const [bleedColorHex, setBleedColorHex] = useState(() => getSaved('bleedColorHex', '#FFFFFF'));
     // "Lẹm mép" (rectangle): hút màu sâu vào trong để doa viền trắng mảnh của file không tràn lề.
     // Con dao 2 lưỡi — lẹm quá ăn vào nội dung sát mép → default nhỏ, cho chỉnh/tắt (0).
-    const [edgeBiteMm, setEdgeBiteMm] = useState<number>(() => getSavedNum('edgeBiteMm', 0.4, 0, 5));
+    const [edgeBiteMm, setEdgeBiteMm] = useState<number>(getSavedEdgeBite);
 
     // Đổi kiểu màu nền: khi chọn "Đổ màu trơn" mà giá trị hiện tại chưa ở dạng CMYK
     // ("C,M,Y,K"), khởi tạo về "0,0,0,0" để khung CMYK và giá trị gửi backend khớp
@@ -97,6 +102,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         }
     };
 
+
     // Save to localStorage whenever state changes
     useEffect(() => {
         localStorage.setItem('ps_sticker_cutMode', JSON.stringify(cutMode));
@@ -105,12 +111,12 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         localStorage.setItem('ps_sticker_fillHoles', JSON.stringify(fillHoles));
         localStorage.setItem('ps_sticker_bleedMm', JSON.stringify(bleedMm));
         localStorage.setItem('ps_sticker_removeWhiteBg', JSON.stringify(removeWhiteBg));
-        localStorage.setItem('ps_sticker_trimWhiteEdge', JSON.stringify(trimWhiteEdge));
         localStorage.setItem('ps_sticker_bleedColorType', JSON.stringify(bleedColorType));
         localStorage.setItem('ps_sticker_bleedColorHex', JSON.stringify(bleedColorHex));
         localStorage.setItem('ps_sticker_edgeBiteMm', JSON.stringify(edgeBiteMm));
+        localStorage.setItem('ps_sticker_edgeBiteVersion', '2');
         localStorage.setItem('ps_sticker_cutFirstPageOnly', JSON.stringify(cutFirstPageOnly));
-    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly]);
+    }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -121,26 +127,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const runVectorMirror = async () => {
         // Step 1: Upload
         const uploadRes = await uploadPDF((await getWorkingFile()) || pdfFile!);
-        let currentFid = uploadRes.id;
+        const currentFid = uploadRes.id;
         
-        // Step 2: Auto Trim (if requested)
-        if (trimWhiteEdge) {
-            const trimRes = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: currentFid, pages: null, margin_mm: 0 }),
-            });
-            const trimData = await trimRes.json();
-            if (!trimData.success) throw new Error(trimData.detail || t('preprocess.sticker:loi_xoa_le_trang'));
-            
-            // Download the trimmed file to re-upload it (since API expects file_id)
-            const dlRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${trimData.output_filename}`);
-            const trimBlob = await dlRes.blob();
-            const trimFile = new File([trimBlob], 'trimmed.pdf', { type: 'application/pdf' });
-            
-            const reUploadRes = await uploadPDF(trimFile);
-            currentFid = reUploadRes.id;
-        }
-        
+        // Khổ trang hiện tại là khổ thành phẩm. Không pixel-auto-trim trước khi
+        // bù xén vì vùng trắng sát mép có thể là một phần hợp lệ của thiết kế.
         const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/mirror-bleed`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ file_id: currentFid, bleed_mm: bleedMm, pages: null }),
@@ -154,24 +144,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     };
 
     const runOpenCVBleed = async () => {
-        let currentFid = '';
-        let targetFile = (await getWorkingFile()) || pdfFile!;
-        
-        if (productType === 'rectangle' && trimWhiteEdge) {
-            const uploadRes = await uploadPDF(targetFile);
-            currentFid = uploadRes.id;
-            
-            const trimRes = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: currentFid, pages: null, margin_mm: 0 }),
-            });
-            const trimData = await trimRes.json();
-            if (!trimData.success) throw new Error(trimData.detail || t('preprocess.sticker:loi_xoa_le_trang'));
-            
-            const dlRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${trimData.output_filename}`);
-            const trimBlob = await dlRes.blob();
-            targetFile = new File([trimBlob], 'trimmed.pdf', { type: 'application/pdf' });
-        }
+        const targetFile = (await getWorkingFile()) || pdfFile!;
 
         // We use uploadPDF first to bypass FastAPI multipart bugs when mixing files and text fields
         const uploadRes = await uploadPDF(targetFile);
@@ -240,7 +213,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         // ─── Recipe record hook ─── (params tất định; phát lại dò contour lại trên file mới)
         recipeRecorder.noteOperation('sticker_dieline', {
             productType, cutMode, offsetMm, cornerStyle, fillHoles,
-            bleedMm, removeWhiteBg, trimWhiteEdge, bleedColorType, bleedColorHex, edgeBiteMm,
+            bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
             cutFirstPageOnly, shapeMode: forceContour ? 'contour' : 'auto_safe',
         });
 
@@ -351,18 +324,38 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                     </div>
                                 </div>
                                 <p className="text-[10px] text-slate-400 mt-1 mb-4">{t('preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong')}</p>
-                                <button
-                                    onClick={() => setCutFirstPageOnly(!cutFirstPageOnly)}
-                                    aria-pressed={cutFirstPageOnly}
+                                <label
                                     title={t('preprocess.sticker:file_nhieu_loai_tem_dung_chung_1_khuon')}
-                                    className={`w-full h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-2 ${
+                                    className={`w-full min-h-[38px] rounded-lg border px-3 py-2 flex items-center gap-2.5 cursor-pointer select-none transition-all ${
                                         cutFirstPageOnly
                                             ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
-                                            : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                                            : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50 text-slate-700 dark:border-zinc-600 dark:bg-zinc-900 dark:hover:border-zinc-500 dark:hover:bg-zinc-800 dark:text-zinc-300'
                                     }`}
                                 >
-                                    {cutFirstPageOnly ? t('preprocess.sticker:tao_duong_cat_cho_trang_dau') : t('preprocess.sticker:tao_duong_cat_cho_trang_dau_2')}
-                                </button>
+                                    <input
+                                        type="checkbox"
+                                        checked={cutFirstPageOnly}
+                                        onChange={(event) => setCutFirstPageOnly(event.target.checked)}
+                                        className="peer sr-only"
+                                    />
+                                    <span
+                                        aria-hidden="true"
+                                        className={`h-[18px] w-[18px] shrink-0 rounded border-2 flex items-center justify-center transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2 dark:peer-focus-visible:ring-offset-zinc-900 ${
+                                            cutFirstPageOnly
+                                                ? 'border-teal-600 bg-teal-600 text-white'
+                                                : 'border-slate-400 bg-white dark:border-zinc-500 dark:bg-zinc-950'
+                                        }`}
+                                    >
+                                        {cutFirstPageOnly && (
+                                            <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                <path d="M3 8.25 6.5 11.5 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
+                                            </svg>
+                                        )}
+                                    </span>
+                                    <span className="text-[11px] font-bold leading-tight">
+                                        {t('preprocess.sticker:tao_duong_cat_cho_trang_dau_2')}
+                                    </span>
+                                </label>
                                 <p className="text-[10px] text-slate-400 mt-1 mb-4">{t('preprocess.sticker:nhieu_loai_tem_chung_khuon_chi_trang')}</p>
                             </>
                         )}
@@ -454,9 +447,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             {productType === 'rectangle' && (
                 <div className="animate-in slide-in-from-right-4 fade-in duration-300 space-y-4">
                     <div>
-                        <ToolSectionLabel>{t('preprocess.sticker:xoa_le_trang_bu_xen')}</ToolSectionLabel>
-                        
-                        <div className="flex gap-2 mb-4 items-end">
+                        <div className="flex items-end gap-3 mb-4">
                             <ToolNumberInput
                                 label={t('preprocess.sticker:do_day_bleed')}
                                 value={bleedMm}
@@ -465,24 +456,22 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                 step={0.5}
                                 min={0}
                                 max={10}
-                                className="w-[90px] shrink-0"
+                                className="flex-1 min-w-0"
                             />
-                            <div className="flex-1">
-                                <button
-                                    onClick={() => setTrimWhiteEdge(!trimWhiteEdge)}
-                                    aria-pressed={trimWhiteEdge}
-                                    title={t('preprocess.sticker:tu_dong_thu_gon_cac_khoang_trang_vo')}
-                                    className={`w-full h-[32px] rounded border text-[11px] transition-all flex items-center justify-center font-bold px-2 whitespace-nowrap overflow-hidden ${
-                                        trimWhiteEdge
-                                            ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
-                                            : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
-                                    }`}
-                                >
-                                    {trimWhiteEdge ? t('preprocess.sticker:xoa_le_trang_thua') : t('preprocess.sticker:xoa_le_trang_thua_2')}
-                                </button>
-                            </div>
+                            {(bleedColorType === 'image' || bleedColorType === 'inpaint') && (
+                                <ToolNumberInput
+                                    label={t('preprocess.sticker:do_lem_mep')}
+                                    value={edgeBiteMm}
+                                    onChange={setEdgeBiteMm}
+                                    suffix="mm"
+                                    step={0.1}
+                                    min={0}
+                                    max={5}
+                                    className="flex-1 min-w-0"
+                                />
+                            )}
                         </div>
-                        
+
                         <div className="p-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-200 dark:border-zinc-700/50">
                             <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">{t('preprocess.sticker:mau_nen_bu_xen')}</label>
                             <div className="flex flex-col gap-1.5 mb-2 relative z-[50]">
@@ -529,25 +518,6 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             )}
                         </div>
 
-                        {/* Lẹm mép (doa nền): chỉ hiển thị khi hút màu từ ảnh (image/inpaint).
-                            "Đổ màu trơn" và "Lật gương" không cần vì không phụ thuộc màu mép nguồn. */}
-                        {(bleedColorType === 'image' || bleedColorType === 'inpaint') && (
-                            <div className="mt-3 flex gap-2 items-end">
-                                <ToolNumberInput
-                                    label={t('preprocess.sticker:do_lem_mep')}
-                                    value={edgeBiteMm}
-                                    onChange={setEdgeBiteMm}
-                                    suffix="mm"
-                                    step={0.1}
-                                    min={0}
-                                    max={5}
-                                    className="w-[90px] shrink-0"
-                                />
-                                <p className="flex-1 text-[10.5px] text-slate-500 dark:text-zinc-400 leading-snug pb-1">
-                                    {t('preprocess.sticker:lem_nhe_vao_trong_de')} <strong>{t('preprocess.sticker:doa_vien_trang_manh')}</strong> {t('preprocess.sticker:khi_file_khong_tran_le_dat')} <strong>0</strong> {t('preprocess.sticker:neu_co_chu_chi_tiet_sat_mep')}
-                                </p>
-                            </div>
-                        )}
                     </div>
                 </div>
             )}
@@ -562,7 +532,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             : 'bg-indigo-600 hover:bg-indigo-700 text-white'
                     }`}
                 >
-                    {isProcessing ? t('preprocess.sticker:dang_xu_ly') : (productType === 'sticker' ? t('preprocess.sticker:tu_dong_bu_xen_tao_vien_cat') : t('preprocess.sticker:tu_dong_bu_xen_hinh_vuong'))}
+                    {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                 </button>
             ) : (
                 <div className="mt-4 bg-white dark:bg-zinc-800 p-4 rounded-xl shadow-sm border border-emerald-200 dark:border-emerald-800/50 animate-in fade-in slide-in-from-bottom-2 duration-300">

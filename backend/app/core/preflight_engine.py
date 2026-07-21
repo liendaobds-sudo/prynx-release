@@ -35,9 +35,10 @@ def _content_stream_worker(pdf_path: str, page_nums: list[int], active_rules: se
         "image_low_res": 0,
         "image_min_dpi": 9999,
         "has_rgb": False,
-        "has_spot": False
+        "has_spot": False,
+        "has_cmyk": False,
     }
-    
+
     try:
         doc = pikepdf.Pdf.open(pdf_path)
         doc._path = pdf_path  # Attach path for pdfplumber fallback
@@ -48,6 +49,7 @@ def _content_stream_worker(pdf_path: str, page_nums: list[int], active_rules: se
         engine._image_min_dpi = 9999
         engine._has_rgb = False
         engine._has_spot = False
+        engine._has_cmyk = False
 
         if "IMAGE_LOW_RES" in active_rules or "IMAGE_HIGH_DPI" in active_rules or "IMAGE_NOT_EMBEDDED" in active_rules or "COLOR_RGB_DETECTED" in active_rules or "COLOR_SPOT_DETECTED" in active_rules:
             issues += engine._check_image_resolution(doc, active_rules, page_nums)
@@ -80,7 +82,8 @@ def _content_stream_worker(pdf_path: str, page_nums: list[int], active_rules: se
         stats["image_min_dpi"] = getattr(engine, "_image_min_dpi", 9999)
         stats["has_rgb"] = getattr(engine, "_has_rgb", False)
         stats["has_spot"] = getattr(engine, "_has_spot", False)
-        
+        stats["has_cmyk"] = getattr(engine, "_has_cmyk", False)
+
     except Exception as e:
         logger.error(f"Worker content-stream failed: {e}")
         issues.append(PreflightIssue(
@@ -164,6 +167,8 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
             if not hasattr(self, "_has_rgb"):
                 self._has_rgb = False
                 self._has_spot = False
+            if not hasattr(self, "_has_cmyk"):
+                self._has_cmyk = False
 
             CHUNK_SIZE = 10
             if total_pages <= CHUNK_SIZE:
@@ -221,6 +226,8 @@ class PreflightEngine(ColorRulesMixin, FontRulesMixin, ImageRulesMixin, Structur
                             self._has_rgb = True
                         if chunk_stats.get("has_spot"):
                             self._has_spot = True
+                        if chunk_stats.get("has_cmyk"):
+                            self._has_cmyk = True
 
             if "FONT_NOT_EMBEDDED" in active_rules:
                 if doc is None:

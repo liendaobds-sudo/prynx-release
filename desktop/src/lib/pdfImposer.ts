@@ -5,7 +5,7 @@ import { generateBindingMap } from './imposerEngine/VirtualMap';
 import { solveGeometry } from './imposerEngine/GeometricSolver';
 import { renderBooklet } from './imposerEngine/Renderer';
 import { renderNup } from './imposerEngine/NupRenderer';
-import { getSpreadPatternById, getPatternForPageCount } from './imposerEngine/FoldPatterns';
+import { getSpreadPatternById, getExactPatternForPageCount } from './imposerEngine/FoldPatterns';
 import { placeSpreadsByFoldPattern } from './imposerEngine/SpreadPlacer';
 import { serializeBookletPlan } from './imposerEngine/InstructionSerializer';
 import type { InstructionSet } from './imposerEngine/InstructionSerializer';
@@ -23,6 +23,18 @@ export { ImpositionMode };
 const sanitizeNumber = (value: any, defaultValue = 0): number => {
     const num = Number(value);
     return isNaN(num) ? defaultValue : num;
+};
+
+const effectivePdfLibPageBox = (page: any) => {
+    const media = page.getMediaBox?.() || page.getSize?.();
+    const crop = page.getCropBox?.();
+    if (!media || !crop || media.width <= 0 || media.height <= 0 || crop.width <= 0 || crop.height <= 0) {
+        return media || crop;
+    }
+    const widthRatio = crop.width / media.width;
+    const heightRatio = crop.height / media.height;
+    const areaRatio = (crop.width * crop.height) / (media.width * media.height);
+    return widthRatio < 0.80 || heightRatio < 0.80 || areaRatio < 0.75 ? crop : media;
 };
 
 export const imposePdf = async (
@@ -90,10 +102,9 @@ export const imposePdf = async (
                 angle += settings.pageRotations[i];
             }
             
-            // MediaBox-first (KHỚP backend pikepdf ép Box=MediaBox): bình theo TRANG VẬT LÝ.
-            // CropBox-first sẽ cắt lề trắng khi trang có CropBox chặt hơn MediaBox (vd sau
-            // auto-trim hoặc PDF vẽ CropBox ôm nội dung) → mất nền trắng, chỉ bình phần có mực.
-            const { x, y, width, height } = p.getMediaBox() || p.getCropBox();
+            // Giữ MediaBox cho bleed nhỏ; dùng CropBox khi MediaBox là canvas lớn
+            // chứa nhiều trang logic đặt cạnh nhau.
+            const { x, y, width, height } = effectivePdfLibPageBox(p);
             const ep = await outputPdf.embedPage(p, { left: x, bottom: y, right: x + width, top: y + height });
             embeddedPages.push(ep);
 
@@ -193,8 +204,8 @@ export const imposePdf = async (
                         continue;
                     }
                     const p = srcPagesTemp[pOriginalIndex];
-                    // MediaBox-first: giữ nguyên lề trắng (xem chú thích ở embed chính).
-                    const { x, y, width, height } = p.getMediaBox() || p.getCropBox();
+                    // Dùng cùng quy tắc effective box với backend.
+                    const { x, y, width, height } = effectivePdfLibPageBox(p);
                     const ep = await tempPdf.embedPage(p, { left: x, bottom: y, right: x + width, top: y + height });
                     tempEmbeddedPages.push(ep);
                 }
@@ -223,16 +234,18 @@ export const imposePdf = async (
                 const chainSourceDetails = tempPages.map(() => ({ visualW: cw, visualH: ch, angle: 0, x: 0, y: 0 }));
 
                 // Route: Fold Pattern → SpreadPlacer, otherwise → NupRenderer
-                let foldPattern = (settings as any).foldPattern && (settings as any).foldPattern !== 'auto'
+                const allowFoldPattern = (settings as any).paperClassification === 'offset'
+                    || (settings as any).imposerMode === 'offset';
+                let foldPattern = allowFoldPattern && (settings as any).foldPattern && (settings as any).foldPattern !== 'auto'
                     ? getSpreadPatternById((settings as any).foldPattern)
                     : null;
                 
                 // Auto-detect: pick best pattern based on signature page count
-                if ((settings as any).foldPattern === 'auto' && virtualMap.length > 0) {
+                if (allowFoldPattern && (settings as any).foldPattern === 'auto' && virtualMap.length > 0) {
                     // Detect pages per signature from the first sig
                     const firstSigSheets = virtualMap[0].sigTotalSheets ?? virtualMap.length;
                     const pagesPerSig = firstSigSheets * 4;
-                    foldPattern = getPatternForPageCount(pagesPerSig) ?? null;
+                    foldPattern = getExactPatternForPageCount(pagesPerSig) ?? null;
                     if (foldPattern) {
                         setStatus(i18n.t('lib.pdfImposer:auto_detect_chon_so_do_foldpattern_name', { name: foldPattern.name, pagesPerSig }));
                         if (foldPattern.pagesPerSig !== pagesPerSig) {
@@ -507,6 +520,17 @@ export const imposePdfViaBackend = async (
 
     setStatus(i18n.t('lib.pdfImposer:dang_tinh_toan_so_do_binh_trang'));
 
+    // Defense-in-depth: không cho knob Offset ẩn rò vào job Digital.
+    const isOffsetBooklet = (settings as any).paperClassification === 'offset'
+        || (settings as any).imposerMode === 'offset';
+    settings = {
+        ...settings,
+        paperClassification: isOffsetBooklet ? 'offset' : 'in_nhanh',
+        foldPattern: isOffsetBooklet ? (settings as any).foldPattern : undefined,
+        gripperMargin: isOffsetBooklet ? (settings as any).gripperMargin : 0,
+        interleave: !isOffsetBooklet || (settings as any).foldPattern ? 'normal' : (settings.interleave || 'normal'),
+    } as ProcessingSettings;
+
     // ──── STEP 1: Đọc metadata cơ bản từ file (chỉ lấy số trang + kích thước) ────
     // Gọi Backend API để lấy thông tin file mà không cần nạp file vào Webview
     const metaRes = await fetch(`${BACKEND_API}/api/imposition/pdf-meta`, {
@@ -540,9 +564,8 @@ export const imposePdfViaBackend = async (
         pageCount = srcPdf.getPageCount();
         const pages = srcPdf.getPages();
         for (const p of pages) {
-            // MediaBox-first (xem chú thích ở nhánh embed chính): dùng khổ trang vật lý
-            // cho phép tính scale, tránh cắt lề trắng khi CropBox chặt hơn MediaBox.
-            const { width, height } = p.getMediaBox() || p.getCropBox() || p.getSize();
+            // Dùng cùng quy tắc effective box với backend.
+            const { width, height } = effectivePdfLibPageBox(p);
             const angle = p.getRotation()?.angle || 0;
             const vw = (angle % 180 !== 0) ? height : width;
             const vh = (angle % 180 !== 0) ? width : height;
@@ -567,23 +590,74 @@ export const imposePdfViaBackend = async (
     // (index logic vào pageOrder) → index TRANG THẬT trong file gốc, hoặc null nếu là slot
     // trắng. source_page/backend giữ nguyên; slot null được backend skip (fix trang trắng
     // lệch mặt 2026-07-07).
-    const pageOrder: number[] | undefined = Array.isArray((settings as any).pageOrder)
-        ? (settings as any).pageOrder : undefined;
-    const effectiveCount = pageOrder ? pageOrder.length : pageCount;
+    const pageOrder: number[] = Array.isArray((settings as any).pageOrder)
+        ? [...(settings as any).pageOrder]
+        : Array.from({ length: pageCount }, (_, i) => i + 1);
+    const pageRotations: number[] = Array.isArray((settings as any).pageRotations)
+        ? [...(settings as any).pageRotations]
+        : Array.from({ length: pageOrder.length }, () => 0);
+
+    // Tách bìa trong chính pipeline backend đang hoạt động.
+    let bodyOrder = pageOrder;
+    let bodyRotations = pageRotations;
+    const appendSourcePages: { source_page: number; rotation_deg?: number }[] = [];
+    let separatedCoverCount = 0;
+    const wantSeparateCover = !!(settings as any).separateCover;
+    const coverCount = Math.max(2, Number((settings as any).coverPageCount) || 4);
+    if (wantSeparateCover && pageOrder.length >= coverCount + 4) {
+        const half = Math.floor(coverCount / 2);
+        const coverPositions = [
+            ...Array.from({ length: half }, (_, i) => i),
+            ...Array.from({ length: half }, (_, i) => pageOrder.length - half + i),
+        ];
+        for (const pos of coverPositions) {
+            const sourcePage = pageOrder[pos];
+            if (sourcePage > 0) {
+                appendSourcePages.push({ source_page: sourcePage - 1, rotation_deg: pageRotations[pos] || 0 });
+            }
+        }
+        bodyOrder = pageOrder.slice(half, pageOrder.length - half);
+        bodyRotations = pageRotations.slice(half, pageRotations.length - half);
+        separatedCoverCount = appendSourcePages.length;
+    }
+
+    const effectiveCount = bodyOrder.length;
     const mapResult = generateBindingMap(effectiveCount, bMode, (settings as any).foliosize, (settings as any).blankPlacement || 'end');
     const virtualMap = mapResult.sheets;
-    if (pageOrder) {
-        const remapSlot = (slot: { srcIndex: number | null }) => {
-            if (slot.srcIndex === null) return; // padding do map tự thêm → giữ trắng
-            const realPage = pageOrder[slot.srcIndex]; // 1-based trang gốc, hoặc -1 = trắng
-            slot.srcIndex = (realPage == null || realPage === -1) ? null : realPage - 1;
-        };
-        for (const sheet of virtualMap) {
-            remapSlot(sheet.front.left); remapSlot(sheet.front.right);
-            remapSlot(sheet.back.left); remapSlot(sheet.back.right);
-        }
+    const remapSlot = (slot: { srcIndex: number | null; userRotation?: number }) => {
+        if (slot.srcIndex === null) return;
+        const orderIndex = slot.srcIndex;
+        const realPage = bodyOrder[orderIndex];
+        slot.userRotation = bodyRotations[orderIndex] || 0;
+        slot.srcIndex = (realPage == null || realPage === -1) ? null : realPage - 1;
+    };
+    for (const sheet of virtualMap) {
+        remapSlot(sheet.front.left); remapSlot(sheet.front.right);
+        remapSlot(sheet.back.left); remapSlot(sheet.back.right);
     }
     let report = mapResult.report;
+    if (separatedCoverCount > 0) {
+        report += (report ? '\n' : '') + `Đã tách ${separatedCoverCount} trang bìa; bình ${bodyOrder.length} trang ruột.`;
+    }
+
+    // Chỉ dùng kích thước các trang thực sự nằm trong ruột, kể cả góc xoay riêng.
+    let selectedMaxW = 0;
+    let selectedMaxH = 0;
+    for (let i = 0; i < bodyOrder.length; i++) {
+        const sourcePage = bodyOrder[i];
+        if (sourcePage <= 0) continue;
+        const detail = srcPageDetails[sourcePage - 1];
+        if (!detail) continue;
+        const swapsAxes = Math.abs(bodyRotations[i] || 0) % 180 !== 0;
+        const w = swapsAxes ? detail.visualH : detail.visualW;
+        const h = swapsAxes ? detail.visualW : detail.visualH;
+        selectedMaxW = Math.max(selectedMaxW, w);
+        selectedMaxH = Math.max(selectedMaxH, h);
+    }
+    if (selectedMaxW > 0 && selectedMaxH > 0) {
+        maxSrcW = selectedMaxW;
+        maxSrcH = selectedMaxH;
+    }
 
     setStatus(i18n.t('lib.pdfImposer:dang_tinh_toan_kich_thuoc_tu_dong'));
     let reqSheetW = sanitizeNumber(settings.sheetWidth);
@@ -669,7 +743,13 @@ export const imposePdfViaBackend = async (
         sourcePdfPath,
         outputDir || 'results',
         pageCount,
+        appendSourcePages,
     );
+
+    if ((settings as any).foldPattern && instructionSet.phase2?.mode !== 'fold_pattern') {
+        const warn = `Sơ đồ gấp ${(settings as any).foldPattern} không khớp toàn bộ tay sách; đã chuyển sang Step & Repeat an toàn.`;
+        report += (report ? '\n' : '') + warn;
+    }
 
 
     // ──── STEP 4: Gửi JSON cho Backend Python thực thi ────

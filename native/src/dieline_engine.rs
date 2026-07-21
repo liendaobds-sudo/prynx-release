@@ -11,20 +11,27 @@ const MAX_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 thread_local! {
     // Boa contexts are intentionally thread-local: they are not Send, and
     // parsing the bundled engine on every preview request would cause jitter.
-    static ENGINE_CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) };
+    // The context is `&'static mut` (leaked) rather than owned on purpose: boa's
+    // GC heap lives in a separate thread-local whose teardown order at thread
+    // exit is unspecified. If that heap is dropped before this Context, the
+    // Context's drop underflows a GC refcount (boa_gc gc_header.rs) and aborts
+    // the thread. Leaking the Context means it is never dropped, so no GC
+    // teardown race exists. The engine worker thread lives for the whole
+    // process, making this a no-op leak in production.
+    static ENGINE_CONTEXT: RefCell<Option<&'static mut Context>> = const { RefCell::new(None) };
 }
 
 fn format_js_error(error: boa_engine::JsError) -> String {
     format!("{error}")
 }
 
-fn ensure_engine_context(slot: &mut Option<Context>) -> Result<(), String> {
+fn ensure_engine_context(slot: &mut Option<&'static mut Context>) -> Result<(), String> {
     if slot.is_none() {
         let mut context = Context::default();
         context
             .eval(Source::from_bytes(ENGINE_SOURCE))
             .map_err(format_js_error)?;
-        *slot = Some(context);
+        *slot = Some(Box::leak(Box::new(context)));
     }
     Ok(())
 }

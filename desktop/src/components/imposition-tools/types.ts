@@ -82,6 +82,8 @@ export const DEFAULT_SHEET_H = PREDEFINED_SIZES.A3.h;
 // ==================== EXPORTED INTERFACES ====================
 
 export interface BookletSettings {
+    /** Phân luồng bắt buộc để không rò thiết lập sơ đồ gấp Offset sang In Nhanh. */
+    paperClassification: 'offset' | 'in_nhanh';
     signatureMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
     foliosize: number;
     formsize: string;

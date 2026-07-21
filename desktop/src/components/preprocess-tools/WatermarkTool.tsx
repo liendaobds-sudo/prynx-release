@@ -635,7 +635,7 @@ export default function WatermarkTool({ pdfFile, onFileFixed }: Props) {
                             : 'bg-sky-600 hover:bg-sky-700 text-white shadow-md'
                     }`}
                 >
-                    {isProcessing ? t('preprocess.watermark:dang_xu_ly') : t('preprocess.watermark:ap_dung_thay_doi')}
+                    {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                 </button>
             ) : (
                 <div className="mt-4 bg-white dark:bg-zinc-800 p-4 rounded-xl shadow-sm border border-emerald-200 dark:border-emerald-800/50 animate-in fade-in slide-in-from-bottom-2 duration-300">

@@ -102,6 +102,7 @@ def _build_edge_color_source_mask(
     peel_px: int = 1,
     edge_bite_px: int = 0,
     kernel_type: int = cv2.MORPH_ELLIPSE,
+    exclude_near_white: bool = True,
 ) -> np.ndarray:
     """Nguồn màu bleed = dải VIỀN tem gốc (shell), không hút cả ruột.
 
@@ -133,7 +134,12 @@ def _build_edge_color_source_mask(
         return cv2.subtract(outer, inner)
 
     def _strip_white(shell: np.ndarray) -> np.ndarray:
-        if np.count_nonzero(shell) == 0 or img is None or img.ndim != 3:
+        if (
+            not exclude_near_white
+            or np.count_nonzero(shell) == 0
+            or img is None
+            or img.ndim != 3
+        ):
             return shell
         cleaned = shell.copy()
         cleaned[_near_white_mask_rgb(img)] = 0
@@ -220,6 +226,269 @@ def _inpaint_color_fill(sub_img, sub_csm, sub_bleed, max_dim: int = 4000):
     if f > 1:
         out = cv2.resize(out, (sw, sh), interpolation=cv2.INTER_NEAREST)
     return out
+
+
+def _render_page_rgb_ghostscript(
+    input_path: str,
+    page_index: int,
+    scale: float,
+    expected_width: int,
+    expected_height: int,
+) -> np.ndarray | None:
+    """Render one page with Ghostscript for transparency/gradient colour fidelity.
+
+    PDFium can expose the uncomposited colour of some Canva transparency groups
+    at the trim edge. That colour does not match the original vector artwork when
+    PDF.js, Poppler or a RIP displays it, creating a hard seam before any bleed
+    algorithm runs. Ghostscript is already bundled/discovered by the application
+    and produces the composited RGB appearance needed by raster bleed sampling.
+    """
+    try:
+        import subprocess
+        from app.config import settings
+        from app.utils.subprocess_utils import run_hidden
+
+        gs_path = getattr(settings, "GHOSTSCRIPT_PATH", "")
+        if not gs_path or not os.path.isfile(gs_path):
+            return None
+
+        dpi = max(1.0, float(scale) * 72.0)
+        with tempfile.TemporaryDirectory(prefix="prynx_sticker_gs_") as tmp_dir:
+            output_path = os.path.join(tmp_dir, "page.png")
+            page_number = int(page_index) + 1
+            cmd = [
+                gs_path,
+                "-dSAFER",
+                "-dBATCH",
+                "-dNOPAUSE",
+                "-dQUIET",
+                "-dAutoRotatePages=/None",
+                "-dUseCropBox",
+                "-dTextAlphaBits=4",
+                "-dGraphicsAlphaBits=4",
+                "-sDEVICE=png16m",
+                f"-r{dpi:.6f}",
+                f"-dFirstPage={page_number}",
+                f"-dLastPage={page_number}",
+                f"-sOutputFile={output_path}",
+                input_path,
+            ]
+            result = run_hidden(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=180,
+            )
+            if (
+                result.returncode != 0
+                or not os.path.isfile(output_path)
+                or os.path.getsize(output_path) == 0
+            ):
+                logger.warning(
+                    "Ghostscript sticker render failed on page %d (exit %s): %s",
+                    page_number,
+                    getattr(result, "returncode", "?"),
+                    result.stderr.decode(errors="replace")[-500:],
+                )
+                return None
+
+            image_bgr = cv2.imread(output_path, cv2.IMREAD_COLOR)
+            if image_bgr is None or image_bgr.size == 0:
+                return None
+            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+
+        target_w = max(1, int(expected_width))
+        target_h = max(1, int(expected_height))
+        if image_rgb.shape[1] != target_w or image_rgb.shape[0] != target_h:
+            image_rgb = cv2.resize(
+                image_rgb, (target_w, target_h), interpolation=cv2.INTER_AREA
+            )
+        return image_rgb
+    except Exception as exc:
+        logger.warning(
+            "Ghostscript sticker render unavailable on page %d: %s",
+            int(page_index) + 1,
+            exc,
+        )
+        return None
+
+
+def _trajectory_right_strip(
+    img: np.ndarray,
+    amount: int,
+    px_per_mm: float,
+) -> np.ndarray:
+    """Extrapolate the right edge by advecting colours along local isophotes."""
+    amount = max(0, int(amount))
+    h, w = img.shape[:2]
+    if amount == 0:
+        return np.empty((h, 0, 3), dtype=np.uint8)
+
+    edge = np.ascontiguousarray(img[:, -1:])
+    if h < 3 or w < 3:
+        return np.repeat(edge, amount, axis=1)
+
+    # Inspect only a narrow source band. This keeps memory/runtime proportional
+    # to the perimeter even for very large print pages.
+    lookback = min(
+        w,
+        max(8, min(64, int(round(max(amount, 1.5 * max(0.1, px_per_mm)))))),
+    )
+    band = img[:, -lookback:].astype(np.float32) / 255.0
+    grad_x = cv2.Sobel(band, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(band, cv2.CV_32F, 0, 1, ksize=3)
+    j_xx = np.sum(grad_x * grad_x, axis=2)
+    j_xy = np.sum(grad_x * grad_y, axis=2)
+    j_yy = np.sum(grad_y * grad_y, axis=2)
+
+    weights = np.linspace(0.2, 1.0, lookback, dtype=np.float32)
+    weights /= weights.sum()
+    tensor_xx = np.sum(j_xx * weights, axis=1)
+    tensor_xy = np.sum(j_xy * weights, axis=1)
+    tensor_yy = np.sum(j_yy * weights, axis=1)
+
+    smooth_sigma = max(1.0, min(6.0, amount / 6.0))
+    tensor_xx = cv2.GaussianBlur(
+        tensor_xx[:, None], (1, 0), smooth_sigma
+    ).ravel()
+    tensor_xy = cv2.GaussianBlur(
+        tensor_xy[:, None], (1, 0), smooth_sigma
+    ).ravel()
+    tensor_yy = cv2.GaussianBlur(
+        tensor_yy[:, None], (1, 0), smooth_sigma
+    ).ravel()
+
+    # Dominant tensor eigenvector is the colour-gradient normal. An isophote is
+    # perpendicular to it, hence dy/dx = -gradient_x / gradient_y.
+    angle = 0.5 * np.arctan2(
+        2.0 * tensor_xy, tensor_xx - tensor_yy
+    )
+    direction_x = np.cos(angle)
+    direction_y = np.sin(angle)
+    energy = tensor_xx + tensor_yy
+    coherence = np.sqrt(
+        (tensor_xx - tensor_yy) ** 2 + 4.0 * tensor_xy ** 2
+    ) / (energy + 1e-8)
+    energy_floor = max(1e-7, float(np.percentile(energy, 15)))
+    valid = (
+        (coherence > 0.12)
+        & (energy > energy_floor)
+        & (np.abs(direction_y) > 0.15)
+    )
+
+    slopes = np.zeros(h, dtype=np.float32)
+    valid_rows = np.flatnonzero(valid)
+    if valid_rows.size:
+        valid_slopes = np.clip(
+            -direction_x[valid] / direction_y[valid], -1.25, 1.25
+        )
+        slopes = np.interp(
+            np.arange(h), valid_rows, valid_slopes
+        ).astype(np.float32)
+        slopes = cv2.GaussianBlur(
+            slopes[:, None], (1, 0),
+            max(0.8, min(4.0, 0.18 * max(0.1, px_per_mm))),
+        ).ravel()
+        slopes = np.clip(slopes, -1.25, 1.25)
+
+    source_y = np.arange(h, dtype=np.float32)
+    output_y = source_y.copy()
+    map_x = np.zeros((h, 1), dtype=np.float32)
+    strip = np.empty((h, amount, 3), dtype=np.uint8)
+    for step in range(1, amount + 1):
+        # Forward-warp source rows, enforce a monotone mapping to prevent local
+        # trajectory crossings, then invert it for cv2.remap. This avoids pointed
+        # wedges and duplicated bands when neighbouring tangent estimates differ.
+        forward_y = source_y + slopes * float(step)
+        min_spacing = 0.05
+        forward_y = np.maximum.accumulate(
+            forward_y - source_y * min_spacing
+        ) + source_y * min_spacing
+        map_y = np.interp(
+            output_y, forward_y, source_y, left=0.0, right=float(h - 1)
+        ).astype(np.float32)[:, None]
+        strip[:, step - 1] = cv2.remap(
+            edge,
+            map_x,
+            map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REPLICATE,
+        )[:, 0]
+    return strip
+
+
+def _trajectory_extend_axis(
+    img: np.ndarray,
+    before: int,
+    after: int,
+    px_per_mm: float,
+) -> np.ndarray:
+    """Extend both ends of the image x-axis; callers transpose for top/bottom."""
+    before = max(0, int(before))
+    after = max(0, int(after))
+    parts = []
+    if before:
+        near_to_far = _trajectory_right_strip(
+            np.ascontiguousarray(img[:, ::-1]), before, px_per_mm
+        )
+        parts.append(near_to_far[:, ::-1])
+    parts.append(img)
+    if after:
+        parts.append(_trajectory_right_strip(img, after, px_per_mm))
+    return np.concatenate(parts, axis=1)
+
+
+def _rectangle_smooth_color_fill(
+    img: np.ndarray,
+    pad_px: int,
+    edge_bite_px: int,
+    px_per_mm: float,
+) -> np.ndarray:
+    """Continue local edge trajectories into all four rectangular bleed sides.
+
+    Each side estimates a structure-tensor direction from the real artwork just
+    inside the trim edge, then advects the edge colours along that tangent. This
+    moves diagonal and curved bands as they leave the page instead of extruding
+    every edge pixel along a perpendicular line. Top/bottom are evaluated after
+    left/right so the corner fill inherits both local trajectories.
+    """
+    if img is None or img.ndim != 3 or img.shape[0] == 0 or img.shape[1] == 0:
+        return img
+
+    h, w = img.shape[:2]
+    pad = max(0, int(pad_px))
+    bite_x = min(max(0, int(edge_bite_px)), max(0, (w - 1) // 2))
+    bite_y = min(max(0, int(edge_bite_px)), max(0, (h - 1) // 2))
+    core = img[bite_y:h - bite_y if bite_y else h,
+               bite_x:w - bite_x if bite_x else w]
+    if core.size == 0:
+        core = img
+        bite_x = bite_y = 0
+
+    top = bottom = pad + bite_y
+    left = right = pad + bite_x
+
+    # Continue left/right first. Transposing turns top/bottom into the same edge
+    # problem while letting corner pixels inherit the side trajectories.
+    horizontal = _trajectory_extend_axis(
+        core, left, right, float(px_per_mm)
+    )
+    vertical_input = np.ascontiguousarray(
+        np.transpose(horizontal, (1, 0, 2))
+    )
+    vertical = _trajectory_extend_axis(
+        vertical_input, top, bottom, float(px_per_mm)
+    )
+    out = np.ascontiguousarray(np.transpose(vertical, (1, 0, 2)))
+
+    # Keep the known artwork exact at the seam; the vector source is drawn above
+    # it, but partial-alpha pixels still sample this raster layer.
+    out[top:top + core.shape[0], left:left + core.shape[1]] = core
+
+    # Interpolation may only mix existing colours; clamp any rounding excursion.
+    src_min = core.reshape(-1, 3).min(axis=0)
+    src_max = core.reshape(-1, 3).max(axis=0)
+    return np.clip(out, src_min, src_max).astype(np.uint8)
 
 
 def _band_tiles(band, band_radius: int, tile: int = 1024):
@@ -324,6 +593,124 @@ def _banded_inpaint_fill(img, csm, bleed, ring, band, band_radius: int, out, til
         core_filled = filled[cyl:cyr, cxl:cxr]
         core_out[core_band] = core_filled[core_band]
     return True
+
+
+def _make_srgb_colorspace(pdf: pikepdf.Pdf):
+    """Create a calibrated sRGB color space for raster bleed images.
+
+    PDFium renders sampled bleed pixels to RGB. Labelling those bytes as bare
+    DeviceRGB leaves their interpretation up to the viewer/RIP. ICCBased sRGB
+    keeps the rendered samples deterministic while the original artwork stays
+    vector and retains its own CMYK/spot resources.
+    """
+    try:
+        from PIL import ImageCms
+        # The legacy asset named sRGB.icc is actually Adobe RGB (1998). Build a
+        # genuine LittleCMS sRGB profile so viewers do not oversaturate the bleed.
+        cms_profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+        profile = pikepdf.Stream(pdf, cms_profile.tobytes())
+        profile[pikepdf.Name("/N")] = 3
+        profile[pikepdf.Name("/Alternate")] = pikepdf.Name.DeviceRGB
+        return pikepdf.Array([pikepdf.Name("/ICCBased"), pdf.make_indirect(profile)])
+    except Exception as exc:
+        logger.warning("Cannot embed sRGB ICC profile; falling back to DeviceRGB: %s", exc)
+        return pikepdf.Name.DeviceRGB
+
+
+def _copy_output_intents(src_pdf: pikepdf.Pdf, dst_pdf: pikepdf.Pdf) -> None:
+    """Preserve document output profiles when rebuilding pages in a new PDF."""
+    try:
+        intents = src_pdf.Root.get("/OutputIntents")
+        if not intents:
+            return
+        copied = []
+        for intent in intents:
+            foreign = intent if intent.is_indirect else src_pdf.make_indirect(intent)
+            copied.append(dst_pdf.copy_foreign(foreign))
+        if copied:
+            dst_pdf.Root[pikepdf.Name("/OutputIntents")] = pikepdf.Array(copied)
+    except Exception as exc:
+        logger.warning("Cannot preserve PDF OutputIntents: %s", exc)
+
+
+def _rectangle_vector_bleed_commands(
+    xobject_name,
+    *,
+    crop_x0: float,
+    crop_y0: float,
+    page_width: float,
+    page_height: float,
+    bleed_pts: float,
+    edge_bite_pts: float,
+    sample_depth_pts: float,
+) -> tuple[list[str], float, float]:
+    """Stretch eight vector edge/corner strips around a rectangular page.
+
+    Unlike the contour/sticker path, this never filters white pixels and never
+    converts process/ICC/spot colors to RGB. ``edge_bite_pts`` intentionally
+    moves the sampled strip inward; the default is zero for exact edge color.
+    Returned bite values are clamped independently for X/Y and are also used to
+    clip the original artwork when the user explicitly requests edge bite.
+    """
+    if bleed_pts <= 0 or page_width <= 0 or page_height <= 0:
+        return [], 0.0, 0.0
+
+    depth_x = min(max(0.01, sample_depth_pts), max(0.01, page_width / 2.0))
+    depth_y = min(max(0.01, sample_depth_pts), max(0.01, page_height / 2.0))
+    bite_x = min(max(0.0, edge_bite_pts), max(0.0, page_width / 2.0 - depth_x))
+    bite_y = min(max(0.0, edge_bite_pts), max(0.0, page_height / 2.0 - depth_y))
+
+    out_w = page_width + 2.0 * bleed_pts
+    out_h = page_height + 2.0 * bleed_pts
+    ext_x = bleed_pts + bite_x
+    ext_y = bleed_pts + bite_y
+    sx = ext_x / depth_x
+    sy = ext_y / depth_y
+    name = str(xobject_name)
+    commands: list[str] = []
+
+    def place(x: float, y: float, w: float, h: float,
+              a: float, d: float, e: float, f: float) -> None:
+        if w <= 0 or h <= 0:
+            return
+        commands.extend([
+            "q",
+            f"{x:.4f} {y:.4f} {w:.4f} {h:.4f} re W n",
+            f"{a:.8f} 0 0 {d:.8f} {e:.4f} {f:.4f} cm",
+            f"{name} Do",
+            "Q",
+        ])
+
+    src_left = crop_x0 + bite_x
+    src_right = crop_x0 + page_width - bite_x - depth_x
+    src_bottom = crop_y0 + bite_y
+    src_top = crop_y0 + page_height - bite_y - depth_y
+    x_identity_shift = bleed_pts - crop_x0
+    y_identity_shift = bleed_pts - crop_y0
+    dst_right = out_w - ext_x
+    dst_top = out_h - ext_y
+
+    # Four sides, excluding corner squares.
+    place(0.0, ext_y, ext_x, out_h - 2.0 * ext_y,
+          sx, 1.0, -sx * src_left, y_identity_shift)
+    place(dst_right, ext_y, ext_x, out_h - 2.0 * ext_y,
+          sx, 1.0, dst_right - sx * src_right, y_identity_shift)
+    place(ext_x, 0.0, out_w - 2.0 * ext_x, ext_y,
+          1.0, sy, x_identity_shift, -sy * src_bottom)
+    place(ext_x, dst_top, out_w - 2.0 * ext_x, ext_y,
+          1.0, sy, x_identity_shift, dst_top - sy * src_top)
+
+    # Four corners. Keeping them as vector form draws preserves ICC/spot color.
+    place(0.0, 0.0, ext_x, ext_y,
+          sx, sy, -sx * src_left, -sy * src_bottom)
+    place(dst_right, 0.0, ext_x, ext_y,
+          sx, sy, dst_right - sx * src_right, -sy * src_bottom)
+    place(0.0, dst_top, ext_x, ext_y,
+          sx, sy, -sx * src_left, dst_top - sy * src_top)
+    place(dst_right, dst_top, ext_x, ext_y,
+          sx, sy, dst_right - sx * src_right, dst_top - sy * src_top)
+
+    return commands, bite_x, bite_y
 
 
 # ── Ngưỡng song song ─────────────────────────────────────────────────────
@@ -448,6 +835,10 @@ class StickerEngine:
 
             debug_step = "Create Output PDF"
             doc_out = pikepdf.Pdf.new()
+            # Worker chunks are merged into a fresh document later; only the
+            # top-level sequential path copies catalog-level output profiles here.
+            if _page_subset is None:
+                _copy_output_intents(doc_in_pike, doc_out)
             
             debug_step = "Inject Spot Color Definition"
             c, m, y, k = cut_color
@@ -464,6 +855,10 @@ class StickerEngine:
             mm_to_pts = 2.83465
             offset_pts = offset_mm * mm_to_pts
             bleed_pts = bleed_mm * mm_to_pts
+            use_vector_rectangle_bleed = (
+                rectangle_mode and bleed_color_type == "image" and bleed_pts > 0
+            )
+            srgb_colorspace = None
             
             all_pages_meta = []
             any_dieline_found = False
@@ -506,12 +901,42 @@ class StickerEngine:
                 if shrink < 1.0 and self.debug:
                     logger.warning(">>> DPI CAP page %d: scale %.4f→%.4f (page %.0fx%.0f pt)", page_idx, base_scale, self.scale, pw_pt, ph_pt)
 
-                bitmap = page_in.render(scale=self.scale)
-                img_bgra = bitmap.to_numpy()
-                img = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2RGBA)
-                img_native = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2RGB)
-                
-                has_alpha = img.shape[2] == 4 and img[:, :, 3].min() < 255
+                if use_vector_rectangle_bleed:
+                    # Geometry is the page rectangle and bleed is drawn from the
+                    # source Form XObject. No raster is needed for detection/color.
+                    img = np.full((1, 1, 4), 255, dtype=np.uint8)
+                    img_native = img[:, :, :3]
+                    has_alpha = False
+                else:
+                    img_native = None
+                    use_color_managed_rectangle_raster = (
+                        rectangle_mode
+                        and bleed_color_type == "inpaint"
+                        and bleed_pts > 0
+                    )
+                    if use_color_managed_rectangle_raster:
+                        img_native = _render_page_rgb_ghostscript(
+                            input_path,
+                            page_idx,
+                            self.scale,
+                            max(1, int(round(float(pw_pt) * self.scale))),
+                            max(1, int(round(float(ph_pt) * self.scale))),
+                        )
+                        if img_native is None:
+                            logger.warning(
+                                "Smart rectangle bleed page %d is falling back to PDFium RGB",
+                                page_idx + 1,
+                            )
+
+                    if img_native is not None:
+                        img = cv2.cvtColor(img_native, cv2.COLOR_RGB2RGBA)
+                        has_alpha = False
+                    else:
+                        bitmap = page_in.render(scale=self.scale)
+                        img_bgra = bitmap.to_numpy()
+                        img = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2RGBA)
+                        img_native = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2RGB)
+                        has_alpha = img.shape[2] == 4 and img[:, :, 3].min() < 255
                 if page_idx == 0 and self.debug:
                     logger.warning(">>> PARAMS: cut_mode=%s offset_mm=%.2f bleed_mm=%.2f corner_style=%s remove_white_bg=%s bleed_color_type=%s fill_holes=%s", cut_mode, offset_mm, bleed_mm, corner_style, remove_white_bg, bleed_color_type, fill_holes)
                     logger.warning(">>> IMAGE: shape=%s has_alpha=%s", img.shape, has_alpha)
@@ -602,19 +1027,18 @@ class StickerEngine:
                 # - original: cut = offset, outer = offset + bleed
                 # - bleed:    cut = outer = bleed + offset  (cắt bao lề bù xén)
                 # - none:     chỉ tràn màu bleed
-                # - rectangle_mode (Xén vuông góc): shape = đúng page rect → CHỈ pad
-                #   bằng bleed. CỘNG +50pt “safety” (dùng cho tem bám contour lệch mép)
-                #   sẽ tạo 4 dải TRẮNG quanh thành phẩm (~17.6mm/cạnh) dù bleed=0.
+                # Không cộng vùng “safety” cố định: 50pt/cạnh tương đương 17.6mm trắng
+                # và làm MediaBox phình vô cớ. Offset âm co đường cắt vào trong nên cũng
+                # không cần abs(); chỉ phần thực sự nở ra ngoài mới cần pad.
                 if rectangle_mode:
-                    max_expansion_pts = abs(bleed_pts)
+                    max_expansion_pts = max(0.0, bleed_pts)
                 elif cut_mode == "none":
-                    max_expansion_pts = abs(bleed_pts) + 50
-                elif cut_mode == "bleed":
-                    _outer = (bleed_pts + offset_pts) if bleed_pts > 0 else offset_pts
-                    max_expansion_pts = max(abs(offset_pts), abs(_outer), abs(bleed_pts)) + 50
+                    max_expansion_pts = max(0.0, bleed_pts)
                 else:
-                    _outer = offset_pts + bleed_pts if bleed_pts > 0 else offset_pts
-                    max_expansion_pts = max(abs(offset_pts), abs(_outer), abs(bleed_pts)) + 50
+                    _cut_edge, _outer_edge = compute_cut_bleed_offsets(
+                        cut_mode, bleed_pts, offset_pts
+                    )
+                    max_expansion_pts = max(0.0, _cut_edge, _outer_edge)
                 new_width = page_in_width + 2 * max_expansion_pts
                 new_height = page_in_height + 2 * max_expansion_pts
                 
@@ -798,7 +1222,7 @@ class StickerEngine:
                 # ============================================================
                 # STEP B: Generate bleed using dieline_poly for perfect alignment
                 # ============================================================
-                if bleed_mm > 0.0:
+                if bleed_mm > 0.0 and not use_vector_rectangle_bleed:
                     debug_step = f"Generate Bleed Page {page_idx}"
                     bleed_px = math.ceil(bleed_mm * px_per_mm)
                     if bleed_px > 0:
@@ -824,13 +1248,7 @@ class StickerEngine:
                         _, raw_mask_bin = cv2.threshold(raw_mask, 10, 255, cv2.THRESH_BINARY)
                         padded_raw_mask = np.pad(raw_mask_bin, pad_width=pad_b, mode='constant', constant_values=0)
                         
-                        # Check if CMYK (simple heuristic)
-                        is_cmyk = False
-                        
-                        if is_cmyk:
-                            padded_img = np.pad(img_native, pad_width=((pad_b, pad_b), (pad_b, pad_b), (0, 0)), mode='constant', constant_values=0)
-                        else:
-                            padded_img = np.pad(img_native, pad_width=((pad_b, pad_b), (pad_b, pad_b), (0, 0)), mode='constant', constant_values=255)
+                        padded_img = np.pad(img_native, pad_width=((pad_b, pad_b), (pad_b, pad_b), (0, 0)), mode='constant', constant_values=255)
                         
                         # Nguồn màu = dải VIỀN tem gốc (shell), không erode cả ruột.
                         # - peel ~0.08mm: bỏ 1 lớp AA trộn nền ở mép render.
@@ -849,6 +1267,7 @@ class StickerEngine:
                             peel_px=peel_px,
                             edge_bite_px=edge_bite_px,
                             kernel_type=kernel_type,
+                            exclude_near_white=not rectangle_mode,
                         )
                         # Giữ tên inset_px cho log/công thức band cũ (tương đương depth nguồn).
                         inset_px = max(1, source_depth_px)
@@ -958,6 +1377,10 @@ class StickerEngine:
                                     )
                                 else:
                                     bleed_colors = _nearest_color_fill(color_source_mask, padded_img)
+                        elif bleed_color_type == "inpaint" and rectangle_mode:
+                            bleed_colors = _rectangle_smooth_color_fill(
+                                img_native, pad_b, edge_bite_px, px_per_mm
+                            )
                         elif bleed_color_type == "inpaint":
                             # 'Làm mượt thông minh' — inpaint giới hạn theo band (tile + bỏ ô ruột).
                             bleed_colors = np.zeros_like(padded_img)
@@ -1020,7 +1443,26 @@ class StickerEngine:
                             except Exception as e:
                                 logger.warning(">>> BLEED DEBUG FAILED: %s", e)
 
+                # One source Form XObject is reused by the vector bleed strips and
+                # by the original artwork layer. Its resources retain CMYK/ICC/spot.
+                src_xobj = page_in_pike.as_form_xobject()
+                src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
+
                 page_content_stream = []
+                vector_bite_x = 0.0
+                vector_bite_y = 0.0
+                if use_vector_rectangle_bleed:
+                    vector_ops, vector_bite_x, vector_bite_y = _rectangle_vector_bleed_commands(
+                        src_xobj_name,
+                        crop_x0=crop_x0,
+                        crop_y0=crop_y0,
+                        page_width=page_in_width,
+                        page_height=page_in_height,
+                        bleed_pts=bleed_pts,
+                        edge_bite_pts=max(0.0, edge_bite_mm * mm_to_pts),
+                        sample_depth_pts=72.0 / max(1, self.dpi),
+                    )
+                    page_content_stream.extend(vector_ops)
 
                 # LAYER 1 (BOTTOM): Bleed color with SMask
                 if bleed_stream_data:
@@ -1041,7 +1483,12 @@ class StickerEngine:
                     img_obj.Subtype = pikepdf.Name.Image
                     img_obj.Width = img_w
                     img_obj.Height = img_h
-                    img_obj.ColorSpace = pikepdf.Name.DeviceCMYK if is_bleed_cmyk else pikepdf.Name.DeviceRGB
+                    if is_bleed_cmyk:
+                        img_obj.ColorSpace = pikepdf.Name.DeviceCMYK
+                    else:
+                        if srgb_colorspace is None:
+                            srgb_colorspace = _make_srgb_colorspace(doc_out)
+                        img_obj.ColorSpace = srgb_colorspace
                     img_obj.BitsPerComponent = 8
                     # Cả 2 nhánh nay đều zlib (lossless) → FlateDecode. Trước RGB là DCTDecode (JPEG).
                     img_obj.Filter = pikepdf.Name.FlateDecode
@@ -1077,11 +1524,17 @@ class StickerEngine:
                 # màu RGB). Nay luôn vẽ lại form XObject gốc. Khi có bleed: clip artwork
                 # vào đúng footprint (CÙNG biên với bleed_ring → không hở mép trắng),
                 # phần ngoài footprint để lộ bleed bên dưới.
-                src_xobj = page_in_pike.as_form_xobject()
-                src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
 
                 page_content_stream.append("q")
-                if bleed_stream_data and sticker_footprint is not None:
+                if use_vector_rectangle_bleed and (vector_bite_x > 0 or vector_bite_y > 0):
+                    clip_x = bleed_pts + vector_bite_x
+                    clip_y = bleed_pts + vector_bite_y
+                    clip_w = max(0.01, page_in_width - 2.0 * vector_bite_x)
+                    clip_h = max(0.01, page_in_height - 2.0 * vector_bite_y)
+                    page_content_stream.append(
+                        f"{clip_x:.4f} {clip_y:.4f} {clip_w:.4f} {clip_h:.4f} re W n"
+                    )
+                elif bleed_stream_data and sticker_footprint is not None:
                     # Trace footprint (đã đóng kín, hole-filled) thành đường clip vector.
                     # footprint là raster trong KHÔNG GIAN ẢNH ĐỆM (padded); ánh xạ về
                     # toạ độ trang giống vị trí đặt ảnh bleed: (shift_x + px/scale,
@@ -1181,6 +1634,34 @@ class StickerEngine:
                     box_arr = pikepdf.Array([minx, pdf_miny, maxx, pdf_maxy])
                     page_out.TrimBox = box_arr
                     page_out.ArtBox = box_arr
+                    # Khung trang phải ôm đúng phần có thể nhìn/in: đường bế + mép ngoài
+                    # bù xén. Trước đây chỉ có TrimBox, còn MediaBox/CropBox vẫn là canvas
+                    # lớn nên nhiều viewer/RIP hiện khoảng trắng quanh tem.
+                    visible_geoms = [dieline_poly]
+                    if bleed_outer_poly is not None and not getattr(bleed_outer_poly, 'is_empty', True):
+                        visible_geoms.append(bleed_outer_poly)
+                    visible_bounds = [g.bounds for g in visible_geoms]
+                    vis_minx = min(b[0] for b in visible_bounds)
+                    vis_miny = min(b[1] for b in visible_bounds)
+                    vis_maxx = max(b[2] for b in visible_bounds)
+                    vis_maxy = max(b[3] for b in visible_bounds)
+
+                    # CutContour rộng 1pt và stroke nằm giữa path: chừa nửa stroke
+                    # để không bị CropBox cắt cụt khi đường bế cũng là mép ngoài cùng.
+                    crop_guard = 0.55 if draw_cut_contour and cut_mode != "none" else 0.0
+                    crop_box = [
+                        max(0.0, vis_minx + max_expansion_pts - crop_guard),
+                        max(0.0, page_in_height - vis_maxy + max_expansion_pts - crop_guard),
+                        min(new_width, vis_maxx + max_expansion_pts + crop_guard),
+                        min(new_height, page_in_height - vis_miny + max_expansion_pts + crop_guard),
+                    ]
+                    if crop_box[2] > crop_box[0] and crop_box[3] > crop_box[1]:
+                        # MediaBox cũng phải siết theo CropBox. Nhiều RIP/renderer mặc
+                        # định hiển thị MediaBox (không phải CropBox); nếu chỉ set CropBox
+                        # thì chúng vẫn cho thấy canvas trắng kỹ thuật ở bên ngoài.
+                        page_out.MediaBox = pikepdf.Array(crop_box)
+                        page_out.CropBox = pikepdf.Array(crop_box)
+                        page_out.BleedBox = pikepdf.Array(crop_box)
                     
                     # Generate Meta for this page.
                     # Dùng bounds GỐC của dieline_poly (trước khi cộng max_expansion_pts)
@@ -1407,6 +1888,9 @@ class StickerEngine:
                 # KHÔNG close src trước khi save: pikepdf giữ tham chiếu foreign object.
 
             debug_step = "Save Merged Output"
+            with pikepdf.Pdf.open(input_path) as source_catalog:
+                _copy_output_intents(source_catalog, final_doc)
+
             final_doc.save(output_path)
         finally:
             if final_doc is not None:

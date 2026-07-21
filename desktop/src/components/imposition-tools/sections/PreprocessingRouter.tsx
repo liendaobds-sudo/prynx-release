@@ -129,7 +129,7 @@ export default function PreprocessingRouter({
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
-                        {isProcessing ? t('imposition.preprocessingRouter:dang_ap_dung') : t('imposition.preprocessingRouter:thuc_thi_xao_tron')}
+                        {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                     </button>
                 </div>
             )}
@@ -145,7 +145,7 @@ export default function PreprocessingRouter({
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
-                        {isProcessing ? t('imposition.preprocessingRouter:dang_ap_dung') : t('imposition.preprocessingRouter:thuc_thi_doi_kho')}
+                        {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                     </button>
                 </div>
             )}
@@ -161,7 +161,7 @@ export default function PreprocessingRouter({
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50"
                     >
-                        {isProcessing ? t('imposition.preprocessingRouter:dang_ap_dung') : t('imposition.preprocessingRouter:thuc_thi_trim_shift')}
+                        {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                     </button>
                 </div>
             )}
@@ -177,7 +177,7 @@ export default function PreprocessingRouter({
                         disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold transition-colors disabled:opacity-50"
                     >
-                        {isProcessing ? t('imposition.preprocessingRouter:dang_ap_dung') : t('imposition.preprocessingRouter:thuc_thi_tach_file')}
+                        {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                     </button>
                 </div>
             )}

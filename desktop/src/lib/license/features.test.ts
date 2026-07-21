@@ -1,18 +1,32 @@
-﻿import { describe, expect, it } from 'vitest';
+﻿import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   FEATURE_CATALOG,
-  FEATURE_GATING_ENABLED,
   FEATURE_MIN_PLAN,
-  canUse,
   featureIdForFocus,
   hasFeatureAccess,
   normalizePlan,
 } from './features';
 
 describe('license feature catalog', () => {
-  it('giữ gate tắt nếu bản build chưa chủ động bật', () => {
-    expect(FEATURE_GATING_ENABLED).toBe(false);
-    expect(canUse('impo.cnc', 'free')).toBe(true);
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('giữ gate tắt nếu bản build chưa chủ động bật', async () => {
+    vi.stubEnv('VITE_FEATURE_GATING_ENABLED', '');
+    vi.resetModules();
+    const mod = await import('./features');
+    expect(mod.FEATURE_GATING_ENABLED).toBe(false);
+    expect(mod.canUse('impo.cnc', 'free')).toBe(true);
+  });
+
+  it('bật gate khi build chủ động set cờ', async () => {
+    vi.stubEnv('VITE_FEATURE_GATING_ENABLED', 'true');
+    vi.resetModules();
+    const mod = await import('./features');
+    expect(mod.FEATURE_GATING_ENABLED).toBe(true);
+    expect(mod.canUse('impo.cnc', 'free')).toBe(false);
   });
 
   it('phân quyền Free/Pro đúng và cho phép cấp quyền riêng', () => {

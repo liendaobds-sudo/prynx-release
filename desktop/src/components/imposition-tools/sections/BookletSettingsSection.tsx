@@ -166,7 +166,7 @@ export default function BookletSettingsSection() {
                     Sách sẽ hỏi người dùng chọn Cuối/Giữa. */}
 
                 {/* Interleave */}
-                {!s.autoCatalog && s.paperClassification === 'offset' && (
+                {!s.autoCatalog && s.paperClassification === 'offset' && !s.foldPattern && (
                     <div className="flex flex-col gap-2 relative z-[40]">
                         <label className="text-[11px] text-slate-500 font-medium block -mb-0.5">{t('imposition.bookletSettings:the_phoi_sap_trang')}</label>
                         <RichSelect

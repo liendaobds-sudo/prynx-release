@@ -10,7 +10,7 @@ import type { VirtualSheet } from './VirtualMap';
 import type { GeometricContext } from './GeometricSolver';
 import { solvePageTransform } from './GeometricSolver';
 import type { ProcessingSettings } from '../pdfImposer';
-import { getSpreadPatternById, getPatternForPageCount, type SpreadFoldPattern } from './FoldPatterns';
+import { getSpreadPatternById, getExactPatternForPageCount, type SpreadFoldPattern } from './FoldPatterns';
 
 const MM_TO_POINTS = 2.83465;
 
@@ -55,7 +55,12 @@ export interface SheetInstruction {
     width_pt: number;
     height_pt: number;
     front: SheetSideInstruction;
-    back: SheetSideInstruction;
+    back?: SheetSideInstruction;
+}
+
+export interface AppendedPageInstruction {
+    source_page: number;
+    rotation_deg?: number;
 }
 
 export interface InstructionSet {
@@ -74,6 +79,8 @@ export interface InstructionSet {
     /** Page details: native rotation angles for each source page */
     page_details: { angle: number; visual_w: number; visual_h: number }[];
     sheets: SheetInstruction[];
+    /** Các trang tách riêng (ví dụ bìa) được chép nguyên khổ ở cuối file kết quả. */
+    append_source_pages?: AppendedPageInstruction[];
     /**
      * Phase-2 arrangement (Step & Repeat / Fold Pattern / Cut & Stack).
      * Khi có: `sheets` là các "trang spread" trung gian (mỗi sheet = 1 mặt spread,
@@ -125,7 +132,8 @@ export function serializeBookletPlan(
     settings: ProcessingSettings,
     sourcePdfPath: string,
     outputDir: string,
-    totalSourcePages: number
+    totalSourcePages: number,
+    appendSourcePages: AppendedPageInstruction[] = [],
 ): InstructionSet {
     const markLenPt = ((settings as any).markLength ?? 5.0) * MM_TO_POINTS;
     const markOffPt = ((settings as any).markOffset ?? 3.0) * MM_TO_POINTS;
@@ -146,28 +154,58 @@ export function serializeBookletPlan(
         return isCutStackSpread && cutStackHutGay && isRightStack;
     };
 
+    // Fold pattern là knob riêng của Offset. Digital luôn phải đi đúng Step & Repeat,
+    // kể cả persisted store còn giữ một pattern ẩn từ phiên làm việc trước.
+    const isOffsetBooklet = (settings as any).paperClassification === 'offset'
+        || (settings as any).imposerMode === 'offset';
+    const fpId = isOffsetBooklet ? (settings as any).foldPattern : undefined;
+    let foldPattern: SpreadFoldPattern | null = null;
+    if (fpId && fpId !== 'auto') {
+        foldPattern = getSpreadPatternById(fpId) ?? null;
+    } else if (fpId === 'auto' && virtualMap.length > 0) {
+        const firstSigSheets = virtualMap[0].sigTotalSheets ?? virtualMap.length;
+        foldPattern = getExactPatternForPageCount(firstSigSheets * 4) ?? null;
+    }
+
+    // Một pattern chỉ an toàn khi MỌI tay trong map có đúng số surface của pattern.
+    // Không còn fallback 28p → 16p hoặc tay dư 12p → pattern 8/16p.
+    if (foldPattern && bindingMode !== 'saddle' && bindingMode !== 'thread') {
+        foldPattern = null;
+    }
+    if (foldPattern) {
+        const surfaceCountBySignature = new Map<number, number>();
+        for (const sheet of virtualMap) {
+            const sig = sheet.signatureIndex ?? 1;
+            surfaceCountBySignature.set(sig, (surfaceCountBySignature.get(sig) || 0) + 2);
+        }
+        if ([...surfaceCountBySignature.values()].some(count => count !== foldPattern!.spreadsPerSig)) {
+            foldPattern = null;
+        }
+    }
+    const effectiveInterleaveMode = foldPattern
+        ? 'normal'
+        : (isOffsetBooklet ? interleaveMode : 'normal');
+
     // Build surface iteration order (same logic as Renderer.ts)
     const surfaces: { sheetIndex: number; isFront: boolean; slots: any; sheet: VirtualSheet }[] = [];
 
-    const isSingleSided = (settings as any).signatureMode === 'flush_mount';
+    const isSingleSided = bindingMode === 'flush_mount';
 
-    if (interleaveMode === 'normal' || isSingleSided) {
+    if (effectiveInterleaveMode === 'normal' || isSingleSided) {
         for (const sheet of virtualMap) {
             surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: true, slots: sheet.front, sheet });
             if (!isSingleSided) {
                 surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: false, slots: sheet.back, sheet });
-            } else {
-                surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: false, slots: null, sheet, isEmpty: true } as any);
             }
         }
-    } else if (interleaveMode === 'all_fronts_first') {
+    } else if (effectiveInterleaveMode === 'all_fronts_first') {
         for (const sheet of virtualMap) {
             surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: true, slots: sheet.front, sheet });
         }
         for (const sheet of virtualMap) {
             surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: false, slots: sheet.back, sheet });
         }
-    } else if (interleaveMode === 'reverse_backs' || interleaveMode === 'reverse_backs_180') {
+    } else if (effectiveInterleaveMode === 'reverse_backs' || effectiveInterleaveMode === 'reverse_backs_180') {
         for (const sheet of virtualMap) {
             surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: true, slots: sheet.front, sheet });
         }
@@ -192,7 +230,7 @@ export function serializeBookletPlan(
         const srcDetail = srcIndex !== null && srcIndex < srcPageDetails.length
             ? srcPageDetails[srcIndex] : null;
         // is180 = XOR(reverse_backs_180 trên mặt sau, cọc phải cut-stack hút gáy)
-        const rev180 = !isFront && interleaveMode === 'reverse_backs_180';
+        const rev180 = !isFront && effectiveInterleaveMode === 'reverse_backs_180';
         const rot180 = rev180 !== cutStackRotates(isFront, isLeft);
         return {
             source_page: srcIndex,
@@ -206,21 +244,13 @@ export function serializeBookletPlan(
                 w_pt: transform.clipW,
                 h_pt: transform.clipH,
             },
-            native_angle: srcDetail?.angle ?? 0,
+            native_angle: (srcDetail?.angle ?? 0) + (slot.userRotation ?? 0),
         };
     };
     const buildSurfacePlacements = (surf: any): PlacementInstruction[] =>
         (!surf || (surf as any).isEmpty) ? [] : [makePlacement(surf, true), makePlacement(surf, false)];
 
     // ── Phát hiện chế độ phase-2 (Step&Repeat / Fold Pattern / Cut&Stack) ──
-    const fpId = (settings as any).foldPattern;
-    let foldPattern: SpreadFoldPattern | null = null;
-    if (fpId && fpId !== 'auto') {
-        foldPattern = getSpreadPatternById(fpId) ?? null;
-    } else if (fpId === 'auto' && virtualMap.length > 0) {
-        const firstSigSheets = virtualMap[0].sigTotalSheets ?? virtualMap.length;
-        foldPattern = getPatternForPageCount(firstSigSheets * 4) ?? null;
-    }
     const wantChainNup = !!(settings as any).chainNup;
     const wantCutStack = !!(settings as any).cutStack;
     const phase2Mode: 'step_repeat' | 'fold_pattern' | 'cut_stack' | null =
@@ -269,9 +299,10 @@ export function serializeBookletPlan(
             bottom: _tL.trimBox.y,
             top: _tL.trimBox.y + _tL.trimBox.height,
         };
-        for (let surfIdx = 0; surfIdx < surfaces.length; surfIdx += 2) {
+        const surfaceStep = isSingleSided ? 1 : 2;
+        for (let surfIdx = 0; surfIdx < surfaces.length; surfIdx += surfaceStep) {
             const frontSurf = surfaces[surfIdx];
-            const backSurf = surfaces[surfIdx + 1];
+            const backSurf = isSingleSided ? undefined : surfaces[surfIdx + 1];
 
             const frontPlacements = buildSurfacePlacements(frontSurf);
             const backPlacements = buildSurfacePlacements(backSurf);
@@ -284,7 +315,7 @@ export function serializeBookletPlan(
                 width_pt: context.finalSheetWidth,
                 height_pt: context.finalSheetHeight,
                 front: { placements: frontPlacements, marks: frontMarks },
-                back: (backSurf as any)?.isEmpty ? undefined : { placements: backPlacements, marks: backMarks },
+                back: isSingleSided ? undefined : { placements: backPlacements, marks: backMarks },
             } as any;
 
             if (context.isRotated) {
@@ -316,6 +347,7 @@ export function serializeBookletPlan(
             angle: d.angle, visual_w: d.visualW, visual_h: d.visualH,
         })),
         sheets,
+        ...(appendSourcePages.length ? { append_source_pages: appendSourcePages } : {}),
         ...(phase2 ? { phase2 } : {}),
     };
 }

@@ -188,7 +188,7 @@ export default function UpscaleTool({ tabId, pdfFile }: Props) {
                         isProcessing || !hasPending
                         ? 'bg-slate-300 text-slate-500 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-400'
                         : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>
-                    {isProcessing ? t('preprocess.upscale:dang_xu_ly') : t('preprocess.upscale:bat_dau_phong_to_anh')}
+                    {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                 </button>
                 {hasSuccess && (
                     <div className="flex gap-2">

@@ -305,7 +305,7 @@ export default function CoverNumberingTool({
                 </label>
                 <button onClick={handleGenerate} disabled={busy || !derived.valid || clusters.length === 0 || (singleFileMode && coverPageIdx.length === 0)}
                     className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold rounded-lg">
-                    {busy ? t('preprocess.coverNumbering:dang_xu_ly') : t('preprocess.coverNumbering:tao_bia_n_cuon', { n: derived.valid ? v.bookletCount : 0 })}
+                    {t('preprocess.common:run')}{busy ? '…' : ''}
                 </button>
                 {status && <p className="text-[11px] text-slate-500 text-center">{status}</p>}
             </div>

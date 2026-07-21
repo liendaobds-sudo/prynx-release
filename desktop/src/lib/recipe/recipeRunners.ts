@@ -180,24 +180,9 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
         let targetFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
         let resultBlob: Blob;
 
-        const autoTrim = async (f: File): Promise<File> => {
-            const up0 = await uploadPDF(f);
-            const trimRes = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: up0.id, pages: null, margin_mm: 0 }),
-            });
-            const trimData = await trimRes.json();
-            if (!trimData.success) throw new Error(trimData.detail || i18n.t('recipe.recipeRunners:loi_xoa_le_trang'));
-            const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${trimData.output_filename}`);
-            return new File([await dl.blob()], 'trimmed.pdf', { type: 'application/pdf' });
-        };
-
         if (productType === 'rectangle' && p.bleedColorType === 'mirror') {
-            // Lật gương vector: (auto-trim) → mirror-bleed (phản chiếu nội dung mép)
-            let working = targetFile;
-            // Tương thích recipe cũ: ưu tiên trimWhiteEdge, fallback removeWhiteBg.
-            const doTrim = p.trimWhiteEdge ?? p.removeWhiteBg;
-            if (doTrim) working = await autoTrim(working);
+            // Khổ trang hiện tại luôn là khổ thành phẩm; recipe cũ không còn được phép auto-trim đổi khổ.
+            const working = targetFile;
             const up = await uploadPDF(working);
             const bleedRes = await authenticatedFetch(`${getApiUrl()}/preflight/mirror-bleed`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -208,7 +193,6 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
             const finalRes = await authenticatedFetch(`${getApiUrl()}/preflight/download/${bleedData.output_filename}`);
             resultBlob = await finalRes.blob();
         } else {
-            if (productType === 'rectangle' && (p.trimWhiteEdge ?? p.removeWhiteBg)) targetFile = await autoTrim(targetFile);
             const up = await uploadPDF(targetFile);
             const fd = new FormData();
             fd.append('file_id', up.id);

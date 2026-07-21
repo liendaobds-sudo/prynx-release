@@ -35,7 +35,15 @@ def _font_names_match(span_font: str, object_ref: str) -> bool:
 
 class FontRulesMixin:
     def _check_fonts(self, pdf: pikepdf.Pdf, page_nums: list[int] = None) -> list[PreflightIssue]:
-        """Check all fonts in the PDF for embedding status."""
+        """Check all fonts in the PDF for embedding status.
+
+        Quét ĐỆ QUY qua Form XObject lồng + appearance stream annotation (không chỉ
+        page-level Resources) và xử lý ĐÚNG font composite Type0: FontDescriptor +
+        FontFile của Type0 nằm ở ``/DescendantFonts→CIDFont``, KHÔNG ở dict Type0.
+        Đọc thẳng dict Type0 (code cũ) → luôn báo sai "chưa nhúng".
+        """
+        from app.core.preflight_rules.resource_walker import iter_fonts
+
         issues = []
         total_fonts = 0
         not_embedded = 0
@@ -46,65 +54,88 @@ class FontRulesMixin:
         for page_idx in target_pages:
             page = pdf.pages[page_idx]
             page_num = page_idx + 1
-            fonts = page.get("/Resources", {}).get("/Font", {})
-            if not fonts:
-                continue
 
-            for font_name, font_ref in fonts.items():
-                try:
-                    font_obj = font_ref if isinstance(font_ref, pikepdf.Dictionary) else pdf.get_object(font_ref)
-                except Exception:
-                    continue
-
+            for font_name, font_obj in iter_fonts(page, pdf):
                 base_font = str(font_obj.get("/BaseFont", font_name))
+                # Dedupe theo BaseFont + trang (một font dùng nhiều nơi chỉ báo 1 lần).
                 font_key = f"{base_font}_{page_num}"
                 if font_key in seen_fonts:
                     continue
                 seen_fonts.add(font_key)
                 total_fonts += 1
 
-                # Check if font file is embedded
-                desc = font_obj.get("/FontDescriptor")
-                if desc is None:
-                    # Type1 base 14 fonts don't need embedding
-                    font_type = str(font_obj.get("/Subtype", ""))
-                    if font_type == "/Type1":
-                        continue
-                    not_embedded += 1
-                    issues.append(PreflightIssue(
-                        rule_id="FONT_NOT_EMBEDDED",
-                        severity="error",
-                        page=page_num,
-                        object_ref=f"Font {font_name} ({base_font})",
-                        description=f"Font '{base_font}' chưa được nhúng (embedded). Có thể bị thay thế font khi in.",
-                        auto_fixable=True,
-                    ))
+                if self._font_is_embedded(font_obj, pdf):
                     continue
 
-                try:
-                    desc_obj = desc if isinstance(desc, pikepdf.Dictionary) else pdf.get_object(desc)
-                except Exception:
-                    continue
-
-                has_file = any(
-                    desc_obj.get(key) is not None
-                    for key in ["/FontFile", "/FontFile2", "/FontFile3"]
-                )
-                if not has_file:
-                    not_embedded += 1
-                    issues.append(PreflightIssue(
-                        rule_id="FONT_NOT_EMBEDDED",
-                        severity="error",
-                        page=page_num,
-                        object_ref=f"Font {font_name} ({base_font})",
-                        description=f"Font '{base_font}' chưa được nhúng (embedded). Có thể bị thay thế font khi in.",
-                        auto_fixable=True,
-                    ))
+                not_embedded += 1
+                issues.append(PreflightIssue(
+                    rule_id="FONT_NOT_EMBEDDED",
+                    severity="error",
+                    page=page_num,
+                    object_ref=f"Font {font_name} ({base_font})",
+                    description=f"Font '{base_font}' chưa được nhúng (embedded). Có thể bị thay thế font khi in.",
+                    auto_fixable=True,
+                ))
 
         # Store counts for summary
         self._font_total = total_fonts
         self._font_not_embedded = not_embedded
         return issues
+
+    @staticmethod
+    def _font_is_embedded(font_obj: pikepdf.Object, pdf: pikepdf.Pdf) -> bool:
+        """Xác định một font đã nhúng chưa — xử lý cả simple font lẫn Type0/CID.
+
+        - Type0 (composite): FontDescriptor/FontFile nằm trong ``/DescendantFonts``
+          (mảng 1 phần tử là CIDFont). Phải descend vào đó mới thấy FontFile.
+        - Base-14 Type1 (Helvetica, Times…): không có FontDescriptor và KHÔNG cần
+          nhúng → coi như hợp lệ.
+        - Type3: glyph định nghĩa bằng content stream (CharProcs), không có
+          FontFile; luôn tự-chứa → coi như "nhúng" (không cảnh báo rớt font).
+        """
+        def _resolve(o):
+            try:
+                if hasattr(o, "resolve") and callable(getattr(o, "resolve", None)):
+                    return o.resolve()
+            except Exception:
+                pass
+            return o
+
+        def _descriptor_has_file(font_dict) -> bool:
+            desc = _resolve(font_dict.get("/FontDescriptor"))
+            if not isinstance(desc, pikepdf.Dictionary):
+                return False
+            return any(
+                desc.get(k) is not None for k in ("/FontFile", "/FontFile2", "/FontFile3")
+            )
+
+        subtype = str(font_obj.get("/Subtype", ""))
+
+        # Type3: tự-chứa glyph trong CharProcs → không phải lỗi rớt font.
+        if subtype == "/Type3":
+            return True
+
+        # Type0 composite → descend DescendantFonts → CIDFont.
+        if subtype == "/Type0":
+            desc_fonts = _resolve(font_obj.get("/DescendantFonts"))
+            cid_fonts = []
+            if isinstance(desc_fonts, pikepdf.Array):
+                cid_fonts = [_resolve(f) for f in desc_fonts]
+            elif isinstance(desc_fonts, pikepdf.Dictionary):
+                cid_fonts = [desc_fonts]
+            for cf in cid_fonts:
+                if isinstance(cf, pikepdf.Dictionary) and _descriptor_has_file(cf):
+                    return True
+            return False
+
+        # Simple font (Type1/TrueType/MMType1).
+        if _descriptor_has_file(font_obj):
+            return True
+        # Không FontDescriptor: base-14 Type1 chuẩn không cần nhúng.
+        desc = _resolve(font_obj.get("/FontDescriptor"))
+        if desc is None and subtype == "/Type1":
+            return True
+        return False
 
     def _enrich_font_bboxes(self, doc, issues: list[PreflightIssue], page_nums: list[int] = None):
         """Match text spans via pdfplumber to find bboxes for unembedded fonts."""

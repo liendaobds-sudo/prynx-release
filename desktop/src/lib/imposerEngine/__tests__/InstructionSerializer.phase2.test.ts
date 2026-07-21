@@ -12,11 +12,11 @@ import { serializeBookletPlan } from '../InstructionSerializer';
 const MM = 2.83465;
 const W = 105 * MM, H = 148 * MM; // A6
 const PAGES = 16;
-const details = Array.from({ length: PAGES }, () => ({ visualW: W, visualH: H, angle: 0 }));
 
-function build(s: any) {
+function buildForPages(pageCount: number, s: any) {
     const bMode = s.bindingMode || 'saddle';
-    const map = generateBindingMap(PAGES, bMode, s.foliosize, 'end').sheets;
+    const map = generateBindingMap(pageCount, bMode, s.foliosize, 'end').sheets;
+    const pageDetails = Array.from({ length: pageCount }, () => ({ visualW: W, visualH: H, angle: 0 }));
     const fp = s.foldPattern;
     const phase2 = !!s.chainNup || (!!fp && fp !== '');
     const pseudo = {
@@ -25,9 +25,13 @@ function build(s: any) {
         bleed: s.bleed, signatureMode: bMode, spreadDistribution: s.spreadDistribution,
     } as any;
     const geo = solveGeometry(W, H, pseudo, {}, MM);
-    return serializeBookletPlan(map, details, geo, (s.bleed || 0) * MM, 0,
+    return serializeBookletPlan(map, pageDetails, geo, (s.bleed || 0) * MM, 0,
         bMode === 'saddle' || bMode === 'thread', s.markType || 'none',
-        s.interleave || 'normal', s, 'src.pdf', 'out', PAGES);
+        s.interleave || 'normal', s, 'src.pdf', 'out', pageCount);
+}
+
+function build(s: any) {
+    return buildForPages(PAGES, s);
 }
 
 describe('serializeBookletPlan — phase-2 contract', () => {
@@ -50,8 +54,57 @@ describe('serializeBookletPlan — phase-2 contract', () => {
         }
     });
 
+    it('28p Digital ignores a persisted Offset pattern and keeps 14 Step & Repeat plates', () => {
+        const p = buildForPages(28, {
+            imposerMode: 'guillotine', paperClassification: 'in_nhanh',
+            bindingMode: 'saddle', chainNup: true, foldPattern: 'sig_16p',
+            sheetWidth: 640, sheetHeight: 450,
+        });
+        expect(p.phase2?.mode).toBe('step_repeat');
+        expect(p.sheets).toHaveLength(14);
+        expect(p.phase2?.plates).toHaveLength(14);
+        expect(p.sheets[0].front.placements.map(q => q.source_page)).toEqual([27, 0]);
+        expect(p.sheets[1].front.placements.map(q => q.source_page)).toEqual([1, 26]);
+        expect(p.sheets[13].front.placements.map(q => q.source_page)).toEqual([13, 14]);
+    });
+
+    it('28p Offset rejects incompatible sig_16p instead of regrouping 8+6 surfaces', () => {
+        const p = buildForPages(28, {
+            imposerMode: 'offset', paperClassification: 'offset',
+            bindingMode: 'saddle', chainNup: true, foldPattern: 'sig_16p',
+            sheetWidth: 700, sheetHeight: 500,
+        });
+        expect(p.phase2?.mode).toBe('step_repeat');
+        expect(p.phase2?.plates).toHaveLength(14);
+    });
+
+    it('flush_mount is truly single-sided in phase 2 (no blank back plates)', () => {
+        const p = buildForPages(8, {
+            imposerMode: 'guillotine', paperClassification: 'in_nhanh',
+            bindingMode: 'flush_mount', chainNup: true,
+            sheetWidth: 640, sheetHeight: 450,
+        });
+        expect(p.phase2?.mode).toBe('step_repeat');
+        expect(p.sheets).toHaveLength(4);
+        expect(p.phase2?.plates).toHaveLength(4);
+    });
+
+    it('preserves the per-thumbnail page rotation in backend instructions', () => {
+        const map = generateBindingMap(4, 'saddle').sheets;
+        map[0].front.left.userRotation = 90;
+        const pageDetails = Array.from({ length: 4 }, () => ({ visualW: W, visualH: H, angle: 0 }));
+        const geo = solveGeometry(W, H, {
+            formsize: 'auto_100', bleed: 0, signatureMode: 'saddle',
+        } as any, {}, MM);
+        const p = serializeBookletPlan(
+            map, pageDetails, geo, 0, 0, true, 'none', 'normal',
+            { bindingMode: 'saddle' } as any, 'src.pdf', 'out', 4,
+        );
+        expect(p.sheets[0].front.placements[0].native_angle).toBe(90);
+    });
+
     it('F2 fold_pattern sig_16p → 2 plates (A/B), có slot xoay 180°', () => {
-        const p = build({ bindingMode: 'saddle', bleed: 3, foldPattern: 'sig_16p', sheetWidth: 700, sheetHeight: 500, gripperMargin: 10 });
+        const p = build({ imposerMode: 'offset', paperClassification: 'offset', bindingMode: 'saddle', bleed: 3, foldPattern: 'sig_16p', sheetWidth: 700, sheetHeight: 500, gripperMargin: 10 });
         expect(p.phase2?.mode).toBe('fold_pattern');
         expect(p.phase2!.plates).toHaveLength(2);
         for (const pl of p.phase2!.plates) {
@@ -134,7 +187,7 @@ describe('serializeBookletPlan — phase-2 grid rotation (90°) & cut_stack', ()
     });
 
     it('fold_pattern khổ dọc → slot 0/180 cộng 90 thành 90/270', () => {
-        const p = build({ bindingMode: 'saddle', bleed: 3, foldPattern: 'sig_16p', sheetWidth: 500, sheetHeight: 700, marginLeft: 10, marginRight: 10, marginTop: 10, gripperMargin: 10 });
+        const p = build({ imposerMode: 'offset', paperClassification: 'offset', bindingMode: 'saddle', bleed: 3, foldPattern: 'sig_16p', sheetWidth: 500, sheetHeight: 700, marginLeft: 10, marginRight: 10, marginTop: 10, gripperMargin: 10 });
         const rots = new Set<number>(p.phase2!.plates.flatMap((pl: any) => pl.placements.map((q: any) => q.rotation_deg)));
         expect(rots.has(90)).toBe(true);
         expect(rots.has(270)).toBe(true);

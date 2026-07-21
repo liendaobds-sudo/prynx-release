@@ -154,7 +154,7 @@ export default function OcrTool({ pdfFile, onFileFixed }: Props) {
                         : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white shadow-cyan-500/25 hover:shadow-cyan-500/40'
                 }`}
             >
-                {isProcessing ? t('preprocess.ocr:dang_xu_ly_ocr') : t('preprocess.ocr:tao_searchable_pdf')}
+                {t('preprocess.common:run')}{isProcessing ? '…' : ''}
             </button>
 
             {/* Progress */}

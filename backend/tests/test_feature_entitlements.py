@@ -4,8 +4,10 @@ import app.core.feature_entitlements as entitlements
 from app.core.feature_entitlements import assert_feature, can_use_feature, normalize_plan
 
 
-def test_gate_off_always_allows():
-    assert entitlements.FEATURE_GATING_ENABLED is False
+def test_gate_off_always_allows(monkeypatch):
+    # Gate may be forced on during production QA (PRYNX_FEATURE_GATING_ENABLED=true);
+    # this unit test verifies the off-path regardless of process env.
+    monkeypatch.setattr(entitlements, "FEATURE_GATING_ENABLED", False)
     assert can_use_feature("impo.diecut", "free") is True
 
 

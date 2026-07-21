@@ -160,7 +160,7 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
           <div className="h-px w-full bg-slate-200 dark:bg-zinc-700" />
           <button onClick={() => convertSpot()} disabled={converting}
             className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700">
-            {converting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.inkManager:dang_chuyen_doi')}</>) : (<>{t('preprocess.inkManager:chuyen_tat_ca_spot_cmyk')}</>)}
+            {converting ? (<><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.common:run')}…</>) : (<>{t('preprocess.common:run')}</>)}
           </button>
         </>
       )}

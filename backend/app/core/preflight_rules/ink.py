@@ -178,10 +178,25 @@ class InkRulesMixin:
                     )
                 )
                 if sep.get("engine") != "ghostscript":
+                    # KHÔNG im lặng bỏ qua: nếu thiếu Ghostscript, TAC chưa hề chạy →
+                    # phát issue để user biết báo cáo "sạch TAC" là KHÔNG đáng tin,
+                    # thay vì tưởng file đạt ngưỡng mực (false-clean nguy hiểm).
                     logger.warning(
-                        "TAC trang %d: Ghostscript không khả dụng, bỏ qua kiểm tra TAC.",
+                        "TAC trang %d: Ghostscript không khả dụng, không kiểm tra được TAC.",
                         page_num,
                     )
+                    issues.append(PreflightIssue(
+                        rule_id="TAC_EXCEEDED",
+                        severity="info",
+                        page=page_num,
+                        object_ref="Tổng mực (TAC)",
+                        description=(
+                            f"Chưa kiểm tra được TAC trang {page_num}: thiếu Ghostscript "
+                            "(công cụ tách kênh). Hãy cài Ghostscript để kiểm tổng mực; "
+                            "ĐỪNG coi trang này là đạt ngưỡng mực."
+                        ),
+                        auto_fixable=False,
+                    ))
                     continue
                 width = int(sep.get("width", 0))
                 height = int(sep.get("height", 0))

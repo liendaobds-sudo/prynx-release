@@ -1316,9 +1316,14 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         const sheetW = isCustom ? config.customSheetWidth : (PREDEFINED_SIZES[actualFormsize]?.w ?? config.customSheetWidth);
         const sheetH = isCustom ? config.customSheetHeight : (PREDEFINED_SIZES[actualFormsize]?.h ?? config.customSheetHeight);
 
+        // Cách ly cứng hai pipeline: knob Offset có thể vẫn còn trong persisted store nhưng
+        // tuyệt đối không được đi vào job In Nhanh chỉ vì UI đang ẩn nó.
+        const isOffsetBooklet = config.paperClassification === 'offset';
+        const effectiveFoldPattern = isOffsetBooklet ? config.foldPattern : undefined;
         const settings: any = {
-            imposerMode: config.foldPattern ? 'offset' : 'guillotine',
+            imposerMode: isOffsetBooklet ? 'offset' : 'guillotine',
             impositionMode: ImpositionMode.Booklet,
+            paperClassification: config.paperClassification,
             bindingMode: config.signatureMode,
             foliosize: config.foliosize,
             paperThickness: config.paperThickness,
@@ -1333,9 +1338,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             markLength: config.markLength,
             markThickness: config.markThickness,
             markStyle: config.markStyle,
-            interleave: config.interleave,
-            foldPattern: config.foldPattern,
-            gripperMargin: config.gripperMargin,
+            interleave: effectiveFoldPattern ? 'normal' : (isOffsetBooklet ? config.interleave : 'normal'),
+            foldPattern: effectiveFoldPattern,
+            gripperMargin: isOffsetBooklet ? config.gripperMargin : 0,
             marginTop: config.marginTop,
             marginBottom: config.marginBottom,
             marginLeft: config.marginLeft,
@@ -1358,8 +1363,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             : config.foliosize;
 
         const totalPages = viewerPageOrder ? viewerPageOrder.length : 0;
-        const paddedPages = Math.ceil(totalPages / 4) * 4;
-        const mapResult = generateBindingMap(totalPages, (settings as any).bindingMode || 'saddle', effectiveFoliosize, (settings as any).blankPlacement || 'end');
+        const requestedCoverPageCount = config.coverPageCount || 4;
+        const separatedCoverPages = config.separateCover && totalPages >= requestedCoverPageCount + 4
+            ? requestedCoverPageCount
+            : 0;
+        const imposedPageCount = totalPages - separatedCoverPages;
+        const bodyMultiple = config.signatureMode === 'flush_mount' ? 2 : 4;
+        const paddedBodyPages = Math.ceil(imposedPageCount / bodyMultiple) * bodyMultiple;
+        const paddedPages = paddedBodyPages + separatedCoverPages;
+        const mapResult = generateBindingMap(imposedPageCount, (settings as any).bindingMode || 'saddle', effectiveFoliosize, (settings as any).blankPlacement || 'end');
 
         // Check if page sizes are consistent
         let sizesConsistent = true;
@@ -1386,7 +1398,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // Bypass confirmation if everything is perfectly aligned
             processEngine(settings, config.spawnNewTab);
         } else {
-            setConfirmBlankPlacement('end');
+            setConfirmBlankPlacement(config.blankPlacement || 'end');
             setConfirmBookletSettings({
                 settings,
                 spawnNewTab: config.spawnNewTab,
@@ -2192,8 +2204,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         {isProcessing && (
                             <div className="absolute inset-0 bg-[#525659]/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white">
                                 <div className="w-16 h-16 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mb-6"></div>
-                                <h3 className="font-bold text-2xl tracking-widest uppercase mb-3">
-                                    {/(bình|kẽm|thuật toán|catalog)/i.test(processStatus) ? t('tabs.imposition:dang_binh_trang') : t('tabs.imposition:dang_xu_ly_file')}
+                                <h3 className="font-bold text-2xl tracking-wide mb-3">
+                                    {/(bình|kẽm|catalog|impos)/i.test(processStatus) ? t('tabs.imposition:dang_binh_trang') : t('tabs.imposition:dang_xu_ly_file')}
                                 </h3>
                                 <p className="text-emerald-200 mt-2 text-sm tracking-normal font-medium">{processStatus}</p>
                             </div>
@@ -2271,6 +2283,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onObjectDelete={handleDeleteObjects}
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
                                     onEditCommit={handleEditCommit}
+                                    onDocumentUndo={handleUndo}
                                     editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}
                                     toolbarExtra={file ? (

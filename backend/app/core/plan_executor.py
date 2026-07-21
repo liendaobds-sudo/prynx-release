@@ -16,6 +16,7 @@ import os
 from typing import List, Optional, Tuple
 
 from app.workers import pdf_wrapper as pdf_lib
+from app.core.imposition_page_box import effective_imposition_box
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,37 @@ class PlanExecutor:
             # Save output — tên file UNIQUE (uuid) để 2 job booklet đồng thời / nhiều
             # tab KHÔNG ghi đè cùng 1 file trong results/ (audit #C1). FileResponse trả
             # theo NỘI DUNG file nên tên đĩa không ảnh hưởng phía client.
+            # Append separately handled source pages (for example, detached covers).
+            for item in instruction_json.get('append_source_pages', []):
+                if isinstance(item, int):
+                    src_idx, user_rotation = item, 0
+                else:
+                    src_idx = int(item.get('source_page', -1))
+                    user_rotation = int(item.get('rotation_deg', 0)) % 360
+                if src_idx < 0 or src_idx >= total_src_pages:
+                    continue
+                src_page = src_doc[src_idx]
+                src_box = effective_imposition_box(src_page)
+                user_unit = 1.0
+                try:
+                    if '/UserUnit' in src_page._page:
+                        user_unit = float(src_page._page['/UserUnit'])
+                except Exception:
+                    pass
+                src_w = float(src_box.width) * user_unit
+                src_h = float(src_box.height) * user_unit
+                native_rotation = int(getattr(src_page, 'rotation', 0) or 0) % 360
+                total_rotation = (native_rotation + user_rotation) % 360
+                if total_rotation in (90, 270):
+                    out_w, out_h = src_h, src_w
+                else:
+                    out_w, out_h = src_w, src_h
+                out_page = output_doc.new_page(width=out_w, height=out_h)
+                out_page.show_pdf_page(
+                    pdf_lib.Rect(0, 0, out_w, out_h), src_doc, src_idx,
+                    rotate=total_rotation, clip=src_box,
+                )
+
             import uuid as _uuid
             output_filename = f"imposed_plan_{_uuid.uuid4().hex[:8]}.pdf"
             output_path = os.path.join(output_dir, output_filename)
@@ -211,15 +243,12 @@ def _render_placements(
         clip_data = placement.get("clip")
 
         # Get source page dimensions.
-        # PARITY (audit 🔴): /imposition/pdf-meta báo kích thước theo **MediaBox**
-        # (imposition.py get_pdf_meta) để giữ phần bleed; TS Planner dựng toàn bộ
-        # hình học/scale theo kích thước đó. Ở đây PHẢI dùng CÙNG MediaBox, nếu không
-        # PDF in sẵn (TrimBox < MediaBox) sẽ bị vẽ nhỏ hơn kế hoạch → lệch gáy/dấu xén
-        # và preview ≠ output. Thứ tự: MediaBox > CropBox > TrimBox > rect.
+        # PARITY: dùng đúng cùng effective box với /imposition/pdf-meta. MediaBox
+        # giữ bleed nhỏ; CropBox thắng khi MediaBox là canvas nhiều trang.
         src_page = src_doc[src_page_idx]
 
         # In pdf_wrapper, Page has mediabox, cropbox, trimbox properties
-        src_box = src_page.mediabox or src_page.cropbox or src_page.trimbox or src_page.rect
+        src_box = effective_imposition_box(src_page)
         src_w = src_box.width
         src_h = src_box.height
         
@@ -235,20 +264,20 @@ def _render_placements(
         src_h *= user_unit
 
         # Build clip rect for source page (what area of the source to show)
-        clip_rect = None
-        if clip_data:
-            # Clip coordinates are in output space — convert to source space
-            # clip defines the visible area on the output sheet
-            clip_rect = src_box  # Default: show entire source page based on our chosen box
-        else:
-            clip_rect = src_box  # Pass chosen box to show_pdf_page to crop out printer marks
+        clip_rect = src_box
+        output_clip_rect = None
 
         # Calculate the destination rectangle on the output page
         # The placement coordinates (x, y) define where the page goes
         # in the output coordinate system (origin bottom-left in PDF,
         # but top-left origin used here)
-        dest_w = src_w * scale_factor
-        dest_h = src_h * scale_factor
+        total_rotation = int((native_angle + rotation) % 360)
+        if total_rotation in (90, 270):
+            dest_w = src_h * scale_factor
+            dest_h = src_w * scale_factor
+        else:
+            dest_w = src_w * scale_factor
+            dest_h = src_h * scale_factor
 
         # top-left origin used here, PDF instructions use bottom-left
         # Convert: pike_y = sheet_h - y - dest_h
@@ -275,18 +304,10 @@ def _render_placements(
             if visible_rect.is_empty:
                 continue
 
-            # Calculate the corresponding clip in source space
-            # Map visible_rect back to source page coordinates
-            sx0 = (visible_rect.x0 - dest_rect.x0) / scale_factor
-            sy0 = (visible_rect.y0 - dest_rect.y0) / scale_factor
-            sx1 = sx0 + visible_rect.width / scale_factor
-            sy1 = sy0 + visible_rect.height / scale_factor
-
-            clip_rect = pdf_lib.Rect(sx0, sy0, sx1, sy1)
-            dest_rect = visible_rect
-
-        # Compute total rotation
-        total_rotation = int((native_angle + rotation) % 360)
+            # Keep the full source transform and clip in OUTPUT space.  Converting
+            # this rectangle back into source coordinates loses a non-zero CropBox
+            # origin and also breaks rotated pages.
+            output_clip_rect = clip_output_rect
 
         # Use show_pdf_page — handles clipping + rotation natively
         out_page.show_pdf_page(
@@ -295,6 +316,7 @@ def _render_placements(
             src_page_idx,
             rotate=total_rotation,
             clip=clip_rect,
+            out_clip=output_clip_rect,
         )
 
     # --- Phase 2: Draw marks (batched via pdf_lib.Shape) ---

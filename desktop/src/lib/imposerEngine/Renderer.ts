@@ -122,11 +122,14 @@ export const renderBooklet = async (
     
     // Flatten iteration plan based on Interleave Mode
     const surfaces: { sheetIndex: number, isFront: boolean, slots: any, sheet: VirtualSheet }[] = [];
+    const isSingleSided = settings?.bindingMode === 'flush_mount';
     
-    if (interleaveMode === 'normal') {
+    if (interleaveMode === 'normal' || isSingleSided) {
         for (const sheet of virtualMap) {
             surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: true, slots: sheet.front, sheet });
-            surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: false, slots: sheet.back, sheet });
+            if (!isSingleSided) {
+                surfaces.push({ sheetIndex: sheet.sheetIndex, isFront: false, slots: sheet.back, sheet });
+            }
         }
     } else if (interleaveMode === 'all_fronts_first') {
         for (const sheet of virtualMap) {

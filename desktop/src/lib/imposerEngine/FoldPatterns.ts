@@ -171,10 +171,14 @@ export const SPREAD_FOLD_REGISTRY: SpreadFoldPattern[] = [SPREAD_4P_1UP, SPREAD_
 export const getSpreadPatternById = (id: string): SpreadFoldPattern | undefined =>
     SPREAD_FOLD_REGISTRY.find(p => p.id === id);
 
+/** Chỉ trả pattern khớp tuyệt đối. Dùng ở đường xuất để không ép tay 28p vào mẫu 16p. */
+export const getExactPatternForPageCount = (pagesPerSig: number): SpreadFoldPattern | undefined =>
+    SPREAD_FOLD_REGISTRY.find(p => p.pagesPerSig === pagesPerSig);
+
 /** Tự động chọn pattern phù hợp nhất dựa trên số trang tay sách */
 export const getPatternForPageCount = (pagesPerSig: number): SpreadFoldPattern | undefined => {
     // Ưu tiên match chính xác
-    const exact = SPREAD_FOLD_REGISTRY.find(p => p.pagesPerSig === pagesPerSig);
+    const exact = getExactPatternForPageCount(pagesPerSig);
     if (exact) return exact;
     // Fallback: pattern lớn nhất chứa được
     return [...SPREAD_FOLD_REGISTRY]

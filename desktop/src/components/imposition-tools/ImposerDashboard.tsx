@@ -910,6 +910,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             const effSheetH = _press.h;
 
             onStartBooklet({
+                paperClassification: s.paperClassification,
                 signatureMode: s.signatureMode, foliosize: s.foliosize,
                 formsize: (s.scaleMode === '100') ? 'auto_100' : 'custom',
                 customSheetWidth: effSheetW, customSheetHeight: effSheetH,
@@ -917,10 +918,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness,
                 markStyle: s.marksConfig.style === 2 ? 'japanese' : 'default',
                 spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true,
-                interleave: s.paperClassification === 'in_nhanh' ? 'normal' : s.interleave,
+                // Fold-pattern registry được định nghĩa theo surface F,B,F,B. Digital không được
+                // nhận bất kỳ knob Offset nào; Offset có pattern cũng phải dùng thứ tự normal.
+                interleave: s.paperClassification === 'in_nhanh' || !!s.foldPattern ? 'normal' : s.interleave,
                 scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : (s.scaleMode === 'cut_stack' ? 'cut_stack' : s.scaleMode),
-                foldPattern: (s.paperClassification === 'offset' && s.foldPattern) ? s.foldPattern : (s.scaleMode === 'chain_nup' && s.foldPattern) ? s.foldPattern : undefined,
-                gripperMargin: (s.paperClassification === 'offset' && s.foldPattern) ? s.gripperMargin : (s.scaleMode === 'chain_nup' && s.foldPattern) ? s.gripperMargin : undefined,
+                foldPattern: s.paperClassification === 'offset' && s.foldPattern ? s.foldPattern : undefined,
+                gripperMargin: s.paperClassification === 'offset' ? s.gripperMargin : undefined,
                 marginTop: s.marginTop, marginBottom: s.marginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight,
                 marginMode: s.marginMode, gapX: s.gapX, gapY: s.gapY,
                 spreadDistribution: s.spreadDistribution,
@@ -1072,7 +1075,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         taskMode: s.taskMode as 'booklet' | 'nup' | 'sticker_imposer',
         paper: { formsize: s.formsize, customSheetWidth: s.customSheetWidth, customSheetHeight: s.customSheetHeight, bleed: s.bleed, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, marginTop: s.marginTop, marginBottom: s.marginBottom, marginLeft: s.marginLeft, marginRight: s.marginRight, marginMode: s.marginMode },
         marks: { markType: s.markType, markOffset: s.marksConfig.distance, markLength: s.marksConfig.length, markThickness: s.marksConfig.thickness, markStyle: s.marksConfig.style === 2 ? 'style2' as const : 'style1' as const },
-        booklet: s.taskMode === 'booklet' ? { signatureMode: s.signatureMode, foliosize: s.foliosize, paperThickness: s.paperThickness, scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode, interleave: s.interleave, foldPattern: s.foldPattern || undefined, gripperMargin: s.gripperMargin } : undefined,
+        booklet: s.taskMode === 'booklet' ? { signatureMode: s.signatureMode, foliosize: s.foliosize, paperThickness: s.paperThickness, scaleMode: s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode, interleave: s.interleave, foldPattern: s.paperClassification === 'offset' ? (s.foldPattern || undefined) : undefined, gripperMargin: s.paperClassification === 'offset' ? s.gripperMargin : undefined } : undefined,
         nup: s.taskMode !== 'booklet' ? { layoutType: s.layoutType, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy, groupingStrategy: s.groupingStrategy, duplexFlow: s.duplexFlow, align: s.align, clusterMode: s.clusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode } : undefined,
     }), [s]);
 
@@ -1198,7 +1201,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                     </div>
                     <button onClick={() => onStartMerge && onStartMerge({ ...mergeSettings, spawnNewTab: s.spawnNewTabByTool['merge'] ?? true })} disabled={isProcessing}
                         className="mt-2 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors disabled:opacity-50">
-                        {isProcessing ? t('imposition.imposerDashboard:dang_ap_dung') : t('imposition.imposerDashboard:thuc_thi_ghep_file')}
+                        {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                     </button>
                 </div>
             )}
@@ -1495,7 +1498,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         )}
                         <button onClick={handleExecute} disabled={isProcessing}
                             className="w-full h-11 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1">
-                            {isProcessing ? t('imposition.imposerDashboard:dang_xu_ly') : (activeTool === 'cnc_imposer' ? t('imposition.imposerDashboard:thuc_thi_binh_be_rot_cnc') : activeTool === 'sticker_imposer' ? t('imposition.imposerDashboard:thuc_thi_binh_tem_be') : s.taskMode === 'booklet' ? t('imposition.imposerDashboard:thuc_thi_binh_sach_booklet') : s.taskMode === 'step_repeat' ? t('imposition.imposerDashboard:thuc_thi_nhan_ban_step_repeat') : t('imposition.imposerDashboard:thuc_thi_dan_trang_n_up'))}
+                            {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                         </button>
                     </div>
                 </>
@@ -1510,8 +1513,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             <MarksSettingsDialog isOpen={s.showMarksModal} onClose={() => s.setShowMarksModal(false)} config={s.marksConfig} onSave={(cfg) => { s.setMarksConfig(cfg); }} />
             <PontSettingsDialog isOpen={s.showPontModal} onClose={() => s.setShowPontModal(false)} config={s.pontConfig} onSave={(cfg) => { s.setPontConfig(cfg); }} />
             <PresetSelector isOpen={s.isPresetOpen} onClose={() => s.setIsPresetOpen(false)} onLoadPreset={handleLoadPreset} onGetCurrentSettings={getCurrentSettings} />
-            <FlipbookDialog isOpen={s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} bindingMode={s.signatureMode} foliosize={s.foliosize} bleed={s.bleed} />
-            <SheetViewerDialog isOpen={s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.foldPattern} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.gripperMargin} pageWpt={s.sourcePageDim?.w} pageHpt={s.sourcePageDim?.h} bleed={s.bleed} gapX={s.gapX} gapY={s.gapY} marginLeft={s.marginLeft} marginRight={s.marginRight} marginTop={s.marginTop} />
+            <FlipbookDialog isOpen={s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={s.foliosize} bleed={s.bleed} blankPlacement={s.blankPlacement} />
+            <SheetViewerDialog isOpen={s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.paperClassification === 'offset' ? s.foldPattern : ''} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.paperClassification === 'offset' ? s.gripperMargin : 0} pageWpt={s.sourcePageDim?.w} pageHpt={s.sourcePageDim?.h} bleed={s.bleed} gapX={s.gapX} gapY={s.gapY} marginLeft={s.marginLeft} marginRight={s.marginRight} marginTop={s.marginTop} blankPlacement={s.blankPlacement} separateCover={s.separateCover && (s.signatureMode === 'continuous' || s.signatureMode === 'thread')} coverPageCount={s.coverPageCount} />
         </div>
     );
 }

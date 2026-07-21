@@ -7,6 +7,8 @@ export enum ImpositionMode {
 
 export interface BaseSettings {
     impositionMode: ImpositionMode;
+    /** Phân loại máy in; booklet dùng để cách ly cấu hình Digital/Offset tại engine boundary. */
+    paperClassification?: 'offset' | 'in_nhanh';
     sheetWidth: number; // 0 means auto
     sheetHeight: number;
     paperThickness: number;

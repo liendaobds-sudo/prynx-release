@@ -18,7 +18,15 @@ from app.core.license_guard import require_license
 
 
 # Bỏ guard license để test riêng logic containment (guard đã có test khác).
-app.dependency_overrides[require_license] = lambda: {"license_key": "TEST", "hwid": "TEST", "verified": True}
+# plan=pro: release QA bật feature gating; download preflight không cần Pro nhưng
+# override không có plan bị suy ra free và có thể rò sang test khác.
+app.dependency_overrides[require_license] = lambda: {
+    "license_key": "TEST",
+    "hwid": "TEST",
+    "verified": True,
+    "plan": "pro",
+    "features": ["*"],
+}
 client = TestClient(app)
 
 

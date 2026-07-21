@@ -8,7 +8,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, RotateCw, Layers, Grid3X3 } from 'lucide-react';
 import { generateBindingMap, type VirtualSheet, type PageSlot } from '../../lib/imposerEngine/VirtualMap';
-import { SPREAD_FOLD_REGISTRY, getPatternForPageCount } from '../../lib/imposerEngine/FoldPatterns';
+import { SPREAD_FOLD_REGISTRY, getExactPatternForPageCount, getSpreadPatternById } from '../../lib/imposerEngine/FoldPatterns';
 import { computeSpreadGrid } from '../../lib/imposerEngine/InstructionSerializer';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
@@ -27,6 +27,7 @@ const SIG_COLORS = [
 
 const BINDING_LABELS: Record<string, string> = {
     saddle: 'Bấm Ghim', thread: 'Khâu Chỉ', cut_stacks: 'Bóc Tép', continuous: 'Liên Tục',
+    flush_mount: 'Dán Đôi Lưng',
 };
 
 interface SheetViewerDialogProps {
@@ -34,7 +35,8 @@ interface SheetViewerDialogProps {
     onClose: () => void;
     pdfFile?: any;
     pageOrder: number[];
-    bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks';
+    pageRotations?: number[];
+    bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
     foliosize: number;
     sheetWidth?: number;
     sheetHeight?: number;
@@ -54,18 +56,22 @@ interface SheetViewerDialogProps {
     marginLeft?: number;
     marginRight?: number;
     marginTop?: number;
+    blankPlacement?: 'end' | 'center';
+    separateCover?: boolean;
+    coverPageCount?: number;
 }
 
 // ─── Single page image ───
 const PageSlotView: React.FC<{
-    slot: PageSlot; pageOrder: number[]; pdfFile?: any;
+    slot: PageSlot; pageOrder: number[]; pageRotations?: number[]; pdfFile?: any;
     pageWpt?: number; pageHpt?: number; bleed?: number;
-}> = ({ slot, pageOrder, pdfFile, pageWpt, pageHpt, bleed }) => {
+}> = ({ slot, pageOrder, pageRotations = [], pdfFile, pageWpt, pageHpt, bleed }) => {
   const { t } = useTranslation();
     const [loaded, setLoaded] = useState(false);
     const isBlank = slot.srcIndex === null || slot.srcIndex >= pageOrder.length;
     const pdfPageNum = !isBlank ? pageOrder[slot.srcIndex!] : -1;
     const isBlankPage = isBlank || pdfPageNum === -1;
+    const userRotation = !isBlank ? (pageRotations[slot.srcIndex!] || 0) : 0;
     const totalPages = pageOrder.length;
 
     let coverLabel = '';
@@ -78,8 +84,11 @@ const PageSlotView: React.FC<{
 
     const imageUrl = useMemo(() => {
         if (isBlankPage || !pdfFile?.path) return '';
-        return `http://tile.localhost/${encodeURIComponent(pdfFile.path)}/${pdfPageNum}/1.0/0/0/0/0/0`;
-    }, [isBlankPage, pdfPageNum, pdfFile, pageWpt, pageHpt, bleed]);
+        return buildTileUrl({
+            path: pdfFile.path, page: pdfPageNum, scale: 1.0, rot: userRotation,
+            pageWpt, pageHpt, bleedMm: bleed,
+        });
+    }, [isBlankPage, pdfPageNum, pdfFile, userRotation, pageWpt, pageHpt, bleed]);
 
     return (
         <div className="relative flex flex-col items-center justify-center w-full h-full min-w-0 min-h-0">
@@ -134,12 +143,13 @@ const COVER_STYLES = {
 
 const BlueprintCell: React.FC<{
     logicalIndex: number; isBlank: boolean; rotation: number;
+    userRotation?: number;
     totalPages: number; bindingMode: string;
     pdfFile?: any; pageNum?: number;
     currentJob?: import('../../lib/imposerEngine/CatalogPlanner').PlateJob;
     width?: number;
     height?: number;
-}> = ({ logicalIndex, isBlank, rotation, totalPages, bindingMode, pdfFile, pageNum, currentJob, width = 120, height = 160 }) => {
+}> = ({ logicalIndex, isBlank, rotation, userRotation = 0, totalPages, bindingMode, pdfFile, pageNum, currentJob, width = 120, height = 160 }) => {
   const { t } = useTranslation();
     const isCoverJob = currentJob ? currentJob.isCover : false;
     const isSameMaterialCover = !currentJob && bindingMode === 'saddle';
@@ -172,8 +182,8 @@ const BlueprintCell: React.FC<{
 
     const imageUrl = useMemo(() => {
         if (isBlank || !pdfFile?.path || !pageNum || pageNum === -1) return '';
-        return `http://tile.localhost/${encodeURIComponent(pdfFile.path)}/${pageNum}/1.0/0/0/0/0/0`;
-    }, [isBlank, pageNum, pdfFile]);
+        return buildTileUrl({ path: pdfFile.path, page: pageNum, scale: 1.0, rot: userRotation });
+    }, [isBlank, pageNum, pdfFile, userRotation]);
 
     return (
         <div className={`relative flex items-center justify-center overflow-hidden shrink-0 transition-all duration-300 border ${bgClass} ${borderClass}`} style={{ width: `${width}px`, height: `${height}px`, transform: rotation === 180 ? 'rotate(180deg)' : undefined, background: coverStyle ? coverStyle.bg : undefined, borderColor: coverStyle ? coverStyle.border : undefined }}>
@@ -201,11 +211,12 @@ const BlueprintGrid: React.FC<{
     sheets: VirtualSheet[];
     currentSheetIdx: number;
     pageOrder: number[];
+    pageRotations?: number[];
     bindingMode: string;
     pdfFile?: any;
     currentJob?: import('../../lib/imposerEngine/CatalogPlanner').PlateJob;
     gripperMargin?: number;
-}> = ({ pattern, sheets, currentSheetIdx, pageOrder, bindingMode, pdfFile, currentJob, gripperMargin }) => {
+}> = ({ pattern, sheets, currentSheetIdx, pageOrder, pageRotations = [], bindingMode, pdfFile, currentJob, gripperMargin }) => {
   const { t } = useTranslation();
     const hasBack = pattern.backPlate.length > 0;
     // When catalog jobs are active, logicalIndex has been rewritten to global page numbers
@@ -259,11 +270,13 @@ const BlueprintGrid: React.FC<{
                                 const rightBlank = !spread || spread.right.srcIndex === null || spread.right.srcIndex === -1 || spread.right.srcIndex >= pageOrder.length;
                                 const leftPageNum = !leftBlank && spread?.left.srcIndex !== null ? pageOrder[spread.left.srcIndex!] : -1;
                                 const rightPageNum = !rightBlank && spread?.right.srcIndex !== null ? pageOrder[spread.right.srcIndex!] : -1;
+                                const leftRotation = !leftBlank && spread?.left.srcIndex !== null ? (pageRotations[spread.left.srcIndex!] || 0) : 0;
+                                const rightRotation = !rightBlank && spread?.right.srcIndex !== null ? (pageRotations[spread.right.srcIndex!] || 0) : 0;
                                 return (
                                     <div key={i} className="flex border-2 border-dashed border-slate-300 dark:border-zinc-500 p-[2px] rounded transition-colors duration-300" style={{ transform: slot.rotation === 180 ? 'rotate(180deg)' : undefined }}>
-                                        <BlueprintCell logicalIndex={spread?.left.logicalIndex ?? 0} isBlank={leftBlank} rotation={0} totalPages={actualTotalPages} bindingMode={bindingMode} pdfFile={pdfFile} pageNum={leftPageNum} currentJob={currentJob} width={cellWidth} height={cellHeight} />
+                                        <BlueprintCell logicalIndex={spread?.left.logicalIndex ?? 0} isBlank={leftBlank} rotation={0} userRotation={leftRotation} totalPages={actualTotalPages} bindingMode={bindingMode} pdfFile={pdfFile} pageNum={leftPageNum} currentJob={currentJob} width={cellWidth} height={cellHeight} />
                                         <div className="w-[3px] bg-red-500/80 shrink-0 relative z-10 mx-[2px]" />
-                                        <BlueprintCell logicalIndex={spread?.right.logicalIndex ?? 0} isBlank={rightBlank} rotation={0} totalPages={actualTotalPages} bindingMode={bindingMode} pdfFile={pdfFile} pageNum={rightPageNum} currentJob={currentJob} width={cellWidth} height={cellHeight} />
+                                        <BlueprintCell logicalIndex={spread?.right.logicalIndex ?? 0} isBlank={rightBlank} rotation={0} userRotation={rightRotation} totalPages={actualTotalPages} bindingMode={bindingMode} pdfFile={pdfFile} pageNum={rightPageNum} currentJob={currentJob} width={cellWidth} height={cellHeight} />
                                     </div>
                                 );
                             })}
@@ -309,6 +322,7 @@ const DigitalPressSheetGrid: React.FC<{
     sheets: VirtualSheet[];
     currentSheetIdx: number;
     pageOrder: number[];
+    pageRotations?: number[];
     pdfFile?: any;
     scaleMode: string;
     pageWpt: number;
@@ -322,7 +336,8 @@ const DigitalPressSheetGrid: React.FC<{
     marginRight: number;
     marginTop: number;
     gripperMargin: number;
-}> = ({ sheets, currentSheetIdx, pageOrder, pdfFile, scaleMode, pageWpt, pageHpt, sheetWmm, sheetHmm, bleed, gapX, gapY, marginLeft, marginRight, marginTop, gripperMargin }) => {
+    singleSided?: boolean;
+}> = ({ sheets, currentSheetIdx, pageOrder, pageRotations = [], pdfFile, scaleMode, pageWpt, pageHpt, sheetWmm, sheetHmm, bleed, gapX, gapY, marginLeft, marginRight, marginTop, gripperMargin, singleSided = false }) => {
   const { t } = useTranslation();
     const cs = sheets[currentSheetIdx];
 
@@ -366,18 +381,18 @@ const DigitalPressSheetGrid: React.FC<{
         return (
             <div className="flex w-full h-full border border-slate-200 dark:border-zinc-600 bg-white dark:bg-zinc-800 overflow-hidden">
                 <div className="flex-1 min-w-0 h-full flex items-center justify-center p-1">
-                    <PageSlotView slot={side.left} pageOrder={pageOrder} pdfFile={pdfFile} />
+                    <PageSlotView slot={side.left} pageOrder={pageOrder} pageRotations={pageRotations} pdfFile={pdfFile} />
                 </div>
                 <div className="shrink-0 w-px bg-red-400/70 z-10" />
                 <div className="flex-1 min-w-0 h-full flex items-center justify-center p-1">
-                    <PageSlotView slot={side.right} pageOrder={pageOrder} pdfFile={pdfFile} />
+                    <PageSlotView slot={side.right} pageOrder={pageOrder} pageRotations={pageRotations} pdfFile={pdfFile} />
                 </div>
             </div>
         );
     };
 
     // Fit-contain: mỗi plate chiếm nửa vùng (trừ padding p-4=32, gap-8=32), cao trừ nhãn (~44).
-    const availW = Math.max(1, (area.w - 64) / 2);
+    const availW = Math.max(1, (area.w - (singleSided ? 32 : 64)) / (singleSided ? 1 : 2));
     const availH = Math.max(1, area.h - 44);
     const fitScale = Math.min(availW / frameW, availH / frameH);
     const boxW = frameW * fitScale;
@@ -412,19 +427,32 @@ const DigitalPressSheetGrid: React.FC<{
     return (
         <div ref={areaRef} className="flex-1 flex items-center justify-center gap-8 p-4 min-h-0 min-w-0 w-full">
             {renderPlate(t('misc.sheetViewerDialog:mat_truoc'), false, 'text-sky-500 dark:text-sky-400', 'bg-sky-100 dark:bg-sky-500/20')}
-            {renderPlate(t('misc.sheetViewerDialog:mat_sau'), true, 'text-amber-500 dark:text-amber-400', 'bg-amber-100 dark:bg-amber-500/20')}
+            {!singleSided && renderPlate(t('misc.sheetViewerDialog:mat_sau'), true, 'text-amber-500 dark:text-amber-400', 'bg-amber-100 dark:bg-amber-500/20')}
         </div>
     );
 };
 
 export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
-    isOpen, onClose, pdfFile, pageOrder, bindingMode, foliosize, sheetWidth, sheetHeight, scaleMode = '100', foldPattern = '', catalogJobs, isDigital = false, gripperMargin = 0,
-    pageWpt = 0, pageHpt = 0, bleed = 0, gapX = 0, gapY = 0, marginLeft = 0, marginRight = 0, marginTop = 0
+    isOpen, onClose, pdfFile, pageOrder, pageRotations = [], bindingMode, foliosize, sheetWidth, sheetHeight, scaleMode = '100', foldPattern = '', catalogJobs, isDigital = false, gripperMargin = 0,
+    pageWpt = 0, pageHpt = 0, bleed = 0, gapX = 0, gapY = 0, marginLeft = 0, marginRight = 0, marginTop = 0,
+    blankPlacement = 'end', separateCover = false, coverPageCount = 4,
 }) => {
   const { t } = useTranslation();
     const [currentSheetIdx, setCurrentSheetIdx] = useState(0);
     const [showBack, setShowBack] = useState(false);
     const [blueprintMode, setBlueprintMode] = useState(false);
+
+    const imposedPageOrder = useMemo(() => {
+        if (catalogJobs?.length || !separateCover || pageOrder.length < coverPageCount + 4) return pageOrder;
+        const half = Math.floor(coverPageCount / 2);
+        return pageOrder.slice(half, pageOrder.length - half);
+    }, [catalogJobs, separateCover, coverPageCount, pageOrder]);
+
+    const imposedPageRotations = useMemo(() => {
+        if (catalogJobs?.length || !separateCover || pageOrder.length < coverPageCount + 4) return pageRotations;
+        const half = Math.floor(coverPageCount / 2);
+        return pageRotations.slice(half, pageOrder.length - half);
+    }, [catalogJobs, separateCover, coverPageCount, pageOrder.length, pageRotations]);
 
     const { sheets, report, jobMap } = useMemo(() => {
         if (catalogJobs && catalogJobs.length > 0) {
@@ -454,20 +482,25 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
             }
             return { sheets: allSheets, report: t('misc.sheetViewerDialog:dua_tren_cau_hinh_auto_catalog'), jobMap: jMap };
         } else {
-            if (!pageOrder.length) return { sheets: [] as VirtualSheet[], report: '', jobMap: null };
-            return { ...generateBindingMap(pageOrder.length, bindingMode, foliosize), jobMap: null };
+            if (!imposedPageOrder.length) return { sheets: [] as VirtualSheet[], report: '', jobMap: null };
+            return { ...generateBindingMap(imposedPageOrder.length, bindingMode, foliosize, blankPlacement), jobMap: null };
         }
-    }, [catalogJobs, pageOrder, bindingMode, foliosize]);
+    }, [catalogJobs, imposedPageOrder, bindingMode, foliosize, blankPlacement]);
 
     const cs = sheets[currentSheetIdx];
     const currentJob = jobMap?.get(cs);
 
-    // Always try to resolve a fold pattern for blueprint view
-    const activeFoldPattern = currentJob
-        ? getPatternForPageCount(currentJob.actualPageCount)
+    // Preview chỉ hiển thị blueprint khi pattern khớp tuyệt đối tay hiện tại.
+    const patternCandidate = currentJob
+        ? (getSpreadPatternById(currentJob.foldPatternId) || getExactPatternForPageCount(currentJob.actualPageCount))
         : ((scaleMode === 'chain_nup' && foldPattern && foldPattern !== '' && foldPattern !== 'auto')
-            ? (SPREAD_FOLD_REGISTRY.find(p => p.id === foldPattern) || getPatternForPageCount(foliosize))
-            : getPatternForPageCount(foliosize) || null);
+            ? (SPREAD_FOLD_REGISTRY.find(p => p.id === foldPattern) || null)
+            : null);
+    const currentSignature = cs?.signatureIndex ?? 1;
+    const currentSignatureSurfaces = sheets.filter(s => (s.signatureIndex ?? 1) === currentSignature).length * 2;
+    const activeFoldPattern = patternCandidate && patternCandidate.spreadsPerSig === currentSignatureSurfaces
+        ? patternCandidate
+        : null;
 
     const signatureGroups = useMemo(() => {
         const groups: { sigIndex: number; sheets: VirtualSheet[]; color: typeof SIG_COLORS[0] }[] = [];
@@ -604,7 +637,7 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                     {blueprintMode && activeFoldPattern ? (
                         /* ── BLUEPRINT GRID VIEW ── */
                         <div className="flex-1 flex items-center justify-center p-4 min-h-0 min-w-0">
-                            <BlueprintGrid pattern={activeFoldPattern} sheets={sheets} currentSheetIdx={currentSheetIdx} pageOrder={pageOrder} bindingMode={bindingMode} pdfFile={pdfFile} currentJob={currentJob} gripperMargin={gripperMargin} />
+                            <BlueprintGrid pattern={activeFoldPattern} sheets={sheets} currentSheetIdx={currentSheetIdx} pageOrder={imposedPageOrder} pageRotations={imposedPageRotations} bindingMode={bindingMode} pdfFile={pdfFile} currentJob={currentJob} gripperMargin={gripperMargin} />
                         </div>
                     ) : (isDigital && (scaleMode === 'chain_nup' || scaleMode === 'cut_stack')) ? (
                         /* ── DIGITAL PRESS SHEET SIMULATION VIEW ── */
@@ -612,7 +645,8 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                             <DigitalPressSheetGrid
                                 sheets={sheets}
                                 currentSheetIdx={currentSheetIdx}
-                                pageOrder={pageOrder}
+                                pageOrder={imposedPageOrder}
+                                pageRotations={imposedPageRotations}
                                 pdfFile={pdfFile}
                                 scaleMode={scaleMode}
                                 pageWpt={pageWpt}
@@ -626,6 +660,7 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                                 marginRight={marginRight}
                                 marginTop={marginTop}
                                 gripperMargin={gripperMargin}
+                                singleSided={bindingMode === 'flush_mount'}
                             />
                             {/* Message about digital imposition */}
                             <div className="shrink-0 mt-2 bg-white/90 dark:bg-zinc-800/95 text-slate-800 dark:text-white px-6 py-3.5 rounded-xl text-sm font-medium shadow-xl dark:shadow-2xl flex items-center gap-3 border border-indigo-200 dark:border-indigo-500/30 max-w-2xl w-max text-center leading-relaxed backdrop-blur-sm z-50 relative">
@@ -645,30 +680,32 @@ export const SheetViewerDialog: React.FC<SheetViewerDialogProps> = ({
                                 </div>
                                 <div className="flex justify-center bg-white dark:bg-zinc-800 rounded-lg border border-slate-200 dark:border-zinc-700 shadow-lg overflow-hidden min-h-0 min-w-0">
                                     <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                                        <PageSlotView slot={cs.front.left} pageOrder={pageOrder} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
+                                        <PageSlotView slot={cs.front.left} pageOrder={imposedPageOrder} pageRotations={imposedPageRotations} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
                                     </div>
                                     <div className="shrink-0 w-px bg-red-400/60 z-10" />
                                     <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                                        <PageSlotView slot={cs.front.right} pageOrder={pageOrder} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
+                                        <PageSlotView slot={cs.front.right} pageOrder={imposedPageOrder} pageRotations={imposedPageRotations} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
                                     </div>
                                 </div>
                             </div>
                             
                             {/* BACK PLATE */}
+                            {bindingMode === 'flush_mount' ? null : (
                             <div className="flex flex-col items-center gap-3 max-h-full w-1/2 justify-center min-w-0">
                                 <div className="shrink-0 inline-flex items-center justify-center h-7 text-[11px] font-bold tracking-wider uppercase px-5 rounded-md bg-amber-100 dark:bg-amber-500/20 text-amber-500 dark:text-amber-400">
                                     {t('misc.sheetViewerDialog:mat_sau')}
                                 </div>
                                 <div className="flex justify-center bg-white dark:bg-zinc-800 rounded-lg border border-slate-200 dark:border-zinc-700 shadow-lg overflow-hidden min-h-0 min-w-0">
                                     <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                                        <PageSlotView slot={cs.back.left} pageOrder={pageOrder} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
+                                        <PageSlotView slot={cs.back.left} pageOrder={imposedPageOrder} pageRotations={imposedPageRotations} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
                                     </div>
                                     <div className="shrink-0 w-px bg-red-400/60 z-10" />
                                     <div className="flex-1 min-w-0 h-full min-h-0 flex items-center justify-center p-2">
-                                        <PageSlotView slot={cs.back.right} pageOrder={pageOrder} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
+                                        <PageSlotView slot={cs.back.right} pageOrder={imposedPageOrder} pageRotations={imposedPageRotations} pdfFile={pdfFile} pageWpt={pageWpt} pageHpt={pageHpt} bleed={bleed} />
                                     </div>
                                 </div>
                             </div>
+                            )}
                         </div>
                     )}
                 </div>

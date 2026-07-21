@@ -3,7 +3,9 @@ Page Boxes Engine — Quản lý khổ trang PDF (MediaBox, CropBox, TrimBox, Bl
 
 Chức năng tương đương Acrobat Pro → Print Production → Set Page Boxes.
 """
+import ctypes
 import logging
+import math
 import uuid
 from pathlib import Path
 
@@ -16,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 # 1 pt = 1/72 inch, 1 inch = 25.4 mm
 PT_PER_MM = 72 / 25.4
+MAX_CROP_REGIONS = 64
+MIN_CROP_SIZE_PT = 1.0
+MAX_CROP_DETECT_PIXELS = 20_000_000
 
 
 def _pike_box_to_list(box):
@@ -108,6 +113,254 @@ def _pixel_bbox_to_cropbox(x0, y0, x1, y1, pix_w, pix_h, cb, rotate, margin_pt):
     cy1 = min(cb3, cy1)
     return [cx0, cy0, cx1, cy1]
 
+
+def _normalise_crop_rects(page, rects_mm: list[dict]) -> tuple[list[float], list[list[float]]]:
+    """Validate and clamp crop rectangles to the page's visible CropBox."""
+    if not rects_mm:
+        raise ValueError("Cần ít nhất 1 vùng crop")
+    if len(rects_mm) > MAX_CROP_REGIONS:
+        raise ValueError(f"Chỉ xử lý tối đa {MAX_CROP_REGIONS} vùng mỗi lần")
+
+    media = _get_page_box(page, "/MediaBox")
+    visible = _get_page_box(page, "/CropBox", fallback=media)
+    vx0, vy0, vx1, vy1 = visible
+    normalised: list[list[float]] = []
+
+    for idx, rect in enumerate(rects_mm):
+        try:
+            values = [float(rect[key]) for key in ("x0", "y0", "x1", "y1")]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Vùng #{idx + 1} thiếu hoặc sai tọa độ") from exc
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"Vùng #{idx + 1} chứa tọa độ không hữu hạn")
+
+        x0, y0, x1, y1 = (value * PT_PER_MM for value in values)
+        x0, x1 = max(vx0, x0), min(vx1, x1)
+        y0, y1 = max(vy0, y0), min(vy1, y1)
+        if x1 - x0 < MIN_CROP_SIZE_PT or y1 - y0 < MIN_CROP_SIZE_PT:
+            raise ValueError(f"Vùng #{idx + 1} nằm ngoài trang hoặc quá nhỏ")
+        normalised.append([x0, y0, x1, y1])
+
+    return visible, normalised
+
+
+def _page_rect_to_pixel_bbox(rect, pix_w, pix_h, cb, rotate):
+    """Map a PDF-space rectangle to the top-left pixel space rendered by PDFium."""
+    cb0, cb1, cb2, cb3 = cb
+    width, height = cb2 - cb0, cb3 - cb1
+    x0, y0, x1, y1 = rect
+    u0, u1 = x0 - cb0, x1 - cb0
+    v0, v1 = y0 - cb1, y1 - cb1
+    rot = rotate % 360
+
+    if rot == 90:
+        dx0, dx1, dy0, dy1 = v0, v1, u0, u1
+        disp_w, disp_h = height, width
+    elif rot == 180:
+        dx0, dx1, dy0, dy1 = width - u1, width - u0, v0, v1
+        disp_w, disp_h = width, height
+    elif rot == 270:
+        dx0, dx1 = height - v1, height - v0
+        dy0, dy1 = width - u1, width - u0
+        disp_w, disp_h = height, width
+    else:
+        dx0, dx1 = u0, u1
+        dy0, dy1 = height - v1, height - v0
+        disp_w, disp_h = width, height
+
+    sx = pix_w / disp_w if disp_w else 1.0
+    sy = pix_h / disp_h if disp_h else 1.0
+    return [
+        max(0, min(pix_w, int(math.floor(dx0 * sx)))),
+        max(0, min(pix_h, int(math.floor(dy0 * sy)))),
+        max(0, min(pix_w, int(math.ceil(dx1 * sx)))),
+        max(0, min(pix_h, int(math.ceil(dy1 * sy)))),
+    ]
+
+
+def _pdfium_object_candidates(file_path: str, page_index: int) -> list[tuple[list[float], int]]:
+    """Read top-level painted object bounds without rasterising the PDF."""
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as pdfium_c
+
+    pdf = pdfium.PdfDocument(file_path)
+    try:
+        page = pdf[page_index]
+        page_raw = page.raw
+        count = min(int(pdfium_c.FPDFPage_CountObjects(page_raw)), 20000)
+        candidates: list[tuple[list[float], int]] = []
+        painted_types = {
+            int(pdfium_c.FPDF_PAGEOBJ_PATH),
+            int(pdfium_c.FPDF_PAGEOBJ_IMAGE),
+            int(pdfium_c.FPDF_PAGEOBJ_SHADING),
+            int(pdfium_c.FPDF_PAGEOBJ_FORM),
+        }
+        for idx in range(count):
+            obj = pdfium_c.FPDFPage_GetObject(page_raw, idx)
+            if not obj:
+                continue
+            raw_type = int(pdfium_c.FPDFPageObj_GetType(obj))
+            if raw_type not in painted_types:
+                continue
+            left = ctypes.c_float()
+            bottom = ctypes.c_float()
+            right = ctypes.c_float()
+            top = ctypes.c_float()
+            if not pdfium_c.FPDFPageObj_GetBounds(
+                obj,
+                ctypes.byref(left),
+                ctypes.byref(bottom),
+                ctypes.byref(right),
+                ctypes.byref(top),
+            ):
+                continue
+            box = [float(left.value), float(bottom.value), float(right.value), float(top.value)]
+            if all(math.isfinite(value) for value in box) and box[2] > box[0] and box[3] > box[1]:
+                candidates.append((box, raw_type))
+        return candidates
+    finally:
+        pdf.close()
+
+
+def _choose_structural_crop_box(
+    rough: list[float],
+    candidates: list[tuple[list[float], int]],
+    max_trim_pt: float,
+) -> list[float] | None:
+    """Prefer a page/image/form boundary that lies just inside the rough selection."""
+    import pypdfium2.raw as pdfium_c
+
+    rx0, ry0, rx1, ry1 = rough
+    rough_area = (rx1 - rx0) * (ry1 - ry0)
+    tolerance = 0.6 * PT_PER_MM
+    priorities = {
+        int(pdfium_c.FPDF_PAGEOBJ_FORM): 4,
+        int(pdfium_c.FPDF_PAGEOBJ_IMAGE): 3,
+        int(pdfium_c.FPDF_PAGEOBJ_SHADING): 2,
+        int(pdfium_c.FPDF_PAGEOBJ_PATH): 1,
+    }
+    best: tuple[float, list[float]] | None = None
+
+    for box, raw_type in candidates:
+        x0, y0, x1, y1 = box
+        gaps = [x0 - rx0, y0 - ry0, rx1 - x1, ry1 - y1]
+        if any(gap < -tolerance or gap > max_trim_pt + tolerance for gap in gaps):
+            continue
+        width, height = x1 - x0, y1 - y0
+        if width < 10 * PT_PER_MM or height < 10 * PT_PER_MM:
+            continue
+        ratio = (width * height) / rough_area if rough_area else 0.0
+        if ratio < 0.45:
+            continue
+        clipped = [max(rx0, x0), max(ry0, y0), min(rx1, x1), min(ry1, y1)]
+        if clipped[2] <= clipped[0] or clipped[3] <= clipped[1]:
+            continue
+        score = priorities.get(raw_type, 0) * 100.0 + ratio * 10.0 - sum(max(0.0, gap) for gap in gaps) / max(1.0, max_trim_pt)
+        if best is None or score > best[0]:
+            best = (score, clipped)
+    return best[1] if best else None
+
+
+def _detect_raster_crop_box(
+    image_arr: np.ndarray,
+    rough: list[float],
+    pix_w: int,
+    pix_h: int,
+    cb: list[float],
+    rotate: int,
+    max_trim_pt: float,
+) -> list[float] | None:
+    """Fallback edge detector. It is accepted only when every removed edge is small."""
+    import cv2
+
+    px0, py0, px1, py1 = _page_rect_to_pixel_bbox(rough, pix_w, pix_h, cb, rotate)
+    if px1 - px0 < 8 or py1 - py0 < 8:
+        return None
+    region = image_arr[py0:py1, px0:px1]
+    rgb = region[:, :, :3] if region.ndim == 3 else np.repeat(region[:, :, None], 3, axis=2)
+    border_width = max(1, min(4, min(rgb.shape[:2]) // 12))
+    border = np.concatenate((
+        rgb[:border_width].reshape(-1, 3),
+        rgb[-border_width:].reshape(-1, 3),
+        rgb[:, :border_width].reshape(-1, 3),
+        rgb[:, -border_width:].reshape(-1, 3),
+    ), axis=0)
+    background = np.median(border.astype(np.float32), axis=0)
+    distance = np.linalg.norm(rgb.astype(np.float32) - background, axis=2)
+    mask = (distance > 16.0).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    if not mask.any():
+        return None
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    min_area = max(9, int(mask.size * 0.00005))
+    clean = np.zeros_like(mask)
+    for idx in range(1, count):
+        if stats[idx, cv2.CC_STAT_AREA] >= min_area:
+            clean[labels == idx] = 1
+    if not clean.any():
+        return None
+
+    rows = np.any(clean, axis=1)
+    cols = np.any(clean, axis=0)
+    local_y0, local_y1 = np.where(rows)[0][[0, -1]]
+    local_x0, local_x1 = np.where(cols)[0][[0, -1]]
+    candidate = _pixel_bbox_to_cropbox(
+        px0 + int(local_x0), py0 + int(local_y0),
+        px0 + int(local_x1), py0 + int(local_y1),
+        pix_w, pix_h, cb, rotate, 0.0,
+    )
+    gaps = [candidate[0] - rough[0], candidate[1] - rough[1], rough[2] - candidate[2], rough[3] - candidate[3]]
+    tolerance = 0.6 * PT_PER_MM
+    if any(gap < -tolerance or gap > max_trim_pt + tolerance for gap in gaps):
+        return None
+    rough_area = (rough[2] - rough[0]) * (rough[3] - rough[1])
+    if (candidate[2] - candidate[0]) * (candidate[3] - candidate[1]) < 0.45 * rough_area:
+        return None
+    return [max(rough[0], candidate[0]), max(rough[1], candidate[1]), min(rough[2], candidate[2]), min(rough[3], candidate[3])]
+
+def _translate_crop_annotations(page, x0: float, y0: float, width: float, height: float) -> None:
+    """Move annotation geometry with physically cropped page content and drop outside links."""
+    annotations = page.get("/Annots")
+    if not annotations:
+        return
+    kept = pikepdf.Array()
+
+    def shift_pairs(values):
+        shifted = []
+        for idx, value in enumerate(values):
+            shifted.append(float(value) - (x0 if idx % 2 == 0 else y0))
+        return pikepdf.Array(shifted)
+
+    for annotation_ref in annotations:
+        try:
+            annotation = annotation_ref
+            rect = annotation.get("/Rect")
+            if rect is not None and len(rect) >= 4:
+                ax0 = float(rect[0]) - x0
+                ay0 = float(rect[1]) - y0
+                ax1 = float(rect[2]) - x0
+                ay1 = float(rect[3]) - y0
+                clipped = [max(0.0, ax0), max(0.0, ay0), min(width, ax1), min(height, ay1)]
+                if clipped[2] <= clipped[0] or clipped[3] <= clipped[1]:
+                    continue
+                annotation[pikepdf.Name.Rect] = pikepdf.Array(clipped)
+            for key in ("/QuadPoints", "/Vertices", "/L", "/CL"):
+                values = annotation.get(key)
+                if values is not None:
+                    annotation[pikepdf.Name(key)] = shift_pairs(values)
+            ink_list = annotation.get("/InkList")
+            if ink_list is not None:
+                annotation[pikepdf.Name.InkList] = pikepdf.Array(
+                    [shift_pairs(stroke) for stroke in ink_list]
+                )
+            kept.append(annotation_ref)
+        except Exception as exc:
+            logger.debug("Cannot translate crop annotation: %s", exc)
+            kept.append(annotation_ref)
+    page[pikepdf.Name.Annots] = kept
 
 class PageBoxesEngine:
 
@@ -268,12 +521,132 @@ class PageBoxesEngine:
             page.Contents = pikepdf.Stream(doc, prefix + raw + suffix)
         except Exception as e:
             logger.warning("physical crop content translate failed: %s — box-only fallback", e)
-            page.MediaBox = pikepdf.Array([x0, y0, x0 + w, y0 + h])
-            page.CropBox = pikepdf.Array([x0, y0, x0 + w, y0 + h])
+            absolute_box = pikepdf.Array([x0, y0, x0 + w, y0 + h])
+            page.MediaBox = absolute_box
+            page.CropBox = pikepdf.Array(absolute_box)
+            page.TrimBox = pikepdf.Array(absolute_box)
             return
 
-        page.MediaBox = pikepdf.Array([0.0, 0.0, w, h])
-        page.CropBox = pikepdf.Array([0.0, 0.0, w, h])
+        _translate_crop_annotations(page, x0, y0, w, h)
+        output_box = pikepdf.Array([0.0, 0.0, w, h])
+        page.MediaBox = output_box
+        page.CropBox = pikepdf.Array(output_box)
+        page.TrimBox = pikepdf.Array(output_box)
+
+    def detect_crop_regions(
+        self,
+        file_path: str,
+        page_num: int,
+        rects_mm: list[dict],
+        max_trim_mm: float = 5.0,
+    ) -> dict:
+        """Find likely finished-size edges inside rough selections without destructive cropping.
+
+        A large page/image/form/path boundary is preferred because it can preserve intentional
+        white artwork. Raster detection is only a fallback, and is rejected if any edge would
+        move farther than ``max_trim_mm``.
+        """
+        if page_num < 1:
+            raise ValueError(f"page_num không hợp lệ: {page_num}")
+        if not math.isfinite(float(max_trim_mm)) or max_trim_mm <= 0 or max_trim_mm > 20:
+            raise ValueError("max_trim_mm phải lớn hơn 0 và không quá 20 mm")
+
+        doc = pikepdf.Pdf.open(file_path)
+        try:
+            if page_num > len(doc.pages):
+                raise ValueError(f"Trang {page_num} không hợp lệ (file có {len(doc.pages)} trang)")
+            page = doc.pages[page_num - 1]
+            visible, rough_rects = _normalise_crop_rects(page, rects_mm)
+            rotate = int(page.get("/Rotate", 0) or 0) % 360
+        finally:
+            doc.close()
+
+        try:
+            object_candidates = _pdfium_object_candidates(file_path, page_num - 1)
+        except Exception as exc:
+            logger.warning("crop edge object detection failed: %s", exc)
+            object_candidates = []
+
+        image_arr = None
+        pix_w = pix_h = 0
+        render_error = False
+        visible_width = visible[2] - visible[0]
+        visible_height = visible[3] - visible[1]
+        if rotate in (90, 270):
+            visible_width, visible_height = visible_height, visible_width
+        render_scale = 200.0 / 72.0
+        projected_pixels = visible_width * visible_height * render_scale * render_scale
+        if projected_pixels > MAX_CROP_DETECT_PIXELS:
+            render_scale *= math.sqrt(MAX_CROP_DETECT_PIXELS / projected_pixels)
+
+        def ensure_render():
+            nonlocal image_arr, pix_w, pix_h, render_error
+            if image_arr is not None or render_error:
+                return
+            try:
+                import pypdfium2 as pdfium
+
+                render_doc = pdfium.PdfDocument(file_path)
+                try:
+                    bitmap = render_doc[page_num - 1].render(scale=render_scale)
+                    image = bitmap.to_pil()
+                    image_arr = np.array(image)
+                    pix_w, pix_h = image.size
+                finally:
+                    render_doc.close()
+            except Exception as exc:
+                render_error = True
+                logger.warning("crop edge raster detection failed: %s", exc)
+
+        max_trim_pt = float(max_trim_mm) * PT_PER_MM
+        results = []
+        for rough in rough_rects:
+            detected = _choose_structural_crop_box(rough, object_candidates, max_trim_pt)
+            method = "object" if detected is not None else "unchanged"
+            confidence = "high" if detected is not None else "low"
+            if detected is None:
+                ensure_render()
+                if image_arr is not None:
+                    detected = _detect_raster_crop_box(
+                        image_arr, rough, pix_w, pix_h, visible, rotate, max_trim_pt,
+                    )
+                    if detected is not None:
+                        method = "pixels"
+                        confidence = "medium"
+
+            final_rect = detected if detected is not None else rough
+            trim_values = [
+                max(0.0, final_rect[0] - rough[0]),
+                max(0.0, final_rect[1] - rough[1]),
+                max(0.0, rough[2] - final_rect[2]),
+                max(0.0, rough[3] - final_rect[3]),
+            ]
+            changed = detected is not None and max(trim_values) >= 0.15 * PT_PER_MM
+            if not changed:
+                final_rect = rough
+                method = "unchanged"
+                confidence = "low"
+                trim_values = [0.0, 0.0, 0.0, 0.0]
+
+            results.append({
+                "rect_mm": _box_to_mm(final_rect),
+                "changed": changed,
+                "method": method,
+                "confidence": confidence,
+                "trim_mm": {
+                    "left": round(trim_values[0] / PT_PER_MM, 2),
+                    "bottom": round(trim_values[1] / PT_PER_MM, 2),
+                    "right": round(trim_values[2] / PT_PER_MM, 2),
+                    "top": round(trim_values[3] / PT_PER_MM, 2),
+                },
+            })
+
+        return {
+            "page": page_num,
+            "cropbox": _box_to_mm(visible),
+            "max_trim_mm": float(max_trim_mm),
+            "regions": results,
+        }
 
     def crop_regions_to_pages(
         self,
@@ -281,49 +654,37 @@ class PageBoxesEngine:
         page_num: int,
         rects_mm: list[dict],
     ) -> str:
-        """Crop N vùng trên 1 trang → 1 PDF N trang (mỗi vùng = 1 page).
-
-        page_num: 1-indexed.
-        rects_mm: [{x0,y0,x1,y1}, ...] đơn vị mm, hệ MediaBox trang nguồn.
-        """
-        if not rects_mm:
-            raise ValueError("rects_mm rỗng — cần ít nhất 1 vùng crop")
+        """Crop N regions on one source page into an N-page, zero-origin PDF."""
         if page_num < 1:
             raise ValueError(f"page_num không hợp lệ: {page_num}")
 
+        check_doc = pikepdf.Pdf.open(file_path)
+        try:
+            if page_num > len(check_doc.pages):
+                raise ValueError(f"Trang {page_num} không hợp lệ (file có {len(check_doc.pages)} trang)")
+            _, rects_pt = _normalise_crop_rects(check_doc.pages[page_num - 1], rects_mm)
+        finally:
+            check_doc.close()
+
         out = pikepdf.Pdf.new()
-        # Mở lại nguồn cho MỖI vùng để physical crop không chồng transform.
-        # pikepdf 9: copy page giữa PDF phải qua pages / import_pages — KHÔNG copy_foreign(Page).
-        for i, rect_mm in enumerate(rects_mm):
-            x0 = float(rect_mm["x0"]) * PT_PER_MM
-            y0 = float(rect_mm["y0"]) * PT_PER_MM
-            x1 = float(rect_mm["x1"]) * PT_PER_MM
-            y1 = float(rect_mm["y1"]) * PT_PER_MM
-            if x1 <= x0 or y1 <= y0:
-                raise ValueError(f"Vùng #{i + 1} không hợp lệ (x1<=x0 hoặc y1<=y0)")
-            w, h = x1 - x0, y1 - y0
+        try:
+            # Reopen the source for every region so physical transforms never accumulate.
+            for x0, y0, x1, y1 in rects_pt:
+                src = pikepdf.Pdf.open(file_path)
+                try:
+                    page = src.pages[page_num - 1]
+                    self._physical_crop_page(src, page, x0, y0, x1 - x0, y1 - y0)
+                    out.pages.append(src.pages[page_num - 1])
+                finally:
+                    src.close()
 
-            src = pikepdf.Pdf.open(file_path)
-            try:
-                if page_num > len(src.pages):
-                    raise ValueError(
-                        f"Trang {page_num} không hợp lệ (file có {len(src.pages)} trang)"
-                    )
-                page = src.pages[page_num - 1]
-                self._physical_crop_page(src, page, x0, y0, w, h)
-                # pikepdf 9: append Page qua pages[] (copy_foreign(Page) bị cấm)
-                out.pages.append(src.pages[page_num - 1])
-            finally:
-                src.close()
+            output_name = f"{Path(file_path).stem}_multicrop_{uuid.uuid4().hex[:6]}.pdf"
+            output_path = str(self.output_dir / output_name)
+            out.save(output_path)
+        finally:
+            out.close()
 
-        output_name = f"{Path(file_path).stem}_multicrop_{uuid.uuid4().hex[:6]}.pdf"
-        output_path = str(self.output_dir / output_name)
-        out.save(output_path)
-        out.close()
-        logger.info(
-            "crop_regions_to_pages: page=%d n=%d → %s",
-            page_num, len(rects_mm), output_path,
-        )
+        logger.info("crop_regions_to_pages: page=%d n=%d → %s", page_num, len(rects_pt), output_path)
         return output_path
 
     def auto_trim(self, file_path: str, pages: list[int] | None = None, margin_mm: float = 0) -> str:

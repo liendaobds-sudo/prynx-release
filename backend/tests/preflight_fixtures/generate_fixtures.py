@@ -76,11 +76,11 @@ FIXTURE_SPECS: dict[str, dict] = {
         "manual_note": "Chỉ kiểm tra bằng file AI/Corel thật; pikepdf strip XMP khi save.",
     },
     "07_indexed_palette.pdf": {
-        "title": "Ảnh Indexed / palette 256 màu",
+        "title": "Ảnh Indexed / palette nghèo 16 màu",
         "category": "image",
         "must_have": ["GIF_IN_PDF"],
         "must_not_have": [],
-        "manual_note": "Giống GIF trong PDF — chất lượng in kém.",
+        "manual_note": "Palette 4-bit giống GIF cũ — cảnh báo chất lượng in kém.",
     },
     "08_low_res_image.pdf": {
         "title": "Ảnh 40×40px kéo full trang (~5 DPI)",
@@ -256,20 +256,20 @@ def _make_opi_linked_image(path: Path) -> None:
 def _make_indexed_palette(path: Path) -> None:
     pdf = pikepdf.Pdf.new()
     page = pdf.add_blank_page(page_size=(612, 792))
-    # Indexed ColorSpace: [ /Indexed /DeviceRGB 255 <palette> ]
-    palette = bytes(range(256)) * 3
+    # Indexed ColorSpace nghèo: 4-bit / 16 màu — đúng ngưỡng GIF_IN_PDF.
+    palette = bytes(range(16)) * 3
     indexed = pikepdf.Array([
         pikepdf.Name("/Indexed"),
         pikepdf.Name("/DeviceRGB"),
-        255,
+        15,
         pikepdf.Stream(pdf, palette),
     ])
-    img = pikepdf.Stream(pdf, b"\x00" * 64)
+    img = pikepdf.Stream(pdf, b"\x12" * 32)
     img["/Type"] = pikepdf.Name("/XObject")
     img["/Subtype"] = pikepdf.Name("/Image")
     img["/Width"] = 8
     img["/Height"] = 8
-    img["/BitsPerComponent"] = 8
+    img["/BitsPerComponent"] = 4
     img["/ColorSpace"] = indexed
     page["/Resources"] = pikepdf.Dictionary({
         "/ColorSpace": pikepdf.Dictionary({"/CsI": indexed}),

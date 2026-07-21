@@ -59,13 +59,13 @@
       "manual_note": "OPI trong XObject. QA manual thêm: file Illustrator XMP linked thật."
     },
     "07_indexed_palette.pdf": {
-      "title": "Ảnh Indexed / palette 256 màu",
+      "title": "Ảnh Indexed / palette nghèo 16 màu",
       "category": "image",
       "must_have": [
         "GIF_IN_PDF"
       ],
       "must_not_have": [],
-      "manual_note": "Giống GIF trong PDF — chất lượng in kém."
+      "manual_note": "Palette 4-bit giống GIF cũ — cảnh báo chất lượng in kém."
     },
     "08_low_res_image.pdf": {
       "title": "Ảnh 40×40px kéo full trang (~5 DPI)",

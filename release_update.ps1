@@ -22,6 +22,11 @@ $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $KEY_FILE = "$env:USERPROFILE\.tauri\prynx.key"
 $CONF_PATH = "$ROOT\desktop\src-tauri\tauri.conf.json"
 
+$Version = $Version.Trim()
+if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$') {
+    throw "-Version phai la SemVer hop le (vd 1.0.0-beta.13), nhan duoc: $Version"
+}
+
 # Release Free/Pro phai luon bien dich lai sidecar. Tai su dung binary cu co the
 # bo sot feature gate moi va tao mot ban cai ma UI khoa nhung backend van mo.
 if ($SkipNuitka) {

@@ -5,6 +5,7 @@ import tempfile
 from app.api.routes.imposition import PreviewLayoutRequest, preview_layout
 from app.workers import pdf_wrapper as pdf_lib
 from app.workers.sticker_imposer_pkg.bin_packing import solve_auto_fill_mixed
+from tests.license_helpers import PRO_LICENSE
 
 
 def test_page_sized_equal_designs_use_one_regular_orientation():
@@ -100,7 +101,7 @@ def test_one_dao_page_mixed_preview_is_a_uniform_grid():
             sheet_w=150.0,
             sheet_h=210.0,
         )
-        return await preview_layout(request)
+        return await preview_layout(request, PRO_LICENSE)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         path = os.path.join(temp_dir, 'same-size-pages.pdf')

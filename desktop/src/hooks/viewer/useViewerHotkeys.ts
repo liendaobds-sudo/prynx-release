@@ -65,6 +65,8 @@ interface UseViewerHotkeysProps {
     isObjectEditMode?: boolean;
     onEditUndo?: () => boolean | void;
     onEditRedo?: () => boolean | void;
+    /** Hoàn tác file đã xử lý khi không còn thao tác trang nào để hoàn tác. */
+    onDocumentUndo?: () => void;
 }
 
 export function useViewerHotkeys(props: UseViewerHotkeysProps) {
@@ -79,7 +81,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         guides, setGuides, guidesHistory, setGuidesHistory, selectedGuideId, setSelectedGuideId, toggleRulers,
         navigatePage,
         mainVirtuosoRef, internalScrollRef,
-        isObjectEditMode, onEditUndo, onEditRedo,
+        isObjectEditMode, onEditUndo, onEditRedo, onDocumentUndo,
     } = props;
 
     const prevToolModeRef = useRef<'pointer' | 'hand' | 'dimension'>('pointer');
@@ -136,7 +138,10 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     }, [pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack]);
 
     const undo = useCallback(() => {
-        if (pastStack.length === 0) return;
+        if (pastStack.length === 0) {
+            onDocumentUndo?.();
+            return;
+        }
         const prev = pastStack[pastStack.length - 1];
         const newPast = pastStack.slice(0, -1);
 
@@ -152,7 +157,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         setSelectedIndices(new Set(prev.selection));
         setLastSelectedIndex(prev.lastSelected);
         setPageRotations(prev.rotations);
-    }, [pastStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack, setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations]);
+    }, [pastStack, pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack, setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, onDocumentUndo]);
 
     const redo = useCallback(() => {
         if (futureStack.length === 0) return;

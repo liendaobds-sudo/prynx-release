@@ -664,7 +664,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                                     disabled={isProcessing}
                                     className="w-full py-3 rounded-xl text-[13px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
                                 >
-                                    {isProcessing ? t('preprocess.officeConvert:dang_chuyen') : t('preprocess.officeConvert:btn_chuyen')}
+                                    {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                                 </button>
                             </div>
                         )}
@@ -697,7 +697,7 @@ export default function OfficeConvertTool({ officeSourceFile, officeSourceFiles,
                             disabled={isProcessing || !googleUrl.trim()}
                             className="mt-3 w-full py-3 rounded-xl text-[13px] font-bold bg-gradient-to-r from-sky-500 to-blue-600 text-white disabled:opacity-50"
                         >
-                            {isProcessing ? t('preprocess.officeConvert:dang_tai_google') : t('preprocess.officeConvert:btn_google')}
+                            {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                         </button>
                     </>
                 )}

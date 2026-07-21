@@ -37,6 +37,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_feature("prepress.preflight"))])
 
 
+def _validate_local_pdf_path(file_path: str) -> str:
+    """Kiểm tra path client gửi tới các endpoint *-by-path (desktop mở file tại chỗ).
+
+    Đây là app desktop: người dùng CHỌN file qua Tauri dialog nên đường dẫn có thể
+    ở bất kỳ đâu — KHÔNG ép vào UPLOAD_DIR. Nhưng vẫn hardening để nếu backend lỡ
+    lộ ra mạng thì không thành đọc-file-tùy-ý toàn ổ đĩa:
+      - Chuẩn hoá (chống ``..`` traversal), chặn null-byte.
+      - BẮT BUỘC đuôi ``.pdf`` → không đọc được /etc/passwd, key, sidecar…
+      - Phải là FILE thật đang tồn tại.
+    Trả path đã chuẩn hoá; ném HTTPException nếu không hợp lệ.
+    """
+    raw = (file_path or "").strip()
+    if not raw or "\x00" in raw:
+        raise HTTPException(status_code=400, detail="Đường dẫn không hợp lệ.")
+    norm = os.path.realpath(os.path.abspath(raw))
+    if os.path.splitext(norm)[1].lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Chỉ chấp nhận file .pdf.")
+    if not os.path.isfile(norm):
+        raise HTTPException(status_code=404, detail="File không tồn tại.")
+    return norm
+
+
 # ── Request/Response Schemas ──
 
 class InspectByIdRequest(BaseModel):
@@ -386,9 +408,8 @@ async def get_page_svg_by_path(file_path: str, page: int):
     """Render SVG from a local file path (desktop app only)."""
     from fastapi.responses import Response
     try:
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="File không tồn tại.")
-        
+        file_path = _validate_local_pdf_path(file_path)
+
         import pypdfium2 as pdfium
         pdf_doc = pdfium.PdfDocument(file_path)
         if page < 1 or page > len(pdf_doc):
@@ -473,10 +494,18 @@ async def get_page_objects(file_id: str, page: int):
                                     bbox = [float(mb[0]), float(mb[1]), float(mb[2]), float(mb[3])]
                                 else:
                                     bbox = [0, 0, 595, 842]
+                                # xref = object number của image XObject (ổn định giữa
+                                # list và delete → delete-object khớp ĐÚNG ảnh này, không
+                                # xóa mù mọi ảnh). objgen=(num, gen); num=0 nếu là inline.
+                                try:
+                                    xref_num = int(obj.objgen[0]) or None
+                                except Exception:
+                                    xref_num = None
                                 objects.append(PdfObjectResponse(
                                     id=f"p{page}_img_{obj_idx}",
                                     type='image',
                                     bbox=bbox,
+                                    xref=xref_num,
                                 ))
                                 obj_idx += 1
                         except Exception:
@@ -499,6 +528,43 @@ class ObjectToDelete(BaseModel):
     type: str
     bbox: List[float]
     xref: Optional[int] = None
+
+
+def _delete_images_by_ref(page, image_objs) -> int:
+    """Xóa CHỈ các image XObject KHỚP object number (xref) yêu cầu — không xóa mù.
+
+    Bug cũ: lặp mọi XObject ``/Image`` và ``del`` tất → yêu cầu xóa 1 ảnh làm mất
+    SẠCH ảnh trên trang (mất dữ liệu âm thầm). Nay chỉ xóa entry mà object number
+    của XObject (``objgen[0]``) nằm trong tập ``xref`` client gửi — cùng object
+    number mà endpoint list trả về nên khớp chính xác.
+
+    Nếu KHÔNG có xref nào (client cũ / chưa gửi) → không xóa gì, trả 0 để caller
+    quyết (an toàn hơn xóa nhầm). Trả số ảnh đã xóa.
+    """
+    target_xrefs = {o.xref for o in image_objs if o.xref is not None}
+    if not target_xrefs:
+        return 0
+    resources = page.get("/Resources")
+    if not resources:
+        return 0
+    xobjects = resources.get("/XObject")
+    if not xobjects:
+        return 0
+    removed = 0
+    for name in list(xobjects.keys()):
+        try:
+            ref = xobjects[name]
+            obj = ref.resolve() if hasattr(ref, "resolve") and callable(getattr(ref, "resolve", None)) else ref
+            if str(obj.get("/Subtype", "")) != "/Image":
+                continue
+            og = getattr(obj, "objgen", None)
+            obj_num = og[0] if og else None
+            if obj_num is not None and obj_num in target_xrefs:
+                del xobjects[name]
+                removed += 1
+        except Exception:
+            pass
+    return removed
 
 class DeleteObjectRequest(BaseModel):
     file_id: str
@@ -525,23 +591,12 @@ async def delete_pdf_object(req: DeleteObjectRequest):
         image_objs = [obj for obj in req.objects if obj.type == 'image']
         drawing_objs = [obj for obj in req.objects if obj.type == 'drawing']
 
-        # 1. Process Images — replace image stream with 1x1 transparent pixel
+        # 1. Process Images — CHỈ xóa image khớp xref yêu cầu (không xóa mù).
         logger.info(f"Received request to delete {len(image_objs)} images.")
-        
+
         if image_objs:
-            resources = p.get("/Resources")
-            if resources:
-                xobjects = resources.get("/XObject")
-                if xobjects:
-                    for name in list(xobjects.keys()):
-                        try:
-                            obj = xobjects[name]
-                            if hasattr(obj, 'resolve'):
-                                obj = obj.resolve() if callable(getattr(obj, 'resolve', None)) else obj
-                            if str(obj.get("/Subtype", "")) == "/Image":
-                                del xobjects[name]
-                        except Exception:
-                            pass
+            removed = _delete_images_by_ref(p, image_objs)
+            logger.info("delete-object: xóa %d/%d ảnh khớp xref.", removed, len(image_objs))
 
         # 2. Process Text — use surgical CTM parser to remove text blocks
         if text_objs:
@@ -611,21 +666,9 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
         image_objs = [obj for obj in req.objects if obj.type == 'image']
         drawing_objs = [obj for obj in req.objects if obj.type == 'drawing']
 
-        # 1. Process Images — remove from XObject
+        # 1. Process Images — CHỈ ẩn image khớp xref yêu cầu (không xóa mù).
         if image_objs:
-            resources = p.get("/Resources")
-            if resources:
-                xobjects = resources.get("/XObject")
-                if xobjects:
-                    for name in list(xobjects.keys()):
-                        try:
-                            obj = xobjects[name]
-                            if hasattr(obj, 'resolve'):
-                                obj = obj.resolve() if callable(getattr(obj, 'resolve', None)) else obj
-                            if str(obj.get("/Subtype", "")) == "/Image":
-                                del xobjects[name]
-                        except Exception:
-                            pass
+            _delete_images_by_ref(p, image_objs)
 
         # 2. Process Text
         if text_objs:
@@ -860,12 +903,11 @@ async def get_separations_by_path(req: SeparationsPathRequest):
     Desktop-only: Trích xuất kẽm trực tiếp từ đường dẫn file trên ổ đĩa.
     Không cần upload — backend đọc file tại chỗ. Tức thì.
     """
-    if not os.path.exists(req.file_path):
-        raise HTTPException(status_code=404, detail=f"File không tồn tại: {req.file_path}")
+    safe_path = _validate_local_pdf_path(req.file_path)
 
     try:
         engine = SeparationEngine()
-        result = await engine.extract_separations(req.file_path, req.page, req.dpi, use_ghostscript=req.use_gs)
+        result = await engine.extract_separations(safe_path, req.page, req.dpi, use_ghostscript=req.use_gs)
         return result
     except Exception as e:
         raise_http(e, "Lỗi khi tạo Separations (by path)")
@@ -911,7 +953,30 @@ class CropRegionsRequest(BaseModel):
     """Crop nhiều vùng trên 1 trang → PDF nhiều trang (mỗi vùng = 1 page)."""
     file_id: str
     page: int  # 1-indexed
-    rects_mm: List[dict]  # [{x0,y0,x1,y1}, ...] mm theo MediaBox
+    rects_mm: List[dict]  # [{x0,y0,x1,y1}, ...] mm theo CropBox đang hiển thị
+
+
+class DetectCropRegionsRequest(CropRegionsRequest):
+    """Dò bốn cạnh thành phẩm nằm gần bên trong các vùng quét rộng."""
+    max_trim_mm: float = 5.0
+
+
+@router.post("/preflight/detect-crop-regions")
+async def detect_crop_regions(req: DetectCropRegionsRequest):
+    """Chỉ trả khung được đề xuất để người dùng xem trước; chưa sửa file PDF."""
+    file_path = _get_file_path(req.file_id)
+    from app.core.page_boxes import PageBoxesEngine
+    engine = PageBoxesEngine()
+    try:
+        return await run_in_threadpool(
+            engine.detect_crop_regions,
+            file_path,
+            req.page,
+            req.rects_mm,
+            req.max_trim_mm,
+        )
+    except Exception as e:
+        raise_http(e, "Không dò được rìa dư")
 
 
 @router.post("/preflight/crop-regions")
@@ -921,7 +986,9 @@ async def crop_regions(req: CropRegionsRequest):
     from app.core.page_boxes import PageBoxesEngine
     engine = PageBoxesEngine()
     try:
-        output = engine.crop_regions_to_pages(file_path, req.page, req.rects_mm)
+        output = await run_in_threadpool(
+            engine.crop_regions_to_pages, file_path, req.page, req.rects_mm,
+        )
         return {
             "success": True,
             "output_filename": Path(output).name,
@@ -1162,6 +1229,16 @@ async def convert_colors(req: ConvertColorsRequest):
     file_path = _get_file_path(req.file_id)
     log = []
     current_path = file_path
+    # File trung gian giữa các bước conversion (output bước trước → input bước sau).
+    # Chỉ dọn file TRUNG GIAN do chính vòng lặp sinh ra, KHÔNG bao giờ xóa file gốc.
+    prev_intermediate: str | None = None
+
+    def _cleanup_intermediate(path: str | None) -> None:
+        if path and path != file_path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     for conv in req.conversions:
         t0 = time.time()
@@ -1170,6 +1247,8 @@ async def convert_colors(req: ConvertColorsRequest):
                 from app.core.ink_manager import InkManagerEngine
                 engine = InkManagerEngine()
                 output = await engine.convert_spot_to_cmyk(current_path, None)
+                _cleanup_intermediate(prev_intermediate)
+                prev_intermediate = output
                 current_path = output
                 ms = round((time.time() - t0) * 1000)
                 log.append({"action_id": conv, "status": "success", "message": "Spot → CMYK", "duration_ms": ms})
@@ -1243,6 +1322,8 @@ async def convert_colors(req: ConvertColorsRequest):
                 if proc.returncode != 0:
                     raise Exception(f"Ghostscript failed: {proc.stderr.decode()[:200]}")
 
+                _cleanup_intermediate(prev_intermediate)
+                prev_intermediate = output
                 current_path = output
                 label = "RGB → CMYK" if conv == "rgb_to_cmyk" else "Chuyển sang Grayscale (đen trắng)"
                 ms = round((time.time() - t0) * 1000)
@@ -1395,7 +1476,8 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
 
                 overprint_rendered = True
 
-                doc.close()
+                # doc đã đóng ngay sau validate (dòng ~1355) — KHÔNG close lại
+                # (double-close ném lỗi, rơi vào except → mất kết quả đã dựng xong).
                 return {
                     "success": True,
                     "has_differences": diff_count > 0,
@@ -1422,7 +1504,7 @@ async def render_overprint_preview(req: OverprintPreviewRequest):
                         logger.debug("Không xoá được temp %s: %s", tmp_overprint_name, _e)
 
         if not overprint_rendered:
-            doc.close()
+            # doc đã đóng sau validate — không close lại (tránh double-close).
             return {
                 "success": False,
                 "error": "Ghostscript không khả dụng để mô phỏng Overprint. Kiểm tra cấu hình GS_PATH.",

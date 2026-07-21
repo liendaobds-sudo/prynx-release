@@ -81,6 +81,20 @@ describe('VirtualMap — Saddle', () => {
         expect(flattenSheet(sheets[1])).toEqual([5, 2, 3, 4]);
     });
 
+    it('28 pages keeps one saddle booklet in the exact 7-sheet order', () => {
+        const { sheets } = generateBindingMap(28, 'saddle');
+        expect(sheets).toHaveLength(7);
+        expect(sheets.map(flattenSheet)).toEqual([
+            [27, 0, 1, 26],
+            [25, 2, 3, 24],
+            [23, 4, 5, 22],
+            [21, 6, 7, 20],
+            [19, 8, 9, 18],
+            [17, 10, 11, 16],
+            [15, 12, 13, 14],
+        ]);
+    });
+
     it('pair sum rule: left + right logical indices = N+1', () => {
         const N = 16;
         const { sheets } = generateBindingMap(N, 'saddle');

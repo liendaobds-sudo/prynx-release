@@ -3571,7 +3571,7 @@ export const LivePageFrame = (props: any) => {
                      </div>
                      {i === cropSels.length - 1 && (
                          <div className="absolute -bottom-6 left-0 text-[9px] font-semibold bg-slate-800/90 text-white px-1.5 py-0.5 rounded shadow whitespace-nowrap max-w-[220px]">
-                             Enter · Esc xóa hết · Del xóa cuối
+                             {t('misc.cropDialog:crop_keyboard_hint')}
                          </div>
                      )}
                  </div>

@@ -3,18 +3,37 @@ import { authenticatedFetch, getApiUrl } from '../../lib/api';
 import { roundMm2, validateRectUnit } from '../preprocess-tools/setPageBoxesUtils';
 import { useTranslation } from 'react-i18next';
 
-interface BoxMm { x0: number; y0: number; x1: number; y1: number; width: number; height: number; }
-interface PageBoxesResponse {
-    page: number; total_pages: number;
-    mediabox: BoxMm; cropbox: BoxMm; trimbox: BoxMm; bleedbox: BoxMm; artbox: BoxMm;
+export interface BoxMm {
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+    width: number;
+    height: number;
 }
-interface Frac { x0: number; y0: number; x1: number; y1: number }
+interface PageBoxesResponse {
+    page: number;
+    total_pages: number;
+    mediabox: BoxMm;
+    cropbox: BoxMm;
+    trimbox: BoxMm;
+    bleedbox: BoxMm;
+    artbox: BoxMm;
+}
+export interface Frac { x0: number; y0: number; x1: number; y1: number }
+export interface RectMm { x0: number; y0: number; x1: number; y1: number }
 interface CropOpenDetail {
     pageNum: number;
-    /** Nhiều vùng (cách A: mỗi vùng → 1 trang). */
+    /** Nhiều vùng: mỗi vùng tạo một trang kết quả. */
     fracs?: Frac[];
-    /** Tương thích cũ: 1 vùng. */
+    /** Tương thích sự kiện crop cũ chỉ có một vùng. */
     frac?: Frac;
+}
+interface DetectedRegion {
+    rect_mm: RectMm & { width?: number; height?: number };
+    changed: boolean;
+    method: 'object' | 'pixels' | 'unchanged';
+    confidence: 'high' | 'medium' | 'low';
 }
 
 interface Props {
@@ -23,17 +42,28 @@ interface Props {
     onClose: () => void;
 }
 
-/** frac (top-left, 0..1 trên MediaBox) → rect mm PDF (bottom-left). */
-function fracToRectMm(frac: Frac, mb: BoxMm): { x0: number; y0: number; x1: number; y1: number } {
-    const leftMm = frac.x0 * mb.width;
-    const rightMm = (1 - frac.x1) * mb.width;
-    const topMm = frac.y0 * mb.height;
-    const bottomMm = (1 - frac.y1) * mb.height;
+/** Convert viewer fractions (top-left origin) into PDF millimetres (bottom-left origin). */
+export function fracToRectMm(frac: Frac, pageBox: BoxMm): RectMm {
+    const leftMm = frac.x0 * pageBox.width;
+    const rightMm = (1 - frac.x1) * pageBox.width;
+    const topMm = frac.y0 * pageBox.height;
+    const bottomMm = (1 - frac.y1) * pageBox.height;
     return {
-        x0: roundMm2(mb.x0 + leftMm),
-        y0: roundMm2(mb.y0 + bottomMm),
-        x1: roundMm2(mb.x1 - rightMm),
-        y1: roundMm2(mb.y1 - topMm),
+        x0: roundMm2(pageBox.x0 + leftMm),
+        y0: roundMm2(pageBox.y0 + bottomMm),
+        x1: roundMm2(pageBox.x1 - rightMm),
+        y1: roundMm2(pageBox.y1 - topMm),
+    };
+}
+
+/** Convert a detected PDF rectangle back to the viewer's top-left fractions. */
+export function rectMmToFrac(rect: RectMm, pageBox: BoxMm): Frac {
+    const clamp = (value: number) => Math.max(0, Math.min(1, value));
+    return {
+        x0: clamp((rect.x0 - pageBox.x0) / pageBox.width),
+        y0: clamp((pageBox.y1 - rect.y1) / pageBox.height),
+        x1: clamp((rect.x1 - pageBox.x0) / pageBox.width),
+        y1: clamp((pageBox.y1 - rect.y0) / pageBox.height),
     };
 }
 
@@ -48,6 +78,10 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
     const [selectedIdx, setSelectedIdx] = useState(0);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
+    const [processEdges, setProcessEdges] = useState(false);
+    const [detectingEdges, setDetectingEdges] = useState(false);
+    const [detectedRegions, setDetectedRegions] = useState<DetectedRegion[] | null>(null);
+    const [detectError, setDetectError] = useState('');
 
     useEffect(() => {
         const onOpen = async (e: Event) => {
@@ -59,6 +93,9 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
             if (list.length === 0) return;
 
             setError('');
+            setDetectError('');
+            setDetectedRegions(null);
+            setProcessEdges(false);
             setBusy(true);
             setOpen(true);
             setPageImg(null);
@@ -76,12 +113,13 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                 setBoxes(data);
                 try {
                     const imgRes = await authenticatedFetch(`${getApiUrl()}/preflight/preview-hide`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ file_id: fid, page: detail.pageNum, objects: [] }),
                     });
                     const imgData = await imgRes.json();
                     if (imgData?.preview_b64) setPageImg(imgData.preview_b64);
-                } catch { /* preview optional */ }
+                } catch { /* Preview is optional. */ }
             } catch (err: any) {
                 setError(t('misc.cropDialog:khong_doc_duoc_kho_trang', { msg: err?.message || err }));
             } finally {
@@ -97,23 +135,81 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
         setBoxes(null);
         setPageImg(null);
         setFracs([]);
+        setDetectedRegions(null);
+        setDetectError('');
+        setProcessEdges(false);
     }, []);
 
-    const mb = boxes?.mediabox || boxes?.cropbox || null;
+    // PDF.js displays CropBox. Using MediaBox here shifts and rescales selections on cropped PDFs.
+    const pageBox = boxes?.cropbox || boxes?.mediabox || null;
 
     const rectsMm = useMemo(() => {
-        if (!mb || fracs.length === 0) return [];
-        return fracs.map((f) => fracToRectMm(f, mb));
-    }, [mb, fracs]);
+        if (!pageBox || fracs.length === 0) return [];
+        return fracs.map((frac) => fracToRectMm(frac, pageBox));
+    }, [pageBox, fracs]);
 
-    const selectedRect = rectsMm[selectedIdx] || null;
+    useEffect(() => {
+        if (!processEdges || !fileId || !pageBox || rectsMm.length === 0) {
+            setDetectedRegions(null);
+            setDetectError('');
+            setDetectingEdges(false);
+            return;
+        }
+
+        const controller = new AbortController();
+        setDetectingEdges(true);
+        setDetectError('');
+        setDetectedRegions(null);
+        void (async () => {
+            try {
+                const res = await authenticatedFetch(`${getApiUrl()}/preflight/detect-crop-regions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_id: fileId,
+                        page: pageNum,
+                        rects_mm: rectsMm,
+                        max_trim_mm: 5,
+                    }),
+                    signal: controller.signal,
+                });
+                const data = await res.json();
+                if (!res.ok || !Array.isArray(data?.regions) || data.regions.length !== rectsMm.length) {
+                    throw new Error(data?.detail || t('misc.cropDialog:edge_detection_failed'));
+                }
+                setDetectedRegions(data.regions);
+            } catch (err: any) {
+                if (err?.name !== 'AbortError') {
+                    setDetectError(err?.message || t('misc.cropDialog:edge_detection_failed'));
+                }
+            } finally {
+                if (!controller.signal.aborted) setDetectingEdges(false);
+            }
+        })();
+        return () => controller.abort();
+    }, [processEdges, fileId, pageNum, pageBox, rectsMm, t]);
+
+    const effectiveRects = useMemo(() => {
+        if (!processEdges || !detectedRegions || detectedRegions.length !== rectsMm.length) return rectsMm;
+        return detectedRegions.map((region) => region.rect_mm);
+    }, [processEdges, detectedRegions, rectsMm]);
+
+    const detectedFracs = useMemo(() => {
+        if (!pageBox || !detectedRegions) return [];
+        return detectedRegions.map((region) => rectMmToFrac(region.rect_mm, pageBox));
+    }, [pageBox, detectedRegions]);
+
+    const selectedRect = effectiveRects[selectedIdx] || null;
     const cropW = selectedRect ? roundMm2(selectedRect.x1 - selectedRect.x0) : 0;
     const cropH = selectedRect ? roundMm2(selectedRect.y1 - selectedRect.y0) : 0;
+    const detectionReady = !processEdges || (
+        !detectingEdges && !detectError && detectedRegions?.length === rectsMm.length
+    );
 
     const handleApply = async () => {
-        if (!boxes || rectsMm.length === 0) return;
-        for (let i = 0; i < rectsMm.length; i++) {
-            const valErr = validateRectUnit(rectsMm[i]);
+        if (!boxes || effectiveRects.length === 0 || !detectionReady) return;
+        for (let i = 0; i < effectiveRects.length; i++) {
+            const valErr = validateRectUnit(effectiveRects[i]);
             if (valErr) {
                 setError(t('misc.cropDialog:vung_cat_khong_hop_le', { err: `#${i + 1}: ${valErr}` }));
                 return;
@@ -122,14 +218,13 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
         setBusy(true);
         setError('');
         try {
-            // 1 vùng: vẫn dùng multipage API (1 trang) — cùng physical crop.
             const res = await authenticatedFetch(`${getApiUrl()}/preflight/crop-regions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     file_id: fileId,
                     page: pageNum,
-                    rects_mm: rectsMm,
+                    rects_mm: effectiveRects,
                 }),
             });
             const data = await res.json();
@@ -137,6 +232,7 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                 throw new Error(data.detail || t('misc.cropDialog:cat_kho_that_bai'));
             }
             const dl = await authenticatedFetch(`${getApiUrl()}/preflight/download/${data.output_filename}`);
+            if (!dl.ok) throw new Error(t('misc.cropDialog:cat_kho_that_bai'));
             const blob = await dl.blob();
             onApplied(blob, data.output_filename);
             close();
@@ -157,22 +253,23 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
             }
             return next;
         });
-        setSelectedIdx((s) => Math.max(0, Math.min(s, fracs.length - 2)));
+        setSelectedIdx((selected) => Math.max(0, Math.min(selected, fracs.length - 2)));
     };
 
     if (!open) return null;
 
     const multi = fracs.length > 1;
+    const runDisabled = busy || !boxes || effectiveRects.length === 0 || !detectionReady;
 
     return (
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) { onClose(); close(); } }}>
-            <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-2xl w-[720px] max-w-[95vw] border border-black/10 dark:border-white/10 text-slate-800 dark:text-zinc-200">
+            <div className="bg-white dark:bg-zinc-800 rounded-lg shadow-2xl w-[760px] max-w-[95vw] border border-black/10 dark:border-white/10 text-slate-800 dark:text-zinc-200">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-black/10 dark:border-white/10">
                     <h2 className="text-[15px] font-bold">
                         {t('misc.cropDialog:cat_kho_trang')}
                         {multi && (
                             <span className="ml-2 text-[12px] font-semibold text-orange-600 dark:text-orange-400">
-                                {fracs.length} vùng → {fracs.length} trang
+                                {t('misc.cropDialog:multi_summary', { count: fracs.length })}
                             </span>
                         )}
                     </h2>
@@ -182,16 +279,16 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                 </div>
 
                 <div className="p-5 grid grid-cols-2 gap-5">
-                    {/* Danh sách vùng */}
-                    <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+                    <div className="space-y-2 max-h-[330px] overflow-y-auto pr-1">
                         <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">
-                            Vùng đã quét (trang {pageNum})
+                            {t('misc.cropDialog:scanned_regions', { page: pageNum })}
                         </div>
-                        {fracs.map((f, i) => {
-                            const r = rectsMm[i];
-                            const w = r ? roundMm2(r.x1 - r.x0) : 0;
-                            const h = r ? roundMm2(r.y1 - r.y0) : 0;
+                        {fracs.map((_, i) => {
+                            const rect = effectiveRects[i];
+                            const width = rect ? roundMm2(rect.x1 - rect.x0) : 0;
+                            const height = rect ? roundMm2(rect.y1 - rect.y0) : 0;
                             const active = i === selectedIdx;
+                            const detected = processEdges ? detectedRegions?.[i] : null;
                             return (
                                 <div
                                     key={i}
@@ -206,15 +303,25 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                                         {i + 1}
                                     </span>
                                     <div className="flex-1 min-w-0 text-[12px]">
-                                        <div className="font-semibold">Vùng {i + 1}</div>
-                                        <div className="text-slate-500 tabular-nums">{w} × {h} mm</div>
+                                        <div className="font-semibold">{t('misc.cropDialog:region', { index: i + 1 })}</div>
+                                        <div className="text-slate-500 tabular-nums">{width} × {height} mm</div>
+                                        {detected?.changed && (
+                                            <div className="mt-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                                {t('misc.cropDialog:edges_processed')}
+                                            </div>
+                                        )}
+                                        {detected && !detected.changed && (
+                                            <div className="mt-0.5 text-[10px] leading-tight text-amber-600 dark:text-amber-400">
+                                                {t('misc.cropDialog:edge_unchanged')}
+                                            </div>
+                                        )}
                                     </div>
                                     {fracs.length > 1 && (
                                         <button
                                             type="button"
                                             onClick={(e) => { e.stopPropagation(); removeRegion(i); }}
                                             className="text-[11px] px-2 py-1 rounded border border-black/10 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40"
-                                            title="Xóa vùng này"
+                                            title={t('misc.cropDialog:remove_region')}
                                         >
                                             ×
                                         </button>
@@ -223,35 +330,34 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                             );
                         })}
                         <p className="text-[10px] text-slate-400 leading-relaxed pt-1">
-                            Mỗi vùng → 1 trang PDF. Quét thêm trên viewer rồi Enter lại nếu cần chỉnh.
+                            {t('misc.cropDialog:region_hint')}
                         </p>
                     </div>
 
-                    {/* Preview */}
                     <div className="flex flex-col items-center justify-center">
                         <div
                             className="relative bg-slate-100 dark:bg-zinc-900 border border-black/10 dark:border-white/10 overflow-hidden"
                             style={{
-                                width: 220,
-                                aspectRatio: mb && mb.height > 0 ? `${mb.width} / ${mb.height}` : '3 / 4',
+                                width: 240,
+                                aspectRatio: pageBox && pageBox.height > 0 ? `${pageBox.width} / ${pageBox.height}` : '3 / 4',
                             }}
                         >
                             {pageImg && (
                                 <img src={pageImg} alt="" className="absolute inset-0 w-full h-full object-fill select-none pointer-events-none" />
                             )}
-                            {fracs.map((f, i) => (
+                            {fracs.map((frac, i) => (
                                 <div
-                                    key={i}
-                                    className={`absolute border-2 pointer-events-none ${
+                                    key={`rough-${i}`}
+                                    className={`absolute border-2 border-dashed pointer-events-none ${
                                         i === selectedIdx
-                                            ? 'border-orange-500 bg-orange-400/15 z-10'
+                                            ? 'border-orange-500 bg-orange-400/10 z-10'
                                             : 'border-orange-400/60 bg-orange-400/5'
                                     }`}
                                     style={{
-                                        left: `${f.x0 * 100}%`,
-                                        top: `${f.y0 * 100}%`,
-                                        width: `${(f.x1 - f.x0) * 100}%`,
-                                        height: `${(f.y1 - f.y0) * 100}%`,
+                                        left: `${frac.x0 * 100}%`,
+                                        top: `${frac.y0 * 100}%`,
+                                        width: `${(frac.x1 - frac.x0) * 100}%`,
+                                        height: `${(frac.y1 - frac.y0) * 100}%`,
                                     }}
                                 >
                                     <span className="absolute -top-4 left-0 text-[9px] font-bold bg-orange-500 text-white px-1 rounded">
@@ -259,10 +365,22 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                                     </span>
                                 </div>
                             ))}
+                            {processEdges && detectedRegions && detectedFracs.map((frac, i) => detectedRegions[i]?.changed && (
+                                <div
+                                    key={`detected-${i}`}
+                                    className="absolute border-2 border-emerald-500 bg-emerald-400/10 pointer-events-none z-20"
+                                    style={{
+                                        left: `${frac.x0 * 100}%`,
+                                        top: `${frac.y0 * 100}%`,
+                                        width: `${(frac.x1 - frac.x0) * 100}%`,
+                                        height: `${(frac.y1 - frac.y0) * 100}%`,
+                                    }}
+                                />
+                            ))}
                         </div>
                         <div className="mt-2 text-[11px] text-slate-500">
                             {multi
-                                ? `${fracs.length} vùng → ${fracs.length} trang`
+                                ? t('misc.cropDialog:multi_summary', { count: fracs.length })
                                 : (
                                     <>
                                         {t('misc.cropDialog:kho_sau_khi_cat')}{' '}
@@ -273,8 +391,34 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                                 )}
                         </div>
                     </div>
+
+                    <label className={`col-span-2 flex items-start gap-3 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${
+                        processEdges
+                            ? 'border-emerald-400 bg-emerald-50 dark:bg-emerald-950/25'
+                            : 'border-black/10 dark:border-white/10 hover:bg-black/[0.03] dark:hover:bg-white/5'
+                    }`}>
+                        <input
+                            type="checkbox"
+                            checked={processEdges}
+                            onChange={(e) => setProcessEdges(e.target.checked)}
+                            disabled={busy || !boxes}
+                            className="mt-0.5 w-4 h-4 accent-emerald-600"
+                        />
+                        <span className="min-w-0">
+                            <span className="block text-[12px] font-bold">{t('misc.cropDialog:process_excess_edges')}</span>
+                            <span className="block mt-0.5 text-[10px] leading-relaxed text-slate-500 dark:text-zinc-400">
+                                {t('misc.cropDialog:process_excess_edges_desc')}
+                            </span>
+                            {detectingEdges && (
+                                <span className="block mt-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                    {t('misc.cropDialog:detecting_edges')}
+                                </span>
+                            )}
+                        </span>
+                    </label>
                 </div>
 
+                {detectError && <div className="px-5 pb-2 text-[12px] text-amber-600 dark:text-amber-400">⚠ {detectError}</div>}
                 {error && <div className="px-5 pb-2 text-[12px] text-red-600 dark:text-red-400">❌ {error}</div>}
 
                 <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-black/10 dark:border-white/10">
@@ -283,18 +427,12 @@ export default function CropDialog({ ensureFileId, onApplied, onClose }: Props) 
                     </button>
                     <button
                         onClick={handleApply}
-                        disabled={busy || !boxes || rectsMm.length === 0}
-                        className={`px-5 h-9 text-[13px] font-bold rounded text-white ${
-                            busy || !boxes || rectsMm.length === 0
-                                ? 'bg-slate-400 cursor-not-allowed'
-                                : 'bg-orange-600 hover:bg-orange-700'
+                        disabled={runDisabled}
+                        className={`min-w-[84px] px-5 h-9 text-[13px] font-bold rounded text-white ${
+                            runDisabled ? 'bg-slate-400 cursor-not-allowed' : 'bg-orange-600 hover:bg-orange-700'
                         }`}
                     >
-                        {busy
-                            ? t('misc.cropDialog:dang_xu_ly')
-                            : multi
-                                ? `Áp dụng (${fracs.length} trang)`
-                                : t('misc.cropDialog:ap_dung')}
+                        {busy ? `${t('preprocess.common:run')}…` : t('preprocess.common:run')}
                     </button>
                 </div>
             </div>

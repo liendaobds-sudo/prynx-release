@@ -318,7 +318,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
                   variant="primary"
                   fullWidth
                 >
-                  {t('tabs.compare:bat_dau_so_sanh')}
+                  {t('preprocess.common:run')}
                 </Button>
               </div>
             </div>

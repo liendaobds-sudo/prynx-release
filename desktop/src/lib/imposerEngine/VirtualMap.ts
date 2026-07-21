@@ -1,6 +1,8 @@
 export interface PageSlot {
     srcIndex: number | null; // 0-based original page index, or null if blank padding
     logicalIndex: number; // 1-based reading order index
+    /** Góc xoay riêng của instance trong thumbnail order (không phải rotation gốc của PDF). */
+    userRotation?: number;
 }
 
 export interface SheetSide {

@@ -43,6 +43,8 @@ def client():
         "license_key": "test",
         "hwid": "test",
         "verified": True,
+        "plan": "pro",
+        "features": ["*"],
     }
     try:
         with TestClient(app) as c:

@@ -173,7 +173,7 @@ export default function OptimizeTool({ pdfFile, onFileFixed }: Props) {
                         : 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-emerald-500/25 hover:shadow-emerald-500/40'
                 }`}
             >
-                {isProcessing ? t('preprocess.optimize:dang_nen') : t('preprocess.optimize:toi_uu_pdf')}
+                {t('preprocess.common:run')}{isProcessing ? '…' : ''}
             </button>
 
             {/* Progress */}

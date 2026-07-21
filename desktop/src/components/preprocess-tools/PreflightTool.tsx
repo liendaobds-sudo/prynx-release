@@ -210,9 +210,9 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                 className="flex-1 px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700"
               >
                 {isInspecting ? (
-                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.preflight:dang_quet')}</>
+                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.common:run')}…</>
                 ) : (
-                  <>{t('preprocess.preflight:quet_preflight')}</>
+                  <>{t('preprocess.common:run')}</>
                 )}
               </button>
               
@@ -344,9 +344,9 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
                 className="w-full px-2.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[12px] font-bold shadow-sm transition-colors disabled:opacity-50 flex items-center justify-center gap-2 border border-indigo-700"
               >
                 {fixingAction ? (
-                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.preflight:dang_sua')}</>
+                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> {t('preprocess.common:run')}…</>
                 ) : (
-                  <>🚀 {t('preprocess.preflight:thuc_thi')} ({selectedActions.size})</>
+                  <>{t('preprocess.common:run')}</>
                 )}
               </button>
             )}

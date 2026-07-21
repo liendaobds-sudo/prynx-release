@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 from app.api.routes.imposition import PreviewLayoutBatchRequest, PreviewLayoutRequest, get_pdf_meta, preview_layout, preview_layouts_batch
 from app.workers import pdf_wrapper as pdf_lib
+from tests.license_helpers import PRO_LICENSE
 
 
 def _make_one_page_pdf(path: str) -> None:
@@ -54,7 +55,7 @@ def test_three_live_thumbnail_types_are_all_visible_from_one_page_pdf(
         target_quantities_by_page={},
     )
 
-    result = asyncio.run(preview_layout(req, {}))
+    result = asyncio.run(preview_layout(req, PRO_LICENSE))
 
     assert result["strategyUsed"] == layout_type
     assert result["isMixedPreview"] is True
@@ -93,7 +94,7 @@ def test_step_repeat_labels_cells_as_the_selected_thumbnail_type(tmp_path):
         target_quantity=0,
     )
 
-    result = asyncio.run(preview_layout(req, {}))
+    result = asyncio.run(preview_layout(req, PRO_LICENSE))
 
     assert result["success"] is True
     assert result["absPlacement"] is False
@@ -121,7 +122,7 @@ def test_multi_design_preview_rejects_mixed_page_sizes(tmp_path):
     )
 
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(preview_layout(req, {}))
+        asyncio.run(preview_layout(req, PRO_LICENSE))
     assert exc.value.status_code == 422
     assert "c\u00f9ng k\u00edch th\u01b0\u1edbc" in str(exc.value.detail)
 
@@ -146,7 +147,7 @@ def test_manual_preview_returns_exact_grid(tmp_path):
         is_die_cut=False,
     )
 
-    result = asyncio.run(preview_layout(req, {}))
+    result = asyncio.run(preview_layout(req, PRO_LICENSE))
     assert result["totalItems"] == 4
     assert len(result["cells"]) == 4
 
@@ -183,7 +184,7 @@ def test_guillotine_cluster_forwards_nesting_and_cut_mode(tmp_path):
         "app.workers.cluster_tile_engine.compute_cluster_sheets",
         side_effect=fake_cluster,
     ):
-        result = asyncio.run(preview_layout(req, {}))
+        result = asyncio.run(preview_layout(req, PRO_LICENSE))
 
     assert result["success"] is True
     assert captured["cluster_nesting"] is False
@@ -218,7 +219,7 @@ def test_batch_preview_rejects_zero_page_dimensions(tmp_path):
     )
 
     with pytest.raises(HTTPException) as exc:
-        preview_layouts_batch(req, {})
+        preview_layouts_batch(req, PRO_LICENSE)
     assert exc.value.status_code == 422
 
 
@@ -239,7 +240,7 @@ def test_batch_manual_capacity_matches_requested_grid(tmp_path):
         is_die_cut=False,
     )
 
-    result = preview_layouts_batch(req, {})
+    result = preview_layouts_batch(req, PRO_LICENSE)
     assert result["capacities"] == {0: 4}
 
 
@@ -260,5 +261,5 @@ def test_batch_manual_overflow_does_not_report_capacity(tmp_path):
         is_die_cut=False,
     )
 
-    result = preview_layouts_batch(req, {})
+    result = preview_layouts_batch(req, PRO_LICENSE)
     assert result["capacities"] == {0: 0}

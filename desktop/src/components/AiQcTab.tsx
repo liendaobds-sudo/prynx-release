@@ -173,7 +173,7 @@ export default function AiQcTab() {
             onClick={handleRunQc}
             disabled={isProcessing}
           >
-            {isProcessing ? t('tabs.aiQc:dang_nho_ai_phan_tich') : t('tabs.aiQc:thuc_thi_ai_tim_loi_analyze')}
+            {t('preprocess.common:run')}{isProcessing ? '…' : ''}
           </Button>
         </div>
 

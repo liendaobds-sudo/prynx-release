@@ -64,6 +64,8 @@ interface Props {
     onObjectDelete?: (objs: any[], pageNum: number) => void;
     fetchObjectsForPage?: (pageNum: number) => void;
     onEditCommit?: (outputUrl: string, outputFilename: string, outputFid?: string, outputPath?: string) => void | Promise<void>;
+    /** Hoàn tác kết quả xử lý PDF khi viewer không còn thao tác trang để hoàn tác. */
+    onDocumentUndo?: () => void;
     onVdpBoxCreate?: (box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string }) => void;
     rightPanel?: React.ReactNode;
     /** Nút phụ mép trái toolbar (sau Xuất ảnh), vd Ghi quy trình */
@@ -75,7 +77,7 @@ interface Props {
     editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
     // ═══ Global Store ═══
     const {
@@ -416,6 +418,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         // (css px/point × dpr) để ảnh clip khôi phục đủ nét. editHistory cũ (snapshot
         // pdfUrl) KHÔNG còn dùng cho edit-object — session là đường DUY NHẤT.
         isObjectEditMode,
+        onDocumentUndo,
         onEditUndo: () => {
             if (!editSession?.canUndo) return objectEdit.undo();
             const cssScale = pageDim?.w ? (actualWidth100 * zoom) / (pageDim.w * 72 / 96) : 2;

@@ -2,14 +2,13 @@ import { useEffect, useLayoutEffect, useRef } from 'react';
 import './SplashScreen.css';
 
 export type SplashScreenProps = {
-  /** Parent ready to leave — play exit cinematic then call onExitComplete. */
+  /** Parent ready to leave — play soft exit then call onExitComplete. */
   exiting?: boolean;
   onExitComplete?: () => void;
 };
 
 /**
- * PRYNX brand intro — SVG draw-on, color reveal, ambient breath, exit fade.
- * Pure CSS + path prep (offline; no GSAP CDN).
+ * PRYNX brand intro — light monochrome: draw logo, letters, slogan, soft fade.
  */
 export default function SplashScreen({ exiting = false, onExitComplete }: SplashScreenProps) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -41,8 +40,7 @@ export default function SplashScreen({ exiting = false, onExitComplete }: Splash
     }
 
     const finish = () => onExitComplete?.();
-    // Fallback if animationend doesn't fire (prefers-reduced-motion / interrupted)
-    const fallback = window.setTimeout(finish, 700);
+    const fallback = window.setTimeout(finish, 600);
 
     const onEnd = (e: AnimationEvent) => {
       if (e.target !== el) return;
@@ -64,9 +62,6 @@ export default function SplashScreen({ exiting = false, onExitComplete }: Splash
       role="status"
       aria-label="PrynX is starting"
     >
-      {/* Soft brand glow — ambient breath behind logo */}
-      <div className="prynx-intro__glow" aria-hidden />
-
       <div className="prynx-intro__stage">
         <div className="prynx-intro__logo-group">
           <div className="prynx-intro__icon">
@@ -121,20 +116,16 @@ export default function SplashScreen({ exiting = false, onExitComplete }: Splash
               <span
                 key={ch}
                 className="prynx-intro__letter"
-                style={{ ['--letter-delay' as string]: `${1.6 + i * 0.1}s` }}
+                style={{ ['--letter-delay' as string]: `${0.95 + i * 0.07}s` }}
               >
                 {ch}
               </span>
             ))}
           </div>
-
-          <div className="prynx-intro__sweep" aria-hidden />
         </div>
 
         <div className="prynx-intro__slogan">Print made easy!</div>
       </div>
-
-      <div className="prynx-intro__accent" aria-hidden />
 
       <p className="prynx-intro__status">
         <span className="prynx-intro__spinner" aria-hidden />

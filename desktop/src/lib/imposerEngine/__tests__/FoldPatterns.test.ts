@@ -13,6 +13,7 @@ import {
     SPREAD_FOLD_REGISTRY,
     getSpreadPatternById,
     getPatternForPageCount,
+    getExactPatternForPageCount,
     type SpreadFoldPattern,
 } from '../FoldPatterns';
 
@@ -71,6 +72,11 @@ describe('FoldPatterns — Lookup', () => {
         const p = getPatternForPageCount(12);
         expect(p).toBeDefined();
         expect(p!.pagesPerSig).toBeLessThanOrEqual(12);
+    });
+
+    it('exact lookup must not coerce a 28-page signature into a 16-page pattern', () => {
+        expect(getExactPatternForPageCount(28)).toBeUndefined();
+        expect(getExactPatternForPageCount(16)?.id).toBe('sig_16p');
     });
 });
 

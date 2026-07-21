@@ -40,29 +40,101 @@ class StructureRulesMixin:
         return issues
 
     def _check_transparency(self, pdf: pikepdf.Pdf, page_nums: list[int] = None) -> list[PreflightIssue]:
-        """Check if any page has transparency groups."""
+        """Phát hiện MỌI dạng trong suốt cần flatten trước khi xuất kẽm CTP.
+
+        Code cũ chỉ kiểm ``page/Group`` (transparency group mức trang) → bỏ sót dạng
+        phổ biến nhất: SMask (soft-mask) và blend-mode/alpha (``/CA``,``/ca`` < 1)
+        trong ExtGState, cùng transparency group lồng trong Form XObject. Nay:
+          - Quét ExtGState ở MỌI resource (đệ quy Form XObject + annotation AP).
+          - Bắt ``/SMask`` ≠ /None, ``/BM`` ≠ /Normal|/Compatible, ``/CA``/``/ca`` < 1.
+          - Bắt Form XObject có ``/Group /S /Transparency`` (group lồng).
+          - Vẫn bắt page-level Group như cũ.
+        Mỗi trang chỉ báo MỘT issue (gộp lý do) để tránh spam.
+        """
+        from app.core.preflight_rules.resource_walker import iter_resource_dicts
+
+        def _resolve(o):
+            try:
+                if hasattr(o, "resolve") and callable(getattr(o, "resolve", None)):
+                    return o.resolve()
+            except Exception:
+                pass
+            return o
+
+        def _is_transparency_group(obj) -> bool:
+            grp = _resolve(obj.get("/Group")) if hasattr(obj, "get") else None
+            if isinstance(grp, pikepdf.Dictionary):
+                return str(grp.get("/S", "")) == "/Transparency"
+            return False
+
         issues = []
         page_count = len(pdf.pages)
         target_pages = [p - 1 for p in page_nums] if page_nums else range(page_count)
         for page_idx in target_pages:
             page = pdf.pages[page_idx]
             page_num = page_idx + 1
-            group = page.get("/Group")
-            if group is not None:
-                try:
-                    group_obj = group if isinstance(group, pikepdf.Dictionary) else pdf.get_object(group)
-                    s_value = str(group_obj.get("/S", ""))
-                    if s_value == "/Transparency":
-                        issues.append(PreflightIssue(
-                            rule_id="TRANSPARENCY_DETECTED",
-                            severity="warning",
-                            page=page_num,
-                            object_ref="Page Group",
-                            description=f"Trang {page_num} chứa Transparency Group. Cần Flatten trước khi xuất kẽm CTP.",
-                            auto_fixable=True,
-                        ))
-                except Exception:
-                    pass
+            reasons: set[str] = set()
+
+            # 1) Page-level transparency group (hành vi cũ).
+            try:
+                if _is_transparency_group(page):
+                    reasons.add("transparency group (trang)")
+            except Exception:
+                pass
+
+            # 2) ExtGState + Form XObject group ở MỌI resource (đệ quy).
+            try:
+                for res in iter_resource_dicts(page, pdf):
+                    # 2a) ExtGState: SMask / blend mode / alpha < 1.
+                    egs = _resolve(res.get("/ExtGState"))
+                    if isinstance(egs, pikepdf.Dictionary):
+                        for _n, gs_ref in egs.items():
+                            gs = _resolve(gs_ref)
+                            if not isinstance(gs, pikepdf.Dictionary):
+                                continue
+                            smask = gs.get("/SMask")
+                            if smask is not None and str(smask) != "/None":
+                                reasons.add("soft mask (SMask)")
+                            bm = gs.get("/BM")
+                            if bm is not None:
+                                bm_s = str(bm)
+                                if bm_s not in ("/Normal", "/Compatible", ""):
+                                    reasons.add(f"blend mode {bm_s}")
+                            for alpha_key, label in (("/CA", "alpha nét"), ("/ca", "alpha tô")):
+                                av = gs.get(alpha_key)
+                                if av is not None:
+                                    try:
+                                        if float(av) < 1.0:
+                                            reasons.add(f"{label} < 100%")
+                                    except (TypeError, ValueError):
+                                        pass
+                    # 2b) Form XObject có transparency group riêng.
+                    xobjs = _resolve(res.get("/XObject"))
+                    if isinstance(xobjs, pikepdf.Dictionary):
+                        for _n, xref in xobjs.items():
+                            xo = _resolve(xref)
+                            if isinstance(xo, (pikepdf.Stream, pikepdf.Dictionary)):
+                                try:
+                                    if str(xo.get("/Subtype", "")) == "/Form" and _is_transparency_group(xo):
+                                        reasons.add("transparency group (XObject)")
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+
+            if reasons:
+                detail = ", ".join(sorted(reasons))
+                issues.append(PreflightIssue(
+                    rule_id="TRANSPARENCY_DETECTED",
+                    severity="warning",
+                    page=page_num,
+                    object_ref="Transparency",
+                    description=(
+                        f"Trang {page_num} chứa trong suốt ({detail}). "
+                        "Cần Flatten trước khi xuất kẽm CTP."
+                    ),
+                    auto_fixable=True,
+                ))
         return issues
 
     def _check_bleed_boxes(self, pdf: pikepdf.Pdf, page_nums: list[int] = None) -> list[PreflightIssue]:
@@ -90,13 +162,17 @@ class StructureRulesMixin:
                 try:
                     media = [float(x) for x in media_box]
                     trim = [float(x) for x in trim_box]
-                    if media == trim:
+                    # So khớp float chính xác (media == trim) BỎ SÓT trường hợp lệch
+                    # <1pt — vẫn là "không có bleed thật" (bleed in ấn thường ≥3mm ≈
+                    # 8.5pt mỗi cạnh). Coi là thiếu bleed nếu mọi cạnh lệch ≤ dung sai.
+                    EPS = 1.0  # pt
+                    if all(abs(media[i] - trim[i]) <= EPS for i in range(4)):
                         issues.append(PreflightIssue(
                             rule_id="BLEED_MISSING",
                             severity="info",
                             page=page_num,
                             object_ref="Page Boxes",
-                            description=f"Trang {page_num}: MediaBox = TrimBox, không có vùng tràn lề (bleed).",
+                            description=f"Trang {page_num}: MediaBox ≈ TrimBox, không có vùng tràn lề (bleed).",
                             auto_fixable=False,
                         ))
                 except Exception:
@@ -113,11 +189,24 @@ class StructureRulesMixin:
         for page_idx in target_pages:
             page = pdf.pages[page_idx]
             page_num = page_idx + 1
-            media_box = page.get("/MediaBox")
+            # page.mediabox: pikepdf tự phân giải MediaBox KẾ THỪA từ /Pages cha
+            # (page.get("/MediaBox") trả None nếu box chỉ khai ở cây cha → bỏ sót).
+            try:
+                media_box = page.mediabox
+            except Exception:
+                media_box = page.get("/MediaBox")
             if media_box:
                 try:
                     w = round(float(media_box[2]) - float(media_box[0]), 1)
                     h = round(float(media_box[3]) - float(media_box[1]), 1)
+                    # /Rotate 90/270 hoán đổi chiều hiển thị → so W/H theo khổ ĐÃ xoay,
+                    # nếu không trang xoay 90° báo lệch khổ sai (false positive).
+                    try:
+                        rot = int(page.get("/Rotate", 0) or 0) % 360
+                    except Exception:
+                        rot = 0
+                    if rot in (90, 270):
+                        w, h = h, w
                     sizes.append((page_num, w, h))
                 except Exception:
                     pass

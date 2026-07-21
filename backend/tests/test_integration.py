@@ -10,8 +10,14 @@ from app.core.license_guard import require_license
 
 client = TestClient(app)
 
-# Bypass license check for tests
-app.dependency_overrides[require_license] = lambda: {"license": "TEST_LICENSE", "status": "active"}
+# Bypass license check for tests (Pro plan — feature gating may be on in release QA)
+app.dependency_overrides[require_license] = lambda: {
+    "license_key": "TEST_LICENSE",
+    "hwid": "TEST",
+    "verified": True,
+    "plan": "pro",
+    "features": ["*"],
+}
 
 def test_health_check():
     response = client.get("/")

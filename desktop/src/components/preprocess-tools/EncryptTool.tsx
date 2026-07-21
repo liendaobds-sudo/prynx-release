@@ -248,7 +248,7 @@ export default function EncryptTool({ pdfFile, onFileFixed }: Props) {
                                 : 'bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-amber-500/25'
                         }`}
                     >
-                        {isProcessing ? t('preprocess.encrypt:dang_khoa') : t('preprocess.encrypt:btn_khoa')}
+                        {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                     </button>
                 </>
             ) : (
@@ -277,7 +277,7 @@ export default function EncryptTool({ pdfFile, onFileFixed }: Props) {
                                 : 'bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-600 hover:to-blue-700 text-white shadow-sky-500/25'
                         }`}
                     >
-                        {isProcessing ? t('preprocess.encrypt:dang_mo_khoa') : t('preprocess.encrypt:btn_mo_khoa')}
+                        {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                     </button>
                 </>
             )}

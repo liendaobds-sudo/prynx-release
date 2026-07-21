@@ -10,7 +10,8 @@
 #    .\build_production.ps1 -SkipTauri       # Skip Tauri build
 #    .\build_production.ps1 -NuitkaOnly      # Only compile Python
 #    .\build_production.ps1 -Release         # Build updater artifacts (needs signing key)
-#    .\build_production.ps1 -SkipPreflightQA # Emergency build without pytest gate
+#    .\build_production.ps1 -SkipPreflightQA # Emergency build without automated QA
+#    .\build_production.ps1 -NoOpenExplorer  # Do not open Explorer after build
 #    .\build_production.ps1 -Version 1.0.0-beta.13  # Bump version before build
 #
 # ============================================================
@@ -21,6 +22,7 @@ param(
     [switch]$NuitkaOnly,
     [switch]$Release,
     [switch]$SkipPreflightQA,
+    [switch]$NoOpenExplorer,
     [string]$Version = ""
 )
 
@@ -34,6 +36,7 @@ Write-Host "  ===========================================" -ForegroundColor Cyan
 Write-Host ""
 
 $VENV_PYTHON = "$ROOT\backend\venv\Scripts\python.exe"
+$env:NUITKA_CACHE_DIR = Join-Path ([System.IO.Path]::GetTempPath()) "prynx-nuitka-cache"
 $SIDECAR_DIR = "$ROOT\desktop\src-tauri\binaries"
 $SIDECAR_NAME = "pdf-inspector-backend"
 
@@ -67,7 +70,7 @@ function Copy-DirectoryWithRetry {
 # → gõ 1.0.0-beta.12 vẫn ra installer .11. Ghi UTF-8 không BOM (tránh hỏng JSON).
 if (-not [string]::IsNullOrWhiteSpace($Version)) {
     $Version = $Version.Trim()
-    if ($Version -notmatch '^\d+\.\d+\.\d+') {
+    if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?$') {
         Write-Host "ERROR: -Version phai la SemVer (vd 1.0.0-beta.12), nhan duoc: $Version" -ForegroundColor Red
         exit 1
     }
@@ -157,32 +160,24 @@ $env:PRYNX_FEATURE_GATING_ENABLED = "true"
 Write-Host "  Free/Pro feature gating: ENABLED (frontend + backend)" -ForegroundColor Green
 
 
-# ---- Step 0: Preflight QA gate (runs before Nuitka/Tauri) ----
+# ---- Step 0: Full release QA gate (runs before Nuitka/Tauri) ----
 if (-not $SkipPreflightQA) {
-    Write-Host "[0/5] Running Preflight QA (pytest + golden fixtures)..." -ForegroundColor Yellow
-    & "$ROOT\backend\scripts\run_preflight_qa.ps1"
+    Write-Host "[0/5] Running full release regression gate..." -ForegroundColor Yellow
+    & "$ROOT\scripts\run_release_qa.ps1"
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Preflight QA failed. Fix tests before release." -ForegroundColor Red
+        Write-Host "ERROR: Release regression gate failed. Fix tests before release." -ForegroundColor Red
         Write-Host "  Emergency only: add -SkipPreflightQA to skip this gate." -ForegroundColor Yellow
         exit 1
     }
-    Write-Host "  Preflight QA passed." -ForegroundColor Green
-    Write-Host "  Running Free-token entitlement E2E..." -ForegroundColor Yellow
-    & "$ROOT\backend\scripts\run_free_token_e2e.ps1"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Free-token E2E failed. Production build is blocked." -ForegroundColor Red
-        exit 1
-    }
-    Write-Host "  Free-token entitlement E2E passed." -ForegroundColor Green
-
+    Write-Host "  Full release regression gate passed." -ForegroundColor Green
 } else {
-    Write-Host "[0/5] Skipped Preflight QA + Free-token E2E (-SkipPreflightQA)." -ForegroundColor DarkGray
+    Write-Host "[0/5] Skipped ALL automated release tests (-SkipPreflightQA)." -ForegroundColor DarkGray
 }
 
 # ---- Step 1: Nuitka compile backend ----
 if (-not $SkipNuitka) {
     Write-Host "[1/5] Compiling Python backend with Nuitka..." -ForegroundColor Yellow
-    Write-Host "  This may take 5-15 minutes on first run." -ForegroundColor DarkGray
+    Write-Host "  This may take 20-45 minutes for this large one-file sidecar." -ForegroundColor DarkGray
 
     & $VENV_PYTHON -m pip show nuitka *> $null
     if ($LASTEXITCODE -ne 0) {
@@ -295,24 +290,33 @@ if (-not $SkipNuitka) {
     $MODELS_DIR = "$ROOT\backend\app\data\models"
     $GEN_ONNX = "$MODELS_DIR\realesr-general-x4v3.onnx"
     if (-not (Test-Path $GEN_ONNX)) {
-        # Thu convert neu build venv co torch; neu khong -> fail-soft (ship khong co upscale).
+        # Try conversion when the build venv has torch.
         & $VENV_PYTHON -c "import torch" *> $null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  Converting Real-ESRGAN .pth -> .onnx (build-time)..." -ForegroundColor DarkGray
             & $VENV_PYTHON "$ROOT\backend\scripts\convert_realesrgan_onnx.py" --out "$MODELS_DIR"
         } else {
-            Write-Host "  torch not in build venv - SKIP upscale models. To enable: pip install torch onnx; python backend/scripts/convert_realesrgan_onnx.py --out backend/app/data/models" -ForegroundColor Yellow
+            Write-Host "  torch not in build venv; cannot generate the required upscale model." -ForegroundColor Yellow
         }
     }
     if (Test-Path $GEN_ONNX) {
         $UPSCALE_MODELS_FLAG = "--include-data-dir=app/data/models=app/data/models"
         Write-Host "  Real-ESRGAN models bundled: $MODELS_DIR" -ForegroundColor DarkGray
     } else {
-        Write-Host "  Real-ESRGAN models absent - upscale feature will error at runtime until models present." -ForegroundColor Yellow
+        Write-Host "ERROR: Real-ESRGAN model absent: $GEN_ONNX" -ForegroundColor Red
+        Write-Host "  Build aborted to avoid shipping a broken AI Upscale feature." -ForegroundColor Red
+        Pop-Location
+        exit 1
     }
 
+# MSVC /Ox exhausts compiler heap on some large Nuitka-generated modules (for example
+# jinja2.lexer). Append /O1 after Nuitka's /Ox only for generated Python C code.
+$previousClAppend = $env:_CL_
+$env:_CL_ = if ([string]::IsNullOrWhiteSpace($previousClAppend)) { "/O1" } else { "$previousClAppend /O1" }
     & $VENV_PYTHON -m nuitka `
         --standalone `
+        --jobs=2 `
+        --no-prefer-source-code `
         --onefile `
         --output-filename="$SIDECAR_NAME.exe" `
         --output-dir="$SIDECAR_DIR" `
@@ -343,7 +347,6 @@ if (-not $SkipNuitka) {
         --include-package=pytesseract `
         --include-package=celery `
         --include-package=pypdf `
-        --include-package=fontTools `
         --include-package=uharfbuzz `
         --include-package=onnxruntime `
         --include-package-data=onnxruntime `
@@ -356,6 +359,11 @@ if (-not $SkipNuitka) {
         $UPSCALE_MODELS_FLAG `
         --nofollow-import-to=tkinter `
         --nofollow-import-to=unittest `
+        --nofollow-import-to=pytest `
+        --nofollow-import-to=hypothesis `
+        --nofollow-import-to=*.tests `
+        --noinclude-pytest-mode=nofollow `
+        --noinclude-unittest-mode=nofollow `
         --nofollow-import-to=test `
         --nofollow-import-to=pip `
         --nofollow-import-to=setuptools `
@@ -375,6 +383,8 @@ if (-not $SkipNuitka) {
         app\main.py
 
     $nuitkaExit = $LASTEXITCODE
+    if ($null -eq $previousClAppend) { Remove-Item Env:_CL_ -ErrorAction SilentlyContinue }
+    else { $env:_CL_ = $previousClAppend }
     Pop-Location
 
     if ($nuitkaExit -ne 0) {
@@ -456,8 +466,23 @@ if (Test-Path $TESS_SRC) {
     Get-ChildItem -Path $TESS_DEST -Filter *.exe -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $tessKeepExe } | Remove-Item -Force -ErrorAction SilentlyContinue
     Write-Host "  Tesseract bundled (pruned training tools)." -ForegroundColor Green
 } else {
-    Write-Host "  WARNING: Local Tesseract not found at $TESS_SRC. It will not be bundled." -ForegroundColor Yellow
+    Write-Host "ERROR: Tesseract not found at $TESS_SRC." -ForegroundColor Red
+    Write-Host "  Build aborted to avoid shipping a broken OCR feature." -ForegroundColor Red
+    exit 1
 }
+
+$requiredBundleFiles = @(
+    "$ROOT\desktop\src-tauri\bin\pdfium.dll",
+    "$ROOT\desktop\src-tauri\installer-hooks.nsh",
+    "$ROOT\desktop\src-tauri\icons\icon.ico"
+)
+foreach ($requiredFile in $requiredBundleFiles) {
+    if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
+        Write-Host "ERROR: Required Tauri bundle file missing: $requiredFile" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "  Required Tauri resources verified." -ForegroundColor Green
 
 # ---- Step 3: Compute SHA-256 hash for integrity verification ----
 Write-Host "`n[3/5] Computing sidecar integrity hash..." -ForegroundColor Yellow
@@ -542,7 +567,7 @@ if (-not $SkipTauri) {
 
         Write-Host "  Installer: $finalInstallerPath"
         Write-Host "  Size:      $([math]::Round((Get-Item $finalInstallerPath).Length / 1MB, 1)) MB"
-        if (-not $Release) {
+        if (-not $Release -and -not $NoOpenExplorer) {
             Write-Host ""
             Write-Host "  >> Da copy file cai dat ra ngoai thu muc de de lay hon..." -ForegroundColor Cyan
             Start-Process explorer.exe -ArgumentList "/select,`"$finalInstallerPath`""

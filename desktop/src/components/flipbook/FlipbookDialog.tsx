@@ -17,14 +17,16 @@ interface FlipbookDialogProps {
     pdfUrl: string | null;
     pdfFile?: any; // Added for native tile rendering
     pageOrder: number[]; // 1-based indices from thumbnails, -1 for blank
-    bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks';
+    pageRotations?: number[]; // Rotation by thumbnail position
+    bindingMode: 'continuous' | 'saddle' | 'thread' | 'cut_stacks' | 'flush_mount';
     foliosize: number;
+    blankPlacement?: 'end' | 'center';
     /** Bleed mỗi cạnh (mm) — cắt khỏi tile để xem trước ĐÚNG khổ thành phẩm. */
     bleed?: number;
 }
 
 export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
-    isOpen, onClose, pdfUrl, pdfFile, pageOrder, bindingMode, foliosize, bleed = 0
+    isOpen, onClose, pdfUrl, pdfFile, pageOrder, pageRotations = [], bindingMode, foliosize, bleed = 0, blankPlacement = 'end'
 }) => {
   const { t } = useTranslation();
     const [bookData, setBookData] = useState<BookData>({ pages: [] });
@@ -70,7 +72,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
 
         loadDoc();
         return () => { cancelled = true; };
-    }, [pdfUrl, isOpen, pageOrder]);
+    }, [pdfUrl, isOpen, pageOrder, pageRotations, bindingMode, foliosize, blankPlacement]);
 
     // Handle ESC key
     useEffect(() => {
@@ -86,10 +88,18 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         setIsLoading(true);
 
         const effectivePageCount = pageOrder.length;
-        const { sheets } = generateBindingMap(effectivePageCount, bindingMode, foliosize);
+        const { sheets } = generateBindingMap(effectivePageCount, bindingMode, foliosize, blankPlacement);
         
-        const paddedPageCount = Math.ceil(effectivePageCount / 4) * 4;
+        const paddedPageCount = bindingMode === 'flush_mount'
+            ? Math.ceil(effectivePageCount / 2) * 2
+            : Math.ceil(effectivePageCount / 4) * 4;
         const totalPages = paddedPageCount;
+        const sourceIndexByLogical = new Map<number, number | null>();
+        for (const sheet of sheets) {
+            for (const slot of [sheet.front.left, sheet.front.right, sheet.back.left, sheet.back.right]) {
+                if (slot.logicalIndex > 0) sourceIndexByLogical.set(slot.logicalIndex, slot.srcIndex);
+            }
+        }
 
         const initialPages: BookPage[] = [];
 
@@ -109,8 +119,9 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                 ? t('misc.flipbookDialog:trang_tep', { trang: logical1Based, tep: signatureIndex })
                 : t('misc.flipbookDialog:trang_n', { n: logical1Based });
 
-            const srcIndex = logical1Based <= effectivePageCount ? logical1Based - 1 : null;
+            const srcIndex = sourceIndexByLogical.get(logical1Based) ?? null;
             const originalIndex = srcIndex !== null ? pageOrder[srcIndex] : -1;
+            const userRotation = srcIndex !== null ? (pageRotations[srcIndex] || 0) : 0;
 
             initialPages.push({
                 id: `page-${logical1Based}`,
@@ -118,13 +129,16 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                 pageNumber: logical1Based,
                 signatureInfo: sigInfoStr,
                 imageUrl: '', // Will be loaded lazily
-                _originalIndex: originalIndex // internal tracker
-            } as BookPage & { _originalIndex: number });
+                _originalIndex: originalIndex, // internal tracker
+                _userRotation: userRotation,
+            } as BookPage & { _originalIndex: number; _userRotation: number });
         }
 
         // Get aspect ratio from the first valid page
         if (pageOrder.length > 0) {
-            const firstValidIndex = pageOrder.find(idx => idx !== -1) || 1;
+            const firstValidPosition = Math.max(0, pageOrder.findIndex(idx => idx !== -1));
+            const firstValidIndex = pageOrder[firstValidPosition] || 1;
+            const firstRotation = pageRotations[firstValidPosition] || 0;
             try {
                 if (meta) {
                     // Native (pdfium): lấy khổ trang từ allDims[trang] (widthPt/heightPt).
@@ -133,10 +147,13 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
                     const h = dim?.heightPt ?? meta.heightPt;
                     // Tỉ lệ khung theo khổ SAU xén (trừ bleed) để layout không kéo giãn
                     // ảnh đã clip — pages dùng object-fill.
-                    if (w > 0 && h > 0) setPageAspectRatio(trimmedAspectRatio(w, h, bleed));
+                    if (w > 0 && h > 0) {
+                        const ratio = trimmedAspectRatio(w, h, bleed);
+                        setPageAspectRatio(Math.abs(firstRotation) % 180 !== 0 ? 1 / ratio : ratio);
+                    }
                 } else {
                     const page = await doc.getPage(firstValidIndex);
-                    const viewport = page.getViewport({ scale: 1.0 });
+                    const viewport = page.getViewport({ scale: 1.0, rotation: (page.rotate || 0) + firstRotation });
                     setPageAspectRatio(viewport.width / viewport.height);
                 }
             } catch (e) {
@@ -151,13 +168,13 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         await loadPageImages(doc, initialPages, 0, 4);
     };
 
-    const renderPageToDataURL = async (doc: any, originalIndex: number): Promise<string> => {
+    const renderPageToDataURL = async (doc: any, originalIndex: number, userRotation: number = 0): Promise<string> => {
         if (originalIndex === -1) return ''; // Blank page
 
         // --- NATIVE TAURI RENDER PIPELINE (ZERO LATENCY) ---
         if ((window as any).__TAURI_INTERNALS__ && pdfFile && (pdfFile as any).path) {
             const scale = 1.0; // Optimized scale for Flipbook (fast native fetch)
-            const rot = 0; // Page rotation handled by Flipbook
+            const rot = userRotation;
             // Clip bleed theo khổ trang nguồn (allDims[trang]) → xem trước ĐÚNG thành phẩm.
             const dim = metaRef.current?.allDims?.[String(originalIndex)];
             // Return the Native tile.localhost URL instantly! The browser will fetch it asynchronously.
@@ -174,7 +191,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
 
         try {
             const page = await doc.getPage(originalIndex);
-            const viewport = page.getViewport({ scale: 1.5 }); // Good resolution for preview
+            const viewport = page.getViewport({ scale: 1.5, rotation: (page.rotate || 0) + userRotation }); // Good resolution for preview
             
             // Create a fresh canvas to prevent transform matrix accumulation
             const canvas = document.createElement('canvas');
@@ -201,7 +218,7 @@ export const FlipbookDialog: React.FC<FlipbookDialogProps> = ({
         for (let i = startIndex; i < endIndex; i++) {
             const p = currentPages[i];
             if (!p.imageUrl) {
-                const url = await renderPageToDataURL(doc, p._originalIndex);
+                const url = await renderPageToDataURL(doc, p._originalIndex, p._userRotation || 0);
                 pagesToUpdate.push({ index: i, url });
             }
         }

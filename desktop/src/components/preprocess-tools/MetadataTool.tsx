@@ -179,7 +179,7 @@ export default function MetadataTool({ pdfFile, onFileFixed }: Props) {
                             : 'bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white shadow-violet-500/25'
                     }`}
                 >
-                    {isProcessing ? t('preprocess.metadata:dang_luu') : t('preprocess.metadata:btn_luu')}
+                    {t('preprocess.common:run')}{isProcessing ? '…' : ''}
                 </button>
                 <button
                     type="button"

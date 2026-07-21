@@ -179,10 +179,13 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         const commit = vi.fn();
         await RECIPE_RUNNERS.sticker_dieline!(
             makeCtx({ commitWorkingFile: commit, file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
-            { productType: 'rectangle', bleedMm: 3, bleedColorType: 'image', edgeBiteMm: 1.5, cutFirstPageOnly: true },
+            { productType: 'rectangle', bleedMm: 3, bleedColorType: 'image', edgeBiteMm: 1.5, cutFirstPageOnly: true, removeWhiteBg: true, trimWhiteEdge: true },
             null,
         );
         const fd = (authenticatedFetch as any).mock.calls[0][1].body as FormData;
+        // Cả removeWhiteBg/trimWhiteEdge kiểu cũ đều không được auto-trim đổi khổ.
+        expect((authenticatedFetch as any).mock.calls).toHaveLength(1);
+        expect((authenticatedFetch as any).mock.calls[0][0]).toBe('http://x/api/pdf-tools/sticker-dieline');
         expect(fd.get('edge_bite_mm')).toBe('1.5');
         // rectangle không dùng "trang đầu" dù params có cờ.
         expect(fd.get('cut_first_page_only')).toBe('false');

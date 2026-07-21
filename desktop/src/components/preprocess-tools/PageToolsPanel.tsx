@@ -165,7 +165,7 @@ export default function PageToolsPanel() {
                             </div>
                         </div>
                         <button onClick={handleSubmit} className="mt-4 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors">
-                            {t('preprocess.pageTools:thuc_thi_nhan_ban')}
+                            {t('preprocess.common:run')}
                         </button>
                     </div>
                 )}
@@ -203,7 +203,7 @@ export default function PageToolsPanel() {
                             </div>
                         </div>
                         <button onClick={handleSubmit} className="mt-4 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors">
-                            {t('preprocess.pageTools:thuc_thi_di_chuyen')}
+                            {t('preprocess.common:run')}
                         </button>
                     </div>
                 )}
@@ -245,7 +245,7 @@ export default function PageToolsPanel() {
                         {renderTargetSelection(true)}
                         {renderFilterSelection(targetType === 'current')}
                         <button onClick={handleSubmit} className="mt-4 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors">
-                            {t('preprocess.pageTools:thuc_thi_xoay_trang')}
+                            {t('preprocess.common:run')}
                         </button>
                     </div>
                 )}
@@ -285,7 +285,7 @@ export default function PageToolsPanel() {
                             </div>
                         </div>
                         <button onClick={handleSubmit} className="mt-4 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors">
-                            {t('preprocess.pageTools:chen_trang_trang')}
+                            {t('preprocess.common:run')}
                         </button>
                     </div>
                 )}
@@ -313,7 +313,7 @@ export default function PageToolsPanel() {
                             {t('preprocess.pageTools:cac_trang_trong_dai_se_duoc_tach_ra')}
                         </div>
                         <button onClick={handleSubmit} className="mt-4 w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded font-bold shadow-sm transition-colors">
-                            {t('preprocess.pageTools:trich_xuat_dai_trang')}
+                            {t('preprocess.common:run')}
                         </button>
                     </div>
                 )}
