@@ -119,8 +119,25 @@ export const pageBlobCache = new Map<string, string>();
 
 /**
  * Thumbnail cache (low-res, for sidebar). Shared reference holder.
+ * Chỉ đường web/pdfjs ghi vào (Tauri native đi IPC, early-return) → lưu data URL
+ * base64 (JPEG q0.7), KHÔNG phải blob nên không cần revoke.
  */
 export const thumbCacheRef = { current: new Map<string, string>() };
+
+// Trước đây Map này KHÔNG cap/clear → tăng đơn điệu theo số trang đã thumbnail
+// suốt vòng đời app (leak ở bản web). Cap FIFO: Map giữ thứ tự chèn, vượt trần
+// thì xoá entry cũ nhất. Re-set để "chạm" (đẩy về cuối) → xấp xỉ LRU.
+const MAX_THUMB_CACHE = 400;
+export function putThumbCache(key: string, url: string): void {
+    const m = thumbCacheRef.current;
+    if (m.has(key)) m.delete(key);
+    m.set(key, url);
+    while (m.size > MAX_THUMB_CACHE) {
+        const oldest = m.keys().next().value;
+        if (oldest === undefined) break;
+        m.delete(oldest);
+    }
+}
 
 /**
  * Renders a PDF page to a blob URL via pdfjs.

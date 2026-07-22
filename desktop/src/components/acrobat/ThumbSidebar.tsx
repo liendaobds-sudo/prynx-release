@@ -3,6 +3,7 @@ import { useThumbSidebar } from './useThumbSidebar';
 import { thumbCacheRef } from '../workspace/ViewerHelpers';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
+import { fetchViewerThumbnailPreview } from '../../lib/viewerPreview';
 
 interface ThumbSidebarProps {
     // Page state
@@ -49,7 +50,7 @@ const MemoThumbItem = React.memo((props: any) => {
         index, originalPageNum, logicalPageLabel,
         isSelected, isActive, isDragged, showCopyBadge, hoverTargetState,
         rot, localDim, thumbBaseWidth,
-        pdfUrl, file, thumbRev, isLoadable, registerRef,
+        pdfUrl, file, thumbRev, pageCount, isLoadable, registerRef,
         handleThumbClick, handlePointerDown, onContextMenu
     } = props;
     const { t } = useTranslation();
@@ -66,59 +67,65 @@ const MemoThumbItem = React.memo((props: any) => {
     const footprintW = isRotated ? imgH : imgW;
     const footprintH = isRotated ? imgW : imgH;
 
-    // Cache key theo zoom thực tế + thumbRev (pdfUrl/fid đổi sau edit) — tránh key chết `_0_400`
-    // và tránh giữ blob JPEG cũ khi path giữ nguyên sau commit.
+    // Stable revision key: a committed edit gets a new pdfUrl even if its disk path is reused.
     const baseW = localDim?.w || 595;
     const optimalZoom = Math.max(0.1, Math.min(1.5, (thumbBaseWidth * 1.3) / baseW));
     const revToken = thumbRev || pdfUrl || '';
     const cacheKey = `${revToken}_${originalPageNum}_0_${Math.round(optimalZoom * 1000)}`;
-    let finalSrc = thumbCacheRef.current.get(cacheKey);
-    const isImage = file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i);
+    const cachedSrc = thumbCacheRef.current.get(cacheKey);
+    const isImage = !!(file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i));
+    const nativeRequestKey = `${cacheKey}_${pageCount}`;
+    const [nativePreview, setNativePreview] = useState<{ key: string; url: string } | null>(null);
+    const needsNativeRender = !cachedSrc && !isImage && isLoadable
+        && !!(window as any).__TAURI_INTERNALS__ && !!file?.path && originalPageNum > 0;
 
-    if (!finalSrc && isImage) {
-        finalSrc = pdfUrl || undefined;
-    } else if (!finalSrc && isLoadable && (window as any).__TAURI_INTERNALS__ && file?.path) {
-        // Chỉ tạo URL tile khi thumbnail nằm trong tầm nhìn VÀ trang chính đã hiển thị xong.
-        // `r=` buộc finalSrc đổi theo thumbRev → useEffect re-fetch dù path không đổi.
-        finalSrc = `http://tile.localhost/${encodeURIComponent(file.path)}/${originalPageNum}/${optimalZoom}/0/0/0/0/0?r=${encodeURIComponent(revToken)}`;
-    }
-
+    let finalSrc: string | undefined = cachedSrc;
+    if (!finalSrc && isImage) finalSrc = pdfUrl || undefined;
+    if (!finalSrc && nativePreview?.key === nativeRequestKey) finalSrc = nativePreview.url;
     const dimW = localDim ? (localDim.w * 25.4 / 72).toFixed(1) : 0;
     const dimH = localDim ? (localDim.h * 25.4 / 72).toFixed(1) : 0;
     const tooltipText = originalPageNum !== -1 ? t('misc.thumbSidebar:trang_kich_thuoc_tooltip', { page: logicalPageLabel, w: dimW, h: dimH }) : t('misc.thumbSidebar:trang_trong');
-    // Chưa có dim thật → contain tránh méo theo fallback A4 1.414; có dim → fill khớp khung.
-    const imgObjectFit: 'fill' | 'contain' = localDim ? 'fill' : 'contain';
+    // Luôn contain: giữ tỉ lệ trang, không kéo giãn ảnh preview (tránh méo khi
+    // tỉ lệ khung lệch nhẹ so với ảnh GS do làm tròn pixel, và không phóng đại mờ).
+    const imgObjectFit: 'fill' | 'contain' = 'contain';
 
-    // FIX release: protocol tile.localhost (img/new Image/fetch) đều KHÔNG hiển thị ở release.
-    // Lấy bytes JPEG qua IPC invoke('render_pdf_page') (đáng tin, giống tách nền) → blob: → img.
-    const thumbImgRef = useRef<HTMLImageElement>(null);
+    // Thumbnail render: PDFium TRƯỚC (đảo với bản cũ chạy Ghostscript trước). Đo thật
+    // 2026-07-22 cho thấy GS parse LẠI toàn bộ file mỗi khối 6 trang → ~40s/khối trên
+    // file đã bình. PDFium giữ doc mở sẵn + page LRU (render_tile_jpeg) → trang đã xem ở
+    // view chính được TÁI DÙNG, thumbnail gần như tức thì; zoom nhỏ nên bitmap bé + encode
+    // rẻ. GS chỉ còn là fallback khi PDFium ném lỗi (view chính cũng dùng PDFium nên nếu
+    // nó hỏng thì cả 2 hỏng — fallback chỉ cho edge case hiếm).
     useEffect(() => {
-        const el = thumbImgRef.current;
-        if (!el || !finalSrc) return;
-        const isTileScheme = finalSrc.startsWith('http://tile.localhost')
-            || finalSrc.startsWith('https://tile.localhost')
-            || finalSrc.startsWith('tile://');
-        if (!isTileScheme) { el.src = finalSrc; return; }
+        if (!needsNativeRender) return;
         let cancelled = false;
-        let blobUrl: string | null = null;
+        let ownBlobUrl: string | null = null;
         (async () => {
+            let src: string | null = null;
             try {
                 const { invoke } = await import('@tauri-apps/api/core');
                 const bytes: ArrayBuffer = await invoke('render_pdf_page', {
                     filePath: file.path, page: originalPageNum, zoom: optimalZoom, rotation: 0,
                     clipX: null, clipY: null, clipW: null, clipH: null,
                 });
-                if (cancelled) return;
-                blobUrl = URL.createObjectURL(new Blob([bytes as any], { type: 'image/jpeg' }));
-                if (thumbImgRef.current) thumbImgRef.current.src = blobUrl;
+                ownBlobUrl = URL.createObjectURL(new Blob([bytes as any], { type: 'image/jpeg' }));
+                src = ownBlobUrl;
             } catch {
-                /* thumbnail render thất bại — giữ placeholder, không chặn UI */
+                // Fallback GS (hiếm): PDFium lỗi thì thử Ghostscript.
+                src = await fetchViewerThumbnailPreview(
+                    file.path, originalPageNum, pageCount, thumbRev || pdfUrl,
+                );
             }
+            if (cancelled) {
+                if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
+                return;
+            }
+            if (src) setNativePreview({ key: nativeRequestKey, url: src });
         })();
-        return () => { cancelled = true; if (blobUrl) URL.revokeObjectURL(blobUrl); };
-        // thumbRev: bust sau edit/commit khi path có thể giữ nguyên nhưng nội dung PDF đã đổi.
-    }, [finalSrc, file?.path, originalPageNum, thumbBaseWidth, localDim?.w, thumbRev, optimalZoom]);
-
+        return () => {
+            cancelled = true;
+            if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
+        };
+    }, [needsNativeRender, nativeRequestKey, file?.path, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom]);
     return (
         <div
             ref={(el) => registerRef?.(el, index)}
@@ -172,7 +179,7 @@ const MemoThumbItem = React.memo((props: any) => {
                         }} className="bg-white" data-thumb-page="1">
                             {finalSrc ? (
                                 <img
-                                    ref={thumbImgRef}
+                                    src={finalSrc}
                                     alt={`Page ${originalPageNum}`}
                                     style={{ width: '100%', height: '100%', display: 'block', objectFit: imgObjectFit }}
                                     className="pointer-events-none bg-white"
@@ -228,10 +235,11 @@ const MemoThumbItem = React.memo((props: any) => {
         prev.localDim?.h === next.localDim?.h &&
         prev.isLoadable === next.isLoadable &&
         prev.pdfUrl === next.pdfUrl &&
-        prev.thumbRev === next.thumbRev;
+        prev.thumbRev === next.thumbRev &&
+        prev.pageCount === next.pageCount;
 });
 
-// Cổng tải thumbnail: hoãn render thumbnail (qua tile://) cho đến khi trang chính
+// Cổng tải thumbnail: hoãn render thumbnail (qua cache ảnh phụ) cho đến khi trang chính
 // đã hiển thị xong (sự kiện 'prynx-main-tile-ready'), hoặc fallback sau 700ms.
 // Mục đích: trang chính được ưu tiên dùng pdfium handle trước, mở file nhanh hơn hẳn.
 function useThumbLoadGate(pdfUrl: string | null, skipReset?: boolean) {
@@ -467,6 +475,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         thumbBaseWidth={displayThumbBase}
                                         pdfUrl={pdfUrl}
                                         thumbRev={thumbRev}
+                                        pageCount={numPages}
                                         file={file}
                                         isLoadable={thumbsGateOpen && visibleThumbs.has(index)}
                                         registerRef={registerThumbRef}

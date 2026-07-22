@@ -24,6 +24,7 @@ import DataMergeTool from '../../preprocess-tools/DataMergeTool';
 import OcrTool from '../../preprocess-tools/OcrTool';
 import OptimizeTool from '../../preprocess-tools/OptimizeTool';
 import StickerTool from '../../preprocess-tools/StickerTool';
+import StickerToolErrorBoundary from '../../preprocess-tools/StickerToolErrorBoundary';
 import BgRemoverTool from '../../preprocess-tools/BgRemoverTool';
 import WatermarkTool from '../../preprocess-tools/WatermarkTool';
 import UpscaleTool from '../../preprocess-tools/UpscaleTool';
@@ -226,7 +227,9 @@ export default function PreprocessingRouter({
             )}
 
             {activeTool === 'sticker' && (
-                <StickerTool pdfFile={pdfFile} onFileFixed={(blob, name, path) => { if (onFileFixed) onFileFixed(blob, name, path); }} />
+                <StickerToolErrorBoundary>
+                    <StickerTool pdfFile={pdfFile} onFileFixed={(blob, name, path) => { if (onFileFixed) onFileFixed(blob, name, path); }} />
+                </StickerToolErrorBoundary>
             )}
 
             {activeTool === 'bgremover' && (

@@ -91,7 +91,12 @@ struct DocHandle {
     pages: Mutex<PageLru>,
 }
 
-// LRU các PdfPage đang mở. Giữ ít (mặc định 4) vì mỗi page giữ ảnh đã giải nén tốn RAM.
+// LRU các PdfPage đang mở. Mỗi page giữ ảnh đã giải nén → tốn RAM, nên có cận.
+// Cap 24 (trước 10): đo thật 2026-07-22 cho thấy decode trang lần đầu ~800ms là chi
+// phí lớn nhất khi cuộn (cả view chính lẫn thumbnail dùng CHUNG LRU này). Giữ nhiều
+// trang mở hơn → cuộn qua lại + prefetch trang lân cận không phải decode lại. 24 ×
+// ~16MB/trang (file bình nặng) ≈ 384MB trần/doc — đủ mượt mà không phình như 40+.
+const PAGE_LRU_CAP: usize = 24;
 struct PageLru {
     map: HashMap<u16, PdfPage<'static>>,
     order: std::collections::VecDeque<u16>,
@@ -265,6 +270,78 @@ fn append_perf_log(app_handle: tauri::AppHandle, msg: String) {
     }
 }
 
+// ── Đo hiệu năng render (đo thật, không đoán) ────────────────────────────────
+// Đường log riêng cho render/thumbnail, set 1 lần trong setup(). KHÔNG dùng
+// chrono::Local::now() (đã PANIC ở release trong render_tile_jpeg — xem note ~:609)
+// → dùng epoch millis từ SystemTime (không timezone, không panic). Bật khi:
+//   - debug build (dev chạy run_dev.bat → tự bật, không cần thao tác), HOẶC
+//   - env PRYNX_PERF=1 (opt-in cho bản release khi cần chẩn đoán máy khách).
+static PERF_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+fn perf_enabled() -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
+    std::env::var("PRYNX_PERF")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn perf_log(msg: &str) {
+    if !perf_enabled() {
+        return;
+    }
+    if let Some(path) = PERF_LOG_PATH.get() {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            use std::io::Write;
+            let epoch_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let _ = writeln!(&mut file, "[{}] {}", epoch_ms, msg);
+        }
+    }
+}
+
+// Cho FE đẩy dòng đo (TilePerf / ViewerPreview) vào CÙNG file PrynX_RenderPerf.log
+// → user chỉ cần gửi 1 file thay vì mở devtools copy console. Chỉ ghi khi
+// perf_enabled() (debug build / PRYNX_PERF=1). Gắn prefix "FE " để phân biệt
+// dòng Rust (render/encode thuần) với dòng FE (tổng thời gian chờ invoke).
+#[tauri::command]
+fn append_render_perf(msg: String) {
+    perf_log(&format!("FE {}", msg));
+}
+
+fn compact_log_field(value: String, max_chars: usize) -> String {
+    value
+        .chars()
+        .take(max_chars)
+        .map(|ch| if ch == '\r' || ch == '\n' { ' ' } else { ch })
+        .collect()
+}
+
+#[tauri::command]
+fn log_frontend_error(
+    area: String,
+    error_id: String,
+    app_version: String,
+    message: String,
+    component_stack: Option<String>,
+) {
+    log::error!(
+        "[FRONTEND_UI] area={} error_id={} version={} message={} component_stack={}",
+        compact_log_field(area, 80),
+        compact_log_field(error_id, 80),
+        compact_log_field(app_version, 40),
+        compact_log_field(message, 800),
+        compact_log_field(component_stack.unwrap_or_default(), 5000),
+    );
+}
+
 #[tauri::command]
 async fn get_pdf_metadata(
     app_handle: tauri::AppHandle,
@@ -296,7 +373,7 @@ async fn get_pdf_metadata(
             for _ in 0..pool_size {
                 pool.push(OnceLock::new());
             }
-            let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(10)) });
+            let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)) });
             cache.insert(file_path.clone(), Arc::new(CachedDocument {
                 pool,
                 next: AtomicUsize::new(0),
@@ -386,16 +463,24 @@ fn render_tile_jpeg(
     clip_w: Option<i32>,
     clip_h: Option<i32>,
 ) -> Result<Vec<u8>, String> {
+    let _total_t0 = std::time::Instant::now();
     // RENDER_VER: đổi token này mỗi khi thay đổi cách render/encode (LCD text, JPEG
     // quality...) → vô hiệu MỌI tile cache cũ (RAM + đĩa) render bằng cấu hình cũ.
     // Nếu không, tile q92/không-LCD đã lưu vẫn được đọc lại, che mất thay đổi (2026-07-06).
     const RENDER_VER: &str = "v5_q90";
+    // zoom LÀM TRÒN 3 chữ số trong cache_key: prefetch (FE tính computeRenderZoomPure)
+    // và view chính đôi khi lệch nhau ở chữ số thập phân rất nhỏ của f32 (cùng in
+    // "1.000" nhưng bit khác) → key string khác → KHÔNG trúng cache của nhau → cùng 1
+    // trang render 2 lần (đo thật 2026-07-22). Gộp key theo 3 chữ số: 2 zoom chênh
+    // <0.001 cho bitmap gần như giống hệt nên chia sẻ tile là an toàn → prefetch xong
+    // thì view chính là CACHE HIT thật.
+    let zoom_key = format!("{:.3}", zoom);
     let cache_key = format!(
         "{}_{}_{}_{}_{}_{}_{}_{}_{}",
         RENDER_VER,
         file_path,
         page,
-        zoom,
+        zoom_key,
         rotation,
         clip_x.unwrap_or(0),
         clip_y.unwrap_or(0),
@@ -444,7 +529,7 @@ fn render_tile_jpeg(
             pdfium.load_pdf_from_byte_vec(bytes, None)
                 .map_err(|e| format!("Failed to open PDF: {:?}", e))?
         };
-        let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(10)) });
+        let _ = pool[0].set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)) });
         cache.insert(file_path.to_string(), Arc::new(CachedDocument {
             pool,
             next: AtomicUsize::new(0),
@@ -469,10 +554,17 @@ fn render_tile_jpeg(
                 .map_err(|e| format!("Failed to open PDF (lazy): {:?}", e))?
         };
         // Race-safe: nếu thread khác set trước, set này trả Err → bỏ qua (doc thừa drop, vô hại).
-        let _ = cell.set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(10)) });
+        let _ = cell.set(DocHandle { doc, lock: Mutex::new(()), pages: Mutex::new(PageLru::new(PAGE_LRU_CAP)) });
     }
     let handle = cell.get().ok_or_else(|| "DocHandle init failed".to_string())?;
     
+    // Đo thật (perf_log): lock-wait RENDER_LOCK vs render vs encode vs cache. Biến
+    // gom ngoài block khóa → log SAU khi nhả khóa (không làm sai số / không giữ khóa
+    // lâu hơn). Chỉ ghi khi perf_enabled().
+    let mut lock_wait_ms: u128 = 0;
+    let mut render_ms: u128 = 0;
+    let mut bitmap_wh: (i32, i32) = (0, 0);
+
     let rgba_image = {
         let _guard = lock_mutex(&handle.lock);
         let page_index = (page - 1) as u16;
@@ -563,11 +655,17 @@ fn render_tile_jpeg(
         };
         // RENDER_LOCK: serialize với đường in (print.rs mở doc riêng ngoài DOC_CACHE).
         // PDFium không thread-safe kể cả trên doc khác nhau.
+        let _lock_t0 = std::time::Instant::now();
         let _render_guard = lock_mutex(&RENDER_LOCK);
+        lock_wait_ms = _lock_t0.elapsed().as_millis();
+        let _render_t0 = std::time::Instant::now();
         let bitmap = pdf_page
             .render_with_config(&render_config)
             .map_err(|e| format!("Failed to render page: {:?}", e))?;
-        bitmap.as_image().to_rgba8()
+        let img = bitmap.as_image().to_rgba8();
+        render_ms = _render_t0.elapsed().as_millis();
+        bitmap_wh = (img.width() as i32, img.height() as i32);
+        img
     };
 
     let mut buffer = Vec::new();
@@ -576,14 +674,17 @@ fn render_tile_jpeg(
     // (KHÔNG subsample màu → biên màu vẫn sắc); chỉ giảm nhẹ lượng tử hoá DCT, mắt thường
     // gần như không phân biệt với q98 trên ảnh render màn hình. (Từng: q92→q98 cho nét, nay
     // hạ q90 đổi lấy tốc độ vì debounce đã đảm bảo mỗi lần zoom chỉ 1 render.)
+    let _encode_t0 = std::time::Instant::now();
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, 90);
     encoder
         .encode_image(&rgba_image)
         .map_err(|e| format!("Encode error: {:?}", e))?;
-    // LƯU Ý: ĐÃ GỠ block ghi PrynX_Performance.log ở đây — nó gọi chrono::Local::now()
-    // và PANIC ở bản release ("Task panicked"), khiến render_tile_jpeg trả 500 → main view
-    // kẹt RENDERING + thumbnail vỡ. Đây là nguyên nhân gốc thật sự (xem frontend_debug.log).
-    
+    let encode_ms = _encode_t0.elapsed().as_millis();
+    // LƯU Ý: block ghi PrynX_Performance.log kiểu cũ dùng chrono::Local::now() và PANIC
+    // ở release. perf_log() thay bằng SystemTime epoch (không chrono) + chỉ ghi khi
+    // perf_enabled() → an toàn. Ghi SAU khi encode xong, NGOÀI mọi vùng khóa.
+    let _cache_t0 = std::time::Instant::now();
+
     {
         let cache_lock = TILE_CACHE.get_or_init(|| Mutex::new(TileCache::new(500)));
         if let Ok(mut cache) = cache_lock.lock() {
@@ -601,7 +702,17 @@ fn render_tile_jpeg(
             cache.insert(cache_key, buffer.clone());
         }
     }
-    
+
+    let cache_ms = _cache_t0.elapsed().as_millis();
+    let total_ms = _total_t0.elapsed().as_millis();
+    // Tag "tile" (clip) vs "page" (full-page) để tách chi phí 2 loại render.
+    let kind = if clip_w.is_some() && clip_h.is_some() { "tile" } else { "page" };
+    perf_log(&format!(
+        "RENDER kind={} page={} zoom={:.3} wh={}x{} lock_wait_ms={} render_ms={} encode_ms={} cache_ms={} total_ms={} bytes={}",
+        kind, page, zoom, bitmap_wh.0, bitmap_wh.1,
+        lock_wait_ms, render_ms, encode_ms, cache_ms, total_ms, buffer.len()
+    ));
+
     Ok(buffer)
 }
 
@@ -944,6 +1055,54 @@ fn write_file_atomic(path: String, contents: Vec<u8>) -> Result<(), String> {
     if let Err(e) = std::fs::write(&tmp, &contents) {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("Lỗi ghi file tạm: {}", e));
+    }
+    if let Err(e) = std::fs::rename(&tmp, target) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Lỗi thay thế file đích: {}", e));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn copy_file_atomic(source: String, path: String) -> Result<(), String> {
+    // COPY file đĩa→đĩa NGUYÊN TỬ, không đọc bytes vào JS. Vì sao: kết quả bình
+    // sách/VDP là file lớn (hàng trăm MB) đã nằm trên đĩa; đường cũ đọc toàn bộ vào
+    // JS rồi truyền Uint8Array qua IPC cho write_file_atomic → "RangeError: Invalid
+    // array length" khi serialize khối bytes khổng lồ. Copy thẳng path→path tránh
+    // hẳn round-trip đó. Ghi temp cùng thư mục đích rồi rename (nguyên tử, cùng volume).
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let allowed = [
+        "pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "svg", "csv", "txt", "json",
+    ];
+    if !allowed.contains(&ext.as_str()) {
+        return Err(format!("File type .{} not allowed", ext));
+    }
+    if is_sensitive_path(&source) || is_sensitive_write_path(&path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    let source_path = std::path::Path::new(&source);
+    if !source_path.is_file() {
+        return Err("Source file does not exist".to_string());
+    }
+    let target = std::path::Path::new(&path);
+    let dir = match target.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let fname = target.file_name().and_then(|n| n.to_str()).unwrap_or("out");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(".{}.{}.{}.tmp", fname, std::process::id(), nanos));
+
+    if let Err(e) = std::fs::copy(source_path, &tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Lỗi copy file: {}", e));
     }
     if let Err(e) = std::fs::rename(&tmp, target) {
         let _ = std::fs::remove_file(&tmp);
@@ -1300,7 +1459,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
-        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, read_dir_json, append_perf_log, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
+        .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, append_perf_log, append_render_perf, log_frontend_error, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(state) = app.try_state::<SystemFilesState>() {
                 if let Ok(mut pending) = state.0.lock() {
@@ -1348,6 +1507,12 @@ pub fn run() {
                         ));
                 }
                 app.handle().plugin(builder.build())?;
+            }
+
+            // Đường log đo render (perf_log). Ghi ra Desktop cạnh PrynX_Performance.log
+            // để dễ tìm. Chỉ ghi khi perf_enabled() (debug build hoặc PRYNX_PERF=1).
+            if let Ok(desktop_dir) = app.handle().path().desktop_dir() {
+                let _ = PERF_LOG_PATH.set(desktop_dir.join("PrynX_RenderPerf.log"));
             }
 
             // ══════════════════════════════════════════════════════════════

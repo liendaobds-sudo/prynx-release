@@ -1360,6 +1360,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             separateCover: config.separateCover,
             coverPageCount: config.coverPageCount,
             blankPlacement: config.blankPlacement || 'end',
+            bookReport: config.bookReport,
             pageOrder: viewerPageOrder,
             pageRotations: viewerPageRotations
         };
@@ -1806,20 +1807,25 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         onTitleChange?.(fileName);
                         return true;
                     }
-                    // Bytes THẬT để ghi: nếu KHÔNG bake và file có path trên đĩa (kết quả VDP
-                    // có blob in-memory chỉ là placeholder 5 byte, hoặc file mở từ OS có body
-                    // rỗng) → đọc bytes thật từ đĩa qua lệnh Rust (không vướng fs scope).
-                    // Ngược lại dùng blob đã bake (edits/VDP nhúng).
-                    let writeData: Uint8Array;
-                    if (!didBake && (curFile as any)?.path) {
-                        const { invoke } = await import('@tauri-apps/api/core');
-                        const resp: any = await invoke('read_system_file', { path: (curFile as any).path });
-                        writeData = resp instanceof Uint8Array ? resp : new Uint8Array(resp);
-                    } else {
-                        writeData = new Uint8Array(await targetBlob.arrayBuffer());
-                    }
+                    // Ghi ra path đích. Nếu KHÔNG bake và file đã nằm trên đĩa (kết quả
+                    // bình sách/VDP là file lớn hàng trăm MB) → COPY thẳng đĩa→đĩa qua Rust,
+                    // KHÔNG đọc bytes vào JS. Đường cũ đọc toàn bộ file vào Uint8Array rồi
+                    // truyền qua IPC cho write_file_atomic → "RangeError: Invalid array length"
+                    // khi serialize khối bytes khổng lồ (vd booklet 338MB). Ngược lại (đã bake
+                    // edits/VDP, hoặc file chỉ có blob in-memory) → ghi bytes như cũ.
+                    const sourceDiskPath: string | null =
+                        (!didBake && (curFile as any)?.path) ? (curFile as any).path : null;
+                    const performWrite = async (destPath: string) => {
+                        if (sourceDiskPath) {
+                            const { invoke } = await import('@tauri-apps/api/core');
+                            await invoke('copy_file_atomic', { source: sourceDiskPath, path: destPath });
+                        } else {
+                            const ab = await targetBlob.arrayBuffer();
+                            await atomicWrite(destPath, new Uint8Array(ab));
+                        }
+                    };
                     try {
-                        await atomicWrite(path, writeData);
+                        await performWrite(path);
                         const fileName = path.split(/[\\/]/).pop() || targetName;
                         if (didBake) {
                             _bakeInMemory(targetBlob, fileName, path);
@@ -1829,6 +1835,10 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                             // đúng file người dùng (không hỏi lại, không dùng path uuid).
                             const rebased = new File([targetBlob as any], fileName, { type: 'application/pdf' });
                             try { Object.defineProperty(rebased, 'path', { value: path }); } catch { /* ignore */ }
+                            // Chỉ ĐỔI PATH (copy đĩa→đĩa), nội dung + pdfUrl KHÔNG đổi → cờ này
+                            // cho usePdfLoader RETURN SỚM (như __editCommit): không setNumPages(0),
+                            // không nạp lại 14 trang + thumbnail vô ích sau khi lưu.
+                            try { Object.defineProperty(rebased, '__pathRebaseOnly', { value: true }); } catch { /* ignore */ }
                             setFile(rebased);
                             setOriginalFileName(fileName);
                         }
@@ -1843,7 +1853,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                 title: 'Select save location (Original path restricted)'
                             });
                             if (fallbackPath) {
-                                await atomicWrite(fallbackPath, writeData);
+                                await performWrite(fallbackPath);
                                 const fileName = fallbackPath.split(/[\\/]/).pop() || targetName;
                                 if (didBake) _bakeInMemory(targetBlob, fileName, fallbackPath);
                                 setIsSaved(true);
@@ -2290,6 +2300,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onObjectDelete={handleDeleteObjects}
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
                                     onEditCommit={handleEditCommit}
+                                    onCropCommit={commitWorkingFile}
                                     onDocumentUndo={handleUndo}
                                     editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { fracToRectMm, rectMmToFrac, type BoxMm, type Frac } from './CropDialog';
+import { fracToRectMm, rectMmToFrac, type BoxMm, type Frac } from '../../lib/cropDialogGeometry';
 
 const visibleCropBox: BoxMm = {
     x0: 10,

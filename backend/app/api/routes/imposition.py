@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import logging
 import re
+import asyncio
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -243,6 +244,85 @@ async def execute_plan_json(body: dict, license_info: dict = Depends(require_fea
         raise_http(e, "Thực thi kế hoạch bình thất bại")
     except Exception as e:
         raise_http(e, "Thực thi kế hoạch bình thất bại")
+
+@router.post("/viewer-preview/page")
+async def viewer_page_preview(body: dict):
+    """Return a disposable fast preview; PDFium still paints the final sharp layer."""
+    from app.core.viewer_preview import ViewerPreviewError, render_page_preview
+
+    pdf_path = _validate_file_path(body.get("path"))
+    try:
+        page = int(body.get("page", 1))
+        dpi = int(body.get("dpi", 96))
+        result = await asyncio.to_thread(render_page_preview, pdf_path, page, dpi)
+        logger.info(
+            "[PAGE_TIMING] page=%s dpi=%s cache_hit=%s render_ms=%s",
+            page, dpi, result.cache_hit, result.render_ms,
+        )
+        return FileResponse(
+            path=result.path,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-PrynX-Preview-Cache": "hit" if result.cache_hit else "miss",
+                "X-PrynX-Preview-Ms": str(result.render_ms),
+            },
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid page preview parameters.")
+    except ViewerPreviewError as exc:
+        logger.info("Fast page preview unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.post("/viewer-preview/thumbnails")
+async def viewer_thumbnail_batch(body: dict):
+    """Prepare one visible thumbnail block in a single Ghostscript process."""
+    from app.core.viewer_preview import ViewerPreviewError, prepare_thumbnail_batch
+
+    pdf_path = _validate_file_path(body.get("path"))
+    try:
+        page_count = int(body.get("page_count", 0))
+        start_page = int(body.get("start_page", 1))
+        batch_size = int(body.get("batch_size", 8))
+        result = await asyncio.to_thread(
+            prepare_thumbnail_batch, pdf_path, page_count, start_page, batch_size
+        )
+        logger.info(
+            "[THUMB_TIMING] pages=%d-%d (%d) cache_hit=%s render_ms=%d",
+            result.start_page, result.end_page,
+            result.end_page - result.start_page + 1,
+            result.cache_hit, result.render_ms,
+        )
+        return {
+            "cache_key": result.cache_key,
+            "pages": result.pages,
+            "start_page": result.start_page,
+            "end_page": result.end_page,
+            "cache_hit": result.cache_hit,
+            "render_ms": result.render_ms,
+        }
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid thumbnail parameters.")
+    except ViewerPreviewError as exc:
+        logger.info("Fast thumbnail preview unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.get("/viewer-preview/thumbnail/{cache_key}/{page}")
+async def viewer_thumbnail(cache_key: str, page: int):
+    """Serve one authenticated thumbnail from the opaque sidecar cache."""
+    from app.core.viewer_preview import ViewerPreviewError, thumbnail_path
+
+    try:
+        path = thumbnail_path(cache_key, page)
+        return FileResponse(
+            path=path,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=31536000, immutable"},
+        )
+    except ViewerPreviewError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 @router.post("/quick-color-space")
 async def quick_color_space(body: dict):
@@ -957,6 +1037,30 @@ import glob
 # In-memory job store for N-Up jobs
 nup_jobs = {}
 
+# TTL dọn job quá hạn khỏi RAM + xoá file kết quả (giống vdp `_purge_old_jobs`).
+# Trước đây nup_jobs KHÔNG có cơ chế purge → dict tăng đơn điệu theo số lần bình
+# bài trong phiên (entry nhỏ nhưng vô hạn) + results/nup_*.pdf đọng ổ đĩa.
+NUP_JOB_TTL_SECONDS = 3600
+
+
+def _purge_old_nup_jobs():
+    import time
+    now = time.time()
+    for jid in list(nup_jobs.keys()):
+        job = nup_jobs.get(jid)
+        if not job:
+            continue
+        created = job.get("created_at", now)
+        if now - created > NUP_JOB_TTL_SECONDS:
+            out = job.get("output_path")
+            if out and os.path.exists(out):
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+            nup_jobs.pop(jid, None)
+            _cleanup_job_temp(jid)
+
 
 def _cleanup_job_temp(job_id: str):
     """Dọn file trạng thái/tiến trình tạm của job (Task 19 / Req 9.2)."""
@@ -1012,15 +1116,19 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
                 except Exception:
                     pass
 
+    _purge_old_nup_jobs()
+
     job_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(RESULTS_DIR, f"{prefix}_{job_id}.pdf")
 
+    import time
     nup_jobs[job_id] = {
         "status": "running",
         "progress": "0/0",
         "report": "",
         "output_path": output_path,
         "error": None,
+        "created_at": time.time(),
     }
 
     # Process riêng để bỏ qua GIL; nup_engine tự chunk

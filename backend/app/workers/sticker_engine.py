@@ -9,7 +9,8 @@ import zlib
 import math
 import time
 import tempfile
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 import logging
@@ -927,10 +928,329 @@ def _rectangle_vector_bleed_commands(
 # tự tại chỗ (không spawn) để không chậm hơn.
 _STICKER_PARALLEL_MIN_PAGES = 6
 
+# Sau khi pool crash (OOM), giữ chế độ tuần tự một lúc để in liên tục không
+# lặp crash→fallback mỗi file (lãng phí thời gian + RAM).
+# TTL auto theo cấu hình máy; override: STICKER_STICKY_SEQ_SEC (0 = tắt sticky).
+_sticky_sequential_until: float = 0.0
+# Cache profile phần cứng (total RAM/CPU không đổi trong process).
+_hw_profile_cache: dict | None = None
+_hw_profile_logged: bool = False
+
+
+def _env_float_or_none(name: str) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _env_int_or_none(name: str) -> int | None:
+    v = _env_float_or_none(name)
+    if v is None:
+        return None
+    return int(v)
+
+
+def _read_memory_status() -> tuple[float | None, float | None]:
+    """(total_mb, available_mb) — không phụ thuộc psutil."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", wintypes.DWORD),
+                    ("dwMemoryLoad", wintypes.DWORD),
+                    ("ullTotalPhys", ctypes.c_uint64),
+                    ("ullAvailPhys", ctypes.c_uint64),
+                    ("ullTotalPageFile", ctypes.c_uint64),
+                    ("ullAvailPageFile", ctypes.c_uint64),
+                    ("ullTotalVirtual", ctypes.c_uint64),
+                    ("ullAvailVirtual", ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", ctypes.c_uint64),
+                ]
+
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return (
+                    float(stat.ullTotalPhys) / (1024.0 * 1024.0),
+                    float(stat.ullAvailPhys) / (1024.0 * 1024.0),
+                )
+        except Exception:
+            pass
+    # Linux
+    total = avail = None
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total = float(line.split()[1]) / 1024.0
+                elif line.startswith("MemAvailable:"):
+                    avail = float(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return total, avail
+
+
+def _available_ram_mb() -> float | None:
+    """RAM vật lý còn trống (MB). None nếu không đọc được."""
+    _total, avail = _read_memory_status()
+    return avail
+
+
+def _total_ram_mb() -> float | None:
+    total, _avail = _read_memory_status()
+    return total
+
+
+def _auto_sticker_hw_profile(
+    *,
+    total_ram_mb: float | None = None,
+    cpu_count: int | None = None,
+) -> dict:
+    """Suy ra max_workers + sticky TTL theo cấu hình máy.
+
+    Bảng (ưu tiên ổn định in ấn; máy mạnh mới tăng tốc):
+      RAM < 8GB            → workers 1, sticky 15'
+      8–16GB               → workers 2, sticky 10'
+      16–32GB + CPU≥8      → workers 3, sticky 5'
+      16–32GB + CPU<8      → workers 2, sticky 5'
+      ≥32GB  + CPU≥12      → workers 4, sticky 1'
+      ≥32GB  + CPU≥8       → workers 3, sticky 2'
+      ≥64GB  + CPU≥16      → workers 6, sticky 0 (tắt)
+
+    Env STICKER_MAX_WORKERS / STICKER_STICKY_SEQ_SEC ghi đè khi set.
+    Không cache ở đây — dùng get_sticker_hw_profile() cho production cache.
+    """
+    global _hw_profile_logged
+
+    if total_ram_mb is None:
+        total_ram_mb = _total_ram_mb()
+    if cpu_count is None:
+        cpu_count = os.cpu_count() or 2
+    cpu_count = max(1, int(cpu_count))
+    ram = float(total_ram_mb) if total_ram_mb is not None else 8192.0  # giả định 8GB
+
+    # ── Workers theo RAM + CPU ──
+    if ram < 8 * 1024:
+        workers, sticky, tier = 1, 900.0, "low"
+    elif ram < 16 * 1024:
+        workers, sticky, tier = 2, 600.0, "mid"
+    elif ram < 32 * 1024:
+        if cpu_count >= 8:
+            workers, sticky, tier = 3, 300.0, "high"
+        else:
+            workers, sticky, tier = 2, 300.0, "high-cpu-limited"
+    elif ram < 64 * 1024:
+        if cpu_count >= 12:
+            workers, sticky, tier = 4, 60.0, "very-high"
+        elif cpu_count >= 8:
+            workers, sticky, tier = 3, 120.0, "very-high-cpu-limited"
+        else:
+            workers, sticky, tier = 2, 180.0, "very-high-cpu-limited"
+    else:
+        # ≥64GB
+        if cpu_count >= 16:
+            workers, sticky, tier = 6, 0.0, "extreme"
+        elif cpu_count >= 12:
+            workers, sticky, tier = 4, 30.0, "extreme-cpu-limited"
+        else:
+            workers, sticky, tier = 3, 60.0, "extreme-cpu-limited"
+
+    # Không vượt quá (cpu-1) — chừa 1 nhân cho UI/backend.
+    workers = max(1, min(workers, max(1, cpu_count - 1)))
+
+    env_workers = _env_int_or_none("STICKER_MAX_WORKERS")
+    env_sticky = _env_float_or_none("STICKER_STICKY_SEQ_SEC")
+    workers_src = "env" if env_workers is not None else "auto"
+    sticky_src = "env" if env_sticky is not None else "auto"
+    if env_workers is not None:
+        workers = max(1, env_workers)
+    if env_sticky is not None:
+        sticky = max(0.0, env_sticky)
+
+    profile = {
+        "max_workers": workers,
+        "sticky_seq_sec": sticky,
+        "tier": tier,
+        "total_ram_mb": ram,
+        "cpu_count": cpu_count,
+        "workers_src": workers_src,
+        "sticky_src": sticky_src,
+    }
+
+    if not _hw_profile_logged:
+        logger.info(
+            "[STICKER] hw auto profile tier=%s workers=%d (%s) sticky_sec=%.0f (%s) "
+            "ram_total_mb=%.0f cpu=%d",
+            tier, workers, workers_src, sticky, sticky_src, ram, cpu_count,
+        )
+        _hw_profile_logged = True
+
+    return profile
+
+
+def get_sticker_hw_profile(*, refresh: bool = False) -> dict:
+    """Profile phần cứng (cache 1 lần/process). refresh=True để đọc lại env/hw."""
+    global _hw_profile_cache
+    if refresh or _hw_profile_cache is None:
+        _hw_profile_cache = _auto_sticker_hw_profile()
+    return _hw_profile_cache
+
+
+def _sticky_seq_seconds() -> float:
+    """TTL sticky sequential. Env ghi đè; không set → auto theo máy."""
+    return float(get_sticker_hw_profile()["sticky_seq_sec"])
+
+
+def _mark_pool_crash_sticky() -> None:
+    """Ghi nhận pool crash → job tiếp theo ưu tiên tuần tự trong TTL."""
+    global _sticky_sequential_until
+    ttl = _sticky_seq_seconds()
+    if ttl <= 0:
+        logger.info(
+            "[STICKER] pool crash but sticky disabled (ttl=0) — vẫn thử pool job sau"
+        )
+        return
+    _sticky_sequential_until = time.time() + ttl
+    logger.warning(
+        "[STICKER] sticky sequential ON for %.0fs (pool crash) — "
+        "in liên tục sẽ không spawn pool lại cho đến khi hết TTL "
+        "hoặc set STICKER_STICKY_SEQ_SEC=0",
+        ttl,
+    )
+
+
+def _sticky_sequential_active() -> bool:
+    return time.time() < _sticky_sequential_until
+
+
+def _default_sticker_max_workers() -> int:
+    """Max workers mặc định: auto theo RAM/CPU, hoặc STICKER_MAX_WORKERS nếu set."""
+    return int(get_sticker_hw_profile()["max_workers"])
+
+
+def _estimate_worker_ram_mb(
+    page_w_pt: float,
+    page_h_pt: float,
+    dpi: int = 300,
+    *,
+    light_path: bool = False,
+) -> float:
+    """Ước lượng peak RAM (MB) cho 1 worker xử lý 1 trang sticker.
+
+    light_path=True: xén thằng + bleed vector (không raster full page) → nhẹ.
+    """
+    if light_path:
+        # pikepdf + pdfium open + form XObject copy — không bitmap khổ lớn.
+        return 250.0
+    if page_w_pt <= 0 or page_h_pt <= 0:
+        return 400.0
+    scale = dpi / 72.0
+    w = page_w_pt * scale
+    h = page_h_pt * scale
+    long_px = max(w, h)
+    if long_px > 6000:
+        s = 6000.0 / long_px
+        w, h = w * s, h * s
+    mp = w * h
+    if mp > 40_000_000:
+        s = (40_000_000 / mp) ** 0.5
+        w, h = w * s, h * s
+    # ~10 byte/px peak (RGBA + mask + bleed buffers) + overhead process Windows.
+    raster_mb = (w * h * 10.0) / (1024.0 * 1024.0)
+    return max(200.0, raster_mb + 280.0)
+
 
 def _n_pages_should_parallelize(n_pages: int) -> bool:
-    """True nếu nên fan-out song song (đủ nhiều trang để bù overhead spawn)."""
+    """True nếu nên fan-out song song (đủ nhiều trang để bù overhead spawn).
+
+    STICKER_FORCE_SEQUENTIAL=1 → luôn tắt pool (debug OOM / crash worker).
+    Sticky sequential sau pool crash → tắt tạm để in liên tục ổn định.
+    """
+    if os.environ.get("STICKER_FORCE_SEQUENTIAL", "").lower() in ("1", "true", "yes"):
+        return False
+    if _sticky_sequential_active():
+        left = max(0.0, _sticky_sequential_until - time.time())
+        logger.info(
+            "[STICKER] skip parallel (sticky sequential, %.0fs left) pages=%d",
+            left, n_pages,
+        )
+        return False
     return n_pages >= _STICKER_PARALLEL_MIN_PAGES
+
+
+def _is_process_pool_crash(exc: BaseException) -> bool:
+    """True khi worker pool bị kill (OOM / native crash) thay vì raise Python."""
+    if isinstance(exc, BrokenProcessPool):
+        return True
+    name = type(exc).__name__
+    if name in ("BrokenProcessPool", "BrokenExecutor"):
+        return True
+    msg = str(exc).lower()
+    return (
+        "terminated abruptly" in msg
+        or "brokenprocesspool" in msg
+        or "broken executor" in msg
+    )
+
+
+def _cap_sticker_workers(
+    n_workers: int,
+    n_pages: int,
+    input_path: str,
+    *,
+    page_w_pt: float = 0.0,
+    page_h_pt: float = 0.0,
+    dpi: int = 300,
+    light_path: bool = False,
+) -> int:
+    """Giảm số worker theo file size + RAM trống + khổ trang (tránh OOM chủ động)."""
+    try:
+        file_mb = os.path.getsize(input_path) / (1024 * 1024)
+    except OSError:
+        file_mb = 0.0
+    cap = n_workers
+    # File combine / multi-page nặng: peak RAM ≈ workers × (raster + mask + bleed).
+    if file_mb >= 80:
+        cap = min(cap, 1)
+    elif file_mb >= 40:
+        cap = min(cap, 2)
+    elif file_mb >= 15:
+        cap = min(cap, 3)
+    # Nhiều trang nhưng file nhỏ (tem A6×N) vẫn song song bình thường.
+    if n_pages >= 40:
+        cap = min(cap, 2)
+
+    per_worker = _estimate_worker_ram_mb(
+        page_w_pt, page_h_pt, dpi, light_path=light_path,
+    )
+    avail = _available_ram_mb()
+    if avail is not None and per_worker > 0:
+        # Giữ ~35% RAM cho OS + app UI + backend cha; không dùng hết free RAM.
+        budget = max(0.0, avail * 0.65)
+        by_ram = max(1, int(budget // per_worker))
+        if by_ram < cap:
+            logger.info(
+                "[STICKER] RAM cap workers %d→%d (avail_mb=%.0f per_worker_mb=%.0f "
+                "budget_mb=%.0f page=%.0fx%.0fpt light=%s)",
+                cap, by_ram, avail, per_worker, budget,
+                page_w_pt, page_h_pt, light_path,
+            )
+        cap = min(cap, by_ram)
+        # RAM rất thấp: ép 1 worker (in-process path).
+        if avail < 900:
+            cap = 1
+            logger.warning(
+                "[STICKER] low RAM avail_mb=%.0f → force 1 worker", avail,
+            )
+
+    return max(1, cap)
 
 
 def _process_sticker_chunk(args: dict):
@@ -944,6 +1264,12 @@ def _process_sticker_chunk(args: dict):
     vẫn trả để phòng thủ + dễ log).
     """
     chunk_idx = args["chunk_idx"]
+    pages = args.get("page_indices") or []
+    t0 = time.perf_counter()
+    logger.info(
+        "[STICKER] chunk start idx=%s pages=%s pid=%s",
+        chunk_idx, pages, os.getpid(),
+    )
     # OVERSUBSCRIPTION FIX: OpenCV/BLAS tự đa luồng (cv2.getNumThreads=số nhân). Chạy
     # W worker mà mỗi worker vẫn dùng full nhân → W×nhân luồng chen nhau trên số nhân
     # có hạn → thrashing (đo thực: 6 worker chỉ nhanh 2x thay vì ~6x). Ghim mỗi worker
@@ -956,28 +1282,40 @@ def _process_sticker_chunk(args: dict):
         cv2.setNumThreads(int(_tpw))
     except Exception:
         pass
-    engine = StickerEngine(dpi=args["dpi"], debug=args["debug"])
-    result = engine.process_pdf(
-        input_path=args["input_path"],
-        output_path="",  # worker mode: KHÔNG ghi ra đĩa, trả bytes
-        cut_mode=args["cut_mode"],
-        offset_mm=args["offset_mm"],
-        corner_style=args["corner_style"],
-        cut_color=args["cut_color"],
-        bleed_mm=args["bleed_mm"],
-        fill_holes=args["fill_holes"],
-        remove_white_bg=args["remove_white_bg"],
-        bleed_color_type=args["bleed_color_type"],
-        solid_bleed_color=args["solid_bleed_color"],
-        draw_cut_contour=args["draw_cut_contour"],
-        rectangle_mode=args["rectangle_mode"],
-        edge_bite_mm=args["edge_bite_mm"],
-        cut_first_page_only=args["cut_first_page_only"],
-        shape_mode=args.get("shape_mode", "auto_safe"),
-        _page_subset=args["page_indices"],
-    )
-    # result = (bytes, metas, pages_no_dieline, any_dieline)
-    return (chunk_idx, result)
+    try:
+        engine = StickerEngine(dpi=args["dpi"], debug=args["debug"])
+        result = engine.process_pdf(
+            input_path=args["input_path"],
+            output_path="",  # worker mode: KHÔNG ghi ra đĩa, trả bytes
+            cut_mode=args["cut_mode"],
+            offset_mm=args["offset_mm"],
+            corner_style=args["corner_style"],
+            cut_color=args["cut_color"],
+            bleed_mm=args["bleed_mm"],
+            fill_holes=args["fill_holes"],
+            remove_white_bg=args["remove_white_bg"],
+            bleed_color_type=args["bleed_color_type"],
+            solid_bleed_color=args["solid_bleed_color"],
+            draw_cut_contour=args["draw_cut_contour"],
+            rectangle_mode=args["rectangle_mode"],
+            edge_bite_mm=args["edge_bite_mm"],
+            cut_first_page_only=args["cut_first_page_only"],
+            shape_mode=args.get("shape_mode", "auto_safe"),
+            _page_subset=args["page_indices"],
+        )
+        # result = (bytes, metas, pages_no_dieline, any_dieline)
+        logger.info(
+            "[STICKER] chunk done idx=%s pages=%s s=%.2f pid=%s",
+            chunk_idx, pages, time.perf_counter() - t0, os.getpid(),
+        )
+        return (chunk_idx, result)
+    except Exception:
+        logger.error(
+            "[STICKER] chunk FAILED idx=%s pages=%s s=%.2f pid=%s",
+            chunk_idx, pages, time.perf_counter() - t0, os.getpid(),
+            exc_info=True,
+        )
+        raise
 
 
 class StickerEngine:
@@ -1028,8 +1366,21 @@ class StickerEngine:
             # + xử lý chunk + trả file PDF, rồi merge ở đây. Overhead spawn Windows
             # ~2-3s/worker nên file nhỏ (< ngưỡng) chạy tuần tự tại chỗ (rơi xuống dưới).
             if _page_subset is None and _n_pages_should_parallelize(len(doc_in_pdfium)):
+                n_pages_probe = len(doc_in_pdfium)
+                try:
+                    input_mb = os.path.getsize(input_path) / (1024 * 1024)
+                except OSError:
+                    input_mb = 0.0
+                logger.info(
+                    "[STICKER] parallel fan-out pages=%d input_mb=%.2f rectangle=%s "
+                    "bleed_mm=%s cut_mode=%s dpi=%s path=%s",
+                    n_pages_probe, input_mb, rectangle_mode, bleed_mm, cut_mode,
+                    self.dpi, os.path.basename(input_path),
+                )
                 doc_in_pdfium.close(); doc_in_pdfium = None
                 doc_in_pike.close(); doc_in_pike = None
+                # Nhãn đúng bước (trước đây lỗi pool vẫn dính "Open Original PDF@…").
+                debug_step = "Process Parallel Workers"
                 return self._process_parallel(
                     input_path=input_path, output_path=output_path,
                     cut_mode=cut_mode, offset_mm=offset_mm, corner_style=corner_style,
@@ -2034,6 +2385,9 @@ class StickerEngine:
             
         except Exception as e:
             logger.error(f"Sticker processing failed at {debug_step}: {e}", exc_info=True)
+            # RuntimeError đã gắn tag [Bước] từ nhánh parallel/fallback → giữ nguyên.
+            if isinstance(e, RuntimeError) and str(e).startswith("["):
+                raise
             # Lấy số dòng trong CHÍNH file này (không phải path hệ thống) để chẩn đoán
             # nhanh dòng nào ném lỗi mà không cần đọc log server.
             import traceback as _tb
@@ -2056,6 +2410,50 @@ class StickerEngine:
                 try: doc_out.close()
                 except Exception: pass
 
+    def _run_sticker_chunks(self, args_list, n_workers: int, use_pool: bool):
+        """Chạy các chunk sticker: in-process tuần tự hoặc ProcessPool.
+
+        Trả list (chunk_idx, result) — không sort. Khi pool chết (OOM/native)
+        ném BrokenProcessPool / exception có "terminated abruptly".
+        """
+        import gc
+
+        if len(args_list) == 1 or not use_pool or n_workers <= 1:
+            mode = "in-process"
+            logger.info(
+                "[STICKER] run chunks mode=%s count=%d workers=%d",
+                mode, len(args_list), n_workers,
+            )
+            results = []
+            for a in args_list:
+                results.append(_process_sticker_chunk(a))
+                # In liên tục nhiều trang: nhả buffer cv2/numpy giữa chunk.
+                gc.collect()
+            return results
+
+        logger.info(
+            "[STICKER] run chunks mode=pool count=%d workers=%d",
+            len(args_list), n_workers,
+        )
+        results = []
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            future_map = {
+                pool.submit(_process_sticker_chunk, a): a for a in args_list
+            }
+            for fut in as_completed(future_map):
+                a = future_map[fut]
+                try:
+                    results.append(fut.result())
+                except Exception as e:
+                    # Python exception từ worker (không phải process kill).
+                    logger.error(
+                        "[STICKER] pool future failed chunk_idx=%s pages=%s: %s",
+                        a.get("chunk_idx"), a.get("page_indices"), e,
+                        exc_info=True,
+                    )
+                    raise
+        return results
+
     def _process_parallel(self, input_path, output_path, **kw) -> tuple:
         """Fan-out xử lý trang ra nhiều tiến trình con rồi merge kết quả.
 
@@ -2064,19 +2462,49 @@ class StickerEngine:
         các chunk theo THỨ TỰ (pikepdf pages.extend, tự kéo spot color /CutContour qua
         copy_foreign), concat meta, tổng hợp any_dieline + pages_no_dieline rồi tái
         tạo final_meta/error/warning Y HỆT nhánh tuần tự.
+
+        Khi process pool bị kill (OOM / crash native) → log chi tiết + fallback
+        tuần tự in-process (peak RAM thấp hơn nhiều worker đồng thời).
         """
         import math as _math
-        from concurrent.futures import ProcessPoolExecutor
         parallel_started = time.perf_counter()
         cut_mode = kw["cut_mode"]
 
+        try:
+            input_mb = os.path.getsize(input_path) / (1024 * 1024)
+        except OSError:
+            input_mb = 0.0
+
         _probe = pdfium.PdfDocument(input_path)
         n_pages = len(_probe)
+        # Probe kích thước trang đầu (gợi ý RAM/trang); không fail nếu PDF lạ.
+        page0_w = page0_h = 0.0
+        try:
+            if n_pages > 0:
+                page0_w, page0_h = _probe[0].get_size()
+        except Exception:
+            pass
         _probe.close()
 
         available = max(1, (os.cpu_count() or 2) - 1)
-        cap = int(os.environ.get("STICKER_MAX_WORKERS", "8"))
-        n_workers = max(1, min(available, cap, n_pages))
+        try:
+            env_cap = int(os.environ.get(
+                "STICKER_MAX_WORKERS", str(_default_sticker_max_workers())
+            ))
+        except ValueError:
+            env_cap = _default_sticker_max_workers()
+        # Xén thằng + bleed image vector: không raster full page → đường nhẹ.
+        light_path = bool(
+            kw.get("rectangle_mode")
+            and kw.get("bleed_color_type") == "image"
+            and float(kw.get("bleed_mm") or 0) > 0
+        )
+        n_workers = max(1, min(available, env_cap, n_pages))
+        n_workers = _cap_sticker_workers(
+            n_workers, n_pages, input_path,
+            page_w_pt=page0_w, page_h_pt=page0_h, dpi=self.dpi,
+            light_path=light_path,
+        )
         chunk_size = max(1, _math.ceil(n_pages / n_workers))
         chunks = [list(range(i, min(i + chunk_size, n_pages)))
                   for i in range(0, n_pages, chunk_size)]
@@ -2088,6 +2516,23 @@ class StickerEngine:
         # cv2.setNumThreads + env BLAS theo số này (đọc từ args["threads_per_worker"]).
         _total_cores = os.cpu_count() or 2
         threads_per_worker = max(1, _total_cores // max(1, n_workers))
+        avail_ram = _available_ram_mb()
+        per_w_ram = _estimate_worker_ram_mb(
+            page0_w, page0_h, self.dpi, light_path=light_path,
+        )
+
+        logger.info(
+            "[STICKER] parallel plan pages=%d workers=%d chunks=%d "
+            "chunk_sizes=%s threads/worker=%d input_mb=%.2f page0_pt=%.1fx%.1f "
+            "rectangle=%s bleed_mm=%s cut_mode=%s light=%s avail_ram_mb=%s "
+            "est_per_worker_mb=%.0f",
+            n_pages, n_workers, len(chunks),
+            [len(c) for c in chunks], threads_per_worker, input_mb,
+            page0_w, page0_h, kw.get("rectangle_mode"), kw.get("bleed_mm"),
+            cut_mode, light_path,
+            f"{avail_ram:.0f}" if avail_ram is not None else "?",
+            per_w_ram,
+        )
 
         args_list = []
         for ci, page_indices in enumerate(chunks):
@@ -2108,13 +2553,50 @@ class StickerEngine:
                 "shape_mode": kw.get("shape_mode", "auto_safe"),
             })
 
-        # 1 chunk → chạy tại chỗ (không spawn). Nhiều chunk → pool. pool.map giữ thứ tự.
+        # 1 chunk / n_workers=1 → in-process. Nhiều chunk → pool; crash → fallback tuần tự.
         workers_started = time.perf_counter()
-        if len(args_list) == 1:
-            results = [_process_sticker_chunk(args_list[0])]
-        else:
-            with ProcessPoolExecutor(max_workers=n_workers) as pool:
-                results = list(pool.map(_process_sticker_chunk, args_list))
+        use_pool = len(args_list) > 1 and n_workers > 1
+        used_pool = False
+        try:
+            results = self._run_sticker_chunks(args_list, n_workers, use_pool=use_pool)
+            used_pool = use_pool
+        except Exception as pool_err:
+            if use_pool and _is_process_pool_crash(pool_err):
+                logger.error(
+                    "[STICKER] process pool CRASH (OOM/native?). "
+                    "pages=%d workers=%d chunks=%d input_mb=%.2f page0_pt=%.1fx%.1f "
+                    "rectangle=%s err=%s — fallback sequential in-process",
+                    n_pages, n_workers, len(chunks), input_mb, page0_w, page0_h,
+                    kw.get("rectangle_mode"), pool_err,
+                    exc_info=True,
+                )
+                # In liên tục: lần sau đừng spawn pool lại ngay (tránh crash lặp).
+                _mark_pool_crash_sticky()
+                try:
+                    # Peak RAM thấp hơn: một chunk một lúc trong process cha.
+                    results = self._run_sticker_chunks(
+                        args_list, n_workers=1, use_pool=False,
+                    )
+                except Exception as seq_err:
+                    logger.error(
+                        "[STICKER] sequential fallback ALSO failed: %s",
+                        seq_err, exc_info=True,
+                    )
+                    raise RuntimeError(
+                        f"[Process Parallel Workers] worker pool crashed "
+                        f"({pool_err}); sequential retry also failed ({seq_err}). "
+                        f"pages={n_pages} input_mb={input_mb:.1f}. "
+                        f"Thử giảm số trang/khổ, đóng app khác giải phóng RAM, "
+                        f"hoặc set STICKER_FORCE_SEQUENTIAL=1."
+                    ) from seq_err
+                used_pool = False
+                logger.info(
+                    "[STICKER] sequential fallback completed chunks=%d s=%.2f",
+                    len(results), time.perf_counter() - workers_started,
+                )
+            else:
+                # Lỗi Python thật từ chunk — giữ nguyên để outer wrap debug_step.
+                raise
         worker_seconds = time.perf_counter() - workers_started
 
         # Sắp theo chunk_idx (phòng thủ) rồi gộp.
@@ -2136,7 +2618,6 @@ class StickerEngine:
                 final_doc.pages.extend(src.pages)
                 # KHÔNG close src trước khi save: pikepdf giữ tham chiếu foreign object.
 
-            debug_step = "Save Merged Output"
             with pikepdf.Pdf.open(input_path) as source_catalog:
                 _copy_output_intents(source_catalog, final_doc)
             merge_seconds = time.perf_counter() - merge_started
@@ -2146,12 +2627,13 @@ class StickerEngine:
             final_doc.save(output_path)
             save_seconds = time.perf_counter() - save_started
             logger.info(
-                "[STICKER_TIMING] parallel pages=%d workers=%d chunks=%d "
+                "[STICKER_TIMING] parallel pages=%d workers=%d chunks=%d used_pool=%s "
                 "worker_s=%.3f merge_s=%.3f dedup_s=%.3f save_s=%.3f total_s=%.3f "
                 "images=%d duplicates=%d rewired=%d reclaimed_candidate_mb=%.2f output_mb=%.2f",
                 n_pages,
                 n_workers,
                 len(chunks),
+                used_pool,
                 worker_seconds,
                 merge_seconds,
                 dedup_stats["seconds"],

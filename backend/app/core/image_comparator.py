@@ -34,6 +34,11 @@ TOLERANCE_MIN_AREA = {
     "LOOSE": 80,
 }
 
+# SSIM is an informational score only. Keep its working image bounded so a
+# print-resolution page cannot create several full-page float64 buffers.
+DEFAULT_SSIM_MAX_SIDE = 1200
+GIF_MAX_SIDE = 1200
+
 
 @dataclass
 class DiffRegion:
@@ -157,10 +162,17 @@ class ImageComparator:
         # Step 1.5: Ensure same dimensions if standard 1:1 mode
         img1, img2 = self._normalize_dimensions(img1, img2)
 
+        # Exact pages are common in version checks. This safe shortcut avoids
+        # registration, SSIM, mask morphology, and result image generation.
+        if np.array_equal(img1, img2):
+            return self._identical_result(img2)
+
         # Step 1.6: Registration — bù lệch render nhỏ (NORMAL/LOOSE).
         # STRICT: KHÔNG align — lệch 1–2px cố ý (cắt xén/trim) vẫn phải báo.
         if (tolerance or "NORMAL").upper() != "STRICT":
             img2 = self._align_to(img1, img2)
+            if np.array_equal(img1, img2):
+                return self._identical_result(img2)
 
         # Ngưỡng diện tích theo tolerance + DPI (trần scale ×2 — tránh 300DPI nuốt glyph).
         dpi = (config or {}).get("dpi", 150) or 150
@@ -179,8 +191,9 @@ class ImageComparator:
         gray2 = cv2.cvtColor(img2, cv2.COLOR_RGB2GRAY) if len(img2.shape) == 3 else img2
 
         # Step 3: SSIM (tham khảo — không quyết định pass/fail)
-        score, diff_map = ssim(gray1, gray2, full=True)
-        result.similarity_score = round(score * 100, 2)
+        result.similarity_score = self._compute_visual_similarity(
+            gray1, gray2, config=config
+        )
 
         # Step 4 & 5: Pixel difference and Thresholding
         threshold_val = TOLERANCE_THRESHOLDS.get(tol_key, 13)
@@ -206,10 +219,10 @@ class ImageComparator:
         result.diff_regions = regions
         result.diff_count = len(regions)
 
-        result.highlighted_image = self.highlight_differences(
-            img2.copy(), binary_mask, regions
-        )
-        if len(regions) > 0:
+        if regions:
+            result.highlighted_image = self.highlight_differences(
+                img2, binary_mask, regions
+            )
             frame_off, frame_on = self._create_spotlight_frames(img2, regions)
             result.gif_image = self._generate_gif(frame_off, frame_on, duration_ms=600)
 
@@ -218,6 +231,46 @@ class ImageComparator:
             f"{result.diff_count} regions, {result.diff_pixel_percentage}% pixels differ"
         )
         return result
+
+    def _identical_result(self, image: np.ndarray) -> ComparisonResult:
+        '''Return a zero-diff result without allocating full-page artifacts.'''
+        result = ComparisonResult()
+        result.similarity_score = 100.0
+        result.diff_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        result.render_w = image.shape[1]
+        result.render_h = image.shape[0]
+        return result
+
+    def _compute_visual_similarity(
+        self,
+        gray1: np.ndarray,
+        gray2: np.ndarray,
+        config: dict = None,
+    ) -> float:
+        '''Compute informational SSIM on a bounded preview.
+
+        Pass/fail remains based on the full-resolution pixel mask. Downscaling
+        here only changes the UI's advisory visual-similarity percentage.
+        '''
+        configured = (config or {}).get("ssim_max_side", DEFAULT_SSIM_MAX_SIDE)
+        try:
+            max_side = int(configured or DEFAULT_SSIM_MAX_SIDE)
+        except (TypeError, ValueError):
+            max_side = DEFAULT_SSIM_MAX_SIDE
+        max_side = max(64, min(max_side, 4096))
+
+        h, w = gray1.shape[:2]
+        if max(h, w) > max_side:
+            scale = max_side / float(max(h, w))
+            target = (
+                max(1, int(round(w * scale))),
+                max(1, int(round(h * scale))),
+            )
+            gray1 = cv2.resize(gray1, target, interpolation=cv2.INTER_AREA)
+            gray2 = cv2.resize(gray2, target, interpolation=cv2.INTER_AREA)
+
+        score = ssim(gray1, gray2, full=False)
+        return round(float(score) * 100, 2)
 
     def _build_diff_mask(
         self,
@@ -338,8 +391,9 @@ class ImageComparator:
             result = ComparisonResult()
             gray1 = cv2.cvtColor(cmyk1[:, :, :3], cv2.COLOR_RGB2GRAY) if cmyk1.shape[2] >= 3 else cmyk1[:, :, 3]
             gray2 = cv2.cvtColor(cmyk2[:, :, :3], cv2.COLOR_RGB2GRAY) if cmyk2.shape[2] >= 3 else cmyk2[:, :, 3]
-            score, _ = ssim(gray1, gray2, full=True)
-            result.similarity_score = round(score * 100, 2)
+            result.similarity_score = self._compute_visual_similarity(
+                gray1, gray2, config=config
+            )
             return result
 
         # STEP 2: Augment each real diff region with CMYK channel breakdown
@@ -376,13 +430,32 @@ class ImageComparator:
         2. A version where only the diff regions are fully bright & highlighted (frame_on)
         """
         h_img, w_img = img.shape[:2]
-        
-        # 1. Create the dark base frame (dim the image by 60%)
-        # Convert to float for safe multiplication, then back to uint8
-        dark_base = (img.astype(np.float32) * 0.4).astype(np.uint8)
-        
-        frame_off = dark_base.copy()
-        frame_on = dark_base.copy()
+        if max(h_img, w_img) > GIF_MAX_SIDE:
+            scale = GIF_MAX_SIDE / float(max(h_img, w_img))
+            target = (
+                max(1, int(round(w_img * scale))),
+                max(1, int(round(h_img * scale))),
+            )
+            img = cv2.resize(img, target, interpolation=cv2.INTER_AREA)
+            regions = [
+                DiffRegion(
+                    x=int(round(region.x * scale)),
+                    y=int(round(region.y * scale)),
+                    width=max(1, int(round(region.width * scale))),
+                    height=max(1, int(round(region.height * scale))),
+                    area=int(round(region.area * scale * scale)),
+                    type=region.type,
+                    severity=region.severity,
+                    description=region.description,
+                )
+                for region in regions
+            ]
+            h_img, w_img = img.shape[:2]
+
+        # Allocate only the two bounded GIF frames. convertScaleAbs avoids a
+        # temporary full-frame float32 array.
+        frame_off = cv2.convertScaleAbs(img, alpha=0.4, beta=0)
+        frame_on = frame_off.copy()
         
         padding = 15  # Expand the spotlight box by 15px in all directions
         
@@ -455,26 +528,34 @@ class ImageComparator:
         Draw semi-transparent highlight overlay on diff regions.
         Reference: pdf-diff (draw_red_boxes), enhanced with severity colors.
         """
-        overlay = image.copy()
+        result = image.copy()
 
         severity_colors = {
-            "high": (239, 68, 68),     # Red
-            "medium": (251, 146, 60),  # Orange
-            "low": (250, 204, 21),     # Yellow
+            "high": (239, 68, 68),
+            "medium": (251, 146, 60),
+            "low": (250, 204, 21),
         }
 
+        h_img, w_img = result.shape[:2]
         for region in regions:
             color = severity_colors.get(region.severity, (239, 68, 68))
-            x, y, w, h = region.x, region.y, region.width, region.height
+            x1 = max(0, region.x)
+            y1 = max(0, region.y)
+            x2 = min(w_img, region.x + region.width)
+            y2 = min(h_img, region.y + region.height)
+            if x2 <= x1 or y2 <= y1:
+                continue
 
-            # Semi-transparent fill
-            cv2.rectangle(overlay, (x, y), (x + w, y + h), color, -1)
+            # Blend only the changed ROI instead of allocating an overlay for
+            # the entire render-sized page.
+            roi = result[y1:y2, x1:x2]
+            tint = np.empty_like(roi)
+            tint[...] = color
+            cv2.addWeighted(
+                tint, overlay_alpha, roi, 1 - overlay_alpha, 0, dst=roi
+            )
+            cv2.rectangle(result, (x1, y1), (x2, y2), color, 2)
 
-            # Solid border
-            cv2.rectangle(image, (x, y), (x + w, y + h), color, 2)
-
-        # Blend overlay
-        result = cv2.addWeighted(overlay, overlay_alpha, image, 1 - overlay_alpha, 0)
         return result
 
     def _align_to(self, ref: np.ndarray, mov: np.ndarray) -> np.ndarray:

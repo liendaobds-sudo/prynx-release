@@ -100,4 +100,76 @@ describe('useViewerHotkeys document undo fallback', () => {
 
         expect(onDocumentUndo).not.toHaveBeenCalled();
     });
+
+    it('routes Ctrl+Z and Ctrl+Y to crop history before document history', () => {
+        const store = createWorkspaceStore();
+        const initial = {
+            ownerId: 'page-1',
+            pageNum: 1,
+            regions: [{ x0: 0.1, y0: 0.1, x1: 0.5, y1: 0.5 }],
+            selectedIndex: 0,
+        };
+        const moved = {
+            ...initial,
+            regions: [{ x0: 0.2, y0: 0.2, x1: 0.6, y1: 0.6 }],
+        };
+        store.getState().setIsCropMode(true);
+        store.getState().commitCropSelection(initial);
+        store.getState().recordCropSelectionSnapshot();
+        store.getState().setCropSelection(moved);
+
+        const onDocumentUndo = vi.fn();
+        const wrapper = ({ children }: PropsWithChildren) => (
+            <WorkspaceContext.Provider value={store}>{children}</WorkspaceContext.Provider>
+        );
+        renderHook(() => useViewerHotkeys(makeProps({ onDocumentUndo })), { wrapper });
+
+        fireEvent.keyDown(document, { key: 'z', code: 'KeyZ', ctrlKey: true });
+        expect(store.getState().cropSelection).toEqual(initial);
+        expect(onDocumentUndo).not.toHaveBeenCalled();
+
+        fireEvent.keyDown(document, { key: 'y', code: 'KeyY', ctrlKey: true });
+        expect(store.getState().cropSelection).toEqual(moved);
+        expect(onDocumentUndo).not.toHaveBeenCalled();
+    });
+
+    it('temporarily pans with Space during crop and restores crop without navigating', () => {
+        const store = createWorkspaceStore();
+        const selection = {
+            ownerId: 'page-1',
+            pageNum: 1,
+            regions: [{ x0: 0.1, y0: 0.1, x1: 0.5, y1: 0.5 }],
+            selectedIndex: 0,
+        };
+        store.getState().setIsCropMode(true);
+        store.getState().commitCropSelection(selection);
+        const navigatePage = vi.fn();
+        const wrapper = ({ children }: PropsWithChildren) => (
+            <WorkspaceContext.Provider value={store}>{children}</WorkspaceContext.Provider>
+        );
+        renderHook(() => useViewerHotkeys(makeProps({ navigatePage })), { wrapper });
+
+        fireEvent.keyDown(document, { key: ' ', code: 'Space' });
+        expect(store.getState().viewerToolMode).toBe('hand');
+        expect(store.getState().cropSelection).toEqual(selection);
+
+        fireEvent.keyUp(document, { key: ' ', code: 'Space' });
+        expect(store.getState().viewerToolMode).toBe('pointer');
+        expect(store.getState().cropSelection).toEqual(selection);
+        expect(navigatePage).not.toHaveBeenCalled();
+    });
+
+    it('restores the crop tool if the window loses focus while Space is held', () => {
+        const store = createWorkspaceStore();
+        store.getState().setIsCropMode(true);
+        const wrapper = ({ children }: PropsWithChildren) => (
+            <WorkspaceContext.Provider value={store}>{children}</WorkspaceContext.Provider>
+        );
+        renderHook(() => useViewerHotkeys(makeProps()), { wrapper });
+
+        fireEvent.keyDown(document, { key: ' ', code: 'Space' });
+        expect(store.getState().viewerToolMode).toBe('hand');
+        fireEvent.blur(window);
+        expect(store.getState().viewerToolMode).toBe('pointer');
+    });
 });

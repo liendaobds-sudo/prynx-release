@@ -5,6 +5,7 @@ import './i18n'
 import App from './App'
 import { ErrorBoundary } from './ErrorBoundary'
 import { installBackendFetchAuth } from './lib/api'
+import { APP_VERSION } from './lib/uiErrorDiagnostics'
 
 // ══════════════════════════════════════════════════════════════
 // VECTOR #3+#13 FIX: Freeze Tauri IPC bridge AND capture invoke.
@@ -40,6 +41,7 @@ if ((window as any).__TAURI__) {
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
+  release: `prynx@${APP_VERSION}`,
   // F8 FIX: KHÔNG gửi PII mặc định (IP, dữ liệu request...) lên Sentry — riêng tư khách hàng.
   sendDefaultPii: false,
   // Add useful tags for desktop apps

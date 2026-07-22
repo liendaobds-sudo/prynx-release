@@ -424,8 +424,42 @@ export async function runShuffle(ctx: ProcessContext, settings: any) {
 export async function runResize(ctx: ProcessContext, settings: any) {
     const { file, onSpawnTab, commitWorkingFile, setError, setIsProcessing, setProcessStatus, getWorkingBytes } = ctx;
     setError(''); setIsProcessing(true); setProcessStatus(i18n.t('lib.processHandlers:dang_doi_kho_trang'));
+
+    const MM_TO_PT = 2.83465;
+    const resizeMode: string = settings.resizeMode || 'auto';
+    const newFileName = `Resized_${file.name}`;
+    // pdf-lib nạp CẢ file vào RAM rồi embedPages (nhân bản nội dung trang thành Form
+    // XObject) + save (dựng Uint8Array mới) → đỉnh RAM ~3-4× kích thước file. File
+    // lớn/nhiều ảnh vượt trần cấp phát ArrayBuffer của V8 → "Array buffer allocation
+    // failed". Vượt ngưỡng này BỎ QUA pdf-lib, đẩy thẳng backend (xử lý theo path
+    // trên đĩa qua Ghostscript/pypdfium2, KHÔNG nạp vào WebView).
+    const FE_SIZE_LIMIT = 50 * 1024 * 1024;
+
+    const emit = async (blob: Blob) => {
+        if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
+        else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
+    };
+
     try {
-        const inputBytes = await getWorkingBytes();
+        // ── Backend theo PATH (không giữ file trong RAM) ─────────────────────
+        // Dùng khi: không đọc nổi bytes vào RAM (RangeError). prepareFileForUpload
+        // (trong backendResizePages) đọc lại nội dung THẬT từ đĩa qua file.path →
+        // KHÔNG nhân bản bytes trong WebView. Mất phần bake edit-ảo (order/rotation)
+        // nhưng còn hơn crash cứng — file cỡ này bake trong JS cũng sẽ crash.
+        const runBackendByPath = async (): Promise<Blob> => {
+            const { backendResizePages } = await import('../lib/api');
+            return backendResizePages(file, settings.targetW, settings.targetH, settings.scaleMode, settings.applyToStr || 'all', 0, resizeMode);
+        };
+
+        let inputBytes: Uint8Array;
+        try {
+            inputBytes = await getWorkingBytes();
+        } catch (readErr) {
+            // Không giữ nổi file trong RAM (RangeError / bake edit crash) → backend theo path.
+            console.warn('[resize] không đọc được bytes vào RAM, fallback backend theo path:', readErr);
+            await emit(await runBackendByPath());
+            return;
+        }
 
         // Thử soi bằng pdf-lib để lấy số trang + quyết định downsample. File do
         // BACKEND sinh (bù xén/downsample qua pikepdf/QPDF, Ghostscript) có thể
@@ -450,20 +484,13 @@ export async function runResize(ctx: ProcessContext, settings: any) {
         // resize kiểu XObject giữ NGUYÊN độ phân giải ảnh gốc → A1→A5 mà file vẫn
         // ~dung lượng gốc → tác vụ sau chậm. Khổ đích NHỎ HƠN khổ gốc → bật
         // downsample (mặc định 300 DPI) qua backend (Ghostscript/pypdfium2).
-        const MM_TO_PT = 2.83465;
         const targetArea = (settings.targetW * MM_TO_PT) * (settings.targetH * MM_TO_PT);
         const isDownsizing = sourceArea > 0 && targetArea > 0 && targetArea < sourceArea * 0.9;
         const targetDpi: number = typeof settings.targetDpi === 'number'
             ? settings.targetDpi
             : (isDownsizing ? 300 : 0);
-        const resizeMode: string = settings.resizeMode || 'auto';
         const wantDownsample = targetDpi > 0;
 
-        const newFileName = `Resized_${file.name}`;
-        const emit = async (blob: Blob) => {
-            if (settings.spawnNewTab && onSpawnTab) { onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' })); }
-            else { await commitWorkingFile(blob, newFileName); ctx.setReportMsg(''); }
-        };
         const runBackend = async (): Promise<Blob> => {
             const { backendResizePages } = await import('../lib/api');
             const workingFile = new File([inputBytes as any], file.name, { type: 'application/pdf' });
@@ -471,13 +498,14 @@ export async function runResize(ctx: ProcessContext, settings: any) {
         };
 
         // Backend bắt buộc khi: cần downsample, pdf-lib không parse được, hoặc file lớn.
-        if (wantDownsample || !canUseFrontend || totalPages > 1000 || file.size > 300 * 1024 * 1024) {
+        if (wantDownsample || !canUseFrontend || totalPages > 1000 || (file.size || inputBytes.byteLength) > FE_SIZE_LIMIT) {
             await emit(await runBackend());
             return;
         }
 
         // Đường frontend pdf-lib (nhanh, không round-trip). Nếu ném lỗi (vd flate
-        // stream do file backend-sinh), TỰ fallback sang backend thay vì báo lỗi.
+        // stream do file backend-sinh, hoặc RangeError khi embed/save file nặng),
+        // TỰ fallback sang backend thay vì báo lỗi.
         try {
             let applyToPages: 'all' | 'even' | 'odd' | number[] = 'all';
             if (settings.applyToStr === 'even' || settings.applyToStr === 'odd' || settings.applyToStr === 'all') {

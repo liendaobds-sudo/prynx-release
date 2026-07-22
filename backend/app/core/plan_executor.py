@@ -132,6 +132,9 @@ class PlanExecutor:
             # Save output — tên file UNIQUE (uuid) để 2 job booklet đồng thời / nhiều
             # tab KHÔNG ghi đè cùng 1 file trong results/ (audit #C1). FileResponse trả
             # theo NỘI DUNG file nên tên đĩa không ảnh hưởng phía client.
+            # Product report belongs to imposed press sheets. Detached cover pages
+            # are copied at final size and have no safe report margin.
+            report_page_count = output_doc.page_count
             # Append separately handled source pages (for example, detached covers).
             for item in instruction_json.get('append_source_pages', []):
                 if isinstance(item, int):
@@ -193,6 +196,47 @@ class PlanExecutor:
             output_doc.close()
             if temp_doc is not None:
                 temp_doc.close()
+
+            # Optional book/magazine product report. Stamp only after all PDF
+            # handles are closed so the same path is safe on Windows as well.
+            book_report = instruction_json.get("book_report") or {}
+            report_text = str(book_report.get("text") or "").strip()
+            if book_report.get("enabled") and report_text and report_page_count > 0:
+                report_tmp = None
+                try:
+                    import tempfile
+                    from app.workers.nup_report import stamp_reports_on_pdf
+
+                    fd, report_tmp = tempfile.mkstemp(
+                        suffix=".pdf",
+                        dir=os.path.dirname(output_path) or ".",
+                    )
+                    os.close(fd)
+                    reports_by_page = {
+                        page_index: report_text
+                        for page_index in range(report_page_count)
+                    }
+                    stamped = stamp_reports_on_pdf(
+                        output_path,
+                        report_tmp,
+                        reports_by_page,
+                        position=book_report.get("position", "top"),
+                        offset_x_mm=max(0.0, float(book_report.get("offset_x_mm", 5.0))),
+                        offset_y_mm=max(0.0, float(book_report.get("offset_y_mm", 5.0))),
+                        font_size=max(4.0, float(book_report.get("font_size", 7.0))),
+                        centered=book_report.get("centered", True) is not False,
+                    )
+                    if stamped:
+                        os.replace(report_tmp, output_path)
+                        report_tmp = None
+                except Exception as report_error:
+                    logger.warning("PlanExecutor book report failed: %s", report_error)
+                finally:
+                    if report_tmp and os.path.exists(report_tmp):
+                        try:
+                            os.unlink(report_tmp)
+                        except OSError:
+                            pass
 
             logger.info(f"PlanExecutor: Done. Output at {output_path}")
             return os.path.abspath(output_path)

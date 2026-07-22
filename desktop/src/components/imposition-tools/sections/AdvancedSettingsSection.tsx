@@ -8,6 +8,7 @@ import { DEFAULT_MATERIALS, LAMINATION_OPTIONS, PREDEFINED_SIZES, type ReportFie
 import { buildReportPreview } from '../../../lib/reportPreview';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
+import BookReportSettings from './BookReportSettings';
 
 const REPORT_FIELD_LABELS: Record<string, string> = {
     orderCode: 'Mã đơn hàng', identifier: 'Mẫu/Trang', gangCount: 'Số mẫu ghép',
@@ -142,7 +143,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
     const stickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
     // Nhóm report (Thông tin sản phẩm) mở cho CẢ cắt xén (nup): backend + handler đã sẵn
     // sàng nhận reportDisplay cho guillotine, chỉ UI trước đây gate nhầm theo stickerLike.
-    const reportCapable = stickerLike || activeTool === 'nup';
+    const labelReportCapable = stickerLike || activeTool === 'nup';
     const [infoModal, setInfoModal] = useState<{ title: string, content: React.ReactNode } | null>(null);
     const [showClusterModal, setShowClusterModal] = useState(false);
     const [matInput, setMatInput] = useState<string | null>(null); // null = không thêm; '' = đang nhập
@@ -377,11 +378,21 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         )}
 
                         {/* === NHÓM ② THÔNG TIN SẢN PHẨM (REPORT) === */}
-                        {reportCapable && (
+                        {/* Book/magazine report is intentionally separate from the label report. */}
+                        {activeTool === 'booklet' && (
+                            <CollapsibleGroup
+                                title={t('imposition.bookReport:title', { defaultValue: 'THÔNG TIN SÁCH / TẠP CHÍ (REPORT)' })}
+                            >
+                                <BookReportSettings sourceTotalPages={sourceTotalPages} />
+                            </CollapsibleGroup>
+                        )}
+
+
+                        {labelReportCapable && (
                         <CollapsibleGroup title={t('imposition.advancedSettings:thong_tin_san_pham_report')}>
 
                         {/* === REPORT & XUẤT TỜ DUY NHẤT (sticker_imposer + cnc + cắt xén) === */}
-                        {reportCapable && (
+                        {labelReportCapable && (
                             <div className="flex flex-col gap-3 pb-1">
                                 <div className="flex items-center justify-between">
                                     <label className="text-[10px] text-slate-400 italic">{t('imposition.advancedSettings:bat_tuy_chinh_khoi_thong_tin_in_len_to')}</label>

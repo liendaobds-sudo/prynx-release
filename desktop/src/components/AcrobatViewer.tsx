@@ -64,6 +64,8 @@ interface Props {
     onObjectDelete?: (objs: any[], pageNum: number) => void;
     fetchObjectsForPage?: (pageNum: number) => void;
     onEditCommit?: (outputUrl: string, outputFilename: string, outputFid?: string, outputPath?: string) => void | Promise<void>;
+    /** Commit crop through the workspace history/save pipeline. */
+    onCropCommit?: (blob: Blob, outputFilename: string) => void | Promise<void>;
     /** Hoàn tác kết quả xử lý PDF khi viewer không còn thao tác trang để hoàn tác. */
     onDocumentUndo?: () => void;
     onVdpBoxCreate?: (box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string }) => void;
@@ -77,13 +79,13 @@ interface Props {
     editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onCropCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
     // ═══ Global Store ═══
     const {
         file, setFile, pdfUrl, setPdfUrl, bleedView, highlightedIssue,
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, selectionFileId,
-        isObjectEditMode, isCropMode,
+        isObjectEditMode, isCropMode, undoCropSelection, redoCropSelection,
         hiddenOcgLayerIds,
         separationPlates, vdpFields, selectedVdpFieldIds,
         setSelectedVdpFieldIds, setVdpFields, setIsSidebarOpen,
@@ -109,6 +111,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         hiddenOcgLayerIds: state.hiddenOcgLayerIds,
         isObjectEditMode: state.isObjectEditMode,
         isCropMode: state.isCropMode,
+        undoCropSelection: state.undoCropSelection,
+        redoCropSelection: state.redoCropSelection,
         separationPlates: state.separationPlates,
         vdpFields: state.vdpFields, selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         softProofImageUrl: state.softProofImageUrl, gamutWarningUrl: state.gamutWarningUrl, tacHeatmapUrl: state.tacHeatmapUrl, overprintPreviewUrl: state.overprintPreviewUrl,
@@ -143,26 +147,31 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const setIsCropMode = useWorkspaceStore(s => s.setIsCropMode);
     const setIsObjectEditMode = useWorkspaceStore(s => s.setIsObjectEditMode);
 
-    const ensureCropFileId = useCallback(async () => {
+    const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
         // LUÔN upload lại file ĐANG XEM (bytes hiện tại). Reuse selectionFileId cũ
         // dễ trỏ Working_File / edit session TRƯỚC ĐÓ → crop chạy trên file sai
         // (user thấy “cắt lệch / lún vào object” so với vùng quét trên màn).
         if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
-        const res = await uploadPDF(file);
+        const res = await uploadPDF(file, { signal });
         setSelectionFileId(res.id);
         return res.id;
     }, [file, setSelectionFileId]);
 
-    const handleCropApplied = useCallback((blob: Blob) => {
+    const handleCropApplied = useCallback(async (blob: Blob) => {
         // Crop tạo file MỚI (blob) — KHÔNG giữ .path file gốc (nếu giữ, getFileArrayBuffer
         // / tile native có thể đọc lại PDF gốc → resize/tool sau “co giãn nhầm hình gốc”).
         const base = (file?.name || 'document.pdf').replace(/\.[^/.]+$/, '');
-        const newFile = new File([blob], `Cropped_${base}.pdf`, { type: 'application/pdf' });
-        if (pdfUrl && pdfUrl.startsWith('blob:')) {
-            try { URL.revokeObjectURL(pdfUrl); } catch { /* ignore */ }
+        const outputName = `Cropped_${base}.pdf`;
+        if (onCropCommit) {
+            await onCropCommit(blob, outputName);
+        } else {
+            const newFile = new File([blob], outputName, { type: 'application/pdf' });
+            if (pdfUrl && pdfUrl.startsWith('blob:')) {
+                try { URL.revokeObjectURL(pdfUrl); } catch { /* ignore */ }
+            }
+            setFile(newFile);
+            setPdfUrl(URL.createObjectURL(newFile));
         }
-        setFile(newFile);
-        setPdfUrl(URL.createObjectURL(newFile));
         setSelectionFileId(''); // buộc re-upload cho thao tác sau
         setIsCropMode(false);
         // File mới đã bake crop; bỏ edit ảo trên file cũ (order/rot).
@@ -170,7 +179,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         setViewerPageInstanceIds(undefined);
         setViewerPageRotations(undefined);
         setViewerDirty(false);
-    }, [file, pdfUrl, setFile, setPdfUrl, setSelectionFileId, setIsCropMode, setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty]);
+    }, [file, pdfUrl, onCropCommit, setFile, setPdfUrl, setSelectionFileId, setIsCropMode, setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty]);
     const onVdpBoxSelect = (fieldIds: string[]) => {}; // Handled directly in LivePageFrame now
     const onVdpFieldsChange = setVdpFields;
 
@@ -477,6 +486,21 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         if (internalScrollRef.current) internalScrollRef.current = null;
     }, [pdfUrl, file]);
 
+    // ── Giải phóng bitmap trang khi tab ở NỀN lâu (audit RAM: app nặng dần theo số
+    //    tab mở). Mọi tab luôn mounted (audit chốt KHÔNG unmount ImpositionTab vì
+    //    state nằm trong store/useRef → unmount = mất việc chưa lưu). Thay vào đó:
+    //    tab nền >20s thì NGỪNG render cây LivePageFrame → <img> tile (bitmap RGBA
+    //    tới ~200MB/trang khổ lớn) bị gỡ khỏi DOM → trình duyệt GC. Tile blob (JPEG
+    //    nhỏ) vẫn nằm trong LRU cache bounded (TILE_CACHE_MAX + revoke) nên khi quay
+    //    lại tab, LiveTile phục hồi ảnh tức thì từ cache. pageOrder/rotation/mọi state
+    //    nằm trong store → save/print vẫn đúng dù cây trang đã tạm gỡ.
+    const [suspendViewer, setSuspendViewer] = useState(false);
+    useEffect(() => {
+        if (isActive) { setSuspendViewer(false); return; }
+        const t = setTimeout(() => setSuspendViewer(true), 20000);
+        return () => clearTimeout(t);
+    }, [isActive]);
+
     // ── Menu bar (kiểu Acrobat) → lệnh thao tác trên viewer. Mọi tab đều mounted nên
     //    CHỈ tab active mới xử lý (tránh mọi tab cùng phản ứng). App-level (New/Open/Save…)
     //    xử lý ở AppInner; ở đây chỉ nhận lệnh liên quan trực tiếp tới viewer trang hiện tại.
@@ -502,13 +526,13 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 case 'toggle-object-edit': setIsObjectEditMode(v => !v); break;
                 case 'crop': setIsCropMode(true); setIsObjectEditMode(false); setToolMode('pointer'); break;
                 case 'delete-pages': setIsDeleteModalOpen(true); break;
-                case 'undo': undo(); break;
-                case 'redo': redo(); break;
+                case 'undo': if (isCropMode) undoCropSelection(); else undo(); break;
+                case 'redo': if (isCropMode) redoCropSelection(); else redo(); break;
             }
         };
         window.addEventListener('prynx-menu-command', handleMenuCommand);
         return () => window.removeEventListener('prynx-menu-command', handleMenuCommand);
-    }, [isActive, setZoom, setFitMode, applyFitWidth, applyFitPage, setPageDisplayMode, navigatePage, pageOrder.length, activePage, toggleRulers, setIsObjectEditMode, setIsCropMode, setToolMode, undo, redo]);
+    }, [isActive, setZoom, setFitMode, applyFitWidth, applyFitPage, setPageDisplayMode, navigatePage, pageOrder.length, activePage, toggleRulers, setIsObjectEditMode, setIsCropMode, setToolMode, undo, redo, isCropMode, undoCropSelection, redoCropSelection]);
 
     // Jump to highlighted issue or specific page
     useEffect(() => {
@@ -1229,6 +1253,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 <div className="relative">
                     <LivePageFrame
                         originalPageNum={originalPageNum}
+                        pageInstanceId={instId || `page-${originalPageNum}-${flatIndex ?? 0}`}
                         actualWidth100={localWidth100}
                         zoom={zoom}
                         rotation={rot}
@@ -1247,6 +1272,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         setHoveredPdfPosition={setHoveredPdfPosition}
                         isBlankDoc={!!(file as any)?.isBlank}
                         isImageFile={isImage}
+                        nativeFilePath={(file as any)?.path}
+                        previewRevision={pdfUrl}
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
                         editSession={editSession}
                         isActivePage={originalPageNum === activePage}
@@ -1400,7 +1427,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                     </div>
                                 )}
 
-                                {isZoomReady && (() => {
+                                {isZoomReady && !suspendViewer && (() => {
                                     if (pageDisplayMode.includes('_fit')) {
                                         return (
                                             <div className="flex-1 relative min-w-0 min-h-0">

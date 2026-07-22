@@ -1,7 +1,7 @@
 // Cấu hình persist — ghép partialize keys từ các slice + migrate giữ nguyên verbatim.
 import type { PersistOptions } from 'zustand/middleware';
 import { DEFAULT_PONT_CONFIG } from '../PontSettingsDialog';
-import { DEFAULT_REPORT_CONFIG } from '../types';
+import { DEFAULT_BOOK_REPORT_CONFIG, DEFAULT_REPORT_CONFIG } from '../types';
 import type { ImposerSettingsState } from './types';
 
 import { PAPER_PERSIST_KEYS } from './slices/paperSlice';
@@ -97,12 +97,21 @@ function migrate(persistedState: any, version: number): any {
         }
         persistedState = { ...rest, toolProfiles: profiles };
     }
+    if (version < 10) {
+        persistedState = {
+            ...persistedState,
+            bookReportDisplay: {
+                ...DEFAULT_BOOK_REPORT_CONFIG,
+                ...(persistedState.bookReportDisplay || {}),
+            },
+        };
+    }
     return persistedState;
 }
 
 export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<ImposerSettingsState>> = {
     name: 'ps_imposer_settings',
-    version: 9,
+    version: 10,
     migrate,
     partialize: (state) => {
         const out: Record<string, any> = {};

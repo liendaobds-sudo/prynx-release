@@ -198,15 +198,50 @@ export async function prepareFileForUpload(file: File | any): Promise<File | Blo
   return file;
 }
 
-export async function uploadPDF(file: File | any) {
+export async function uploadPDF(file: File | any, options: { signal?: AbortSignal } = {}) {
+  options.signal?.throwIfAborted();
+
+  // Desktop sidecar can register a local path directly. This avoids materializing
+  // a 100-500 MB PDF as ArrayBuffer/Blob inside the WebView before processing.
+  if (
+    typeof window !== 'undefined' &&
+    (window as any).__TAURI_INTERNALS__ &&
+    typeof file?.path === 'string' &&
+    file.path
+  ) {
+    const localRes = await authenticatedFetch(`${API_BASE}/api/upload/local`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: file.path }),
+      signal: options.signal,
+    });
+    if (localRes.ok) return localRes.json();
+
+    const localErr = await localRes.json().catch(() => ({ detail: 'Upload th\u1ea5t b\u1ea1i' }));
+    const desktopEndpointUnavailable = localRes.status === 403
+      && localErr?.detail === 'Ch\u1ec9 kh\u1ea3 d\u1ee5ng trong \u1ee9ng d\u1ee5ng desktop';
+
+    // Older sidecars may not expose /upload/local. A Tauri development window
+    // can also talk to a separately launched DEV_MODE backend, where the local
+    // path endpoint is intentionally disabled. In both cases, safely fall back
+    // to multipart bytes instead of surfacing a misleading desktop-only error.
+    if (localRes.status !== 404 && localRes.status !== 405 && !desktopEndpointUnavailable) {
+      const detail = localErr.detail;
+      throw new Error(typeof detail === 'string' ? detail : 'Upload th\u1ea5t b\u1ea1i');
+    }
+  }
+
   const formData = new FormData();
   
+  options.signal?.throwIfAborted();
   const realFile = await prepareFileForUpload(file);
+  options.signal?.throwIfAborted();
   formData.append('file', realFile, file.name);
 
   const res = await authenticatedFetch(`${API_BASE}/api/upload`, {
     method: 'POST',
     body: formData,
+    signal: options.signal,
   });
 
   if (!res.ok) {
@@ -497,7 +532,10 @@ export async function backendResizePages(
   targetDpi: number = 0, mode: string = 'auto',
 ): Promise<Blob> {
   const formData = new FormData();
-  formData.append('file', file);
+  // File lớn: đọc lại bytes từ ĐĨA qua path (asset protocol) thay vì giữ blob
+  // trong JS heap — tránh "Array buffer allocation failed" khi resize file nặng.
+  const realFile = await prepareFileForUpload(file);
+  formData.append('file', realFile, file.name);
   formData.append('target_w', String(targetW));
   formData.append('target_h', String(targetH));
   formData.append('scale_mode', scaleMode);

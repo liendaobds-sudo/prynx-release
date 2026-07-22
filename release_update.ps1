@@ -125,16 +125,23 @@ $cargoLock = [regex]::Replace(
 Write-Host "  [OK] Da dat version=$Version trong npm + Cargo (gom ca lockfiles)." -ForegroundColor Green
 
 # ---- 3. Build day du + ky updater ----
+# Dung splatting: chi them switch khi that su bat. Truoc day dung
+# $(if($SkipPreflightQA){'-SkipPreflightQA'}) -> khi KHONG bat, bieu thuc tra $null
+# va bi truyen nhu POSITIONAL arg -> roi vao param non-switch dau tien (NuitkaJobs)
+# -> $null ep int = 0 -> ValidateRange(1,8) tu choi -> build chet truoc khi chay.
+$buildArgs = @{ Release = $true }
+if ($SkipPreflightQA) { $buildArgs.SkipPreflightQA = $true }
 if ($SkipNuitka) {
     Write-Host "  [..] Build (BO QUA Nuitka, dung lai sidecar cu) + frontend + tauri + KY updater..." -ForegroundColor Yellow
     $sidecar = "$ROOT\desktop\src-tauri\binaries\pdf-inspector-backend-x86_64-pc-windows-msvc.exe"
     if (-not (Test-Path $sidecar)) {
         throw "Bat -SkipNuitka nhung khong thay sidecar cu: $sidecar . Hay build day du it nhat 1 lan truoc."
     }
-    & "$ROOT\build_production.ps1" -Release -SkipNuitka $(if ($SkipPreflightQA) { '-SkipPreflightQA' })
+    $buildArgs.SkipNuitka = $true
+    & "$ROOT\build_production.ps1" @buildArgs
 } else {
     Write-Host "  [..] Build (Nuitka + frontend + tauri + KY updater) - co the lau..." -ForegroundColor Yellow
-    & "$ROOT\build_production.ps1" -Release $(if ($SkipPreflightQA) { '-SkipPreflightQA' })
+    & "$ROOT\build_production.ps1" @buildArgs
 }
 if ($LASTEXITCODE -ne 0) { throw "Build that bai." }
 

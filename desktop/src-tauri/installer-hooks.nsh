@@ -40,6 +40,8 @@
 ; thay vì tab Bình bài. Combine KHÔNG mang cờ → giữ nguyên luồng cũ đã chạy tốt.
 !define CVTVERB "pdf-inspector-convert"
 !define CVTLABEL "Convert to PDF (PrynX)"
+!define PDFPROGID "PrynX.PDF"
+!define PDFICONREL "icons\file-pdf.ico"
 
 ; Đăng ký verb cho 1 phần mở rộng. %1 là literal trong NSIS (khác batch, không cần %%).
 !macro REGISTER_COMBINE_VERB EXT
@@ -65,6 +67,21 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Tauri registers the PDF ProgID first using the application icon. Override
+  ; only the document icon so Explorer can distinguish a PDF from the PrynX app.
+  WriteRegStr SHCTX "Software\Classes\${PDFPROGID}\DefaultIcon" "" '"$INSTDIR\${PDFICONREL}",0'
+
+  ; Migrate the backup created by older PrynX installers. The old generic
+  ; ProgID was "PDF Document"; keeping it as the new backup would restore a
+  ; stale PrynX association after uninstall instead of the user's prior app.
+  ReadRegStr $0 SHCTX "Software\Classes\.pdf" "${PDFPROGID}_backup"
+  StrCmp $0 "PDF Document" 0 prynx_pdf_backup_done
+  ReadRegStr $1 SHCTX "Software\Classes\.pdf" "PDF Document_backup"
+  WriteRegStr SHCTX "Software\Classes\.pdf" "${PDFPROGID}_backup" "$1"
+prynx_pdf_backup_done:
+
+  !insertmacro UPDATEFILEASSOC
+
   !insertmacro REGISTER_COMBINE_VERB ".pdf"
   !insertmacro REGISTER_COMBINE_VERB ".jpg"
   !insertmacro REGISTER_COMBINE_VERB ".jpeg"
@@ -83,4 +100,5 @@
   !insertmacro UNREGISTER_CONVERT_VERB ".jpg"
   !insertmacro UNREGISTER_CONVERT_VERB ".jpeg"
   !insertmacro UNREGISTER_CONVERT_VERB ".png"
+  !insertmacro UPDATEFILEASSOC
 !macroend

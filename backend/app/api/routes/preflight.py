@@ -8,6 +8,8 @@ Endpoints:
   GET  /api/preflight/actions     — List available fix actions
   GET  /api/preflight/download/{filename} — Download fixed PDF
 """
+import asyncio
+import threading
 import logging
 import os
 import uuid
@@ -15,7 +17,7 @@ import base64
 import re
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -569,6 +571,8 @@ def _delete_images_by_ref(page, image_objs) -> int:
 class DeleteObjectRequest(BaseModel):
     file_id: str
     page: int
+    preview_dpi: float = 200.0
+    preview_max_pixels: Optional[int] = None
     objects: List[ObjectToDelete]
 
 @router.post("/preflight/delete-object")
@@ -683,7 +687,14 @@ async def preview_hide_pdf_object(req: DeleteObjectRequest):
             
             pdf_render = pdfium.PdfDocument(render_tmp.name)
             render_page = pdf_render[req.page - 1]
-            bitmap = render_page.render(scale=200/72)
+            requested_dpi = max(36.0, min(200.0, float(req.preview_dpi)))
+            render_scale = requested_dpi / 72.0
+            if req.preview_max_pixels and req.preview_max_pixels > 0:
+                page_width, page_height = render_page.get_size()
+                projected_pixels = page_width * page_height * render_scale * render_scale
+                if projected_pixels > req.preview_max_pixels:
+                    render_scale *= (req.preview_max_pixels / projected_pixels) ** 0.5
+            bitmap = render_page.render(scale=render_scale)
             img = bitmap.to_pil()
             pdf_render.close()
             
@@ -954,6 +965,7 @@ class CropRegionsRequest(BaseModel):
     file_id: str
     page: int  # 1-indexed
     rects_mm: List[dict]  # [{x0,y0,x1,y1}, ...] mm theo CropBox đang hiển thị
+    keep_other_pages: bool = False  # True = thay trang nguồn bằng N vùng, giữ phần còn lại
 
 
 class DetectCropRegionsRequest(CropRegionsRequest):
@@ -962,11 +974,21 @@ class DetectCropRegionsRequest(CropRegionsRequest):
 
 
 @router.post("/preflight/detect-crop-regions")
-async def detect_crop_regions(req: DetectCropRegionsRequest):
+async def detect_crop_regions(req: DetectCropRegionsRequest, request: Request):
     """Chỉ trả khung được đề xuất để người dùng xem trước; chưa sửa file PDF."""
     file_path = _get_file_path(req.file_id)
     from app.core.page_boxes import PageBoxesEngine
     engine = PageBoxesEngine()
+    cancel_event = threading.Event()
+
+    async def watch_disconnect() -> None:
+        while not cancel_event.is_set():
+            if await request.is_disconnected():
+                cancel_event.set()
+                return
+            await asyncio.sleep(0.1)
+
+    disconnect_task = asyncio.create_task(watch_disconnect())
     try:
         return await run_in_threadpool(
             engine.detect_crop_regions,
@@ -974,10 +996,13 @@ async def detect_crop_regions(req: DetectCropRegionsRequest):
             req.page,
             req.rects_mm,
             req.max_trim_mm,
+            cancel_event,
         )
     except Exception as e:
         raise_http(e, "Không dò được rìa dư")
-
+    finally:
+        cancel_event.set()
+        disconnect_task.cancel()
 
 @router.post("/preflight/crop-regions")
 async def crop_regions(req: CropRegionsRequest):
@@ -987,7 +1012,11 @@ async def crop_regions(req: CropRegionsRequest):
     engine = PageBoxesEngine()
     try:
         output = await run_in_threadpool(
-            engine.crop_regions_to_pages, file_path, req.page, req.rects_mm,
+            engine.crop_regions_to_pages,
+            file_path,
+            req.page,
+            req.rects_mm,
+            req.keep_other_pages,
         )
         return {
             "success": True,

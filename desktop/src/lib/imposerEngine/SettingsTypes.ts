@@ -5,6 +5,16 @@ export enum ImpositionMode {
     NUp = 'nup'
 }
 
+export interface BookReportRenderSettings {
+    enabled: boolean;
+    text: string;
+    position: 'top' | 'bottom' | 'left' | 'right';
+    centered: boolean;
+    offsetX: number;
+    offsetY: number;
+    fontSize: number;
+}
+
 export interface BaseSettings {
     impositionMode: ImpositionMode;
     /** Phân loại máy in; booklet dùng để cách ly cấu hình Digital/Offset tại engine boundary. */
@@ -34,6 +44,7 @@ export interface BaseSettings {
     // đã theo vị trí nên lookup [i]. (Cũ: Record<pageNum,deg> — xem migrate ở loader.)
     pageRotations?: number[];
     
+    bookReport?: BookReportRenderSettings;
     onConfirmScale?: (msg: string) => Promise<boolean>;
 }
 

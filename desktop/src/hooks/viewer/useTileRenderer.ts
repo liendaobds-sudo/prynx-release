@@ -42,7 +42,10 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
                 }
 
                 try {
+                    const _t0 = performance.now();
                     const bytes: Uint8Array = await invoke('render_pdf_page', item.args);
+                    const _ms = Math.round(performance.now() - _t0);
+                    if (_ms >= 30) console.info(`[TilePerf] via=queue page=${item.args.page} zoom=${(item.args.zoom ?? 0).toFixed?.(2) ?? item.args.zoom} invoke=${_ms}ms bytes=${(bytes as any).byteLength ?? bytes.length ?? 0}`);
                     const blob = new Blob([bytes as any], { type: 'image/jpeg' });
                     const url = URL.createObjectURL(blob);
                     item.resolve(url);
@@ -74,6 +77,11 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
             const isTile = !!(clipW && clipW > 0 && clipH && clipH > 0);
             return (async () => {
                 const { invoke } = await import('@tauri-apps/api/core');
+                // Đo thật: thời gian FE chờ 1 lần invoke render_pdf_page (gồm hàng đợi
+                // spawn_blocking + RENDER_LOCK + render + encode + IPC). So với perf_log
+                // Rust (render/encode thuần) sẽ lộ overhead hàng đợi/khóa. layer=tile khi
+                // có clip (zoom sâu), =page khi full-page.
+                const _t0 = performance.now();
                 const bytes: ArrayBuffer = await invoke('render_pdf_page', {
                     filePath: (file as any).path,
                     page: pageNum,
@@ -84,6 +92,8 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, zoom, activePage }: UseT
                     clipW: isTile ? clipW : null,
                     clipH: isTile ? clipH : null,
                 });
+                const _ms = Math.round(performance.now() - _t0);
+                if (_ms >= 30) console.info(`[TilePerf] layer=${isTile ? 'tile' : 'page'} page=${pageNum} zoom=${zoomScale.toFixed(2)} invoke=${_ms}ms bytes=${(bytes as any).byteLength ?? 0}`);
                 const blob = new Blob([bytes as any], { type: 'image/jpeg' });
                 return URL.createObjectURL(blob);
             })();

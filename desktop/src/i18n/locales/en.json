@@ -2117,12 +2117,30 @@
     "remove_region": "Remove this region",
     "region_hint": "Each region creates one PDF page. You can scan slightly outside the finished edge, then enable Process excess edges.",
     "process_excess_edges": "Process excess edges",
-    "process_excess_edges_desc": "Find the four true edges inside each scan. The green outline is the output size; uncertain regions remain unchanged.",
+    "process_excess_edges_desc": "Remove background outside the card while preserving BleedBox. Images auto-trim only when four clear rectangular edges are found; ambiguous pixels remain unchanged.",
     "detecting_edges": "Finding four edges…",
     "edges_processed": "Excess edges processed",
+    "bleedbox_preserved": "BleedBox preserved",
+    "pixel_edge_preserved": "Pixel edge is not safe enough — scan preserved",
+    "trim_summary": "Trim L {{left}} · T {{top}} · R {{right}} · B {{bottom}} mm",
+    "max_excess": "Maximum scan overshoot",
     "edge_unchanged": "Four clear edges not found — keeping the scanned region",
     "edge_detection_failed": "Could not detect excess edges. Turn this option off or scan the region again.",
-    "crop_keyboard_hint": "Enter · Esc clears all · Del removes the last region"
+    "crop_mode_hint": "Drag to scan · Hold Space to pan the view · Enter to apply",
+    "preparing_file": "Preparing file…",
+    "creating_pages": "Creating cropped pages…",
+    "updating_document": "Updating document…",
+    "apply_crop": "Apply crop",
+    "output_mode": "Output",
+    "keep_document": "Keep the full document",
+    "keep_document_desc": "Replace page {{page}} with {{count}} cropped region(s) and keep all other pages.",
+    "regions_only": "Cropped regions only",
+    "regions_only_desc": "Create a new document containing only the {{count}} selected region(s).",
+    "result_summary": "The resulting document will contain {{count}} page(s).",
+    "regions_only_warning": "The source has {{total}} pages. Other pages will not be included in this result.",
+    "precision_margins": "Precise margins",
+    "crop_keyboard_hint": "Drag the frame/handles to adjust · Hold Space to pan · Ctrl+Z undo · Ctrl+Y redo · Enter to apply",
+    "resize_region": "Resize region"
   },
   "misc.diffSidebar": {
     "canh_bao_chinh_ta_ai": "AI Spelling Warning",
@@ -2146,6 +2164,14 @@
   "misc.errorBoundary": {
     "da_xay_ra_loi": "An error occurred",
     "tai_lai": "Reload",
+    "khong_the_mo_cong_cu_bu_xen": "Could not open Bleed – Create Cut Line",
+    "cau_hinh_cu_hoac_du_lieu_giao_dien": "Saved settings or UI data on this computer may be damaged. Your PDF file has not been changed.",
+    "ma_loi": "Error ID",
+    "phien_ban": "Version",
+    "khoi_phuc_cau_hinh_va_thu_lai": "Restore settings and retry",
+    "thu_lai": "Retry",
+    "da_sao_chep": "Copied",
+    "sao_chep_chan_doan": "Copy diagnostics",
     "ung_dung_gap_su_co_ngoai_y_muon_vui": "The app hit an unexpected error. Please reload to continue."
   },
   "misc.exportImage": {
@@ -2316,6 +2342,8 @@
     "file_qua_lon_toi_da_500mb": "File too large. Maximum 500MB.",
     "keo_tha_file_pdf_vao_day_hoac_click_de": "Drag & drop a PDF file here or click to choose",
     "toi_da_500mb": "Max 500MB",
+    "mot_so_file_khong_the_doc": "Some files could not be read because of path permissions.",
+    "dang_chuyen_sang_bo_chon_tuong_thich": "The selected path could not be read. Switching to the compatible file picker…",
     "vui_long_chon_hoac_tha_file_pdf": "Please choose or drop a PDF file"
   },
   "misc.progressTracker": {

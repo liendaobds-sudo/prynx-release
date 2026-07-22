@@ -71,6 +71,15 @@ import {
     resolvePreviewItemDimension,
     usesPageSizedStickerShape,
 } from './shapeDetectionPolicy';
+import { toBookReportRenderConfig } from '../../lib/bookReport';
+
+const BOOK_REPORT_BINDING_LABELS: Record<string, string> = {
+    saddle: 'Bấm kim giữa',
+    thread: 'Khâu chỉ',
+    cut_stacks: 'Cắt đôi ráp xấp',
+    continuous: 'Keo gáy / lò xo',
+    flush_mount: 'Dán đôi lưng',
+};
 
 
 export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge, onStartCatalogPlan, initialFeature, lockedMode, onBleedUpdate, onFileFixed, systemMergeFiles, officeSourceFile, officeSourceFiles, getWorkingFile }: ImposerDashboardProps) {
@@ -102,6 +111,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // Duplication updates the order and page counter through separate UI paths.
     // Taking the larger value prevents preview from remaining stuck at the old count.
     const sourceTotalPages = Math.max(viewerPageOrder?.length || 0, viewerNumPages || 0);
+    // The report describes the edited document, so prefer the current page order after deletes.
+    const bookReportPageCount = viewerPageOrder?.length || sourceTotalPages;
     const onOpenOutputPreview = () => setShowOutputPreview(true);
 
     // ═══ Imposition Settings Store ═══
@@ -889,6 +900,19 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // ═══ Execute Handler ═══
     const handleExecute = async () => {
         if (s.taskMode === 'booklet') {
+            const buildActiveBookReport = (sheetWidth: number, sheetHeight: number) => toBookReportRenderConfig(
+                s.bookReportDisplay,
+                {
+                    pageCount: bookReportPageCount || 0,
+                    finishedWidthMm: s.sourcePageDim
+                        ? Math.max(0, s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0)) : undefined,
+                    finishedHeightMm: s.sourcePageDim
+                        ? Math.max(0, s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0)) : undefined,
+                    bindingLabel: BOOK_REPORT_BINDING_LABELS[s.signatureMode] || '',
+                    paperSizeLabel: sheetWidth > 0 && sheetHeight > 0
+                        ? `${Math.round(sheetWidth)} × ${Math.round(sheetHeight)} mm` : '',
+                },
+            );
             if (s.autoCatalog && onStartCatalogPlan && s.optimalData?.recommended) {
                 // Khổ ĐÍCH = SSOT (resolve theo formsize + swap offset) — đồng nhất optimizer.
                 const _press = resolvePressSheetDims();
@@ -898,7 +922,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 if (s.catalogMasterSigOverride !== 'auto') targetMasterSig = parseInt(s.catalogMasterSigOverride, 10);
                 onStartCatalogPlan(
                     { totalPages: sourceTotalPages || 0, bindingMode: s.signatureMode === 'thread' ? 'perfect' : 'saddle', hasSeparateCover: s.catalogHasCover, masterSig: targetMasterSig, remainderPlacement: s.catalogRemainderPlacement },
-                    { sheetWidth: sheetW, sheetHeight: sheetH, bleed: s.bleed, markType: s.markType, markOffset: s.marksConfig?.distance, markLength: s.marksConfig?.length, markThickness: s.marksConfig?.thickness, markStyle: s.marksConfig?.style === 2 ? 'japanese' : 'default', gripperMargin: s.gripperMargin, marginTop: s.marginTop, marginLeft: s.marginLeft, marginRight: s.marginRight, paperThickness: s.paperThickness, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true } as any
+                    { sheetWidth: sheetW, sheetHeight: sheetH, bleed: s.bleed, markType: s.markType, markOffset: s.marksConfig?.distance, markLength: s.marksConfig?.length, markThickness: s.marksConfig?.thickness, markStyle: s.marksConfig?.style === 2 ? 'japanese' : 'default', gripperMargin: s.gripperMargin, marginTop: s.marginTop, marginLeft: s.marginLeft, marginRight: s.marginRight, paperThickness: s.paperThickness, gapX: s.gapX, gapY: s.gapY, spreadDistribution: s.spreadDistribution, bookReport: buildActiveBookReport(sheetW, sheetH), spawnNewTab: s.spawnNewTabByTool[activeTool] ?? true } as any
                 );
                 return;
             }
@@ -932,6 +956,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                 separateCover: s.separateCover && (s.signatureMode === 'continuous' || s.signatureMode === 'thread') ? true : undefined,
                 coverPageCount: s.separateCover ? s.coverPageCount : undefined,
                 blankPlacement: s.blankPlacement,
+                bookReport: buildActiveBookReport(effSheetW, effSheetH),
             });
         } else {
             // 2 mặt N-Up cắt xén — chặn sớm các case không hợp lệ (tránh user bấm Bình rồi lỗi backend).
@@ -1297,7 +1322,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         </>
                     )}
 
-                    <AdvancedSettingsSection activeTool={activeTool} sourceTotalPages={sourceTotalPages} />
+                    <AdvancedSettingsSection activeTool={activeTool} sourceTotalPages={bookReportPageCount} />
 
                     {/* Grid preview for all modes */}
                     {(s.taskMode === 'nup' || s.taskMode === 'step_repeat' || s.taskMode === 'sticker_imposer') && (

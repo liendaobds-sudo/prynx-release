@@ -94,6 +94,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     const isActiveRef = useRef(isActive);
     useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
     const isSpacebarHeldRef = useRef(false);
+    const spaceStartedInCropRef = useRef(false);
     const spacePressTimeRef = useRef<number>(0);
     const guidesRef = useRef(guides);
     useEffect(() => { guidesRef.current = guides; }, [guides]);
@@ -188,6 +189,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (isImeNoise(e)) return;
             if (!isViewerLive()) return;
+            if (isCropModeRef.current) return;
 
             if (e.ctrlKey && (e.code === 'KeyR' || e.key.toLowerCase() === 'r')) {
                 e.preventDefault();
@@ -310,6 +312,35 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
 
             if (!isViewerLive()) return;
 
+            // Space temporarily switches to the hand tool even while Crop is active.
+            // Handling this before the Crop guard prevents the shortcut from being swallowed.
+            if (e.code === 'Space') {
+                e.preventDefault();
+                if (!e.repeat && !isSpacebarHeldRef.current) {
+                    const currentMode = workspaceStore?.getState().viewerToolMode ?? toolModeRef.current;
+                    isSpacebarHeldRef.current = true;
+                    spaceStartedInCropRef.current = isCropModeRef.current;
+                    spacePressTimeRef.current = Date.now();
+                    prevToolModeRef.current = currentMode;
+                    toolModeRef.current = 'hand';
+                    if (workspaceStore) workspaceStore.getState().setViewerToolMode('hand');
+                    else setToolModeRef.current('hand');
+                }
+                return;
+            }
+
+            if (isCropModeRef.current) {
+                const key = e.key.toLowerCase();
+                if ((e.ctrlKey || e.metaKey) && (key === 'z' || key === 'y')) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    const cropState = workspaceStore?.getState();
+                    if (key === 'y' || e.shiftKey) cropState?.redoCropSelection();
+                    else cropState?.undoCropSelection();
+                }
+                return;
+            }
+
             if (e.ctrlKey || e.metaKey) {
                 // Khi đang ở chế độ VDP, undo/redo do useVdpHistory xử lý (capture-phase).
                 if (isVdpMode) return;
@@ -353,47 +384,64 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                 let str = sortedSel.length > 0 ? sortedSel.join(', ') : '';
                 setExtractPagesStrForModal(str);
                 setIsExtractModalOpen(true);
-            } else if (e.code === 'Space') {
-                if (!e.repeat) {
-                    e.preventDefault();
-                    if (!isSpacebarHeldRef.current) {
-                        isSpacebarHeldRef.current = true;
-                        spacePressTimeRef.current = Date.now();
-                        prevToolModeRef.current = toolModeRef.current;
-                        setToolModeRef.current('hand');
-                    }
-                } else {
-                    e.preventDefault();
-                }
             }
+        };
+
+        const restoreToolAfterSpace = () => {
+            if (!isSpacebarHeldRef.current) return false;
+            isSpacebarHeldRef.current = false;
+            const previousMode = prevToolModeRef.current;
+            spaceStartedInCropRef.current = false;
+            toolModeRef.current = previousMode;
+            if (workspaceStore) workspaceStore.getState().setViewerToolMode(previousMode);
+            else setToolModeRef.current(previousMode);
+            return true;
         };
 
         const handleKeyUp = (e: KeyboardEvent) => {
             if (isImeNoise(e)) return;
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-            if (!isViewerLive()) return;
-            if (e.code === 'Space') {
+            // Always release a temporary hand tool, even if focus/tab changed while Space was held.
+            if (e.code === 'Space' && isSpacebarHeldRef.current) {
                 e.preventDefault();
-                isSpacebarHeldRef.current = false;
-                setToolModeRef.current(prevToolModeRef.current);
+                const startedInCrop = spaceStartedInCropRef.current;
+                restoreToolAfterSpace();
 
-                if (Date.now() - spacePressTimeRef.current < 250) {
+                // A quick Space tap in Crop is still a pan gesture, never page navigation.
+                if (!startedInCrop && Date.now() - spacePressTimeRef.current < 250) {
                     if (e.shiftKey) {
                         navigatePage(activePage - 1);
                     } else {
                         navigatePage(activePage + 1);
                     }
                 }
+                return;
             }
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            if (!isViewerLive()) return;
         };
 
         document.addEventListener('keydown', handleKeyDown);
         document.addEventListener('keyup', handleKeyUp);
+        window.addEventListener('blur', restoreToolAfterSpace);
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
             document.removeEventListener('keyup', handleKeyUp);
+            window.removeEventListener('blur', restoreToolAfterSpace);
         };
-    }, [isViewerLive, selectedIndices, activePage, undo, redo, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo, navigatePage, setIsDeleteModalOpen, setExtractPagesStrForModal, setIsExtractModalOpen]);
+    }, [isViewerLive, selectedIndices, activePage, undo, redo, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo, navigatePage, setIsDeleteModalOpen, setExtractPagesStrForModal, setIsExtractModalOpen, workspaceStore]);
+
+    // Restore only when this viewer really unmounts. The keyboard-listener effect above
+    // can restart while panning (for example when activePage changes during the drag).
+    useEffect(() => () => {
+        if (!isSpacebarHeldRef.current) return;
+        isSpacebarHeldRef.current = false;
+        spaceStartedInCropRef.current = false;
+        const previousMode = prevToolModeRef.current;
+        toolModeRef.current = previousMode;
+        if (workspaceStore) workspaceStore.getState().setViewerToolMode(previousMode);
+        else setToolModeRef.current(previousMode);
+    }, [workspaceStore]);
+
 
     // Escape: đóng modal + thoát DIM (nếu đang bật)
     useEffect(() => {

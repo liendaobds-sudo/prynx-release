@@ -3,6 +3,7 @@ import { useStore } from 'zustand';
 import { createContext, useContext } from 'react';
 import type { StoreApi } from 'zustand';
 import type { PlateOverlay } from '../components/OutputPreviewTab';
+import type { CropRegionFrac } from '../lib/cropGeometry';
 import type { ProcessingSettings } from '../lib/pdfImposer';
 
 // ═══════════════════════════════════════════════════════════
@@ -11,6 +12,22 @@ import type { ProcessingSettings } from '../lib/pdfImposer';
 // ═══════════════════════════════════════════════════════════
 
 type Phase = 'upload' | 'workspace';
+
+export interface CropSelectionState {
+    /** Stable viewer instance id, so duplicated source pages do not share hotkeys. */
+    ownerId: string;
+    /** One-indexed source page sent to the crop API. */
+    pageNum: number;
+    regions: CropRegionFrac[];
+    selectedIndex: number;
+}
+
+type CropSelectionUpdater = CropSelectionState | null | ((prev: CropSelectionState | null) => CropSelectionState | null);
+const CROP_HISTORY_LIMIT = 64;
+
+const cloneCropSelection = (selection: CropSelectionState | null): CropSelectionState | null => selection
+    ? { ...selection, regions: selection.regions.map((region) => ({ ...region })) }
+    : null;
 
 export interface WorkspaceState {
     // ── File & Phase ──
@@ -70,6 +87,9 @@ export interface WorkspaceState {
 
     // ── Crop Mode (Crop PDF kiểu Acrobat: quét vùng → Enter → Set Page Boxes) ──
     isCropMode: boolean;
+    cropSelection: CropSelectionState | null;
+    cropPast: Array<CropSelectionState | null>;
+    cropFuture: Array<CropSelectionState | null>;
 
     // ── Object Edit Mode (chế độ chỉnh sửa đối tượng) ──
     isObjectEditMode: boolean;
@@ -162,6 +182,11 @@ export interface WorkspaceState {
 
     setIsObjectEditMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
     setIsCropMode: (updater: boolean | ((prev: boolean) => boolean)) => void;
+    setCropSelection: (updater: CropSelectionUpdater) => void;
+    commitCropSelection: (updater: CropSelectionUpdater) => void;
+    recordCropSelectionSnapshot: () => void;
+    undoCropSelection: () => void;
+    redoCropSelection: () => void;
     setCurrentEditObjects: (updater: any[] | ((prev: any[]) => any[])) => void;
     setPdfObjectsVersion: (updater: number | ((prev: number) => number)) => void;
     setSelectedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
@@ -249,6 +274,9 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
 
     isObjectEditMode: false,
     isCropMode: false,
+    cropSelection: null,
+    cropPast: [],
+    cropFuture: [],
     currentEditObjects: [],
     pdfObjectsVersion: 0,
     selectedObjectIds: [],
@@ -353,7 +381,47 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     }),
     setIsCropMode: (v) => set((state) => {
         const next = typeof v === 'function' ? v(state.isCropMode) : v;
-        return { isCropMode: next };
+        if (next === state.isCropMode) return state;
+        return next
+            ? { isCropMode: true, cropPast: [], cropFuture: [] }
+            : { isCropMode: false, cropSelection: null, cropPast: [], cropFuture: [] };
+    }),
+    setCropSelection: (updater) => set((state) => ({
+        cropSelection: typeof updater === 'function' ? updater(state.cropSelection) : updater,
+    })),
+    recordCropSelectionSnapshot: () => set((state) => ({
+        cropPast: [...state.cropPast, cloneCropSelection(state.cropSelection)].slice(-CROP_HISTORY_LIMIT),
+        cropFuture: [],
+    })),
+    commitCropSelection: (updater) => set((state) => {
+        const current = state.cropSelection;
+        const next = typeof updater === 'function' ? updater(current) : updater;
+        if (next === current) return state;
+        const ownerChanged = current !== null && next !== null && current.ownerId !== next.ownerId;
+        const previousHistory = ownerChanged ? [] : state.cropPast;
+        return {
+            cropSelection: cloneCropSelection(next),
+            cropPast: [...previousHistory, ownerChanged ? null : cloneCropSelection(current)].slice(-CROP_HISTORY_LIMIT),
+            cropFuture: [],
+        };
+    }),
+    undoCropSelection: () => set((state) => {
+        if (state.cropPast.length === 0) return state;
+        const previous = state.cropPast[state.cropPast.length - 1];
+        return {
+            cropSelection: cloneCropSelection(previous),
+            cropPast: state.cropPast.slice(0, -1),
+            cropFuture: [...state.cropFuture, cloneCropSelection(state.cropSelection)].slice(-CROP_HISTORY_LIMIT),
+        };
+    }),
+    redoCropSelection: () => set((state) => {
+        if (state.cropFuture.length === 0) return state;
+        const next = state.cropFuture[state.cropFuture.length - 1];
+        return {
+            cropSelection: cloneCropSelection(next),
+            cropPast: [...state.cropPast, cloneCropSelection(state.cropSelection)].slice(-CROP_HISTORY_LIMIT),
+            cropFuture: state.cropFuture.slice(0, -1),
+        };
     }),
     setCurrentEditObjects: (updater) => set((state) => {
         const next = typeof updater === 'function' ? updater(state.currentEditObjects) : updater;

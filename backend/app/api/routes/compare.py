@@ -3,6 +3,7 @@ Comparison job API endpoints.
 Supports both Celery (production) and synchronous (DEV_MODE) processing.
 """
 import logging
+import math
 import os
 import threading
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -20,8 +21,39 @@ router = APIRouter()
 # Giới hạn số job SO SÁNH chạy ĐỒNG THỜI ở chế độ thread (DEV/Desktop). Mỗi job đỉnh
 # RAM ~0.5–0.7GB/trang; chạy nhiều job song song dễ tràn RAM. Job vượt giới hạn sẽ
 # XẾP HÀNG (thread chờ semaphore) thay vì cùng ngốn RAM. Cấu hình qua biến môi trường.
-_MAX_CONCURRENT_COMPARES = max(1, int(os.environ.get("PRYNX_MAX_COMPARE_JOBS", "2") or "2"))
+_MAX_CONCURRENT_COMPARES = max(1, int(os.environ.get("PRYNX_MAX_COMPARE_JOBS", "1") or "1"))
 _COMPARE_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_COMPARES)
+
+# Bound the largest rendered page, not just the PDF page count. A single A1/A0
+# page at 300-600 DPI can exhaust memory even when the document has one page.
+_MAX_COMPARE_PAGE_PIXELS = max(
+    1,
+    int(os.environ.get("PRYNX_MAX_COMPARE_PAGE_PIXELS", "40000000") or "40000000"),
+)
+
+
+def _estimate_max_render_pixels(uploaded_file, dpi: int) -> int | None:
+    '''Estimate the largest page raster from upload metadata.'''
+    metadata = getattr(uploaded_file, "pdf_metadata", None) or {}
+    pages = metadata.get("pages") if isinstance(metadata, dict) else None
+    if not isinstance(pages, list):
+        return None
+
+    largest = 0
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        try:
+            width_pt = float(page.get("width_pt") or 0)
+            height_pt = float(page.get("height_pt") or 0)
+        except (TypeError, ValueError):
+            continue
+        if width_pt <= 0 or height_pt <= 0:
+            continue
+        width_px = math.ceil(width_pt * dpi / 72.0)
+        height_px = math.ceil(height_pt * dpi / 72.0)
+        largest = max(largest, width_px * height_px)
+    return largest or None
 
 
 def run_comparison_sync(job_id: str):
@@ -72,6 +104,25 @@ def create_comparison_job(
         raise HTTPException(
             status_code=413, 
             detail=f"Quá giới hạn (>{MAX_PAGES} trang). Vui lòng nâng cấp phần cứng và chia nhỏ file PDF để tránh tràn RAM (OOM)."
+        )
+
+    max_render_pixels = max(
+        _estimate_max_render_pixels(file_a, request.dpi) or 0,
+        _estimate_max_render_pixels(file_b, request.dpi) or 0,
+    )
+    if max_render_pixels > _MAX_COMPARE_PAGE_PIXELS:
+        safe_dpi = max(
+            72,
+            int(request.dpi * math.sqrt(_MAX_COMPARE_PAGE_PIXELS / max_render_pixels)),
+        )
+        megapixels = round(max_render_pixels / 1_000_000, 1)
+        limit_megapixels = round(_MAX_COMPARE_PAGE_PIXELS / 1_000_000, 1)
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Trang l\u1edbn nh\u1ea5t s\u1ebd render {megapixels} MP, v\u01b0\u1ee3t gi\u1edbi h\u1ea1n an to\u00e0n "
+                f"{limit_megapixels} MP. H\u00e3y ch\u1ecdn kho\u1ea3ng {safe_dpi} DPI ho\u1eb7c th\u1ea5p h\u01a1n."
+            ),
         )
 
     # Create job

@@ -121,14 +121,9 @@ def test_free_token_cannot_call_pro_sidecar_endpoints(production_free_client):
     )
     _assert_forbidden(response, "pdf.trim_shift")
 
-    path = "/api/pdf-tools/optimize"
-    response = client.post(
-        path,
-        headers=_headers(path, token),
-        files={"file": ("sample.pdf", pdf_bytes, "application/pdf")},
-        data={"preset": "custom"},
-    )
-    _assert_forbidden(response, "pdf.optimize_advanced")
+    # Nen/toi uu PDF (optimize) da chuyen thanh FREE hoan toan: bo gate
+    # pdf.optimize_advanced khoi backend (moi preset + custom + grayscale deu free).
+    # Khong con assert 403 cho optimize o day.
 
     path = "/api/pdf-tools/office-convert/file"
     response = client.post(

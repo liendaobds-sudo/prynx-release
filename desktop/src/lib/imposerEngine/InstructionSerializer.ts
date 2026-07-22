@@ -63,6 +63,16 @@ export interface AppendedPageInstruction {
     rotation_deg?: number;
 }
 
+export interface BookReportInstruction {
+    enabled: boolean;
+    text: string;
+    position: 'top' | 'bottom' | 'left' | 'right';
+    centered: boolean;
+    offset_x_mm: number;
+    offset_y_mm: number;
+    font_size: number;
+}
+
 export interface InstructionSet {
     version: string;
     source_pdf_path: string;
@@ -81,6 +91,7 @@ export interface InstructionSet {
     sheets: SheetInstruction[];
     /** Các trang tách riêng (ví dụ bìa) được chép nguyên khổ ở cuối file kết quả. */
     append_source_pages?: AppendedPageInstruction[];
+    book_report?: BookReportInstruction;
     /**
      * Phase-2 arrangement (Step & Repeat / Fold Pattern / Cut & Stack).
      * Khi có: `sheets` là các "trang spread" trung gian (mỗi sheet = 1 mặt spread,
@@ -348,6 +359,19 @@ export function serializeBookletPlan(
         })),
         sheets,
         ...(appendSourcePages.length ? { append_source_pages: appendSourcePages } : {}),
+        ...((settings as any).bookReport?.enabled && String((settings as any).bookReport.text || '').trim()
+            ? {
+                book_report: {
+                    enabled: true,
+                    text: String((settings as any).bookReport.text),
+                    position: (settings as any).bookReport.position || 'top',
+                    centered: (settings as any).bookReport.centered !== false,
+                    offset_x_mm: Math.max(0, Number((settings as any).bookReport.offsetX) || 0),
+                    offset_y_mm: Math.max(0, Number((settings as any).bookReport.offsetY) || 0),
+                    font_size: Math.max(4, Number((settings as any).bookReport.fontSize) || 7),
+                },
+            }
+            : {}),
         ...(phase2 ? { phase2 } : {}),
     };
 }

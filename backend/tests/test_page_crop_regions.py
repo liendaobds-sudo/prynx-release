@@ -5,7 +5,10 @@ import pikepdf
 import pypdfium2 as pdfium
 import pytest
 from reportlab.lib.colors import HexColor, white
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
+from pypdf import PdfReader
+from PIL import Image, ImageDraw
 
 from app.core.page_boxes import (
     MAX_CROP_REGIONS,
@@ -13,6 +16,7 @@ from app.core.page_boxes import (
     PageBoxesEngine,
     _page_rect_to_pixel_bbox,
     _pixel_bbox_to_cropbox,
+    _choose_structural_crop_box,
 )
 
 
@@ -130,6 +134,37 @@ def test_crop_clamps_regions_to_visible_cropbox(tmp_path: Path):
         assert list(map(float, cropped.pages[0].TrimBox)) == pytest.approx(expected, abs=0.01)
 
 
+def test_crop_can_replace_source_page_and_preserve_document_order(tmp_path: Path):
+    source = tmp_path / "three-pages.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(100 * PT_PER_MM, 60 * PT_PER_MM))
+    for label in ("FIRST", "MIDDLE", "LAST"):
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(20 * PT_PER_MM, 30 * PT_PER_MM, label)
+        pdf.showPage()
+    pdf.save()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path / "output"
+    engine.output_dir.mkdir()
+    output = engine.crop_regions_to_pages(
+        str(source),
+        2,
+        [{"x0": 10, "y0": 10, "x1": 90, "y1": 50}],
+        keep_other_pages=True,
+    )
+
+    with pikepdf.Pdf.open(output) as cropped:
+        assert len(cropped.pages) == 3
+        assert list(map(float, cropped.pages[0].MediaBox)) == pytest.approx([0, 0, 100 * PT_PER_MM, 60 * PT_PER_MM], abs=0.02)
+        assert list(map(float, cropped.pages[1].MediaBox)) == pytest.approx([0, 0, 80 * PT_PER_MM, 40 * PT_PER_MM], abs=0.02)
+        assert list(map(float, cropped.pages[2].MediaBox)) == pytest.approx([0, 0, 100 * PT_PER_MM, 60 * PT_PER_MM], abs=0.02)
+
+    page_text = [page.extract_text() or "" for page in PdfReader(output).pages]
+    assert "FIRST" in page_text[0]
+    assert "MIDDLE" in page_text[1]
+    assert "LAST" in page_text[2]
+
+
 def test_crop_rejects_non_finite_and_excessive_region_lists(tmp_path: Path):
     source = tmp_path / "input.pdf"
     positions = _make_two_card_pdf(source)
@@ -181,3 +216,125 @@ def test_crop_pixel_mapping_round_trips_all_page_rotations(rotation: int):
     )
 
     assert restored == pytest.approx(rect, abs=0.01)
+
+
+def test_edge_detection_preserves_declared_bleedbox(tmp_path: Path):
+    source = tmp_path / "declared-bleed.pdf"
+    page_w, page_h = 110.0, 60.0
+    pdf = canvas.Canvas(str(source), pagesize=(page_w * PT_PER_MM, page_h * PT_PER_MM))
+    pdf.setFillColor(HexColor("#167D3A"))
+    pdf.rect(2 * PT_PER_MM, 2 * PT_PER_MM, 106 * PT_PER_MM, 56 * PT_PER_MM, fill=1, stroke=0)
+    pdf.showPage()
+    pdf.save()
+    with pikepdf.Pdf.open(source, allow_overwriting_input=True) as doc:
+        page = doc.pages[0]
+        page.TrimBox = pikepdf.Array([5 * PT_PER_MM, 5 * PT_PER_MM, 105 * PT_PER_MM, 55 * PT_PER_MM])
+        page.BleedBox = pikepdf.Array([2 * PT_PER_MM, 2 * PT_PER_MM, 108 * PT_PER_MM, 58 * PT_PER_MM])
+        doc.save(source)
+
+    result = PageBoxesEngine().detect_crop_regions(
+        str(source), 1, [{"x0": 0, "y0": 0, "x1": page_w, "y1": page_h}], max_trim_mm=5,
+    )["regions"][0]
+
+    assert result["changed"] is True
+    assert result["safe_to_apply"] is True
+    assert result["method"] == "bleedbox"
+    assert result["rect_mm"] == {
+        "x0": 2.0, "y0": 2.0, "x1": 108.0, "y1": 58.0,
+        "width": 106.0, "height": 56.0,
+    }
+
+
+def test_pixel_only_edge_is_suggestion_and_never_auto_trims(tmp_path: Path, monkeypatch):
+    import app.core.page_boxes as page_boxes
+
+    source = tmp_path / "white-bleed.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(100 * PT_PER_MM, 60 * PT_PER_MM))
+    pdf.drawString(20 * PT_PER_MM, 30 * PT_PER_MM, "CONTENT")
+    pdf.showPage()
+    pdf.save()
+
+    monkeypatch.setattr(page_boxes, "_pdfium_object_candidates", lambda *_args: [])
+    suggestion = [
+        3 * PT_PER_MM, 3 * PT_PER_MM,
+        97 * PT_PER_MM, 57 * PT_PER_MM,
+    ]
+    monkeypatch.setattr(page_boxes, "_detect_raster_crop_box", lambda *_args: suggestion)
+
+    result = PageBoxesEngine().detect_crop_regions(
+        str(source), 1, [{"x0": 0, "y0": 0, "x1": 100, "y1": 60}], max_trim_mm=5,
+    )["regions"][0]
+
+    assert result["changed"] is False
+    assert result["safe_to_apply"] is False
+    assert result["method"] == "pixels"
+    assert result["rect_mm"]["width"] == pytest.approx(100.0)
+    assert result["rect_mm"]["height"] == pytest.approx(60.0)
+    assert result["suggested_rect_mm"]["x0"] == pytest.approx(3.0)
+    assert result["suggested_rect_mm"]["y0"] == pytest.approx(3.0)
+
+
+def test_structural_detection_prefers_outermost_artwork_boundary():
+    import pypdfium2.raw as pdfium_c
+
+    rough = [0, 0, 100 * PT_PER_MM, 60 * PT_PER_MM]
+    inner_image = ([3 * PT_PER_MM, 3 * PT_PER_MM, 97 * PT_PER_MM, 57 * PT_PER_MM], int(pdfium_c.FPDF_PAGEOBJ_IMAGE))
+    outer_path = ([1 * PT_PER_MM, 1 * PT_PER_MM, 99 * PT_PER_MM, 59 * PT_PER_MM], int(pdfium_c.FPDF_PAGEOBJ_PATH))
+
+    detected = _choose_structural_crop_box(rough, [inner_image, outer_path], 5 * PT_PER_MM)
+
+    assert detected == pytest.approx(outer_path[0])
+
+
+def test_raster_cards_on_uniform_background_are_safely_split(tmp_path: Path):
+    width, height = 503, 570
+    image_path = tmp_path / "two-raster-cards.png"
+    image = Image.new("RGB", (width, height), (208, 208, 208))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((80, 35, 427, 260), fill=(18, 55, 105))
+    draw.rectangle((80, 290, 427, 515), fill=(250, 250, 250))
+    draw.rectangle((80, 470, 427, 515), fill=(18, 55, 105))
+    image.save(image_path)
+
+    source = tmp_path / "two-raster-cards.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(width, height))
+    pdf.drawImage(ImageReader(str(image_path)), 0, 0, width=width, height=height)
+    pdf.showPage()
+    pdf.save()
+
+    # Only two pixels of background are left around each card. This mirrors a
+    # user dragging tightly around the artwork: the local selection border is
+    # mostly card pixels, so detection must use the uniform page background.
+    visual_rough_rects = [
+        (78, 33, 430, 263),
+        (78, 288, 430, 518),
+    ]
+    rough_rects_mm = [
+        {
+            "x0": x0 / PT_PER_MM,
+            "y0": (height - y1) / PT_PER_MM,
+            "x1": x1 / PT_PER_MM,
+            "y1": (height - y0) / PT_PER_MM,
+        }
+        for x0, y0, x1, y1 in visual_rough_rects
+    ]
+
+    regions = PageBoxesEngine().detect_crop_regions(
+        str(source), 1, rough_rects_mm, max_trim_mm=6,
+    )["regions"]
+
+    assert len(regions) == 2
+    assert all(region["method"] == "background" for region in regions)
+    assert all(region["changed"] is True for region in regions)
+    assert all(region["safe_to_apply"] is True for region in regions)
+    visual_results = [
+        [
+            round(region["rect_mm"]["x0"] * PT_PER_MM),
+            round(height - region["rect_mm"]["y1"] * PT_PER_MM),
+            round(region["rect_mm"]["x1"] * PT_PER_MM),
+            round(height - region["rect_mm"]["y0"] * PT_PER_MM),
+        ]
+        for region in regions
+    ]
+    assert visual_results[0] == pytest.approx([80, 35, 428, 261], abs=1)
+    assert visual_results[1] == pytest.approx([80, 290, 428, 516], abs=1)

@@ -41,6 +41,32 @@ describe('serializeBookletPlan — phase-2 contract', () => {
         expect(p.sheets).toHaveLength(4);
     });
 
+    it('serializes a render-ready book report without label-production fields', () => {
+        const p = build({
+            bindingMode: 'saddle',
+            bleed: 3,
+            bookReport: {
+                enabled: true,
+                text: 'DH-001 - TAP CHI - 96 TRANG\nRUOT FORT 80 GSM',
+                position: 'bottom',
+                centered: false,
+                offsetX: 6,
+                offsetY: 7,
+                fontSize: 8,
+            },
+        });
+
+        expect(p.book_report).toEqual({
+            enabled: true,
+            text: 'DH-001 - TAP CHI - 96 TRANG\nRUOT FORT 80 GSM',
+            position: 'bottom',
+            centered: false,
+            offset_x_mm: 6,
+            offset_y_mm: 7,
+            font_size: 8,
+        });
+    });
+
     it('F1 chain_nup → step_repeat, một plate per spread surface, replicate đầy lưới', () => {
         const p = build({ bindingMode: 'saddle', bleed: 3, chainNup: true, sheetWidth: 320, sheetHeight: 450, gripperMargin: 10 });
         expect(p.phase2?.mode).toBe('step_repeat');

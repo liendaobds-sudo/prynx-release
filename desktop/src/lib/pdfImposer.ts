@@ -845,6 +845,7 @@ export const imposeCatalogBatchViaBackend = async (
             gapX: baseSettings.gapX,
             gapY: baseSettings.gapY,
             spreadDistribution: (baseSettings as any).spreadDistribution || 'clustered',
+            bookReport: (baseSettings as any).bookReport,
             pageOrder: job.pageIndices.map(idx => idx + 1), // Convert 0-based → 1-based
         } as any;
 

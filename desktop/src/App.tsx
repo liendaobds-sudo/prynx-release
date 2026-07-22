@@ -915,16 +915,14 @@ function AppInner() {
             } else if ((window as any).__isBgRemoverActive) {
               window.dispatchEvent(new CustomEvent('prynx-bgremover-add-files', { detail: { files: filesForOtherTools } }));
             } else {
-              const activeTab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
-              if (activeTab && activeTab.type !== 'home' && activeTab.type !== 'combine_pdf') {
-                window.dispatchEvent(new CustomEvent(`send-file-to-tab-${activeTab.id}`, {
-                  detail: { file: filesForOtherTools[0] }
-                }));
-              } else {
-                handleOpenApp('imposition', {
-                  file: filesForOtherTools[0],
-                });
-              }
+              // LUÔN mở tab MỚI (kiểu Acrobat). Trước đây khi tab hiện tại đã mở file thì
+              // phát `send-file-to-tab-${id}` để "gửi vào tab đang xem" — NHƯNG không có
+              // listener nào nhận sự kiện đó (ImpositionTab chỉ nạp qua prop initialFile,
+              // mà prop này bị bỏ qua khi tab đã có file). Hệ quả: double-click / Open with
+              // một file khi Prynx đang mở sẵn file → file rơi vào hư không, không mở được.
+              handleOpenApp('imposition', {
+                file: filesForOtherTools[0],
+              });
             }
           }
         }, 50); // Reduced delay for drag-and-drop snappiness

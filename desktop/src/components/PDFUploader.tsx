@@ -1,6 +1,6 @@
 import { useCallback, useState, useRef } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from './ui/Toast';
 import { useTranslation } from 'react-i18next';
 
@@ -41,7 +41,7 @@ export default function PDFUploader({
       }
       onFileSelected(pdfs[0], pdfs);
     },
-    [onFileSelected],
+    [onFileSelected, t],
   );
 
   const onDrop = useCallback(
@@ -72,7 +72,7 @@ export default function PDFUploader({
   );
 
   const handleClick = useCallback(async () => {
-    if ((window as any).__TAURI_INTERNALS__) {
+    if ('__TAURI_INTERNALS__' in window) {
       try {
         const selected = await open({
           multiple: true,
@@ -82,23 +82,51 @@ export default function PDFUploader({
         if (selected) {
           const paths = Array.isArray(selected) ? selected : [selected];
           const filesToProcess: File[] = [];
+          let unreadableCount = 0;
           
           const { stat } = await import('@tauri-apps/plugin-fs');
           for (const p of paths) {
+            let fileSize: number;
             try {
               const fileStat = await stat(p);
+              fileSize = Number(fileStat.size);
+            } catch (pluginError) {
+              // plugin-fs is capability-scoped and may reject a valid file on a
+              // network drive, USB drive or a non-home volume. The native command
+              // applies the app's sensitive-path checks without that narrow scope.
+              try {
+                fileSize = Number(await invoke<number>('get_file_size', { path: p }));
+              } catch (nativeError) {
+                unreadableCount += 1;
+                console.error('Failed to inspect selected file', p, pluginError, nativeError);
+                continue;
+              }
+            }
+
+            try {
               const name = p.split('\\').pop() || p.split('/').pop() || 'unknown';
-              const fileObj = new File([], name, { type: 'application/pdf' });
-              Object.defineProperty(fileObj, 'path', { value: p }); // CRITICAL: Retain absolute path
-              Object.defineProperty(fileObj, 'size', { value: fileStat.size });
+              const fileObj = typeof File === 'function'
+                ? new File([], name, { type: 'application/pdf' })
+                : Object.assign(new Blob([], { type: 'application/pdf' }), { name }) as File;
+              Object.defineProperty(fileObj, 'path', { value: p, configurable: true });
+              Object.defineProperty(fileObj, 'size', { value: fileSize, configurable: true });
               filesToProcess.push(fileObj);
             } catch (err) {
-              console.error("Failed to read", p, err);
+              unreadableCount += 1;
+              console.error('Failed to create selected file handle', p, err);
             }
           }
           
           if (filesToProcess.length > 0) {
             handleFiles(filesToProcess);
+          }
+          if (unreadableCount > 0) {
+            if (filesToProcess.length > 0) {
+              toast.info(t('misc.pDFUploader:mot_so_file_khong_the_doc'));
+            } else {
+              toast.info(t('misc.pDFUploader:dang_chuyen_sang_bo_chon_tuong_thich'));
+              inputRef.current?.click();
+            }
           }
         }
       } catch (err) {
@@ -108,7 +136,7 @@ export default function PDFUploader({
     } else {
       inputRef.current?.click();
     }
-  }, [handleFiles]);
+  }, [handleFiles, t]);
 
   const uploaded = !!uploadedName;
 

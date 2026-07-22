@@ -264,41 +264,72 @@ def _build_overlay_pdf_bytes(report_str: str, page_w_pt: float, page_h_pt: float
     trái/phải → giữa dọc). offset = khoảng cách từ mép đã chọn.
     """
     import io
+    from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfgen import canvas
 
     font = _ensure_font()
+    lines = [line.strip() for line in str(report_str).splitlines() if line.strip()]
+    if not lines:
+        lines = ['']
+
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(page_w_pt, page_h_pt))
-    c.setFont(font, font_size)
     c.setFillColorCMYK(0, 0, 0, 1)  # pure-K cho chữ báo cáo (không dùng RGB)
 
     off_x = offset_x_mm * MM_TO_PT
     off_y = offset_y_mm * MM_TO_PT
+    horizontal = position not in ("left", "right")
+    available = (page_w_pt - 2 * off_x) if horizontal else (page_h_pt - 2 * off_y)
+    fitted_font_size = max(4.0, float(font_size))
+    longest = max(pdfmetrics.stringWidth(line, font, fitted_font_size) for line in lines)
+    if available > 0 and longest > available:
+        fitted_font_size = max(4.0, fitted_font_size * available / longest)
+    leading = fitted_font_size * 1.3
+    c.setFont(font, fitted_font_size)
+
+    def draw_horizontal(line: str, y: float):
+        if centered:
+            c.drawCentredString(page_w_pt / 2.0, y, line)
+        else:
+            c.drawString(off_x, y, line)
 
     if position == "bottom":
-        if centered:
-            c.drawCentredString(page_w_pt / 2.0, off_y, report_str)
-        else:
-            c.drawString(off_x, off_y, report_str)
+        # Keep the first (identity) line above the production-detail line.
+        for index, line in enumerate(lines):
+            y = off_y + (len(lines) - index - 1) * leading
+            draw_horizontal(line, y)
     elif position == "left":
         c.saveState()
         if centered:
-            c.translate(off_x, page_h_pt / 2.0); c.rotate(90); c.drawCentredString(0, 0, report_str)
+            c.translate(off_x, page_h_pt / 2.0)
         else:
-            c.translate(off_x, off_y); c.rotate(90); c.drawString(0, 0, report_str)
+            c.translate(off_x, off_y)
+        c.rotate(90)
+        for index, line in enumerate(lines):
+            y = -index * leading
+            if centered:
+                c.drawCentredString(0, y, line)
+            else:
+                c.drawString(0, y, line)
         c.restoreState()
     elif position == "right":
         c.saveState()
         if centered:
-            c.translate(page_w_pt - off_x, page_h_pt / 2.0); c.rotate(90); c.drawCentredString(0, 0, report_str)
+            c.translate(page_w_pt - off_x, page_h_pt / 2.0)
         else:
-            c.translate(page_w_pt - off_x, off_y); c.rotate(90); c.drawString(0, 0, report_str)
+            c.translate(page_w_pt - off_x, off_y)
+        c.rotate(90)
+        for index, line in enumerate(lines):
+            y = index * leading
+            if centered:
+                c.drawCentredString(0, y, line)
+            else:
+                c.drawString(0, y, line)
         c.restoreState()
     else:  # top (mặc định)
-        if centered:
-            c.drawCentredString(page_w_pt / 2.0, page_h_pt - off_y - font_size, report_str)
-        else:
-            c.drawString(off_x, page_h_pt - off_y - font_size, report_str)
+        for index, line in enumerate(lines):
+            y = page_h_pt - off_y - fitted_font_size - index * leading
+            draw_horizontal(line, y)
 
     c.showPage()
     c.save()

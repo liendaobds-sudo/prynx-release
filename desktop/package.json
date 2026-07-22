@@ -13,7 +13,10 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:catalog": "npx tsx tests/CatalogPlanner.test.ts"
+    "test:catalog": "npx tsx tests/CatalogPlanner.test.ts",
+    "render:intro": "node scripts/intro/render-intro.mjs",
+    "verify:intro": "node scripts/intro/verify-intro.mjs",
+    "render:intro:check": "node scripts/intro/render-intro.mjs && node scripts/intro/verify-intro.mjs"
   },
   "dependencies": {
     "@formkit/auto-animate": "^0.9.0",
@@ -40,6 +43,7 @@
     "clipper-lib": "^6.4.2",
     "clsx": "^2.1.1",
     "diff": "^8.0.4",
+    "gsap": "^3.15.0",
     "i18next": "^26.3.6",
     "jspdf": "^4.2.1",
     "lucide-react": "^1.14.0",
@@ -77,8 +81,10 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "fast-check": "^4.8.0",
+    "ffmpeg-static": "^5.3.0",
     "globals": "^17.4.0",
     "jsdom": "^25.0.1",
+    "playwright": "^1.61.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.57.0",
     "vite": "^8.0.1",

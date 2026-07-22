@@ -2117,12 +2117,30 @@
     "remove_region": "Xóa vùng này",
     "region_hint": "Mỗi vùng tạo một trang PDF. Có thể quét rộng hơn mép thành phẩm rồi bật Xử lý rìa dư.",
     "process_excess_edges": "Xử lý rìa dư",
-    "process_excess_edges_desc": "Tự dò bốn cạnh thật bên trong vùng quét. Khung xanh là kích thước sẽ xuất; vùng không đủ chắc chắn được giữ nguyên.",
+    "process_excess_edges_desc": "Loại nền ngoài card nhưng luôn giữ BleedBox. Ảnh chỉ tự xén khi tìm thấy bốn cạnh chữ nhật rõ ràng; trường hợp pixel mơ hồ được giữ nguyên.",
     "detecting_edges": "Đang dò bốn cạnh…",
     "edges_processed": "Đã xử lý rìa dư",
+    "bleedbox_preserved": "Đã giữ nguyên BleedBox",
+    "pixel_edge_preserved": "Biên pixel chưa đủ an toàn — giữ nguyên vùng quét",
+    "trim_summary": "Xén T {{left}} · Tr {{top}} · P {{right}} · D {{bottom}} mm",
+    "max_excess": "Phần quét dư tối đa",
     "edge_unchanged": "Chưa tìm thấy đủ 4 cạnh — giữ nguyên vùng quét",
     "edge_detection_failed": "Không dò được rìa dư. Hãy bỏ chọn hoặc quét lại vùng.",
-    "crop_keyboard_hint": "Enter · Esc xóa hết · Del xóa vùng cuối"
+    "crop_mode_hint": "Kéo để quét vùng · Giữ Space để di chuyển view · Enter để áp dụng",
+    "preparing_file": "Đang chuẩn bị tệp…",
+    "creating_pages": "Đang tạo các trang crop…",
+    "updating_document": "Đang cập nhật tài liệu…",
+    "apply_crop": "Áp dụng crop",
+    "output_mode": "Kết quả đầu ra",
+    "keep_document": "Giữ toàn bộ tài liệu",
+    "keep_document_desc": "Thay trang {{page}} bằng {{count}} vùng crop; giữ nguyên các trang khác.",
+    "regions_only": "Chỉ lấy các vùng crop",
+    "regions_only_desc": "Tạo tài liệu mới chỉ gồm {{count}} vùng đã chọn.",
+    "result_summary": "Tài liệu kết quả sẽ có {{count}} trang.",
+    "regions_only_warning": "Tệp gốc có {{total}} trang. Chế độ này sẽ không đưa các trang khác vào kết quả.",
+    "precision_margins": "Chỉnh lề chính xác",
+    "crop_keyboard_hint": "Kéo khung/nút để chỉnh · Giữ Space kéo view · Ctrl+Z hoàn tác · Ctrl+Y làm lại · Enter áp dụng",
+    "resize_region": "Điều chỉnh vùng"
   },
   "misc.diffSidebar": {
     "canh_bao_chinh_ta_ai": "Cảnh báo Chính tả AI",
@@ -2146,6 +2164,14 @@
   "misc.errorBoundary": {
     "da_xay_ra_loi": "Đã xảy ra lỗi",
     "tai_lai": "Tải lại",
+    "khong_the_mo_cong_cu_bu_xen": "Không thể mở công cụ Bù xén – Tạo đường cắt",
+    "cau_hinh_cu_hoac_du_lieu_giao_dien": "Cấu hình cũ hoặc dữ liệu giao diện trên máy này có thể bị lỗi. File PDF của bạn không bị thay đổi.",
+    "ma_loi": "Mã lỗi",
+    "phien_ban": "Phiên bản",
+    "khoi_phuc_cau_hinh_va_thu_lai": "Khôi phục cấu hình và thử lại",
+    "thu_lai": "Thử lại",
+    "da_sao_chep": "Đã sao chép",
+    "sao_chep_chan_doan": "Sao chép chẩn đoán",
     "ung_dung_gap_su_co_ngoai_y_muon_vui": "Ứng dụng gặp sự cố ngoài ý muốn. Vui lòng tải lại để tiếp tục."
   },
   "misc.exportImage": {
@@ -2316,6 +2342,8 @@
     "file_qua_lon_toi_da_500mb": "File quá lớn. Tối đa 500MB.",
     "keo_tha_file_pdf_vao_day_hoac_click_de": "Kéo thả file PDF vào đây hoặc click để chọn",
     "toi_da_500mb": "Tối đa 500MB",
+    "mot_so_file_khong_the_doc": "Một số file không thể đọc do quyền truy cập đường dẫn.",
+    "dang_chuyen_sang_bo_chon_tuong_thich": "Không thể đọc đường dẫn đã chọn. Đang chuyển sang bộ chọn file tương thích…",
     "vui_long_chon_hoac_tha_file_pdf": "Vui lòng chọn hoặc thả file PDF"
   },
   "misc.progressTracker": {

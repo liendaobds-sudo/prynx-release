@@ -315,3 +315,66 @@ def test_imposition_flags_changed_instance():
 
 
 
+def test_identical_fast_path_skips_ssim_and_artifacts(monkeypatch):
+    """Byte-identical pages skip SSIM, highlight, and GIF generation."""
+    import app.core.image_comparator as comparator_module
+
+    def _unexpected_ssim(*_args, **_kwargs):
+        raise AssertionError("identical fast path must not call SSIM")
+
+    monkeypatch.setattr(comparator_module, "ssim", _unexpected_ssim)
+    image = _canvas_with_bar()
+    result = ImageComparator().compare(
+        image, image.copy(), tolerance="NORMAL", config={"dpi": 300}
+    )
+
+    assert result.similarity_score == 100.0
+    assert result.diff_count == 0
+    assert result.diff_mask.shape == image.shape[:2]
+    assert result.highlighted_image is None
+    assert result.gif_image is None
+
+
+def test_ssim_uses_bounded_preview_but_pixel_diff_keeps_full_resolution(monkeypatch):
+    """SSIM is preview-only while the verdict mask stays full resolution."""
+    import app.core.image_comparator as comparator_module
+
+    real_ssim = comparator_module.ssim
+    seen_shapes = []
+
+    def _capture_ssim(a, b, **kwargs):
+        seen_shapes.append((a.shape, b.shape, kwargs))
+        return real_ssim(a, b, **kwargs)
+
+    monkeypatch.setattr(comparator_module, "ssim", _capture_ssim)
+    a = np.full((1200, 1800, 3), 255, np.uint8)
+    b = a.copy()
+    b[500:560, 800:920] = 0
+
+    result = ImageComparator().compare(
+        a,
+        b,
+        tolerance="NORMAL",
+        config={"dpi": 300, "ssim_max_side": 512},
+    )
+
+    assert seen_shapes
+    assert max(seen_shapes[0][0]) <= 512
+    assert seen_shapes[0][2].get("full") is False
+    assert result.diff_mask.shape == a.shape[:2]
+    assert result.diff_count >= 1
+
+
+def test_spotlight_frames_are_bounded_before_full_frame_copies():
+    """GIF preview frames are downscaled before they are duplicated."""
+    from app.core.image_comparator import DiffRegion
+
+    cmp = ImageComparator()
+    image = np.full((1800, 2400, 3), 255, np.uint8)
+    off, on = cmp._create_spotlight_frames(
+        image,
+        [DiffRegion(x=1000, y=700, width=200, height=120, severity="high")],
+    )
+
+    assert off.shape == on.shape
+    assert max(off.shape[:2]) <= 1200

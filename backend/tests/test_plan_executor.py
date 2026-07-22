@@ -248,9 +248,45 @@ def test_uses_mediabox_not_trimbox_for_parity(tmp_path):
     d.close()
 
     assert found, "phải có vùng đen"
+
+
     s = 2.0
     w_pt = (maxx - minx) / s
     h_pt = (maxy - miny) / s
     # MediaBox-draw ⇒ ~120; TrimBox-draw (lỗi cũ) ⇒ ~100. Cho dung sai raster ±3pt.
     assert abs(w_pt - 120) < 3, f"phải vẽ theo MediaBox (w~120), được {w_pt:.1f}"
     assert abs(h_pt - 120) < 3, f"phải vẽ theo MediaBox (h~120), được {h_pt:.1f}"
+
+
+def test_stamps_multiline_book_report_on_every_output_side(tmp_path):
+    from pypdf import PdfReader
+
+    src = _make_source(tmp_path, ['plain', 'plain'])
+    plan = _plan(src, str(tmp_path / 'out'), [{
+        'sheet_index': 0,
+        'width_pt': 500,
+        'height_pt': 300,
+        'front': {'placements': [{'source_page': 0, 'x_pt': 20, 'y_pt': 20, 'scale': 1.0}], 'marks': []},
+        'back': {'placements': [{'source_page': 1, 'x_pt': 20, 'y_pt': 20, 'scale': 1.0}], 'marks': []},
+    }])
+    plan['book_report'] = {
+        'enabled': True,
+        'text': 'DH-001 - TAP CHI THANG 7 - 96 TRANG\nRUOT FORT 80 GSM - BIA C300 GSM',
+        'position': 'top',
+        'offset_x_mm': 5,
+        'offset_y_mm': 5,
+        'font_size': 8,
+        'centered': True,
+    }
+    plan['append_source_pages'] = [{'source_page': 0, 'rotation_deg': 0}]
+
+    out = _run(plan, src)
+    reader = PdfReader(out)
+
+    assert len(reader.pages) == 3
+    for page in reader.pages[:2]:
+        text = page.extract_text() or ''
+        assert 'DH-001' in text
+        assert 'FORT 80 GSM' in text
+    detached_cover_text = reader.pages[2].extract_text() or ''
+    assert 'DH-001' not in detached_cover_text

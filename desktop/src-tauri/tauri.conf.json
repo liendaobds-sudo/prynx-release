@@ -60,7 +60,8 @@
     "resources": [
       "binaries/gs/**/*",
       "binaries/tesseract/**/*",
-      "bin/pdfium.dll"
+      "bin/pdfium.dll",
+      "icons/file-pdf.ico"
     ],
     "icon": [
       "icons/32x32.png",
@@ -74,8 +75,8 @@
         "ext": [
           "pdf"
         ],
-        "name": "PDF Document",
-        "description": "PDF Document",
+        "name": "PrynX.PDF",
+        "description": "PrynX PDF Document",
         "role": "Editor",
         "mimeType": "application/pdf"
       }

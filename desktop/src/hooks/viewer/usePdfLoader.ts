@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { pdfjs } from 'react-pdf';
-import { thumbCacheRef } from '../../components/workspace/ViewerHelpers';
+import { thumbCacheRef, putThumbCache } from '../../components/workspace/ViewerHelpers';
 import { clearTileUrlCache } from '../../components/workspace/LivePageFrame';
 
 export interface PageDim {
@@ -104,6 +104,13 @@ export function usePdfLoader({
         // spinner), KHÔNG reset scroll/zoom/selection/undo. Tile tự nạp lại do
         // LiveTile khóa theo pdfUrl (đã đổi); overlay /edit/objects refetch theo fid.
         if ((file as any)?.__editCommit) {
+            return;
+        }
+
+        // Lưu bằng COPY đĩa→đĩa chỉ đổi .path của `file`, pdfUrl + nội dung GIỮ NGUYÊN.
+        // Không có gì để nạp lại → return sớm (như __editCommit) để không setNumPages(0)
+        // (unmount viewer + spinner) và không re-render toàn bộ trang/thumbnail vô ích.
+        if ((file as any)?.__pathRebaseOnly && isSameUrl) {
             return;
         }
 
@@ -445,7 +452,7 @@ export function usePdfLoader({
             const url = canvas.toDataURL('image/jpeg', 0.7);
             canvas.width = 0; canvas.height = 0;
 
-            thumbCacheRef.current.set(cacheKey, url);
+            putThumbCache(cacheKey, url);
         } catch (e) { console.warn('Thumb gen err', e); }
     }, [pdfUrl, file]);
 

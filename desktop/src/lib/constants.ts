@@ -31,6 +31,7 @@ export const OUTPUT_PREFIXES = [
   'converted_',
   'google_',
   'Edited_',
+  'Cropped_',
   'Split_',
   'Interleaved_',
 ] as const;

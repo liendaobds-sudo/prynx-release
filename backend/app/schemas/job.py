@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field
 
 
 # ── Upload ──────────────────────────────────────────────
+class LocalFileUploadRequest(BaseModel):
+    file_path: str = Field(min_length=1)
+
+
 class FileUploadResponse(BaseModel):
     id: str
     filename: str

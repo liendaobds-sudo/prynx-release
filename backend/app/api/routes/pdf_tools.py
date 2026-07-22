@@ -13,6 +13,8 @@ import uuid
 import shutil
 import time
 import logging
+import threading
+from contextlib import contextmanager
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, Depends
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -25,6 +27,31 @@ from app.utils.errors import raise_http
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pdf-tools", tags=["PDF Tools"], dependencies=[Depends(require_license)])
+
+# Xếp hàng job tạo viền bế / bù xén khi in liên tục. Mỗi job peak RAM cao
+# (raster 300 DPI × workers); chạy chồng chéo dễ OOM. Mặc định 1 job/lúc
+# (desktop in ấn). Override: PRYNX_MAX_STICKER_JOBS.
+_MAX_CONCURRENT_STICKER = max(
+    1, int(os.environ.get("PRYNX_MAX_STICKER_JOBS", "1") or "1")
+)
+_STICKER_JOB_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_STICKER)
+
+
+@contextmanager
+def _sticker_job_slot(job_id: str = ""):
+    """Acquire slot; job vượt mức chờ tới lượt (xếp hàng), không spawn song song."""
+    waited = time.perf_counter()
+    _STICKER_JOB_SEMAPHORE.acquire()
+    wait_s = time.perf_counter() - waited
+    if wait_s > 0.05:
+        logger.info(
+            "[STICKER] job queued job=%s wait_s=%.2f max_concurrent=%d",
+            job_id, wait_s, _MAX_CONCURRENT_STICKER,
+        )
+    try:
+        yield
+    finally:
+        _STICKER_JOB_SEMAPHORE.release()
 
 def _log_sticker_response_complete(started: float, job_id: str, output_path: str) -> None:
     try:
@@ -1112,23 +1139,25 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 
         engine = StickerEngine(dpi=300)
         engine_started = time.perf_counter()
-        success, meta = engine.process_pdf(
-            input_path=source_path,
-            output_path=output_path,
-            cut_mode=cut_mode,
-            offset_mm=offset_mm,
-            corner_style=corner_style,
-            bleed_mm=bleed_mm,
-            fill_holes=do_fill_holes,
-            remove_white_bg=do_remove_bg,
-            bleed_color_type=bleed_color_type,
-            solid_bleed_color=solid_bleed_color,
-            draw_cut_contour=do_draw_cut_contour,
-            rectangle_mode=do_rectangle_mode,
-            edge_bite_mm=edge_bite_mm,
-            cut_first_page_only=do_cut_first_page_only,
-            shape_mode=shape_mode,
-        )
+        # Xếp hàng: in liên tục nhiều file không chồng 2 job bù xén (tránh OOM).
+        with _sticker_job_slot(job_id):
+            success, meta = engine.process_pdf(
+                input_path=source_path,
+                output_path=output_path,
+                cut_mode=cut_mode,
+                offset_mm=offset_mm,
+                corner_style=corner_style,
+                bleed_mm=bleed_mm,
+                fill_holes=do_fill_holes,
+                remove_white_bg=do_remove_bg,
+                bleed_color_type=bleed_color_type,
+                solid_bleed_color=solid_bleed_color,
+                draw_cut_contour=do_draw_cut_contour,
+                rectangle_mode=do_rectangle_mode,
+                edge_bite_mm=edge_bite_mm,
+                cut_first_page_only=do_cut_first_page_only,
+                shape_mode=shape_mode,
+            )
         engine_seconds = time.perf_counter() - engine_started
         if not success or not os.path.exists(output_path):
             # success=False kèm meta['error'] = lỗi nghiệp vụ (vd không dò được hình)

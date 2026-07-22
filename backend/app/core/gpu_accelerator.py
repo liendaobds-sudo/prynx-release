@@ -19,14 +19,12 @@ class GPUAccelerator:
         return cls._instance
 
     def __init__(self):
-        # Mặc định LUÔN "đã kích hoạt" (theo yêu cầu: bỏ UI bật/tắt). Nếu có NVIDIA
-        # CUDA + CuPy dùng được → tăng tốc thật trên VRAM; nếu không → compute_diff_mask
-        # tự fallback CPU (OpenCV) an toàn. is_available=True chỉ để định tuyến; không
-        # cần plugin/mock gì cả.
-        self.is_available = True
-        self.backend = "nvidia_cuda"
-        self.device_name = "Card đồ họa rời (Tăng tốc phần cứng)"
-        self.plugin_size_mb = 2048
+        # Route to CUDA only after CuPy and a working CUDA runtime are verified.
+        # Otherwise ImageComparator can use the Rust implementation or OpenCV.
+        self.is_available = False
+        self.backend = "cpu"
+        self.device_name = "CPU"
+        self.plugin_size_mb = 0
 
         try:
             import cupy as cp
@@ -34,6 +32,9 @@ class GPUAccelerator:
                 # Xác minh NVRTC compile được (đủ CUDA Toolkit) mới dùng GPU thật.
                 _ = cp.array([1, 2, 3]) * 2
                 self.cp = cp
+                self.is_available = True
+                self.backend = "nvidia_cuda"
+                self.plugin_size_mb = 2048
                 try:
                     props = cp.cuda.runtime.getDeviceProperties(0)
                     if hasattr(props, 'name'):

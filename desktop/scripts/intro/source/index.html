@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PRYNX — 3D Rotation Reveal</title>
+  <meta name="description" content="PRYNX brand intro — Cinematic 3D Rotation Reveal animation">
+
+  <!-- Offline-first fonts (no Google CDN — Playwright/capture must not hang on network) -->
+  <style>
+    /* ============================================
+       RESET & BASE
+    ============================================ */
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #f5f5f7;
+      font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* ============================================
+       MAIN CONTAINER
+    ============================================ */
+    .intro-container {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(ellipse at center, #ffffff 0%, #ededf0 70%);
+      perspective: 1200px;
+    }
+
+    /* ============================================
+       CAMERA WRAPPER — zoom + perspective origin
+    ============================================ */
+    .camera {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transform-style: preserve-3d;
+      transform: scale(0.6) translateZ(-200px);
+      opacity: 0;
+    }
+
+    /* ============================================
+       LOGO GROUP (icon + text)
+    ============================================ */
+    .logo-group {
+      display: flex;
+      align-items: center;
+      gap: clamp(16px, 3vw, 40px);
+      position: relative;
+      transform-style: preserve-3d;
+    }
+
+    /* ============================================
+       LOGO ICON — 3D flip container
+    ============================================ */
+    .logo-icon {
+      width: clamp(70px, 9vw, 130px);
+      height: clamp(70px, 9vw, 130px);
+      position: relative;
+      transform-style: preserve-3d;
+    }
+
+    /* Each polygon piece flips independently */
+    .logo-piece {
+      position: absolute;
+      inset: 0;
+      transform-style: preserve-3d;
+      backface-visibility: hidden;
+      will-change: transform, opacity;
+    }
+
+    .logo-piece svg {
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+
+    .piece-fill-gray { fill: #bdbec1; }
+    .piece-fill-dark { fill: #231f20; }
+
+    /* ============================================
+       REFLECTION (mirror below logo icon)
+    ============================================ */
+    .logo-reflection {
+      position: absolute;
+      bottom: -5px;
+      left: 0;
+      width: 100%;
+      height: 40%;
+      transform: scaleY(-1);
+      opacity: 0;
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,0.15), transparent);
+      -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0.15), transparent);
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    .logo-reflection svg {
+      width: 100%;
+      height: auto;
+    }
+
+    /* ============================================
+       BRAND TEXT — 3D flip per letter
+    ============================================ */
+    .brand-text {
+      display: flex;
+      align-items: center;
+      gap: clamp(2px, 0.5vw, 6px);
+      transform-style: preserve-3d;
+    }
+
+    .flip-letter {
+      font-size: clamp(40px, 6.5vw, 90px);
+      font-weight: 900;
+      color: #231f20;
+      letter-spacing: 0.06em;
+      line-height: 1;
+      display: inline-block;
+      transform-style: preserve-3d;
+      transform-origin: center bottom;
+      will-change: transform, opacity;
+      opacity: 0;
+      transform: rotateX(-90deg) translateY(20px);
+    }
+
+    /* ============================================
+       LIGHT SWEEP
+    ============================================ */
+    .light-sweep {
+      position: absolute;
+      top: -30%;
+      left: 0;
+      width: 50%;
+      height: 160%;
+      background: linear-gradient(
+        100deg,
+        transparent 0%,
+        transparent 35%,
+        rgba(189, 190, 193, 0.08) 42%,
+        rgba(189, 190, 193, 0.2) 48%,
+        rgba(255, 255, 255, 0.4) 50%,
+        rgba(189, 190, 193, 0.2) 52%,
+        rgba(189, 190, 193, 0.08) 58%,
+        transparent 65%,
+        transparent 100%
+      );
+      pointer-events: none;
+      z-index: 10;
+      transform: translateX(-130%);
+      overflow: hidden;
+    }
+
+    /* ============================================
+       SLOGAN
+    ============================================ */
+    .slogan {
+      margin-top: clamp(16px, 2.5vw, 32px);
+      font-size: clamp(13px, 1.8vw, 22px);
+      font-weight: 300;
+      color: #6b6b70;
+      letter-spacing: 0.8em;
+      text-transform: uppercase;
+      opacity: 0;
+      transform: translateY(20px);
+    }
+
+    /* ============================================
+       GROUND LINE (beneath logo group)
+    ============================================ */
+    .ground-line {
+      position: absolute;
+      bottom: 14%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 0;
+      height: 1px;
+      background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(35, 31, 32, 0.12),
+        transparent
+      );
+    }
+
+    /* ============================================
+       SUBTLE SHADOW beneath logo
+    ============================================ */
+    .logo-shadow {
+      position: absolute;
+      bottom: -15%;
+      left: 10%;
+      width: 80%;
+      height: 12px;
+      background: radial-gradient(ellipse at center, rgba(35,31,32,0.1) 0%, transparent 70%);
+      border-radius: 50%;
+      opacity: 0;
+      filter: blur(4px);
+    }
+
+    /* ============================================
+       RESPONSIVE
+    ============================================ */
+    @media (max-width: 600px) {
+      .logo-group {
+        flex-direction: column;
+        gap: 16px;
+      }
+      .slogan {
+        letter-spacing: 0.4em;
+      }
+      .intro-container {
+        perspective: 800px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<div class="intro-container">
+
+  <!-- Camera wrapper (zoom + 3D) -->
+  <div class="camera" id="camera">
+
+    <div class="logo-group">
+
+      <!-- Logo Icon: 3D flip pieces -->
+      <div class="logo-icon" id="logoIcon">
+
+        <!-- Shadow beneath -->
+        <div class="logo-shadow" id="logoShadow"></div>
+
+        <!-- Piece 1: bottom-left leg -->
+        <div class="logo-piece" id="piece1">
+          <svg viewBox="0 0 70.87 70.87" xmlns="http://www.w3.org/2000/svg">
+            <polygon class="piece-fill-dark" points="24.86 44.95 24.86 70.87 8.93 70.87 8.93 64.57 24.86 44.95"/>
+          </svg>
+        </div>
+
+        <!-- Piece 2: diagonal cross (gray) -->
+        <div class="logo-piece" id="piece2">
+          <svg viewBox="0 0 70.87 70.87" xmlns="http://www.w3.org/2000/svg">
+            <polygon class="piece-fill-gray" points="37.99 25.33 8.93 60.69 8.93 55.61 29.5 30.27 11.55 8.16 24.06 8.16 37.99 25.33"/>
+          </svg>
+        </div>
+
+        <!-- Piece 3: upper-right arm -->
+        <div class="logo-piece" id="piece3">
+          <svg viewBox="0 0 70.87 70.87" xmlns="http://www.w3.org/2000/svg">
+            <polygon class="piece-fill-dark" points="32.87 35.37 61.93 0 61.93 5.08 41.37 30.42 59.01 52.16 46.5 52.16 32.87 35.37"/>
+          </svg>
+        </div>
+
+        <!-- Piece 4: left triangle -->
+        <div class="logo-piece" id="piece4">
+          <svg viewBox="0 0 70.87 70.87" xmlns="http://www.w3.org/2000/svg">
+            <polygon class="piece-fill-dark" points="8.93 52.16 8.93 8.38 26.7 30.27 8.93 52.16"/>
+          </svg>
+        </div>
+
+        <!-- Reflection -->
+        <div class="logo-reflection" id="logoReflection">
+          <svg viewBox="0 0 70.87 70.87" xmlns="http://www.w3.org/2000/svg">
+            <polygon fill="#bdbec1" points="37.99 25.33 8.93 60.69 8.93 55.61 29.5 30.27 11.55 8.16 24.06 8.16 37.99 25.33"/>
+            <polygon fill="#231f20" points="32.87 35.37 61.93 0 61.93 5.08 41.37 30.42 59.01 52.16 46.5 52.16 32.87 35.37"/>
+            <polygon fill="#231f20" points="8.93 52.16 8.93 8.38 26.7 30.27 8.93 52.16"/>
+            <polygon fill="#231f20" points="24.86 44.95 24.86 70.87 8.93 70.87 8.93 64.57 24.86 44.95"/>
+          </svg>
+        </div>
+
+      </div>
+
+      <!-- Brand Text: 3D flip letters -->
+      <div class="brand-text" id="brandText">
+        <span class="flip-letter" id="flipP">P</span>
+        <span class="flip-letter" id="flipR">R</span>
+        <span class="flip-letter" id="flipY">Y</span>
+        <span class="flip-letter" id="flipN">N</span>
+        <span class="flip-letter" id="flipX">X</span>
+      </div>
+
+      <!-- Light Sweep -->
+      <div class="light-sweep" id="lightSweep"></div>
+
+    </div>
+
+    <!-- Slogan -->
+    <div class="slogan" id="slogan">Print made easy!</div>
+
+  </div>
+
+  <!-- Ground Line -->
+  <div class="ground-line" id="groundLine"></div>
+
+</div>
+
+<!-- GSAP local (offline / Playwright capture) -->
+<script src="./vendor/gsap.min.js"></script>
+
+<script>
+  /* ============================================
+     PRYNX — 3D Rotation Reveal (source of truth)
+     From Desktop/prynx-logo-animation/3d-reveal.html
+     Camera zoom + 3D polygon flips + letter flip + sweep
+     Capture hooks: __PRYNX_INTRO_READY__, __PRYNX_PLAY_EXIT__
+  ============================================ */
+
+  function bootIntro() {
+    if (typeof gsap === 'undefined') {
+      console.error('GSAP failed to load');
+      window.__PRYNX_INTRO_READY__ = true;
+      return;
+    }
+
+    // ── Initial states (gsap.set — best practice) ──
+    gsap.set('#camera', { scale: 0.55, z: -250, opacity: 0 });
+    gsap.set('#piece1', { rotationY: 180, opacity: 0, transformOrigin: 'center bottom' });
+    gsap.set('#piece2', { rotationY: -180, opacity: 0, transformOrigin: 'left center' });
+    gsap.set('#piece3', { rotationY: 180, opacity: 0, transformOrigin: 'right center' });
+    gsap.set('#piece4', { rotationX: -180, opacity: 0, transformOrigin: 'center top' });
+    // Letters: force z:0 end-state — without it GSAP can leave translateZ residual
+    // (QA caught z=-20 after flip, which skews the wordmark in perspective).
+    gsap.set('.flip-letter', {
+      rotateX: -90,
+      y: 20,
+      z: 0,
+      opacity: 0,
+      transformOrigin: 'center bottom',
+      force3D: true,
+    });
+    gsap.set('#slogan', { opacity: 0, y: 25 });
+    gsap.set('#logoShadow', { opacity: 0, scaleX: 0.3 });
+    gsap.set('#logoReflection', { opacity: 0 });
+    gsap.set('#lightSweep', { xPercent: -130 });
+    gsap.set('#groundLine', { width: 0 });
+    gsap.set('.brand-text', { transformPerspective: 900 });
+
+    const letterIn = {
+      rotateX: 0,
+      y: 0,
+      z: 0,
+      opacity: 1,
+      duration: 0.45,
+      ease: 'back.out(1.4)',
+      force3D: true,
+    };
+
+    const tl = gsap.timeline({
+      defaults: { ease: 'power3.out' },
+      onStart: () => { window.__PRYNX_INTRO_READY__ = true; },
+    });
+
+    // PHASE 1: Camera zoom in
+    tl.to('#camera', { opacity: 1, duration: 0.4, ease: 'power2.in' }, 0)
+      .to('#camera', { scale: 1, z: 0, duration: 1.8, ease: 'power2.out' }, 0)
+
+    // PHASE 2: Logo pieces 3D flip
+      .to('#piece4', { rotationX: 0, opacity: 1, duration: 0.8, ease: 'power3.inOut' }, 0.3)
+      .to('#piece2', { rotationY: 0, opacity: 1, duration: 0.9, ease: 'power3.inOut' }, 0.45)
+      .to('#piece3', { rotationY: 0, opacity: 1, duration: 0.85, ease: 'power3.inOut' }, 0.55)
+      .to('#piece1', { rotationY: 0, opacity: 1, duration: 0.75, ease: 'power3.inOut' }, 0.7)
+
+    // PHASE 3: Shadow + reflection
+      .to('#logoShadow', { opacity: 1, scaleX: 1, duration: 0.5, ease: 'power2.out' }, 1.2)
+      .to('#logoReflection', { opacity: 1, duration: 0.6, ease: 'power2.out' }, 1.3)
+
+    // PHASE 4: Letters 3D flip (explicit z:0 — see residual-Z note above)
+      .to('#flipP', letterIn, 1.5)
+      .to('#flipR', letterIn, 1.65)
+      .to('#flipY', letterIn, 1.8)
+      .to('#flipN', letterIn, 1.95)
+      .to('#flipX', letterIn, 2.1)
+
+    // PHASE 5: Light sweep
+      .to('#lightSweep', { xPercent: 350, duration: 0.85, ease: 'power2.inOut' }, 2.5)
+
+    // PHASE 6: Slogan
+      .to('#slogan', { opacity: 1, y: 0, duration: 0.6, ease: 'power2.out' }, 2.8)
+
+    // PHASE 7: Ground line + settle
+      .to('#groundLine', { width: 'clamp(120px, 30vw, 360px)', duration: 0.7, ease: 'power3.inOut' }, 3.2)
+      .to('#camera', { scale: 1.02, duration: 0.3, ease: 'power2.out' }, 3.6)
+      .to('#camera', { scale: 1, duration: 0.5, ease: 'elastic.out(1, 0.6)' }, 3.9);
+
+    // Exit cinematic for video capture
+    window.__PRYNX_PLAY_EXIT__ = function () {
+      gsap.to('.intro-container', {
+        opacity: 0,
+        duration: 0.55,
+        ease: 'power2.inOut',
+      });
+      gsap.to('#camera', {
+        scale: 1.06,
+        y: -12,
+        filter: 'blur(2px)',
+        duration: 0.55,
+        ease: 'power2.inOut',
+      });
+    };
+
+    // Preview: ?autoexit=1&hold=5000
+    const params = new URLSearchParams(location.search);
+    if (params.get('autoexit') === '1') {
+      const hold = Number(params.get('hold') || 5000);
+      setTimeout(() => window.__PRYNX_PLAY_EXIT__(), hold);
+    }
+
+    // Fallback ready if onStart never fires
+    setTimeout(() => { window.__PRYNX_INTRO_READY__ = true; }, 50);
+  }
+
+  // Start immediately (system fonts are available without network)
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootIntro, { once: true });
+  } else {
+    bootIntro();
+  }
+</script>
+
+</body>
+</html>

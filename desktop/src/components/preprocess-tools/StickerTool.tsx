@@ -38,6 +38,116 @@ const BLEED_COLOR_MODES_RECTANGLE = [
     { value: 'solid', title: '🎨 Đổ màu trơn', desc: 'Bo viền nền bằng hệ màu in ấn chuyên nghiệp (CMYK).' },
 ];
 
+const STICKER_STORAGE_PREFIX = 'ps_sticker_';
+const STICKER_PREFERENCE_KEYS = [
+    'cutMode', 'offsetMm', 'cornerStyle', 'fillHoles', 'bleedMm',
+    'removeWhiteBg', 'trimWhiteEdge', 'bleedColorType', 'bleedColorHex',
+    'edgeBiteMm', 'edgeBiteVersion', 'cutFirstPageOnly',
+] as const;
+let warnedAboutStickerStorage = false;
+
+function warnStickerStorage(error: unknown) {
+    if (warnedAboutStickerStorage) return;
+    warnedAboutStickerStorage = true;
+    console.warn('[StickerTool] Saved preferences are unavailable; using safe defaults.', error);
+}
+
+function getStickerStorage(): Storage | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        return window.localStorage;
+    } catch (error) {
+        warnStickerStorage(error);
+        return null;
+    }
+}
+
+function readStickerRaw(key: string): string | null {
+    try {
+        return getStickerStorage()?.getItem(`${STICKER_STORAGE_PREFIX}${key}`) ?? null;
+    } catch (error) {
+        warnStickerStorage(error);
+        return null;
+    }
+}
+
+function removeStickerPreference(key: string): void {
+    try {
+        getStickerStorage()?.removeItem(`${STICKER_STORAGE_PREFIX}${key}`);
+    } catch (error) {
+        warnStickerStorage(error);
+    }
+}
+
+function readStickerJson(key: string): unknown {
+    const raw = readStickerRaw(key);
+    if (raw === null) return undefined;
+    try {
+        return JSON.parse(raw);
+    } catch {
+        removeStickerPreference(key);
+        return undefined;
+    }
+}
+
+function readStickerEnum(key: string, defaultValue: string, allowed: readonly string[]): string {
+    const value = readStickerJson(key);
+    if (typeof value === 'string' && allowed.includes(value)) return value;
+    if (value !== undefined) removeStickerPreference(key);
+    return defaultValue;
+}
+
+function readStickerBoolean(key: string, defaultValue: boolean): boolean {
+    const value = readStickerJson(key);
+    if (typeof value === 'boolean') return value;
+    if (value !== undefined) removeStickerPreference(key);
+    return defaultValue;
+}
+
+function readStickerNumber(key: string, defaultValue: number, min: number, max: number): number {
+    const value = readStickerJson(key);
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+        if (value !== undefined) removeStickerPreference(key);
+        return defaultValue;
+    }
+    return Math.min(max, Math.max(min, value));
+}
+
+function readStickerColor(): string {
+    const value = readStickerJson('bleedColorHex');
+    if (typeof value !== 'string') {
+        if (value !== undefined) removeStickerPreference('bleedColorHex');
+        return '#FFFFFF';
+    }
+    if (/^#[0-9a-f]{6}$/i.test(value)) return value.toUpperCase();
+    const cmyk = value.split(',').map(part => Number(part.trim()));
+    if (cmyk.length === 4 && cmyk.every(channel => Number.isFinite(channel) && channel >= 0 && channel <= 100)) {
+        return cmyk.map(channel => String(Math.round(channel))).join(',');
+    }
+    removeStickerPreference('bleedColorHex');
+    return '#FFFFFF';
+}
+
+function writeStickerPreference(key: string, value: unknown): void {
+    try {
+        getStickerStorage()?.setItem(`${STICKER_STORAGE_PREFIX}${key}`, JSON.stringify(value));
+    } catch (error) {
+        warnStickerStorage(error);
+    }
+}
+
+export function resetStickerPreferences(): boolean {
+    const storage = getStickerStorage();
+    if (!storage) return false;
+    try {
+        for (const key of STICKER_PREFERENCE_KEYS) storage.removeItem(`${STICKER_STORAGE_PREFIX}${key}`);
+        return true;
+    } catch (error) {
+        warnStickerStorage(error);
+        return false;
+    }
+}
+
 export default function StickerTool({ pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
@@ -48,21 +158,12 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const [productType, setProductType] = useState<'sticker' | 'rectangle'>('sticker');
     const setTaskMode = useImposerSettingsStore(s => s.setTaskMode);
 
-    // Helper for localStorage
-    const getSaved = (key: string, defaultVal: any) => {
-        try { const v = localStorage.getItem(`ps_sticker_${key}`); return v !== null ? JSON.parse(v) : defaultVal; } catch { return defaultVal; }
-    };
     // Số từ localStorage PHẢI ép về number hợp lệ + clamp [min,max] ngay lúc khởi tạo.
     // Build cũ (hoặc sửa tay) có thể lưu giá trị vượt giới hạn UI mới, hoặc "null"/"true"
     // → nếu không sanitize, handleRun gửi thẳng giá trị sai/non-number xuống backend.
-    const getSavedNum = (key: string, defaultVal: number, min: number, max: number) => {
-        const raw = getSaved(key, defaultVal);
-        const n = typeof raw === 'number' && isFinite(raw) ? raw : defaultVal;
-        return Math.min(max, Math.max(min, n));
-    };
     const getSavedEdgeBite = () => {
-        const saved = getSavedNum('edgeBiteMm', 0.0, 0, 5);
-        const version = localStorage.getItem('ps_sticker_edgeBiteVersion');
+        const saved = readStickerNumber('edgeBiteMm', 0.0, 0, 5);
+        const version = readStickerRaw('edgeBiteVersion');
         // Migrate the former 0.4 mm default once, while preserving deliberate
         // user values such as 0.2, 0.5 or 1.5 mm.
         if (version !== '2' && saved === 0.4) return 0.0;
@@ -70,13 +171,13 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     };
 
     // UI State for Sticker
-    const [cutMode, setCutMode] = useState(() => getSaved('cutMode', 'original'));
-    const [offsetMm, setOffsetMm] = useState<number>(() => getSavedNum('offsetMm', 0.0, -10, 10));
-    const [cornerStyle, setCornerStyle] = useState(() => getSaved('cornerStyle', 'round'));
-    const [fillHoles, setFillHoles] = useState<boolean>(() => getSaved('fillHoles', true));
+    const [cutMode, setCutMode] = useState(() => readStickerEnum('cutMode', 'original', ['original', 'bleed', 'none']));
+    const [offsetMm, setOffsetMm] = useState<number>(() => readStickerNumber('offsetMm', 0.0, -10, 10));
+    const [cornerStyle, setCornerStyle] = useState(() => readStickerEnum('cornerStyle', 'round', ['round', 'miter']));
+    const [fillHoles, setFillHoles] = useState<boolean>(() => readStickerBoolean('fillHoles', true));
     // "Tạo đường cắt cho trang đầu": file nhiều loại tem CÙNG khuôn → chỉ trang 1 mang
     // đường cắt (khuôn master), trang 2+ chỉ bù xén. Bước đệm sang Bình tem bế/CNC đồng nhất.
-    const [cutFirstPageOnly, setCutFirstPageOnly] = useState<boolean>(() => getSaved('cutFirstPageOnly', false));
+    const [cutFirstPageOnly, setCutFirstPageOnly] = useState<boolean>(() => readStickerBoolean('cutFirstPageOnly', false));
     // Hình học đường cắt: backend tự nhận (auto_safe). "Hình cắt sai?" → forceContour
     // ép giữ mép ảnh. KHÔNG lưu localStorage: mỗi file khác hình, mặc định luôn auto.
     const [forceContour, setForceContour] = useState<boolean>(false);
@@ -84,10 +185,10 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const [detectedCutKind, setDetectedCutKind] = useState<string | null>(null);
 
     // Shared State
-    const [bleedMm, setBleedMm] = useState<number>(() => getSavedNum('bleedMm', 0.0, 0, 10));
-    const [removeWhiteBg, setRemoveWhiteBg] = useState<boolean>(() => getSaved('removeWhiteBg', true));
-    const [bleedColorType, setBleedColorType] = useState(() => getSaved('bleedColorType', 'image')); // 'mirror', 'image', 'inpaint', 'solid'
-    const [bleedColorHex, setBleedColorHex] = useState(() => getSaved('bleedColorHex', '#FFFFFF'));
+    const [bleedMm, setBleedMm] = useState<number>(() => readStickerNumber('bleedMm', 0.0, 0, 10));
+    const [removeWhiteBg, setRemoveWhiteBg] = useState<boolean>(() => readStickerBoolean('removeWhiteBg', true));
+    const [bleedColorType, setBleedColorType] = useState(() => readStickerEnum('bleedColorType', 'image', ['mirror', 'image', 'inpaint', 'solid']));
+    const [bleedColorHex, setBleedColorHex] = useState(readStickerColor);
     // "Lẹm mép" (rectangle): hút màu sâu vào trong để doa viền trắng mảnh của file không tràn lề.
     // Con dao 2 lưỡi — lẹm quá ăn vào nội dung sát mép → default nhỏ, cho chỉnh/tắt (0).
     const [edgeBiteMm, setEdgeBiteMm] = useState<number>(getSavedEdgeBite);
@@ -105,17 +206,17 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
 
     // Save to localStorage whenever state changes
     useEffect(() => {
-        localStorage.setItem('ps_sticker_cutMode', JSON.stringify(cutMode));
-        localStorage.setItem('ps_sticker_offsetMm', JSON.stringify(offsetMm));
-        localStorage.setItem('ps_sticker_cornerStyle', JSON.stringify(cornerStyle));
-        localStorage.setItem('ps_sticker_fillHoles', JSON.stringify(fillHoles));
-        localStorage.setItem('ps_sticker_bleedMm', JSON.stringify(bleedMm));
-        localStorage.setItem('ps_sticker_removeWhiteBg', JSON.stringify(removeWhiteBg));
-        localStorage.setItem('ps_sticker_bleedColorType', JSON.stringify(bleedColorType));
-        localStorage.setItem('ps_sticker_bleedColorHex', JSON.stringify(bleedColorHex));
-        localStorage.setItem('ps_sticker_edgeBiteMm', JSON.stringify(edgeBiteMm));
-        localStorage.setItem('ps_sticker_edgeBiteVersion', '2');
-        localStorage.setItem('ps_sticker_cutFirstPageOnly', JSON.stringify(cutFirstPageOnly));
+        writeStickerPreference('cutMode', cutMode);
+        writeStickerPreference('offsetMm', offsetMm);
+        writeStickerPreference('cornerStyle', cornerStyle);
+        writeStickerPreference('fillHoles', fillHoles);
+        writeStickerPreference('bleedMm', bleedMm);
+        writeStickerPreference('removeWhiteBg', removeWhiteBg);
+        writeStickerPreference('bleedColorType', bleedColorType);
+        writeStickerPreference('bleedColorHex', bleedColorHex);
+        writeStickerPreference('edgeBiteMm', edgeBiteMm);
+        try { getStickerStorage()?.setItem(`${STICKER_STORAGE_PREFIX}edgeBiteVersion`, '2'); } catch (error) { warnStickerStorage(error); }
+        writeStickerPreference('cutFirstPageOnly', cutFirstPageOnly);
     }, [cutMode, offsetMm, cornerStyle, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, cutFirstPageOnly]);
     
     // Process state

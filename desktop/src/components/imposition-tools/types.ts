@@ -112,6 +112,7 @@ export interface BookletSettings {
     separateCover?: boolean;
     coverPageCount?: number;
     blankPlacement?: 'end' | 'center';
+    bookReport?: BookReportRenderConfig;
     spawnNewTab: boolean;
 }
 
@@ -247,6 +248,90 @@ export const DEFAULT_REPORT_CONFIG: ReportDisplayConfig = {
     labelNameText: '',
     position: 'top', offsetX: 5, offsetY: 5, fontSize: 8, removeDiacritics: false,
     centered: true,
+};
+
+// Separate product report for books/magazines. Keep this isolated from the
+// sticker report so label-specific fields never leak into booklet jobs.
+export type BookReportFieldKey =
+    | 'orderCode' | 'title' | 'finishedSize' | 'pageCount' | 'quantity'
+    | 'binding' | 'bodyPaper' | 'coverPaper' | 'coverFinish' | 'colorMode'
+    | 'printSides' | 'paperSize' | 'notes';
+
+export interface BookReportDisplayConfig {
+    enabled: boolean;
+    fieldOrder: BookReportFieldKey[];
+    showOrderCode: boolean;
+    showTitle: boolean;
+    showFinishedSize: boolean;
+    showPageCount: boolean;
+    showQuantity: boolean;
+    showBinding: boolean;
+    showBodyPaper: boolean;
+    showCoverPaper: boolean;
+    showCoverFinish: boolean;
+    showColorMode: boolean;
+    showPrintSides: boolean;
+    showPaperSize: boolean;
+    showNotes: boolean;
+    orderCode: string;
+    titleText: string;
+    quantity: number;
+    bodyPaper: string;
+    coverPaper: string;
+    coverFinish: string;
+    colorMode: string;
+    printSides: string;
+    notes: string;
+    position: 'top' | 'bottom' | 'left' | 'right';
+    centered: boolean;
+    offsetX: number;
+    offsetY: number;
+    fontSize: number;
+    removeDiacritics: boolean;
+}
+
+export interface BookReportRenderConfig {
+    enabled: boolean;
+    text: string;
+    position: 'top' | 'bottom' | 'left' | 'right';
+    centered: boolean;
+    offsetX: number;
+    offsetY: number;
+    fontSize: number;
+}
+
+export const DEFAULT_BOOK_REPORT_CONFIG: BookReportDisplayConfig = {
+    enabled: false,
+    fieldOrder: ['orderCode', 'title', 'finishedSize', 'pageCount', 'quantity',
+        'binding', 'bodyPaper', 'coverPaper', 'coverFinish', 'colorMode', 'printSides', 'paperSize', 'notes'],
+    showOrderCode: true,
+    showTitle: true,
+    showFinishedSize: true,
+    showPageCount: true,
+    showQuantity: true,
+    showBinding: true,
+    showBodyPaper: true,
+    showCoverPaper: true,
+    showCoverFinish: true,
+    showColorMode: true,
+    showPrintSides: true,
+    showPaperSize: true,
+    showNotes: true,
+    orderCode: '',
+    titleText: '',
+    quantity: 0,
+    bodyPaper: '',
+    coverPaper: '',
+    coverFinish: '',
+    colorMode: '4/4 màu',
+    printSides: 'In 2 mặt',
+    notes: '',
+    position: 'top',
+    centered: true,
+    offsetX: 5,
+    offsetY: 5,
+    fontSize: 7,
+    removeDiacritics: false,
 };
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';

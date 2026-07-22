@@ -4,11 +4,11 @@ from pydantic import BaseModel
 from typing import List
 from app.core.llm_checker import LLMChecker
 from app.utils.file_handler import save_upload_file
-from app.core.pdf_processor import PDFProcessor
-from app.core.ocr_engine import OCREngine
 from app.core.license_guard import require_license
 from app.utils.errors import raise_http
-import cv2
+# cv2/OCREngine/PDFProcessor nạp LAZY trong extract_text: cv2 (OpenCV) ngốn ~50-90MB
+# RAM thường trú, kéo vào ngay lúc sidecar boot dù user chưa từng dùng QC. OCREngine
+# import cv2 ở top-level nên chỉ lazy `import cv2` là chưa đủ — phải hoãn cả cụm.
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -73,6 +73,11 @@ async def extract_text(file: UploadFile = File(...), license_info: dict = Depend
         stored_name, file_path, _ = await save_upload_file(file)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Lưu file thất bại: {e}")
+
+    # Lazy import: chỉ nạp OpenCV/OCR/pdfium khi thực sự trích text (xem note đầu file).
+    import cv2
+    from app.core.pdf_processor import PDFProcessor
+    from app.core.ocr_engine import OCREngine
 
     try:
         extracted_text = ""
