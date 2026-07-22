@@ -40,7 +40,23 @@ import { createPreprocSlice } from './store/slices/preprocSlice';
 
 // ─── Store Definition (ghép slice + persist) ────────────────────────────────
 
-export const createImposerSettingsStore = () => createStore<ImposerSettingsState>()(
+export const createImposerSettingsStore = (scopeKey?: string) => {
+    const scopedName = scopeKey
+        ? `ps_imposer_settings:${encodeURIComponent(scopeKey)}`
+        : PERSIST_CONFIG.name;
+    if (scopeKey && typeof window !== 'undefined') {
+        try {
+            // Seed each scoped store from the legacy shared preferences once, so
+            // this performance fix does not silently reset existing users.
+            if (window.localStorage.getItem(scopedName) === null) {
+                const legacy = window.localStorage.getItem('ps_imposer_settings');
+                if (legacy !== null) window.localStorage.setItem(scopedName, legacy);
+            }
+        } catch { /* storage remains best effort */ }
+    }
+    const persistConfig = scopeKey
+        ? { ...PERSIST_CONFIG, name: scopedName }
+        : PERSIST_CONFIG;    return createStore<ImposerSettingsState>()(
     persist(
         (...a) => ({
             ...createWorkspaceSlice(...a),
@@ -55,9 +71,9 @@ export const createImposerSettingsStore = () => createStore<ImposerSettingsState
             ...createUiSlice(...a),
             ...createPreprocSlice(...a),
         }),
-        PERSIST_CONFIG,
-    )
-);
+        persistConfig,
+    ));
+};
 
 
 // ─── React Context + Hook (public API — giữ nguyên) ─────────────────────────

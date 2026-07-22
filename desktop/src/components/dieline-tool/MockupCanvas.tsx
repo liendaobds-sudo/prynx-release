@@ -102,7 +102,7 @@ export default function MockupCanvas({
                 gl={{
                     antialias: true,
                     alpha: true,
-                    preserveDrawingBuffer: true, // cần cho xuất ảnh PNG phía client
+                    preserveDrawingBuffer: false, // export dùng WebGLRenderTarget riêng
                     toneMapping: THREE.ACESFilmicToneMapping,
                     toneMappingExposure: DEFAULT_TONE_MAPPING_EXPOSURE,
                     outputColorSpace: THREE.SRGBColorSpace,

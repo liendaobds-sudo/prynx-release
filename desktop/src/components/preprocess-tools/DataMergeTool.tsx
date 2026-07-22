@@ -939,7 +939,7 @@ export default function DataMergeTool({
 
                     const { fields, data: jobData } = buildJobInput(data);
                     setStatusMessage(`${tag}: ${t('preprocess.dataMerge:dang_sinh_n_ban_ghi', { n: data.length })}`);
-                    const jobId = await startVdpJobBackend(templateFile, fields, jobData);
+                    const jobId = await startVdpJobBackend(templateFile, fields, jobData, !isMultiUp ? csvFile : undefined, csvHasHeader);
                     pollAbortRef.current = new AbortController();
                     const result = await pollVdpJob(jobId, (m) => setStatusMessage(`${tag}: ${m}`), true, pollAbortRef.current.signal);
                     if (!result.blob) { setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_khong_co_ket_qua')}`); continue; }
@@ -1232,7 +1232,8 @@ export default function DataMergeTool({
             const fullData = await resolveFullSourceData();
 
             const { fields: jobFields, data: jobData } = buildJobInput(fullData);
-            const jobId = await startVdpJobBackend(templateFile, jobFields, jobData);
+            const transportFile = dataMode === 'csv' && !isMultiUp ? (lastCsvFileRef.current ?? undefined) : undefined;
+            const jobId = await startVdpJobBackend(templateFile, jobFields, jobData, transportFile, csvHasHeader);
 
             // Poll
             pollAbortRef.current = new AbortController();

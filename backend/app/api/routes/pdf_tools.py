@@ -18,11 +18,13 @@ from contextlib import contextmanager
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, Depends
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from typing import List, Optional
 import json
 from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.config import settings
 from app.utils.errors import raise_http
+from app.utils.file_handler import save_upload_file
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,18 @@ RESULTS_DIR = settings.RESULTS_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+
+def _cleanup_split_artifacts(zip_path: str, output_dir: str) -> None:
+    try:
+        if zip_path and os.path.exists(zip_path):
+            os.remove(zip_path)
+    except OSError:
+        pass
+    try:
+        if output_dir and os.path.isdir(output_dir):
+            shutil.rmtree(output_dir, ignore_errors=True)
+    except OSError:
+        pass
 
 def _safe_watermark(pdf_path: str, license_info: dict) -> None:
     """Nhúng stealth watermark (XMP + invisible text) vào PDF output.
@@ -170,17 +184,14 @@ def _normalize_compat(pdf_path: str) -> None:
 
 
 async def save_upload(file: UploadFile) -> str:
-    """Save an uploaded file and return its path. 
-    Uses async read and seek(0) to bypass FastAPI multipart parsing cursor bugs.
-    """
-    file_id = uuid.uuid4().hex
-    path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
-    await file.seek(0)
-    content = await file.read()
-    with open(path, "wb") as f:
-        f.write(content)
-    return path
-
+    """Stream an uploaded PDF to disk and enforce the shared file-size limit."""
+    try:
+        if not file.filename:
+            file.filename = "upload.pdf"
+        _stored_name, path, _size = await save_upload_file(file)
+        return path
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
 
 @router.post("/merge")
 async def merge_pdfs_endpoint(
@@ -206,8 +217,8 @@ async def merge_pdfs_endpoint(
     output_path = os.path.join(RESULTS_DIR, f"merged_{job_id}.pdf")
     
     try:
-        merge_pdfs(file_paths, output_path, mode=mode)
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(merge_pdfs, file_paths, output_path, mode=mode)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
             filename="merged_output.pdf",
@@ -220,6 +231,50 @@ async def merge_pdfs_endpoint(
             try: os.remove(p)
             except OSError: pass
 
+
+@router.post("/merge-manifest")
+async def merge_manifest_endpoint(
+    files: List[UploadFile] = File(...),
+    manifest: str = Form(...),
+    license_info: dict = Depends(require_license),
+):
+    """Assemble large Combine jobs from a bounded page-operation manifest."""
+    from app.workers.pdf_manifest_engine import merge_manifest
+
+    if len(files) < 1 or len(files) > 256:
+        raise HTTPException(status_code=400, detail="Invalid manifest file count")
+    if len(manifest) > 4 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Manifest is too large")
+    try:
+        manifest_items = json.loads(manifest)
+        if not isinstance(manifest_items, list):
+            raise ValueError("Manifest must be an array")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid manifest JSON") from exc
+
+    file_paths = []
+    job_id = uuid.uuid4().hex[:8]
+    output_path = os.path.join(RESULTS_DIR, f"merged_manifest_{job_id}.pdf")
+    try:
+        for uploaded in files:
+            file_paths.append(await save_upload(uploaded))
+        await run_in_threadpool(merge_manifest, file_paths, manifest_items, output_path)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
+        return FileResponse(
+            path=output_path,
+            filename="merged_output.pdf",
+            media_type="application/pdf",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise_http(exc, "Gộp PDF theo manifest thất bại")
+    finally:
+        for path in file_paths:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 @router.post("/split")
 async def split_pdf_endpoint(
@@ -237,7 +292,6 @@ async def split_pdf_endpoint(
     """
     from app.workers.pdf_tools_engine import split_pdf
     import zipfile
-    from fastapi.responses import Response
     
     source_path = await save_upload(file)
     cfg = json.loads(config)
@@ -247,7 +301,7 @@ async def split_pdf_endpoint(
     base_name = file.filename.replace('.pdf', '') if file.filename else 'split'
     
     try:
-        results = split_pdf(
+        results = await run_in_threadpool(split_pdf,
             source_path, output_dir,
             mode=mode,
             ranges=cfg.get('ranges'),
@@ -257,26 +311,26 @@ async def split_pdf_endpoint(
         )
         
         if len(results) == 1:
-            _safe_watermark(results[0]["path"], license_info)
+            await run_in_threadpool(_safe_watermark, results[0]["path"], license_info)
             return FileResponse(
                 path=results[0]["path"],
                 filename=results[0]["filename"],
                 media_type="application/pdf"
             )
         
-        # Multiple files: return as ZIP
-        import io
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Multiple files: write ZIP to disk and stream it; do not retain the
+        # complete archive plus an extra getvalue() copy in process memory.
+        zip_path = os.path.join(RESULTS_DIR, f"split_{job_id}.zip")
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for r in results:
-                _safe_watermark(r["path"], license_info)
+                await run_in_threadpool(_safe_watermark, r["path"], license_info)
                 zf.write(r["path"], r["filename"])
-        zip_buffer.seek(0)
-        
-        return Response(
-            content=zip_buffer.getvalue(),
+
+        return FileResponse(
+            path=zip_path,
+            filename=f"split_{job_id}.zip",
             media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename=split_{job_id}.zip"}
+            background=BackgroundTask(_cleanup_split_artifacts, zip_path, output_dir),
         )
     except Exception as e:
         raise_http(e, "Tách PDF thất bại")
@@ -312,9 +366,9 @@ async def resize_pages_endpoint(
     output_path = os.path.join(RESULTS_DIR, f"resized_{job_id}.pdf")
 
     try:
-        resize_pages_smart(source_path, output_path, target_w, target_h,
+        await run_in_threadpool(resize_pages_smart, source_path, output_path, target_w, target_h,
                            scale_mode, apply_to, target_dpi=target_dpi, mode=mode)
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"resized_{file.filename}",
@@ -351,7 +405,7 @@ async def trim_shift_endpoint(
     output_path = os.path.join(RESULTS_DIR, f"trimshift_{job_id}.pdf")
 
     try:
-        trim_shift(
+        await run_in_threadpool(trim_shift,
             source_path, output_path,
             apply_to=apply_to,
             trim_top_mm=float(cfg.get('trimTop', 0)),
@@ -370,7 +424,7 @@ async def trim_shift_endpoint(
             content_mode=str(cfg.get('contentMode', 'original')),
             keep_bleed=bool(cfg.get('keepBleed', False)),
         )
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"trimshift_{file.filename}",
@@ -405,8 +459,8 @@ async def shuffle_pages_endpoint(
     mapping_list = json.loads(mapping) if mapping else []
     
     try:
-        shuffle_pages(source_path, output_path, action=action, mapping=mapping_list)
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(shuffle_pages, source_path, output_path, action=action, mapping=mapping_list)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"shuffled_{file.filename}",
@@ -449,7 +503,7 @@ async def ocr_searchable_endpoint(
     do_preprocess = preprocess.lower() in ("true", "1", "yes")
 
     try:
-        result = OCREngine.make_searchable_pdf(
+        result = await run_in_threadpool(OCREngine.make_searchable_pdf,
             input_path=source_path,
             output_path=output_path,
             lang=lang,
@@ -463,7 +517,7 @@ async def ocr_searchable_endpoint(
                 detail="OCR không nhận diện được ký tự nào. File có thể trống hoặc chứa nội dung không phải chữ."
             )
 
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"searchable_{file.filename}",
@@ -600,16 +654,16 @@ async def optimize_pdf_endpoint(
         # vì đây là yêu cầu riêng của user, độc lập với việc nén.
         t1 = _time.perf_counter()
         if do_strip:
-            _strip_pdf_metadata(output_path)
+            await run_in_threadpool(_strip_pdf_metadata, output_path)
         t_strip = _time.perf_counter() - t1
 
         t2 = _time.perf_counter()
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         t_wm = _time.perf_counter() - t2
 
         # Chuẩn hóa xref cổ điển CUỐI CÙNG để pdf-lib (frontend) mở lại được.
         t3 = _time.perf_counter()
-        _normalize_compat(output_path)
+        await run_in_threadpool(_normalize_compat, output_path)
         t_compat = _time.perf_counter() - t3
 
         # Kích thước có thể đổi sau hậu xử lý → cập nhật lại header cho chính xác.
@@ -669,7 +723,7 @@ async def encrypt_pdf_endpoint(
     try:
         # Không gọi _safe_watermark sau khi khóa (file đã encrypt → open fail).
         # Watermark stealth vẫn áp dụng trên /decrypt và các tool plain-PDF khác.
-        encrypt_pdf(
+        await run_in_threadpool(encrypt_pdf,
             source_path,
             output_path,
             user_password=user_password or "",
@@ -714,8 +768,8 @@ async def decrypt_pdf_endpoint(
     output_path = os.path.join(RESULTS_DIR, f"decrypted_{job_id}.pdf")
 
     try:
-        decrypt_pdf(source_path, output_path, password=password or "")
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(decrypt_pdf, source_path, output_path, password=password or "")
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         base = file.filename or "document.pdf"
         return FileResponse(
             path=output_path,
@@ -744,7 +798,7 @@ async def encryption_status_endpoint(
 
     source_path = await save_upload(file)
     try:
-        return {"encrypted": pdf_is_encrypted(source_path)}
+        return {"encrypted": await run_in_threadpool(pdf_is_encrypted, source_path)}
     except Exception as e:
         logger.exception("Kiểm tra mã hóa thất bại")
         raise_http(e, "Kiểm tra mã hóa thất bại")
@@ -766,7 +820,7 @@ async def metadata_read_endpoint(
 
     source_path = await save_upload(file)
     try:
-        meta = read_pdf_metadata(source_path, password=password or "")
+        meta = await run_in_threadpool(read_pdf_metadata, source_path, password=password or "")
         return {"metadata": meta}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -810,14 +864,14 @@ async def metadata_write_endpoint(
             "Creator": creator,
             "Producer": producer,
         }
-        write_pdf_metadata(
+        await run_in_threadpool(write_pdf_metadata,
             source_path,
             output_path,
             fields=fields,
             clear_all=do_clear,
             password=password or "",
         )
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         base = file.filename or "document.pdf"
         return FileResponse(
             path=output_path,
@@ -913,7 +967,7 @@ async def office_convert_file_endpoint(
         if not os.path.isfile(output_path) or os.path.getsize(output_path) < 32:
             raise HTTPException(status_code=500, detail="Chuyển đổi xong nhưng file PDF rỗng.")
 
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         base = os.path.splitext(name)[0] + ".pdf"
         return FileResponse(
             path=output_path,
@@ -950,7 +1004,7 @@ async def office_convert_google_endpoint(
         # The engine uses a synchronous HTTP client; keep the API loop responsive.
         from fastapi.concurrency import run_in_threadpool
         await run_in_threadpool(convert_google_link, url, output_path)
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"google_{kind}.pdf",
@@ -1166,7 +1220,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 raise HTTPException(status_code=422, detail=biz_err)
             raise RuntimeError("Lỗi lưu file kết quả. (File not found)")
 
-        _safe_watermark(output_path, license_info)
+        await run_in_threadpool(_safe_watermark, output_path, license_info)
 
         headers = {
             "X-Sticker-Output-Path": os.path.abspath(output_path),

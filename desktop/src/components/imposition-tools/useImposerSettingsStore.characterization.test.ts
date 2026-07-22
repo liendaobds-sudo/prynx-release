@@ -38,11 +38,27 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         const raw = localStorage.getItem(PERSIST_KEY);
         expect(raw).toBeTruthy();
         const parsed = JSON.parse(raw as string);
-        expect(parsed.version).toBe(9);
+        expect(parsed.version).toBe(10);
         const keys = Object.keys(parsed.state).sort();
         expect(keys).toMatchSnapshot();
     });
 
+    it('scope theo tab và seed một lần từ khóa persist cũ', () => {
+        localStorage.setItem(PERSIST_KEY, JSON.stringify({ state: { bleed: 7 }, version: 10 }));
+        const store = createImposerSettingsStore('tab:alpha');
+        expect(store.getState().bleed).toBe(7);
+        expect(localStorage.getItem('ps_imposer_settings:tab%3Aalpha')).toBeTruthy();
+    });
+
+    it('hai tab ghi vào hai khóa riêng', () => {
+        const first = createImposerSettingsStore('tab:first');
+        const second = createImposerSettingsStore('tab:second');
+        first.getState().setBleed(3);
+        second.getState().setBleed(5);
+        expect(localStorage.getItem('ps_imposer_settings:tab%3Afirst')).not.toBe(
+            localStorage.getItem('ps_imposer_settings:tab%3Asecond'),
+        );
+    });
     it('migration v6 → v7: thêm gangCount/showGangCount vào reportDisplay', () => {
         localStorage.clear();
         // Giả lập state persist version 6 KHÔNG có gangCount.

@@ -147,21 +147,18 @@ import { DEFAULT_PARAMS } from '../../../lib/dieline/types';
 
 // ─── Tiện ích dựng threeState giả ───────────────────────────────────────────
 
-function makeFakeGl(toBlobImpl?: (cb: (b: Blob | null) => void) => void) {
+function makeFakeGl() {
     return {
-        domElement: {
-            toBlob:
-                toBlobImpl ??
-                ((cb: (b: Blob | null) => void) =>
-                    cb(new Blob(['png-bytes'], { type: 'image/png' }))),
-        } as unknown as HTMLCanvasElement,
+        domElement: {} as HTMLCanvasElement,
         getPixelRatio: vi.fn(() => 1),
         setPixelRatio: vi.fn(),
         setSize: vi.fn(),
         render: vi.fn(),
+        getRenderTarget: vi.fn(() => null),
+        setRenderTarget: vi.fn(),
+        clear: vi.fn(),
+        readRenderTargetPixels: vi.fn(),
         capabilities: { getMaxAnisotropy: vi.fn(() => 16) },
-        // renderToBlob (useSceneExport) lưu/khôi phục clear color cho nhánh
-        // nền trong suốt; stub các API này để khớp renderer thật.
         getClearColor: vi.fn((target: THREE.Color) => {
             target.set(0x000000);
             return target;
@@ -173,7 +170,6 @@ function makeFakeGl(toBlobImpl?: (cb: (b: Blob | null) => void) => void) {
         outputColorSpace: THREE.SRGBColorSpace,
     };
 }
-
 function makeFakeThreeState(gl = makeFakeGl()) {
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
     camera.position.set(10, 10, 10);
@@ -190,6 +186,7 @@ function makeFakeThreeState(gl = makeFakeGl()) {
 // ─── Setup / teardown chung ─────────────────────────────────────────────────
 
 let getContextSpy: ReturnType<typeof vi.spyOn> | null = null;
+let toBlobSpy: ReturnType<typeof vi.spyOn> | null = null;
 
 beforeEach(() => {
     h.canvasProps.length = 0;
@@ -212,8 +209,20 @@ beforeEach(() => {
     // nên ép kiểu qua `never` để mockReturnValue khớp với mọi overload.
     getContextSpy = vi
         .spyOn(HTMLCanvasElement.prototype, 'getContext')
-        .mockReturnValue({} as never);
-
+        .mockImplementation(((contextId: string) => {
+            if (contextId === '2d') {
+                return {
+                    createImageData: (width: number, height: number) => ({
+                        data: new Uint8ClampedArray(width * height * 4),
+                    }),
+                    putImageData: vi.fn(),
+                };
+            }
+            return {};
+        }) as never);
+    toBlobSpy = vi
+        .spyOn(HTMLCanvasElement.prototype, 'toBlob')
+        .mockImplementation((callback) => callback(new Blob(['png-bytes'], { type: 'image/png' })));
     // jsdom không có URL.createObjectURL/revokeObjectURL — stub cho downloadBlob.
     (URL as unknown as { createObjectURL: unknown }).createObjectURL = vi.fn(
         () => 'blob:mock-url',
@@ -252,8 +261,8 @@ describe('MockupCanvas — tone mapping ACES Filmic (Yêu cầu 3.4)', () => {
         expect(props.gl).toBeDefined();
         expect(props.gl.toneMapping).toBe(THREE.ACESFilmicToneMapping);
         expect(props.gl.outputColorSpace).toBe(THREE.SRGBColorSpace);
-        // preserveDrawingBuffer cần cho xuất PNG phía client.
-        expect(props.gl.preserveDrawingBuffer).toBe(true);
+        // PNG export dùng render target riêng; không giữ framebuffer thường trực.
+        expect(props.gl.preserveDrawingBuffer).toBe(false);
         expect(props.frameloop).toBe('demand');
         expect(props.dpr).toEqual([1, 1.5]);
     });
@@ -397,7 +406,7 @@ describe('useSceneExport — exportPNG (Yêu cầu 6.1, 6.5)', () => {
         return api;
     }
 
-    it('xuất PNG thành công: resize tạm, đọc toBlob, kích hoạt tải file, khôi phục cảnh', async () => {
+    it('xuất PNG thành công qua render target riêng, không resize canvas hiển thị', async () => {
         const gl = makeFakeGl();
         h.threeState = makeFakeThreeState(gl);
 
@@ -408,9 +417,9 @@ describe('useSceneExport — exportPNG (Yêu cầu 6.1, 6.5)', () => {
         });
 
         expect(ok).toBe(true);
-        // Đã render lại ở kích thước mục tiêu rồi KHÔI PHỤC (setSize gọi ≥2 lần).
-        expect(gl.setSize).toHaveBeenCalled();
-        expect((gl.setSize as any).mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(gl.readRenderTargetPixels).toHaveBeenCalledOnce();
+        expect(gl.setRenderTarget).toHaveBeenLastCalledWith(null);
+        expect(gl.setSize).not.toHaveBeenCalled();
         // Tải file phía client: tạo object URL.
         expect((URL.createObjectURL as any).mock.calls.length).toBeGreaterThan(0);
         // Báo thành công.
@@ -418,7 +427,8 @@ describe('useSceneExport — exportPNG (Yêu cầu 6.1, 6.5)', () => {
     });
 
     it('nhánh lỗi PNG (toBlob trả null): trả false, báo lỗi, KHÔNG ném và khôi phục cảnh', async () => {
-        const gl = makeFakeGl((cb) => cb(null)); // mô phỏng trình duyệt không tạo được blob
+        const gl = makeFakeGl();
+        toBlobSpy!.mockImplementationOnce((callback: (blob: Blob | null) => void) => callback(null));
         h.threeState = makeFakeThreeState(gl);
 
         const api = mountExportHarness();
@@ -429,8 +439,8 @@ describe('useSceneExport — exportPNG (Yêu cầu 6.1, 6.5)', () => {
 
         expect(ok).toBe(false);
         expect(toast.error).toHaveBeenCalled();
-        // Cảnh được khôi phục kích thước ban đầu trong finally (setSize vẫn gọi).
-        expect(gl.setSize).toHaveBeenCalled();
+        expect(gl.setRenderTarget).toHaveBeenLastCalledWith(null);
+        expect(gl.setSize).not.toHaveBeenCalled();
     });
 
     it('từ chối khi kích thước xuất vượt giới hạn (logic computeExportSize, giữ cảnh)', () => {

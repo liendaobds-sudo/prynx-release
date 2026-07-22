@@ -1,5 +1,5 @@
 // Cấu hình persist — ghép partialize keys từ các slice + migrate giữ nguyên verbatim.
-import type { PersistOptions } from 'zustand/middleware';
+import { createJSONStorage, type PersistOptions, type StateStorage } from 'zustand/middleware';
 import { DEFAULT_PONT_CONFIG } from '../PontSettingsDialog';
 import { DEFAULT_BOOK_REPORT_CONFIG, DEFAULT_REPORT_CONFIG } from '../types';
 import type { ImposerSettingsState } from './types';
@@ -15,6 +15,59 @@ import { CNC_PERSIST_KEYS } from './slices/cncSlice';
 import { WORKSPACE_PERSIST_KEYS } from './slices/workspaceSlice';
 import { PREPROC_PERSIST_KEYS, DEFAULT_RESIZE_SETTINGS } from './slices/preprocSlice';
 
+const PERSIST_DEBOUNCE_MS = 150;
+const pendingWrites = new Map<string, { value: string; timer: number }>();
+
+function flushPendingWrites(): void {
+    if (typeof window === 'undefined') return;
+    for (const [name, pending] of pendingWrites) {
+        window.clearTimeout(pending.timer);
+        try {
+            window.localStorage.setItem(name, pending.value);
+        } catch {
+            // Storage failures must not break the editor.
+        }
+        pendingWrites.delete(name);
+    }
+}
+
+const debouncedStorage: StateStorage = {
+    getItem: (name) => {
+        if (typeof window === 'undefined') return null;
+        try { return window.localStorage.getItem(name); } catch { return null; }
+    },
+    setItem: (name, value) => {
+        if (typeof window === 'undefined') return;
+        try {
+            // Keep the first durable write synchronous so a newly created key is
+            // never lost if the app closes immediately; subsequent bursts debounce.
+            if (!pendingWrites.has(name) && window.localStorage.getItem(name) === null) {
+                window.localStorage.setItem(name, value);
+                return;
+            }
+        } catch { /* continue with best-effort debounce */ }
+        const previous = pendingWrites.get(name);
+        if (previous) window.clearTimeout(previous.timer);
+        const timer = window.setTimeout(() => {
+            try { window.localStorage.setItem(name, value); } catch { /* best effort */ }
+            pendingWrites.delete(name);
+        }, PERSIST_DEBOUNCE_MS);
+        pendingWrites.set(name, { value, timer });
+    },
+    removeItem: (name) => {
+        if (typeof window === 'undefined') return;
+        const previous = pendingWrites.get(name);
+        if (previous) window.clearTimeout(previous.timer);
+        pendingWrites.delete(name);
+        try { window.localStorage.removeItem(name); } catch { /* best effort */ }
+    },
+};
+
+const persistStorage = createJSONStorage<Partial<ImposerSettingsState>>(() => debouncedStorage);
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', flushPendingWrites);
+}
 /** Tập field được lưu vào localStorage — ghép từ khai báo của từng slice. */
 export const PARTIALIZE_KEYS: readonly string[] = [
     ...WORKSPACE_PERSIST_KEYS,
@@ -111,6 +164,7 @@ function migrate(persistedState: any, version: number): any {
 
 export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<ImposerSettingsState>> = {
     name: 'ps_imposer_settings',
+    storage: persistStorage,
     version: 10,
     migrate,
     partialize: (state) => {

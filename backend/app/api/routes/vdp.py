@@ -1,13 +1,17 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import os
 import uuid
 import json
 import time
 import base64
+import csv
+import io
 import tempfile
 import multiprocessing
+import threading
 from typing import List, Dict, Optional, Any, Tuple
 from app.schemas.vdp import VdpRequest, VdpField
 from app.workers.vdp_engine import run_vdp_engine
@@ -44,6 +48,11 @@ vdp_jobs = {}
 # ── Giới hạn tài nguyên ──
 VDP_JOB_TTL_SECONDS = 3600          # Dọn job + file kết quả sau 1 giờ
 MAX_VDP_ROWS = 100_000              # Chặn payload quá lớn gây OOM/đầy đĩa
+MAX_VDP_PAYLOAD_BYTES = 256 * 1024 * 1024
+_VDP_MAX_CONCURRENT_JOBS = max(1, int(os.environ.get('PRYNX_MAX_VDP_JOBS', '1') or '1'))
+_VDP_MAX_QUEUED_JOBS = max(0, int(os.environ.get('PRYNX_MAX_VDP_QUEUE', '8') or '8'))
+_VDP_JOB_SEMAPHORE = threading.BoundedSemaphore(_VDP_MAX_CONCURRENT_JOBS)
+_VDP_SUBMISSION_SLOTS = threading.BoundedSemaphore(_VDP_MAX_CONCURRENT_JOBS + _VDP_MAX_QUEUED_JOBS)
 
 
 def _purge_old_jobs():
@@ -69,6 +78,56 @@ def _purge_old_jobs():
 
 import glob
 import tempfile
+
+def _parse_csv_upload(file_obj, has_header: bool) -> List[Dict[str, str]]:
+    """Parse an uploaded CSV once, without materializing a JSON string copy."""
+    file_obj.seek(0)
+    wrapper = io.TextIOWrapper(file_obj, encoding="utf-8-sig", errors="replace", newline="")
+    try:
+        sample = wrapper.read(4096)
+        wrapper.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        except csv.Error:
+            dialect = csv.excel
+        reader = csv.reader(wrapper, dialect)
+        rows: List[Dict[str, str]] = []
+        if has_header:
+            try:
+                header = [str(value or "").strip() for value in next(reader)]
+            except StopIteration:
+                return rows
+            for raw in reader:
+                if not any(str(value or "").strip() for value in raw):
+                    continue
+                rows.append({
+                    name: str(raw[index] if index < len(raw) else "")
+                    for index, name in enumerate(header)
+                })
+                if len(rows) > MAX_VDP_ROWS:
+                    raise ValueError(f"Quá nhiều bản ghi (>{MAX_VDP_ROWS}).")
+        else:
+            for raw in reader:
+                if not any(str(value or "").strip() for value in raw):
+                    continue
+                rows.append({
+                    f"Cột {index + 1}": str(value or "")
+                    for index, value in enumerate(raw)
+                })
+                if len(rows) > MAX_VDP_ROWS:
+                    raise ValueError(f"Quá nhiều bản ghi (>{MAX_VDP_ROWS}).")
+        return rows
+    finally:
+        wrapper.detach()
+        file_obj.seek(0)
+
+
+def _uploaded_file_size(file_obj) -> int:
+    current = file_obj.tell()
+    file_obj.seek(0, os.SEEK_END)
+    size = file_obj.tell()
+    file_obj.seek(current)
+    return size
 
 def vdp_background_task(job_id: str, template_path: str, fields: List[VdpField], data: List[Dict[str, str]], output_path: str, **kwargs):
     try:
@@ -98,6 +157,17 @@ def vdp_background_task(job_id: str, template_path: str, fields: List[VdpField],
             except Exception:
                 pass
 
+def vdp_background_task_limited(*args, **kwargs):
+    """Bound VDP fan-out so each queued job gets a controlled worker slot."""
+    job_id = args[0] if args else kwargs.get("job_id")
+    try:
+        with _VDP_JOB_SEMAPHORE:
+            if job_id in vdp_jobs:
+                vdp_jobs[job_id]["status"] = "processing"
+            return vdp_background_task(*args, **kwargs)
+    finally:
+        _VDP_SUBMISSION_SLOTS.release()
+
 @router.post("/generate")
 async def start_vdp_job(
     background_tasks: BackgroundTasks,
@@ -105,6 +175,8 @@ async def start_vdp_job(
     data_file: UploadFile = File(...),
     file: Optional[UploadFile] = File(None),
     file_path: Optional[str] = Form(None),
+    data_format: str = Form("json"),
+    has_header: bool = Form(True),
     license_info: dict = Depends(require_license),
 ):
     logger.debug("Received POST /generate")
@@ -112,16 +184,29 @@ async def start_vdp_job(
     try:
         fields_parsed = json.loads(fields)
         logger.debug("Parsed fields")
-        data_content = await data_file.read()
-        logger.debug("Read data content: %d bytes", len(data_content))
-        data_parsed = json.loads(data_content)
-        logger.debug("Parsed %d rows", len(data_parsed))
-        
+        if data_format.lower() == "csv":
+            data_size = await run_in_threadpool(_uploaded_file_size, data_file.file)
+            if data_size > MAX_VDP_PAYLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="VDP payload vượt quá giới hạn kích thước.")
+            data_parsed = await run_in_threadpool(_parse_csv_upload, data_file.file, has_header)
+            logger.debug("Parsed %d CSV rows without JSON materialization", len(data_parsed))
+        else:
+            data_content = await data_file.read()
+            if len(data_content) > MAX_VDP_PAYLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="VDP payload vượt quá giới hạn kích thước.")
+            logger.debug("Read data content: %d bytes", len(data_content))
+            data_parsed = json.loads(data_content)
+            logger.debug("Parsed %d rows", len(data_parsed))
+
         vdp_fields = [VdpField(**f) for f in fields_parsed]
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        logger.error("Error parsing input: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as e:
         logger.error("Error parsing input: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid JSON data")
-        
+        raise HTTPException(status_code=400, detail="Invalid data payload")
     if not data_parsed:
         raise HTTPException(status_code=400, detail="Data array is empty")
 
@@ -176,8 +261,14 @@ async def start_vdp_job(
     # tìm thấy file (os error 3) → render hỏng dù Python mở được.
     output_path = os.path.abspath(os.path.join(RESULTS_DIR, f"vdp_{job_id}.pdf"))
     
+    if not _VDP_SUBMISSION_SLOTS.acquire(blocking=False):
+        try:
+            os.remove(template_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=429, detail="Hàng đợi VDP đang đầy. Vui lòng chờ job hiện tại hoàn tất.")
     vdp_jobs[job_id] = {
-        "status": "processing",
+        "status": "queued",
         "processed": 0,
         "total": len(data_parsed),
         "result": None,
@@ -186,7 +277,7 @@ async def start_vdp_job(
     }
     
     background_tasks.add_task(
-        vdp_background_task, job_id, template_path, vdp_fields, data_parsed, output_path,
+        vdp_background_task_limited, job_id, template_path, vdp_fields, data_parsed, output_path,
         _license_key=license_info.get("license_key", ""),
         _hwid=license_info.get("hwid", ""),
     )

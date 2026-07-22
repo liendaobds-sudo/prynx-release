@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { runMerge, type ProcessContext } from '../lib/processHandlers';
+import { backendMergeManifest, backendMergePdfs, type BackendMergeManifestItem } from '../lib/api';
+import { shouldDelegateLargePdfJob } from '../lib/combineDelegation';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { getFileArrayBuffer } from '../lib/utils';
@@ -34,6 +35,36 @@ export type CombineNode = {
   sizeKey?: string;
 };
 
+
+function buildBackendCombineManifest(nodes: CombineNode[]): {
+  files: File[];
+  manifest: BackendMergeManifestItem[];
+} {
+  const files: File[] = [];
+  const indexes = new Map<File, number>();
+  const manifest: BackendMergeManifestItem[] = [];
+  for (const node of nodes) {
+    if (node.type === 'blank') {
+      manifest.push({ blank: true, rotation: node.rotation || 0 });
+      continue;
+    }
+    if (!node.file || !node.file.name.toLowerCase().endsWith('.pdf')) {
+      throw new Error('Manifest backend chỉ hỗ trợ PDF');
+    }
+    let fileIndex = indexes.get(node.file);
+    if (fileIndex === undefined) {
+      fileIndex = files.length;
+      indexes.set(node.file, fileIndex);
+      files.push(node.file);
+    }
+    manifest.push({
+      file_index: fileIndex,
+      page_index: node.pageIndex,
+      rotation: node.rotation || 0,
+    });
+  }
+  return { files, manifest };
+}
 interface Props {
   tabId?: string;
   isActive?: boolean;
@@ -455,10 +486,22 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     setStatusMsg(t('tabs.combine:dang_xu_ly_dan_xen'));
 
     try {
+      const topLevelFiles = nodes.filter(n => n.type === 'collapsed_group' || (n.type === 'single' && !n.groupId));
+      const canDelegateInterleave = topLevelFiles.length === nodes.length
+        && shouldDelegateLargePdfJob(topLevelFiles, pageCounts, {
+          scaleMode,
+          requireTopLevel: true,
+        });
+      if (canDelegateInterleave) {
+        setStatusMsg(`${t('tabs.combine:dang_xu_ly_dan_xen')} (backend)`);
+        const blob = await backendMergePdfs(topLevelFiles.map(n => n.file!), 'interleave');
+        const finalFile = new File([blob], 'Interleaved.pdf', { type: 'application/pdf' });
+        if (onSpawnTab) onSpawnTab(finalFile);
+        return;
+      }
       const finalDoc = await PDFDocument.create();
       const loadedDocs = new Map<File, PDFDocument>();
       
-      const topLevelFiles = nodes.filter(n => n.type === 'collapsed_group' || (n.type === 'single' && !n.groupId));
       const pdfsToInterleave: PDFDocument[] = [];
       const rotations: number[] = [];
       
@@ -762,6 +805,23 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
     try {
       const loadedDocs = new Map<File, PDFDocument>();
       const flatNodes = nodes.flatMap(n => n.type === 'collapsed_group' && n.pages ? n.pages : [n]);
+
+      if (!groupByPageSize) {
+        const canDelegateMerge = shouldDelegateLargePdfJob(flatNodes, pageCounts, {
+          scaleMode,
+          groupingEnabled: groupByPageSize,
+          allowManifest: true,
+        });
+        if (canDelegateMerge) {
+          setStatusMsg(`${t('tabs.combine:dang_xu_ly_tai_lieu')} (backend)`);
+          const { files, manifest } = buildBackendCombineManifest(flatNodes);
+          const blob = await backendMergeManifest(files, manifest);
+          const finalFile = new File([blob], 'Combined.pdf', { type: 'application/pdf' });
+          if (onSpawnTab) onSpawnTab(finalFile);
+          return;
+        }
+      }
+
 
       // ── Không chia nhóm: 1 file → tab imposition (hành vi cũ) ──
       if (!groupByPageSize) {

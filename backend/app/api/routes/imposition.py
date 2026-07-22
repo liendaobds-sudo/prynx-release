@@ -1033,9 +1033,14 @@ async def api_detect_shape(body: dict):
 import tempfile
 import threading
 import glob
+from concurrent.futures import ThreadPoolExecutor
 
 # In-memory job store for N-Up jobs
 nup_jobs = {}
+_NUP_MAX_CONCURRENT_JOBS = max(1, int(os.environ.get('PRYNX_MAX_NUP_JOBS', '1') or '1'))
+_NUP_MAX_QUEUED_JOBS = max(0, int(os.environ.get('PRYNX_MAX_NUP_QUEUE', '8') or '8'))
+_NUP_EXECUTOR = ThreadPoolExecutor(max_workers=_NUP_MAX_CONCURRENT_JOBS, thread_name_prefix='prynx-nup')
+_NUP_SUBMISSION_SLOTS = threading.BoundedSemaphore(_NUP_MAX_CONCURRENT_JOBS + _NUP_MAX_QUEUED_JOBS)
 
 # TTL dọn job quá hạn khỏi RAM + xoá file kết quả (giống vdp `_purge_old_jobs`).
 # Trước đây nup_jobs KHÔNG có cơ chế purge → dict tăng đơn điệu theo số lần bình
@@ -1062,6 +1067,16 @@ def _purge_old_nup_jobs():
             _cleanup_job_temp(jid)
 
 
+def _cleanup_nup_chunk_files(job_id: str):
+    """Remove chunk PDFs left by completed, failed, or cancelled N-Up workers."""
+    pattern = os.path.join(tempfile.gettempdir(), f"prynx_nup_{job_id}_*.pdf")
+    for path in glob.glob(pattern):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def _cleanup_job_temp(job_id: str):
     """Dọn file trạng thái/tiến trình tạm của job (Task 19 / Req 9.2)."""
     for name in (f"nup_state_{job_id}.txt", f"nup_prog_{job_id}.txt"):
@@ -1071,6 +1086,37 @@ def _cleanup_job_temp(job_id: str):
                 os.remove(p)
         except OSError:
             pass
+    _cleanup_nup_chunk_files(job_id)
+
+
+def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_id: str):
+    """Run one outer process only after the bounded executor grants a slot."""
+    import multiprocessing
+    try:
+        job = nup_jobs.get(job_id)
+        if job is None:
+            return
+        job["status"] = "running"
+        proc = multiprocessing.Process(
+            target=_nup_process_worker,
+            args=(source_path, output_path, settings, job_id),
+            daemon=False,
+        )
+        proc.start()
+        job["pid"] = proc.pid
+        proc.join()
+        if proc.exitcode not in (0, None):
+            state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
+            if not os.path.exists(state_file):
+                try:
+                    with open(state_file, 'w', encoding='utf-8') as f:
+                        f.write(f"failed|||N-Up worker exited with code {proc.exitcode}")
+                except OSError:
+                    pass
+    finally:
+        _cleanup_nup_chunk_files(job_id)
+        _NUP_SUBMISSION_SLOTS.release()
+
 
 def _nup_process_worker(source_path: str, output_path: str, settings: dict, job_id: str):
     import tempfile
@@ -1095,8 +1141,6 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     Helper chung cho N-Up & Sticker (Task 18 / Req 9.3).
     Hai chế độ chỉ khác tiền tố tên file; mode thực do settings['isDieCutMode'].
     """
-    import multiprocessing
-
     source_path = _validate_file_path(body.get("source_path"))
     settings = body.get("settings", {})
 
@@ -1123,7 +1167,7 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
 
     import time
     nup_jobs[job_id] = {
-        "status": "running",
+        "status": "queued",
         "progress": "0/0",
         "report": "",
         "output_path": output_path,
@@ -1131,13 +1175,17 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         "created_at": time.time(),
     }
 
-    # Process riêng để bỏ qua GIL; nup_engine tự chunk
-    proc = multiprocessing.Process(
-        target=_nup_process_worker,
-        args=(source_path, output_path, settings, job_id),
-        daemon=False,
-    )
-    proc.start()
+    # Queue outer processes so concurrent jobs cannot multiply process trees
+    # without bound. Each granted process still uses the capped inner pool.
+    if not _NUP_SUBMISSION_SLOTS.acquire(blocking=False):
+        nup_jobs.pop(job_id, None)
+        raise HTTPException(status_code=429, detail="Hàng đợi N-Up đang đầy. Vui lòng chờ job hiện tại hoàn tất.")
+    try:
+        _NUP_EXECUTOR.submit(_spawn_nup_process, source_path, output_path, settings, job_id)
+    except Exception:
+        _NUP_SUBMISSION_SLOTS.release()
+        nup_jobs.pop(job_id, None)
+        raise
     return {"job_id": job_id}
 
 
@@ -1222,28 +1270,28 @@ async def download_nup_result(job_id: str, _: dict = Depends(require_license)):
         background=BackgroundTask(_cleanup_job_temp, job_id),
     )
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict, Any, Optional, List
 
 class PreviewLayoutRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     
-    usable_w: float
-    usable_h: float
-    item_w: float
-    item_h: float
-    gap_x: float
-    gap_y: float
+    usable_w: float = Field(gt=0, le=10000)
+    usable_h: float = Field(gt=0, le=10000)
+    item_w: float = Field(gt=0, le=10000)
+    item_h: float = Field(gt=0, le=10000)
+    gap_x: float = Field(ge=0, le=10000)
+    gap_y: float = Field(ge=0, le=10000)
     strategy: str
     shape_type: str = "CUSTOM"
-    shape_props: Dict[str, Any] = {}
+    shape_props: Dict[str, Any] = Field(default_factory=dict)
     pont_config: Optional[Dict[str, Any]] = None
-    sheet_w: float = 0
-    sheet_h: float = 0
-    margin_left: float = 0
-    margin_bottom: float = 0
-    margin_top: float = 0
-    margin_right: float = 0
+    sheet_w: float = Field(default=0, ge=0, le=10000)
+    sheet_h: float = Field(default=0, ge=0, le=10000)
+    margin_left: float = Field(default=0, ge=0, le=10000)
+    margin_bottom: float = Field(default=0, ge=0, le=10000)
+    margin_top: float = Field(default=0, ge=0, le=10000)
+    margin_right: float = Field(default=0, ge=0, le=10000)
     # Căn lưới (center|left|right|top|bottom…) — ratio_stack preview khớp nup_engine.
     align: Optional[str] = "center"
     file_id: Optional[str] = None
@@ -1256,20 +1304,20 @@ class PreviewLayoutRequest(BaseModel):
     cluster_sizing_mode: str = "dims"
     cluster_combine_mode: str = "replicate_mixed"
     cluster_nesting: bool = True
-    cluster_cols: int = 2
-    cluster_rows: int = 2
-    cluster_w: float = 0
-    cluster_h: float = 0
-    tile_gap_x: float = 0
-    tile_gap_y: float = 0
+    cluster_cols: int = Field(default=2, ge=0, le=1000)
+    cluster_rows: int = Field(default=2, ge=0, le=1000)
+    cluster_w: float = Field(default=0, ge=0, le=10000)
+    cluster_h: float = Field(default=0, ge=0, le=10000)
+    tile_gap_x: float = Field(default=0, ge=0, le=10000)
+    tile_gap_y: float = Field(default=0, ge=0, le=10000)
     task_mode: str = "nup"
     # 0 = chưa gửi / không biết → dùng doc.page_count. >0 = số trang viewer (sau xóa/sắp).
-    total_pages: int = 0
+    total_pages: int = Field(default=0, ge=0, le=200000)
     # N-Up 2 mặt: 'double' | 'normal' (sequential ghép cặp trang trước/sau).
     duplex_flow: Optional[str] = "normal"
     split_gap: Optional[float] = 0
-    target_quantity: Optional[int] = 0
-    target_quantities_by_page: Optional[Dict[str, int]] = {}
+    target_quantity: Optional[int] = Field(default=0, ge=0, le=1000000)
+    target_quantities_by_page: Optional[Dict[str, int]] = Field(default_factory=dict)
     # ── Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup) — hình/props nhận diện theo trang ──
     # Cần để preview phát hiện "1 khuôn master + nhiều nội dung" KHỚP output (nup_engine).
     detected_shapes_by_page: Optional[Dict[str, Any]] = None
@@ -1278,8 +1326,8 @@ class PreviewLayoutRequest(BaseModel):
     imposer_mode: Optional[str] = None
     cnc_two_sided: Optional[bool] = False
     cnc_flip_edge: Optional[str] = "long"
-    cols: int = 0
-    rows: int = 0
+    cols: int = Field(default=0, ge=0, le=1000)
+    rows: int = Field(default=0, ge=0, le=1000)
     # Chế độ 1 Dao (LETA): KC cụm phụ (mm) — preview phải khớp nup_engine secondary_gap.
     cut_type: Optional[str] = "default"
     fill_block_gap: Optional[float] = 0
@@ -1465,6 +1513,9 @@ def apply_preview_collisions(items: List[Dict[str, Any]], item_w: float, item_h:
         return items
 
 
+MAX_PREVIEW_CELLS = 100_000
+MAX_PREVIEW_PAGE_MAP = 200_000
+
 @router.post("/preview-layout")
 async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(require_license)):
     """
@@ -1476,6 +1527,14 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
             status_code=422,
             detail="L\u01b0\u1edbi th\u1ee7 c\u00f4ng c\u1ea7n s\u1ed1 c\u1ed9t v\u00e0 s\u1ed1 d\u00f2ng l\u1edbn h\u01a1n 0.",
         )
+
+    requested_cells = (req.cols * req.rows) if req.cols > 0 and req.rows > 0 else 0
+    cluster_cells = (req.cluster_cols * req.cluster_rows) if req.cluster_cols > 0 and req.cluster_rows > 0 else 0
+    page_map = req.target_quantities_by_page or {}
+    if requested_cells > MAX_PREVIEW_CELLS or cluster_cells > MAX_PREVIEW_CELLS:
+        raise HTTPException(status_code=422, detail="Preview layout v\u01b0\u1ee3t qu\u00e1 gi\u1edbi h\u1ea1n s\u1ed1 \u00f4 cho ph\u00e9p.")
+    if len(page_map) > MAX_PREVIEW_PAGE_MAP or any(value > 1_000_000 for value in page_map.values()):
+        raise HTTPException(status_code=422, detail="Preview layout v\u01b0\u1ee3t qu\u00e1 gi\u1edbi h\u1ea1n page map ho\u1eb7c quantity.")
 
     enforce_feature(_imposition_feature(req), license_info)
     

@@ -76,14 +76,10 @@ def recover_stuck_jobs(db: Session = Depends(get_db), license_info: dict = Depen
         db.commit()
         
         if settings.DEV_MODE or settings.IS_DESKTOP_APP:
-            from app.api.routes.compare import run_comparison_sync
-            import threading
-            t = threading.Thread(
-                target=run_comparison_sync,
-                args=(str(job.id),),
-                daemon=True,
-            )
-            t.start()
+            from app.api.routes.compare import submit_comparison_local
+            if not submit_comparison_local(str(job.id)):
+                logger.warning("Compare queue full; leaving recovered job %s pending", job.id)
+                continue
         else:
             from app.workers.compare_task import run_comparison
             run_comparison.delay(str(job.id))

@@ -7,6 +7,7 @@ import SettingsModal from './components/SettingsModal';
 import NewDocumentModal from './components/NewDocumentModal';
 import { createBlankPdfFile } from './lib/createBlankPdf';
 import { scheduleWarmupPdfjs } from './lib/pdfWarmup';
+import { appPerf } from './lib/perfMarks';
 import SystemIntegrations from './components/SystemIntegrations';
 import UpdateChecker from './components/UpdateChecker';
 import { TOOL_REGISTRY, TOOL_CATEGORIES, getToolsByCategory, getToolUniqueKey, getTabTitle, getExistingInstance, type AppToolId } from './lib/toolRegistry';
@@ -151,8 +152,16 @@ export default function App() {
   const [splashDone, setSplashDone] = useState(false);
 
   useEffect(() => {
+    appPerf.mark('app-mounted');
     const t = window.setTimeout(() => setSplashMinElapsed(true), SPLASH_MIN_MS);
     return () => window.clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    appPerf.mark('warmup-scheduled');
+    const cancelWarmup = scheduleWarmupPdfjs();
+
+    return cancelWarmup;
   }, []);
 
   useEffect(() => {
@@ -175,6 +184,8 @@ export default function App() {
   }, [isChecking, splashMinElapsed, splashExiting, splashDone]);
 
   const handleSplashExitComplete = useCallback(() => {
+    appPerf.mark('splash-complete');
+    appPerf.measure('startup-to-splash-complete', 'app-mounted', 'splash-complete');
     setSplashDone(true);
   }, []);
 
@@ -222,11 +233,11 @@ function AppInner() {
   const { showMenuBar, showRulers, hiddenTools } = useAppSettingsStore();
   const { theme, toggleTheme } = useTheme();
 
-  // Warm-up pdfjs worker lúc app rảnh để loại bỏ cold-start vài giây ở lần
-  // mở/tạo PDF đầu tiên (qua pdfjs). Chạy nền, không chặn UI.
+  // AppInner là mốc shell đã được mount sau splash. Warm-up được khởi động ở
+  // App() để không đợi hết splash và không cần render toàn bộ tab tree.
   useEffect(() => {
-    const cancel = scheduleWarmupPdfjs();
-    return cancel;
+    appPerf.mark('app-inner-mounted');
+    appPerf.measure('startup-to-app-inner', 'app-mounted', 'app-inner-mounted');
   }, []);
 
   // ── CRASH RECOVERY: quét snapshot còn sót lúc khởi động (chỉ có nếu lần trước

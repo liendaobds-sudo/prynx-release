@@ -211,9 +211,12 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     );
     // Chỉ thay đổi khóa này ở page-mode. Metadata đến sau không được làm nhận diện
     // đường khuôn thật bị hủy rồi chạy lại.
-    const pageSizedShapeStateKey = pageSizedOneDao
-        ? JSON.stringify({ dims: s.sourcePageDims, fallback: s.sourcePageDim, count: sourceTotalPages })
-        : '';
+    const pageSizedShapeStateKey = useMemo(
+        () => pageSizedOneDao
+            ? JSON.stringify({ dims: s.sourcePageDims, fallback: s.sourcePageDim, count: sourceTotalPages })
+            : '',
+        [pageSizedOneDao, s.sourcePageDims, s.sourcePageDim, sourceTotalPages],
+    );
     const expectedShapeDetectionKey = `${activeTool}|${detectionSourceKey}|${pageSizedOneDao ? pageSizedShapeStateKey : 'vector'}`;
     const previewDetectedShapesByPage = useMemo(
         () => projectPageRecordToViewer(detectedShapesByPage, viewerPageOrder),
@@ -236,6 +239,17 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     const previewDetectedShapeParamsByPage = useMemo(
         () => projectShapeParamsToViewer(detectedShapeParamsByPage, viewerPageOrder),
         [detectedShapeParamsByPage, viewerPageOrder],
+    );
+    const previewSourceKey = useMemo(
+        () => JSON.stringify({
+            f: detectionSourceKey,
+            o: viewerPageOrder,
+            i: viewerPageInstanceIds,
+            r: viewerPageRotations,
+            d: previewSourceDimensionsByPage,
+            n: sourceTotalPages,
+        }),
+        [detectionSourceKey, viewerPageOrder, viewerPageInstanceIds, viewerPageRotations, previewSourceDimensionsByPage, sourceTotalPages],
     );
 
     // ═══ Paper Presets ═══
@@ -1502,7 +1516,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 dieOffsetMm={s.dieOffsetMm}
                                 fillBlockGap={s.fillBlockGap}
                                 getWorkingFile={getWorkingFile}
-                                previewSourceKey={JSON.stringify({ f: detectionSourceKey, o: viewerPageOrder, i: viewerPageInstanceIds, r: viewerPageRotations, d: previewSourceDimensionsByPage, n: sourceTotalPages })}
+                                previewSourceKey={previewSourceKey}
                             />
                             );
                             })()}

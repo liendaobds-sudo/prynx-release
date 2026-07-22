@@ -5,17 +5,15 @@
 // KHÔNG gọi backend, KHÔNG telemetry (Yêu cầu 6.1, 6.5, 6.6, 9.5):
 //
 //   • exportPNG(scale?) — kết xuất cảnh hiện tại thành tệp PNG ở hệ số
-//     phóng đại ∈ {1,2,4}. Renderer được resize TẠM THỜI tới kích thước
-//     mục tiêu (xác thực qua `computeExportSize` với trần 16384 px —
-//     Yêu cầu 6.4), render lại, đọc pixel qua `canvas.toBlob`, rồi KHÔI
-//     PHỤC kích thước ban đầu. Nếu vượt giới hạn hoặc lỗi → giữ nguyên
-//     cảnh và báo lỗi (Yêu cầu 6.4, 6.7).
+//     phóng đại ∈ {1,2,4}. Cảnh được render vào WebGLRenderTarget tạm thời,
+//     đọc pixel và mã hóa qua canvas 2D dùng riêng cho file xuất; canvas hiển thị
+//     không resize và không cần `preserveDrawingBuffer` thường trực.
 //
 //   • exportGLB() — kết xuất scene three.js sang tệp nhị phân GLB qua
 //     `GLTFExporter` (chế độ binary). Lỗi → giữ cảnh và báo lỗi (6.8).
 //
 // Cả hai bọc trong try/catch; mọi nhánh lỗi đều BẢO TOÀN cảnh hiện tại
-// (khôi phục kích thước/pixelRatio renderer trong `finally`) và thông
+// (khôi phục render target, camera và trạng thái scene trong `finally`) và thông
 // báo cho người dùng. Việc tải tệp được kích hoạt phía client bằng thẻ
 // <a download> + object URL, không có request mạng.
 //
@@ -156,30 +154,60 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
         [onSuccess],
     );
 
-    // Render cảnh hiện tại ra PNG blob. Khi `transparent` → ẩn nền (scene
-    // background) + sàn/bóng ('mockup-floor') và đặt clear alpha = 0 để PNG có
-    // nền trong suốt; khôi phục mọi thứ sau khi đọc xong (bảo toàn cảnh).
+    // Render vào framebuffer riêng rồi đọc pixel. Canvas hiển thị không cần
+    // preserveDrawingBuffer và không bị resize trong lúc export.
     const renderToBlob = useCallback(
-        async (transparent: boolean): Promise<Blob | null> => {
-            const canvas = gl.domElement as HTMLCanvasElement;
+        async (transparent: boolean, width: number, height: number): Promise<Blob | null> => {
             const prevBg = scene.background;
             const floor = scene.getObjectByName('mockup-floor');
             const prevFloorVisible = floor ? floor.visible : undefined;
             const prevClear = new THREE.Color();
             gl.getClearColor(prevClear);
             const prevClearAlpha = gl.getClearAlpha();
+            const prevTarget = gl.getRenderTarget();
+            const target = new THREE.WebGLRenderTarget(width, height, {
+                depthBuffer: true,
+                stencilBuffer: false,
+            });
+            target.texture.colorSpace = THREE.SRGBColorSpace;
 
             if (transparent) {
                 scene.background = null;
                 if (floor) floor.visible = false;
                 gl.setClearColor(0x000000, 0);
             }
+
             try {
+                gl.setRenderTarget(target);
+                gl.clear(true, true, true);
                 gl.render(scene, camera);
+
+                const pixels = new Uint8Array(width * height * 4);
+                gl.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+
+                // WebGL có gốc ở dưới-trái; Canvas 2D có gốc ở trên-trái.
+                const flipped = new Uint8ClampedArray(pixels.length);
+                const rowBytes = width * 4;
+                for (let y = 0; y < height; y += 1) {
+                    const sourceStart = (height - 1 - y) * rowBytes;
+                    flipped.set(pixels.subarray(sourceStart, sourceStart + rowBytes), y * rowBytes);
+                }
+
+                const exportCanvas = document.createElement('canvas');
+                exportCanvas.width = width;
+                exportCanvas.height = height;
+                const context = exportCanvas.getContext('2d');
+                if (!context) throw new Error('Không khởi tạo được canvas xuất ảnh.');
+                const imageData = context.createImageData(width, height);
+                imageData.data.set(flipped);
+                context.putImageData(imageData, 0, 0);
+
                 return await new Promise<Blob | null>((resolve) => {
-                    canvas.toBlob((b) => resolve(b), 'image/png');
+                    exportCanvas.toBlob((blob) => resolve(blob), 'image/png');
                 });
             } finally {
+                gl.setRenderTarget(prevTarget);
+                target.dispose();
                 if (transparent) {
                     scene.background = prevBg;
                     if (floor && prevFloorVisible !== undefined) floor.visible = prevFloorVisible;
@@ -189,42 +217,25 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
         },
         [gl, scene, camera],
     );
-
     // ── exportPNG ────────────────────────────────────────────────────────────
     const exportPNG = useCallback(
         async (scale?: ExportScale): Promise<boolean> => {
             if (busyRef.current) return false;
 
             const effectiveScale = scale ?? storeExportScale;
-
-            // Xác thực kích thước mục tiêu TRƯỚC khi đụng tới renderer
-            // (Yêu cầu 6.4): nếu vượt 16384 px → giữ cảnh, báo lỗi.
             const sizing = computeExportSize(size.width, size.height, effectiveScale);
             if (!sizing.ok) {
                 reportError('png', sizing.reason ?? t('dieline.useSceneExport:kich_thuoc_xuat_vuot_gioi_han_cho_phep'));
                 return false;
             }
 
-            const canvas = gl.domElement as HTMLCanvasElement;
-
-            // Lưu trạng thái renderer để khôi phục chính xác sau khi xuất.
-            // Khôi phục kích thước bằng `size` gốc của R3F (CSS pixels) cùng
-            // pixelRatio trước đó, đưa drawing buffer về đúng trạng thái ban đầu.
-            const prevPixelRatio = gl.getPixelRatio();
-            const restoreWidth = size.width;
-            const restoreHeight = size.height;
-
             busyRef.current = true;
             try {
-                // Resize TẠM THỜI tới đúng số pixel mục tiêu: ép pixelRatio = 1
-                // rồi setSize theo (width, height) đã tính, không cập nhật style
-                // để không làm layout DOM nhảy.
-                gl.setPixelRatio(1);
-                gl.setSize(sizing.width, sizing.height, false);
-
-                // Render + đọc pixel (kèm tùy chọn nền trong suốt).
-                const blob = await renderToBlob(exportTransparent);
-
+                const blob = await renderToBlob(
+                    exportTransparent,
+                    sizing.width,
+                    sizing.height,
+                );
                 if (!blob) {
                     throw new Error(t('dieline.useSceneExport:trinh_duyet_khong_tao_duoc_du_lieu_anh'));
                 }
@@ -241,21 +252,11 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 reportError('png', message);
                 return false;
             } finally {
-                // KHÔI PHỤC kích thước/pixelRatio ban đầu và render lại để
-                // cảnh hiển thị trở về trạng thái trước khi xuất (Yêu cầu 6.7).
-                try {
-                    gl.setPixelRatio(prevPixelRatio);
-                    gl.setSize(restoreWidth, restoreHeight, false);
-                    gl.render(scene, camera);
-                } catch (restoreErr) {
-                    console.error('[useSceneExport] restore size error:', restoreErr);
-                }
                 busyRef.current = false;
             }
         },
-        [gl, scene, camera, size.width, size.height, storeExportScale, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent],
+        [size.width, size.height, storeExportScale, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t],
     );
-
     // ── exportBatchPNG: nhiều góc camera ──────────────────────────────────────
     const exportBatchPNG = useCallback(async (): Promise<boolean> => {
         if (busyRef.current) return false;
@@ -268,36 +269,30 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
 
         const order: CameraPreset[] = ['front', 'isometric', 'top', 'orthographic'];
         const cam = camera as THREE.PerspectiveCamera;
-
-        // Lưu camera + renderer để khôi phục.
         const savedPos = cam.position.clone();
         const savedQuat = cam.quaternion.clone();
         const savedFov = cam.isPerspectiveCamera ? cam.fov : 45;
-        const prevPixelRatio = gl.getPixelRatio();
-
-        // Tâm nhìn + khoảng cách hiện tại để dựng pose từng preset.
         const center = controls?.target ? controls.target.clone() : new THREE.Vector3();
         const distance = cam.position.distanceTo(center);
 
         busyRef.current = true;
         let okCount = 0;
         try {
-            gl.setPixelRatio(1);
-            gl.setSize(sizing.width, sizing.height, false);
-
             for (const preset of order) {
                 const pose = computeTargetPose(preset, center, distance);
                 cam.position.copy(pose.position);
-                if (cam.isPerspectiveCamera) {
-                    cam.fov = pose.fov;
-                }
+                if (cam.isPerspectiveCamera) cam.fov = pose.fov;
                 cam.lookAt(center);
                 cam.updateProjectionMatrix();
 
-                const blob = await renderToBlob(exportTransparent);
+                const blob = await renderToBlob(
+                    exportTransparent,
+                    sizing.width,
+                    sizing.height,
+                );
                 if (blob) {
                     downloadBlob(blob, buildFilename(`${filePrefix}-${preset}`, 'png'));
-                    okCount++;
+                    okCount += 1;
                 }
             }
             if (okCount > 0) reportSuccess('png', `${okCount} góc`);
@@ -307,23 +302,18 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
             reportError('png', 'Xuất batch thất bại: ' + (err instanceof Error ? err.message : t('dieline.useSceneExport:loi_khong_xac_dinh_2')));
             return false;
         } finally {
-            // Khôi phục camera + kích thước renderer + đồng bộ controls.
             try {
                 cam.position.copy(savedPos);
                 cam.quaternion.copy(savedQuat);
                 if (cam.isPerspectiveCamera) cam.fov = savedFov;
                 cam.updateProjectionMatrix();
-                gl.setPixelRatio(prevPixelRatio);
-                gl.setSize(size.width, size.height, false);
                 controls?.update();
-                gl.render(scene, camera);
             } catch (restoreErr) {
                 console.error('[useSceneExport] batch restore error:', restoreErr);
             }
             busyRef.current = false;
         }
-    }, [gl, scene, camera, controls, size.width, size.height, storeExportScale, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent]);
-
+    }, [scene, camera, controls, size.width, size.height, storeExportScale, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t]);
     // ── exportGLB ────────────────────────────────────────────────────────────
     const exportGLB = useCallback(async (): Promise<boolean> => {
         if (busyRef.current) return false;

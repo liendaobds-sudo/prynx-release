@@ -1306,13 +1306,19 @@ def process_chunk(args):
 
             except OSError: pass
 
-    import io
-    buf = io.BytesIO()
-
-    out_doc.save(buf, garbage=0, deflate=True)
-
-    out_doc.close()
-
-    src_doc.close()
-
-    return buf.getvalue()
+    chunk_path = os.path.join(
+        tempfile.gettempdir(),
+        f"prynx_nup_{job_id}_{chunk_idx}_{os.getpid()}.pdf",
+    )
+    try:
+        out_doc.save(chunk_path, garbage=0, deflate=True)
+        return chunk_path
+    except Exception:
+        try:
+            os.remove(chunk_path)
+        except OSError:
+            pass
+        raise
+    finally:
+        out_doc.close()
+        src_doc.close()

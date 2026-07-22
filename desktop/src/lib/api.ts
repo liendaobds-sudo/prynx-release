@@ -389,7 +389,7 @@ export async function getPullProgress() {
   return res.json();
 }
 
-export async function startVdpJobBackend(pdfFile: File, vdpFields: any[], csvData: any[]): Promise<string> {
+export async function startVdpJobBackend(pdfFile: File, vdpFields: any[], csvData: any[], dataFile?: File, dataFileHasHeader = true): Promise<string> {
   const formData = new FormData();
   if ((pdfFile as any).path) {
     formData.append('file_path', (pdfFile as any).path);
@@ -398,9 +398,17 @@ export async function startVdpJobBackend(pdfFile: File, vdpFields: any[], csvDat
   }
   formData.append('fields', JSON.stringify(vdpFields));
   
-  const dataBlob = new Blob([JSON.stringify(csvData)], { type: 'application/json' });
-  formData.append('data_file', dataBlob, 'data.json');
-
+  if (dataFile) {
+    const realDataFile = await prepareFileForUpload(dataFile);
+    formData.append('data_file', realDataFile, dataFile.name);
+    formData.append('data_format', 'csv');
+    formData.append('has_header', String(dataFileHasHeader));
+  } else {
+    // Giữ tương thích với manual/multi-up; CSV thuần dùng file transport để
+    // tránh tạo chuỗi JSON lớn ở frontend và bản sao json.loads ở backend.
+    const dataBlob = new Blob([JSON.stringify(csvData)], { type: 'application/json' });
+    formData.append('data_file', dataBlob, 'data.json');
+  }
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/generate`, {
     method: 'POST',
     body: formData,
@@ -513,6 +521,28 @@ export async function backendMergePdfs(files: File[], mode: string = 'merge_file
   return await res.blob();
 }
 
+export type BackendMergeManifestItem = {
+  blank?: boolean;
+  file_index?: number;
+  page_index?: number;
+  rotation?: number;
+  width?: number;
+  height?: number;
+};
+
+export async function backendMergeManifest(files: File[], manifest: BackendMergeManifestItem[]): Promise<Blob> {
+  const formData = new FormData();
+  for (const file of files) {
+    formData.append('files', await prepareFileForUpload(file), file.name);
+  }
+  formData.append('manifest', JSON.stringify(manifest));
+  const res = await authenticatedFetch(`${API_BASE}/api/pdf-tools/merge-manifest`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) throw new Error('Backend manifest merge failed: ' + await res.text());
+  return await res.blob();
+}
 export async function backendSplitPdf(file: File, mode: string, config: any): Promise<Blob> {
   const formData = new FormData();
   formData.append('file', file);

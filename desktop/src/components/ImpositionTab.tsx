@@ -85,7 +85,7 @@ export default function ImpositionTab(props: Props) {
         storeRef.current = createWorkspaceStore();
     }
     if (!imposerStoreRef.current) {
-        imposerStoreRef.current = createImposerSettingsStore();
+        imposerStoreRef.current = createImposerSettingsStore(props.tabId ? `tab:${props.tabId}` : undefined);
     }
     return (
         <ImposerSettingsContext.Provider value={imposerStoreRef.current}>

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useComparisonStore } from '../stores/comparisonStore';
 import { uploadPDF, createCompareJob, getJobStatus, getJobResults, getFileUrl } from '../lib/api';
 import PDFUploader from './PDFUploader';
@@ -39,6 +39,14 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
 
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [focusedRegion, setFocusedRegion] = useState<{page: number, nx: number, ny: number} | null>(null);
+  const pollingCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      pollingCleanupRef.current?.();
+      pollingCleanupRef.current = null;
+    };
+  }, []);
 
   // Keyboard globals for GIF Viewer
   useEffect(() => {
@@ -148,9 +156,33 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
       });
       store.setJobId(job_id);
 
-      const pollJob = async () => {
+      pollingCleanupRef.current?.();
+      pollingCleanupRef.current = null;
+
+      let cancelled = false;
+      let pollTimer: number | null = null;
+      let deadlineTimer: number | null = null;
+      const cleanupPolling = () => {
+        cancelled = true;
+        if (pollTimer !== null) {
+          window.clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+        if (deadlineTimer !== null) {
+          window.clearTimeout(deadlineTimer);
+          deadlineTimer = null;
+        }
+        if (pollingCleanupRef.current === cleanupPolling) {
+          pollingCleanupRef.current = null;
+        }
+      };
+      pollingCleanupRef.current = cleanupPolling;
+
+      const pollJob = async (): Promise<boolean> => {
+        if (cancelled) return true;
         try {
           const job = await getJobStatus(job_id);
+          if (cancelled) return true;
           store.setJobStatus(job.status);
 
           let message = t('tabs.compare:chuan_bi');
@@ -164,43 +196,49 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
 
           if (job.status === 'completed') {
             const results = await getJobResults(job_id);
+            if (cancelled) return true;
             store.setResults(results.pages, results.summary);
             setPhase('results');
+            cleanupPolling();
             return true;
-          } else if (job.status === 'failed') {
+          }
+          if (job.status === 'failed') {
             setError(job.error_message || t('tabs.compare:co_loi_xay_ra_khi_so_sanh'));
             setPhase('upload');
+            cleanupPolling();
             return true;
           }
         } catch (pollErr) {
-          console.warn('Poll error:', pollErr);
+          if (!cancelled) console.warn('Poll error:', pollErr);
         }
         return false;
       };
 
-      const done = await pollJob();
-      if (!done) {
-        const pollInterval = setInterval(async () => {
-          const isDone = await pollJob();
-          if (isDone) clearInterval(pollInterval);
-        }, 2000);
-        // Hết thời gian chờ tối đa (10 phút): dừng poll VÀ báo lỗi rõ ràng thay vì
-        // để UI kẹt mãi ở "đang xử lý" (audit so-sánh: poll dừng âm thầm).
-        setTimeout(() => {
-          clearInterval(pollInterval);
-          if (useComparisonStore.getState().jobStatus !== 'completed') {
-            setError(t('tabs.compare:qua_thoi_gian_cho_xu_ly_10_phut_file_co'));
-            setPhase('upload');
-          }
-        }, 600000);
-      }
+      const runPoll = async () => {
+        const done = await pollJob();
+        if (!done && !cancelled) {
+          pollTimer = window.setTimeout(() => { void runPoll(); }, 2000);
+        }
+      };
+
+      deadlineTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        cleanupPolling();
+        if (useComparisonStore.getState().jobStatus !== 'completed') {
+          setError(t('tabs.compare:qua_thoi_gian_cho_xu_ly_10_phut_file_co'));
+          setPhase('upload');
+        }
+      }, 600000);
+      void runPoll();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : t('tabs.compare:khong_the_tao_job'));
       setPhase('upload');
     }
-  }, [store]);
+  }, [store, t]);
 
   const handleReset = useCallback(() => {
+    pollingCleanupRef.current?.();
+    pollingCleanupRef.current = null;
     store.reset();
     setPhase('upload');
     setError('');

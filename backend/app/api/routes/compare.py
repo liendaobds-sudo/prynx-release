@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
@@ -18,11 +19,18 @@ from app.core.license_guard import require_license, require_feature
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Giới hạn số job SO SÁNH chạy ĐỒNG THỜI ở chế độ thread (DEV/Desktop). Mỗi job đỉnh
-# RAM ~0.5–0.7GB/trang; chạy nhiều job song song dễ tràn RAM. Job vượt giới hạn sẽ
-# XẾP HÀNG (thread chờ semaphore) thay vì cùng ngốn RAM. Cấu hình qua biến môi trường.
+# Giới hạn job SO SÁNH ở DEV/Desktop. Fixed executor giữ số OS thread ổn định;
+# submission slots chặn cả số job chạy và số job chờ để tránh tăng RAM vô hạn.
+# Cấu hình qua PRYNX_MAX_COMPARE_JOBS và PRYNX_MAX_COMPARE_QUEUE.
 _MAX_CONCURRENT_COMPARES = max(1, int(os.environ.get("PRYNX_MAX_COMPARE_JOBS", "1") or "1"))
-_COMPARE_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_COMPARES)
+_MAX_QUEUED_COMPARES = max(0, int(os.environ.get("PRYNX_MAX_COMPARE_QUEUE", "8") or "8"))
+_COMPARE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_MAX_CONCURRENT_COMPARES,
+    thread_name_prefix="prynx-compare",
+)
+_COMPARE_SUBMISSION_SLOTS = threading.BoundedSemaphore(
+    _MAX_CONCURRENT_COMPARES + _MAX_QUEUED_COMPARES
+)
 
 # Bound the largest rendered page, not just the PDF page count. A single A1/A0
 # page at 300-600 DPI can exhaust memory even when the document has one page.
@@ -59,13 +67,12 @@ def _estimate_max_render_pixels(uploaded_file, dpi: int) -> int | None:
 def run_comparison_sync(job_id: str):
     """Run comparison synchronously in a background thread (DEV_MODE).
 
-    Giới hạn đồng thời bằng semaphore: job vượt mức sẽ chờ tới lượt (xếp hàng) để
-    không bùng nổ RAM khi mở nhiều job so sánh cùng lúc.
+    Executor có số worker cố định; job vượt mức sẽ chờ trong hàng đợi bounded để
+    không bùng nổ RAM hoặc số thread khi mở nhiều job so sánh cùng lúc.
     """
     from app.database import SessionLocal
     from app.core.comparison_engine import run_comparison_pipeline
 
-    _COMPARE_SEMAPHORE.acquire()
     db = SessionLocal()
     try:
         run_comparison_pipeline(job_id, db)
@@ -79,7 +86,24 @@ def run_comparison_sync(job_id: str):
             db.commit()
     finally:
         db.close()
-        _COMPARE_SEMAPHORE.release()
+        _COMPARE_SUBMISSION_SLOTS.release()
+
+
+def _submit_reserved_comparison(job_id: str) -> None:
+    """Submit after the caller has reserved one bounded queue slot."""
+    _COMPARE_EXECUTOR.submit(run_comparison_sync, job_id)
+
+
+def submit_comparison_local(job_id: str) -> bool:
+    """Reserve a local Compare slot and submit, returning False when full."""
+    if not _COMPARE_SUBMISSION_SLOTS.acquire(blocking=False):
+        return False
+    try:
+        _submit_reserved_comparison(job_id)
+    except Exception:
+        _COMPARE_SUBMISSION_SLOTS.release()
+        raise
+    return True
 
 
 @router.post("/jobs/compare", response_model=JobCreateResponse)
@@ -139,23 +163,29 @@ def create_comparison_job(
             "is_packaging_mode": request.is_packaging_mode,
         },
     )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-
-    if settings.DEV_MODE or settings.IS_DESKTOP_APP:
-        # DEV_MODE or Desktop App: run in a real daemon thread (survives uvicorn reload better)
-        t = threading.Thread(
-            target=run_comparison_sync,
-            args=(str(job.id),),
-            daemon=True,
+    local_mode = settings.DEV_MODE or settings.IS_DESKTOP_APP
+    if local_mode and not _COMPARE_SUBMISSION_SLOTS.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="Hàng đợi Compare đang đầy. Vui lòng chờ job hiện tại hoàn tất.",
         )
-        t.start()
-    else:
-        # Production: dispatch to Celery
-        from app.workers.compare_task import run_comparison
-        run_comparison.delay(str(job.id))
 
-    logger.info(f"Created job: {job.id} (sync_mode={settings.DEV_MODE or settings.IS_DESKTOP_APP})")
+    try:
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        if local_mode:
+            # Fixed workers: queued jobs no longer allocate one waiting OS thread each.
+            _submit_reserved_comparison(str(job.id))
+        else:
+            # Production continues to use Celery.
+            from app.workers.compare_task import run_comparison
+            run_comparison.delay(str(job.id))
+    except Exception:
+        if local_mode:
+            _COMPARE_SUBMISSION_SLOTS.release()
+        raise
+    logger.info(f"Created job: {job.id} (sync_mode={local_mode})")
     return JobCreateResponse(job_id=job.id)
 

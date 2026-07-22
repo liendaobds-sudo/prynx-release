@@ -2943,7 +2943,13 @@ def run_nup_engine(
 
     prog_file = os.path.join(tempfile.gettempdir(), f"nup_prog_{job_id}.txt") if job_id else None
 
-    available_cores = max(1, os.cpu_count() - 1)
+    available_cores = max(1, (os.cpu_count() or 1) - 1)
+    try:
+        configured_workers = int(os.environ.get("PRYNX_NUP_WORKERS", "0") or "0")
+    except (TypeError, ValueError):
+        configured_workers = 0
+    if configured_workers > 0:
+        available_cores = min(available_cores, configured_workers)
 
     # Adaptive chunk sizing: distribute work evenly across cores
 
@@ -3026,7 +3032,7 @@ def run_nup_engine(
 
         chunk_idx += 1
 
-    chunk_bytes = []
+    chunk_paths = []
 
     if len(args_list) > 0:
 
@@ -3036,7 +3042,7 @@ def run_nup_engine(
 
             for args in args_list:
 
-                chunk_bytes.append(process_chunk(args))
+                chunk_paths.append(process_chunk(args))
 
         else:
 
@@ -3046,7 +3052,7 @@ def run_nup_engine(
 
             with ProcessPoolExecutor(max_workers=num_workers) as pool:
 
-                chunk_bytes = list(pool.map(process_chunk, args_list))
+                chunk_paths = list(pool.map(process_chunk, args_list))
 
     # Mốc tiến trình finalize (để chẩn đoán nếu kẹt ở bước nào)
     def _stage(msg):
@@ -3061,19 +3067,18 @@ def run_nup_engine(
 
     # --- FAST ASSEMBLY ---
 
-    if len(chunk_bytes) == 1:
+    if len(chunk_paths) == 1:
         # Optimization: no merge needed, preserves all layers perfectly
-        with open(output_path, 'wb') as f:
-            f.write(chunk_bytes[0])
+        import shutil
+        shutil.copyfile(chunk_paths[0], output_path)
     elif is_die_cut:
         # PDFium import_pages strips Document Catalog /OCProperties (layers).
         # We must use pikepdf to merge chunks to preserve layers.
         # This is slightly slower but die-cut jobs rarely exceed 100 pages.
         import pikepdf
-        import io
-        final_doc = pikepdf.Pdf.open(io.BytesIO(chunk_bytes[0]))
-        for cb in chunk_bytes[1:]:
-            src_pdf = pikepdf.Pdf.open(io.BytesIO(cb))
+        final_doc = pikepdf.Pdf.open(chunk_paths[0])
+        for chunk_path in chunk_paths[1:]:
+            src_pdf = pikepdf.Pdf.open(chunk_path)
             
             # Merge OCGs and /Order structure from source chunk into final document
             src_oc_props = src_pdf.Root.get("/OCProperties")
@@ -3142,12 +3147,18 @@ def run_nup_engine(
     else:
         # Merge chunks using C++ PDFium (avoids O(N^2) resource deduplication freeze for huge jobs)
         final_doc = pdfium.PdfDocument.new()
-        for cb in chunk_bytes:
-            src_pdf = pdfium.PdfDocument(cb)
+        for chunk_path in chunk_paths:
+            src_pdf = pdfium.PdfDocument(chunk_path)
             final_doc.import_pages(src_pdf)
             src_pdf.close()
         final_doc.save(output_path)
         final_doc.close()
+
+    for chunk_path in chunk_paths:
+        try:
+            os.remove(chunk_path)
+        except OSError:
+            pass
 
     _shared_master_cut = (
         homogeneous_master_idx is not None
