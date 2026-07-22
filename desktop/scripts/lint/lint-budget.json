@@ -1,0 +1,23 @@
+{
+  "errors": 1549,
+  "warnings": 112,
+  "rules": {
+    "@typescript-eslint/no-explicit-any": 1190,
+    "@typescript-eslint/no-unused-vars": 193,
+    "react-hooks/exhaustive-deps": 103,
+    "prefer-const": 14,
+    "react-hooks/static-components": 38,
+    "react-refresh/only-export-components": 30,
+    "react-hooks/set-state-in-effect": 24,
+    "no-empty": 20,
+    "@typescript-eslint/ban-ts-comment": 16,
+    "no-useless-escape": 0,
+    "react-hooks/preserve-manual-memoization": 7,
+    "eslint/unused-disable": 9,
+    "react-hooks/refs": 7,
+    "@typescript-eslint/no-unused-expressions": 4,
+    "react-hooks/immutability": 4,
+    "no-async-promise-executor": 1,
+    "react-hooks/purity": 1
+  }
+}

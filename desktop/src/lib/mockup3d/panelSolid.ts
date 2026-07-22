@@ -378,7 +378,7 @@ export function buildFoldFilletGeometry(
     const ul = Math.hypot(ux, uy) || 1;
     const u = { x: ux / ul, y: uy / ul };
     // Pháp tuyến trong mặt phẳng; chọn hướng về phía panel con (+Y hệ bản lề).
-    let w = { x: -u.y, y: u.x };
+    const w = { x: -u.y, y: u.x };
     const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
     const toChild = { x: childCentroid.x - mid.x, y: childCentroid.y - mid.y };
     const sigma = (w.x * toChild.x + w.y * toChild.y) >= 0 ? 1 : -1;

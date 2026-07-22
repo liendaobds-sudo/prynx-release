@@ -6,7 +6,7 @@ function ptDistSq(p1: Point2D, p2: Point2D) {
 
 // Convert all PathSegments into small 2-point line segments (sampling beziers)
 function getLineSegments(paths: PathSegment[]): [Point2D, Point2D][] {
-    let result: [Point2D, Point2D][] = [];
+    const result: [Point2D, Point2D][] = [];
     for (const seg of paths) {
         if (seg.type === 'bezier' && seg.controlPoints) {
             const [p0, cp1, cp2, p3] = seg.controlPoints;

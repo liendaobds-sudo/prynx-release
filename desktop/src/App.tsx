@@ -525,7 +525,7 @@ function AppInner() {
       // Tab khôi phục đang-sửa sẽ tự ghi snapshot MỚI → xóa snapshot cũ cho sạch.
       await clearAllSnapshots();
     }
-  }, [handleOpenApp]);
+  }, [handleOpenApp, t]);
 
   const dismissRecovery = useCallback(async () => {
     setRecoverySnaps(null);

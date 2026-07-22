@@ -4,7 +4,6 @@ import { VirtualSheet } from './VirtualMap';
 import type { GuillotineSettings, OffsetSettings } from './SettingsTypes';
 export type BookletSettings = GuillotineSettings | OffsetSettings;
 import { GeometricContext, solvePageTransform } from './GeometricSolver';
-import { ProcessingSettings } from '../pdfImposer';
 import { drawRegistrationMarks } from './MarksRenderer';
 import i18n from '../../i18n';
 
@@ -44,10 +43,6 @@ export const drawSpreadMarks = (
         drawL(right, box.y - markOffset, right, box.y - markOffset - markLength, trimColor);
         drawL(right + markOffset, box.y, right + markOffset + markLength, box.y, trimColor);
     };
-
-    const isOffset = (settings as any)?.imposerMode === 'offset';
-    const isSaddle = (settings as any)?.bindingMode === 'saddle';
-    const foldStyle = isSaddle ? 'saddle' : 'perfect';
     
     // Spread Distribution
     const spreadDistribution = (settings as any)?.spreadDistribution || 'clustered';
@@ -115,10 +110,6 @@ export const renderBooklet = async (
     settings?: BookletSettings,
     gutterPt: number = 0
 ) => {
-    
-    const markLength = (settings as any)?.markLength || 5;
-    const markOffset = (settings as any)?.markOffset || 3;
-    const markThickness = (settings as any)?.markThickness || 0.25;
     
     // Flatten iteration plan based on Interleave Mode
     const surfaces: { sheetIndex: number, isFront: boolean, slots: any, sheet: VirtualSheet }[] = [];

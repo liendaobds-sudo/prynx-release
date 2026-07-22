@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { startVdpJobBackend, getVdpJobStatus, downloadVdpJob, pollVdpJob } from '@/lib/api';
+import { startVdpJobBackend, pollVdpJob } from '@/lib/api';
 import { CmykColorPicker } from './DataMergeTool';
 import { ToolNumberInput } from './ToolUI';
 import { FontSelector } from './FontSelector';
@@ -118,7 +118,7 @@ export default function NumberingTool({
     const generateSequence = () => {
         // Trần an toàn số phần tử để preview/sinh không làm đơ app với range/bộ quá lớn.
         const MAX_SEQUENCE = 200000;
-        let rawSequence: string[] = [];
+        const rawSequence: string[] = [];
         const step = Number(increment);
 
         if (genMethod === 'range') {
@@ -152,7 +152,7 @@ export default function NumberingTool({
             const numberToLetters = (num: number, lower = false) => {
                 let str = "";
                 while (num > 0) {
-                    let rem = (num - 1) % 26;
+                    const rem = (num - 1) % 26;
                     str = String.fromCharCode(rem + (lower ? 97 : 65)) + str;
                     num = Math.floor((num - 1) / 26);
                 }
@@ -170,7 +170,7 @@ export default function NumberingTool({
                     // Số BỘ đệm theo đúng độ rộng người dùng gõ ("1"→1,2,3; "01"→01,02),
                     // KHÔNG dùng padLength (vốn dành cho số thứ tự). Trước đây bộ 1 ký tự
                     // lại rơi về padLength → độ rộng số bộ nhảy bất ngờ khi thêm/bớt số 0.
-                    let sNum = startSetNum + s;
+                    const sNum = startSetNum + s;
                     setValStr = padZero ? sNum.toString().padStart(setStartStr.length, '0') : sNum.toString();
                 }
 
@@ -179,10 +179,10 @@ export default function NumberingTool({
                 const seqStep = Number.isFinite(step) && step > 0 ? step : 1;
                 for (let q = 0; q < seqTotal; q++) {
                     if (rawSequence.length >= MAX_SEQUENCE) break;
-                    let qNum = seqStart + q * seqStep;
-                    let seqValStr = padZero ? qNum.toString().padStart(padLength, '0') : qNum.toString();
+                    const qNum = seqStart + q * seqStep;
+                    const seqValStr = padZero ? qNum.toString().padStart(padLength, '0') : qNum.toString();
                     
-                    let resultStr = formatTemplate.replace(/\{\%b\}/g, setValStr).replace(/\{\%t\}/g, seqValStr);
+                    const resultStr = formatTemplate.replace(/\{%b\}/g, setValStr).replace(/\{%t\}/g, seqValStr);
                     rawSequence.push(`${prefix}${resultStr}${suffix}`);
                 }
             }
@@ -334,7 +334,7 @@ export default function NumberingTool({
                 let pageStr = `${t('preprocess.numbering:trang', { n: p + 1 })} `;
                 let itemsAdded = 0;
                 for (let s = 0; s < numSlots; s++) {
-                    let indexInSequence = applyStyle === 'linear' ? (p * numSlots + s) : (s * totalPages + p);
+                    const indexInSequence = applyStyle === 'linear' ? (p * numSlots + s) : (s * totalPages + p);
                     if (indexInSequence < rawSequence.length) {
                         pageStr += (itemsAdded > 0 ? ', ' : '') + rawSequence[indexInSequence];
                         itemsAdded++;
@@ -349,7 +349,7 @@ export default function NumberingTool({
             }
             if (totalPages > maxPreviewPages) lines.push('...');
             return lines;
-        } catch (err) {
+        } catch {
             return [t('preprocess.numbering:loi_cau_hinh_day_so')];
         }
     }, [genMethod, startNum, endNum, increment, padZero, padLength, prefix, suffix, setTotal, setStartStr, seqTotal, seqStart, formatTemplate, isShuffle, applyStyle, buildSortedSlots]);

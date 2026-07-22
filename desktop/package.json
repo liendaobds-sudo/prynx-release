@@ -10,6 +10,7 @@
     "check:dieline-webview": "node scripts/check-dieline-webview-bundle.mjs",
     "build": "tsc --noEmit -p tsconfig.app.json && vite build",
     "lint": "eslint .",
+    "lint:budget": "node scripts/lint/check-budget.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

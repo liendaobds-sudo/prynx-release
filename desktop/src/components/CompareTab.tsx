@@ -86,7 +86,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
     } finally {
       setUploadingB(false);
     }
-  }, [store]);
+  }, [store, t]);
 
   const handleUploadA = useCallback(async (file: File, allFiles?: File[]) => {
     setUploadingA(true);
@@ -104,7 +104,7 @@ export default function CompareTab({ tabId, isActive = true }: CompareTabProps) 
     } finally {
       setUploadingA(false);
     }
-  }, [store, handleUploadB]);
+  }, [store, handleUploadB, t]);
 
   // Ctrl+P / File→In: in bản B (sửa) nếu có, không thì bản A.
   const handlePrint = useCallback(async () => {

@@ -103,7 +103,7 @@ export default function SavePdfxTool({ pdfFile, onFileFixed }: Props) {
     const r = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(r.id);
     return r.id;
-  }, [fileId, pdfFile, getWorkingFile]);
+  }, [fileId, pdfFile, getWorkingFile, t]);
 
   const checkCompliance = async () => {
     setChecking(true); setStatus(''); setCompliance(null);

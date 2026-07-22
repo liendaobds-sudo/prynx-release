@@ -177,7 +177,7 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
     setError(''); setIsProcessing(true); setProcessStatus(i18n.t('recipe.recipeRunners:dang_tao_duong_cat_bu_xen'));
     try {
         const workingBytes = await getWorkingBytes();
-        let targetFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+        const targetFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
         let resultBlob: Blob;
 
         if (productType === 'rectangle' && p.bleedColorType === 'mirror') {

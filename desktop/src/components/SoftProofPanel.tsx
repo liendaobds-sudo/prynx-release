@@ -83,7 +83,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
         } finally {
             setLoading(false);
         }
-    }, [fileId, activePage, selectedProfile, intent, showGamut, setSoftProofImageUrl, setGamutWarningUrl, setSoftProofActive]);
+    }, [fileId, activePage, selectedProfile, intent, showGamut, setSoftProofImageUrl, setGamutWarningUrl, setSoftProofActive, t]);
 
     const clearSoftProof = useCallback(() => {
         setSoftProofActive(false);

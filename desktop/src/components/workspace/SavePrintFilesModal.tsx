@@ -60,9 +60,9 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
             } catch { if (active) setDerivedTypes([{ label: labelNameText || t('misc.savePrintFiles:trang_1'), sheetCount: 0 }]); }
         })();
         return () => { active = false; };
-    }, [open, resultBlob, separateCut, cncMode, cncTwoSided, typesProp, labelNameText]);
+    }, [open, resultBlob, separateCut, cncMode, cncTwoSided, typesProp, labelNameText, t]);
 
-    const types: SaveTypeInfo[] = (typesProp && typesProp.length) ? typesProp : (derivedTypes || []);
+    const types = useMemo<SaveTypeInfo[]>(() => (typesProp && typesProp.length) ? typesProp : (derivedTypes || []), [typesProp, derivedTypes]);
 
     useEffect(() => {
         if (!open) return;
@@ -73,7 +73,7 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [open, onClose]);
 
-    const cfg: SavePlanConfig = {
+    const cfg = useMemo<SavePlanConfig>(() => ({
         nameMode: savePrint.nameMode,
         folderMode: savePrint.folderMode,
         separateCut,
@@ -83,9 +83,9 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
         originalName,
         cncMode,
         cncTwoSided,
-    };
+    }), [savePrint.nameMode, savePrint.folderMode, savePrint.includeOrderCode, savePrint.includeDate, separateCut, orderCode, originalName, cncMode, cncTwoSided]);
 
-    const plan = useMemo(() => buildSavePlan(types, cfg), [types, savePrint, separateCut, cncMode, cncTwoSided, orderCode, originalName]);
+    const plan = useMemo(() => buildSavePlan(types, cfg), [types, cfg]);
 
     if (!open) return null;
 

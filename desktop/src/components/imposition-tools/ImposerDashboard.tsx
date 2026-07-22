@@ -364,7 +364,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         }
     }, [s.paperClassification, s.formsize, savedForms, activeTool]);
 
-    const handleSettingsApply = useCallback((w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number, _usages: PaperUsage[] = ['in_nhanh']) => {
+    const handleSettingsApply = useCallback((w: number, h: number, mT: number, mB: number, mL: number, mR: number, mMode: 'labels_only' | 'include_marks', classification: 'offset' | 'in_nhanh', gripper: number) => {
         s.setCustomSheetWidth(w); s.setCustomSheetHeight(h);
         s.setMarginTop(mT); s.setMarginBottom(mB); s.setMarginLeft(mL); s.setMarginRight(mR);
         s.setMarginMode(mMode);
@@ -487,7 +487,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                         data.dimensions.forEach((d: any, i: number) => { newDims[i] = d; });
                         setDetectedDimensionsByPage(newDims);
                     }
-                    let newParams: Record<number, any> = {};
+                    const newParams: Record<number, any> = {};
                     if (data.shapeParams) {
                         data.shapeParams.forEach((p: any, i: number) => { newParams[i] = p; });
                         setDetectedShapeParamsByPage(newParams);
@@ -998,8 +998,8 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
             if (s.formsize.startsWith('custom_') || s.formsize === 'custom') finalFormsize = 'custom';
             
             const _pressNup = resolvePressSheetDims();
-            let effSheetW = _pressNup.w;
-            let effSheetH = _pressNup.h;
+            const effSheetW = _pressNup.w;
+            const effSheetH = _pressNup.h;
 
             // Gripper chỉ cộng lề dưới khi N-up + classification offset (máy offset).
             // Không cộng cho bế tem/CNC — tránh rò nhíp từ session booklet offset.
@@ -1155,10 +1155,6 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
     // CNC dùng chung render/preview die-cut với Bế tem (trừ pont — CNC dùng dấu canh riêng).
     const stickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
     const showPaperSection = s.taskMode !== 'booklet' || (s.taskMode === 'booklet' && s.scaleMode !== '100');
-    const requiredClassif = (s.taskMode === 'booklet' && s.foldPattern && s.foldPattern !== '' && s.foldPattern !== 'auto') ? 'offset' : null;
-    const marginSummary = (s.marginTop === s.marginBottom && s.marginBottom === s.marginLeft && s.marginLeft === s.marginRight)
-        ? (s.marginTop > 0 ? `Lề: ${s.marginTop}mm` : '') : `Lề: ${s.marginTop}/${s.marginBottom}/${s.marginLeft}/${s.marginRight}`;
-
     // ═══ RENDER ═══
     if (activeTool === 'none') {
         return <ToolMenuList setActiveTool={t => setActiveTool(t as ActiveToolType)} setTaskMode={m => {

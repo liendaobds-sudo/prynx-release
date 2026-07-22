@@ -5,7 +5,7 @@
  * eliminating closure dependency on component state.
  */
 
-import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString } from 'pdf-lib';
 import { imposeCatalogBatchViaBackend, ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig } from '../lib/imposerEngine/CatalogPlanner';
 import { getImposerCapability } from '../components/imposition-tools/types';
@@ -47,10 +47,8 @@ export async function runProcessEngine(
     setProcessStatus(i18n.t('lib.processHandlers:dang_chuan_bi_du_lieu'));
 
     try {
-        const srcPageCount = ctx.viewerNumPages || 0;
 
         const isDieCut = settings.imposerMode === 'diecut';
-        const isOffset = settings.imposerMode === 'offset';
         const isGuillotine = settings.imposerMode === 'guillotine';
         const isCnc = settings.imposerMode === 'cnc';
         // Task 16 / Req 6: capability khai báo theo profile (mark/pont) — không khóa cứng
@@ -141,8 +139,6 @@ export async function runProcessEngine(
                 cncFlipEdge: isCnc ? (settings as any).cncFlipEdge : undefined,
                 cncDuplexMarks: isCnc ? (settings as any).cncDuplexMarks : undefined,
             };
-
-            const jobName = (settings as any).layoutType === 'repeat' ? i18n.t('lib.processHandlers:nhan_ban_s_r') : 'N-Up';
 
             const jobId = await startNupJobBackend(serverPath, backendSettings);
 

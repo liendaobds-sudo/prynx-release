@@ -26,8 +26,8 @@ export const renderNup = async (
     const trimWidth = maxSrcPageWidth - 2 * bleedPt;
     const trimHeight = maxSrcPageHeight - 2 * bleedPt;
     
-    let cols = settings.cols || 0;
-    let rows = settings.rows || 0;
+    const cols = settings.cols || 0;
+    const rows = settings.rows || 0;
     const gapX = (settings.gapX || 0) * MM_TO_POINTS;
     const gapY = (settings.gapY || 0) * MM_TO_POINTS;
     let marginTop = (settings.marginTop || 0) * MM_TO_POINTS;
@@ -77,10 +77,6 @@ export const renderNup = async (
         usableH = (usableH - clusterGapPt * (clusterCount - 1)) / clusterCount;
         cyCount = clusterCount;
     }
-
-    let isAutoRotated = false;
-    let actualTrimWidth = trimWidth;
-    let actualTrimHeight = trimHeight;
 
     let splitGap = settings.clusterGap !== undefined && settings.clusterGap > 0 
         ? settings.clusterGap * MM_TO_POINTS 
@@ -300,13 +296,6 @@ export const renderNup = async (
             }
         }
     }
-
-    const drawL = (page: any, x1: number, y1: number, x2: number, y2: number, color: any) => {
-        page.drawLine({start:{x:x1,y:y1}, end:{x:x2,y:y2}, thickness: 0.5, color});
-    };
-    const black = cmyk(1, 1, 1, 1); // Registration (mọi kẽm) cho dấu N-up
-    const tickLen = 7;
-    const tickOff = 4;
 
     for (let s = 0; s < sheetsToRender.length; s++) {
         const renderItem = sheetsToRender[s];

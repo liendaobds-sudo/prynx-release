@@ -7,10 +7,7 @@
  *          bleed input, spawn new tab toggle.
  */
 import React from 'react';
-import { createPortal } from 'react-dom';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
-import { RichSelect, Checkbox, SectionLabel, Divider, inputCls } from '../SharedUI';
-import type { PontConfig } from '../types';
 import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
 

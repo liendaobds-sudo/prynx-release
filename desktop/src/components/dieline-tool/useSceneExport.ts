@@ -28,7 +28,7 @@ import { toast } from 'sonner';
 import { useMockupStore } from '../../store/useMockupStore';
 import { computeExportSize } from '../../lib/mockup3d/exportSizing';
 import type { ExportScale } from '../../lib/mockup3d/types';
-import { PRESETS, computeTargetPose } from './CameraRig';
+import { computeTargetPose } from './CameraRig';
 import type { CameraPreset } from '../../store/useMockupStore';
 import { useTranslation } from 'react-i18next';
 
@@ -313,7 +313,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
             }
             busyRef.current = false;
         }
-    }, [scene, camera, controls, size.width, size.height, storeExportScale, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t]);
+    }, [camera, controls, size.width, size.height, storeExportScale, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t]);
     // ── exportGLB ────────────────────────────────────────────────────────────
     const exportGLB = useCallback(async (): Promise<boolean> => {
         if (busyRef.current) return false;
@@ -347,7 +347,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
         } finally {
             busyRef.current = false;
         }
-    }, [scene, filePrefix, reportError, reportSuccess]);
+    }, [scene, filePrefix, reportError, reportSuccess, t]);
 
     return { exportPNG, exportBatchPNG, exportGLB };
 }

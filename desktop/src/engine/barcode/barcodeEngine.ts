@@ -150,7 +150,7 @@ function validateCode39(data: string): ValidationResult {
     return { valid: false, error: 'Vui lòng nhập dữ liệu' };
   }
   const upper = data.toUpperCase();
-  if (!/^[A-Z0-9\-\.\s\$\/\+\%]+$/.test(upper)) {
+  if (!/^[A-Z0-9.\s$/+%-]+$/.test(upper)) {
     return { valid: false, error: 'Chỉ hỗ trợ: A-Z, 0-9, - . $ / + % SPACE' };
   }
   return { valid: true, correctedData: upper };
@@ -161,7 +161,7 @@ function validateCodabar(data: string): ValidationResult {
     return { valid: false, error: 'Vui lòng nhập dữ liệu' };
   }
   const upper = data.toUpperCase();
-  if (!/^[ABCD][0-9\-\$\:\/\.\+]+[ABCD]$/.test(upper)) {
+  if (!/^[ABCD][0-9$:/.+-]+[ABCD]$/.test(upper)) {
     return { valid: false, error: 'Phải bắt đầu/kết thúc bằng A/B/C/D, giữa là: 0-9 - $ : / . +' };
   }
   return { valid: true, correctedData: upper };

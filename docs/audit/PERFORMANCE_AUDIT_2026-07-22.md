@@ -178,10 +178,10 @@ Phần còn lại: loại bỏ các dynamic import vừa tĩnh vừa động khi
 
 `npm run lint`: **Không đạt**.
 
-- 1.760 errors.
-- 135 warnings.
-- Tổng cộng 1.895 vấn đề.
-- 81 errors và 9 warnings có thể autofix.
+- 1.549 errors.
+- 112 warnings.
+- Tổng cộng 1.661 vấn đề.
+- Đợt xử lý hiện tại đã áp dụng safe autofix, dọn unused vars ở các module ưu tiên, chuẩn hóa API boundary và sửa một nhóm React Hook dependencies ngoài viewer/thumbnail.
 
 ### Giới hạn kiểm chứng
 
@@ -376,7 +376,7 @@ Nguyên tắc chung trước khi bắt tay:
 ### Giai đoạn P2
 
 - **P2-14.** Tối ưu bundle: thêm `manualChunks`/bundle budget vào [`desktop/vite.config.ts`](../../desktop/vite.config.ts); xử lý các module vừa import tĩnh vừa động; chỉ preload chunk theo tool sắp mở. Công sức M.
-- **P2-15.** Đưa test/snapshot/lint về xanh: cập nhật snapshot Imposer store (`bookReportDisplay`), sửa persist version test (mong đợi 9 vs mã 10), profile ba property test timeout (dieline contourValidator/geometry, mockup3d determinism) trước khi quyết định sửa thuật toán hay chỉ điều chỉnh giới hạn, giảm 1.770 lint error (bắt đầu từ 81 autofix). **Chạy lại toàn bộ gate trước khi hành động vì số liệu mục 7 là ảnh chụp tại thời điểm audit, đã có commit sau đó.** Công sức L.
+- **P2-15.** Đưa test/snapshot/lint về xanh: cập nhật snapshot Imposer store (`bookReportDisplay`), sửa persist version test (mong đợi 9 vs mã 10), profile ba property test timeout (dieline contourValidator/geometry, mockup3d determinism) trước khi quyết định sửa thuật toán hay chỉ điều chỉnh giới hạn, đã có lint budget ratchet và đang xử lý theo từng nhóm rủi ro; mốc hiện tại là 1.549 errors và 112 warnings, chưa bao gồm viewer/thumbnail Công sức L.
 - **P2-16.** Bổ sung benchmark regression theo ma trận mục 9 để có số thật trước/sau cho các workload lớn. Công sức L.
 
 ### Phụ thuộc và thứ tự đề xuất
@@ -428,4 +428,4 @@ Cập nhật sau các đợt triển khai ngày 2026-07-22. Mục 11 vẫn là r
 - Backend test mục tiêu không cần database: **121/121 đạt**, gồm xuất PDF thật cho N-Up cắt xén/die-cut/layer và 30 test Compare queue/engine/pipeline.
 - Backend VDP integration: 14 test không chạy được vì PostgreSQL localhost:5432 không hoạt động; đây là lỗi môi trường test, không phải assertion failure.
 - `cargo check`: **đạt**, còn 12 warning có sẵn.
-- Lint trên các file frontend lớn vẫn báo nhiều lỗi legacy; chưa tuyên bố lint xanh.
+- Lint budget gate: **đạt** với 1.549 errors và 112 warnings; chưa tuyên bố lint xanh vì phần legacy còn lại vẫn được theo dõi theo budget.

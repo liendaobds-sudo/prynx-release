@@ -42,7 +42,7 @@ self.onmessage = async (e: MessageEvent) => {
         if (!item.content) continue;
 
         try {
-            let itemOpts = { ...options, data: item.content };
+            const itemOpts = { ...options, data: item.content };
             
             if (typeInfo) {
               const validation = typeInfo.validator(item.content);

@@ -1,7 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { PDFDocument, rgb, degrees, StandardFonts } from 'pdf-lib';
 import { getFileArrayBuffer } from '../../lib/utils';
-import { ToolSectionLabel } from './ToolUI';
 import { FontSelector } from './FontSelector';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
@@ -17,7 +16,6 @@ interface Props {
 export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Props) {
   const { t } = useTranslation();
     const [isProcessing, setIsProcessing] = useState(false);
-    const [progress, setProgress] = useState('');
     const [error, setError] = useState('');
     const [isSuccess, setIsSuccess] = useState(false);
 
@@ -83,7 +81,6 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
         setIsSuccess(false);
         setIsProcessing(true);
         setError('');
-        setProgress(t('preprocess.stickTextNumber:dang_xu_ly_dong_dau'));
 
         try {
             // Đóng dấu trên BẢN ĐÃ CHỈNH (viewer reorder/xoay/xoá) nếu có — đồng bộ
@@ -170,7 +167,7 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
 
                 const drawField = (content: string, pos: 'topLeft' | 'topCenter' | 'topRight' | 'bottomLeft' | 'bottomCenter' | 'bottomRight') => {
                     if (!content) return;
-                    let drawString = applyTokens(content, numStr, totalStr, todayStr);
+                    const drawString = applyTokens(content, numStr, totalStr, todayStr);
                     const textWidth = font.widthOfTextAtSize(drawString, fontSize);
 
                     let x = 0;
@@ -213,14 +210,12 @@ export default function StickTextNumberTool({ pdfFile, onFileFixed, onBack }: Pr
             const pdfBytes = await doc.save();
             const blob = new Blob([pdfBytes as any], { type: 'application/pdf' });
 
-            setProgress('');
             if (onFileFixed) {
                 onFileFixed(blob, `Stamped_${pdfFile.name}`);
                 setIsSuccess(true);
             }
         } catch (e: any) {
             setError(e.message || t('preprocess.stickTextNumber:da_xay_ra_loi_khi_xu_ly'));
-            setProgress('');
         } finally {
             setIsProcessing(false);
         }

@@ -36,9 +36,9 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
     const r = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(r.id);
     return r.id;
-  }, [fileId, pdfFile, getWorkingFile]);
+  }, [fileId, pdfFile, getWorkingFile, t]);
 
-  const fetchInks = async () => {
+  const fetchInks = useCallback(async () => {
     if (!pdfFile) return;
     setLoading(true); setStatus('');
     try {
@@ -48,9 +48,9 @@ export default function InkManagerTool({ pdfFile, onFileFixed }: Props) {
       setInks(data.inks || []);
     } catch (e: any) { setStatus(`❌ ${e.message}`); }
     setLoading(false);
-  };
+  }, [pdfFile, ensureUploaded]);
 
-  useEffect(() => { fetchInks(); }, [pdfFile]);
+  useEffect(() => { fetchInks(); }, [fetchInks]);
 
   const convertSpot = async (spotName?: string) => {
     setConverting(true); setStatus('');

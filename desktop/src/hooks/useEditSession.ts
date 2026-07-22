@@ -28,13 +28,11 @@
  *
  * _Requirements: 5.1, 5.3, 5.6, 9.5, 11.1, 12.2, 12.4_
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { authenticatedFetch, getApiUrl } from '../lib/api';
 import type { EditOp, BBox } from '../components/workspace/editTypes';
 import { useTranslation } from 'react-i18next';
 
-/** Ngưỡng debounce mặc định: commit ~1.5s sau Edit_Op cuối (Yêu cầu 5.3). */
-const DEFAULT_DEBOUNCE_COMMIT_MS = 1500;
 /** Scale render preview mặc định (px/point ≈ zoom×dpr) — khớp `SessionOpReq.render_scale`. */
 const DEFAULT_RENDER_SCALE = 2.0;
 /** Lề an toàn quanh Clip_Region (point) — khớp `SessionOpReq.clip_pad_pt`. */
@@ -234,12 +232,12 @@ export function useEditSession(options: UseEditSessionOptions = {}): UseEditSess
             setDirtyFlag(false);
             setPreviews([]); // phiên mới → không còn overlay của phiên trước.
             return typeof data?.page_count === 'number' ? data.page_count : 0;
-        } catch (e) {
+        } catch {
             // Mở thất bại (kể cả 410/404) → tín hiệu fallback Legacy (Yêu cầu 11.1).
             markFailed();
             return null;
         }
-    }, [request, jsonPost, setSession, setDirtyFlag, markFailed]);
+    }, [request, jsonPost, setSession, setDirtyFlag, markFailed, t]);
 
     // ── Áp Edit_Op / Undo / Redo ───────────────────────────────────────────────
     const runOp = useCallback(async (

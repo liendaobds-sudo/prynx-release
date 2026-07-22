@@ -1,6 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
-import { RichSelect, SectionLabel, Divider, inputCls } from "../SharedUI";
+import { inputCls } from "../SharedUI";
 import { useImposerSettingsStore } from "../useImposerSettingsStore";
 import { useShallow } from "zustand/react/shallow";
 import { useAppSettingsStore } from "../../../stores/appSettingsStore";
@@ -69,10 +69,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
     setRows,
     gapX,
     setGapX,
-    gapY,
+
     setGapY,
-    showGapSettings,
-    setShowGapSettings,
+
+
     detectedShapesByPage,
     setDetectedShapesByPage,
     viewerActivePage,

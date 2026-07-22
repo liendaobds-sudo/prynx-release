@@ -141,12 +141,18 @@ function migrate(persistedState: any, version: number): any {
     }
     if (version < 9) {
         // v8 → v9: dao cắt (cutType/dieSize*) không còn nhớ — luôn mặc định session
-        const { cutType: _c, dieSizeMode: _d, dieOffsetMm: _o, ...rest } = persistedState || {};
+        const rest = { ...(persistedState || {}) };
+        delete rest.cutType;
+        delete rest.dieSizeMode;
+        delete rest.dieOffsetMm;
         const profiles = { ...(rest.toolProfiles || {}) };
         for (const tool of Object.keys(profiles)) {
             if (!profiles[tool] || typeof profiles[tool] !== 'object') continue;
-            const { cutType: _tc, dieSizeMode: _td, dieOffsetMm: _to, ...pRest } = profiles[tool];
-            profiles[tool] = pRest;
+            const profile = { ...profiles[tool] };
+            delete profile.cutType;
+            delete profile.dieSizeMode;
+            delete profile.dieOffsetMm;
+            profiles[tool] = profile;
         }
         persistedState = { ...rest, toolProfiles: profiles };
     }

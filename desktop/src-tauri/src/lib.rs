@@ -1,5 +1,5 @@
 use tauri::http::{self};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 // Add state struct for PDFium
 use pdfium_render::prelude::*;
@@ -245,14 +245,7 @@ pub(crate) static LOAD_LOCK: Mutex<()> = Mutex::new(());
 // PrintDlg (tránh treo viewer suốt lúc hộp thoại mở).
 pub static RENDER_LOCK: Mutex<()> = Mutex::new(());
 
-// The State wrapper in Tauri requires Send + Sync
-pub struct PdfiumState {
-    pdfium: Option<Pdfium>,
-}
-
 struct SystemFilesState(Mutex<Vec<String>>);
-unsafe impl Send for PdfiumState {}
-unsafe impl Sync for PdfiumState {}
 
 #[tauri::command]
 fn append_perf_log(app_handle: tauri::AppHandle, msg: String) {
@@ -344,19 +337,15 @@ fn log_frontend_error(
 
 #[tauri::command]
 async fn get_pdf_metadata(
-    app_handle: tauri::AppHandle,
     file_path: String,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
-        let start_time = std::time::Instant::now();
         let pdfium = ensure_pdfium()?;
         
         let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         let mut cache = lock_mutex(cache_lock);
         
-        let mut load_ms = 0;
         if !cache.contains_key(&file_path) {
-            let load_start = std::time::Instant::now();
             // Lazy pool: open only 1 handle immediately for fast metadata access
             let doc = {
                 let _guard = lock_mutex(&LOAD_LOCK);
@@ -366,7 +355,6 @@ async fn get_pdf_metadata(
                     .load_pdf_from_byte_vec(bytes, None)
                     .map_err(|e| format!("Failed to open PDF: {:?}", e))?
             };
-            load_ms = load_start.elapsed().as_millis();
             
             let pool_size = get_doc_pool_size();
             let mut pool = Vec::with_capacity(pool_size);
@@ -558,14 +546,9 @@ fn render_tile_jpeg(
     }
     let handle = cell.get().ok_or_else(|| "DocHandle init failed".to_string())?;
     
-    // Đo thật (perf_log): lock-wait RENDER_LOCK vs render vs encode vs cache. Biến
-    // gom ngoài block khóa → log SAU khi nhả khóa (không làm sai số / không giữ khóa
-    // lâu hơn). Chỉ ghi khi perf_enabled().
-    let mut lock_wait_ms: u128 = 0;
-    let mut render_ms: u128 = 0;
-    let mut bitmap_wh: (i32, i32) = (0, 0);
-
-    let rgba_image = {
+    // Đo thật (perf_log): trả ảnh và timing cùng lúc để log sau khi nhả khóa,
+    // không kéo dài vùng khóa chỉ vì instrumentation.
+    let (rgba_image, lock_wait_ms, render_ms, bitmap_wh) = {
         let _guard = lock_mutex(&handle.lock);
         let page_index = (page - 1) as u16;
         if page_index >= handle.doc.pages().len() {
@@ -657,15 +640,15 @@ fn render_tile_jpeg(
         // PDFium không thread-safe kể cả trên doc khác nhau.
         let _lock_t0 = std::time::Instant::now();
         let _render_guard = lock_mutex(&RENDER_LOCK);
-        lock_wait_ms = _lock_t0.elapsed().as_millis();
+        let lock_wait_ms = _lock_t0.elapsed().as_millis();
         let _render_t0 = std::time::Instant::now();
         let bitmap = pdf_page
             .render_with_config(&render_config)
             .map_err(|e| format!("Failed to render page: {:?}", e))?;
         let img = bitmap.as_image().to_rgba8();
-        render_ms = _render_t0.elapsed().as_millis();
-        bitmap_wh = (img.width() as i32, img.height() as i32);
-        img
+        let render_ms = _render_t0.elapsed().as_millis();
+        let bitmap_wh = (img.width() as i32, img.height() as i32);
+        (img, lock_wait_ms, render_ms, bitmap_wh)
     };
 
     let mut buffer = Vec::new();
@@ -1199,6 +1182,7 @@ fn solve_layout(
 // ══════════════════════════════════════════════════════════════
 
 /// Compute SHA-256 hash of a file
+#[cfg(not(debug_assertions))]
 fn sha256_file(path: &std::path::Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -1457,7 +1441,6 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-        .manage(Mutex::new(PdfiumState { pdfium: None }))
         .manage(SystemFilesState(Mutex::new(Vec::new())))
         .invoke_handler(tauri::generate_handler![render_pdf_page, get_pdf_metadata, get_startup_args, read_system_file, get_file_size, list_batch_folder_files, write_batch_pdf, copy_batch_pdf, get_pending_system_files, write_file_atomic, copy_file_atomic, read_dir_json, append_perf_log, append_render_perf, log_frontend_error, pdf_engine::diecut::strip_diecut_lines, pdf_engine::print::print_pdf, pdf_engine::print::print_pdf_direct, pdf_engine::print::cancel_print_job, pdf_engine::print::open_printer_properties, pdf_engine::print::list_printers, pdf_engine::print::get_printer_geometry, pdf_engine::print::delete_print_temp, pdf_engine::print::log_print_event, solve_layout, security::get_hardware_id, security::store_license, security::load_license, security::delete_license, security::register_validated_key, security::clear_validated_keys, security::sign_api_request, security::store_last_online, security::load_last_online, security::store_license_token, security::load_license_token, security::delete_license_token, normalize_image_to_png, normalize_image_bytes, external_app::detect_design_apps, external_app::launch_external_app])
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {

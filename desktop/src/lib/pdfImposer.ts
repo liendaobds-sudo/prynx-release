@@ -133,8 +133,8 @@ export const imposePdf = async (
         const paperThickness = thicknessInput * MM_TO_POINTS;
         const bleed = sanitizeNumber(settings.bleed) * MM_TO_POINTS;
         const gutterPt = sanitizeNumber((settings as any).gutterMargin) * MM_TO_POINTS;
-        let reqSheetW = sanitizeNumber(settings.sheetWidth);
-        let reqSheetH = sanitizeNumber(settings.sheetHeight);
+        const reqSheetW = sanitizeNumber(settings.sheetWidth);
+        const reqSheetH = sanitizeNumber(settings.sheetHeight);
 
         // ĐỂ NGUYÊN KHỔ GIẤY DO NGƯỜI DÙNG NHẬP, KHÔNG TỰ ĐỘNG XOAY.
         // Vì SheetOptimizer đã tính toán fit trên khổ gốc (hoặc xoay).

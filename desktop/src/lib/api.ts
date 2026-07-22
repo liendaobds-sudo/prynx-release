@@ -7,6 +7,22 @@ import { tv } from '../i18n';
  */
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8321';
 
+type TauriCoreInvoker = Pick<typeof import('@tauri-apps/api/core'), 'invoke'>;
+
+function formatApiErrorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string') return detail || fallback;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => {
+      if (item && typeof item === 'object' && 'msg' in item) {
+        return String((item as { msg?: unknown }).msg ?? '');
+      }
+      return String(item);
+    }).filter(Boolean).join(', ') || fallback;
+  }
+  if (detail && typeof detail === 'object') return JSON.stringify(detail);
+  return fallback;
+}
+
 export const getApiUrl = () => `${API_BASE}/api`;
 
 
@@ -19,7 +35,7 @@ export const getApiUrl = () => `${API_BASE}/api`;
  * validated in Rust cache, it refuses to sign.
  */
 // Cache the Tauri module to avoid repeated dynamic imports.
-let _cachedTauriCore: any = null;
+let _cachedTauriCore: TauriCoreInvoker | null = null;
 let _tauriAvailable: boolean | null = null;
 
 async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
@@ -38,7 +54,7 @@ async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
     // VECTOR #13: Use captured invoke from main.tsx (immune to ES module patches)
     if (!_cachedTauriCore) {
       try {
-        const capturedInvoke = (window as any).__PRYNX_INVOKE__;
+        const capturedInvoke = window.__PRYNX_INVOKE__;
         if (capturedInvoke) {
           // Use the pre-captured, frozen invoke from main.tsx
           _cachedTauriCore = { invoke: capturedInvoke };
@@ -149,12 +165,12 @@ export function installBackendFetchAuth(): void {
     } catch {
       /* bất kỳ lỗi nào → dùng fetch gốc, không chặn request */
     }
-    return origFetch(input as any, init);
+    return origFetch(input, init);
   };
 }
 
 
-export async function prepareFileForUpload(file: File | any): Promise<File | Blob> {
+export async function prepareFileForUpload(file: File): Promise<File | Blob> {
   // CRITICAL BUGFIX: Tauri SystemIntegrations creates fake File objects with 0 bytes of blob data (file.size is spoofed).
   // If the file is actually a fake blob but has a physical path, we MUST read it from disk before uploading.
   if (file.path) {
@@ -198,14 +214,14 @@ export async function prepareFileForUpload(file: File | any): Promise<File | Blo
   return file;
 }
 
-export async function uploadPDF(file: File | any, options: { signal?: AbortSignal } = {}) {
+export async function uploadPDF(file: File, options: { signal?: AbortSignal } = {}) {
   options.signal?.throwIfAborted();
 
   // Desktop sidecar can register a local path directly. This avoids materializing
   // a 100-500 MB PDF as ArrayBuffer/Blob inside the WebView before processing.
   if (
     typeof window !== 'undefined' &&
-    (window as any).__TAURI_INTERNALS__ &&
+    window.__TAURI_INTERNALS__ &&
     typeof file?.path === 'string' &&
     file.path
   ) {
@@ -389,10 +405,10 @@ export async function getPullProgress() {
   return res.json();
 }
 
-export async function startVdpJobBackend(pdfFile: File, vdpFields: any[], csvData: any[], dataFile?: File, dataFileHasHeader = true): Promise<string> {
+export async function startVdpJobBackend(pdfFile: File, vdpFields: readonly unknown[], csvData: readonly unknown[], dataFile?: File, dataFileHasHeader = true): Promise<string> {
   const formData = new FormData();
-  if ((pdfFile as any).path) {
-    formData.append('file_path', (pdfFile as any).path);
+  if (pdfFile.path) {
+    formData.append('file_path', pdfFile.path);
   } else {
     formData.append('file', pdfFile);
   }
@@ -461,7 +477,7 @@ export async function pollVdpJob(jobId: string, onProgress: (msg: string) => voi
 
 // ===== N-Up Backend Engine API =====
 
-export async function startNupJobBackend(sourcePath: string, settings: any): Promise<string> {
+export async function startNupJobBackend(sourcePath: string, settings: unknown): Promise<string> {
   const res = await authenticatedFetch(`${API_BASE}/api/imposition/nup-start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -543,7 +559,7 @@ export async function backendMergeManifest(files: File[], manifest: BackendMerge
   if (!res.ok) throw new Error('Backend manifest merge failed: ' + await res.text());
   return await res.blob();
 }
-export async function backendSplitPdf(file: File, mode: string, config: any): Promise<Blob> {
+export async function backendSplitPdf(file: File, mode: string, config: unknown): Promise<Blob> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('mode', mode);
@@ -596,7 +612,7 @@ export async function backendShufflePages(file: File, action: string, mapping: n
   return await res.blob();
 }
 
-export async function backendTrimShift(file: File, applyTo: string, config: any): Promise<Blob> {
+export async function backendTrimShift(file: File, applyTo: string, config: unknown): Promise<Blob> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('apply_to', applyTo);
@@ -660,11 +676,7 @@ export async function readVdpDatasource(params: {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Lỗi đọc nguồn dữ liệu' }));
-    let msg = err.detail || 'Lỗi đọc nguồn dữ liệu';
-    if (typeof msg === 'object') {
-      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
-    }
-    throw new Error(msg);
+    throw new Error(formatApiErrorDetail(err.detail, 'Lỗi đọc nguồn dữ liệu'));
   }
   return res.json();
 }
@@ -702,7 +714,7 @@ export interface VdpPreviewResult {
  * Truyền `signal` để huỷ request cũ khi người dùng điều hướng nhanh (giữ UI mượt).
  */
 export async function previewVdpRecord(params: {
-  fields: any[];
+  fields: readonly unknown[];
   requestedIndex: number;
   template?: File;
   templatePath?: string;
@@ -747,11 +759,7 @@ export async function previewVdpRecord(params: {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Lỗi tạo bản xem trước' }));
-    let msg = err.detail || 'Lỗi tạo bản xem trước';
-    if (typeof msg === 'object') {
-      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
-    }
-    throw new Error(msg);
+    throw new Error(formatApiErrorDetail(err.detail, 'Lỗi tạo bản xem trước'));
   }
   return res.json();
 }
@@ -787,7 +795,7 @@ export interface VdpValidateResult {
  * Nguồn chưa nạp/0 record được backend coi là lỗi chặn (Req 5.8, 5.11).
  */
 export async function validateVdp(params: {
-  fields: any[];
+  fields: readonly unknown[];
   rows?: Record<string, string>[];
   columns?: string[];
   kind?: 'csv' | 'xlsx' | 'gsheet';
@@ -819,11 +827,7 @@ export async function validateVdp(params: {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Lỗi kiểm tra dữ liệu' }));
-    let msg = err.detail || 'Lỗi kiểm tra dữ liệu';
-    if (typeof msg === 'object') {
-      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
-    }
-    throw new Error(msg);
+    throw new Error(formatApiErrorDetail(err.detail, 'Lỗi kiểm tra dữ liệu'));
   }
   return res.json();
 }
@@ -840,7 +844,7 @@ export async function validateVdp(params: {
  */
 export async function downloadVdpErrorReport(params: {
   issues?: VdpIssue[];
-  fields?: any[];
+  fields?: readonly unknown[];
   rows?: Record<string, string>[];
   columns?: string[];
   kind?: 'csv' | 'xlsx' | 'gsheet';
@@ -875,17 +879,13 @@ export async function downloadVdpErrorReport(params: {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Lỗi xuất báo cáo lỗi' }));
-    let msg = err.detail || 'Lỗi xuất báo cáo lỗi';
-    if (typeof msg === 'object') {
-      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
-    }
-    throw new Error(msg);
+    throw new Error(formatApiErrorDetail(err.detail, 'Lỗi xuất báo cáo lỗi'));
   }
 
   const blob = await res.blob();
   const defaultName = params.fileName || 'vdp_error_report.csv';
 
-  if ((window as any).__TAURI_INTERNALS__) {
+  if (window.__TAURI_INTERNALS__) {
     const { save } = await import('@tauri-apps/plugin-dialog');
     const { writeFile } = await import('@tauri-apps/plugin-fs');
     const path = await save({
@@ -918,11 +918,7 @@ export async function listVdpSheets(file: File): Promise<string[]> {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Lỗi đọc danh sách sheet' }));
-    let msg = err.detail || 'Lỗi đọc danh sách sheet';
-    if (typeof msg === 'object') {
-      msg = Array.isArray(msg) ? msg.map((e: any) => e.msg).join(', ') : JSON.stringify(msg);
-    }
-    throw new Error(msg);
+    throw new Error(formatApiErrorDetail(err.detail, 'Lỗi đọc danh sách sheet'));
   }
   const data = await res.json();
   return data.sheets as string[];

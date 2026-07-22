@@ -50,6 +50,7 @@ pub(crate) fn resolve_scale_mode_pub(s: Option<&str>, percent: Option<f64>) -> S
     resolve_scale_mode(s, percent)
 }
 
+#[cfg(test)]
 fn for_each_print_page<E, F>(
     start_page: i32,
     end_page: i32,
@@ -153,6 +154,7 @@ fn plan_scale_with_rotation_dimensions(
     (scale, rotate_page)
 }
 
+#[cfg(test)]
 fn plan_scale(
     disp_w: f64,
     disp_h: f64,

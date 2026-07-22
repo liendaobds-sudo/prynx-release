@@ -89,7 +89,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
     const result = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(result.id);
     return result.id;
-  }, [fileId, pdfFile, getWorkingFile]);
+  }, [fileId, pdfFile, getWorkingFile, t]);
 
   // ── Inspect ──
   const runInspect = useCallback(async () => {
@@ -105,7 +105,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
       setReport(await res.json());
     } catch (e: any) { setError(e.message); }
     finally { setIsInspecting(false); }
-  }, [pdfFile, selectedRules, ensureUploaded]);
+  }, [pdfFile, selectedRules, ensureUploaded, t]);
 
   // ── Pipeline (auto-upload if needed) ──
   const runPipeline = useCallback(async () => {
@@ -132,7 +132,7 @@ export default function PreflightTool({ pdfFile, onFileFixed, onIssueSelect, onO
       }
     } catch (e: any) { setError(e.message); }
     finally { setFixingAction(''); }
-  }, [selectedActions, ensureUploaded, onFileFixed]);
+  }, [selectedActions, ensureUploaded, onFileFixed, t]);
 
   const toggleRule = (id: string) => {
     setSelectedRules(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });

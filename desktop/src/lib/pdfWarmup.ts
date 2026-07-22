@@ -31,7 +31,7 @@ export async function warmupWorkspaceChunks(): Promise<void> {
             import('../components/AcrobatViewer'),
             import('../components/workspace/LivePageFrame'),
         ]);
-    } catch (e) {
+    } catch {
         chunksWarmed = false;
     }
 }
@@ -53,7 +53,7 @@ export async function warmupPdfium(): Promise<void> {
         const { invoke } = await import('@tauri-apps/api/core');
         // get_pdf_metadata vừa bind pdfium vừa nạp doc vào cache → làm nóng engine.
         await invoke('get_pdf_metadata', { filePath: path });
-    } catch (e) {
+    } catch {
         pdfiumWarmed = false;
     }
 }
@@ -78,7 +78,7 @@ export async function warmupPdfjs(): Promise<void> {
         const pdf = await task.promise;
         await pdf.getPage(1);
         await pdf.destroy();
-    } catch (e) {
+    } catch {
         // Warm-up thất bại không sao — chỉ mất lợi ích tối ưu, app vẫn chạy.
         warmed = false;
     }

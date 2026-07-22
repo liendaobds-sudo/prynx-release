@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useImposerSettingsStore } from '../useImposerSettingsStore';
 import { useShallow } from 'zustand/react/shallow';
-import { SectionLabel, Divider, inputCls, Checkbox, RichSelect } from '../SharedUI';
+import { Divider, inputCls, Checkbox } from '../SharedUI';
 import { DEFAULT_MATERIALS, LAMINATION_OPTIONS, PREDEFINED_SIZES, type ReportFieldKey } from '../types';
 import { buildReportPreview } from '../../../lib/reportPreview';
 import { useTranslation } from 'react-i18next';
@@ -260,7 +260,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                         const p = presets.find((x) => 'preset_' + x.name === val);
                                                         if (p && p.config) s.setPontConfig(p.config);
                                                     }
-                                                } catch (e) {}
+                                                } catch {}
                                             }
                                         }}
                                         className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
@@ -277,7 +277,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                         <option key={p.name} value={'preset_' + p.name}>{p.name}</option>
                                                     ));
                                                 }
-                                            } catch (e) {}
+                                            } catch {}
                                             return null;
                                         })()}
                                         <option value="custom">{t('imposition.advancedSettings:tuy_chinh')}</option>
@@ -682,7 +682,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                                         const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
                                                         const dir = await openDialog({ directory: true, multiple: false, title: t('imposition.advancedSettings:chon_thu_muc_luu_file_in') });
                                                         if (typeof dir === 'string') s.setSavePrint({ lastFolder: dir });
-                                                    } catch (e) { /* ignore */ }
+                                                    } catch { /* ignore */ }
                                                 }}
                                                 className="px-2.5 h-7 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-medium shrink-0">{t('imposition.advancedSettings:chon_thu_muc')}</button>
                                             <span className="text-[11px] text-slate-600 dark:text-zinc-300 truncate flex-1" title={s.savePrint.lastFolder}>

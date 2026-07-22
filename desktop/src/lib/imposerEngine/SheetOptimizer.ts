@@ -232,8 +232,8 @@ export function optimizeMasterSig(
 
         // === PRIMARY FIT: chỉ trừ nhíp cứng (gripperUsable), lề mềm không tính ===
         let fits = gridW <= gripperUsable.w && gridH <= gripperUsable.h;
-        let actualGridW = gridW;
-        let actualGridH = gridH;
+        const actualGridW = gridW;
+        const actualGridH = gridH;
         let isRotated = false;
 
         // Thử xoay kẽm nếu không fit

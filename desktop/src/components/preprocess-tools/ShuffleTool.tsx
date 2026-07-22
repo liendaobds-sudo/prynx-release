@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { SHUFFLE_PRESETS, getPresetById, RepeatMode, parseRule, applyRule, shuffleEvenOdd, reversePages, serializeRule, type ShuffleRule } from '../../lib/preprocessEngine/ShuffleEngine';
 import { 
@@ -71,10 +71,10 @@ export default function ShuffleTool({ settings, onChange }: Props) {
             let res = displayMapping.join(', ');
             if (mapping.length > 32) res += '...';
             setPreviewStr(`[${res}]`);
-        } catch (e) {
+        } catch {
             setPreviewStr(t('preprocess.shuffle:quy_tac_khong_hop_le'));
         }
-    }, [activeTab, settings, localRule]);
+    }, [activeTab, settings, localRule, t]);
 
     useEffect(() => {
         if (settings.presetId === 'special') setActiveTab('quick');

@@ -64,7 +64,7 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
     const r = await uploadPDF((await getWorkingFile()) || pdfFile);
     setFileId(r.id);
     return r.id;
-  }, [fileId, pdfFile, getWorkingFile]);
+  }, [fileId, pdfFile, getWorkingFile, t]);
 
   const run = async () => {
     setRunning(true); setResult(null); setError('');

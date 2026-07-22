@@ -255,12 +255,12 @@ export function planCatalog(config: PlanConfig): PlanResult {
     const { totalPages, bindingMode, hasSeparateCover, masterSig, sourceFileName } = config;
     const baseName = getBaseName(sourceFileName);
     const jobs: PlateJob[] = [];
-    let reportLines: string[] = [];
+    const reportLines: string[] = [];
     let sortOrder = 0;
 
     // ---- Bước 1: Xử lý Bìa ----
     let coverPageIndices: number[] = [];
-    let bodyPageIndices: number[] = [];
+    const bodyPageIndices: number[] = [];
 
     if (hasSeparateCover && totalPages >= 8) {
         // Bìa riêng chất liệu: trước(0), trước-trong(1), sau-trong(N-2), sau(N-1)

@@ -164,7 +164,7 @@ function getNextInsertBlock(copiedInsert: any[], settings: MergeSettings, curren
         return { pages: copiedInsert, nextIdx: currentIdx }; // nextIdx doesn't matter, we always return entire
     } else {
         const count = settings.insertPagesEachTime;
-        let pagesToReturn = [];
+        const pagesToReturn = [];
         let newIdx = currentIdx;
         
         for (let i = 0; i < count; i++) {

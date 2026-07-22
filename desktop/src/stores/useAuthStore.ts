@@ -233,7 +233,6 @@ const RETRY_INTERVAL_MS = 30 * 1000;              // 30 seconds (when locked)
 // hợp pháp (tắt máy nghỉ cuối tuần, đi công tác không mạng).
 const MAX_OFFLINE_MS = 24 * 60 * 60 * 1000;       // 24h — fallback cho client chưa có token
 const REVOKE_GRACE_MS = 5 * 60 * 1000;            // 5 phút ân hạn để khách kịp lưu file trước khi khóa cứng
-const LAST_ONLINE_KEY = 'prynx_last_online';
 
 /**
  * Durable security telemetry. Events are queued without a license key, then
@@ -313,7 +312,7 @@ async function checkConnectivity(): Promise<'online' | 'offline' | 'supabase_blo
   // Check 1: Can we reach ANY public server?
   let hasInternet = false;
   try {
-    const resp = await fetch('https://www.gstatic.com/generate_204', {
+    await fetch('https://www.gstatic.com/generate_204', {
       method: 'HEAD', mode: 'no-cors', cache: 'no-store',
       signal: AbortSignal.timeout(5000),
     });
@@ -321,7 +320,7 @@ async function checkConnectivity(): Promise<'online' | 'offline' | 'supabase_blo
   } catch {
     // Try another endpoint
     try {
-      const resp = await fetch('https://1.1.1.1/cdn-cgi/trace', {
+      await fetch('https://1.1.1.1/cdn-cgi/trace', {
         method: 'HEAD', mode: 'no-cors', cache: 'no-store',
         signal: AbortSignal.timeout(5000),
       });
@@ -335,7 +334,7 @@ async function checkConnectivity(): Promise<'online' | 'offline' | 'supabase_blo
   
   // Check 2: Can we reach Supabase specifically?
   try {
-    const { supabase: _sb } = await import('../lib/supabase');
+    await import('../lib/supabase');
     // Just check if the Supabase health endpoint responds
     await fetch(`${import.meta.env.VITE_SUPABASE_URL}/rest/v1/`, {
       method: 'HEAD', mode: 'no-cors', cache: 'no-store',

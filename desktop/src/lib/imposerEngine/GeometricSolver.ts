@@ -49,8 +49,8 @@ export const solveGeometry = (
         scaleFactor = 1.0;
     } else {
         const isCustom = settings.formsize === 'custom';
-        let wMm = isCustom ? settings.customSheetWidth : PREDEFINED_SIZES[settings.formsize].w;
-        let hMm = isCustom ? settings.customSheetHeight : PREDEFINED_SIZES[settings.formsize].h;
+        const wMm = isCustom ? settings.customSheetWidth : PREDEFINED_SIZES[settings.formsize].w;
+        const hMm = isCustom ? settings.customSheetHeight : PREDEFINED_SIZES[settings.formsize].h;
 
         const spreadRatio = spreadW / spreadH;
         const sheetRatio = wMm / hMm;

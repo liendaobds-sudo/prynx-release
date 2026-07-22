@@ -85,8 +85,8 @@ class PdfErrorBoundary extends React.Component<{children: React.ReactNode}, {has
     super(props);
     this.state = { hasError: false, retryCount: 0 };
   }
-  static getDerivedStateFromError(error: any) { return { hasError: true }; }
-  componentDidCatch(error: any) {
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch() {
     if (this.state.retryCount < 5) {
       setTimeout(() => this.setState(prev => ({ hasError: false, retryCount: prev.retryCount + 1 })), 100);
     }
@@ -247,7 +247,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
               const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
               updates[id] = doc.getPageCount();
               hasUpdates = true;
-            } catch (err) {
+            } catch {
               updates[id] = 1;
               hasUpdates = true;
             }
@@ -449,7 +449,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       }
     };
 
-    const onPointerUp = (upEvent: PointerEvent) => {
+    const onPointerUp = () => {
       target.releasePointerCapture(pointerId);
       target.removeEventListener('pointermove', onPointerMove);
       target.removeEventListener('pointerup', onPointerUp);
@@ -784,8 +784,9 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
       skipNextRegroupRef.current = false;
       setGroupByPageSize(false);
       setNodes(prev => prev.map(n => {
-        const { sizeKey: _sk, ...rest } = n as CombineNode & { sizeKey?: string };
-        return { ...rest } as CombineNode;
+        const rest = { ...n };
+        delete rest.sizeKey;
+        return rest;
       }));
       return;
     }

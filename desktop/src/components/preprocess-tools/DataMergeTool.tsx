@@ -2,13 +2,12 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import Papa from 'papaparse';
-import { startVdpJobBackend, getVdpJobStatus, downloadVdpJob, pollVdpJob, getSystemFonts, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, type VdpFieldError, type VdpIssue, type VdpGating } from '@/lib/api';
-import { getQRBlob, DEFAULT_QR_STYLE } from '@/engine/barcode/qrEngine';
+import { startVdpJobBackend, pollVdpJob, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, type VdpFieldError, type VdpIssue, type VdpGating } from '@/lib/api';
 import { generateBarcodeDataURL } from '@/engine/barcode/barcodeEngine';
 import { FontSelector } from './FontSelector';
-import { ToolSectionLabel, ToolDivider, ToolNumberInput } from './ToolUI';
+import { ToolDivider, ToolNumberInput } from './ToolUI';
 import { useVdpTool } from '@/hooks/useVdpTool';
-import { sortFieldsGeometrically, buildMultiUpJobInput } from '@/lib/vdpUtils';
+import { buildMultiUpJobInput } from '@/lib/vdpUtils';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useTranslation } from 'react-i18next';
@@ -54,19 +53,6 @@ export function CmykColorPicker({ label, value, onChange, disabled }: { label?: 
         if (isOpen) document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, [isOpen]);
-
-    const presets = [
-        { c: 0, m: 0, y: 0, k: 100 }, // Black
-        { c: 0, m: 0, y: 0, k: 0 },   // White
-        { c: 100, m: 0, y: 0, k: 0 }, // Cyan
-        { c: 0, m: 100, y: 0, k: 0 }, // Magenta
-        { c: 0, m: 0, y: 100, k: 0 }, // Yellow
-        { c: 0, m: 100, y: 100, k: 0 }, // Red
-        { c: 100, m: 0, y: 100, k: 0 }, // Green
-        { c: 100, m: 100, y: 0, k: 0 }, // Blue
-        { c: 0, m: 50, y: 100, k: 0 }, // Orange
-        { c: 0, m: 0, y: 0, k: 50 },  // Gray
-    ];
 
     return (
         <div className="flex flex-col gap-1 relative" ref={popoverRef}>
@@ -481,9 +467,6 @@ export default function DataMergeTool({
     const [manualColName, setManualColName] = useState('Noidung');
     const [statusMessage, setStatusMessage] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
-    const [systemFonts, setSystemFonts] = useState<{name: string, path: string}[]>([]);
-    const [fontDropdownOpen, setFontDropdownOpen] = useState(false);
-    const [fontSearch, setFontSearch] = useState('');
 
     // ── Nguồn dữ liệu mở rộng (xlsx / Google Sheets) — task 14.1 ──
     // Số bản ghi THẬT do backend báo về (preview_rows chỉ là mẫu hiển thị).
@@ -513,10 +496,6 @@ export default function DataMergeTool({
     const [validateIssues, setValidateIssues] = useState<VdpIssue[]>([]);
     const [validating, setValidating] = useState(false);
     const [reportLoading, setReportLoading] = useState(false);
-
-    useEffect(() => {
-        getSystemFonts().then(setSystemFonts).catch(console.error);
-    }, []);
 
     // Hủy polling VDP khi component unmount để không poll vô hạn nền (#13).
     const pollAbortRef = useRef<AbortController | null>(null);
@@ -760,16 +739,12 @@ export default function DataMergeTool({
         }
     };
 
-    const {
-        deleteSelectedField,
-        handleGroupFields,
-        handleUngroupFields
-    } = useVdpTool(vdpFields, setVdpFields as any, selectedFieldIds, onSelectField, isActive);
+    const { deleteSelectedField } = useVdpTool(vdpFields, setVdpFields as any, selectedFieldIds, onSelectField, isActive);
 
     const selectedFieldId = selectedFieldIds[0];
     const selectedField = vdpFields.find(f => f.id === selectedFieldId);
     const viewerPageDimMm = useWorkspaceStore(s => s.viewerPageDimMm);
-    const [isMultiUp, setIsMultiUp] = useState(false);
+    const isMultiUp = false;
     // Trình tách cột (chèn nhanh placeholder, không phải gõ cú pháp tay)
     const [splitCol, setSplitCol] = useState('');
     const [splitMode, setSplitMode] = useState('whole'); // whole | ws | - | , | ; | / | custom

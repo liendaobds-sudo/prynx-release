@@ -1,8 +1,7 @@
 // @ts-nocheck
 import { useState, useCallback, useEffect } from 'react';
 import { X } from 'lucide-react';
-import { authenticatedFetch, getApiUrl, uploadPDF, getFileUrl } from '../lib/api';
-import { PRESET_RULES } from '../lib/preprocessEngine/ShuffleEngine';
+import { authenticatedFetch, getApiUrl, uploadPDF } from '../lib/api';
 import { getFileArrayBuffer } from '../lib/utils';
 import { Button } from './Button';
 import PDFUploader from './PDFUploader';
@@ -162,7 +161,7 @@ export default function PreflightTab({ onDirtyChange, tabId, isActive }: any = {
     } catch (e: any) {
       setError(e.message || t('preflight.preflight:upload_that_bai'));
     }
-  }, []);
+  }, [t]);
 
   // ── Preflight Inspect ──
   const runInspect = useCallback(async () => {
@@ -177,22 +176,7 @@ export default function PreflightTab({ onDirtyChange, tabId, isActive }: any = {
       setReport(await res.json());
     } catch (e: any) { setError(e.message); }
     finally { setIsInspecting(false); }
-  }, [fileId, selectedRules]);
-
-  // ── Fix Action ──
-  const runAction = useCallback(async (actionId: string) => {
-    if (!fileId) return;
-    setFixingAction(actionId); setFixResult(null);
-    try {
-      const res = await authenticatedFetch(`${getApiUrl()}/preflight/fix`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_id: fileId, action_id: actionId }),
-      });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || t('preflight.preflight:loi'));
-      setFixResult(await res.json());
-    } catch (e: any) { setError(e.message); }
-    finally { setFixingAction(''); }
-  }, [fileId]);
+  }, [fileId, selectedRules, t]);
 
   // ── Pipeline ──
   const runPipeline = useCallback(async () => {
@@ -218,7 +202,7 @@ export default function PreflightTab({ onDirtyChange, tabId, isActive }: any = {
       }
     } catch (e: any) { setError(e.message); }
     finally { setFixingAction(''); }
-  }, [fileId, selectedActions]);
+  }, [fileId, selectedActions, t]);
 
   const handleReset = () => {
     setPhase('upload'); setFile(null); setFileId(''); setPdfUrl(null);
