@@ -31,14 +31,16 @@ import UpscaleTool from '../../preprocess-tools/UpscaleTool';
 import EncryptTool from '../../preprocess-tools/EncryptTool';
 import MetadataTool from '../../preprocess-tools/MetadataTool';
 import OfficeConvertTool from '../../preprocess-tools/OfficeConvertTool';
+import CropDialog from '../../workspace/CropDialog';
 
 import PageToolsPanel from '../../preprocess-tools/PageToolsPanel';
 import { PREPROCESS_ROUTER_TOOLS } from './preprocessRouterTools';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
+import { CropIcon } from '../../shared/ToolIcons';
 
 // ─── Tool Header Definitions ────────────────────────────────────────────────
-const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }> = {
+const TOOL_HEADERS: Record<string, { icon: React.ReactNode; title: string; desc: string }> = {
     shuffle: { icon: '🔀', title: 'Xáo trộn trang (Shuffle)', desc: 'Sắp xếp, đảo ngược, xoay chiều trang tự động.' },
     resize: { icon: '📏', title: 'Co giãn trang (Resize)', desc: 'Thu phóng nội dung fit vào khổ giấy mới.' },
     trim_shift: { icon: '⇔', title: 'Cắt xén & Dời (Trim & Shift)', desc: 'Chỉnh khổ từng cạnh, dời nội dung, bù lề gáy & creep.' },
@@ -62,6 +64,7 @@ const TOOL_HEADERS: Record<string, { icon: string; title: string; desc: string }
     encrypt: { icon: '🔐', title: 'Khóa / Mở khóa PDF', desc: 'Đặt mật khẩu, hạn chế in/copy, hoặc gỡ khóa khi biết mật khẩu.' },
     metadata: { icon: '🏷️', title: 'Metadata PDF', desc: 'Xem / sửa Title, Author, Subject… hoặc xóa metadata.' },
     office_convert: { icon: '📝', title: 'Word / Excel / Google → PDF', desc: 'Chuyển .docx/.xlsx hoặc link Google Docs/Sheets thành PDF.' },
+    crop: { icon: <CropIcon className="h-4 w-4" />, title: 'Cắt khổ trang (Crop)', desc: 'Quét vùng, nhập kích thước và canh theo toàn bộ trang.' },
 };
 
 
@@ -82,10 +85,13 @@ interface PreprocessingRouterProps {
     onFileFixed?: (blob: Blob, name: string, path?: string) => void;
     officeSourceFile?: File | null;
     officeSourceFiles?: File[];
+    ensureCropFileId?: (signal?: AbortSignal) => Promise<string>;
+    onCropApplied?: (blob: Blob, filename: string, openInNewTab: boolean) => void | Promise<void>;
+    onCropClose?: () => void;
 }
 
 export default function PreprocessingRouter({
-    tabId, activeTool, pdfFile, isProcessing,
+    tabId, activeTool, pdfFile, isProcessing, ensureCropFileId, onCropApplied, onCropClose,
     onStartShuffle, onStartResize, onStartTrimShift, onStartSplit, onStartMerge,
     onIssueSelect, onOpenOutputPreview, onFileFixed, officeSourceFile, officeSourceFiles,
 }: PreprocessingRouterProps) {
@@ -111,7 +117,7 @@ export default function PreprocessingRouter({
             {header && (
                 <div className="pt-2 text-center pb-2">
                     <h2 className="text-sm font-bold text-slate-800 dark:text-white uppercase tracking-wider flex items-center justify-center gap-2">
-                        <span>{header.icon}</span>
+                        <span className="inline-flex items-center justify-center">{header.icon}</span>
                         <span>{tv(header.title)}</span>
                     </h2>
                     <p className="text-[11px] text-slate-500 mt-1">{tv(header.desc)}</p>
@@ -119,6 +125,10 @@ export default function PreprocessingRouter({
             )}
 
             {/* ═══ CONTENT ═══ */}
+            {activeTool === 'crop' && ensureCropFileId && onCropApplied && (
+                <CropDialog embedded ensureFileId={ensureCropFileId} onApplied={onCropApplied} onClose={onCropClose || (() => undefined)} />
+            )}
+
             {activeTool === 'shuffle' && (
                 <div>
                     <ShuffleTool settings={s.shuffleSettings} onChange={s.setShuffleSettings} />

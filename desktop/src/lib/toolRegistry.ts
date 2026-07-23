@@ -7,7 +7,8 @@
  * Muốn thêm tool mới? Chỉ cần thêm 1 entry vào đây + tạo component.
  */
 
-import { lazy, type LazyExoticComponent, type ComponentType } from 'react';
+import { createElement, lazy, type LazyExoticComponent, type ComponentType, type ReactNode } from 'react';
+import { CropIcon } from '../components/shared/ToolIcons';
 
 // ─── Tool Category IDs ───
 export type ToolCategoryId = 'file' | 'print' | 'vdp' | 'impo' | 'packaging' | 'util' | 'qc';
@@ -22,8 +23,8 @@ export interface ToolDefinition {
   title: string;
   /** Default tab title when opened */
   tabTitle: string;
-  /** Emoji icon */
-  icon: string;
+  /** Tool icon */
+  icon: ReactNode;
   /** Short description for compact sidebar */
   description: string;
   /** Long description for expanded card view */
@@ -115,6 +116,23 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     hoverShadow: 'hover:shadow-[0_8px_30px_rgb(20,184,166,0.15)]',
     bgIcon: 'bg-teal-100 dark:bg-teal-500/10',
     textIcon: 'text-teal-600',
+  },
+  {
+    id: 'imposition',
+    title: 'Cắt khổ trang (Crop)',
+    tabTitle: 'Bình bài (Chưa có file)',
+    icon: createElement(CropIcon, { width: '1em', height: '1em' }),
+    description: 'Quét vùng và cắt theo kích thước, canh theo trang',
+    longDescription: 'Quét một hoặc nhiều vùng trên trang PDF, nhập kích thước chính xác và canh vùng theo toàn bộ trang.',
+    category: 'file',
+    component: ImpositionTab,
+    isEnabled: true,
+    defaultPayload: { focusFeature: 'crop' },
+    hoverColor: 'hover:border-orange-500 hover:text-orange-600 text-slate-800 dark:text-white',
+    hoverBorder: 'hover:border-orange-500',
+    hoverShadow: 'hover:shadow-[0_8px_30px_rgb(249,115,22,0.15)]',
+    bgIcon: 'bg-orange-100 dark:bg-orange-500/10',
+    textIcon: 'text-orange-600',
   },
   {
     id: 'imposition',

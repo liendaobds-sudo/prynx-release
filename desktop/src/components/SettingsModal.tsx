@@ -11,6 +11,7 @@ import CutterMachinesPanel from './imposition-tools/cut-export/CutterMachinesPan
 import { Star, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
+import { KEYBOARD_SHORTCUTS, SHORTCUT_GROUPS } from '../lib/keyboardShortcuts';
 
 type SettingsTab = 'tools' | 'export' | 'workspace' | 'shortcuts' | 'cutter';
 
@@ -290,23 +291,26 @@ export default function SettingsModal({ onClose, initialTab = 'tools' }: Setting
                 </p>
 
                 <div className="space-y-2 flex-1 pr-4 overflow-y-auto custom-scrollbar pb-10">
-                  {[
-                    { keys: ['Ctrl', 'S'], desc: t('settings:luu_xuat_file_pdf_hien_tai') },
-                    { keys: ['Ctrl', 'Shift', 'S'], desc: t('settings:luu_de_file_save_as') },
-                    { keys: ['Ctrl', 'W'], desc: t('settings:dong_tab_cong_cu_dang_mo') },
-                    { keys: ['Ctrl', 'K'], desc: t('settings:mo_dong_bang_cai_dat_nay') },
-                    { keys: ['Alt', 'F4'], desc: t('settings:thoat_phan_mem') },
-                  ].map((shortcut, i) => (
-                    <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/5 hover:border-cyan-500/30 transition-colors">
-                      <span className="text-sm font-medium text-slate-700 dark:text-zinc-300">{shortcut.desc}</span>
-                      <div className="flex gap-1.5">
-                        {shortcut.keys.map((k, j) => (
-                          <kbd key={j} className="px-2 py-1 bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded text-xs font-bold text-slate-600 dark:text-zinc-300 shadow-sm">
-                            {k}
-                          </kbd>
-                        ))}
-                      </div>
-                    </div>
+                  {SHORTCUT_GROUPS.map((group) => (
+                    <section key={group.id} className="space-y-2 pb-3">
+                      <h4 className="sticky top-0 z-10 py-2 bg-white/95 dark:bg-zinc-900/95 backdrop-blur text-xs font-bold uppercase tracking-wider text-cyan-700 dark:text-cyan-300">
+                        {t(`settings:${group.labelKey}`)}
+                      </h4>
+                      {KEYBOARD_SHORTCUTS.filter((shortcut) => shortcut.group === group.id).map((shortcut) => (
+                        <div key={shortcut.id} className="flex items-center justify-between gap-4 p-3 rounded-lg bg-slate-50 dark:bg-zinc-800/40 border border-slate-200 dark:border-white/5 hover:border-cyan-500/30 transition-colors">
+                          <span className="text-sm font-medium text-slate-700 dark:text-zinc-300">
+                            {t(`settings:${shortcut.descriptionKey}`)}
+                          </span>
+                          <div className="flex gap-1.5 flex-wrap justify-end shrink-0">
+                            {shortcut.keys.map((key) => (
+                              <kbd key={key} className="px-2 py-1 bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded text-xs font-bold text-slate-600 dark:text-zinc-300 shadow-sm">
+                                {key}
+                              </kbd>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </section>
                   ))}
                 </div>
               </div>

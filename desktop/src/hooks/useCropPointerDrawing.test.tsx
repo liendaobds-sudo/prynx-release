@@ -82,9 +82,26 @@ describe('useCropPointerDrawing', () => {
     firePointer(canvas, 'pointerdown', { pointerId: 7, button: 0, clientX: 10, clientY: 10 });
     firePointer(canvas, 'pointercancel', { pointerId: 7, clientX: 60, clientY: 40 });
     firePointer(canvas, 'pointerdown', { pointerId: 8, button: 0, clientX: 90, clientY: 10 });
+
     firePointer(canvas, 'pointerup', { pointerId: 8, clientX: 180, clientY: 90 });
 
     expect(screen.getByTestId('crop-count').textContent).toBe('1');
     expect(screen.getByTestId('crop-marquee').style.display).toBe('none');
+  });
+
+  it('measures layout once per drag instead of once per pointer move', () => {
+    render(<Harness />);
+    const canvas = screen.getByTestId('crop-canvas');
+    installPointerCapture(canvas);
+    const rectSpy = vi.spyOn(canvas, 'getBoundingClientRect');
+
+    firePointer(canvas, 'pointerdown', { pointerId: 9, button: 0, clientX: 10, clientY: 10 });
+    firePointer(canvas, 'pointermove', { pointerId: 9, clientX: 30, clientY: 20 });
+    firePointer(canvas, 'pointermove', { pointerId: 9, clientX: 60, clientY: 40 });
+    firePointer(canvas, 'pointermove', { pointerId: 9, clientX: 100, clientY: 60 });
+    firePointer(canvas, 'pointerup', { pointerId: 9, clientX: 100, clientY: 60 });
+
+    expect(rectSpy).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('crop-count').textContent).toBe('1');
   });
 });

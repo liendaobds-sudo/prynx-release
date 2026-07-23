@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { fracToRectMm, rectMmToFrac, type BoxMm, type Frac } from '../../lib/cropDialogGeometry';
+import { fracToRectMm, rectMmToFrac, resizeCropFrac, type BoxMm, type Frac } from '../../lib/cropDialogGeometry';
 
 const visibleCropBox: BoxMm = {
     x0: 10,
@@ -37,5 +37,15 @@ describe('CropDialog geometry', () => {
             x1: 1,
             y1: 1,
         });
+    });
+    it('aligns the exact crop size against the complete page', () => {
+        expect(resizeCropFrac(
+            { x0: 0.1, y0: 0.2, x1: 0.9, y1: 0.8 },
+            visibleCropBox,
+            40,
+            20,
+            'right',
+            'bottom',
+        )).toEqual({ x0: 0.6, y0: 0.6, x1: 1, y1: 1 });
     });
 });

@@ -510,7 +510,7 @@ const VdpAutoFitText = ({ field, scale, text }: any) => {
 // bề rộng render KHỚP bề rộng thật của dòng trên trang. KHÔNG overflow:hidden/width
 // cứng (bản cũ cắt mất chữ tràn + lệch). scaleX đo 1 lần qua offsetWidth (bỏ qua
 // transform nên không lặp vô hạn). transformOrigin top-left để neo đúng mép trái-trên.
-const SelectableTextLine = ({ line, scale, gapPt }: { line: any; scale: number; gapPt: number }) => {
+const SelectableTextLine = React.memo(function SelectableTextLine({ line, scale, gapPt }: { line: any; scale: number; gapPt: number }) {
     const ref = useRef<HTMLSpanElement>(null);
     const [scaleX, setScaleX] = useState(1);
     const text = line.chars?.map((c: any) => c.c).join('') || '';
@@ -554,7 +554,37 @@ const SelectableTextLine = ({ line, scale, gapPt }: { line: any; scale: number; 
             {text}
         </span>
     );
-};
+});
+
+const SelectableTextLayer = React.memo(function SelectableTextLayer({
+    textBlocks,
+    pageWidthPx,
+    displayWidth,
+}: {
+    textBlocks: any;
+    pageWidthPx?: number;
+    displayWidth: number;
+}) {
+    const allLines = React.useMemo(
+        () => (Array.isArray(textBlocks) ? textBlocks : (textBlocks?.blocks || []))
+            .flatMap((block: any) => block.lines || [])
+            .filter((line: any) => line?.bbox)
+            .sort((a: any, b: any) => a.bbox.y - b.bbox.y),
+        [textBlocks],
+    );
+    const pageWidthPt = pageWidthPx ? pageWidthPx * 72 / 96 : 595;
+    const scale = displayWidth / pageWidthPt;
+
+    return (
+        <div className="absolute inset-0 z-[12] select-text cursor-text" style={{ pointerEvents: 'auto' }}>
+            {allLines.map((line: any, index: number) => {
+                const next = allLines[index + 1];
+                const gap = next ? (next.bbox.y - line.bbox.y) : Infinity;
+                return <SelectableTextLine key={index} line={line} scale={scale} gapPt={gap} />;
+            })}
+        </div>
+    );
+});
 
 export const LivePageFrame = (props: any) => {
   const { t } = useTranslation();
@@ -564,7 +594,7 @@ export const LivePageFrame = (props: any) => {
         getTileUrl, textBlocks, isVdpMode, onVdpBoxCreate, onVdpBoxSelect, onVdpFieldsChange,
         setHoveredPdfPosition, detectedDimension, isBlankDoc, onEditCommit, isActivePage,
         isImageFile: isImage, nativeFilePath, previewRevision,
-        editSession
+        editSession, totalPages
     } = props;
     // Trang ĐANG xem (active) trong danh sách ảo (Virtuoso). Chỉ frame active mới
     // đẩy editObjects của mình lên store `currentEditObjects` → panel "Thành phần"
@@ -779,12 +809,15 @@ export const LivePageFrame = (props: any) => {
     const selectedCropIdx = cropSelection?.ownerId === cropOwnerId
         ? cropSelection.selectedIndex
         : -1;
+    const cropSelsRef = useRef<CropRegionFrac[]>(cropSels);
+    cropSelsRef.current = cropSels;
     const cropAdjustRef = useRef<{
         index: number;
         mode: CropAdjustMode;
         startX: number;
         startY: number;
         original: CropRegionFrac;
+        latest: CropRegionFrac;
         historyRecorded: boolean;
         pointerId: number;
         captureTarget: HTMLElement;
@@ -1481,6 +1514,7 @@ export const LivePageFrame = (props: any) => {
     }, [isVdpMode, pageDim, displayWidth, onVdpBoxCreate, vdpFields.length, originalPageNum]);
 
     const displayHeight = pageDim && pageDim.w ? displayWidth * (pageDim.h / pageDim.w) : displayWidth * 1.414;
+    const cropPageBox = pageDim?.w && pageDim?.h ? { x0: 0, y0: 0, x1: pageDim.w * 25.4 / 96, y1: pageDim.h * 25.4 / 96, width: pageDim.w * 25.4 / 96, height: pageDim.h * 25.4 / 96 } : undefined;
 
     // Crop PDF: Enter → dialog (mọi vùng); Esc → xóa hết; Delete/Backspace → xóa vùng cuối.
     // cropSelection toàn workspace chỉ có một ownerId nên luôn chỉ có một listener.
@@ -1492,7 +1526,7 @@ export const LivePageFrame = (props: any) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
                 window.dispatchEvent(new CustomEvent('prynx-crop-open', {
-                    detail: { pageNum: originalPageNum, fracs: cropSels, frac: cropSels[0] },
+                    detail: { ownerId: cropOwnerId, pageNum: originalPageNum, totalPages, pageBox: cropPageBox, fracs: cropSels, frac: cropSels[0] },
                 }));
             } else if (e.key === 'Escape') {
                 commitCropSelection(null);
@@ -1513,7 +1547,40 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isCropMode, cropSels, cropOwnerId, selectedCropIdx, commitCropSelection, originalPageNum]);
+    }, [isCropMode, cropSels, cropOwnerId, selectedCropIdx, commitCropSelection, originalPageNum, totalPages, cropPageBox]);
+
+    // Crop panel -> page overlay: keep the selected frame visible and live.
+    // ownerId prevents updates from reaching a duplicate instance of the same page.
+    useEffect(() => {
+        if (!isCropMode) return;
+        const onPreviewChange = (event: Event) => {
+            const detail = (event as CustomEvent<{
+                ownerId?: string;
+                pageNum?: number;
+                fracs?: CropRegionFrac[];
+                selectedIndex?: number;
+            }>).detail;
+            if (!detail || detail.ownerId !== cropOwnerId || !Array.isArray(detail.fracs) || detail.fracs.length === 0) return;
+            const regions = detail.fracs.map((frac) => ({ ...frac }));
+            const selectedIndex = Math.max(0, Math.min(
+                regions.length - 1,
+                Number.isInteger(detail.selectedIndex) ? Number(detail.selectedIndex) : 0,
+            ));
+            setCropSelection((prev) => {
+                if (!prev || prev.ownerId !== cropOwnerId) return prev;
+                const unchanged = prev.regions.length === regions.length
+                    && prev.regions.every((region, index) => {
+                        const next = regions[index];
+                        return region.x0 === next.x0 && region.y0 === next.y0
+                            && region.x1 === next.x1 && region.y1 === next.y1;
+                    });
+                if (unchanged && prev.selectedIndex === selectedIndex) return prev;
+                return { ...prev, regions, selectedIndex };
+            });
+        };
+        window.addEventListener('prynx-crop-preview-change', onPreviewChange as EventListener);
+        return () => window.removeEventListener('prynx-crop-preview-change', onPreviewChange as EventListener);
+    }, [isCropMode, cropOwnerId, setCropSelection]);
     // Panel → canvas: khi selection đổi (vd click dòng trong panel Thành phần), cuộn
     // overlay object đầu được chọn vào tầm nhìn. Chỉ frame CHỨA overlay đó mới cuộn
     // (query data-obj-id trong containerRef; frame khác không có node → bỏ qua). Dùng
@@ -1570,6 +1637,17 @@ export const LivePageFrame = (props: any) => {
         } catch { /* capture may already be released */ }
     }, []);
 
+    const notifyCropPanel = React.useCallback((regions: CropRegionFrac[], selectedIndex: number) => {
+        window.dispatchEvent(new CustomEvent('prynx-crop-selection-change', {
+            detail: {
+                ownerId: cropOwnerId,
+                pageNum: originalPageNum,
+                fracs: regions.map((frac) => ({ ...frac })),
+                selectedIndex,
+            },
+        }));
+    }, [cropOwnerId, originalPageNum]);
+
     const cropDrawing = useCropPointerDrawing({
         enabled: isCropInteractionEnabled,
         containerRef,
@@ -1582,17 +1660,22 @@ export const LivePageFrame = (props: any) => {
             dragRef.current.active = false;
         },
         onComplete: (frac) => {
-            commitCropSelection((prev) => {
-                const current = prev?.ownerId === cropOwnerId ? prev.regions : [];
-                if (current.length >= 64) return prev;
-                const regions = [...current, frac];
-                return {
-                    ownerId: cropOwnerId,
-                    pageNum: originalPageNum,
-                    regions,
-                    selectedIndex: regions.length - 1,
-                };
+            if (cropSels.length >= 64) return;
+            const regions = [...cropSels, frac];
+            commitCropSelection({
+                ownerId: cropOwnerId,
+                pageNum: originalPageNum,
+                regions,
+                selectedIndex: regions.length - 1,
             });
+            window.dispatchEvent(new CustomEvent('prynx-crop-open', {
+                detail: {
+                    ownerId: cropOwnerId, totalPages, pageBox: cropPageBox,
+                    pageNum: originalPageNum,
+                    fracs: regions,
+                    frac: regions[0],
+                },
+            }));
         },
     });
 
@@ -1612,6 +1695,7 @@ export const LivePageFrame = (props: any) => {
             startX: coords.x,
             startY: coords.y,
             original: cropSels[index],
+            latest: cropSels[index],
             historyRecorded: false,
             pointerId: event.pointerId,
             captureTarget,
@@ -1619,6 +1703,7 @@ export const LivePageFrame = (props: any) => {
         setCropSelection((prev) => prev?.ownerId === cropOwnerId
             ? { ...prev, selectedIndex: index }
             : prev);
+        notifyCropPanel(cropSels, index);
     };
 
     useEffect(() => {
@@ -1639,6 +1724,7 @@ export const LivePageFrame = (props: any) => {
                 8 / displayWidth,
                 8 / displayHeight,
             );
+            adjustment.latest = next;
             const changedFromOriginal = next.x0 !== adjustment.original.x0
                 || next.y0 !== adjustment.original.y0
                 || next.x1 !== adjustment.original.x1
@@ -1657,6 +1743,12 @@ export const LivePageFrame = (props: any) => {
         const finishAdjustment = (event?: PointerEvent) => {
             const adjustment = cropAdjustRef.current;
             if (event && adjustment && event.pointerId !== adjustment.pointerId) return;
+            if (adjustment && cropSelsRef.current[adjustment.index]) {
+                const regions = cropSelsRef.current.map((region, index) => index === adjustment.index
+                    ? adjustment.latest
+                    : region);
+                notifyCropPanel(regions, adjustment.index);
+            }
             cancelCropAdjustment();
         };
         window.addEventListener('pointermove', onPointerMove, { passive: false });
@@ -2442,38 +2534,17 @@ export const LivePageFrame = (props: any) => {
                 />
             )}
 
-             {/* Lớp text vô hình để QUÉT + COPY chữ (như Acrobat). CHỈ bật ở chế độ XEM
-                 THƯỜNG: edit-object dùng chuột để chọn object, VDP/crop dùng để quét vùng —
-                 lớp select-text sẽ nuốt mất cú kéo đó. Nên loại cả 3 chế độ. */}
-            {getTileUrl && textBlocks && !isObjectEditMode && !isVdpMode && !isCropMode && (() => {
-                // bbox từ /pdf-text ở POINT, gốc trên-trái. pageDim.w là px@96
-                // (= point × 96/72) → pageWidthPt = pageDim.w × 72/96. scale =
-                // displayWidth / pageWidthPt (px màn trên mỗi POINT).
-                const pageWidthPt = pageDim?.w ? pageDim.w * 72 / 96 : 595;
-                const scale = displayWidth / pageWidthPt;
-                // GOM mọi dòng (mọi block) rồi SORT theo y. bbox.h của pdfplumber là cao
-                // chữ (ascent→descent) nhưng khoảng cách dòng (leading) thường NHỎ hơn →
-                // đáy span dòng trên lấn đỉnh span dòng dưới → kéo 1 dòng chạm span dòng
-                // kề → browser nhảy selection sang. Nên KẸP chiều cao mỗi span ≤ khe tới
-                // đỉnh dòng kế (capH) → span không chồng mép Y (fix nhảy dòng 2026-07-07).
-                const allLines = (Array.isArray(textBlocks) ? textBlocks : (textBlocks.blocks || []))
-                    .flatMap((block: any) => block.lines || [])
-                    .filter((ln: any) => ln?.bbox)
-                    .sort((a: any, b: any) => a.bbox.y - b.bbox.y);
-                return (
-                    <div className="absolute inset-0 z-[12] select-text cursor-text" style={{ pointerEvents: 'auto' }}>
-                        {allLines.map((line: any, i: number) => {
-                            const next = allLines[i + 1];
-                            // Khe tới dòng kế (point). Không có dòng kế → không kẹp.
-                            const gap = next ? (next.bbox.y - line.bbox.y) : Infinity;
-                            return (
-                                <SelectableTextLine key={i} line={line} scale={scale} gapPt={gap} />
-                            );
-                        })}
-                     </div>
-                );
-            })()}
-             
+             {/* Keep the expensive text DOM mounted while Crop is active. The shield
+                 below receives crop gestures, avoiding thousands of line unmounts and
+                 layout measurements whenever the mode is toggled. */}
+            {getTileUrl && textBlocks && !isObjectEditMode && !isVdpMode && (
+                <SelectableTextLayer
+                    textBlocks={textBlocks}
+                    pageWidthPx={pageDim?.w}
+                    displayWidth={displayWidth}
+                />
+            )}
+
              {/* Output Preview: Separation plate overlays rendered on the PDF page */}
              {separationPlates.length > 0 && (
                  <div className="absolute inset-0 z-[14] bg-white pointer-events-none">
@@ -3719,21 +3790,19 @@ export const LivePageFrame = (props: any) => {
                  });
              })()}
 
+             {isCropMode && (
+                 <div className="absolute inset-0 z-[39]" aria-hidden="true" />
+             )}
              {/* Marquee Drag Box — always in DOM, visibility controlled by ref */}
              {(isObjectEditMode || isCropMode) && (
                  <div 
                      ref={marqueeRef}
                      className="absolute border-2 border-blue-500 bg-blue-400/15 z-40 pointer-events-none"
-                     style={{ display: 'none' }}
+                     style={{ display: 'none', willChange: 'transform, width, height', contain: 'layout paint' }}
                  />
              )}
 
              {/* Crop PDF — nhiều vùng đã quét (mỗi vùng → 1 trang sau khi áp dụng) */}
-             {isCropMode && cropSels.length === 0 && (
-                 <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 pointer-events-none rounded-md bg-slate-900/90 px-3 py-2 text-[11px] font-semibold text-white shadow-lg whitespace-nowrap">
-                     {t('misc.cropDialog:crop_mode_hint')}
-                 </div>
-             )}
              {isCropMode && cropSels.map((frac, i) => {
                  const sel = cropFracToPixels(frac, displayWidth, displayHeight);
                  return (

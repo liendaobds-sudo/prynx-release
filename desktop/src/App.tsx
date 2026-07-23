@@ -32,6 +32,7 @@ import { ZoomIn, ZoomOut, Maximize, MoveHorizontal, FileText, ScrollText, Column
 import { useTranslation } from 'react-i18next';
 import { tv } from './i18n';
 import { canUse, featureIdForFocus, FEATURE_CATALOG } from './lib/license/features';
+import { getShortcutLabel } from './lib/keyboardShortcuts';
 
 type AppTabType = 'home' | AppToolId;
 
@@ -1021,27 +1022,27 @@ function AppInner() {
         { label: tv('Hoàn tác'), shortcut: 'Ctrl+Z', disabled: !isToolActive, onClick: () => viewerCmd('undo') },
         { label: tv('Làm lại'), shortcut: 'Ctrl+Y', disabled: !isToolActive, onClick: () => viewerCmd('redo') },
         { separator: true },
-        { label: tv('Chỉnh sửa đối tượng'), disabled: !isToolActive, onClick: () => viewerCmd('toggle-object-edit') },
-        { label: tv('Cắt khổ (Crop)'), disabled: !isToolActive, onClick: () => viewerCmd('crop') },
-        { label: tv('Xóa trang…'), disabled: !isToolActive, onClick: () => viewerCmd('delete-pages') },
+        { label: tv('Chỉnh sửa đối tượng'), shortcut: getShortcutLabel('viewer.object_edit'), disabled: !isToolActive, onClick: () => viewerCmd('toggle-object-edit') },
+        { label: tv('Cắt khổ (Crop)'), shortcut: getShortcutLabel('viewer.crop'), disabled: !isToolActive, onClick: () => viewerCmd('crop') },
+        { label: tv('Xóa trang…'), shortcut: getShortcutLabel('viewer.delete_pages'), disabled: !isToolActive, onClick: () => viewerCmd('delete-pages') },
       ],
     },
     {
       label: 'View',
       items: [
-        { label: t('shell:phong_to'), shortcut: 'Ctrl++', icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
-        { label: t('shell:thu_nho'), shortcut: 'Ctrl+-', icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
-        { label: tv('Về 100%'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
+        { label: t('shell:phong_to'), shortcut: getShortcutLabel('view.zoom_in'), icon: <ZoomIn className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-in') },
+        { label: t('shell:thu_nho'), shortcut: getShortcutLabel('view.zoom_out'), icon: <ZoomOut className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-out') },
+        { label: tv('Về 100%'), shortcut: getShortcutLabel('view.actual_size'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('zoom-100') },
         { separator: true },
-        { label: tv('Vừa chiều ngang'), icon: <MoveHorizontal className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },
-        { label: tv('Vừa trọn trang'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-page') },
+        { label: tv('Vừa chiều ngang'), shortcut: getShortcutLabel('view.fit_width'), icon: <MoveHorizontal className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-width') },
+        { label: tv('Vừa trọn trang'), shortcut: getShortcutLabel('view.fit_page'), icon: <Maximize className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('fit-page') },
         { separator: true },
         { label: tv('Xem một trang'), icon: <FileText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-fit') },
         { label: tv('Cuộn trang dọc'), icon: <ScrollText className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-single-scroll') },
         { label: tv('Xem hai trang'), icon: <Columns2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-fit') },
         { label: tv('Cuộn hai trang'), icon: <Rows2 className="w-3.5 h-3.5" />, disabled: !isToolActive, onClick: () => viewerCmd('layout-two-scroll') },
         { separator: true },
-        { label: tv('Thước đo (Rulers)'), icon: <Ruler className="w-3.5 h-3.5" />, checked: showRulers, disabled: !isToolActive, onClick: () => viewerCmd('toggle-rulers') },
+        { label: tv('Thước đo (Rulers)'), shortcut: getShortcutLabel('viewer.toggle_rulers'), icon: <Ruler className="w-3.5 h-3.5" />, checked: showRulers, disabled: !isToolActive, onClick: () => viewerCmd('toggle-rulers') },
         { label: tv('Giao diện Tối'), icon: <Moon className="w-3.5 h-3.5" />, checked: theme === 'dark', onClick: toggleTheme },
       ],
     },

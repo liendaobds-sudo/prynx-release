@@ -165,6 +165,32 @@ def test_crop_can_replace_source_page_and_preserve_document_order(tmp_path: Path
     assert "LAST" in page_text[2]
 
 
+def test_crop_can_apply_same_regions_to_multiple_pages(tmp_path: Path):
+    source = tmp_path / "three-pages-scope.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(100 * PT_PER_MM, 60 * PT_PER_MM))
+    for label in ("FIRST", "MIDDLE", "LAST"):
+        pdf.drawString(20 * PT_PER_MM, 30 * PT_PER_MM, label)
+        pdf.showPage()
+    pdf.save()
+
+    engine = PageBoxesEngine()
+    engine.output_dir = tmp_path / "output"
+    engine.output_dir.mkdir()
+    output = engine.crop_regions_to_pages(
+        str(source),
+        1,
+        [{"x0": 10, "y0": 10, "x1": 90, "y1": 50}],
+        keep_other_pages=True,
+        pages=[1, 3],
+    )
+
+    with pikepdf.Pdf.open(output) as cropped:
+        assert len(cropped.pages) == 3
+        assert list(map(float, cropped.pages[0].MediaBox)) == pytest.approx([0, 0, 80 * PT_PER_MM, 40 * PT_PER_MM], abs=0.02)
+        assert list(map(float, cropped.pages[1].MediaBox)) == pytest.approx([0, 0, 100 * PT_PER_MM, 60 * PT_PER_MM], abs=0.02)
+        assert list(map(float, cropped.pages[2].MediaBox)) == pytest.approx([0, 0, 80 * PT_PER_MM, 40 * PT_PER_MM], abs=0.02)
+
+
 def test_crop_rejects_non_finite_and_excessive_region_lists(tmp_path: Path):
     source = tmp_path / "input.pdf"
     positions = _make_two_card_pdf(source)

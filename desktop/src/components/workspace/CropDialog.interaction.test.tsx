@@ -34,12 +34,14 @@ const fakeJsonResponse = (data: unknown, ok = true) => ({
     blob: async () => new Blob(['pdf'], { type: 'application/pdf' }),
 }) as Response;
 
-function openCropDialog() {
+function openCropDialog(overrides: Record<string, unknown> = {}) {
     act(() => {
         window.dispatchEvent(new CustomEvent('prynx-crop-open', {
             detail: {
                 pageNum: 1,
+                ownerId: 'page-1',
                 fracs: [{ x0: 0.1, y0: 0.1, x1: 0.9, y1: 0.9 }],
+                ...overrides,
             },
         }));
     });
@@ -49,6 +51,7 @@ describe('CropDialog interaction safety', () => {
     beforeEach(() => {
         vi.clearAllMocks();
     });
+        localStorage.clear();
 
     afterEach(() => {
         cleanup();
@@ -87,11 +90,12 @@ describe('CropDialog interaction safety', () => {
         expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    it('opens as an accessible modal, keeps the document by default, and closes on Escape', async () => {
+    it('opens as a non-modal editing panel, keeps the document by default, and closes on Escape', async () => {
         vi.mocked(authenticatedFetch).mockImplementation((url) => {
             const target = String(url);
             if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
             if (target.includes('/preview-hide')) return Promise.resolve(fakeJsonResponse({ preview_b64: null }));
+
             throw new Error(`Unexpected URL: ${target}`);
         });
 
@@ -100,18 +104,95 @@ describe('CropDialog interaction safety', () => {
         openCropDialog();
 
         const dialog = await screen.findByRole('dialog');
-        expect(dialog.getAttribute('aria-modal')).toBe('true');
-        const keepDocument = screen.getByRole('radio', { name: /keep_document/ }) as HTMLInputElement;
-        expect(keepDocument.checked).toBe(true);
+        expect(dialog.getAttribute('aria-modal')).toBe('false');
+        const outputModeSelect = screen.getByRole('combobox', { name: /output_mode/ }) as HTMLSelectElement;
+        expect(outputModeSelect.value).toBe('keep_document');
+        expect(screen.queryByRole('button', { name: 'advanced_options' })).toBeNull();
 
         fireEvent.keyDown(window, { key: 'Escape' });
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
         expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    it('processes edges by default but never applies an unsafe pixel-only suggestion', async () => {
+    it('keeps drawing local when the viewer already supplies the page size', async () => {
+        const ensureFileId = vi.fn(async () => 'fid');
+        render(<CropDialog embedded ensureFileId={ensureFileId} onApplied={vi.fn()} onClose={vi.fn()} />);
+
+        openCropDialog({
+            totalPages: pageBoxes.total_pages,
+            pageBox: pageBoxes.cropbox,
+        });
+
+        const widthInput = await screen.findByRole('spinbutton', { name: /width/ }) as HTMLInputElement;
+        expect(widthInput.disabled).toBe(false);
+        await act(async () => { await Promise.resolve(); });
+
+        expect(ensureFileId).not.toHaveBeenCalled();
+        expect(authenticatedFetch).not.toHaveBeenCalled();
+    });
+
+    it('broadcasts size and alignment changes to the visible crop frame', async () => {
+        vi.mocked(authenticatedFetch).mockImplementation((url) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        const visualEvents: Array<{
+            ownerId?: string;
+            fracs?: Array<{ x0: number; y0: number; x1: number; y1: number }>;
+        }> = [];
+        const onPreviewChange = (event: Event) => {
+            visualEvents.push((event as CustomEvent).detail);
+        };
+        window.addEventListener('prynx-crop-preview-change', onPreviewChange);
+
+        try {
+            render(<CropDialog ensureFileId={async () => 'fid'} onApplied={vi.fn()} onClose={vi.fn()} />);
+            openCropDialog();
+
+            const widthInput = await screen.findByRole('spinbutton', { name: /width/ }) as HTMLInputElement;
+            await waitFor(() => expect(widthInput.disabled).toBe(false));
+            fireEvent.change(widthInput, { target: { value: '100' } });
+            fireEvent.blur(widthInput);
+
+            await waitFor(() => expect(visualEvents.some((detail) => {
+                const frac = detail.fracs?.[0];
+                return detail.ownerId === 'page-1'
+                    && !!frac
+                    && Math.abs((frac.x1 - frac.x0) - (100 / 210)) < 0.0001;
+            })).toBe(true));
+
+            fireEvent.click(screen.getByRole('button', { name: 'align_right' }));
+
+            await waitFor(() => expect(visualEvents.some((detail) => {
+                const frac = detail.fracs?.[0];
+                return detail.ownerId === 'page-1' && !!frac
+                    && Math.abs(frac.x1 - 0.9) < 0.0001;
+            })).toBe(true));
+        } finally {
+            window.removeEventListener('prynx-crop-preview-change', onPreviewChange);
+        }
+    });
+
+    it('does not request a raster preview when opened', async () => {
+        vi.mocked(authenticatedFetch).mockImplementation((url) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        render(<CropDialog ensureFileId={async () => 'fid'} onApplied={vi.fn()} onClose={vi.fn()} />);
+        openCropDialog();
+
+        const applyButton = await screen.findByRole('button', { name: 'apply_crop' });
+        await waitFor(() => expect((applyButton as HTMLButtonElement).disabled).toBe(false));
+        const requestedPreview = vi.mocked(authenticatedFetch).mock.calls.some(([url]) => String(url).includes('/preview-hide'));
+        expect(requestedPreview).toBe(false);
+    });
+    it('processes edges when enabled but never applies an unsafe pixel-only suggestion', async () => {
         let detectedMaxTrimMm: number | undefined;
-        let cropBody: { rects_mm: Array<{ x0: number; y0: number; x1: number; y1: number }> } | undefined;
+        let cropBody: { rects_mm: Array<{ x0: number; y0: number; x1: number; y1: number }>; pages?: number[] } | undefined;
         vi.mocked(authenticatedFetch).mockImplementation((url, init) => {
             const target = String(url);
             if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
@@ -144,10 +225,17 @@ describe('CropDialog interaction safety', () => {
         openCropDialog();
 
         const checkbox = await screen.findByRole('checkbox', { name: /process_excess_edges/ }) as HTMLInputElement;
+        await waitFor(() => expect(checkbox.disabled).toBe(false));
+        expect(checkbox.checked).toBe(false);
+        fireEvent.click(checkbox);
+
         expect(checkbox.checked).toBe(true);
         await waitFor(() => expect(detectedMaxTrimMm).toBe(10));
         await screen.findByText('pixel_edge_preserved');
         const applyButton = screen.getByRole('button', { name: 'apply_crop' });
+        const pageScopeSelect = screen.getByRole('combobox', { name: /pham_vi_trang/ }) as HTMLSelectElement;
+        fireEvent.change(pageScopeSelect, { target: { value: 'range' } });
+        expect(pageScopeSelect.value).toBe('range');
         await waitFor(() => expect((applyButton as HTMLButtonElement).disabled).toBe(false));
         fireEvent.click(applyButton);
         await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
@@ -158,5 +246,87 @@ describe('CropDialog interaction safety', () => {
             x1: 189,
             y1: 267.3,
         });
+        expect(cropBody?.pages).toEqual([1, 2]);
+    });
+    it('lets each scanned region have its own size controls', async () => {
+        render(<CropDialog embedded ensureFileId={async () => 'fid'} onApplied={vi.fn()} onClose={vi.fn()} />);
+        openCropDialog({
+            totalPages: pageBoxes.total_pages,
+            pageBox: pageBoxes.cropbox,
+            fracs: [
+                { x0: 0.1, y0: 0.1, x1: 0.5, y1: 0.5 },
+                { x0: 0.2, y0: 0.2, x1: 0.9, y1: 0.8 },
+            ],
+        });
+
+        await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
+        const widthInput = screen.getByRole('spinbutton', { name: /width/ }) as HTMLInputElement;
+        expect(widthInput.value).toBe('84');
+
+        fireEvent.click(screen.getAllByRole('tab')[1]);
+        await waitFor(() => expect((screen.getByRole('spinbutton', { name: /width/ }) as HTMLInputElement).value).toBe('147'));
+        const secondWidthInput = screen.getByRole('spinbutton', { name: /width/ }) as HTMLInputElement;
+        fireEvent.change(secondWidthInput, { target: { value: '100' } });
+        fireEvent.blur(secondWidthInput);
+        await waitFor(() => expect((screen.getByRole('spinbutton', { name: /width/ }) as HTMLInputElement).value).toBe('100'));
+        fireEvent.click(screen.getAllByRole('tab')[0]);
+        await waitFor(() => expect((screen.getByRole('spinbutton', { name: /width/ }) as HTMLInputElement).value).toBe('84'));
+
+        const echoedPreview = vi.fn();
+        window.addEventListener('prynx-crop-preview-change', echoedPreview);
+        act(() => window.dispatchEvent(new CustomEvent('prynx-crop-selection-change', {
+            detail: {
+                ownerId: 'page-1',
+                pageNum: 1,
+                selectedIndex: 1,
+                fracs: [
+                    { x0: 0.1, y0: 0.1, x1: 0.5, y1: 0.5 },
+                    { x0: 0.2, y0: 0.2, x1: 0.9, y1: 0.8 },
+                ],
+            },
+        })));
+        await waitFor(() => expect(screen.getAllByRole('tab')[1].getAttribute('aria-selected')).toBe('true'));
+        await act(async () => { await Promise.resolve(); });
+        expect(echoedPreview).not.toHaveBeenCalled();
+        window.removeEventListener('prynx-crop-preview-change', echoedPreview);
+    });
+    it('remembers reusable options, forwards the new-tab choice, and keeps the embedded tool open after apply', async () => {
+        vi.mocked(authenticatedFetch).mockImplementation((url) => {
+            const target = String(url);
+            if (target.includes('/page-boxes/')) return Promise.resolve(fakeJsonResponse(pageBoxes));
+            if (target.includes('/crop-regions')) return Promise.resolve(fakeJsonResponse({ success: true, output_filename: 'remembered.pdf' }));
+            if (target.includes('/download/remembered.pdf')) return Promise.resolve(fakeJsonResponse({}));
+            throw new Error(`Unexpected URL: ${target}`);
+        });
+
+        const onApplied = vi.fn();
+        const onClose = vi.fn();
+        render(<CropDialog embedded ensureFileId={async () => 'fid'} onApplied={onApplied} onClose={onClose} />);
+        openCropDialog({ totalPages: pageBoxes.total_pages, pageBox: pageBoxes.cropbox });
+
+        const scope = await screen.findByRole('combobox', { name: /pham_vi_trang/ }) as HTMLSelectElement;
+        const output = screen.getByRole('combobox', { name: /output_mode/ }) as HTMLSelectElement;
+        const openInNewTab = screen.getByRole('checkbox', { name: /open_result_new_tab/ }) as HTMLInputElement;
+        fireEvent.change(scope, { target: { value: 'all' } });
+        fireEvent.change(output, { target: { value: 'regions_only' } });
+        fireEvent.click(openInNewTab);
+        fireEvent.click(screen.getByRole('button', { name: 'align_right' }));
+
+        const applyButton = screen.getByRole('button', { name: 'apply_crop' });
+        await waitFor(() => expect((applyButton as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(applyButton);
+
+        await waitFor(() => expect(onApplied).toHaveBeenCalledWith(expect.any(Blob), 'remembered.pdf', false));
+        expect(onClose).not.toHaveBeenCalled();
+
+        openCropDialog({ totalPages: pageBoxes.total_pages, pageBox: pageBoxes.cropbox });
+        const reopenedScope = await screen.findByRole('combobox', { name: /pham_vi_trang/ }) as HTMLSelectElement;
+        const reopenedOutput = screen.getByRole('combobox', { name: /output_mode/ }) as HTMLSelectElement;
+        const reopenedNewTab = screen.getByRole('checkbox', { name: /open_result_new_tab/ }) as HTMLInputElement;
+
+        expect(reopenedScope.value).toBe('all');
+        expect(reopenedOutput.value).toBe('regions_only');
+        expect(reopenedNewTab.checked).toBe(false);
+        expect(screen.getByRole('button', { name: 'align_right' }).getAttribute('aria-pressed')).toBe('true');
     });
 });

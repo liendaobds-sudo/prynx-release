@@ -23,6 +23,7 @@ interface CropPointerSession {
   startX: number;
   startY: number;
   captureTarget: HTMLElement;
+  rect: DOMRect;
 }
 
 function releaseCapture(session: CropPointerSession): void {
@@ -41,22 +42,36 @@ function releaseCapture(session: CropPointerSession): void {
  */
 export function useCropPointerDrawing(options: CropPointerDrawingOptions) {
   const sessionRef = useRef<CropPointerSession | null>(null);
+  const moveFrameRef = useRef<number | null>(null);
+  const pendingMoveRef = useRef<{ pointerId: number; clientX: number; clientY: number } | null>(null);
   const optionsRef = useRef(options);
   useLayoutEffect(() => {
     optionsRef.current = options;
   }, [options]);
 
+  const cancelMoveFrame = useCallback(() => {
+    pendingMoveRef.current = null;
+    if (moveFrameRef.current !== null) {
+      cancelAnimationFrame(moveFrameRef.current);
+      moveFrameRef.current = null;
+    }
+  }, []);
+
   const hideMarquee = useCallback(() => {
     const marquee = optionsRef.current.marqueeRef.current;
-    if (marquee) marquee.style.display = 'none';
+    if (marquee) {
+      marquee.style.display = 'none';
+      marquee.style.transform = '';
+    }
   }, []);
 
   const cancel = useCallback(() => {
+    cancelMoveFrame();
     const session = sessionRef.current;
     sessionRef.current = null;
     if (session) releaseCapture(session);
     hideMarquee();
-  }, [hideMarquee]);
+  }, [cancelMoveFrame, hideMarquee]);
 
   useEffect(() => {
     if (!options.enabled) cancel();
@@ -78,10 +93,11 @@ export function useCropPointerDrawing(options: CropPointerDrawingOptions) {
 
     cancel();
     event.preventDefault();
+    const rect = container.getBoundingClientRect();
     const coords = current.getCoords(
       event.clientX,
       event.clientY,
-      container.getBoundingClientRect(),
+      rect,
     );
     const captureTarget = event.currentTarget;
     current.onStart?.();
@@ -90,39 +106,54 @@ export function useCropPointerDrawing(options: CropPointerDrawingOptions) {
       startX: coords.x,
       startY: coords.y,
       captureTarget,
+      rect,
     };
     try { captureTarget.setPointerCapture?.(event.pointerId); } catch { /* optional browser API */ }
 
     const marquee = current.marqueeRef.current;
     if (marquee) {
       marquee.style.display = 'block';
-      marquee.style.left = `${coords.x}px`;
-      marquee.style.top = `${coords.y}px`;
+      marquee.style.left = '0px';
+      marquee.style.top = '0px';
+      marquee.style.transform = `translate3d(${coords.x}px, ${coords.y}px, 0)`;
       marquee.style.width = '0px';
       marquee.style.height = '0px';
     }
   }, [cancel]);
 
-  const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+  const flushMove = useCallback(() => {
+    moveFrameRef.current = null;
+    const pending = pendingMoveRef.current;
+    pendingMoveRef.current = null;
     const session = sessionRef.current;
-    const current = optionsRef.current;
-    const container = current.containerRef.current;
-    if (!session || session.pointerId !== event.pointerId || !container) return;
+    if (!pending || !session || session.pointerId !== pending.pointerId) return;
 
-    event.preventDefault();
-    const coords = current.getCoords(
-      event.clientX,
-      event.clientY,
-      container.getBoundingClientRect(),
-    );
+    const current = optionsRef.current;
+    const coords = current.getCoords(pending.clientX, pending.clientY, session.rect);
+    const left = Math.min(session.startX, coords.x);
+    const top = Math.min(session.startY, coords.y);
     const marquee = current.marqueeRef.current;
     if (marquee) {
-      marquee.style.left = `${Math.min(session.startX, coords.x)}px`;
-      marquee.style.top = `${Math.min(session.startY, coords.y)}px`;
+      marquee.style.transform = `translate3d(${left}px, ${top}px, 0)`;
       marquee.style.width = `${Math.abs(coords.x - session.startX)}px`;
       marquee.style.height = `${Math.abs(coords.y - session.startY)}px`;
     }
   }, []);
+
+  const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    const session = sessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    pendingMoveRef.current = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    if (moveFrameRef.current === null) {
+      moveFrameRef.current = requestAnimationFrame(flushMove);
+    }
+  }, [flushMove]);
 
   const finish = useCallback((event: ReactPointerEvent<HTMLElement>, commit: boolean) => {
     const session = sessionRef.current;
@@ -130,12 +161,13 @@ export function useCropPointerDrawing(options: CropPointerDrawingOptions) {
     const container = current.containerRef.current;
     if (!session || session.pointerId !== event.pointerId) return;
 
+    cancelMoveFrame();
     let region: CropRegionFrac | null = null;
     if (commit && container) {
       const coords = current.getCoords(
         event.clientX,
         event.clientY,
-        container.getBoundingClientRect(),
+        session.rect,
       );
       region = cropDragToFrac(
         session.startX,
@@ -150,7 +182,7 @@ export function useCropPointerDrawing(options: CropPointerDrawingOptions) {
     releaseCapture(session);
     hideMarquee();
     if (region) current.onComplete(region);
-  }, [hideMarquee]);
+  }, [cancelMoveFrame, hideMarquee]);
 
   return {
     cancel,

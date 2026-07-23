@@ -372,9 +372,9 @@ export default function NumberingTool({
     }, [genMethod, startNum, endNum, increment, padZero, padLength, prefix, suffix, setTotal, setStartStr, seqTotal, seqStart, formatTemplate, isShuffle, applyStyle, buildSortedSlots]);
 
     return (
-        <div className="flex flex-col h-full bg-white dark:bg-zinc-900 border-l border-slate-200 dark:border-zinc-800 p-4 gap-4 overflow-y-auto scroller-thin">
+        <div className="flex w-full flex-col gap-4">
             {/* Header */}
-            <div className="flex items-center gap-2 pb-3 border-b border-slate-200 dark:border-zinc-700 shrink-0">
+            <div className="flex items-center gap-2 pt-2 pb-3 border-b border-slate-200 dark:border-zinc-700 shrink-0">
                 <button 
                     onClick={onBack}
                     className="p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-md text-slate-500 transition-colors"

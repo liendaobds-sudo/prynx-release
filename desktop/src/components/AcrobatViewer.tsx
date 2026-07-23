@@ -10,7 +10,6 @@ import { useAppSettingsStore } from '../stores/appSettingsStore';
 
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { LivePageFrame, clearTileUrlCache } from './workspace/LivePageFrame';
-import CropDialog from './workspace/CropDialog';
 import ExportImageModal from './workspace/ExportImageModal';
 import { uploadPDF, getApiUrl } from '../lib/api';
 import { toast } from './ui/Toast';
@@ -25,6 +24,13 @@ import { useViewerZoom } from '../hooks/viewer/useViewerZoom';
 import { useVdpHistory } from '../hooks/useVdpHistory';
 import type { UseEditSession } from '../hooks/useEditSession';
 import { useTranslation } from 'react-i18next';
+import { capturePageViewportAnchor, restorePageViewportAnchor, type PageViewportAnchor } from '../lib/pageViewport';
+
+const getRenderedPageElement = (scroller: HTMLElement, page: number): HTMLElement | null => {
+    const container = scroller.querySelector<HTMLElement>(`#pdf-page-container-${page}`);
+    if (!container) return null;
+    return (container.lastElementChild as HTMLElement | null) || container;
+};
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -65,7 +71,6 @@ interface Props {
     fetchObjectsForPage?: (pageNum: number) => void;
     onEditCommit?: (outputUrl: string, outputFilename: string, outputFid?: string, outputPath?: string) => void | Promise<void>;
     /** Commit crop through the workspace history/save pipeline. */
-    onCropCommit?: (blob: Blob, outputFilename: string) => void | Promise<void>;
     /** Hoàn tác kết quả xử lý PDF khi viewer không còn thao tác trang để hoàn tác. */
     onDocumentUndo?: () => void;
     onVdpBoxCreate?: (box: { x: number; y: number; width: number; height: number; pageNum: number, type?: string }) => void;
@@ -79,7 +84,7 @@ interface Props {
     editSession?: UseEditSession;
 }
 
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onCropCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, onViewerDirtyChange, editSession }: Props) {
   const { t } = useTranslation();
     // ═══ Global Store ═══
     const {
@@ -157,29 +162,6 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         return res.id;
     }, [file, setSelectionFileId]);
 
-    const handleCropApplied = useCallback(async (blob: Blob) => {
-        // Crop tạo file MỚI (blob) — KHÔNG giữ .path file gốc (nếu giữ, getFileArrayBuffer
-        // / tile native có thể đọc lại PDF gốc → resize/tool sau “co giãn nhầm hình gốc”).
-        const base = (file?.name || 'document.pdf').replace(/\.[^/.]+$/, '');
-        const outputName = `Cropped_${base}.pdf`;
-        if (onCropCommit) {
-            await onCropCommit(blob, outputName);
-        } else {
-            const newFile = new File([blob], outputName, { type: 'application/pdf' });
-            if (pdfUrl && pdfUrl.startsWith('blob:')) {
-                try { URL.revokeObjectURL(pdfUrl); } catch { /* ignore */ }
-            }
-            setFile(newFile);
-            setPdfUrl(URL.createObjectURL(newFile));
-        }
-        setSelectionFileId(''); // buộc re-upload cho thao tác sau
-        setIsCropMode(false);
-        // File mới đã bake crop; bỏ edit ảo trên file cũ (order/rot).
-        setViewerPageOrder(undefined);
-        setViewerPageInstanceIds(undefined);
-        setViewerPageRotations(undefined);
-        setViewerDirty(false);
-    }, [file, pdfUrl, onCropCommit, setFile, setPdfUrl, setSelectionFileId, setIsCropMode, setViewerPageOrder, setViewerPageInstanceIds, setViewerPageRotations, setViewerDirty]);
     const onVdpBoxSelect = (fieldIds: string[]) => {}; // Handled directly in LivePageFrame now
     const onVdpFieldsChange = setVdpFields;
 
@@ -205,6 +187,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const mainVirtuosoRef = useRef<any>(null);
     const internalScrollRef = useRef<HTMLElement | null>(null);
     const explicitNavRef = useRef(false);
+    const pendingPageViewportRef = useRef<{ page: number; anchor: PageViewportAnchor } | null>(null);
 
     // Undo/Redo cho thao tác trên VDP fields (di chuyển, resize, xóa, tạo...).
     useVdpHistory({ vdpFields, setVdpFields, enabled: isVdpMode, containerRef });
@@ -375,32 +358,39 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [canScanText, file, activePage, nativeTextBlocks, getTextBlocksForPage]);
 
     // ═══ Page Navigation ═══
-    const navigatePage = useCallback((newPage: number) => {
+    const navigatePage = useCallback((newPage: number, options?: { preserveSelection?: boolean }) => {
         if (numPages === 0) return;
-        explicitNavRef.current = true;
         const index = Math.max(0, Math.min(numPages - 1, newPage - 1));
-        setSelectedIndices(new Set([index]));
-        setLastSelectedIndex(index);
-        setActivePage(index + 1);
-        if (mainVirtuosoRef.current) {
-            mainVirtuosoRef.current.scrollToIndex({ index, behavior: 'auto', align: 'start' });
-        } else if (internalScrollRef.current) {
-            internalScrollRef.current.scrollTop = 0;
-            internalScrollRef.current.scrollLeft = 0;
+        const targetPage = index + 1;
+        if (targetPage === activePage) return;
+
+        const scroller = internalScrollRef.current;
+        const currentPage = scroller ? getRenderedPageElement(scroller, activePage) : null;
+        pendingPageViewportRef.current = {
+            page: targetPage,
+            anchor: scroller && currentPage
+                ? capturePageViewportAnchor(scroller, currentPage) || { xRatio: 0.5, yRatio: 0.5 }
+                : { xRatio: 0.5, yRatio: 0.5 },
+        };
+        explicitNavRef.current = true;
+        if (scroller) scroller.dataset.isNavigating = 'true';
+
+        if (!options?.preserveSelection) {
+            setSelectedIndices(new Set([index]));
+            setLastSelectedIndex(index);
         }
-    }, [numPages, setSelectedIndices, setLastSelectedIndex, setActivePage]);
+        setActivePage(targetPage);
+        if (mainVirtuosoRef.current) {
+            const rowIndex = pageDisplayMode.startsWith('two_') ? Math.floor(index / 2) : index;
+            mainVirtuosoRef.current.scrollToIndex({ index: rowIndex, behavior: 'auto', align: 'start' });
+        }
+    }, [numPages, activePage, pageDisplayMode, setSelectedIndices, setLastSelectedIndex, setActivePage]);
 
     const prevAcroPage = () => {
-        if (activePage > 1) {
-            explicitNavRef.current = true;
-            setActivePage(activePage - 1);
-        }
+        if (activePage > 1) navigatePage(activePage - 1);
     };
     const nextAcroPage = () => {
-        if (activePage < pageOrder.length) {
-            explicitNavRef.current = true;
-            setActivePage(activePage + 1);
-        }
+        if (activePage < pageOrder.length) navigatePage(activePage + 1);
     };
 
     // ═══ Hook: Object Edit Undo/Redo (Ctrl+Z hoàn tác move/delete/rotate...) ═══
@@ -412,7 +402,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         // isActive: false khi tab nền — hotkey D/F7/Delete chỉ tab đang xem.
         // undefined (caller cũ) → coi như active + fallback DOM.
         isActive: isActive !== false,
-        pageOrder, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
+        pageOrder, pageInstanceIds, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
         setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
         pastStack, futureStack, setPastStack, setFutureStack,
         toolMode, setToolMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
@@ -524,7 +514,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 case 'next-page': navigatePage(activePage + 1); break;
                 case 'toggle-rulers': toggleRulers(); break;
                 case 'toggle-object-edit': setIsObjectEditMode(v => !v); break;
-                case 'crop': setIsCropMode(true); setIsObjectEditMode(false); setToolMode('pointer'); break;
+                case 'crop': {
+                    const next = !isCropMode;
+                    setIsCropMode(next);
+                    if (next) { setIsObjectEditMode(false); setToolMode('pointer'); }
+                    break;
+                }
                 case 'delete-pages': setIsDeleteModalOpen(true); break;
                 case 'undo': if (isCropMode) undoCropSelection(); else undo(); break;
                 case 'redo': if (isCropMode) redoCropSelection(); else redo(); break;
@@ -534,29 +529,41 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         return () => window.removeEventListener('prynx-menu-command', handleMenuCommand);
     }, [isActive, setZoom, setFitMode, applyFitWidth, applyFitPage, setPageDisplayMode, navigatePage, pageOrder.length, activePage, toggleRulers, setIsObjectEditMode, setIsCropMode, setToolMode, undo, redo, isCropMode, undoCropSelection, redoCropSelection]);
 
-    // Jump to highlighted issue or specific page
+    // Điều hướng trang giữ nguyên điểm đang nhìn theo tỷ lệ trên trang.
     useEffect(() => {
-        if (!internalScrollRef.current) return;
         if (!explicitNavRef.current) return;
         explicitNavRef.current = false;
-        
-        if (internalScrollRef.current.dataset.isNavigating === 'true') return;
-        // Scope query trong instance này (ID pdf-page-container-N bị trùng giữa các tab mounted).
-        const pageEl = internalScrollRef.current.querySelector(`#pdf-page-container-${activePage}`) as HTMLElement | null;
-        if (pageEl) {
-            internalScrollRef.current.dataset.isNavigating = 'true';
-            
-            // Avoid scrollIntoView as it forcibly scrolls overflow-hidden ancestors causing layout shifts
-            const parent = internalScrollRef.current;
-            const parentRect = parent.getBoundingClientRect();
-            const childRect = pageEl.getBoundingClientRect();
-            parent.scrollTop += (childRect.top - parentRect.top);
-            
-            setTimeout(() => {
+        const pending = pendingPageViewportRef.current;
+        if (!pending || pending.page !== activePage) return;
+
+        let frameId = 0;
+        let releaseTimer = 0;
+        let attempts = 0;
+        const restore = () => {
+            const scroller = internalScrollRef.current;
+            const page = scroller ? getRenderedPageElement(scroller, activePage) : null;
+            attempts += 1;
+            if (!scroller || !page || !restorePageViewportAnchor(scroller, page, pending.anchor)) {
+                if (attempts < 8) {
+                    frameId = requestAnimationFrame(restore);
+                } else if (scroller) {
+                    delete scroller.dataset.isNavigating;
+                }
+                return;
+            }
+
+            pendingPageViewportRef.current = null;
+            updateViewportRect();
+            releaseTimer = window.setTimeout(() => {
                 if (internalScrollRef.current) delete internalScrollRef.current.dataset.isNavigating;
             }, 100);
-        }
-    }, [activePage]);
+        };
+        frameId = requestAnimationFrame(restore);
+        return () => {
+            cancelAnimationFrame(frameId);
+            window.clearTimeout(releaseTimer);
+        };
+    }, [activePage, updateViewportRect]);
 
     useEffect(() => {
         if (highlightBoxes && highlightBoxes.length > 0) {
@@ -1064,6 +1071,14 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [activePage, pageOrder, allPageDims, pageDim, pageWidthPt, pageInstanceIds, pageRotations]);
 
     const lastDimHintAtRef = useRef(0);
+    const dimHintToastIdRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        if (toolMode === 'dimension' || dimHintToastIdRef.current === null) return;
+        toast.dismiss(dimHintToastIdRef.current);
+        dimHintToastIdRef.current = null;
+    }, [toolMode]);
+
     const handleDimensionPlacement = useCallback((e: React.MouseEvent) => {
         // Chỉ chuột trái — tránh nhầm với context menu / nút khác.
         if (e.button !== 0) return;
@@ -1082,7 +1097,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             const now = Date.now();
             if (now - lastDimHintAtRef.current > 2500) {
                 lastDimHintAtRef.current = now;
-                toast.info('Kéo hai guide cùng hướng từ thước, rồi bấm vào khoảng giữa chúng để đặt DIM.\n(Phím D hoặc Esc để tắt DIM)');
+                if (dimHintToastIdRef.current !== null) {
+                    toast.dismiss(dimHintToastIdRef.current);
+                }
+                dimHintToastIdRef.current = toast.info('Kéo hai guide cùng hướng từ thước, rồi bấm vào khoảng giữa chúng để đặt DIM.\n(Phím D hoặc Esc để tắt DIM)');
             }
             return;
         }
@@ -1153,6 +1171,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const scrollTimeout = useRef<any | null>(null);
 
     const handleMainScroll = useCallback((e: any) => {
+        const scrollSource = (e.currentTarget || e.target) as HTMLElement | null;
+        if (scrollSource?.dataset.isNavigating === 'true') return;
         if (syncing.current || pageDisplayMode.includes('_fit') || isZoomingRef.current) return;
         if ((mainVirtuosoRef.current as any)?.__thumbClickActive) return;
         if (scrollTimeout.current) clearTimeout(scrollTimeout.current);
@@ -1300,7 +1320,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         nativeFilePath={(file as any)?.path}
                         previewRevision={pdfUrl}
                         detectedDimension={activeDashboardTool === 'sticker_imposer' && !file?.name.startsWith('Imposed_') ? detectedDimensionsByPage[originalPageNum - 1] : undefined}
-                        editSession={editSession}
+                        editSession={editSession} totalPages={numPages}
                         isActivePage={originalPageNum === activePage}
                     />
                     {showOcgOverlay && <OcgPreviewOverlay url={ocgPreviewUrl} />}
@@ -1398,6 +1418,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             setExtractPagesStrForModal={setExtractPagesStrForModal}
                             setIsExtractModalOpen={setIsExtractModalOpen}
                             setIsDeleteModalOpen={setIsDeleteModalOpen}
+                            navigatePage={navigatePage}
                             sidebarRef={sidebarRef} mainVirtuosoRef={mainVirtuosoRef} internalScrollRef={internalScrollRef}
                             file={file} pdfUrl={pdfUrl}
                         />
@@ -1517,7 +1538,6 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             />
 
             {/* Crop PDF dialog (Set Page Boxes) */}
-            <CropDialog ensureFileId={ensureCropFileId} onApplied={handleCropApplied} onClose={() => setIsCropMode(false)} />
 
             {/* Export ảnh (PNG/JPEG/TIFF) */}
             <ExportImageModal

@@ -3,6 +3,8 @@ import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useTranslation } from 'react-i18next';
+import { getShortcutLabel } from '../../lib/keyboardShortcuts';
+import { CropIcon } from '../shared/ToolIcons';
 
 interface AcrobatToolbarProps {
     pageOrderLength: number;
@@ -81,10 +83,10 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
             {/* Spacer co được — đẩy nhóm tool navigation/zoom ra giữa */}
             <div className="flex-1 min-w-0" />
             <div className="flex items-center gap-1 min-w-max">
-                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage - 1)} title="Previous Page" aria-label="Previous Page">
+                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage - 1)} title={`Previous Page (${getShortcutLabel('pages.previous')})`} aria-label="Previous Page">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16V8m-3 3l3-3 3 3"/></svg>
                 </button>
-                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage + 1)} title="Next Page" aria-label="Next Page">
+                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => navigatePage(activePage + 1)} title={`Next Page (${getShortcutLabel('pages.next')})`} aria-label="Next Page">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v8m-3-3l3 3 3-3"/></svg>
                 </button>
                 
@@ -104,12 +106,12 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                 
                 <button 
                     className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${toolMode === 'pointer' && !isObjectEditMode && !isVdpMode ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`} 
-                    onClick={() => setToolMode('pointer')} title="Pointer Tool" aria-label="Pointer Tool">
+                    onClick={() => setToolMode('pointer')} title={`Pointer Tool (${getShortcutLabel('viewer.pointer')})`} aria-label="Pointer Tool">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="0.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5.5 3.21V20.8c0 .45.54.67.85.35l4.86-4.86 2.89 4.8 2.58-1.55-2.89-4.8 4.79-.19c.45-.02.66-.56.34-.86L5.5 3.21z"/></svg>
                 </button>
                 <button 
                     className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${toolMode === 'hand' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
-                    onClick={() => setToolMode('hand')} title="Pan Tool" aria-label="Pan Tool">
+                    onClick={() => setToolMode('hand')} title={`Pan Tool (${getShortcutLabel('viewer.hand')})`} aria-label="Pan Tool">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/>
                         <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/>
@@ -144,14 +146,14 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                     <button
                         className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${isObjectEditMode ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 ring-1 ring-emerald-300 dark:ring-emerald-700' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
                         onClick={() => setIsObjectEditMode(!isObjectEditMode)}
-                        title={t('misc.acrobatToolbar:chinh_sua_doi_tuong_di_chuyen_resize')}
+                        title={`${t('misc.acrobatToolbar:chinh_sua_doi_tuong_di_chuyen_resize')} (${getShortcutLabel('viewer.object_edit')})`}
                         aria-label={t('misc.acrobatToolbar:chinh_sua_doi_tuong')}
                     >
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
                     </button>
                 )}
 
-                {/* Crop PDF (kiểu Acrobat): quét vùng → Enter → hộp thoại Set Page Boxes. */}
+                {/* Crop PDF: scan a region and edit it in the right-hand panel. */}
                 <button
                     className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${isCropMode ? 'text-orange-600 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/30 ring-1 ring-orange-300 dark:ring-orange-700' : 'hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300'}`}
                     onClick={() => {
@@ -159,18 +161,18 @@ export function AcrobatToolbar({ pageOrderLength, navigatePage, applyFitWidth, a
                         setIsCropMode(next);
                         if (next) { setIsObjectEditMode(false); setToolMode('pointer'); }
                     }}
-                    title={t('misc.acrobatToolbar:crop_pdf_quet_chon_vung_roi_nhan_enter')}
+                    title={`${t('misc.acrobatToolbar:crop_pdf_quet_chon_vung_roi_nhan_enter')} (${getShortcutLabel('viewer.crop')})`}
                     aria-label="Crop PDF"
                 >
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+                    <CropIcon width="20" height="20" />
                 </button>
 
                 <div className="w-px h-5 bg-black/10 dark:bg-white/10 mx-2"></div>
 
-                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => handleCustomZoom(z => Math.max(0.01, typeof z === 'number' ? z / 1.25 : 1))} title="Zoom Out" aria-label="Zoom Out">
+                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => handleCustomZoom(z => Math.max(0.01, typeof z === 'number' ? z / 1.25 : 1))} title={`Zoom Out (${getShortcutLabel('view.zoom_out')})`} aria-label="Zoom Out">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3M8 11h6"/></svg>
                 </button>
-                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => handleCustomZoom(z => Math.min(64, typeof z === 'number' ? z * 1.25 : 1))} title="Zoom In" aria-label="Zoom In">
+                <button className="w-8 h-8 flex items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/10 text-slate-600 dark:text-zinc-300 transition-colors" onClick={() => handleCustomZoom(z => Math.min(64, typeof z === 'number' ? z * 1.25 : 1))} title={`Zoom In (${getShortcutLabel('view.zoom_in')})`} aria-label="Zoom In">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3M8 11h6M11 8v6"/></svg>
                 </button>
                 

@@ -336,7 +336,7 @@ export const DEFAULT_BOOK_REPORT_CONFIG: BookReportDisplayConfig = {
 
 export type TaskMode = 'booklet' | 'nup' | 'step_repeat' | 'offset' | 'sticker_imposer' | 'cnc_imposer';
 
-export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert';
+export type ActiveToolType = 'none' | 'booklet' | 'nup' | 'shuffle' | 'resize' | 'split' | 'merge' | 'preflight' | 'hairlines' | 'convertcolors' | 'trapping' | 'pdfx' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'ocr' | 'optimize' | 'sticker' | 'sticker_imposer' | 'cnc_imposer' | 'bgremover' | 'watermark' | 'upscale' | 'pages' | 'trim_shift' | 'encrypt' | 'metadata' | 'office_convert' | 'crop';
 
 /**
  * Loại panel mà một công cụ hiển thị trong workspace bình bài.
@@ -389,6 +389,7 @@ export const WORKSPACE_TOOL_PANEL: Record<ActiveToolType, WorkspacePanelKind> = 
     encrypt: 'preprocess',
     metadata: 'preprocess',
     office_convert: 'preprocess',
+    crop: 'preprocess',
 };
 
 /**
@@ -430,6 +431,9 @@ export interface ImposerDashboardProps {
     officeSourceFiles?: File[];
     /** PDF đã bake sửa viewer (xoay/xóa/sắp trang) — preview dùng CÙNG nguồn với output. */
     getWorkingFile?: () => Promise<File>;
+    ensureCropFileId?: (signal?: AbortSignal) => Promise<string>;
+    onCropApplied?: (blob: Blob, filename: string, openInNewTab: boolean) => void | Promise<void>;
+    onCropClose?: () => void;
 }
 
 // ═══ Khai báo capability theo profile công cụ (Task 16 / Req 6) ═══

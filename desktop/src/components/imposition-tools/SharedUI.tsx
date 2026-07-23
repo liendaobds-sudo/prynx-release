@@ -116,7 +116,7 @@ export const DisabledItem = ({ label }: { label: string }) => (
 );
 
 // ==================== ToolItem ====================
-export const ToolItem = ({ icon, label, desc, info, helpKey, onClick, hoverColor, active, isFavorite, onToggleFavorite }: { icon: string, label: string, desc?: string, info?: string, helpKey?: string, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void }) => {
+export const ToolItem = ({ icon, label, desc, info, helpKey, onClick, hoverColor, active, isFavorite, onToggleFavorite }: { icon: React.ReactNode, label: string, desc?: string, info?: string, helpKey?: string, onClick: () => void, hoverColor: string, active?: boolean, isFavorite?: boolean, onToggleFavorite?: () => void }) => {
   const { t } = useTranslation();
     const [open, setOpen] = useState(false);
     const help = getToolHelp(helpKey);

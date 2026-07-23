@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { ToolHelp } from '../lib/toolHelp';
 import { useTranslation } from 'react-i18next';
@@ -6,7 +6,7 @@ import { tv } from '../i18n';
 
 interface Props {
   help: ToolHelp;
-  icon?: string;
+  icon?: ReactNode;
   onClose: () => void;
 }
 

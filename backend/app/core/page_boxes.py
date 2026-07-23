@@ -824,36 +824,58 @@ class PageBoxesEngine:
         page_num: int,
         rects_mm: list[dict],
         keep_other_pages: bool = False,
+        pages: list[int] | None = None,
     ) -> str:
-        """Crop N regions; optionally replace the source page and preserve the document."""
+        """Crop the selected regions on one or more source pages."""
         if page_num < 1:
             raise ValueError(f"page_num không hợp lệ: {page_num}")
 
         check_doc = pikepdf.Pdf.open(file_path)
         try:
-            if page_num > len(check_doc.pages):
-                raise ValueError(f"Trang {page_num} không hợp lệ (file có {len(check_doc.pages)} trang)")
-            _, rects_pt = _normalise_crop_rects(check_doc.pages[page_num - 1], rects_mm)
+            page_count = len(check_doc.pages)
+            if page_num > page_count:
+                raise ValueError(f"Trang {page_num} không hợp lệ (file có {page_count} trang)")
+            target_pages = sorted(set(pages or [page_num]))
+            if not target_pages or any(page < 1 or page > page_count for page in target_pages):
+                raise ValueError(f"Danh sách trang crop không hợp lệ: {target_pages}")
+            reference_visible, reference_rects = _normalise_crop_rects(check_doc.pages[page_num - 1], rects_mm)
+            rvx0, rvy0, _, _ = reference_visible
+            relative_rects = [[x0 - rvx0, y0 - rvy0, x1 - rvx0, y1 - rvy0] for x0, y0, x1, y1 in reference_rects]
+            rects_by_index: dict[int, list[list[float]]] = {}
+            for page in target_pages:
+                target_page = check_doc.pages[page - 1]
+                target_visible = _get_page_box(target_page, "/CropBox", fallback=_get_page_box(target_page, "/MediaBox"))
+                tvx0, tvy0, tvx1, tvy1 = target_visible
+                target_rects: list[list[float]] = []
+                for dx0, dy0, dx1, dy1 in relative_rects:
+                    x0, x1 = max(tvx0, tvx0 + dx0), min(tvx1, tvx0 + dx1)
+                    y0, y1 = max(tvy0, tvy0 + dy0), min(tvy1, tvy0 + dy1)
+                    if x1 - x0 < MIN_CROP_SIZE_PT or y1 - y0 < MIN_CROP_SIZE_PT:
+                        raise ValueError(f"Vùng crop nằm ngoài trang {page} hoặc quá nhỏ")
+                    target_rects.append([x0, y0, x1, y1])
+                rects_by_index[page - 1] = target_rects
         finally:
             check_doc.close()
 
+        target_indexes = set(rects_by_index)
         out = pikepdf.Pdf.new()
         try:
             # One base document supplies untouched pages. Each crop still reopens the
             # source so physical transforms never accumulate between regions.
             base = pikepdf.Pdf.open(file_path)
             try:
-                source_indexes = range(len(base.pages)) if keep_other_pages else [page_num - 1]
+                source_indexes = range(len(base.pages)) if keep_other_pages else sorted(target_indexes)
                 for source_index in source_indexes:
-                    if source_index != page_num - 1:
-                        out.pages.append(base.pages[source_index])
+                    if source_index not in target_indexes:
+                        if keep_other_pages:
+                            out.pages.append(base.pages[source_index])
                         continue
-                    for x0, y0, x1, y1 in rects_pt:
+                    for x0, y0, x1, y1 in rects_by_index[source_index]:
                         src = pikepdf.Pdf.open(file_path)
                         try:
-                            page = src.pages[page_num - 1]
+                            page = src.pages[source_index]
                             self._physical_crop_page(src, page, x0, y0, x1 - x0, y1 - y0)
-                            out.pages.append(src.pages[page_num - 1])
+                            out.pages.append(src.pages[source_index])
                         finally:
                             src.close()
             finally:
@@ -865,7 +887,10 @@ class PageBoxesEngine:
         finally:
             out.close()
 
-        logger.info("crop_regions_to_pages: page=%d n=%d keep_other_pages=%s → %s", page_num, len(rects_pt), keep_other_pages, output_path)
+        logger.info(
+            "crop_regions_to_pages: page=%d targets=%s n=%d keep_other_pages=%s -> %s",
+            page_num, sorted(target_indexes), len(rects_mm), keep_other_pages, output_path,
+        )
         return output_path
 
     def auto_trim(self, file_path: str, pages: list[int] | None = None, margin_mm: float = 0) -> str:

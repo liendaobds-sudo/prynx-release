@@ -1,15 +1,27 @@
 import { useEffect, useRef, useCallback, useContext } from 'react';
 import { useWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
+import { matchesShortcut } from '../../lib/keyboardShortcuts';
 
 /** Chống 2 listener (nhiều tab mount) toggle DIM 2 lần trong 1 cú nhấn → kẹt ON. */
-let dimShortcutLockUntil = 0;
+const handledDimensionKeyEvents = new WeakSet<KeyboardEvent>();
+
+const isEditableTarget = (target: EventTarget | null): boolean => {
+    const element = target as HTMLElement | null;
+    return element instanceof HTMLInputElement
+        || element instanceof HTMLTextAreaElement
+        || Boolean(element?.isContentEditable);
+};
+
+const dispatchViewerCommand = (cmd: string): void => {
+    window.dispatchEvent(new CustomEvent('prynx-menu-command', { detail: { cmd } }));
+};
 
 interface ViewerSnapshot {
     order: number[];
     selection: number[];
     lastSelected: number | null;
-    rotations: Record<number, number>;
+    rotations: Record<string, number>;
 }
 
 interface UseViewerHotkeysProps {
@@ -19,16 +31,17 @@ interface UseViewerHotkeysProps {
     isActive?: boolean;
     // Page state
     pageOrder: number[];
+    pageInstanceIds: string[];
     selectedIndices: Set<number>;
     lastSelectedIndex: number | null;
-    pageRotations: Record<number, number>;
+    pageRotations: Record<string, number>;
     activePage: number;
     numPages: number;
     // State setters
     setPageOrder: React.Dispatch<React.SetStateAction<number[]>>;
     setSelectedIndices: React.Dispatch<React.SetStateAction<Set<number>>>;
     setLastSelectedIndex: React.Dispatch<React.SetStateAction<number | null>>;
-    setPageRotations: React.Dispatch<React.SetStateAction<Record<number, number>>>;
+    setPageRotations: React.Dispatch<React.SetStateAction<Record<string, number>>>;
     setActivePage: (p: number) => void;
     // Undo/Redo stacks
     pastStack: ViewerSnapshot[];
@@ -72,7 +85,7 @@ interface UseViewerHotkeysProps {
 export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     const {
         containerRef, sidebarRef, isActive = true,
-        pageOrder, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
+        pageOrder, pageInstanceIds, selectedIndices, lastSelectedIndex, pageRotations, activePage, numPages,
         setPageOrder, setSelectedIndices, setLastSelectedIndex, setPageRotations, setActivePage,
         pastStack, futureStack, setPastStack, setFutureStack,
         toolMode, setToolMode, isVdpMode, isThumbMenuOpen, isDeleteModalOpen,
@@ -138,6 +151,20 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         setFutureStack([]);
     }, [pageOrder, selectedIndices, lastSelectedIndex, pageRotations, setPastStack, setFutureStack]);
 
+    const rotateSelectedPages = useCallback((degrees: 90 | 270) => {
+        if (selectedIndices.size === 0) return;
+        commitSnapshot();
+        setPageRotations((previous) => {
+            const next = { ...previous };
+            for (const index of selectedIndices) {
+                const instanceId = pageInstanceIds[index];
+                if (!instanceId) continue;
+                next[instanceId] = ((next[instanceId] || 0) + degrees) % 360;
+            }
+            return next;
+        });
+    }, [commitSnapshot, pageInstanceIds, selectedIndices, setPageRotations]);
+
     const undo = useCallback(() => {
         if (pastStack.length === 0) {
             onDocumentUndo?.();
@@ -191,7 +218,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             if (!isViewerLive()) return;
             if (isCropModeRef.current) return;
 
-            if (e.ctrlKey && (e.code === 'KeyR' || e.key.toLowerCase() === 'r')) {
+            if (matchesShortcut(e, 'viewer.toggle_rulers')) {
                 e.preventDefault();
                 toggleRulersRef.current();
                 return;
@@ -230,7 +257,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     // Provider này, nếu singleton do tab nền đăng ký sẽ toggle nhầm store tab khác.
     useEffect(() => {
         const handleF7 = (e: KeyboardEvent) => {
-            if (e.key !== 'F7') return;
+            if (!matchesShortcut(e, 'viewer.object_edit')) return;
             if (isImeNoise(e)) return;
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
             if (!isViewerLive()) return;
@@ -256,8 +283,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     // Đọc mode từ store.getState() (không tin ref stale) → D lần 2 chắc chắn TẮT.
     useEffect(() => {
         const handleDimensionShortcut = (e: KeyboardEvent) => {
-            if (e.code !== 'KeyD') return;
-            if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            if (!matchesShortcut(e, 'viewer.dimension')) return;
             const target = e.target as HTMLElement | null;
             if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
             // Tab nền: bỏ qua, KHÔNG stopPropagation — để tab active nhận sự kiện.
@@ -266,10 +292,10 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             e.stopPropagation();
             e.stopImmediatePropagation();
             if (e.repeat) return;
-            // Hai listener cùng tab/cùng event (Strict Mode / multi-mount) → khóa 120ms.
-            const now = Date.now();
-            if (now < dimShortcutLockUntil) return;
-            dimShortcutLockUntil = now + 120;
+            // Nhiều listener/tab có thể nhìn thấy cùng một event. Chỉ bỏ event trùng,
+            // không khóa theo thời gian vì người dùng có thể nhấn D hai lần rất nhanh.
+            if (handledDimensionKeyEvents.has(e)) return;
+            handledDimensionKeyEvents.add(e);
 
             const storeApi = workspaceStore;
             const current = storeApi?.getState().viewerToolMode ?? toolModeRef.current;
@@ -301,20 +327,78 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
         return () => window.removeEventListener('keydown', handleDimensionShortcut, true);
     }, [isViewerLive, workspaceStore]);
 
+    // C toggles Crop and stays in sync with the Crop toolbar button.
+    useEffect(() => {
+        const handleCropShortcut = (e: KeyboardEvent) => {
+            if (!matchesShortcut(e, 'viewer.crop')) return;
+            if (isImeNoise(e)) return;
+            const target = e.target as HTMLElement | null;
+            if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable) return;
+            if (!isViewerLive()) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            if (e.repeat) return;
+
+            const storeApi = workspaceStore;
+            const current = storeApi?.getState().isCropMode ?? isCropModeRef.current;
+            const next = !current;
+            isCropModeRef.current = next;
+
+            if (storeApi) {
+                const state = storeApi.getState();
+                state.setIsCropMode(next);
+                if (next) {
+                    state.setIsObjectEditMode(false);
+                    state.setViewerToolMode('pointer');
+                }
+            } else {
+                setIsCropModeRef.current(next);
+                if (next) {
+                    setIsObjectEditModeRef.current(false);
+                    setToolModeRef.current('pointer');
+                }
+            }
+
+            if (next) toolModeRef.current = 'pointer';
+            if (document.activeElement instanceof HTMLElement) {
+                const tag = document.activeElement.tagName;
+                if (tag === 'BUTTON' || tag === 'A') document.activeElement.blur();
+            }
+        };
+
+        window.addEventListener('keydown', handleCropShortcut, true);
+        return () => window.removeEventListener('keydown', handleCropShortcut, true);
+    }, [isViewerLive, workspaceStore]);
+
     // Global keyboard commands (Undo/Redo, Delete, Extract, Spacebar)
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (isImeNoise(e)) return;
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-            if (e.key === 'F7') return; // Handled by independent listener above
+            if (isEditableTarget(e.target)) return;
+            if (matchesShortcut(e, 'viewer.object_edit')) return; // Handled by independent listener above
             // KeyD do handler DIM (capture) xử lý — không đụng nhánh khác.
-            if (e.code === 'KeyD') return;
+            if (matchesShortcut(e, 'viewer.dimension')) return;
+            // KeyC is handled by the Crop capture listener.
+            if (matchesShortcut(e, 'viewer.crop')) return;
 
             if (!isViewerLive()) return;
+            const viewerCommand = matchesShortcut(e, 'view.fit_page') ? 'fit-page'
+                : matchesShortcut(e, 'view.actual_size') ? 'zoom-100'
+                    : matchesShortcut(e, 'view.fit_width') ? 'fit-width'
+                        : matchesShortcut(e, 'view.zoom_in') ? 'zoom-in'
+                            : matchesShortcut(e, 'view.zoom_out') ? 'zoom-out'
+                                : null;
+            if (viewerCommand) {
+                e.preventDefault();
+                dispatchViewerCommand(viewerCommand);
+                return;
+            }
 
             // Space temporarily switches to the hand tool even while Crop is active.
             // Handling this before the Crop guard prevents the shortcut from being swallowed.
-            if (e.code === 'Space') {
+            if (matchesShortcut(e, 'viewer.temporary_hand')) {
                 e.preventDefault();
                 if (!e.repeat && !isSpacebarHeldRef.current) {
                     const currentMode = workspaceStore?.getState().viewerToolMode ?? toolModeRef.current;
@@ -342,6 +426,18 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             }
 
             if (e.ctrlKey || e.metaKey) {
+                if (!isObjectEditMode && !isVdpMode && matchesShortcut(e, 'pages.clear_selection')) {
+                    e.preventDefault();
+                    setSelectedIndices(new Set());
+                    setLastSelectedIndex(null);
+                    return;
+                }
+                if (!isObjectEditMode && !isVdpMode && matchesShortcut(e, 'pages.select_all')) {
+                    e.preventDefault();
+                    setSelectedIndices(new Set(Array.from({ length: pageOrder.length }, (_, index) => index)));
+                    setLastSelectedIndex(pageOrder.length > 0 ? Math.max(0, activePage - 1) : null);
+                    return;
+                }
                 // Khi đang ở chế độ VDP, undo/redo do useVdpHistory xử lý (capture-phase).
                 if (isVdpMode) return;
                 // Chế độ chỉnh sửa đối tượng → Ctrl+Z/Y hoàn tác/làm lại edit-object
@@ -366,7 +462,37 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                     redo();
                 }
 
-            } else if (e.code === 'Delete') {
+            } else if (matchesShortcut(e, 'viewer.pointer')) {
+                e.preventDefault();
+                toolModeRef.current = 'pointer';
+                if (workspaceStore) workspaceStore.getState().setViewerToolMode('pointer');
+                else setToolModeRef.current('pointer');
+            } else if (matchesShortcut(e, 'viewer.hand')) {
+                e.preventDefault();
+                toolModeRef.current = 'hand';
+                if (workspaceStore) workspaceStore.getState().setViewerToolMode('hand');
+                else setToolModeRef.current('hand');
+            } else if (matchesShortcut(e, 'pages.previous')) {
+                e.preventDefault();
+                navigatePage(activePage - 1);
+            } else if (matchesShortcut(e, 'pages.next')) {
+                e.preventDefault();
+                navigatePage(activePage + 1);
+            } else if (matchesShortcut(e, 'pages.first')) {
+                e.preventDefault();
+                navigatePage(1);
+            } else if (matchesShortcut(e, 'pages.last')) {
+                e.preventDefault();
+                navigatePage(pageOrder.length);
+            } else if (matchesShortcut(e, 'pages.rotate_left')) {
+                if (isObjectEditMode || isVdpMode) return;
+                e.preventDefault();
+                rotateSelectedPages(270);
+            } else if (matchesShortcut(e, 'pages.rotate_right')) {
+                if (isObjectEditMode || isVdpMode) return;
+                e.preventDefault();
+                rotateSelectedPages(90);
+            } else if (matchesShortcut(e, 'viewer.delete_pages')) {
                 // CHỈ phím Delete vật lý mở xóa trang.
                 // KHÔNG bắt Backspace: IME Telex (Unikey) khi gõ D/đ thường phát Backspace
                 // → trước đây bấm D lần 2 (tắt DIM) lại mở popup xóa trang.
@@ -378,7 +504,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
                 if (selectedIndices.size === 0) return;
                 e.preventDefault();
                 setIsDeleteModalOpen(true);
-            } else if (e.code === 'KeyE') {
+            } else if (matchesShortcut(e, 'viewer.extract_pages')) {
                 e.preventDefault();
                 const sortedSel = Array.from(selectedIndices).sort((a, b) => a - b).map(i => i + 1);
                 let str = sortedSel.length > 0 ? sortedSel.join(', ') : '';
@@ -428,7 +554,7 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
             document.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('blur', restoreToolAfterSpace);
         };
-    }, [isViewerLive, selectedIndices, activePage, undo, redo, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo, navigatePage, setIsDeleteModalOpen, setExtractPagesStrForModal, setIsExtractModalOpen, workspaceStore]);
+    }, [isViewerLive, selectedIndices, activePage, pageOrder.length, undo, redo, rotateSelectedPages, isVdpMode, isObjectEditMode, onEditUndo, onEditRedo, navigatePage, setSelectedIndices, setLastSelectedIndex, setIsDeleteModalOpen, setExtractPagesStrForModal, setIsExtractModalOpen, workspaceStore]);
 
     // Restore only when this viewer really unmounts. The keyboard-listener effect above
     // can restart while panning (for example when activePage changes during the drag).
@@ -446,17 +572,28 @@ export function useViewerHotkeys(props: UseViewerHotkeysProps) {
     // Escape: đóng modal + thoát DIM (nếu đang bật)
     useEffect(() => {
         const handleEscape = (e: KeyboardEvent) => {
-            if (e.key !== 'Escape') return;
+            if (!matchesShortcut(e, 'viewer.escape_mode')) return;
             if (!isViewerLive()) return;
             setIsInsertModalOpen(false);
             setIsExtractModalOpen(false);
             setIsDeleteModalOpen(false);
             setContextMenu(null);
-            const mode = workspaceStore?.getState().viewerToolMode ?? toolModeRef.current;
-            if (mode === 'dimension') {
-                toolModeRef.current = 'pointer';
-                if (workspaceStore) workspaceStore.getState().setViewerToolMode('pointer');
-                else setToolModeRef.current('pointer');
+            e.preventDefault();
+            isSpacebarHeldRef.current = false;
+            spaceStartedInCropRef.current = false;
+            prevToolModeRef.current = 'pointer';
+            toolModeRef.current = 'pointer';
+            isCropModeRef.current = false;
+
+            const state = workspaceStore?.getState();
+            if (state) {
+                state.setViewerToolMode('pointer');
+                state.setIsCropMode(false);
+                state.setIsObjectEditMode(false);
+            } else {
+                setToolModeRef.current('pointer');
+                setIsCropModeRef.current(false);
+                setIsObjectEditModeRef.current(false);
             }
         };
         document.addEventListener('keydown', handleEscape);

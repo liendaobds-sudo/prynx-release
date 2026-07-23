@@ -34,6 +34,7 @@ interface ThumbSidebarProps {
     setExtractPagesStrForModal: React.Dispatch<React.SetStateAction<string>>;
     setIsExtractModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setIsDeleteModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    navigatePage: (newPage: number, options?: { preserveSelection?: boolean }) => void;
     // Refs
     sidebarRef: React.RefObject<HTMLDivElement | null>;
     mainVirtuosoRef: React.RefObject<any>;
@@ -273,7 +274,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         setActiveDashboardTool, setIsSidebarOpen,
         setContextMenu, sidebarRef, mainVirtuosoRef, internalScrollRef,
         file, pdfUrl, onCrossFileCopy,
-        setIsDeleteModalOpen,
+        setIsDeleteModalOpen, navigatePage,
     } = props;
 
     const {
@@ -298,13 +299,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         sidebarRef, mainVirtuosoRef,
         pdfUrl: pdfUrl || undefined,
         onNavigatePage: (index: number) => {
-            setActivePage(index + 1);
-            if (mainVirtuosoRef.current) {
-                mainVirtuosoRef.current.scrollToIndex({ index, behavior: 'auto', align: 'start' });
-            } else if (internalScrollRef.current) {
-                internalScrollRef.current.scrollTop = 0;
-                internalScrollRef.current.scrollLeft = 0;
-            }
+            navigatePage(index + 1, { preserveSelection: true });
         }
     });
 
@@ -483,7 +478,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                             e.preventDefault();
                                             if (!selectedIndices.has(idx)) {
                                                 setSelectedIndices(new Set([idx]));
-                                                setActivePage(label);
+                                                navigatePage(label, { preserveSelection: true });
                                                 setLastSelectedIndex(idx);
                                             }
                                             setContextMenu({ x: e.clientX, y: e.clientY, visible: true });

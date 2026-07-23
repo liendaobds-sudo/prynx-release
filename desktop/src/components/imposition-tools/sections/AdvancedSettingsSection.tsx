@@ -39,8 +39,8 @@ function CollapsibleGroup({
 }) {
     const [open, setOpen] = useState(defaultOpen);
     return (
-        <div className="rounded-lg border border-slate-200 dark:border-white/10 overflow-hidden bg-white dark:bg-zinc-900">
-            <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-zinc-800/40">
+        <div className="rounded-lg border border-slate-200/80 dark:border-white/10 overflow-hidden bg-slate-50/70 dark:bg-zinc-800/20">
+            <div className="flex items-center gap-2 px-3 py-2">
                 <button
                     type="button"
                     onClick={() => setOpen(o => !o)}
@@ -172,11 +172,11 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
 
     // Render logic
     return (
-        <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10 rounded-xl overflow-hidden mb-4 shadow-sm">
+        <div className="mb-4">
             {/* Header / Toggle */}
             <button 
                 onClick={() => setIsExpanded(!isExpanded)}
-                className="w-full flex items-center justify-between p-4 bg-slate-50 dark:bg-zinc-800/30 hover:bg-slate-100 dark:hover:bg-zinc-800/60 transition-colors"
+                className="w-full flex items-center justify-between px-1 py-2 border-b border-slate-200 dark:border-white/10 hover:bg-slate-100/70 dark:hover:bg-zinc-800/40 transition-colors"
             >
                 <div className="flex items-center gap-2">
                     <svg className="w-5 h-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
@@ -193,7 +193,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
             {/* Expanded Content */}
             <div className={`grid transition-[grid-template-rows] duration-300 ${isExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                 <div className="overflow-hidden">
-                    <div className="p-4 flex flex-col gap-3 border-t border-slate-200 dark:border-white/10">
+                    <div className="pt-3 flex flex-col gap-3">
 
 
                         {/* ══ BÌNH 2 MẶT (CNC) — In 2 mặt + Cạnh lật + Dấu canh in 2 mặt ══ */}

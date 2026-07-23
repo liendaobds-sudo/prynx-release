@@ -967,6 +967,7 @@ class CropRegionsRequest(BaseModel):
     rects_mm: List[dict]  # [{x0,y0,x1,y1}, ...] mm theo CropBox đang hiển thị
     keep_other_pages: bool = False  # True = thay trang nguồn bằng N vùng, giữ phần còn lại
 
+    pages: Optional[List[int]] = None  # None = chỉ page; danh sách = áp dụng cùng vùng cho các trang này
 
 class DetectCropRegionsRequest(CropRegionsRequest):
     """Dò bốn cạnh thành phẩm nằm gần bên trong các vùng quét rộng."""
@@ -1017,11 +1018,12 @@ async def crop_regions(req: CropRegionsRequest):
             req.page,
             req.rects_mm,
             req.keep_other_pages,
+            req.pages,
         )
         return {
             "success": True,
             "output_filename": Path(output).name,
-            "page_count": len(req.rects_mm),
+            "page_count": len(req.rects_mm) * len(req.pages or [req.page]),
         }
     except Exception as e:
         raise_http(e, "Không crop được nhiều vùng")

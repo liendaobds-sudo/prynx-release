@@ -143,7 +143,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         pdfUrl, setPdfUrl, fileSizeStr, setFileSizeStr, highlightedIssue, setHighlightedIssue,
         isProcessing, setIsProcessing, processStatus, setProcessStatus, error, setError,
         history, setHistory, isSaved, setIsSaved, showSaveAsModal, setShowSaveAsModal,
-        reportMsg, setReportMsg, viewerDirty, setViewerDirty, viewerPageOrder, setViewerPageOrder,
+        reportMsg, setReportMsg, viewerDirty, setViewerDirty, viewerPageOrder, setViewerPageOrder, setViewerPageInstanceIds,
         viewerPageRotations, setViewerPageRotations, bleedView, setBleedView,
         isDraggingSidebar, setIsDraggingSidebar,
         showOutputPreview, setShowOutputPreview, separationPlates, setSeparationPlates,
@@ -154,7 +154,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         selectedObjectIds, setSelectedObjectIds, hiddenObjectIds, setHiddenObjectIds,
         setLockedObjectIds,
         hiddenOcgLayerIds, setHiddenOcgLayerIds, setLockedOcgLayerIds,
-        selectionFileId, setSelectionFileId, vdpFields, setVdpFields,
+        selectionFileId, setSelectionFileId, vdpFields, setVdpFields, isCropMode, setIsCropMode, commitCropSelection, setIsObjectEditMode, setViewerToolMode,
         selectedVdpFieldIds, setSelectedVdpFieldIds,
         showCloseConfirm, setShowCloseConfirm,
         viewerNumPages,
@@ -168,7 +168,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         pdfUrl: state.pdfUrl, setPdfUrl: state.setPdfUrl, fileSizeStr: state.fileSizeStr, setFileSizeStr: state.setFileSizeStr, highlightedIssue: state.highlightedIssue, setHighlightedIssue: state.setHighlightedIssue,
         isProcessing: state.isProcessing, setIsProcessing: state.setIsProcessing, processStatus: state.processStatus, setProcessStatus: state.setProcessStatus, error: state.error, setError: state.setError,
         history: state.history, setHistory: state.setHistory, isSaved: state.isSaved, setIsSaved: state.setIsSaved, showSaveAsModal: state.showSaveAsModal, setShowSaveAsModal: state.setShowSaveAsModal,
-        reportMsg: state.reportMsg, setReportMsg: state.setReportMsg, viewerDirty: state.viewerDirty, setViewerDirty: state.setViewerDirty, viewerPageOrder: state.viewerPageOrder, setViewerPageOrder: state.setViewerPageOrder,
+        reportMsg: state.reportMsg, setReportMsg: state.setReportMsg, viewerDirty: state.viewerDirty, setViewerDirty: state.setViewerDirty, viewerPageOrder: state.viewerPageOrder, setViewerPageOrder: state.setViewerPageOrder, setViewerPageInstanceIds: state.setViewerPageInstanceIds,
         viewerPageRotations: state.viewerPageRotations, setViewerPageRotations: state.setViewerPageRotations, bleedView: state.bleedView, setBleedView: state.setBleedView,
         isDraggingSidebar: state.isDraggingSidebar, setIsDraggingSidebar: state.setIsDraggingSidebar,
         showOutputPreview: state.showOutputPreview, setShowOutputPreview: state.setShowOutputPreview, separationPlates: state.separationPlates, setSeparationPlates: state.setSeparationPlates,
@@ -179,7 +179,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         selectedObjectIds: state.selectedObjectIds, setSelectedObjectIds: state.setSelectedObjectIds, hiddenObjectIds: state.hiddenObjectIds, setHiddenObjectIds: state.setHiddenObjectIds,
         setLockedObjectIds: state.setLockedObjectIds,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds, setHiddenOcgLayerIds: state.setHiddenOcgLayerIds, setLockedOcgLayerIds: state.setLockedOcgLayerIds,
-        selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields,
+        selectionFileId: state.selectionFileId, setSelectionFileId: state.setSelectionFileId, vdpFields: state.vdpFields, setVdpFields: state.setVdpFields, isCropMode: state.isCropMode, setIsCropMode: state.setIsCropMode, commitCropSelection: state.commitCropSelection, setIsObjectEditMode: state.setIsObjectEditMode, setViewerToolMode: state.setViewerToolMode,
         selectedVdpFieldIds: state.selectedVdpFieldIds, setSelectedVdpFieldIds: state.setSelectedVdpFieldIds,
         showCloseConfirm: state.showCloseConfirm, setShowCloseConfirm: state.setShowCloseConfirm,
         viewerNumPages: state.viewerNumPages,
@@ -210,6 +210,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     const setIsSidebarOpen = useAppSettingsStore(state => state.setWorkspaceSidebarOpen);
     const sidebarWidth = useAppSettingsStore(state => state.toolMenuWidth);
     const setSidebarWidth = useAppSettingsStore(state => state.setToolMenuWidth);
+    const previousDashboardToolRef = useRef<string | null>(null);
 
     const [isMiniToolbarExpanded, setIsMiniToolbarExpanded] = useState(false);
     const [showSavePrintModal, setShowSavePrintModal] = useState(false);
@@ -223,6 +224,37 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
     // Mở file khuôn bằng AI/Corel (nơi plugin máy bế đã cài) — thay chỗ nút "Gửi Máy Bế".
     const [showOpenInDesign, setShowOpenInDesign] = useState(false);
     const [showRecipePanel, setShowRecipePanel] = useState(false);
+    // Keep the Crop mode, the toolbar button, and the right-hand tool panel in sync.
+    // Selecting Crop from the panel enables drawing; C/toolbar toggles promote the
+    // same mode into the panel without opening a separate modal.
+    useEffect(() => {
+        const previous = previousDashboardToolRef.current;
+        previousDashboardToolRef.current = activeDashboardTool;
+        if (previous === null) {
+            if (activeDashboardTool === 'crop' && !isCropMode) {
+                setIsCropMode(true);
+                setIsObjectEditMode(false);
+                setViewerToolMode('pointer');
+            }
+            return;
+        }
+        if (previous !== activeDashboardTool) {
+            if (activeDashboardTool === 'crop') {
+                setIsCropMode(true);
+                setIsObjectEditMode(false);
+                setViewerToolMode('pointer');
+            } else if (isCropMode) {
+                setIsCropMode(false);
+            }
+            return;
+        }
+        if (isCropMode && activeDashboardTool !== 'crop') {
+            setActiveDashboardTool('crop');
+            setIsSidebarOpen(true);
+        } else if (!isCropMode && activeDashboardTool === 'crop') {
+            setActiveDashboardTool('none');
+        }
+    }, [activeDashboardTool, isCropMode, setActiveDashboardTool, setIsCropMode, setIsObjectEditMode, setViewerToolMode, setIsSidebarOpen]);
     // Lựa chọn vị trí trang trắng — chỉ hỏi trong dialog Xác nhận khi số trang lẻ tay.
     const [confirmBlankPlacement, setConfirmBlankPlacement] = useState<'end' | 'center'>('end');
 
@@ -433,7 +465,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             setActiveDashboardTool(initialFeature);
             // Home/tool-registry opens a new tab with the requested tool. Ensure the
             // tool panel is visible even when the user previously collapsed it.
-            if (initialFeature === 'office_convert') {
+            if (initialFeature === 'office_convert' || initialFeature === 'crop') {
                 if (sidebarWidth < 280) setSidebarWidth(390);
                 setIsSidebarOpen(true);
             }
@@ -709,6 +741,34 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         setHiddenObjectIds([]);
         setLockedObjectIds([]);
     }, [file, originalFileName, onTitleChange]);
+    const ensureCropFileId = useCallback(async (signal?: AbortSignal) => {
+        if (!file) throw new Error(t('misc.acrobatViewer:chua_co_file_de_cat_kho'));
+        const res = await uploadPDF(file, { signal });
+        setSelectionFileId(res.id);
+        return res.id;
+    }, [file, setSelectionFileId, t]);
+
+    const handleCropApplied = useCallback(async (blob: Blob, filename: string, openInNewTab: boolean) => {
+        if (openInNewTab && onSpawnTab) {
+            const resultFile = new File([blob], filename, { type: 'application/pdf' });
+            Object.defineProperty(resultFile, 'isGenerated', { value: true });
+            onSpawnTab(resultFile, { focusFeature: 'crop' });
+        } else {
+            await commitWorkingFile(blob, filename);
+            setViewerPageInstanceIds(undefined);
+        }
+
+        commitCropSelection(null);
+        setIsCropMode(true);
+        setActiveDashboardTool('crop');
+        if (sidebarWidth < 280) setSidebarWidth(390);
+        setIsSidebarOpen(true);
+    }, [onSpawnTab, commitWorkingFile, setViewerPageInstanceIds, commitCropSelection, setIsCropMode, setActiveDashboardTool, sidebarWidth, setSidebarWidth, setIsSidebarOpen]);
+
+    const handleCropClose = useCallback(() => {
+        setIsCropMode(false);
+        setActiveDashboardTool('none');
+    }, [setIsCropMode, setActiveDashboardTool]);
 
 
     // --- OBJECT EDIT UPLOAD ---
@@ -1162,6 +1222,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // #2 audit RAM) — file!.arrayBuffer() sẽ trả 0 byte trên file rỗng+path.
             return new Uint8Array(await getFileArrayBuffer(file!));
         };
+        const getWorkingSourcePathLocal = async (): Promise<string | undefined> => {
+            const sourcePath = (file as File & { path?: string })?.path;
+            if (!(window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ || !sourcePath) return undefined;
+
+            const hasRotationEdits = !!(viewerPageRotations && Object.values(viewerPageRotations)
+                .some((rotation) => (((rotation % 360) + 360) % 360) !== 0));
+            const hasNonIdentityOrder = !!viewerPageOrder
+                && viewerPageOrder.some((pageNumber, index) => pageNumber !== index + 1);
+            if (viewerDirty || editSessionDirty || initialRecovery || hasRotationEdits || hasNonIdentityOrder) {
+                return undefined;
+            }
+            return sourcePath;
+        };
+
         return {
             file: file!,
             onSpawnTab,
@@ -1175,8 +1249,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             },
             viewerNumPages,
             getWorkingBytes: getWorkingBytesLocal,
+            getWorkingSourcePath: getWorkingSourcePathLocal,
         };
-    }, [file, onSpawnTab, commitWorkingFile, viewerNumPages, viewerPageOrder, viewerPageRotations]);
+    }, [file, onSpawnTab, commitWorkingFile, viewerNumPages, viewerPageOrder, viewerPageRotations, viewerDirty, editSessionDirty, initialRecovery]);
 
     const processEngine = useCallback(async (settings: ProcessingSettings, spawnNewTab: boolean) => {
         if (!file) return;
@@ -2230,17 +2305,16 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                     {/* LEFT: Acrobat Workspace */}
                     <div className="flex-1 relative z-0">
                         {isProcessing && (
-                            <div className="absolute inset-0 bg-[#525659]/80 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white">
-                                <div className="w-16 h-16 border-4 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mb-6"></div>
-                                <h3 className="font-bold text-2xl tracking-wide mb-3">
-                                    {/(bình|kẽm|catalog|impos)/i.test(processStatus) ? t('tabs.imposition:dang_binh_trang') : t('tabs.imposition:dang_xu_ly_file')}
-                                </h3>
-                                <p className="text-emerald-200 mt-2 text-sm tracking-normal font-medium">{processStatus}</p>
+                            <div className="absolute inset-0 bg-[#525659]/70 backdrop-blur-sm z-50 flex flex-col items-center justify-center text-white">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-5 h-5 border-2 border-white/25 border-t-white/90 rounded-full animate-spin"></div>
+                                    <span className="text-sm font-medium text-white/90">{processStatus}</span>
+                                </div>
                                 {processCancelHandler && (
                                     <button
                                         type="button"
                                         onClick={() => void processCancelHandler().catch((err) => setError(err?.message || String(err)))}
-                                        className="mt-6 rounded-md border border-red-300/70 bg-red-600/80 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-600"
+                                        className="mt-5 rounded-md border border-white/20 px-4 py-1.5 text-xs font-medium text-white/80 transition-colors hover:bg-white/10"
                                     >
                                         {t('tabs.imposition:huy_bo_cancel')}
                                     </button>
@@ -2320,7 +2394,6 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onObjectDelete={handleDeleteObjects}
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
                                     onEditCommit={handleEditCommit}
-                                    onCropCommit={commitWorkingFile}
                                     onDocumentUndo={handleUndo}
                                     editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}
@@ -2578,6 +2651,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                             officeSourceFile={officeSourceFile}
                                                             officeSourceFiles={officeSourceFiles}
                                                             getWorkingFile={getWorkingFile}
+                                                            ensureCropFileId={ensureCropFileId}
+                                                            onCropApplied={handleCropApplied}
+                                                            onCropClose={handleCropClose}
                                                         />
                                                     )}
                                                 </div>

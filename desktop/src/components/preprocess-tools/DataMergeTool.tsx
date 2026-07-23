@@ -1255,9 +1255,9 @@ export default function DataMergeTool({
     const [spawnNewTab, setSpawnNewTab] = useState(true);
 
     return (
-        <div className="flex flex-col h-full bg-white dark:bg-zinc-900 border-l border-slate-200 dark:border-zinc-800 p-4 gap-4 overflow-y-auto scroller-thin">
+        <div className="flex w-full flex-col gap-4">
             {/* Header */}
-            <div className="flex items-center gap-2 pb-3 border-b border-slate-200 dark:border-zinc-700">
+            <div className="flex items-center gap-2 pt-2 pb-3 border-b border-slate-200 dark:border-zinc-700">
                 <button 
                     onClick={onBack}
                     className="p-1.5 hover:bg-slate-100 dark:hover:bg-zinc-800 rounded-md text-slate-500 transition-colors"
@@ -2289,7 +2289,7 @@ export default function DataMergeTool({
             </VdpSection>
 
             {/* Action Buttons */}
-            <div className="pt-2">
+            <div className="border-t border-slate-200 pt-4 dark:border-zinc-700">
                 {statusMessage && (
                     <div className="text-[11px] text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 p-2 rounded mb-3 text-center">
                         {statusMessage}
