@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createImposerSettingsStore } from './useImposerSettingsStore';
+import { disposeImposerPersistScope } from './store/persist';
 
 const PERSIST_KEY = 'ps_imposer_settings';
 
@@ -59,6 +60,19 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
             localStorage.getItem('ps_imposer_settings:tab%3Asecond'),
         );
     });
+    it('mirrors the latest scoped preferences and removes the closed-tab key', () => {
+        const scope = 'tab:latest';
+        const store = createImposerSettingsStore(scope);
+        store.getState().setBleed(9);
+
+        expect(JSON.parse(localStorage.getItem(PERSIST_KEY) as string).state.bleed).toBe(9);
+        expect(localStorage.getItem('ps_imposer_settings:tab%3Alatest')).toBeTruthy();
+
+        disposeImposerPersistScope(scope);
+        expect(localStorage.getItem('ps_imposer_settings:tab%3Alatest')).toBeNull();
+        expect(JSON.parse(localStorage.getItem(PERSIST_KEY) as string).state.bleed).toBe(9);
+    });
+
     it('migration v6 → v7: thêm gangCount/showGangCount vào reportDisplay', () => {
         localStorage.clear();
         // Giả lập state persist version 6 KHÔNG có gangCount.

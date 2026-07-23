@@ -240,6 +240,13 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
         () => projectShapeParamsToViewer(detectedShapeParamsByPage, viewerPageOrder),
         [detectedShapeParamsByPage, viewerPageOrder],
     );
+    const previewDetectedShapeParamStringsByPage = useMemo(
+        () => Object.fromEntries(
+            Object.entries(previewDetectedShapeParamsByPage)
+                .map(([page, params]) => [page, params ? JSON.stringify(params) : null]),
+        ),
+        [previewDetectedShapeParamsByPage],
+    );
     const previewSourceKey = useMemo(
         () => JSON.stringify({
             f: detectionSourceKey,
@@ -1470,10 +1477,7 @@ export default function ImposerDashboard({ tabId, onStartBooklet, onStartNup, on
                                 shapeParams={
                                     s.cutType === 'one_dao'
                                         ? null
-                                        : (() => {
-                                            const params = previewDetectedShapeParamsByPage[shapePageIdx];
-                                            return params ? JSON.stringify(params) : null;
-                                        })()
+                                        : previewDetectedShapeParamStringsByPage[shapePageIdx] ?? null
                                 }
                                 shapesByPage={
                                     stickerLike

@@ -9,17 +9,28 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8321';
 
 type TauriCoreInvoker = Pick<typeof import('@tauri-apps/api/core'), 'invoke'>;
 
-function formatApiErrorDetail(detail: unknown, fallback: string): string {
+export function formatApiErrorDetail(detail: unknown, fallback: string): string {
   if (typeof detail === 'string') return detail || fallback;
   if (Array.isArray(detail)) {
-    return detail.map((item) => {
+    const messages = detail.flatMap((item): string[] => {
+      if (typeof item === 'string') return item ? [item] : [];
       if (item && typeof item === 'object' && 'msg' in item) {
-        return String((item as { msg?: unknown }).msg ?? '');
+        const message = (item as { msg?: unknown }).msg;
+        return message === undefined || message === null || message === ''
+          ? []
+          : [String(message)];
       }
-      return String(item);
-    }).filter(Boolean).join(', ') || fallback;
+      return [];
+    });
+    return messages.join(', ') || fallback;
   }
-  if (detail && typeof detail === 'object') return JSON.stringify(detail);
+  if (detail && typeof detail === 'object') {
+    try {
+      return JSON.stringify(detail) || fallback;
+    } catch {
+      return fallback;
+    }
+  }
   return fallback;
 }
 
@@ -445,6 +456,15 @@ export async function getVdpJobStatus(jobId: string) {
   return res.json();
 }
 
+export async function cancelVdpJobBackend(jobId: string) {
+  const res = await authenticatedFetch(`${API_BASE}/api/vdp/vdp-cancel/${jobId}`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Kh?ng th? h?y job VDP' }));
+    throw new Error(err.detail || 'Kh?ng th? h?y job VDP');
+  }
+  return res.json();
+}
+
 export async function downloadVdpJob(jobId: string): Promise<Blob> {
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/download/${jobId}`);
   if (!res.ok) throw new Error(tv('Lỗi tải file VDP kết quả'));
@@ -470,6 +490,8 @@ export async function pollVdpJob(jobId: string, onProgress: (msg: string) => voi
           return { blob: await downloadVdpJob(jobId), path: status.result };
       } else if (status.status === 'failed') {
           throw new Error(status.error);
+      } else if (status.status === 'cancelled') {
+          throw new DOMException('VDP job cancelled', 'AbortError');
       }
       await new Promise(r => setTimeout(r, 500));
   }
@@ -494,6 +516,15 @@ export async function startNupJobBackend(sourcePath: string, settings: unknown):
 export async function getNupJobStatus(jobId: string) {
   const res = await authenticatedFetch(`${API_BASE}/api/imposition/nup-status/${jobId}`);
   if (!res.ok) throw new Error(tv('Không thể lấy trạng thái tiến trình N-Up'));
+  return res.json();
+}
+
+export async function cancelNupJobBackend(jobId: string) {
+  const res = await authenticatedFetch(`${API_BASE}/api/imposition/nup-cancel/${jobId}`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Kh?ng th? h?y job N-Up' }));
+    throw new Error(err.detail || 'Kh?ng th? h?y job N-Up');
+  }
   return res.json();
 }
 
@@ -546,10 +577,22 @@ export type BackendMergeManifestItem = {
   height?: number;
 };
 
-export async function backendMergeManifest(files: File[], manifest: BackendMergeManifestItem[]): Promise<Blob> {
+export type BackendMergeManifestResult = {
+  blob?: Blob;
+  path?: string;
+  filename: string;
+};
+
+export async function backendMergeManifest(files: File[], manifest: BackendMergeManifestItem[]): Promise<BackendMergeManifestResult> {
   const formData = new FormData();
-  for (const file of files) {
-    formData.append('files', await prepareFileForUpload(file), file.name);
+  const nativePaths = files.map(file => file.path).filter((path): path is string => typeof path === 'string' && path.length > 0);
+  if (nativePaths.length === files.length) {
+    formData.append('file_paths', JSON.stringify(nativePaths));
+    formData.append('return_path', 'true');
+  } else {
+    for (const file of files) {
+      formData.append('files', await prepareFileForUpload(file), file.name);
+    }
   }
   formData.append('manifest', JSON.stringify(manifest));
   const res = await authenticatedFetch(`${API_BASE}/api/pdf-tools/merge-manifest`, {
@@ -557,7 +600,11 @@ export async function backendMergeManifest(files: File[], manifest: BackendMerge
     body: formData,
   });
   if (!res.ok) throw new Error('Backend manifest merge failed: ' + await res.text());
-  return await res.blob();
+  if (res.headers.get('content-type')?.includes('application/json')) {
+    const payload = await res.json() as { path: string; filename?: string };
+    return { path: payload.path, filename: payload.filename || 'Combined.pdf' };
+  }
+  return { blob: await res.blob(), filename: 'Combined.pdf' };
 }
 export async function backendSplitPdf(file: File, mode: string, config: unknown): Promise<Blob> {
   const formData = new FormData();

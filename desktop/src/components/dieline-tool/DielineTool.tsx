@@ -399,7 +399,11 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                                             <p>{t('dieline.dieline:dang_tai_mo_phong_3d')}</p>
                                         </div>
                                     }>
-                                        <DielineScene3D />
+                                        {isActive === false ? (
+                                            <div className="dt-scene-loading" data-scene-lifecycle="serialized">3D preview paused</div>
+                                        ) : (
+                                            <DielineScene3D />
+                                        )}
                                     </Suspense>
                                 </Scene3DErrorBoundary>
                             }
@@ -412,7 +416,11 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                                     <p>{t('dieline.dieline:dang_tai_mo_phong_3d')}</p>
                                 </div>
                             }>
-                                <DielineScene3D />
+                                {isActive === false ? (
+                                            <div className="dt-scene-loading" data-scene-lifecycle="serialized">3D preview paused</div>
+                                        ) : (
+                                            <DielineScene3D />
+                                        )}
                             </Suspense>
                         </Scene3DErrorBoundary>
                     )}

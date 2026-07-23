@@ -18,7 +18,7 @@ ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 MAX_FILE_SIZE = settings.MAX_FILE_SIZE_MB * 1024 * 1024
 
 
-async def save_upload_file(upload_file: UploadFile) -> tuple[str, str, int]:
+async def _save_upload_file(upload_file: UploadFile) -> tuple[str, str, int]:
     """
     Save uploaded file to disk.
     Returns: (stored_filename, file_path, file_size)
@@ -31,6 +31,7 @@ async def save_upload_file(upload_file: UploadFile) -> tuple[str, str, int]:
     # Generate unique filename
     stored_name = f"{uuid.uuid4().hex}{ext}"
     file_path = os.path.join(settings.UPLOAD_DIR, stored_name)
+    setattr(upload_file, '_prynx_partial_path', file_path)
 
     # Save file
     file_size = 0
@@ -47,6 +48,22 @@ async def save_upload_file(upload_file: UploadFile) -> tuple[str, str, int]:
     logger.info(f"Saved upload: {upload_file.filename} → {stored_name} ({file_size} bytes)")
     return stored_name, file_path, file_size
 
+
+
+async def save_upload_file(upload_file: UploadFile) -> tuple[str, str, int]:
+    """Save an upload and remove any partial file on every failure path."""
+    try:
+        return await _save_upload_file(upload_file)
+    except BaseException:
+        partial_path = getattr(upload_file, '_prynx_partial_path', None)
+        if partial_path:
+            try:
+                os.remove(partial_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning('Could not remove partial upload %s', partial_path, exc_info=True)
+        raise
 
 def cleanup_job_files(job_id: str):
     """Remove all files associated with a job."""

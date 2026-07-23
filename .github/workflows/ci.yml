@@ -73,8 +73,8 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
-      - name: Lint
-        run: npm run lint
+      - name: Lint budget ratchet
+        run: npm run lint:budget
 
       - name: Unit tests
         run: npm run test

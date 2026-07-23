@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -10,11 +10,11 @@ import base64
 import csv
 import io
 import tempfile
-import multiprocessing
 import threading
 from typing import List, Dict, Optional, Any, Tuple
+from concurrent.futures import ThreadPoolExecutor
 from app.schemas.vdp import VdpRequest, VdpField
-from app.workers.vdp_engine import run_vdp_engine
+from app.workers.vdp_engine import VdpCancelledError, run_vdp_engine
 from app.workers.vdp_datasource import (
     DataSourceError,
     RecordTable,
@@ -28,6 +28,7 @@ from app.workers.vdp_validate import (
 )
 from app.workers.vdp_preview import render_record_preview
 from app.core.license_guard import require_license, require_feature
+from app.core.heavy_job_scheduler import scheduled_job
 from app.config import settings
 
 import logging
@@ -44,6 +45,7 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # In-memory job store
 # In production with multiple Uvicorn workers, this should be Redis.
 vdp_jobs = {}
+_VDP_JOBS_LOCK = threading.RLock()
 
 # ── Giới hạn tài nguyên ──
 VDP_JOB_TTL_SECONDS = 3600          # Dọn job + file kết quả sau 1 giờ
@@ -51,7 +53,10 @@ MAX_VDP_ROWS = 100_000              # Chặn payload quá lớn gây OOM/đầy 
 MAX_VDP_PAYLOAD_BYTES = 256 * 1024 * 1024
 _VDP_MAX_CONCURRENT_JOBS = max(1, int(os.environ.get('PRYNX_MAX_VDP_JOBS', '1') or '1'))
 _VDP_MAX_QUEUED_JOBS = max(0, int(os.environ.get('PRYNX_MAX_VDP_QUEUE', '8') or '8'))
-_VDP_JOB_SEMAPHORE = threading.BoundedSemaphore(_VDP_MAX_CONCURRENT_JOBS)
+_VDP_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_VDP_MAX_CONCURRENT_JOBS,
+    thread_name_prefix="prynx-vdp",
+)
 _VDP_SUBMISSION_SLOTS = threading.BoundedSemaphore(_VDP_MAX_CONCURRENT_JOBS + _VDP_MAX_QUEUED_JOBS)
 
 
@@ -67,7 +72,7 @@ def _purge_old_jobs():
         if not job:
             continue
         created = job.get("created_at", now)
-        if now - created > VDP_JOB_TTL_SECONDS:
+        if now - created > VDP_JOB_TTL_SECONDS and job.get("status") in {"completed", "failed", "cancelled"}:
             result_path = job.get("result")
             if result_path and os.path.exists(result_path):
                 try:
@@ -78,6 +83,60 @@ def _purge_old_jobs():
 
 import glob
 import tempfile
+
+
+def _vdp_cancel_marker(job_id: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"vdp_cancel_{job_id}.flag")
+
+
+def _touch_vdp_cancel_marker(path: str) -> None:
+    try:
+        with open(path, "ab"):
+            pass
+    except OSError as exc:
+        logger.warning("Unable to create VDP cancellation marker %s: %s", path, exc)
+
+
+def _vdp_is_cancelled(job: dict) -> bool:
+    event = job.get("cancel_event")
+    return bool(
+        job.get("cancel_requested")
+        or job.get("status") == "cancelled"
+        or (event is not None and event.is_set())
+        or (job.get("cancel_file") and os.path.exists(job["cancel_file"]))
+    )
+
+
+def _cleanup_vdp_job_files(job_id: str, job: dict, *, include_output: bool) -> None:
+    paths = [
+        job.get("data_path"),
+        job.get("template_path"),
+        job.get("cancel_file"),
+    ]
+    if include_output:
+        paths.extend((job.get("output_path"), job.get("result")))
+    tmp_dir = tempfile.gettempdir()
+    paths.extend(glob.glob(os.path.join(tmp_dir, f"vdp_prog_{job_id}_*.txt")))
+    paths.extend(glob.glob(os.path.join(tmp_dir, f"vdp_chunk_{job_id}_*.pdf")))
+    for path in dict.fromkeys(path for path in paths if path):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def _release_vdp_submission_slot(job: dict) -> bool:
+    """Release the reserved queue slot at most once for this job."""
+    should_release = False
+    with _VDP_JOBS_LOCK:
+        if not job.get("slot_released", False):
+            job["slot_released"] = True
+            should_release = True
+    if should_release:
+        _VDP_SUBMISSION_SLOTS.release()
+    return should_release
+
 
 def _parse_csv_upload(file_obj, has_header: bool) -> List[Dict[str, str]]:
     """Parse an uploaded CSV once, without materializing a JSON string copy."""
@@ -129,48 +188,204 @@ def _uploaded_file_size(file_obj) -> int:
     file_obj.seek(current)
     return size
 
-def vdp_background_task(job_id: str, template_path: str, fields: List[VdpField], data: List[Dict[str, str]], output_path: str, **kwargs):
-    try:
-        def on_saving():
-            vdp_jobs[job_id]['status'] = 'saving'
-            
-        run_vdp_engine(template_path, fields, data, output_path, job_id=job_id, on_saving=on_saving, **kwargs)
-            
-        vdp_jobs[job_id]['status'] = 'completed'
-        vdp_jobs[job_id]['result'] = output_path
-        
-    except Exception as e:
-        vdp_jobs[job_id]['status'] = 'failed'
-        vdp_jobs[job_id]['error'] = str(e)
-    finally:
-        # Cleanup temp progress files
-        tmp_dir = tempfile.gettempdir()
-        for f in glob.glob(os.path.join(tmp_dir, f"vdp_prog_{job_id}_*.txt")):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
-        
-        if os.path.exists(template_path):
-            try:
-                os.remove(template_path)
-            except Exception:
-                pass
 
-def vdp_background_task_limited(*args, **kwargs):
-    """Bound VDP fan-out so each queued job gets a controlled worker slot."""
-    job_id = args[0] if args else kwargs.get("job_id")
+def _copy_fileobj_limited(file_obj, destination: str, max_bytes: int) -> int:
+    file_obj.seek(0)
+    total = 0
     try:
-        with _VDP_JOB_SEMAPHORE:
-            if job_id in vdp_jobs:
-                vdp_jobs[job_id]["status"] = "processing"
-            return vdp_background_task(*args, **kwargs)
+        with open(destination, "wb") as output:
+            while True:
+                chunk = file_obj.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("VDP payload exceeds the configured size limit")
+                output.write(chunk)
+    except BaseException:
+        try:
+            os.remove(destination)
+        except OSError:
+            pass
+        raise
     finally:
-        _VDP_SUBMISSION_SLOTS.release()
+        file_obj.seek(0)
+    if total == 0:
+        try:
+            os.remove(destination)
+        except OSError:
+            pass
+        raise ValueError("Uploaded file is empty")
+    return total
+
+
+def _copy_path_limited(source: str, destination: str, max_bytes: int) -> int:
+    with open(source, "rb") as file_obj:
+        return _copy_fileobj_limited(file_obj, destination, max_bytes)
+
+
+def _is_pdf_path(path: str) -> bool:
+    try:
+        with open(path, "rb") as file_obj:
+            return file_obj.read(5).startswith(b"%PDF")
+    except OSError:
+        return False
+
+
+def _load_spooled_vdp_data(data_path: str, data_format: str, has_header: bool) -> List[Dict[str, str]]:
+    with open(data_path, "rb") as file_obj:
+        if data_format == "csv":
+            rows = _parse_csv_upload(file_obj, has_header)
+        else:
+            wrapper = io.TextIOWrapper(file_obj, encoding="utf-8-sig", errors="strict")
+            try:
+                rows = json.load(wrapper)
+            finally:
+                wrapper.detach()
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Data array is empty")
+    if len(rows) > MAX_VDP_ROWS:
+        raise ValueError(f"Too many records ({len(rows)} > {MAX_VDP_ROWS})")
+    if not all(isinstance(row, dict) for row in rows):
+        raise ValueError("VDP data must be an array of objects")
+    return rows
+
+
+def vdp_background_task(job_id: str, template_path: str, fields: List[VdpField], data: List[Dict[str, str]], output_path: str, **kwargs):
+    with _VDP_JOBS_LOCK:
+        job = vdp_jobs.get(job_id)
+    if job is None:
+        return
+
+    cancel_file = job.get("cancel_file") or _vdp_cancel_marker(job_id)
+
+    def cancel_check() -> bool:
+        return _vdp_is_cancelled(job)
+
+    try:
+        if cancel_check():
+            raise VdpCancelledError("VDP job cancelled")
+
+        def on_saving():
+            if cancel_check():
+                raise VdpCancelledError("VDP job cancelled")
+            with _VDP_JOBS_LOCK:
+                if _vdp_is_cancelled(job):
+                    raise VdpCancelledError("VDP job cancelled")
+                job["status"] = "saving"
+
+        run_vdp_engine(
+            template_path,
+            fields,
+            data,
+            output_path,
+            job_id=job_id,
+            on_saving=on_saving,
+            cancel_check=cancel_check,
+            cancel_file=cancel_file,
+            **kwargs,
+        )
+        if cancel_check():
+            raise VdpCancelledError("VDP job cancelled")
+        with _VDP_JOBS_LOCK:
+            if _vdp_is_cancelled(job):
+                raise VdpCancelledError("VDP job cancelled")
+            job["status"] = "completed"
+            job["result"] = output_path
+            job["error"] = None
+    except VdpCancelledError:
+        with _VDP_JOBS_LOCK:
+            job["cancel_requested"] = True
+            job["status"] = "cancelled"
+            job["result"] = None
+            job["error"] = None
+        _cleanup_vdp_job_files(job_id, job, include_output=True)
+    except Exception as e:
+        with _VDP_JOBS_LOCK:
+            if _vdp_is_cancelled(job):
+                job["status"] = "cancelled"
+                job["result"] = None
+                job["error"] = None
+            else:
+                job["status"] = "failed"
+                job["error"] = str(e)
+    finally:
+        _cleanup_vdp_job_files(
+            job_id,
+            job,
+            include_output=job.get("status") == "cancelled",
+        )
+
+@scheduled_job("vdp")
+def vdp_background_task_spooled(
+    job_id: str,
+    template_path: str,
+    data_path: str,
+    fields: List[VdpField],
+    data_format: str,
+    has_header: bool,
+    output_path: str,
+    **kwargs,
+):
+    """Parse only after a fixed worker starts, keeping queued jobs disk-backed."""
+    job = None
+    try:
+        with _VDP_JOBS_LOCK:
+            job = vdp_jobs.get(job_id)
+            if job is None:
+                return
+            job.setdefault("data_path", data_path)
+            job.setdefault("template_path", template_path)
+            job.setdefault("output_path", output_path)
+            job.setdefault("cancel_file", _vdp_cancel_marker(job_id))
+            job.setdefault("cancel_requested", False)
+            if _vdp_is_cancelled(job):
+                raise VdpCancelledError("VDP job cancelled")
+            job["status"] = "processing"
+
+        data = _load_spooled_vdp_data(data_path, data_format, has_header)
+        if _vdp_is_cancelled(job):
+            raise VdpCancelledError("VDP job cancelled")
+        with _VDP_JOBS_LOCK:
+            job["total"] = len(data)
+        return vdp_background_task(job_id, template_path, fields, data, output_path, **kwargs)
+    except VdpCancelledError:
+        if job is not None:
+            with _VDP_JOBS_LOCK:
+                job["cancel_requested"] = True
+                job["status"] = "cancelled"
+                job["result"] = None
+                job["error"] = None
+    except Exception as exc:
+        if job is None:
+            return
+        with _VDP_JOBS_LOCK:
+            if _vdp_is_cancelled(job):
+                job["status"] = "cancelled"
+                job["result"] = None
+                job["error"] = None
+            else:
+                job["status"] = "failed"
+                job["error"] = str(exc)
+    finally:
+        if job is not None:
+            _cleanup_vdp_job_files(
+                job_id,
+                job,
+                include_output=job.get("status") == "cancelled",
+            )
+            _release_vdp_submission_slot(job)
+        else:
+            for path in (data_path, template_path):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            _VDP_SUBMISSION_SLOTS.release()
 
 @router.post("/generate")
 async def start_vdp_job(
-    background_tasks: BackgroundTasks,
     fields: str = Form(...),
     data_file: UploadFile = File(...),
     file: Optional[UploadFile] = File(None),
@@ -179,110 +394,169 @@ async def start_vdp_job(
     has_header: bool = Form(True),
     license_info: dict = Depends(require_license),
 ):
+    """Reserve capacity first, then spool queued inputs without retaining row lists."""
     logger.debug("Received POST /generate")
     _purge_old_jobs()
+    if not _VDP_SUBMISSION_SLOTS.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Hàng đợi VDP đang đầy. Vui lòng chờ job hiện tại hoàn tất.")
+
+    job_id = uuid.uuid4().hex
+    data_path = os.path.join(UPLOAD_DIR, f"vdp_data_{job_id}.dat")
+    template_path = os.path.join(UPLOAD_DIR, f"vdp_template_{job_id}.pdf")
+    output_path = os.path.abspath(os.path.join(RESULTS_DIR, f"vdp_{job_id}.pdf"))
+    submitted = False
+
     try:
         fields_parsed = json.loads(fields)
-        logger.debug("Parsed fields")
-        if data_format.lower() == "csv":
-            data_size = await run_in_threadpool(_uploaded_file_size, data_file.file)
-            if data_size > MAX_VDP_PAYLOAD_BYTES:
-                raise HTTPException(status_code=413, detail="VDP payload vượt quá giới hạn kích thước.")
-            data_parsed = await run_in_threadpool(_parse_csv_upload, data_file.file, has_header)
-            logger.debug("Parsed %d CSV rows without JSON materialization", len(data_parsed))
-        else:
-            data_content = await data_file.read()
-            if len(data_content) > MAX_VDP_PAYLOAD_BYTES:
-                raise HTTPException(status_code=413, detail="VDP payload vượt quá giới hạn kích thước.")
-            logger.debug("Read data content: %d bytes", len(data_content))
-            data_parsed = json.loads(data_content)
-            logger.debug("Parsed %d rows", len(data_parsed))
+        if not isinstance(fields_parsed, list):
+            raise ValueError("Fields must be an array")
+        vdp_fields = [VdpField(**field) for field in fields_parsed]
 
-        vdp_fields = [VdpField(**f) for f in fields_parsed]
+        normalized_format = data_format.strip().lower()
+        if normalized_format not in {"csv", "json"}:
+            raise ValueError("Unsupported VDP data format")
+        data_size = await run_in_threadpool(_uploaded_file_size, data_file.file)
+        if data_size <= 0:
+            raise ValueError("Data file is empty")
+        if data_size > MAX_VDP_PAYLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="VDP payload vượt quá giới hạn kích thước.")
+        await run_in_threadpool(
+            _copy_fileobj_limited,
+            data_file.file,
+            data_path,
+            MAX_VDP_PAYLOAD_BYTES,
+        )
+
+        if file_path:
+            real_path = os.path.realpath(file_path)
+            if not os.path.isfile(real_path):
+                raise HTTPException(status_code=400, detail="file_path không tồn tại hoặc không phải file")
+            if not _is_pdf_path(real_path):
+                raise HTTPException(status_code=400, detail="file_path không phải PDF hợp lệ")
+            await run_in_threadpool(
+                _copy_path_limited,
+                real_path,
+                template_path,
+                MAX_VDP_PAYLOAD_BYTES,
+            )
+        elif file is not None:
+            await run_in_threadpool(
+                _copy_fileobj_limited,
+                file.file,
+                template_path,
+                MAX_VDP_PAYLOAD_BYTES,
+            )
+            if not _is_pdf_path(template_path):
+                raise HTTPException(status_code=400, detail="File tải lên không phải PDF hợp lệ")
+        else:
+            raise HTTPException(status_code=400, detail="No file or file_path provided")
+
+        vdp_jobs[job_id] = {
+            "status": "queued",
+            "processed": 0,
+            "total": 0,
+            "result": None,
+            "error": None,
+            "created_at": time.time(),
+            "cancel_requested": False,
+            "cancel_event": threading.Event(),
+            "cancel_file": _vdp_cancel_marker(job_id),
+            "data_path": data_path,
+            "template_path": template_path,
+            "output_path": output_path,
+            "future": None,
+            "slot_released": False,
+        }
+        future = _VDP_EXECUTOR.submit(
+            vdp_background_task_spooled,
+            job_id,
+            template_path,
+            data_path,
+            vdp_fields,
+            normalized_format,
+            has_header,
+            output_path,
+            _license_key=license_info.get("license_key", ""),
+            _hwid=license_info.get("hwid", ""),
+        )
+        with _VDP_JOBS_LOCK:
+            vdp_jobs[job_id]["future"] = future
+        submitted = True
+        return {"job_id": job_id}
     except HTTPException:
         raise
     except ValueError as exc:
-        logger.error("Error parsing input: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as e:
-        logger.error("Error parsing input: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid data payload")
-    if not data_parsed:
-        raise HTTPException(status_code=400, detail="Data array is empty")
+        logger.error("Error preparing VDP input: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Error preparing VDP input")
+        raise HTTPException(status_code=400, detail="Invalid data payload") from exc
+    finally:
+        if not submitted:
+            vdp_jobs.pop(job_id, None)
+            for path in (data_path, template_path, output_path):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            _VDP_SUBMISSION_SLOTS.release()
 
-    if len(data_parsed) > MAX_VDP_ROWS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Quá nhiều bản ghi ({len(data_parsed)}). Tối đa {MAX_VDP_ROWS}.",
-        )
+@router.post("/vdp-cancel/{job_id}")
+@router.post("/cancel/{job_id}", include_in_schema=False)
+def cancel_vdp_job(job_id: str, license_info: dict = Depends(require_license)):
+    """Request cooperative cancellation without failing on repeated calls."""
+    with _VDP_JOBS_LOCK:
+        job = vdp_jobs.get(job_id)
+        if job is None:
+            return {
+                "job_id": job_id,
+                "status": "not_found",
+                "cancelled": False,
+                "message": "Job not found",
+            }
+        previous_status = job.get("status", "unknown")
+        if previous_status in {"completed", "failed"}:
+            return {
+                "job_id": job_id,
+                "status": previous_status,
+                "cancelled": False,
+                "message": f"Job is already {previous_status}",
+            }
+        already_cancelled = previous_status == "cancelled"
+        was_queued = previous_status == "queued"
+        job["cancel_requested"] = True
+        job["status"] = "cancelled"
+        job["result"] = None
+        job["error"] = None
+        event = job.get("cancel_event")
+        if event is not None:
+            event.set()
+        future = job.get("future")
+        cancel_file = job.get("cancel_file") or _vdp_cancel_marker(job_id)
+        job["cancel_file"] = cancel_file
 
-    template_id = uuid.uuid4().hex
-    template_path = os.path.join(UPLOAD_DIR, f"{template_id}.pdf")
-
-    import shutil
-
-    def _is_pdf(p: str) -> bool:
+    _touch_vdp_cancel_marker(cancel_file)
+    cancelled_before_start = was_queued
+    cancel_future = getattr(future, "cancel", None)
+    if callable(cancel_future):
         try:
-            with open(p, "rb") as fp:
-                return fp.read(5).startswith(b"%PDF")
-        except OSError:
-            return False
+            cancelled_before_start = bool(cancel_future()) or cancelled_before_start
+        except Exception as exc:
+            logger.warning("Unable to cancel queued VDP future %s: %s", job_id, exc)
 
-    used = False
-    if file_path:
-        # Đường dẫn local hợp lệ (Tauri gửi path thật của người dùng), nhưng phải
-        # chuẩn hoá + xác thực là FILE PDF thật để server không bị lừa copy/nhúng
-        # file nhạy cảm khác (defense-in-depth, bug #6).
-        real_path = os.path.realpath(file_path)
-        if not os.path.isfile(real_path):
-            raise HTTPException(status_code=400, detail="file_path không tồn tại hoặc không phải file")
-        if not _is_pdf(real_path):
-            raise HTTPException(status_code=400, detail="file_path không phải PDF hợp lệ")
-        logger.debug("Using local file path: %s", real_path)
-        shutil.copy2(real_path, template_path)
-        used = True
+    if cancelled_before_start:
+        _cleanup_vdp_job_files(job_id, job, include_output=True)
+        _release_vdp_submission_slot(job)
 
-    if not used:
-        if file:
-            file_bytes = await file.read()
-            logger.debug("Received template file: %d bytes", len(file_bytes))
-            if len(file_bytes) == 0:
-                raise HTTPException(status_code=400, detail="Uploaded template PDF is 0 bytes")
-            if not file_bytes.startswith(b"%PDF"):
-                raise HTTPException(status_code=400, detail="File tải lên không phải PDF hợp lệ")
-            with open(template_path, "wb") as f:
-                f.write(file_bytes)
-        else:
-            raise HTTPException(status_code=400, detail="No file or file_path provided")
-        
-    job_id = uuid.uuid4().hex
-    # Đường dẫn TUYỆT ĐỐI: path này được trả về frontend và dùng bởi Rust tile
-    # renderer (cwd khác backend). Nếu để tương đối ("./results/..."), Rust không
-    # tìm thấy file (os error 3) → render hỏng dù Python mở được.
-    output_path = os.path.abspath(os.path.join(RESULTS_DIR, f"vdp_{job_id}.pdf"))
-    
-    if not _VDP_SUBMISSION_SLOTS.acquire(blocking=False):
-        try:
-            os.remove(template_path)
-        except OSError:
-            pass
-        raise HTTPException(status_code=429, detail="Hàng đợi VDP đang đầy. Vui lòng chờ job hiện tại hoàn tất.")
-    vdp_jobs[job_id] = {
-        "status": "queued",
-        "processed": 0,
-        "total": len(data_parsed),
-        "result": None,
-        "error": None,
-        "created_at": time.time(),
+    return {
+        "job_id": job_id,
+        "status": "cancelled",
+        "cancelled": True,
+        "already_cancelled": already_cancelled,
+        "cancelled_before_start": cancelled_before_start,
     }
-    
-    background_tasks.add_task(
-        vdp_background_task_limited, job_id, template_path, vdp_fields, data_parsed, output_path,
-        _license_key=license_info.get("license_key", ""),
-        _hwid=license_info.get("hwid", ""),
-    )
-    
-    return {"job_id": job_id}
+
 
 @router.get("/status/{job_id}")
 def get_vdp_status(job_id: str, license_info: dict = Depends(require_license)):
@@ -305,7 +579,14 @@ def get_vdp_status(job_id: str, license_info: dict = Depends(require_license)):
                 pass
         job['processed'] = total_processed
                 
-    return job
+    return {
+        "status": job.get("status"),
+        "processed": job.get("processed", 0),
+        "total": job.get("total", 0),
+        "result": job.get("result"),
+        "error": job.get("error"),
+        "cancel_requested": bool(job.get("cancel_requested")),
+    }
 
 @router.get("/download/{job_id}")
 def download_vdp(job_id: str, license_info: dict = Depends(require_license)):

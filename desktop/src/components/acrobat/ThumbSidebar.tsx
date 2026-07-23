@@ -3,7 +3,6 @@ import { useThumbSidebar } from './useThumbSidebar';
 import { thumbCacheRef } from '../workspace/ViewerHelpers';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
-import { fetchViewerThumbnailPreview } from '../../lib/viewerPreview';
 
 interface ThumbSidebarProps {
     // Page state
@@ -111,9 +110,8 @@ const MemoThumbItem = React.memo((props: any) => {
                 src = ownBlobUrl;
             } catch {
                 // Fallback GS (hiếm): PDFium lỗi thì thử Ghostscript.
-                src = await fetchViewerThumbnailPreview(
-                    file.path, originalPageNum, pageCount, thumbRev || pdfUrl,
-                );
+                // Disabled: Ghostscript reparses the full PDF for each thumbnail block.
+                src = null;
             }
             if (cancelled) {
                 if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);

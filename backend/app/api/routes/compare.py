@@ -15,6 +15,7 @@ from app.database import get_db
 from app.models.job import ComparisonJob, UploadedFile
 from app.schemas.job import CompareRequest, JobCreateResponse
 from app.core.license_guard import require_license, require_feature
+from app.core.heavy_job_scheduler import scheduled_job
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,30 +65,35 @@ def _estimate_max_render_pixels(uploaded_file, dpi: int) -> int | None:
     return largest or None
 
 
+@scheduled_job("compare")
 def run_comparison_sync(job_id: str):
-    """Run comparison synchronously in a background thread (DEV_MODE).
-
-    Executor có số worker cố định; job vượt mức sẽ chờ trong hàng đợi bounded để
-    không bùng nổ RAM hoặc số thread khi mở nhiều job so sánh cùng lúc.
-    """
-    from app.database import SessionLocal
-    from app.core.comparison_engine import run_comparison_pipeline
-
-    db = SessionLocal()
+    """Run one local comparison and release its reserved slot on every path."""
+    db = None
     try:
-        run_comparison_pipeline(job_id, db)
-    except Exception as e:
-        logger.exception(f"Job {job_id} failed: {e}")
-        from app.models.job import ComparisonJob
-        job = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).first()
-        if job:
-            job.status = "failed"
-            job.error_message = str(e)
-            db.commit()
-    finally:
-        db.close()
-        _COMPARE_SUBMISSION_SLOTS.release()
+        from app.database import SessionLocal
+        from app.core.comparison_engine import run_comparison_pipeline
 
+        db = SessionLocal()
+        try:
+            run_comparison_pipeline(job_id, db)
+        except Exception as exc:
+            logger.exception("Job %s failed: %s", job_id, exc)
+            job = db.query(ComparisonJob).filter(ComparisonJob.id == job_id).first()
+            if job:
+                job.status = "failed"
+                job.error_message = str(exc)
+                db.commit()
+    except Exception as exc:
+        # Initialization/import failures happen before the inner pipeline guard.
+        # They still must release the bounded submission slot.
+        logger.exception("Comparison job %s could not initialize: %s", job_id, exc)
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                logger.exception("Comparison job %s database close failed", job_id)
+        _COMPARE_SUBMISSION_SLOTS.release()
 
 def _submit_reserved_comparison(job_id: str) -> None:
     """Submit after the caller has reserved one bounded queue slot."""

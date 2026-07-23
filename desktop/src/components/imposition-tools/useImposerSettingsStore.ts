@@ -24,7 +24,7 @@ import { persist } from 'zustand/middleware';
 import type { ImposerSettingsState } from './store/types';
 export type { ImposerSettingsState } from './store/types';
 
-import { PERSIST_CONFIG } from './store/persist';
+import { LEGACY_IMPOSER_PERSIST_KEY, PERSIST_CONFIG, scopedImposerPersistName } from './store/persist';
 import { createWorkspaceSlice } from './store/slices/workspaceSlice';
 import { createPaperSlice } from './store/slices/paperSlice';
 import { createMarksSlice } from './store/slices/marksSlice';
@@ -42,21 +42,23 @@ import { createPreprocSlice } from './store/slices/preprocSlice';
 
 export const createImposerSettingsStore = (scopeKey?: string) => {
     const scopedName = scopeKey
-        ? `ps_imposer_settings:${encodeURIComponent(scopeKey)}`
+        ? scopedImposerPersistName(scopeKey)
         : PERSIST_CONFIG.name;
     if (scopeKey && typeof window !== 'undefined') {
         try {
             // Seed each scoped store from the legacy shared preferences once, so
             // this performance fix does not silently reset existing users.
             if (window.localStorage.getItem(scopedName) === null) {
-                const legacy = window.localStorage.getItem('ps_imposer_settings');
+                const legacy = window.localStorage.getItem(LEGACY_IMPOSER_PERSIST_KEY);
                 if (legacy !== null) window.localStorage.setItem(scopedName, legacy);
             }
         } catch { /* storage remains best effort */ }
     }
     const persistConfig = scopeKey
         ? { ...PERSIST_CONFIG, name: scopedName }
-        : PERSIST_CONFIG;    return createStore<ImposerSettingsState>()(
+        : PERSIST_CONFIG;
+
+    return createStore<ImposerSettingsState>()(
     persist(
         (...a) => ({
             ...createWorkspaceSlice(...a),

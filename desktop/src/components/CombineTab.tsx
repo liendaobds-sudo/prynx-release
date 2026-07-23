@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { backendMergeManifest, backendMergePdfs, type BackendMergeManifestItem } from '../lib/api';
+import { backendMergeManifest, backendMergePdfs } from '../lib/api';
 import { shouldDelegateLargePdfJob } from '../lib/combineDelegation';
 import { PDFDocument, degrees } from 'pdf-lib';
 import { Document, Page, pdfjs } from 'react-pdf';
@@ -13,6 +13,11 @@ import { toast } from './ui/Toast';
 import { sizeKeyLabel, groupBySizeKey } from '../lib/combineGroupBySize';
 import { useTranslation } from 'react-i18next';
 import { usePrintDialog } from './shared/usePrintDialog';
+import {
+  addRotatedBlankPage,
+  buildBackendCombineManifest,
+  visiblePageSize,
+} from '../lib/combineAssembly';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -35,36 +40,6 @@ export type CombineNode = {
   sizeKey?: string;
 };
 
-
-function buildBackendCombineManifest(nodes: CombineNode[]): {
-  files: File[];
-  manifest: BackendMergeManifestItem[];
-} {
-  const files: File[] = [];
-  const indexes = new Map<File, number>();
-  const manifest: BackendMergeManifestItem[] = [];
-  for (const node of nodes) {
-    if (node.type === 'blank') {
-      manifest.push({ blank: true, rotation: node.rotation || 0 });
-      continue;
-    }
-    if (!node.file || !node.file.name.toLowerCase().endsWith('.pdf')) {
-      throw new Error('Manifest backend chỉ hỗ trợ PDF');
-    }
-    let fileIndex = indexes.get(node.file);
-    if (fileIndex === undefined) {
-      fileIndex = files.length;
-      indexes.set(node.file, fileIndex);
-      files.push(node.file);
-    }
-    manifest.push({
-      file_index: fileIndex,
-      page_index: node.pageIndex,
-      rotation: node.rotation || 0,
-    });
-  }
-  return { files, manifest };
-}
 interface Props {
   tabId?: string;
   isActive?: boolean;
@@ -618,8 +593,8 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
 
       if (p.type === 'blank') {
         const size = scaleMode === 'fit_a4' ? A4_SIZE : (firstPageSize || A4_SIZE);
-        finalDoc.addPage(size);
-        if (!firstPageSize) firstPageSize = size as [number, number];
+        const page = addRotatedBlankPage(finalDoc, size as [number, number], p.rotation || 0);
+        if (!firstPageSize) firstPageSize = visiblePageSize(page);
         continue;
       }
 
@@ -635,12 +610,7 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         }
 
         if (!firstPageSize) {
-          const angle = page.getRotation().angle % 360;
-          if (angle === 90 || angle === 270) {
-            firstPageSize = [page.getHeight(), page.getWidth()];
-          } else {
-            firstPageSize = [page.getWidth(), page.getHeight()];
-          }
+          firstPageSize = visiblePageSize(page);
         }
 
         finalDoc.addPage(page);
@@ -816,8 +786,11 @@ export default function CombineTab({ initialFiles, onSpawnTab, onSpawnCombineTab
         if (canDelegateMerge) {
           setStatusMsg(`${t('tabs.combine:dang_xu_ly_tai_lieu')} (backend)`);
           const { files, manifest } = buildBackendCombineManifest(flatNodes);
-          const blob = await backendMergeManifest(files, manifest);
-          const finalFile = new File([blob], 'Combined.pdf', { type: 'application/pdf' });
+          const result = await backendMergeManifest(files, manifest);
+          const finalFile = result.path
+            ? new File([], result.filename, { type: 'application/pdf' })
+            : new File([result.blob as Blob], result.filename, { type: 'application/pdf' });
+          if (result.path) Object.defineProperty(finalFile, 'path', { value: result.path });
           if (onSpawnTab) onSpawnTab(finalFile);
           return;
         }

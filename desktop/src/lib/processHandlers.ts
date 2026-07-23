@@ -27,6 +27,7 @@ export interface ProcessContext {
     setProcessStatus: (msg: string) => void;
     setReportMsg: (msg: string) => void;
     setBatchOutput: (v: any) => void;
+    setCancelHandler?: (handler: (() => Promise<void>) | null) => void;
     viewerNumPages?: number;
     getWorkingBytes: () => Promise<Uint8Array>;
 }
@@ -60,7 +61,7 @@ export async function runProcessEngine(
         if (settings.impositionMode === ImpositionMode.NUp) {
 
 
-            const { uploadFileForNup, startNupJobBackend, getNupJobStatus, downloadNupJob } = await import('../lib/api');
+            const { uploadFileForNup, startNupJobBackend, getNupJobStatus, downloadNupJob, cancelNupJobBackend } = await import('../lib/api');
 
 
             // Use baked working bytes (respects page deletions/rotations) instead of original file
@@ -141,6 +142,9 @@ export async function runProcessEngine(
             };
 
             const jobId = await startNupJobBackend(serverPath, backendSettings);
+            ctx.setCancelHandler?.(async () => {
+                await cancelNupJobBackend(jobId);
+            });
 
             let done = false;
             while (!done) {
@@ -185,6 +189,8 @@ export async function runProcessEngine(
                     }
                 } else if (status.status === 'failed') {
                     throw new Error(status.error || i18n.t('lib.processHandlers:loi_xu_ly_he_thong'));
+                } else if (status.status === 'cancelled') {
+                    throw new Error("ABORT_BY_USER");
                 } else {
                     const prog = status.progress || '';
                     // Only update display for numeric progress (e.g. "3/10"), ignore backend stage messages
@@ -246,6 +252,7 @@ export async function runProcessEngine(
         }
         setError(e.message || i18n.t('lib.processHandlers:loi_he_thong_khi_xu_ly_binh_trang'));
     } finally {
+        ctx.setCancelHandler?.(null);
         setIsProcessing(false);
     }
 }

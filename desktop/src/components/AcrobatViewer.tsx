@@ -1188,6 +1188,31 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         }, 150);
     }, [numPages, pageDisplayMode, pageOrder, setSelectedIndices, setLastSelectedIndex]);
 
+    // Virtuoso components PHẢI ổn định identity. Trước đây Scroller/List định nghĩa inline
+    // bằng forwardRef trong JSX → mỗi render tạo component type MỚI → Virtuoso thay Scroller,
+    // chạy lại mount-effect đo size → setState nội bộ → re-render → lặp vô hạn ("Maximum update
+    // depth") khi đổi zoom/mode (parent re-render dồn). Memo hoá 1 lần; Scroller đọc handler mới
+    // nhất qua ref nên không cần phụ thuộc identity của handleMainScroll/updateViewportRect.
+    const scrollHandlersRef = useRef({ handleMainScroll, updateViewportRect });
+    scrollHandlersRef.current = { handleMainScroll, updateViewportRect };
+
+    const virtuosoComponents = useMemo(() => ({
+        Scroller: forwardRef<HTMLDivElement, any>((props, ref) => (
+            <div {...props} ref={ref} onScroll={(e) => { scrollHandlersRef.current.handleMainScroll(e); scrollHandlersRef.current.updateViewportRect(); if ('onScroll' in props && typeof props.onScroll === 'function') (props as any).onScroll(e); }} className="acro-scroll outline-none" style={{ height: '100%', width: '100%', ...props.style, overflowX: 'auto', overflowY: 'auto' }} />
+        )),
+        List: forwardRef<HTMLDivElement, any>((props, ref) => (
+            <div {...props} ref={ref} style={{ minHeight: '100%', ...props.style, minWidth: '100%', width: 'max-content' }} />
+        )),
+    }), []);
+
+    // Ổn định các prop object của Virtuoso: object literal mới mỗi render buộc Virtuoso
+    // đo lại → góp phần vào vòng lặp khi zoom/mode đổi. Chỉ tạo mới khi giá trị nguồn đổi.
+    const virtuosoContext = useMemo(() => ({ highlightBoxes }), [highlightBoxes]);
+    const virtuosoOverscan = useMemo(() => {
+        const margin = Math.max(1000, 2000 / zoom);
+        return { top: margin, bottom: margin };
+    }, [zoom]);
+
     // ═══ Render Rows Memoization ═══
     const visitedIndicesRef = useRef<Set<number>>(new Set());
 
@@ -1452,17 +1477,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                     return (
                                         <div className="absolute inset-0">
                                             <Virtuoso
-                                                ref={mainVirtuosoRef} context={{ highlightBoxes }} totalCount={renderRows.length}
-                                                increaseViewportBy={{ top: Math.max(1000, 2000 / zoom), bottom: Math.max(1000, 2000 / zoom) }}
+                                                ref={mainVirtuosoRef} context={virtuosoContext} totalCount={renderRows.length}
+                                                increaseViewportBy={virtuosoOverscan}
                                                 className="w-full h-full flex-1"
-                                                components={{
-                                                    Scroller: forwardRef((props, ref) => (
-                                                        <div {...props} ref={ref as any} onScroll={(e) => { handleMainScroll(e); updateViewportRect(); if ('onScroll' in props && typeof props.onScroll === 'function') (props as any).onScroll(e); }} className="acro-scroll outline-none" style={{ height: '100%', width: '100%', ...props.style, overflowX: 'auto', overflowY: 'auto' }} />
-                                                    )),
-                                                    List: forwardRef((props, ref) => (
-                                                        <div {...props} ref={ref as any} style={{ minHeight: '100%', ...props.style, minWidth: '100%', width: 'max-content' }} />
-                                                    ))
-                                                }}
+                                                components={virtuosoComponents}
                                                 scrollerRef={(el) => { internalScrollRef.current = el && el instanceof HTMLElement ? el : null; }}
                                                 itemContent={(index) => {
                                                     const row = renderRows[index];

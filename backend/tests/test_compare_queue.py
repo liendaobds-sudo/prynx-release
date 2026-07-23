@@ -1,3 +1,4 @@
+from app import database
 from app.api.routes import compare
 
 
@@ -59,5 +60,18 @@ def test_local_compare_queue_releases_reservation_when_submit_fails(monkeypatch)
         assert str(exc) == "executor stopped"
     else:
         raise AssertionError("expected submit failure")
+
+    assert slots.release_count == 1
+
+
+def test_local_compare_releases_reservation_when_session_init_fails(monkeypatch):
+    slots = _Slots()
+    monkeypatch.setattr(compare, "_COMPARE_SUBMISSION_SLOTS", slots)
+
+    def fail_session_init():
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(database, "SessionLocal", fail_session_init)
+    compare.run_comparison_sync("job-init-error")
 
     assert slots.release_count == 1

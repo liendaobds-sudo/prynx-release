@@ -19,6 +19,8 @@ import type { ExportScale } from './types';
  * _Requirements: 6.4_
  */
 export const MAX_EXPORT_PX = 16384;
+/** Bound aggregate RGBA/readback allocations even when each dimension is legal. */
+export const MAX_EXPORT_PIXELS = 40_000_000;
 
 /**
  * Kết quả tính kích thước xuất ảnh.
@@ -54,10 +56,27 @@ function isPositiveFinite(value: number): boolean {
  * @param viewH Chiều cao khung xem (px), phải là số dương hữu hạn.
  * @param scale Hệ số phóng đại ∈ {1, 2, 4}.
  */
+/** Convert WebGL bottom-left row order to Canvas top-left row order. */
+export function flipWebGlPixelRows(
+    pixels: Uint8Array,
+    width: number,
+    height: number,
+): Uint8ClampedArray {
+    const flipped = new Uint8ClampedArray(pixels.length);
+    const rowBytes = width * 4;
+    for (let y = 0; y < height; y += 1) {
+        const sourceStart = (height - 1 - y) * rowBytes;
+        flipped.set(pixels.subarray(sourceStart, sourceStart + rowBytes), y * rowBytes);
+    }
+    return flipped;
+}
+
 export function computeExportSize(
     viewW: number,
     viewH: number,
     scale: ExportScale,
+    maxDimension = MAX_EXPORT_PX,
+    maxPixels = MAX_EXPORT_PIXELS,
 ): ExportSizeResult {
     if (!isPositiveFinite(viewW) || !isPositiveFinite(viewH)) {
         return {
@@ -71,7 +90,7 @@ export function computeExportSize(
     const width = viewW * scale;
     const height = viewH * scale;
 
-    if (width > MAX_EXPORT_PX || height > MAX_EXPORT_PX) {
+    if (width > maxDimension || height > maxDimension) {
         return {
             ok: false,
             width,
@@ -79,6 +98,15 @@ export function computeExportSize(
             reason:
                 `Kích thước xuất (${width}×${height} px) vượt giới hạn ` +
                 `${MAX_EXPORT_PX} px ở chiều rộng hoặc chiều cao.`,
+        };
+    }
+
+    if (width * height > maxPixels) {
+        return {
+            ok: false,
+            width,
+            height,
+            reason: `Export size (${width}x${height} px) exceeds the aggregate ${maxPixels.toLocaleString()}-pixel limit.`,
         };
     }
 

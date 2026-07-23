@@ -3064,6 +3064,13 @@ def run_nup_engine(
                 pass
 
     _stage("Đang gộp các tờ in...")
+    def _remove_consumed_chunk(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 
     # --- FAST ASSEMBLY ---
 
@@ -3071,6 +3078,8 @@ def run_nup_engine(
         # Optimization: no merge needed, preserves all layers perfectly
         import shutil
         shutil.copyfile(chunk_paths[0], output_path)
+        _remove_consumed_chunk(chunk_paths[0])
+        chunk_paths.clear()
     elif is_die_cut:
         # PDFium import_pages strips Document Catalog /OCProperties (layers).
         # We must use pikepdf to merge chunks to preserve layers.
@@ -3141,9 +3150,12 @@ def run_nup_engine(
                         pass
                         
             src_pdf.close()
+            _remove_consumed_chunk(chunk_path)
             
         final_doc.save(output_path)
         final_doc.close()
+        _remove_consumed_chunk(chunk_paths[0])
+        chunk_paths.clear()
     else:
         # Merge chunks using C++ PDFium (avoids O(N^2) resource deduplication freeze for huge jobs)
         final_doc = pdfium.PdfDocument.new()
@@ -3151,8 +3163,10 @@ def run_nup_engine(
             src_pdf = pdfium.PdfDocument(chunk_path)
             final_doc.import_pages(src_pdf)
             src_pdf.close()
+            _remove_consumed_chunk(chunk_path)
         final_doc.save(output_path)
         final_doc.close()
+        chunk_paths.clear()
 
     for chunk_path in chunk_paths:
         try:

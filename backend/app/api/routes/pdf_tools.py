@@ -18,13 +18,13 @@ from contextlib import contextmanager
 from fastapi import APIRouter, File, UploadFile, HTTPException, Form, Request, Depends
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
-from starlette.concurrency import run_in_threadpool
+from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
 from typing import List, Optional
 import json
 from app.core.license_guard import require_license, require_feature, enforce_feature
 from app.config import settings
 from app.utils.errors import raise_http
-from app.utils.file_handler import save_upload_file
+from app.utils.file_handler import ALLOWED_EXTENSIONS, save_upload_file
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +67,35 @@ def _log_sticker_response_complete(started: float, job_id: str, output_path: str
         output_mb,
     )
 
+
+def _finish_sticker_response(started: float, job_id: str, output_path: str) -> None:
+    try:
+        _log_sticker_response_complete(started, job_id, output_path)
+    finally:
+        _cleanup_file(output_path)
+
 UPLOAD_DIR = settings.UPLOAD_DIR
 RESULTS_DIR = settings.RESULTS_DIR
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
+
+
+def _cleanup_file(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _create_split_zip(results: list[dict], zip_path: str, license_info: dict) -> None:
+    """Watermark and archive split outputs entirely off the async event loop."""
+    import zipfile
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for result in results:
+            _safe_watermark(result["path"], license_info)
+            archive.write(result["path"], result["filename"])
 
 
 def _cleanup_split_artifacts(zip_path: str, output_dir: str) -> None:
@@ -185,9 +210,13 @@ def _normalize_compat(pdf_path: str) -> None:
 
 async def save_upload(file: UploadFile) -> str:
     """Stream an uploaded PDF to disk and enforce the shared file-size limit."""
+    filename = file.filename or "upload.pdf"
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=415, detail=f"Unsupported file extension: {extension or '(none)'}")
     try:
         if not file.filename:
-            file.filename = "upload.pdf"
+            file.filename = filename
         _stored_name, path, _size = await save_upload_file(file)
         return path
     except ValueError as exc:
@@ -222,9 +251,11 @@ async def merge_pdfs_endpoint(
         return FileResponse(
             path=output_path,
             filename="merged_output.pdf",
-            media_type="application/pdf"
+            media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except Exception as e:
+        _cleanup_file(output_path)
         raise_http(e, "Gộp PDF thất bại")
     finally:
         for p in file_paths:
@@ -234,14 +265,29 @@ async def merge_pdfs_endpoint(
 
 @router.post("/merge-manifest")
 async def merge_manifest_endpoint(
-    files: List[UploadFile] = File(...),
+    files: Optional[List[UploadFile]] = File(None),
     manifest: str = Form(...),
+    file_paths: Optional[str] = Form(None),
+    return_path: bool = Form(False),
     license_info: dict = Depends(require_license),
 ):
     """Assemble large Combine jobs from a bounded page-operation manifest."""
     from app.workers.pdf_manifest_engine import merge_manifest
 
-    if len(files) < 1 or len(files) > 256:
+    uploads = files or []
+    native_paths = []
+    if file_paths:
+        try:
+            parsed_paths = json.loads(file_paths)
+            if not isinstance(parsed_paths, list) or not all(isinstance(path, str) for path in parsed_paths):
+                raise ValueError("file_paths must be an array of strings")
+            native_paths = parsed_paths
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid native file paths") from exc
+    if bool(uploads) == bool(native_paths):
+        raise HTTPException(status_code=400, detail="Provide either uploaded files or native file paths")
+    source_count = len(uploads) or len(native_paths)
+    if source_count < 1 or source_count > 256:
         raise HTTPException(status_code=400, detail="Invalid manifest file count")
     if len(manifest) > 4 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Manifest is too large")
@@ -252,25 +298,44 @@ async def merge_manifest_endpoint(
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail="Invalid manifest JSON") from exc
 
-    file_paths = []
+    resolved_paths = []
+    owned_paths = []
     job_id = uuid.uuid4().hex[:8]
     output_path = os.path.join(RESULTS_DIR, f"merged_manifest_{job_id}.pdf")
     try:
-        for uploaded in files:
-            file_paths.append(await save_upload(uploaded))
-        await run_in_threadpool(merge_manifest, file_paths, manifest_items, output_path)
+        for uploaded in uploads:
+            uploaded_path = await save_upload(uploaded)
+            resolved_paths.append(uploaded_path)
+            owned_paths.append(uploaded_path)
+        for native_path in native_paths:
+            resolved = os.path.realpath(native_path)
+            if not os.path.isfile(resolved) or os.path.splitext(resolved)[1].lower() != ".pdf":
+                raise HTTPException(status_code=400, detail="Native source path is not a PDF file")
+            with open(resolved, "rb") as source_file:
+                if source_file.read(5) != b"%PDF-":
+                    raise HTTPException(status_code=400, detail="Native source path is not a valid PDF")
+            resolved_paths.append(resolved)
+        await run_in_threadpool(merge_manifest, resolved_paths, manifest_items, output_path)
         await run_in_threadpool(_safe_watermark, output_path, license_info)
+        if return_path:
+            return {"path": os.path.abspath(output_path), "filename": "merged_output.pdf"}
         return FileResponse(
             path=output_path,
             filename="merged_output.pdf",
             media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
+    except HTTPException:
+        _cleanup_file(output_path)
+        raise
     except ValueError as exc:
+        _cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        _cleanup_file(output_path)
         raise_http(exc, "Gộp PDF theo manifest thất bại")
     finally:
-        for path in file_paths:
+        for path in owned_paths:
             try:
                 os.remove(path)
             except OSError:
@@ -291,7 +356,6 @@ async def split_pdf_endpoint(
     Config JSON: { ranges, pagesPerFile, pageList }
     """
     from app.workers.pdf_tools_engine import split_pdf
-    import zipfile
     
     source_path = await save_upload(file)
     cfg = json.loads(config)
@@ -300,6 +364,7 @@ async def split_pdf_endpoint(
     output_dir = os.path.join(RESULTS_DIR, f"split_{job_id}")
     base_name = file.filename.replace('.pdf', '') if file.filename else 'split'
     
+    zip_path = ""
     try:
         results = await run_in_threadpool(split_pdf,
             source_path, output_dir,
@@ -315,16 +380,14 @@ async def split_pdf_endpoint(
             return FileResponse(
                 path=results[0]["path"],
                 filename=results[0]["filename"],
-                media_type="application/pdf"
+                media_type="application/pdf",
+                background=BackgroundTask(_cleanup_split_artifacts, "", output_dir),
             )
         
         # Multiple files: write ZIP to disk and stream it; do not retain the
         # complete archive plus an extra getvalue() copy in process memory.
         zip_path = os.path.join(RESULTS_DIR, f"split_{job_id}.zip")
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for r in results:
-                await run_in_threadpool(_safe_watermark, r["path"], license_info)
-                zf.write(r["path"], r["filename"])
+        await run_in_threadpool(_create_split_zip, results, zip_path, license_info)
 
         return FileResponse(
             path=zip_path,
@@ -333,6 +396,7 @@ async def split_pdf_endpoint(
             background=BackgroundTask(_cleanup_split_artifacts, zip_path, output_dir),
         )
     except Exception as e:
+        _cleanup_split_artifacts(zip_path, output_dir)
         raise_http(e, "Tách PDF thất bại")
     finally:
         try: os.remove(source_path)
@@ -372,9 +436,11 @@ async def resize_pages_endpoint(
         return FileResponse(
             path=output_path,
             filename=f"resized_{file.filename}",
-            media_type="application/pdf"
+            media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except Exception as e:
+        _cleanup_file(output_path)
         raise_http(e, "Đổi kích thước trang thất bại")
     finally:
         try: os.remove(source_path)
@@ -428,9 +494,11 @@ async def trim_shift_endpoint(
         return FileResponse(
             path=output_path,
             filename=f"trimshift_{file.filename}",
-            media_type="application/pdf"
+            media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except Exception as e:
+        _cleanup_file(output_path)
         raise_http(e, "Trim/shift trang thất bại")
     finally:
         try: os.remove(source_path)
@@ -464,9 +532,11 @@ async def shuffle_pages_endpoint(
         return FileResponse(
             path=output_path,
             filename=f"shuffled_{file.filename}",
-            media_type="application/pdf"
+            media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except Exception as e:
+        _cleanup_file(output_path)
         raise_http(e, "Sắp xếp lại trang thất bại")
     finally:
         try: os.remove(source_path)
@@ -526,11 +596,14 @@ async def ocr_searchable_endpoint(
                 "X-OCR-Total-Pages": str(result["total_pages"]),
                 "X-OCR-Pages-With-Text": str(result["pages_with_text"]),
                 "X-OCR-Total-Words": str(result["total_words"]),
-            }
+            },
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except HTTPException:
+        _cleanup_file(output_path)
         raise
     except Exception as e:
+        _cleanup_file(output_path)
         logger.exception("OCR thất bại")
         raise HTTPException(status_code=500, detail=f"OCR thất bại ({type(e).__name__})")
     finally:
@@ -687,9 +760,11 @@ async def optimize_pdf_endpoint(
                 "X-Original-Size": str(original_size),
                 "X-Output-Size": str(output_size),
                 "X-Compression-Ratio": str(ratio),
-            }
+            },
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except Exception as e:
+        _cleanup_file(output_path)
         logger.exception("Tối ưu thất bại")
         raise HTTPException(status_code=500, detail=f"Tối ưu thất bại ({type(e).__name__})")
     finally:
@@ -741,10 +816,13 @@ async def encrypt_pdf_endpoint(
             path=output_path,
             filename=f"encrypted_{base}",
             media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except ValueError as e:
+        _cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        _cleanup_file(output_path)
         logger.exception("Khóa PDF thất bại")
         raise_http(e, "Khóa PDF thất bại")
     finally:
@@ -775,10 +853,13 @@ async def decrypt_pdf_endpoint(
             path=output_path,
             filename=f"decrypted_{base}",
             media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except ValueError as e:
+        _cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        _cleanup_file(output_path)
         logger.exception("Mở khóa PDF thất bại")
         raise_http(e, "Mở khóa PDF thất bại")
     finally:
@@ -877,10 +958,13 @@ async def metadata_write_endpoint(
             path=output_path,
             filename=f"metadata_{base}",
             media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except ValueError as e:
+        _cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        _cleanup_file(output_path)
         logger.exception("Ghi metadata thất bại")
         raise_http(e, "Ghi metadata thất bại")
     finally:
@@ -962,7 +1046,7 @@ async def office_convert_file_endpoint(
             )
 
         # COM/LibreOffice are blocking and may take minutes on complex files.
-        from fastapi.concurrency import run_in_threadpool
+        from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
         await run_in_threadpool(convert_office_file, source_path, output_path, excel_layout)
         if not os.path.isfile(output_path) or os.path.getsize(output_path) < 32:
             raise HTTPException(status_code=500, detail="Chuyển đổi xong nhưng file PDF rỗng.")
@@ -973,12 +1057,16 @@ async def office_convert_file_endpoint(
             path=output_path,
             filename=f"converted_{base}",
             media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except HTTPException:
+        _cleanup_file(output_path)
         raise
     except ValueError as e:
+        _cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        _cleanup_file(output_path)
         logger.exception("Office convert failed")
         raise_http(e, "Chuyển Office → PDF thất bại")
     finally:
@@ -1002,17 +1090,20 @@ async def office_convert_google_endpoint(
     try:
         kind, _fid = parse_google_url(url)
         # The engine uses a synchronous HTTP client; keep the API loop responsive.
-        from fastapi.concurrency import run_in_threadpool
+        from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
         await run_in_threadpool(convert_google_link, url, output_path)
         await run_in_threadpool(_safe_watermark, output_path, license_info)
         return FileResponse(
             path=output_path,
             filename=f"google_{kind}.pdf",
             media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except ValueError as e:
+        _cleanup_file(output_path)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        _cleanup_file(output_path)
         logger.exception("Google convert failed")
         raise_http(e, "Xuất Google → PDF thất bại")
 
@@ -1028,7 +1119,7 @@ async def office_convert_resize_output(
     batch_mode: bool = Form(False),
 ):
     """Fit a batch PDF onto a standard paper size without rasterizing or overwriting."""
-    from fastapi.concurrency import run_in_threadpool
+    from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
     from app.workers.pdf_tools_engine import resize_pages
 
     if batch_mode:
@@ -1071,10 +1162,13 @@ async def office_convert_resize_output(
             path=output_path,
             filename=f"resized_{name}",
             media_type="application/pdf",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except HTTPException:
+        _cleanup_file(output_path)
         raise
     except Exception as e:
+        _cleanup_file(output_path)
         logger.exception("Batch output resize failed")
         raise_http(e, "Chuẩn hóa khổ PDF thất bại")
     finally:
@@ -1268,12 +1362,14 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
             media_type="application/pdf",
             headers=headers,
             background=BackgroundTask(
-                _log_sticker_response_complete, request_started, job_id, output_path
+                _finish_sticker_response, request_started, job_id, output_path
             ),
         )
     except HTTPException:
+        _cleanup_file(output_path)
         raise
     except Exception as e:
+        _cleanup_file(output_path)
         # Log đầy đủ (kèm stacktrace) ở server để chẩn đoán.
         logger.error("sticker-dieline thất bại: %s", e, exc_info=True)
         # Engine ném RuntimeError("[{debug_step}] {msg}") — tag [debug_step] là NHÃN
@@ -1308,7 +1404,7 @@ async def remove_background_endpoint(
     Takes JPG/PNG, applies post-processing, returns PNG.
     """
     from app.workers.image_postprocessor import apply_edge_shift, apply_auto_crop, apply_background
-    from fastapi.concurrency import run_in_threadpool
+    from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
     from PIL import Image
     import io
 
@@ -1377,9 +1473,11 @@ async def remove_background_endpoint(
         return FileResponse(
             path=output_path,
             filename=f"bg_removed_{file.filename.split('.')[0]}.png" if file and file.filename else f"bg_removed_{job_id}.png",
-            media_type="image/png"
+            media_type="image/png",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except Exception as e:
+        _cleanup_file(output_path)
         logger.error("remove-background thất bại: %s", e, exc_info=True)
         # Anti-recon: KHÔNG trả str(e) ra client (có thể lộ path model ~/.u2net / URL / deps).
         # Chi tiết đã ghi log nội bộ (exc_info) để chẩn đoán; client nhận generic + type name
@@ -1402,7 +1500,7 @@ async def remove_background_warmup(engine: str = Form("general")):
       - 'hair'/'max'  → BiRefNet full (927MB, chất lượng tối đa)
       - còn lại       → BiRefNet lite (mặc định 'general')
     """
-    from fastapi.concurrency import run_in_threadpool
+    from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
     e = (engine or "general").strip().lower()
     if e == "fast":
         from app.workers.isnet_engine import warmup
@@ -1426,7 +1524,7 @@ async def upscale_endpoint(
 
     Chỉ còn một model (general). Giữ alpha nếu ảnh có.
     """
-    from fastapi.concurrency import run_in_threadpool
+    from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
     from PIL import Image
 
     if file:
@@ -1473,8 +1571,10 @@ async def upscale_endpoint(
             path=output_path,
             filename=f"upscaled_{file.filename.split('.')[0]}.png" if file and file.filename else f"upscaled_{job_id}.png",
             media_type="image/png",
+            background=BackgroundTask(_cleanup_file, output_path),
         )
     except Exception as e:
+        _cleanup_file(output_path)
         logger.error("upscale thất bại: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Phóng to ảnh thất bại ({type(e).__name__})")
     finally:
@@ -1486,7 +1586,7 @@ async def upscale_endpoint(
 @router.post("/upscale/warmup", dependencies=[Depends(require_feature("util.upscale"))])
 async def upscale_warmup(engine: str = Form("general")):
     """Nạp sẵn model upscale (chạy nền) để lần bấm đầu không phải chờ cold-start."""
-    from fastapi.concurrency import run_in_threadpool
+    from app.core.heavy_job_scheduler import run_heavy_in_threadpool as run_in_threadpool
     from app.workers.realesrgan_engine import warmup
     ok = await run_in_threadpool(warmup, "general")
     return {"ok": bool(ok)}

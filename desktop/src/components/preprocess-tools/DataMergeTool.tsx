@@ -2,12 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import Papa from 'papaparse';
-import { startVdpJobBackend, pollVdpJob, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, type VdpFieldError, type VdpIssue, type VdpGating } from '@/lib/api';
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, readVdpDatasource, listVdpSheets, previewVdpRecord, validateVdp, downloadVdpErrorReport, type VdpFieldError, type VdpIssue, type VdpGating } from '@/lib/api';
 import { generateBarcodeDataURL } from '@/engine/barcode/barcodeEngine';
 import { FontSelector } from './FontSelector';
 import { ToolDivider, ToolNumberInput } from './ToolUI';
 import { useVdpTool } from '@/hooks/useVdpTool';
-import { buildMultiUpJobInput } from '@/lib/vdpUtils';
 import { VdpAlignPanel } from './VdpAlignPanel';
 import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { useTranslation } from 'react-i18next';
@@ -499,7 +498,21 @@ export default function DataMergeTool({
 
     // Hủy polling VDP khi component unmount để không poll vô hạn nền (#13).
     const pollAbortRef = useRef<AbortController | null>(null);
-    useEffect(() => () => { pollAbortRef.current?.abort(); }, []);
+    const activeVdpJobRef = useRef<string | null>(null);
+    const [activeVdpJobId, setActiveVdpJobId] = useState<string | null>(null);
+    useEffect(() => () => {
+        pollAbortRef.current?.abort();
+        const jobId = activeVdpJobRef.current;
+        if (jobId) void cancelVdpJobBackend(jobId).catch(() => undefined);
+    }, []);
+
+    const cancelActiveVdp = async () => {
+        const jobId = activeVdpJobRef.current;
+        if (!jobId) return;
+        await cancelVdpJobBackend(jobId);
+        pollAbortRef.current?.abort();
+        setStatusMessage(t('tabs.imposition:huy_bo_cancel'));
+    };
 
     const openBatchInfo = async () => {
         setShowBatchInfo(true);
@@ -744,7 +757,6 @@ export default function DataMergeTool({
     const selectedFieldId = selectedFieldIds[0];
     const selectedField = vdpFields.find(f => f.id === selectedFieldId);
     const viewerPageDimMm = useWorkspaceStore(s => s.viewerPageDimMm);
-    const isMultiUp = false;
     // Trình tách cột (chèn nhanh placeholder, không phải gõ cú pháp tay)
     const [splitCol, setSplitCol] = useState('');
     const [splitMode, setSplitMode] = useState('whole'); // whole | ws | - | , | ; | / | custom
@@ -821,14 +833,6 @@ export default function DataMergeTool({
         const heightPt = totalLines * fontPt * 1.2;
         const heightMm = Math.max(3, heightPt / MM_TO_PT);
         updateSelectedField({ height: Math.round(heightMm * 10) / 10 });
-    };
-
-
-
-    // Xây dựng (fields, data) cho 1 job từ dữ liệu CSV — hỗ trợ chế độ Multi-up.
-    const buildJobInput = (sourceData: Record<string, string>[]): { fields: any[]; data: Record<string, string>[] } => {
-        if (!isMultiUp) return { fields: vdpFields, data: sourceData };
-        return buildMultiUpJobInput(vdpFields, csvHeaders, sourceData);
     };
 
     // Đọc 1 file CSV → { headers, data }. Hỗ trợ file KHÔNG có hàng tiêu đề:
@@ -911,10 +915,10 @@ export default function DataMergeTool({
                         setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_kiem_tra_du_lieu_bo_qua', { e: vErr?.message || vErr })}`);
                         continue;
                     }
-
-                    const { fields, data: jobData } = buildJobInput(data);
                     setStatusMessage(`${tag}: ${t('preprocess.dataMerge:dang_sinh_n_ban_ghi', { n: data.length })}`);
-                    const jobId = await startVdpJobBackend(templateFile, fields, jobData, !isMultiUp ? csvFile : undefined, csvHasHeader);
+                    const jobId = await startVdpJobBackend(templateFile, vdpFields, data, csvFile, csvHasHeader);
+                    activeVdpJobRef.current = jobId;
+                    setActiveVdpJobId(jobId);
                     pollAbortRef.current = new AbortController();
                     const result = await pollVdpJob(jobId, (m) => setStatusMessage(`${tag}: ${m}`), true, pollAbortRef.current.signal);
                     if (!result.blob) { setStatusMessage(`${tag}: ${t('preprocess.dataMerge:loi_khong_co_ket_qua')}`); continue; }
@@ -933,6 +937,8 @@ export default function DataMergeTool({
             if (e?.name === 'AbortError') return;
             setStatusMessage(t('preprocess.dataMerge:loi_xu_ly_hang_loat', { e: e.message }));
         } finally {
+            activeVdpJobRef.current = null;
+            setActiveVdpJobId(null);
             setIsGenerating(false);
         }
     };
@@ -988,6 +994,9 @@ export default function DataMergeTool({
             } else if (dataMode === 'gsheet' && gsheetUrl.trim()) {
                 params.kind = 'gsheet';
                 params.url = gsheetUrl.trim();
+            } else if (dataMode === 'csv' && lastCsvFileRef.current) {
+                params.kind = 'csv';
+                params.file = lastCsvFileRef.current;
             } else {
                 params.rows = csvData;
                 params.columns = csvHeaders;
@@ -1205,10 +1214,10 @@ export default function DataMergeTool({
             // Nguồn xlsx/gsheet: csvData chỉ là 20 dòng PREVIEW. Đọc lại TOÀN BỘ
             // record ở backend trước khi sinh lô, tránh xuất thiếu dữ liệu âm thầm.
             const fullData = await resolveFullSourceData();
-
-            const { fields: jobFields, data: jobData } = buildJobInput(fullData);
-            const transportFile = dataMode === 'csv' && !isMultiUp ? (lastCsvFileRef.current ?? undefined) : undefined;
-            const jobId = await startVdpJobBackend(templateFile, jobFields, jobData, transportFile, csvHasHeader);
+            const transportFile = dataMode === 'csv' ? (lastCsvFileRef.current ?? undefined) : undefined;
+            const jobId = await startVdpJobBackend(templateFile, vdpFields, fullData, transportFile, csvHasHeader);
+            activeVdpJobRef.current = jobId;
+            setActiveVdpJobId(jobId);
 
             // Poll
             pollAbortRef.current = new AbortController();
@@ -1237,6 +1246,8 @@ export default function DataMergeTool({
             console.error("PDF Generation Error:", error);
             setStatusMessage(t('preprocess.dataMerge:loi_sinh_file_pdf_x', { x: error.message }));
         } finally {
+            activeVdpJobRef.current = null;
+            setActiveVdpJobId(null);
             setIsGenerating(false);
         }
     };
@@ -2302,6 +2313,15 @@ export default function DataMergeTool({
                         </>
                     )}
                 </button>
+                {isGenerating && activeVdpJobId && (
+                    <button
+                        type="button"
+                        onClick={() => void cancelActiveVdp().catch((err) => setStatusMessage(err?.message || String(err)))}
+                        className="mt-2 w-full rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white transition-colors hover:bg-red-700"
+                    >
+                        {t('tabs.imposition:huy_bo_cancel')}
+                    </button>
+                )}
                 <div className="mt-2 flex items-center gap-2 px-1">
                     <input
                         type="checkbox"

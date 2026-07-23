@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../i18n';
 import { useAuthStore } from '../stores/useAuthStore';
 import { canUse, featureIdForFocus, isProFeature } from '../lib/license/features';
+import { appPerf } from '../lib/perfMarks';
 
 /** accept= cho input file — dựng từ OFFICE_EXTENSIONS (tránh HMR stale export). */
 const HOME_FILE_ACCEPT = [
@@ -177,6 +178,10 @@ function SectionHeader({ id, title, isCollapsed, isMiniMode, isCompactMode, onTo
   );
 }
 
+// Guard module-level: mốc "Home dùng được" chỉ ghi một lần cho cold-launch,
+// dù HomeTab remount khi chuyển tab.
+let homeInteractiveMarked = false;
+
 export default function HomeTab({ onOpenApp, isActive = true }: Props) {
   const { t } = useTranslation();
     const rightPanelWidth = useAppSettingsStore(state => state.homeToolMenuWidth);
@@ -220,6 +225,15 @@ export default function HomeTab({ onOpenApp, isActive = true }: Props) {
             window.removeEventListener('mouseup', stopResizing);
         };
     }, [isResizing, resize, stopResizing]);
+
+    // Mốc "Home dùng được" cho baseline khởi động (P0-0). Chỉ đo LẦN MOUNT ĐẦU:
+    // HomeTab có thể remount khi chuyển tab, nhưng cold-launch chỉ quan tâm lần đầu.
+    useEffect(() => {
+        if (homeInteractiveMarked) return;
+        homeInteractiveMarked = true;
+        appPerf.mark('home-interactive');
+        appPerf.measure('startup-to-home-interactive', 'app-mounted', 'home-interactive');
+    }, []);
 
     // Trang Home: KHÔNG thu gọn sang chế độ icon-only (nhìn tệ) — LUÔN hiển thị dạng
     // có chữ. Bỏ isMiniMode (icon); chỉ còn full / compact (đều kèm nhãn chữ).

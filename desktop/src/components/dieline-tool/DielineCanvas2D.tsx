@@ -837,6 +837,49 @@ function SegmentLabels({ dieline, scale }: { dieline: DielineModel; scale: numbe
     );
 }
 
+// Module-level: định nghĩa trong render body sẽ tạo type mới mỗi render → remount
+// subtree SVG mỗi lần. Nhận scale qua prop; fontSize/arrowSize suy từ scale bên trong.
+function Dim({ x1, y1, x2, y2, label, side, color, small, scale }: {
+    x1: number; y1: number; x2: number; y2: number; label: string;
+    side: 'top' | 'bottom' | 'left' | 'right'; color?: string; small?: boolean; scale: number;
+}) {
+    const c = color || '#ffaa00';
+    const arrowSize = 3 / scale;
+    const fs = small ? Math.max(6, 9 / scale) : Math.max(8, 12 / scale);
+    const mx = (x1 + x2) / 2;
+    const my = (y1 + y2) / 2;
+    return (
+        <g>
+            <line x1={x1} y1={y1} x2={x2} y2={y2}
+                stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
+            {side === 'top' || side === 'bottom' ? (
+                <>
+                    <line x1={x1} y1={y1 - arrowSize} x2={x1} y2={y1 + arrowSize}
+                        stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
+                    <line x1={x2} y1={y2 - arrowSize} x2={x2} y2={y2 + arrowSize}
+                        stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
+                </>
+            ) : (
+                <>
+                    <line x1={x1 - arrowSize} y1={y1} x2={x1 + arrowSize} y2={y1}
+                        stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
+                    <line x1={x2 - arrowSize} y1={y2} x2={x2 + arrowSize} y2={y2}
+                        stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
+                </>
+            )}
+            <text x={mx} y={my}
+                fill={c}
+                fontSize={fs}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                transform={`scale(1, -1) translate(0, ${-2 * my})`}
+            >
+                {label}
+            </text>
+        </g>
+    );
+}
+
 /** Đường đo kích thước tự động */
 function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: DielineModel; scale: number; showDetail: boolean }) {
     const { L, W, D, G, panelOrder, boxType } = dieline.params;
@@ -845,50 +888,7 @@ function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: Dieline
     if (boxType === 'cup_sleeve') return null;
 
     const bb = dieline.boundingBox;
-    const fontSize = Math.max(8, 12 / scale);
     const offset = 8 / scale;
-    const arrowSize = 3 / scale;
-
-    // Helper: vẽ 1 dimension line
-    const Dim = ({ x1, y1, x2, y2, label, side, color, small }: {
-        x1: number; y1: number; x2: number; y2: number; label: string;
-        side: 'top' | 'bottom' | 'left' | 'right'; color?: string; small?: boolean;
-    }) => {
-        const c = color || '#ffaa00';
-        const fs = small ? Math.max(6, 9 / scale) : fontSize;
-        const mx = (x1 + x2) / 2;
-        const my = (y1 + y2) / 2;
-        return (
-            <g>
-                <line x1={x1} y1={y1} x2={x2} y2={y2}
-                    stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
-                {side === 'top' || side === 'bottom' ? (
-                    <>
-                        <line x1={x1} y1={y1 - arrowSize} x2={x1} y2={y1 + arrowSize}
-                            stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
-                        <line x1={x2} y1={y2 - arrowSize} x2={x2} y2={y2 + arrowSize}
-                            stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
-                    </>
-                ) : (
-                    <>
-                        <line x1={x1 - arrowSize} y1={y1} x2={x1 + arrowSize} y2={y1}
-                            stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
-                        <line x1={x2 - arrowSize} y1={y2} x2={x2 + arrowSize} y2={y2}
-                            stroke={c} strokeWidth={0.5} vectorEffect="non-scaling-stroke" />
-                    </>
-                )}
-                <text x={mx} y={my}
-                    fill={c}
-                    fontSize={fs}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    transform={`scale(1, -1) translate(0, ${-2 * my})`}
-                >
-                    {label}
-                </text>
-            </g>
-        );
-    };
 
     // ── ENVELOPE: dimensions riêng ──
     if (boxType === 'envelope') {
@@ -903,11 +903,11 @@ function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: Dieline
             const backShort = 5;
             return (
                 <g className="dimensions">
-                    <Dim x1={0} y1={topY} x2={envW} y2={topY} label={`W=${envW}`} side="top" />
-                    <Dim x1={rightX} y1={backShort} x2={rightX} y2={envH} label={`${envH - backShort}`} side="right" color="#999" small />
-                    <Dim x1={rightX + offset * 3} y1={envH} x2={rightX + offset * 3} y2={envH + envH} label={`H=${envH}`} side="right" />
-                    <Dim x1={rightX} y1={envH + envH} x2={rightX} y2={envH + envH + FH} label={`FH=${FH}`} side="right" color="#66ccff" small />
-                    <Dim x1={-SF} y1={topY + offset} x2={0} y2={topY + offset} label={`SF=${SF}`} side="top" color="#66ccff" small />
+                    <Dim scale={scale} x1={0} y1={topY} x2={envW} y2={topY} label={`W=${envW}`} side="top" />
+                    <Dim scale={scale} x1={rightX} y1={backShort} x2={rightX} y2={envH} label={`${envH - backShort}`} side="right" color="#999" small />
+                    <Dim scale={scale} x1={rightX + offset * 3} y1={envH} x2={rightX + offset * 3} y2={envH + envH} label={`H=${envH}`} side="right" />
+                    <Dim scale={scale} x1={rightX} y1={envH + envH} x2={rightX} y2={envH + envH + FH} label={`FH=${FH}`} side="right" color="#66ccff" small />
+                    <Dim scale={scale} x1={-SF} y1={topY + offset} x2={0} y2={topY + offset} label={`SF=${SF}`} side="top" color="#66ccff" small />
                 </g>
             );
         } else {
@@ -918,15 +918,15 @@ function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: Dieline
             return (
                 <g className="dimensions">
                     {/* Back panel width */}
-                    <Dim x1={0} y1={topY} x2={pW} y2={topY} label={`${envH}`} side="top" color="#999" small />
+                    <Dim scale={scale} x1={0} y1={topY} x2={pW} y2={topY} label={`${envH}`} side="top" color="#999" small />
                     {/* Front panel width */}
-                    <Dim x1={pW} y1={topY + offset} x2={pW + pW} y2={topY + offset} label={`H=${envH}`} side="top" />
+                    <Dim scale={scale} x1={pW} y1={topY + offset} x2={pW + pW} y2={topY + offset} label={`H=${envH}`} side="top" />
                     {/* Panel height */}
-                    <Dim x1={rightX} y1={0} x2={rightX} y2={pH} label={`W=${envW}`} side="right" />
+                    <Dim scale={scale} x1={rightX} y1={0} x2={rightX} y2={pH} label={`W=${envW}`} side="right" />
                     {/* Seal flap height */}
-                    <Dim x1={rightX} y1={pH} x2={rightX} y2={pH + FH} label={`FH=${FH}`} side="right" color="#66ccff" small />
+                    <Dim scale={scale} x1={rightX} y1={pH} x2={rightX} y2={pH + FH} label={`FH=${FH}`} side="right" color="#66ccff" small />
                     {/* Side flap right */}
-                    <Dim x1={pW + pW} y1={topY + offset} x2={pW + pW + SF} y2={topY + offset} label={`SF=${SF}`} side="top" color="#66ccff" small />
+                    <Dim scale={scale} x1={pW + pW} y1={topY + offset} x2={pW + pW + SF} y2={topY + offset} label={`SF=${SF}`} side="top" color="#66ccff" small />
                 </g>
             );
         }
@@ -944,15 +944,15 @@ function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: Dieline
         return (
             <g className="dimensions">
                 {/* Panel heights trên Y (phải) */}
-                <Dim x1={rightX} y1={yFrontBot} x2={rightX} y2={yBottomBot} label={`D=${D}`} side="right" />
-                <Dim x1={rightX + offset * 3} y1={yBottomBot} x2={rightX + offset * 3} y2={W} label={`W=${W}`} side="right" />
-                <Dim x1={rightX} y1={W} x2={rightX} y2={yBackTop} label={`D=${D}`} side="right" />
-                <Dim x1={rightX + offset * 3} y1={yBackTop} x2={rightX + offset * 3} y2={yLidTop} label={`W=${W}`} side="right" />
+                <Dim scale={scale} x1={rightX} y1={yFrontBot} x2={rightX} y2={yBottomBot} label={`D=${D}`} side="right" />
+                <Dim scale={scale} x1={rightX + offset * 3} y1={yBottomBot} x2={rightX + offset * 3} y2={W} label={`W=${W}`} side="right" />
+                <Dim scale={scale} x1={rightX} y1={W} x2={rightX} y2={yBackTop} label={`D=${D}`} side="right" />
+                <Dim scale={scale} x1={rightX + offset * 3} y1={yBackTop} x2={rightX + offset * 3} y2={yLidTop} label={`W=${W}`} side="right" />
                 {/* L trên X (trên) */}
-                <Dim x1={0} y1={bb.maxY + offset * 3} x2={L} y2={bb.maxY + offset * 3} label={`L=${L}`} side="top" />
+                <Dim scale={scale} x1={0} y1={bb.maxY + offset * 3} x2={L} y2={bb.maxY + offset * 3} label={`L=${L}`} side="top" />
                 {/* Side wall D trên X */}
-                <Dim x1={-D} y1={bb.maxY + offset * 6} x2={0} y2={bb.maxY + offset * 6} label={`D=${D}`} side="top" color="#66ccff" small />
-                <Dim x1={L} y1={bb.maxY + offset * 6} x2={L + D} y2={bb.maxY + offset * 6} label={`D=${D}`} side="top" color="#66ccff" small />
+                <Dim scale={scale} x1={-D} y1={bb.maxY + offset * 6} x2={0} y2={bb.maxY + offset * 6} label={`D=${D}`} side="top" color="#66ccff" small />
+                <Dim scale={scale} x1={L} y1={bb.maxY + offset * 6} x2={L + D} y2={bb.maxY + offset * 6} label={`D=${D}`} side="top" color="#66ccff" small />
             </g>
         );
     }
@@ -1011,15 +1011,15 @@ function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: Dieline
             <g className="dimensions">
                 {/* ══ KHAY (Tray) ══ */}
                 {/* L dimension (top, across bottom panel) */}
-                <Dim x1={0} y1={trayTopY} x2={L} y2={trayTopY} label={`L=${L}`} side="top" />
+                <Dim scale={scale} x1={0} y1={trayTopY} x2={L} y2={trayTopY} label={`L=${L}`} side="top" />
                 {/* W dimension (right, across bottom panel) */}
-                <Dim x1={trayRightX} y1={0} x2={trayRightX} y2={W} label={`W=${W}`} side="right" />
+                <Dim scale={scale} x1={trayRightX} y1={0} x2={trayRightX} y2={W} label={`W=${W}`} side="right" />
                 {/* D = wall height (right, front wall) */}
-                <Dim x1={trayRightX + offset * 3} y1={W} x2={trayRightX + offset * 3} y2={W + D} label={`D=${D}`} side="right" color="#66ccff" small />
+                <Dim scale={scale} x1={trayRightX + offset * 3} y1={W} x2={trayRightX + offset * 3} y2={W + D} label={`D=${D}`} side="right" color="#66ccff" small />
                 {/* G = beam (right) */}
-                <Dim x1={trayRightX} y1={W + D} x2={trayRightX} y2={W + D + tG} label={`G=${tG}`} side="right" color="#88ee88" small />
+                <Dim scale={scale} x1={trayRightX} y1={W + D} x2={trayRightX} y2={W + D + tG} label={`G=${tG}`} side="right" color="#88ee88" small />
                 {/* TH = tab (right) */}
-                <Dim x1={trayRightX} y1={W + D + tG + (D - 2 * T)} x2={trayRightX} y2={W + D + tG + (D - 2 * T) + tTH} label={`TH=${tTH}`} side="right" color="#88ee88" small />
+                <Dim scale={scale} x1={trayRightX} y1={W + D + tG + (D - 2 * T)} x2={trayRightX} y2={W + D + tG + (D - 2 * T) + tTH} label={`TH=${tTH}`} side="right" color="#88ee88" small />
             </g>
         );
     }
@@ -1081,39 +1081,39 @@ function DimensionAnnotations({ dieline, scale, showDetail }: { dieline: Dieline
 
     return (
         <g className="dimensions">
-            <Dim x1={x_gL} y1={topY} x2={x_gR} y2={topY} label={`G=${G}`} side="top" />
-            <Dim x1={x_p1} y1={topY + offset} x2={x_p2} y2={topY + offset} label={pl[0]} side="top" />
-            <Dim x1={x_p2} y1={topY} x2={x_p3} y2={topY} label={pl[1]} side="top" />
-            <Dim x1={x_p3} y1={topY + offset} x2={x_p4} y2={topY + offset} label={pl[2]} side="top" />
-            <Dim x1={x_p4} y1={topY} x2={x_p5} y2={topY} label={pl[3]} side="top" />
-            <Dim x1={bb.maxX + offset * 3} y1={bottomOffset} x2={bb.maxX + offset * 3} y2={bottomOffset + D} label={`D=${D}`} side="right" />
+            <Dim scale={scale} x1={x_gL} y1={topY} x2={x_gR} y2={topY} label={`G=${G}`} side="top" />
+            <Dim scale={scale} x1={x_p1} y1={topY + offset} x2={x_p2} y2={topY + offset} label={pl[0]} side="top" />
+            <Dim scale={scale} x1={x_p2} y1={topY} x2={x_p3} y2={topY} label={pl[1]} side="top" />
+            <Dim scale={scale} x1={x_p3} y1={topY + offset} x2={x_p4} y2={topY + offset} label={pl[2]} side="top" />
+            <Dim scale={scale} x1={x_p4} y1={topY} x2={x_p5} y2={topY} label={pl[3]} side="top" />
+            <Dim scale={scale} x1={bb.maxX + offset * 3} y1={bottomOffset} x2={bb.maxX + offset * 3} y2={bottomOffset + D} label={`D=${D}`} side="right" />
 
             {/* Gable detail dimensions */}
             {isGable && showDetail && (
                 <>
                     {/* Chiều cao hình thang dưới W/2 */}
-                    <Dim x1={bb.maxX + offset * 6} y1={yTop} x2={bb.maxX + offset * 6} y2={yAB}
+                    <Dim scale={scale} x1={bb.maxX + offset * 6} y1={yTop} x2={bb.maxX + offset * 6} y2={yAB}
                         label={`${h1}`} side="right" color="#66ccff" small />
                     {/* Chiều cao hình thang trên h2 */}
-                    <Dim x1={bb.maxX + offset * 9} y1={yAB} x2={bb.maxX + offset * 9} y2={yEF}
+                    <Dim scale={scale} x1={bb.maxX + offset * 9} y1={yAB} x2={bb.maxX + offset * 9} y2={yEF}
                         label={`${h2}`} side="right" color="#66ccff" small />
                     {/* Tổng chiều cao gable */}
-                    <Dim x1={bb.maxX + offset * 12} y1={yTop} x2={bb.maxX + offset * 12} y2={yEF}
+                    <Dim scale={scale} x1={bb.maxX + offset * 12} y1={yTop} x2={bb.maxX + offset * 12} y2={yEF}
                         label={`${Math.round((h1 + h2) * 10) / 10}`} side="right" color="#66ccff" small />
                     {/* AB width */}
-                    <Dim x1={aX} y1={yAB - offset} x2={bX} y2={yAB - offset}
+                    <Dim scale={scale} x1={aX} y1={yAB - offset} x2={bX} y2={yAB - offset}
                         label={`${AB_w}`} side="top" color="#66ccff" small />
                     {/* EF width */}
-                    <Dim x1={eX} y1={yEF + offset} x2={fX} y2={yEF + offset}
+                    <Dim scale={scale} x1={eX} y1={yEF + offset} x2={fX} y2={yEF + offset}
                         label={`${EF_w}`} side="top" color="#66ccff" small />
                     {/* Tab width */}
-                    <Dim x1={aX} y1={yAB + offset * 2} x2={aX + tabW} y2={yAB + offset * 2}
+                    <Dim scale={scale} x1={aX} y1={yAB + offset * 2} x2={aX + tabW} y2={yAB + offset * 2}
                         label={`${tabW}`} side="top" color="#66ccff" small />
                     {/* Hole width */}
-                    <Dim x1={holeLeft} y1={holeTopY + offset} x2={holeRight} y2={holeTopY + offset}
+                    <Dim scale={scale} x1={holeLeft} y1={holeTopY + offset} x2={holeRight} y2={holeTopY + offset}
                         label={`${holeWVal}`} side="top" color="#88ee88" small />
                     {/* Hole height */}
-                    <Dim x1={holeLeft - offset * 2} y1={yAB} x2={holeLeft - offset * 2} y2={holeTopY}
+                    <Dim scale={scale} x1={holeLeft - offset * 2} y1={yAB} x2={holeLeft - offset * 2} y2={holeTopY}
                         label={`${holeHVal}`} side="left" color="#88ee88" small />
                 </>
             )}

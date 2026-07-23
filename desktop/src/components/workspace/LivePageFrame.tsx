@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import { Page } from 'react-pdf';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { authenticatedFetch, getApiUrl, getSystemFonts } from '../../lib/api';
-import { fetchViewerPagePreview } from '../../lib/viewerPreview';
 import { adjustCropRegion, cropDragToFrac, cropFracToPixels, type CropAdjustMode, type CropRegionFrac } from '../../lib/cropGeometry';
 import { useCropPointerDrawing } from '../../hooks/useCropPointerDrawing';
 import { VdpPreviewImage } from './ViewerHelpers';
@@ -616,15 +615,9 @@ export const LivePageFrame = (props: any) => {
     const isCropInteractionEnabled = isCropMode && !isCropPanMode;
     
     const watermarkPreview = useWorkspaceStore(s => s.watermarkPreview);
-    const fastPreviewKey = `${nativeFilePath || ''}\u0000${previewRevision || pdfUrl || ''}\u0000${originalPageNum}`;
-    const [fastPreview, setFastPreview] = useState<{ key: string; url: string } | null>(null);
-    useEffect(() => {
         // Layer "xem trước nhanh" Python/Ghostscript ĐÃ BỎ (đo thật 2026-07-22: xếp hàng
         // nghẽn ~10s khi nhiều trang — GS parse lại cả file — CHẬM HƠN cả pdfium ~1s mà nó
         // định che chỗ trống cho). pdfium + prefetch trang lân cận + page LRU đã đủ nhanh.
-        return;
-    }, [fastPreviewKey, getTileUrl, isActiveFrame, nativeFilePath, originalPageNum, previewRevision, pdfUrl, isBlankDoc, isImage]);
-    const fastPreviewUrl = fastPreview?.key === fastPreviewKey ? fastPreview.url : null;
     // Migrated to imposer store per P1-T03
     const activeDashboardTool = useImposerSettingsStore(s => s.activeDashboardTool);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -2419,15 +2412,6 @@ export const LivePageFrame = (props: any) => {
                                 <span className="text-xs font-semibold text-slate-500 tracking-wider">RENDERING</span>
                             </div>
                         </div>
-                        {fastPreviewUrl && (
-                            <img
-                                src={fastPreviewUrl}
-                                alt=""
-                                draggable={false}
-                                className="absolute inset-0 z-[5] pointer-events-none select-none"
-                                style={{ width: '100%', height: '100%', objectFit: 'fill', background: 'white' }}
-                            />
-                        )}
                         <div className="absolute inset-0 z-10">
                             <LiveTile fileKey={pdfUrl || 'unknown'} key="full" pageNum={originalPageNum} zoom={S} rot={0} clipX={0} clipY={0} clipW={0} clipH={0} cssW={Math.ceil(displayWidth)} cssH={Math.ceil(displayHeight)} getTileUrl={getTileUrl} onVisible={handleTileVisibility} />
                         </div>

@@ -26,7 +26,7 @@ import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import * as THREE from 'three';
 import { toast } from 'sonner';
 import { useMockupStore } from '../../store/useMockupStore';
-import { computeExportSize } from '../../lib/mockup3d/exportSizing';
+import { computeExportSize, flipWebGlPixelRows, MAX_EXPORT_PX } from '../../lib/mockup3d/exportSizing';
 import type { ExportScale } from '../../lib/mockup3d/types';
 import { computeTargetPose } from './CameraRig';
 import type { CameraPreset } from '../../store/useMockupStore';
@@ -122,6 +122,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
     // Lấy renderer/scene/camera trực tiếp từ store R3F (không gây re-render).
     const gl = useThree((s) => s.gl);
     const scene = useThree((s) => s.scene);
+    const maxTextureSize = Math.min(MAX_EXPORT_PX, gl.capabilities.maxTextureSize || MAX_EXPORT_PX);
     const camera = useThree((s) => s.camera);
     const size = useThree((s) => s.size);
     const controls = useThree((s) => s.controls) as { target: THREE.Vector3; update: () => void } | null;
@@ -170,6 +171,10 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 stencilBuffer: false,
             });
             target.texture.colorSpace = THREE.SRGBColorSpace;
+            const maxSamples = gl.capabilities.maxSamples || 0;
+            target.samples = gl.capabilities.isWebGL2 && width * height <= 8_000_000
+                ? Math.min(4, maxSamples)
+                : 0;
 
             if (transparent) {
                 scene.background = null;
@@ -186,12 +191,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 gl.readRenderTargetPixels(target, 0, 0, width, height, pixels);
 
                 // WebGL có gốc ở dưới-trái; Canvas 2D có gốc ở trên-trái.
-                const flipped = new Uint8ClampedArray(pixels.length);
-                const rowBytes = width * 4;
-                for (let y = 0; y < height; y += 1) {
-                    const sourceStart = (height - 1 - y) * rowBytes;
-                    flipped.set(pixels.subarray(sourceStart, sourceStart + rowBytes), y * rowBytes);
-                }
+                const flipped = flipWebGlPixelRows(pixels, width, height);
 
                 const exportCanvas = document.createElement('canvas');
                 exportCanvas.width = width;
@@ -223,7 +223,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
             if (busyRef.current) return false;
 
             const effectiveScale = scale ?? storeExportScale;
-            const sizing = computeExportSize(size.width, size.height, effectiveScale);
+            const sizing = computeExportSize(size.width, size.height, effectiveScale, maxTextureSize);
             if (!sizing.ok) {
                 reportError('png', sizing.reason ?? t('dieline.useSceneExport:kich_thuoc_xuat_vuot_gioi_han_cho_phep'));
                 return false;
@@ -255,13 +255,13 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 busyRef.current = false;
             }
         },
-        [size.width, size.height, storeExportScale, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t],
+        [size.width, size.height, storeExportScale, maxTextureSize, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t],
     );
     // ── exportBatchPNG: nhiều góc camera ──────────────────────────────────────
     const exportBatchPNG = useCallback(async (): Promise<boolean> => {
         if (busyRef.current) return false;
 
-        const sizing = computeExportSize(size.width, size.height, storeExportScale);
+        const sizing = computeExportSize(size.width, size.height, storeExportScale, maxTextureSize);
         if (!sizing.ok) {
             reportError('png', sizing.reason ?? t('dieline.useSceneExport:kich_thuoc_xuat_vuot_gioi_han_cho_phep'));
             return false;
@@ -313,7 +313,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
             }
             busyRef.current = false;
         }
-    }, [camera, controls, size.width, size.height, storeExportScale, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t]);
+    }, [camera, controls, size.width, size.height, storeExportScale, maxTextureSize, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t]);
     // ── exportGLB ────────────────────────────────────────────────────────────
     const exportGLB = useCallback(async (): Promise<boolean> => {
         if (busyRef.current) return false;

@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from app.core.license_guard import require_license, require_feature, enforce_feature
+from app.core.heavy_job_scheduler import scheduled_job
 from app.schemas.imposition import ImpositionResponse
 import uuid
 
@@ -1037,6 +1038,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # In-memory job store for N-Up jobs
 nup_jobs = {}
+_NUP_JOBS_LOCK = threading.RLock()
 _NUP_MAX_CONCURRENT_JOBS = max(1, int(os.environ.get('PRYNX_MAX_NUP_JOBS', '1') or '1'))
 _NUP_MAX_QUEUED_JOBS = max(0, int(os.environ.get('PRYNX_MAX_NUP_QUEUE', '8') or '8'))
 _NUP_EXECUTOR = ThreadPoolExecutor(max_workers=_NUP_MAX_CONCURRENT_JOBS, thread_name_prefix='prynx-nup')
@@ -1056,7 +1058,7 @@ def _purge_old_nup_jobs():
         if not job:
             continue
         created = job.get("created_at", now)
-        if now - created > NUP_JOB_TTL_SECONDS:
+        if now - created > NUP_JOB_TTL_SECONDS and job.get("status") in {"completed", "failed", "cancelled"}:
             out = job.get("output_path")
             if out and os.path.exists(out):
                 try:
@@ -1089,23 +1091,83 @@ def _cleanup_job_temp(job_id: str):
     _cleanup_nup_chunk_files(job_id)
 
 
+def _read_nup_state(job_id: str):
+    state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
+    try:
+        with open(state_file, "r", encoding="utf-8") as file_obj:
+            parts = file_obj.read().split("|||", 1)
+    except (OSError, UnicodeDecodeError):
+        return None
+    status = parts[0]
+    if status not in {"completed", "failed"}:
+        return None
+    return status, parts[1] if len(parts) > 1 else ""
+
+
+@scheduled_job("nup")
 def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_id: str):
     """Run one outer process only after the bounded executor grants a slot."""
     import multiprocessing
+    import time
+    # Perf sampling is fully gated: when PRYNX_PERF is off nothing here runs —
+    # no temp-dir scan, no sampler thread, no clock read. Any failure inside the
+    # instrumentation must NEVER bypass the cleanup/slot-release below, so all of
+    # it lives inside try/finally and each measurement is defensively guarded.
+    sampler = None
+    perf_on = False
+    t_start = 0.0
     try:
-        job = nup_jobs.get(job_id)
-        if job is None:
-            return
-        job["status"] = "running"
-        proc = multiprocessing.Process(
-            target=_nup_process_worker,
-            args=(source_path, output_path, settings, job_id),
-            daemon=False,
-        )
-        proc.start()
-        job["pid"] = proc.pid
+        try:
+            from app.core.perf_sampler import perf_enabled
+            perf_on = perf_enabled()
+            if perf_on:
+                t_start = time.monotonic()
+        except Exception:
+            perf_on = False
+
+        with _NUP_JOBS_LOCK:
+            job = nup_jobs.get(job_id)
+            if job is None:
+                return
+            if job.get("cancel_requested") or job.get("status") == "cancelled":
+                job["status"] = "cancelled"
+                return
+            proc = multiprocessing.Process(
+                target=_nup_process_worker,
+                args=(source_path, output_path, settings, job_id),
+                daemon=False,
+            )
+            # Publish only a genuinely started Process so cancellation never
+            # attempts to terminate an unstarted multiprocessing object.
+            job["status"] = "running"
+            proc.start()
+            job["process"] = proc
+            job["pid"] = proc.pid
+        if perf_on:
+            try:
+                from app.core.perf_sampler import ProcessRssSampler
+                temp_dir = tempfile.gettempdir()
+                sampler = ProcessRssSampler(
+                    proc.pid or 0,
+                    temp_patterns=(
+                        os.path.join(temp_dir, f"prynx_nup_{job_id}_*.pdf"),
+                        os.path.join(temp_dir, f"nup_state_{job_id}.txt"),
+                        os.path.join(temp_dir, f"nup_prog_{job_id}.txt"),
+                    ),
+                )
+                sampler.start()
+            except Exception:
+                sampler = None
         proc.join()
-        if proc.exitcode not in (0, None):
+        with _NUP_JOBS_LOCK:
+            current_job = nup_jobs.get(job_id)
+            cancelled = bool(
+                current_job
+                and (current_job.get("cancel_requested") or current_job.get("status") == "cancelled")
+            )
+            if current_job and current_job.get("process") is proc:
+                current_job["process"] = None
+        if proc.exitcode not in (0, None) and not cancelled:
             state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
             if not os.path.exists(state_file):
                 try:
@@ -1114,8 +1176,46 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
                 except OSError:
                     pass
     finally:
+        if sampler is not None:
+            try:
+                sampler.stop()
+            except Exception:
+                pass
+        if perf_on:
+            try:
+                from app.core.perf_sampler import write_job_perf
+                out_mb = None
+                if os.path.exists(output_path):
+                    out_mb = round(os.path.getsize(output_path) / (1024.0 * 1024.0), 1)
+                write_job_perf({
+                    "job": "nup",
+                    "job_id": job_id,
+                    "duration_s": round(time.monotonic() - t_start, 2),
+                    "peak_rss_mb": round(sampler.peak_mb, 1) if sampler and sampler.peak_mb else None,
+                    "peak_temp_mb": round(sampler.peak_temp_mb, 1) if sampler and sampler.peak_temp_mb is not None else None,
+                    "samples": sampler.sample_count if sampler else None,
+                    "output_mb": out_mb,
+                })
+            except Exception:
+                pass
         _cleanup_nup_chunk_files(job_id)
         _NUP_SUBMISSION_SLOTS.release()
+
+
+def _terminate_nup_process(proc, timeout: float = 1.0) -> bool:
+    """Best-effort stop for a child Process; never raise into the API route."""
+    try:
+        if not proc.is_alive():
+            return True
+        proc.terminate()
+        proc.join(timeout=timeout)
+        if proc.is_alive() and hasattr(proc, "kill"):
+            proc.kill()
+            proc.join(timeout=timeout)
+        return not proc.is_alive()
+    except Exception as exc:
+        logger.warning("Unable to stop N-Up process cleanly: %s", exc)
+        return False
 
 
 def _nup_process_worker(source_path: str, output_path: str, settings: dict, job_id: str):
@@ -1173,6 +1273,9 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         "output_path": output_path,
         "error": None,
         "created_at": time.time(),
+        "cancel_requested": False,
+        "process": None,
+        "pid": None,
     }
 
     # Queue outer processes so concurrent jobs cannot multiply process trees
@@ -1220,7 +1323,7 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
     
     # Also check progress file for more granular updates
     prog_file = os.path.join(tempfile.gettempdir(), f"nup_prog_{job_id}.txt")
-    if os.path.exists(prog_file):
+    if job.get("status") != "cancelled" and os.path.exists(prog_file):
         try:
             with open(prog_file, 'r', encoding='utf-8', errors='replace') as f:
                 job["progress"] = f.read().strip()
@@ -1228,7 +1331,7 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
             pass
     
     state_file = os.path.join(tempfile.gettempdir(), f"nup_state_{job_id}.txt")
-    if os.path.exists(state_file):
+    if job.get("status") != "cancelled" and os.path.exists(state_file):
         try:
             with open(state_file, 'r', encoding='utf-8') as f:
                 parts = f.read().split('|||', 1)
@@ -1245,6 +1348,53 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
         "progress": job["progress"],
         "report": job.get("report", ""),
         "error": job.get("error"),
+    }
+
+
+@router.post("/nup-cancel/{job_id}")
+async def cancel_nup_job(job_id: str, _: dict = Depends(require_license)):
+    """Cancel a queued/running N-Up job. Repeated and terminal calls are safe."""
+    terminal_state = _read_nup_state(job_id)
+    with _NUP_JOBS_LOCK:
+        job = nup_jobs.get(job_id)
+        if job is None:
+            return {
+                "job_id": job_id,
+                "status": "not_found",
+                "cancelled": False,
+                "message": "Job not found",
+            }
+        previous_status = job.get("status", "unknown")
+        if previous_status != "cancelled" and terminal_state is not None:
+            previous_status, detail = terminal_state
+            job["status"] = previous_status
+            if previous_status == "completed":
+                job["report"] = detail
+            else:
+                job["error"] = detail
+        if previous_status in {"completed", "failed"}:
+            return {
+                "job_id": job_id,
+                "status": previous_status,
+                "cancelled": False,
+                "message": f"Job is already {previous_status}",
+            }
+        already_cancelled = previous_status == "cancelled"
+        job["cancel_requested"] = True
+        job["status"] = "cancelled"
+        job["error"] = None
+        proc = job.get("process")
+
+    stopped = True
+    if proc is not None:
+        stopped = _terminate_nup_process(proc)
+
+    return {
+        "job_id": job_id,
+        "status": "cancelled",
+        "cancelled": True,
+        "already_cancelled": already_cancelled,
+        "process_stopped": stopped,
     }
 
 

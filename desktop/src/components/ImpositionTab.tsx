@@ -7,7 +7,7 @@ import PDFUploader from './PDFUploader';
 import AcrobatViewer from './AcrobatViewer';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useEditSession } from '../hooks/useEditSession';
-import { ImpositionMode, type ProcessingSettings, type CatalogBatchResult } from '../lib/pdfImposer';
+import { ImpositionMode, type ProcessingSettings } from '../lib/pdfImposer';
 import { planCatalog, verifyCatalogPlan, type PlanConfig, type PlateJob } from '../lib/imposerEngine/CatalogPlanner';
 import { Button } from './Button';
 import { Printer, Scissors, Settings, Star } from 'lucide-react';
@@ -18,6 +18,7 @@ import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
 import { PREDEFINED_SIZES, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
 import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
+import { disposeImposerPersistScope } from './imposition-tools/store/persist';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
 import { applyRule, executeShuffle, getPresetById, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
 import { resizePages } from '../lib/preprocessEngine/PageResizer';
@@ -81,12 +82,17 @@ interface Props {
 export default function ImpositionTab(props: Props) {
     const storeRef = useRef<ReturnType<typeof createWorkspaceStore> | null>(null);
     const imposerStoreRef = useRef<ReturnType<typeof createImposerSettingsStore> | null>(null);
+    const imposerScope = props.tabId ? `tab:${props.tabId}` : undefined;
     if (!storeRef.current) {
         storeRef.current = createWorkspaceStore();
     }
     if (!imposerStoreRef.current) {
-        imposerStoreRef.current = createImposerSettingsStore(props.tabId ? `tab:${props.tabId}` : undefined);
+        imposerStoreRef.current = createImposerSettingsStore(imposerScope);
     }
+    useEffect(() => () => {
+        if (imposerScope) disposeImposerPersistScope(imposerScope);
+    }, [imposerScope]);
+
     return (
         <ImposerSettingsContext.Provider value={imposerStoreRef.current}>
             <WorkspaceContext.Provider value={storeRef.current}>
@@ -1144,6 +1150,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
 
     //#region Processing Handlers
     // ═══ Processing handlers (extracted to lib/processHandlers.ts) ═══
+    const [processCancelHandler, setProcessCancelHandler] = useState<(() => Promise<void>) | null>(null);
+
     const buildProcessContext = useCallback(() => {
         const getWorkingBytesLocal = async (): Promise<Uint8Array> => {
             if (viewerPageOrder) {
@@ -1162,6 +1170,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             // dọn pending note để KHÔNG bị ghép nhầm vào commit của thao tác sau.
             setError: (msg: string) => { if (msg) recipeRecorder.discardPending(); setError(msg); },
             setIsProcessing, setProcessStatus, setReportMsg, setBatchOutput,
+            setCancelHandler: (handler: (() => Promise<void>) | null) => {
+                setProcessCancelHandler(() => handler);
+            },
             viewerNumPages,
             getWorkingBytes: getWorkingBytesLocal,
         };
@@ -2225,6 +2236,15 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     {/(bình|kẽm|catalog|impos)/i.test(processStatus) ? t('tabs.imposition:dang_binh_trang') : t('tabs.imposition:dang_xu_ly_file')}
                                 </h3>
                                 <p className="text-emerald-200 mt-2 text-sm tracking-normal font-medium">{processStatus}</p>
+                                {processCancelHandler && (
+                                    <button
+                                        type="button"
+                                        onClick={() => void processCancelHandler().catch((err) => setError(err?.message || String(err)))}
+                                        className="mt-6 rounded-md border border-red-300/70 bg-red-600/80 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-600"
+                                    >
+                                        {t('tabs.imposition:huy_bo_cancel')}
+                                    </button>
+                                )}
                             </div>
                         )}
 

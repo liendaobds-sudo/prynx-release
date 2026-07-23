@@ -160,7 +160,7 @@ Phần còn lại: loại bỏ các dynamic import vừa tĩnh vừa động khi
 
 ### Native
 
-`cargo check`: **Đạt**, còn 12 warning có sẵn.
+`cargo check`: **Đạt, 0 warning**.
 
 ### Test frontend
 
@@ -427,5 +427,5 @@ Cập nhật sau các đợt triển khai ngày 2026-07-22. Mục 11 vẫn là r
 - Backend CSV transport: **3/3 đạt**; PDF manifest: **2/2 đạt** (chọn trang/trang trắng/xoay và kiểm tra chỉ số lỗi).
 - Backend test mục tiêu không cần database: **121/121 đạt**, gồm xuất PDF thật cho N-Up cắt xén/die-cut/layer và 30 test Compare queue/engine/pipeline.
 - Backend VDP integration: 14 test không chạy được vì PostgreSQL localhost:5432 không hoạt động; đây là lỗi môi trường test, không phải assertion failure.
-- `cargo check`: **đạt**, còn 12 warning có sẵn.
+- `cargo check` và `cargo check --release`: **đạt, 0 warning**; Rust unit tests: **38/38 đạt**.
 - Lint budget gate: **đạt** với 1.549 errors và 112 warnings; chưa tuyên bố lint xanh vì phần legacy còn lại vẫn được theo dõi theo budget.

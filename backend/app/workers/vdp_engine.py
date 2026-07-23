@@ -1,4 +1,5 @@
 import os
+import glob
 import io
 import re
 import math
@@ -25,6 +26,15 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
 logger = logging.getLogger(__name__)
+
+
+class VdpCancelledError(RuntimeError):
+    """Raised when a VDP job observes its cooperative cancellation signal."""
+
+
+def _vdp_cancel_file_exists(cancel_file: str | None) -> bool:
+    return bool(cancel_file and os.path.exists(cancel_file))
+
 
 MM_TO_PTS = 2.83465
 # Hằng số quy đổi toạ độ frontend (CSS px @96dpi) → point backend, dùng CHUNG cho
@@ -771,11 +781,24 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
 
 
 def process_chunk(args) -> str:
-    template_path, fields_dict, data_chunk, chunk_start_idx, progress_file = args
+    template_path, fields_dict, data_chunk, chunk_start_idx, progress_file = args[:5]
+    cancel_file = args[5] if len(args) > 5 else None
+    job_id = args[6] if len(args) > 6 else None
+    if _vdp_cancel_file_exists(cancel_file):
+        return ""
     
     doc_template = pdf_lib.open(template_path)
     template_page_count = len(doc_template)
     out_doc = pdf_lib.open()
+
+    def cancel_chunk_if_requested() -> bool:
+        if not _vdp_cancel_file_exists(cancel_file):
+            return False
+        try:
+            out_doc.close()
+        finally:
+            doc_template.close()
+        return True
     
     # Pre-compute field rects in PDF points for ReportLab
     # IMPORTANT: Frontend calculates "mm" using CSS pixels / 72 * 25.4
@@ -827,6 +850,8 @@ def process_chunk(args) -> str:
     from reportlab.lib.colors import Color
     
     for idx, row in enumerate(data_chunk):
+        if cancel_chunk_if_requested():
+            return ""
         global_idx = chunk_start_idx + idx
         t_idx = global_idx % template_page_count
         
@@ -911,7 +936,11 @@ def process_chunk(args) -> str:
         except Exception:
             pass
                 
-    tmp_path = os.path.join(tempfile.gettempdir(), f"vdp_chunk_{uuid.uuid4().hex}.pdf")
+    if cancel_chunk_if_requested():
+        return ""
+
+    chunk_owner = f"{job_id}_" if job_id else ""
+    tmp_path = os.path.join(tempfile.gettempdir(), f"vdp_chunk_{chunk_owner}{uuid.uuid4().hex}.pdf")
     # POST-PROCESS: Remove the cached template pages so they don't appear in the final output
     for _ in range(template_page_count):
         del out_doc._pdf.pages[0]
@@ -1034,9 +1063,41 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
     from concurrent.futures import ProcessPoolExecutor
     import math
 
+    cancel_file = kwargs.pop("cancel_file", None)
+    cancel_check = kwargs.pop("cancel_check", None)
+    chunk_paths = []
+    canonical_temp_path = None
+
+    def cancellation_requested() -> bool:
+        try:
+            callback_cancelled = bool(cancel_check and cancel_check())
+        except Exception:
+            callback_cancelled = False
+        return callback_cancelled or _vdp_cancel_file_exists(cancel_file)
+
+    def abort_if_requested() -> None:
+        if not cancellation_requested():
+            return
+        paths = list(chunk_paths)
+        if job_id:
+            paths.extend(glob.glob(os.path.join(tempfile.gettempdir(), f"vdp_chunk_{job_id}_*.pdf")))
+        paths.append(output_path)
+        if canonical_temp_path:
+            paths.append(canonical_temp_path)
+        for path in paths:
+            try:
+                if path and os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+        raise VdpCancelledError("VDP job cancelled")
+
+    abort_if_requested()
     fields_dict = [f.model_dump() for f in fields]
     # Chuẩn hoá CropBox→MediaBox (sau Crop) MỘT LẦN trước khi fan-out chunk.
     template_path, _canon_tmp = _canonicalize_template_to_cropbox(template_path)
+    canonical_temp_path = template_path if _canon_tmp else None
+    abort_if_requested()
     available_cores = max(1, os.cpu_count() - 1)
     optimal_chunk_size = math.ceil(len(data) / available_cores) if available_cores > 0 else 5000
     CHUNK_SIZE = max(100, optimal_chunk_size)
@@ -1052,11 +1113,9 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
     chunk_start_idx = 0
     for idx, chunk in enumerate(chunks):
         prog_file = os.path.join(tempfile.gettempdir(), f"vdp_prog_{job_id}_{idx}.txt") if job_id else None
-        args_list.append((template_path, fields_dict, chunk, chunk_start_idx, prog_file))
+        args_list.append((template_path, fields_dict, chunk, chunk_start_idx, prog_file, cancel_file, job_id))
         chunk_start_idx += len(chunk)
         
-    chunk_paths = []
-    
     if len(args_list) > 0:
         if num_workers <= 1 or len(args_list) == 1:
             for args in args_list:
@@ -1066,18 +1125,27 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
                 chunk_paths = list(pool.map(process_chunk, args_list))
     
     # Chunk đã đọc xong template → xoá bản canonical tạm (nếu có).
+    abort_if_requested()
+    if any(not path for path in chunk_paths):
+        raise VdpCancelledError("VDP job cancelled")
     if _canon_tmp:
         try:
             os.remove(template_path)
         except Exception:
             pass
+        canonical_temp_path = None
 
+    abort_if_requested()
     if 'on_saving' in kwargs and kwargs['on_saving']:
         kwargs['on_saving']()
+    abort_if_requested()
 
     import pypdfium2 as pdfium
     final_doc = pdfium.PdfDocument.new()
     for chunk_pdf_path in chunk_paths:
+        if cancellation_requested():
+            final_doc.close()
+            abort_if_requested()
         src_pdf = pdfium.PdfDocument(chunk_pdf_path)
         final_doc.import_pages(src_pdf)
         src_pdf.close()
@@ -1088,6 +1156,7 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
             
     final_doc.save(output_path)
     final_doc.close()
+    abort_if_requested()
 
     # #5 Tối ưu output: nén stream + object streams (gom object) trong CÙNG một
     # pass pikepdf với watermark → giảm đáng kể dung lượng (trước đây deflate=False,
@@ -1116,4 +1185,5 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
     except Exception as e:
         logger.error(f"VDP optimize/watermark pass failed: {e}")
 
+    abort_if_requested()
     return output_path

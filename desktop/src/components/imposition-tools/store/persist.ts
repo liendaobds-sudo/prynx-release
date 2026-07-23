@@ -16,14 +16,27 @@ import { WORKSPACE_PERSIST_KEYS } from './slices/workspaceSlice';
 import { PREPROC_PERSIST_KEYS, DEFAULT_RESIZE_SETTINGS } from './slices/preprocSlice';
 
 const PERSIST_DEBOUNCE_MS = 150;
+export const LEGACY_IMPOSER_PERSIST_KEY = 'ps_imposer_settings';
+const SCOPED_IMPOSER_PERSIST_PREFIX = `${LEGACY_IMPOSER_PERSIST_KEY}:`;
 const pendingWrites = new Map<string, { value: string; timer: number }>();
+
+export function scopedImposerPersistName(scopeKey: string): string {
+    return `${SCOPED_IMPOSER_PERSIST_PREFIX}${encodeURIComponent(scopeKey)}`;
+}
+
+function writeDurable(name: string, value: string): void {
+    window.localStorage.setItem(name, value);
+    if (name.startsWith(SCOPED_IMPOSER_PERSIST_PREFIX)) {
+        window.localStorage.setItem(LEGACY_IMPOSER_PERSIST_KEY, value);
+    }
+}
 
 function flushPendingWrites(): void {
     if (typeof window === 'undefined') return;
     for (const [name, pending] of pendingWrites) {
         window.clearTimeout(pending.timer);
         try {
-            window.localStorage.setItem(name, pending.value);
+            writeDurable(name, pending.value);
         } catch {
             // Storage failures must not break the editor.
         }
@@ -42,14 +55,14 @@ const debouncedStorage: StateStorage = {
             // Keep the first durable write synchronous so a newly created key is
             // never lost if the app closes immediately; subsequent bursts debounce.
             if (!pendingWrites.has(name) && window.localStorage.getItem(name) === null) {
-                window.localStorage.setItem(name, value);
+                writeDurable(name, value);
                 return;
             }
         } catch { /* continue with best-effort debounce */ }
         const previous = pendingWrites.get(name);
         if (previous) window.clearTimeout(previous.timer);
         const timer = window.setTimeout(() => {
-            try { window.localStorage.setItem(name, value); } catch { /* best effort */ }
+            try { writeDurable(name, value); } catch { /* best effort */ }
             pendingWrites.delete(name);
         }, PERSIST_DEBOUNCE_MS);
         pendingWrites.set(name, { value, timer });
@@ -63,9 +76,30 @@ const debouncedStorage: StateStorage = {
     },
 };
 
+export function disposeImposerPersistScope(scopeKey: string): void {
+    if (typeof window === 'undefined') return;
+    const name = scopedImposerPersistName(scopeKey);
+    const pending = pendingWrites.get(name);
+    if (pending) window.clearTimeout(pending.timer);
+    pendingWrites.delete(name);
+    try { window.localStorage.removeItem(name); } catch { /* best effort */ }
+}
+
 const persistStorage = createJSONStorage<Partial<ImposerSettingsState>>(() => debouncedStorage);
 
 if (typeof window !== 'undefined') {
+    try {
+        const gcFlag = 'ps_imposer_scope_gc_v1';
+        if (window.sessionStorage.getItem(gcFlag) !== '1') {
+            const staleKeys: string[] = [];
+            for (let index = 0; index < window.localStorage.length; index += 1) {
+                const key = window.localStorage.key(index);
+                if (key?.startsWith(SCOPED_IMPOSER_PERSIST_PREFIX)) staleKeys.push(key);
+            }
+            for (const key of staleKeys) window.localStorage.removeItem(key);
+            window.sessionStorage.setItem(gcFlag, '1');
+        }
+    } catch { /* storage remains best effort */ }
     window.addEventListener('pagehide', flushPendingWrites);
 }
 /** Tập field được lưu vào localStorage — ghép từ khai báo của từng slice. */
@@ -169,7 +203,7 @@ function migrate(persistedState: any, version: number): any {
 }
 
 export const PERSIST_CONFIG: PersistOptions<ImposerSettingsState, Partial<ImposerSettingsState>> = {
-    name: 'ps_imposer_settings',
+    name: LEGACY_IMPOSER_PERSIST_KEY,
     storage: persistStorage,
     version: 10,
     migrate,

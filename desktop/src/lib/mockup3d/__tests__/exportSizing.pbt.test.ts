@@ -17,7 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import * as fc from 'fast-check';
-import { computeExportSize, MAX_EXPORT_PX } from '../exportSizing';
+import { computeExportSize, flipWebGlPixelRows, MAX_EXPORT_PIXELS, MAX_EXPORT_PX } from '../exportSizing';
 import type { ExportScale } from '../types';
 
 const NUM_RUNS = 200;
@@ -39,6 +39,7 @@ describe('computeExportSize — Property 18: Giới hạn kích thước xuất 
                     // Tiền đề: hợp lệ và nằm trong giới hạn sau khi nhân hệ số.
                     fc.pre(viewW > 0 && viewH > 0);
                     fc.pre(viewW * scale <= MAX_EXPORT_PX && viewH * scale <= MAX_EXPORT_PX);
+                    fc.pre(viewW * scale * viewH * scale <= MAX_EXPORT_PIXELS);
 
                     const result = computeExportSize(viewW, viewH, scale);
                     expect(result.ok).toBe(true);
@@ -108,5 +109,18 @@ describe('computeExportSize — Property 18: Giới hạn kích thước xuất 
             ),
             { numRuns: NUM_RUNS },
         );
+    });
+
+    it('rejects aggregate pixel counts and device-specific texture limits', () => {
+        expect(computeExportSize(8000, 6000, 1).ok).toBe(false);
+        expect(computeExportSize(5000, 100, 1, 4096).ok).toBe(false);
+        expect(computeExportSize(1920, 1080, 4).ok).toBe(true);
+    });
+
+    it('preserves pixels while converting WebGL row order for Canvas', () => {
+        const bottomRow = [1, 2, 3, 4, 5, 6, 7, 8];
+        const topRow = [9, 10, 11, 12, 13, 14, 15, 16];
+        const flipped = flipWebGlPixelRows(new Uint8Array([...bottomRow, ...topRow]), 2, 2);
+        expect(Array.from(flipped)).toEqual([...topRow, ...bottomRow]);
     });
 });

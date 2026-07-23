@@ -45,6 +45,27 @@ const COLOR_HELP: ToolHelp = {
   printNote: 'Chuyển CMYK quan trọng nhất cho IN OFFSET. In nhanh (kỹ thuật số) nhiều máy nhận RGB nên có thể không cần.',
 };
 
+// Module-level: định nghĩa trong render body sẽ tạo type mới mỗi render → remount
+// (mất focus/animation của subtree). Nhận selected/onSelect qua props để giữ closure.
+function ModeCard({ selected, icon, label, desc, onSelect }: {
+  selected: boolean; icon: string; label: string; desc: string; onSelect: () => void;
+}) {
+  return (
+    <button onClick={onSelect}
+      className={`w-full text-left px-3 py-3 rounded-xl border transition-all flex items-center gap-3
+        ${selected ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300 shadow-sm' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
+      <span className="text-xl shrink-0">{icon}</span>
+      <div className="flex-1 min-w-0">
+        <span className="font-bold text-[13px] block">{label}</span>
+        <span className="text-[11px] text-slate-500 dark:text-zinc-400 block leading-snug mt-0.5">{desc}</span>
+      </div>
+      <div className={`w-4 h-4 rounded-full border-2 shrink-0 ${selected ? 'border-teal-500 bg-teal-500' : 'border-slate-300 dark:border-zinc-500'}`}>
+        {selected && <div className="w-full h-full rounded-full border-2 border-white dark:border-zinc-900" />}
+      </div>
+    </button>
+  );
+}
+
 export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
   const [fileId, setFileId] = useState('');
@@ -102,24 +123,6 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
 
   if (!pdfFile) return <div className="text-[11px] text-slate-400 text-center py-6">{t('preprocess.convertColors:vui_long_mo_file_pdf_truoc')}</div>;
 
-  const ModeCard = ({ value, icon, label, desc }: { value: 'cmyk' | 'grayscale'; icon: string; label: string; desc: string }) => {
-    const sel = mode === value;
-    return (
-      <button onClick={() => setMode(value)}
-        className={`w-full text-left px-3 py-3 rounded-xl border transition-all flex items-center gap-3
-          ${sel ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300 shadow-sm' : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'}`}>
-        <span className="text-xl shrink-0">{icon}</span>
-        <div className="flex-1 min-w-0">
-          <span className="font-bold text-[13px] block">{label}</span>
-          <span className="text-[11px] text-slate-500 dark:text-zinc-400 block leading-snug mt-0.5">{desc}</span>
-        </div>
-        <div className={`w-4 h-4 rounded-full border-2 shrink-0 ${sel ? 'border-teal-500 bg-teal-500' : 'border-slate-300 dark:border-zinc-500'}`}>
-          {sel && <div className="w-full h-full rounded-full border-2 border-white dark:border-zinc-900" />}
-        </div>
-      </button>
-    );
-  };
-
   return (
     <div className="space-y-4 animate-in fade-in duration-200">
 
@@ -132,8 +135,8 @@ export default function ConvertColorsTool({ pdfFile, onFileFixed }: Props) {
 
       {/* ═══ CHỌN CHẾ ĐỘ (chọn 1) ═══ */}
       <div className="space-y-2">
-        <ModeCard value="cmyk" icon="🟡" label={t('preprocess.convertColors:chuyen_sang_cmyk')} desc={t('preprocess.convertColors:cho_in_offset_in_4_mau_rgb_cmyk')} />
-        <ModeCard value="grayscale" icon="⬛" label={t('preprocess.convertColors:chuyen_sang_den_trang')} desc={t('preprocess.convertColors:bo_mau_in_1_mau_den_grayscale')} />
+        <ModeCard selected={mode === 'cmyk'} onSelect={() => setMode('cmyk')} icon="🟡" label={t('preprocess.convertColors:chuyen_sang_cmyk')} desc={t('preprocess.convertColors:cho_in_offset_in_4_mau_rgb_cmyk')} />
+        <ModeCard selected={mode === 'grayscale'} onSelect={() => setMode('grayscale')} icon="⬛" label={t('preprocess.convertColors:chuyen_sang_den_trang')} desc={t('preprocess.convertColors:bo_mau_in_1_mau_den_grayscale')} />
       </div>
 
       {/* Tùy chọn màu pha — chỉ hiện ở chế độ CMYK */}

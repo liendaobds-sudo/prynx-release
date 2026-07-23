@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { startVdpJobBackend, pollVdpJob } from '@/lib/api';
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend } from '@/lib/api';
 import { CmykColorPicker } from './DataMergeTool';
 import { ToolNumberInput } from './ToolUI';
 import { FontSelector } from './FontSelector';
@@ -44,7 +44,20 @@ export default function NumberingTool({
 
     // Hủy polling VDP khi unmount để không poll vô hạn nền (#13).
     const pollAbortRef = useRef<AbortController | null>(null);
-    useEffect(() => () => { pollAbortRef.current?.abort(); }, []);
+    const activeVdpJobRef = useRef<string | null>(null);
+    const [activeVdpJobId, setActiveVdpJobId] = useState<string | null>(null);
+    useEffect(() => () => {
+        pollAbortRef.current?.abort();
+        const jobId = activeVdpJobRef.current;
+        if (jobId) void cancelVdpJobBackend(jobId).catch(() => undefined);
+    }, []);
+
+    const cancelActiveVdp = async () => {
+        const jobId = activeVdpJobRef.current;
+        if (!jobId) return;
+        await cancelVdpJobBackend(jobId);
+        pollAbortRef.current?.abort();
+    };
 
     // Đóng modal trợ giúp bằng phím ESC (chỉ gắn listener khi modal đang mở).
     useEffect(() => {
@@ -291,6 +304,8 @@ export default function NumberingTool({
             // Tuân thủ kết quả cuối cùng: dùng file đã áp dụng sửa đổi trang làm template.
             const templateFile = getWorkingFile ? await getWorkingFile() : pdfFile;
             const jobId = await startVdpJobBackend(templateFile, vdpFields, csvData);
+            activeVdpJobRef.current = jobId;
+            setActiveVdpJobId(jobId);
             
             pollAbortRef.current = new AbortController();
             const result = await pollVdpJob(jobId, setStatusMessage, true, pollAbortRef.current.signal);
@@ -311,6 +326,8 @@ export default function NumberingTool({
             console.error(error);
             setStatusMessage(t('preprocess.numbering:loi_msg', { msg: error.message }));
         } finally {
+            activeVdpJobRef.current = null;
+            setActiveVdpJobId(null);
             setIsGenerating(false);
         }
     };
@@ -774,6 +791,15 @@ export default function NumberingTool({
                         <>{t('preprocess.common:run')}</>
                     )}
                 </button>
+                {isGenerating && activeVdpJobId && (
+                    <button
+                        type="button"
+                        onClick={() => void cancelActiveVdp().catch((err) => setStatusMessage(err?.message || String(err)))}
+                        className="mt-2 w-full rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white hover:bg-red-700"
+                    >
+                        {t('tabs.imposition:huy_bo_cancel')}
+                    </button>
+                )}
             </div>
         </div>
     );

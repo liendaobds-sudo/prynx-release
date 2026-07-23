@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { startVdpJobBackend, pollVdpJob } from '@/lib/api';
+import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend } from '@/lib/api';
 import { startVdpDrag } from '../../utils/vdpDrag';
 import { useVdpTool } from '@/hooks/useVdpTool';
 import {
@@ -62,7 +62,20 @@ export default function CoverNumberingTool({
     const [totalPages, setTotalPages] = useState(0);
 
     const pollAbortRef = useRef<AbortController | null>(null);
-    useEffect(() => () => { pollAbortRef.current?.abort(); }, []);
+    const activeVdpJobRef = useRef<string | null>(null);
+    const [activeVdpJobId, setActiveVdpJobId] = useState<string | null>(null);
+    useEffect(() => () => {
+        pollAbortRef.current?.abort();
+        const jobId = activeVdpJobRef.current;
+        if (jobId) void cancelVdpJobBackend(jobId).catch(() => undefined);
+    }, []);
+
+    const cancelActiveVdp = async () => {
+        const jobId = activeVdpJobRef.current;
+        if (!jobId) return;
+        await cancelVdpJobBackend(jobId);
+        pollAbortRef.current?.abort();
+    };
 
     // Đọc số trang của file gốc (cho PA2) — load nhẹ bằng pdf-lib, bỏ qua nếu lỗi.
     useEffect(() => {
@@ -115,7 +128,7 @@ export default function CoverNumberingTool({
         const first = preview[0], last = preview[preview.length - 1];
         return t('preprocess.coverNumbering:so_chia_lien_cuon', { total: derived.totalNumbers, count: v.bookletCount, per: derived.perBooklet }) +
             (first && last ? t('preprocess.coverNumbering:dai_cuon_dau_cuoi', { firstY: first.Y, firstZ: first.Z, count: v.bookletCount, lastY: last.Y, lastZ: last.Z }) : '');
-    }, [derived, preview, v.bookletCount]);
+    }, [derived, preview, t, v.bookletCount]);
 
     const handleGenerate = async () => {
         try {
@@ -184,6 +197,8 @@ export default function CoverNumberingTool({
 
             setStatus(t('preprocess.coverNumbering:dang_day_len_may_chu_to_in', { n: csvData.length }));
             const jobId = await startVdpJobBackend(template, cloned, csvData);
+            activeVdpJobRef.current = jobId;
+            setActiveVdpJobId(jobId);
             pollAbortRef.current = new AbortController();
             const result = await pollVdpJob(jobId, setStatus, true, pollAbortRef.current.signal);
             if (!result.blob) throw new Error(t('preprocess.coverNumbering:khong_nhan_duoc_file_ket_qua'));
@@ -191,8 +206,11 @@ export default function CoverNumberingTool({
             if (spawnNewTab && onSpawnTab) { onSpawnTab(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh_da_tao_tab_moi')); }
             else if (onApplyResult) { onApplyResult(result.blob, outName, result.path ?? undefined); setStatus(t('preprocess.coverNumbering:hoan_thanh')); }
         } catch (e: any) {
+            if (e?.name === 'AbortError') return;
             setStatus(t('preprocess.coverNumbering:loi') + ' ' + (e?.message || String(e)));
         } finally {
+            activeVdpJobRef.current = null;
+            setActiveVdpJobId(null);
             setBusy(false);
         }
     };
@@ -307,6 +325,15 @@ export default function CoverNumberingTool({
                     className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold rounded-lg">
                     {t('preprocess.common:run')}{busy ? '…' : ''}
                 </button>
+                {busy && activeVdpJobId && (
+                    <button
+                        type="button"
+                        onClick={() => void cancelActiveVdp().catch((err) => setStatus(err?.message || String(err)))}
+                        className="w-full rounded-lg bg-red-600 py-2.5 text-sm font-bold text-white hover:bg-red-700"
+                    >
+                        {t('tabs.imposition:huy_bo_cancel')}
+                    </button>
+                )}
                 {status && <p className="text-[11px] text-slate-500 text-center">{status}</p>}
             </div>
         </div>
