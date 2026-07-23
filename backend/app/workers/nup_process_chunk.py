@@ -131,6 +131,12 @@ def process_chunk(args):
     from app.workers.nup_engine import compute_sticker_layout_for_page, _find_largest_die_path
     from app.workers.nup_diecut import resolve_one_dao_trim
 
+    if len(args) > 56:
+        chunk_repeat_metadata = args[54]
+        base_args = args[:54] + args[55:]
+    else:
+        chunk_repeat_metadata, base_args = None, args
+
     (source_path, job_id, chunk_idx, start_sheet, end_sheet, 
 
      sheet_w, sheet_h, capacity, cells, bleed_pt, gap_x, gap_y, 
@@ -140,7 +146,7 @@ def process_chunk(args):
      sheet_usable_w, sheet_usable_h, align, cx_count, cy_count, cluster_gap,
      active_grid_w, active_grid_h, super_grid_w, super_grid_h,
      prog_file, total_page_count, layout_type, is_die_cut, pont_config, strategy, detected_shapes_by_page, target_quantity, detected_shape_params_by_page, sheet_mapping, chunk_precalc_placements,
-     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, die_size_mode, die_offset_mm, target_quantities_by_page, manual_cols, manual_rows, homogeneous_mode, homogeneous_master_idx) = args
+     cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, die_size_mode, die_offset_mm, target_quantities_by_page, manual_cols, manual_rows, homogeneous_mode, homogeneous_master_idx) = base_args
 
     src_doc = pdf_lib.open(source_path)
 
@@ -153,6 +159,21 @@ def process_chunk(args):
     sheets_per_page = 1
 
     total_capacity = capacity * cx_count * cy_count
+    # Build only the mapping needed by this chunk. Previously the full S-sheet
+    # mapping was rebuilt inside every sheet iteration, producing O(S^2) work.
+    if chunk_repeat_metadata:
+        _rust_sheet_mapping = {
+            index: int(value[0]) for index, value in chunk_repeat_metadata.items()
+        }
+    elif isinstance(sheet_mapping, dict):
+        _rust_sheet_mapping = sheet_mapping
+    elif isinstance(sheet_mapping, (list, tuple)):
+        _rust_sheet_mapping = {
+            index: sheet_mapping[index]
+            for index in range(start_sheet, min(end_sheet, len(sheet_mapping)))
+        }
+    else:
+        _rust_sheet_mapping = None
 
     if layout_type == 'repeat' and target_quantity > 0:
 
@@ -478,13 +499,8 @@ def process_chunk(args):
             # Try Rust fast path for placement calculation
             try:
                 import pdfcompare_native as _native
-                # Rust binding expects PyDict for sheet_mapping, not list
-                _sm = None
-                if sheet_mapping is not None:
-                    if isinstance(sheet_mapping, dict):
-                        _sm = sheet_mapping
-                    elif isinstance(sheet_mapping, (list, tuple)):
-                        _sm = {i: v for i, v in enumerate(sheet_mapping)}
+                # Rust binding expects PyDict; this chunk-local map is O(chunk).
+                _sm = _rust_sheet_mapping
                 placements = _native.compute_placements(
                     
                     sheet_idx=sheet_idx,
@@ -584,22 +600,27 @@ def process_chunk(args):
         # list using the same per-page quantity that built sheet_mapping.
         if layout_type == 'repeat' and sheet_mapping and placements:
             try:
-                if isinstance(sheet_mapping, dict):
-                    _repeat_src_idx = int(sheet_mapping.get(sheet_idx, sheet_mapping.get(str(sheet_idx))))
-                    _mapping_value = lambda _idx: sheet_mapping.get(_idx, sheet_mapping.get(str(_idx)))
+                _repeat_meta = (chunk_repeat_metadata or {}).get(sheet_idx)
+                if _repeat_meta is not None:
+                    _repeat_src_idx = int(_repeat_meta[0])
+                    _page_sheet_ordinal = int(_repeat_meta[1])
                 else:
-                    _repeat_src_idx = int(sheet_mapping[sheet_idx])
-                    _mapping_value = lambda _idx: sheet_mapping[_idx]
+                    if isinstance(sheet_mapping, dict):
+                        _mapping_value = lambda _idx: sheet_mapping.get(_idx, sheet_mapping.get(str(_idx)))
+                    else:
+                        _mapping_value = lambda _idx: sheet_mapping[_idx]
+                    _repeat_src_idx = int(_mapping_value(sheet_idx))
+                    # Backward compatibility for legacy direct process_chunk callers.
+                    _page_sheet_ordinal = sum(
+                        1 for _idx in range(sheet_idx)
+                        if int(_mapping_value(_idx)) == _repeat_src_idx
+                    )
                 _repeat_qty_raw = (target_quantities_by_page or {}).get(
                     str(_repeat_src_idx),
                     (target_quantities_by_page or {}).get(_repeat_src_idx, target_quantity),
                 )
                 _repeat_qty = int(_repeat_qty_raw or 0)
                 if _repeat_qty > 0:
-                    _page_sheet_ordinal = sum(
-                        1 for _idx in range(sheet_idx)
-                        if int(_mapping_value(_idx)) == _repeat_src_idx
-                    )
                     _sheet_capacity = max(1, int(cur_capacity) * int(cx_count) * int(cy_count))
                     _remaining = _repeat_qty - _page_sheet_ordinal * _sheet_capacity
                     placements = placements[:max(0, min(len(placements), _remaining))]

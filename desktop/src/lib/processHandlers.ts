@@ -30,6 +30,7 @@ export interface ProcessContext {
     setCancelHandler?: (handler: (() => Promise<void>) | null) => void;
     viewerNumPages?: number;
     getWorkingBytes: () => Promise<Uint8Array>;
+    getWorkingSourcePath?: () => Promise<string | undefined>;
 }
 
 // ═════════════════════════════════════════════
@@ -64,10 +65,14 @@ export async function runProcessEngine(
             const { uploadFileForNup, startNupJobBackend, getNupJobStatus, downloadNupJob, cancelNupJobBackend } = await import('../lib/api');
 
 
-            // Use baked working bytes (respects page deletions/rotations) instead of original file
-            const workingBytes = await ctx.getWorkingBytes();
-            const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
-            const serverPath = await uploadFileForNup(workingFile);
+            // A clean on-disk PDF can go straight to the local backend. Edited or
+            // in-memory documents deliberately keep the existing bake/upload path.
+            let serverPath = await ctx.getWorkingSourcePath?.();
+            if (!serverPath) {
+                const workingBytes = await ctx.getWorkingBytes();
+                const workingFile = new File([workingBytes as any], file.name, { type: 'application/pdf' });
+                serverPath = await uploadFileForNup(workingFile);
+            }
 
             // Watermark: backend tự lấy license từ header X-License-Key đã verify
             // (imposition.py inject _license_key) nên frontend không cần gửi watermarkKey.
@@ -148,26 +153,47 @@ export async function runProcessEngine(
 
             let done = false;
             while (!done) {
-                await new Promise(r => setTimeout(r, 500));
                 const status = await getNupJobStatus(jobId);
 
                 if (status.status === 'completed') {
                     done = true;
-                    setProcessStatus(i18n.t('lib.processHandlers:dang_tai_file_ket_qua_ve'));
-                    const blob = await downloadNupJob(jobId);
                     const newFileName = `Imposed_${file.name.replace('.pdf', '')}_.pdf`;
+                    const nativeOutputPath = (
+                        typeof window !== 'undefined'
+                        && (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+                        && status.output_path
+                    ) ? status.output_path as string : undefined;
+                    const sp = (settings as any).savePrintConfig;
+                    const autoSavePrint = !!((settings as any).autoSavePrint && sp?.folder);
+                    let blob: Blob;
+                    if (!nativeOutputPath || autoSavePrint) {
+                        setProcessStatus(i18n.t('lib.processHandlers:dang_tai_file_ket_qua_ve'));
+                        blob = await downloadNupJob(jobId);
+                    } else {
+                        blob = new Blob(['native-path'], { type: 'application/pdf' });
+                    }
 
                     if (spawnNewTab && onSpawnTab) {
-                        onSpawnTab(new File([blob], newFileName, { type: 'application/pdf' }), { report: status.report });
+                        const outputFile = new File([blob], newFileName, { type: 'application/pdf' });
+                        if (nativeOutputPath) {
+                            Object.defineProperty(outputFile, 'path', { value: nativeOutputPath });
+                            try {
+                                const { stat } = await import('@tauri-apps/plugin-fs');
+                                const info = await stat(nativeOutputPath);
+                                Object.defineProperty(outputFile, 'size', { value: Number(info.size || 0) });
+                            } catch {
+                                // Native rendering only needs the physical path.
+                            }
+                        }
+                        onSpawnTab(outputFile, { report: status.report });
                         setProcessStatus('');
                     } else {
-                        commitWorkingFile(blob, newFileName);
+                        await commitWorkingFile(blob, newFileName, nativeOutputPath);
                         if (status.report) setReportMsg(status.report);
                     }
 
                     // ═══ Tự động lưu file in (đã cài trước khi bình) ═══
-                    const sp = (settings as any).savePrintConfig;
-                    if ((settings as any).autoSavePrint && sp?.folder) {
+                    if (autoSavePrint) {
                         try {
                             setProcessStatus(i18n.t('lib.processHandlers:dang_tu_dong_luu_file_in'));
                             const { savePrintFilesToFolder, pagesPerTypeFor } = await import('../lib/savePrintFiles');
@@ -197,6 +223,7 @@ export async function runProcessEngine(
                     if (prog.includes('/')) {
                         setProcessStatus(i18n.t('lib.processHandlers:dang_xu_ly_prog_trang_da_binh', { prog }));
                     }
+                    await new Promise(r => setTimeout(r, 500));
                 }
             }
         } else {

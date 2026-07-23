@@ -15,7 +15,8 @@ Bố cục trang:
   - 1 mặt: [Front, Cut].
 """
 
-import io
+import os
+import tempfile
 import math
 import logging
 from typing import Dict, Any
@@ -499,15 +500,32 @@ def run_cnc_two_sided(source_path: str, output_path: str, settings: Dict[str, An
 
     # Cache kích thước thành phẩm TRƯỚC KHI đóng src_doc (để report block dùng)
     _trim_cache: Dict[int, tuple] = {}
-    for fi in front_idxs:
-        _trim_cache[fi] = _trim_dims(src_doc[fi])
+    if report_enabled:
+        for fi in front_idxs:
+            _trim_cache[fi] = _trim_dims(src_doc[fi])
 
-    buf = io.BytesIO()
-    out_doc.save(buf, garbage=0, deflate=True)
-    out_doc.close()
-    src_doc.close()
-    with open(output_path, 'wb') as f:
-        f.write(buf.getvalue())
+    output_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+    temp_fd, temp_output = tempfile.mkstemp(
+        prefix=".prynx_cnc_", suffix=".pdf", dir=output_dir,
+    )
+    try:
+        with os.fdopen(temp_fd, "wb") as output_stream:
+            out_doc.save(output_stream, garbage=0, deflate=True)
+        out_doc.close()
+        src_doc.close()
+        os.replace(temp_output, output_path)
+    except Exception:
+        try:
+            out_doc.close()
+            src_doc.close()
+        except Exception:
+            pass
+        try:
+            os.unlink(temp_output)
+        except OSError:
+            pass
+        raise
+
 
     # ── Vẽ report (1 dòng tóm tắt mỗi đơn vị) lên Mặt trước + Khuôn (tuỳ chọn) ──
     if report_enabled:

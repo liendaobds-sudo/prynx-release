@@ -48,7 +48,7 @@ def test_deletes_old_app_prefixed_files(fake_temp):
 def test_deletes_every_whitelisted_prefix(fake_temp):
     names = [
         "vdp_preview_a.pdf", "vdp_preview_tpl_b.pdf", "vdp_chunk_c.pdf",
-        "vdp_canon_d.pdf", "vdp_prog_e.txt", "nup_prog_f.txt", "nup_state_g.txt",
+        "vdp_canon_d.pdf", "vdp_prog_e.txt", "nup_prog_f.txt", "nup_canon_h.pdf", "nup_perf_i.json", "nup_state_g.txt",
     ]
     for n in names:
         _touch(fake_temp / n, age_seconds=48 * 3600)

@@ -15,6 +15,7 @@ Design constraints (match the rest of the codebase):
 from __future__ import annotations
 
 import glob
+import json
 import os
 import threading
 import time
@@ -191,6 +192,59 @@ def _paths_size_mb(patterns: tuple[str, ...]) -> Optional[float]:
         except OSError:
             continue
     return float(total) / (1024.0 * 1024.0) if matched else 0.0
+
+
+class PerfStages:
+    """Low-cost stage timer created only when performance sampling is enabled."""
+
+    def __init__(self):
+        self._started = time.monotonic()
+        self._previous = self._started
+        self._values: dict[str, float] = {}
+
+    def mark(self, name: str) -> float:
+        now = time.monotonic()
+        elapsed = now - self._previous
+        self._previous = now
+        self._values[name] = round(elapsed, 6)
+        return elapsed
+
+    def finish(self) -> dict[str, float]:
+        self._values["engine_total_s"] = round(time.monotonic() - self._started, 6)
+        return dict(self._values)
+
+
+def write_perf_stages(path: str, stages: dict[str, float]) -> None:
+    """Write child-process stage timings for the parent JOBPERF record."""
+    if not perf_enabled() or not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(stages, handle, sort_keys=True)
+    except Exception:
+        pass
+
+
+def read_perf_stages(path: str) -> dict[str, float]:
+    """Read a stage file defensively; malformed instrumentation never breaks jobs."""
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+        if not isinstance(raw, dict):
+            return {}
+        result = {}
+        for name, value in raw.items():
+            if not isinstance(name, str) or isinstance(value, bool):
+                continue
+            try:
+                result[name] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return result
+    except Exception:
+        return {}
 
 
 class ProcessRssSampler:

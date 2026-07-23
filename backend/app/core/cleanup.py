@@ -34,6 +34,8 @@ APP_TEMP_PREFIXES = (
     "vdp_canon_",
     "vdp_prog_",
     "nup_prog_",
+    "nup_canon_",
+    "nup_perf_",
     "nup_state_",
 )
 # Ngưỡng tuổi riêng cho OS temp: đủ dài hơn job VDP/NUP dài nhất, đủ ngắn để không

@@ -33,6 +33,17 @@ class PlanExecutor:
 
     @staticmethod
     async def execute(instruction_json: dict, source_pdf_path: str = None) -> str:
+        """Run the synchronous PDF renderer off the event loop with a heavy slot."""
+        from app.core.heavy_job_scheduler import run_scheduled_in_threadpool
+
+        return await run_scheduled_in_threadpool(
+            "booklet", PlanExecutor._execute_sync,
+            instruction_json, source_pdf_path,
+        )
+
+
+    @staticmethod
+    def _execute_sync(instruction_json: dict, source_pdf_path: str = None) -> str:
         """
         Execute an imposition plan.
 
@@ -43,6 +54,14 @@ class PlanExecutor:
         Returns:
             Absolute path to the output PDF file.
         """
+        perf_stages = None
+        try:
+            from app.core.perf_sampler import PerfStages, perf_enabled
+            if perf_enabled():
+                perf_stages = PerfStages()
+        except Exception:
+            perf_stages = None
+
         try:
             version = instruction_json.get("version", "1.0")
             src_path = source_pdf_path or instruction_json["source_pdf_path"]
@@ -66,6 +85,8 @@ class PlanExecutor:
 
             # Create output PDF
             output_doc = pdf_lib.open()
+            if perf_stages is not None:
+                perf_stages.mark("source_open_s")
 
             phase2 = instruction_json.get("phase2")
             temp_doc = None
@@ -170,8 +191,12 @@ class PlanExecutor:
             output_filename = f"imposed_plan_{_uuid.uuid4().hex[:8]}.pdf"
             output_path = os.path.join(output_dir, output_filename)
 
+            if perf_stages is not None:
+                perf_stages.mark("render_s")
             logger.info(f"PlanExecutor: Saving output to {output_path}")
             output_doc.save(output_path, garbage=4, deflate=True)
+            if perf_stages is not None:
+                perf_stages.mark("save_s")
 
             # Stealth watermark
             _wm_license = instruction_json.get('_license_key', '')
@@ -196,6 +221,8 @@ class PlanExecutor:
             output_doc.close()
             if temp_doc is not None:
                 temp_doc.close()
+            if perf_stages is not None:
+                perf_stages.mark("watermark_cleanup_s")
 
             # Optional book/magazine product report. Stamp only after all PDF
             # handles are closed so the same path is safe on Windows as well.
@@ -239,6 +266,21 @@ class PlanExecutor:
                             pass
 
             logger.info(f"PlanExecutor: Done. Output at {output_path}")
+            if perf_stages is not None:
+                try:
+                    perf_stages.mark("report_s")
+                    from app.core.perf_sampler import write_job_perf
+                    perf_record = {
+                        "job": "book",
+                        "source_pages": total_src_pages,
+                        "sheets": len(sheets),
+                        "output_mb": round(os.path.getsize(output_path) / (1024.0 * 1024.0), 1),
+                    }
+                    perf_record.update(perf_stages.finish())
+                    write_job_perf(perf_record)
+                except Exception:
+                    pass
+
             return os.path.abspath(output_path)
 
         except PlanExecutionError:

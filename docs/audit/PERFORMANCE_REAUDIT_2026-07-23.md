@@ -119,3 +119,46 @@ The verdict above records the state that was independently audited. The current 
 ### Claims that intentionally remain open
 
 The code now provides reproducible opt-in measurements, but this remediation does **not** invent before/after product numbers. Peak RSS for production-scale N-Up/VDP/Compare workloads, Tauri/WebView2 cold launch and scroll traces, cancellation latency, and P95 status latency still require representative customer fixtures and the target release hardware. Until that matrix is captured, performance improvement claims remain **unproven**, even though the correctness, admission, cleanup and budget gates above pass.
+
+## Execution follow-up - 2026-07-23
+
+The post-audit remediation plan has now been implemented in the current working tree. This section records only locally reproduced behavior and does not replace the historical audit snapshot above.
+
+| Work item | Implemented result |
+|---|---|
+| Large source-page traversal | File-backed pdf_wrapper documents materialize the pikepdf page list once and retain at most 512 lazy Page wrappers. New/output documents remain uncached so page-tree mutation behavior is unchanged. |
+| Guillotine repeat planning | Per-sheet source/ordinal metadata is built once in O(S), passed chunk-locally, and reused by the Rust mapping and final-sheet quantity trimming. Legacy direct process_chunk callers remain supported. |
+| Rotated blank and canonical lifetime | Rotated pages without /Contents receive a harmless transformed stream; canonical temp files are job-scoped and removed on success, failure, and outer-process cancellation. |
+| Booklet, CNC, and telemetry | Booklet execution is off-loop under the shared heavy-job scheduler; CNC writes to a same-directory temp file and atomically replaces the destination without a whole-output BytesIO copy; opt-in stage timings cover N-Up and Booklet. |
+| Desktop N-Up transport | Clean path-backed Tauri inputs go directly to the local backend. Edited/recovered/in-memory inputs retain bake plus upload. Completed desktop jobs expose output_path, so the WebView skips result download unless browser mode or auto-save needs the Blob. Status timestamps and immediate first polling are included. |
+
+### Reproduced measurements
+
+| Probe | Result |
+|---|---|
+| 10,000-page source open/materialization | 0.5319 s |
+| 10,000-page wrapper scan | 0.0799 s, wrapper cache bounded at 512 |
+| Audit comparison scan | 7.572 s |
+| 10,000-sheet repeat metadata build | 0.001866 s |
+
+These are focused local microbenchmarks, not customer-workload P95 or end-to-end release claims.
+
+### Gates after this follow-up
+
+| Gate | Result |
+|---|---|
+| Backend changed-area suite | PASS - 90 tests |
+| Backend full suite with isolated temporary SQLite | PASS - 1,145 passed, 7 skipped |
+| N-Up lifecycle and desktop status contract | PASS - 9 tests |
+| Desktop full suite | PASS - 965 passed, 2 skipped across 114 files |
+| Desktop typecheck | PASS |
+| Desktop production build | PASS - entry chunk 1,149.24 kB, below the 1.5 MB budget |
+| Lint budget | PASS - 1,509 errors / 112 warnings; the budget was not increased |
+| Python compile gate for changed backend modules | PASS |
+| git diff --check | PASS |
+
+The backend test harness now provisions its own temporary SQLite database and schema, then removes it after the session. The full suite passes from the repository root without PostgreSQL and without touching the development or production database.
+
+### Still intentionally open
+
+Representative production fixtures and target release hardware are still required for process-tree peak RSS, peak temp usage under sustained concurrency, cancellation latency, Tauri/WebView2 cold launch and scroll traces, and P95 status latency. No values for those metrics are inferred from correctness tests or the focused microbenchmarks.

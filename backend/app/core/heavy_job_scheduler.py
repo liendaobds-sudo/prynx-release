@@ -65,4 +65,11 @@ def _run_heavy(kind: str, function: Callable[..., T], *args: Any, **kwargs: Any)
 
 async def run_heavy_in_threadpool(function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Run one PDF-tool operation off-loop and under the shared scheduler."""
-    return await _run_in_threadpool(_run_heavy, "pdf-tools", function, *args, **kwargs)
+    return await run_scheduled_in_threadpool("pdf-tools", function, *args, **kwargs)
+
+
+async def run_scheduled_in_threadpool(
+    kind: str, function: Callable[..., T], *args: Any, **kwargs: Any
+) -> T:
+    """Run synchronous heavy work off-loop under the shared scheduler."""
+    return await _run_in_threadpool(_run_heavy, kind, function, *args, **kwargs)

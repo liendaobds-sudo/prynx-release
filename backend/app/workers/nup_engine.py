@@ -55,8 +55,39 @@ from app.workers.imposition_finalize import finalize_placements
 
 from app.workers.nup_process_chunk import process_chunk
 
+def _build_repeat_sheet_metadata(sheet_mapping):
+    """Return ``sheet -> (source page, ordinal for that page)`` in O(S)."""
+    if not sheet_mapping:
+        return {}
 
-def _canonicalize_rotation(source_path: str) -> tuple:
+    metadata = {}
+    seen_by_source = {}
+    if isinstance(sheet_mapping, dict):
+        def _value(index):
+            return sheet_mapping.get(index, sheet_mapping.get(str(index)))
+        indices = []
+        for index in sheet_mapping:
+            try:
+                indices.append(int(index))
+            except (TypeError, ValueError):
+                continue
+        indices = sorted(set(indices))
+    else:
+        _value = sheet_mapping.__getitem__
+        indices = range(len(sheet_mapping))
+
+    for sheet_index in indices:
+        try:
+            source_index = int(_value(sheet_index))
+        except (KeyError, TypeError, ValueError):
+            continue
+        ordinal = seen_by_source.get(source_index, 0)
+        metadata[sheet_index] = (source_index, ordinal)
+        seen_by_source[source_index] = ordinal + 1
+    return metadata
+
+
+def _canonicalize_rotation(source_path: str, job_id: str = None) -> tuple:
     """Bake /Rotate ≠ 0 vào content stream để mọi bước hạ nguồn (die detection, trim,
     layout, placement) thấy trang KHÔNG xoay. Trả (path, is_temp).
 
@@ -100,13 +131,17 @@ def _canonicalize_rotation(source_path: str) -> tuple:
                     mtx = (0.0, 1.0, -1.0, 0.0, my0 + mh, -mx0)
                     new_w, new_h = mh, mw
                 ma, mb_, mc, md, me, mf = mtx
-                page.contents_coalesce()
-                stream = page.obj["/Contents"]
-                old = stream.read_bytes()
                 prefix = (
                     f"q {ma:.6g} {mb_:.6g} {mc:.6g} {md:.6g} {me:.4f} {mf:.4f} cm\n"
                 ).encode("ascii")
-                stream.write(prefix + old + b"\nQ")
+                if "/Contents" in page.obj:
+                    page.contents_coalesce()
+                    stream = page.obj["/Contents"]
+                    old = stream.read_bytes()
+                    stream.write(prefix + old + b"\nQ")
+                else:
+                    # A rotated blank page legitimately has no content stream.
+                    page.obj["/Contents"] = pikepdf.Stream(_p, prefix + b"Q")
                 page.MediaBox = pikepdf.Array([0, 0, new_w, new_h])
                 page.CropBox = pikepdf.Array([0, 0, new_w, new_h])
                 page.Rotate = 0
@@ -117,7 +152,11 @@ def _canonicalize_rotation(source_path: str) -> tuple:
                         xs = [ma * px + mc * py + me for px, py in corners]
                         ys = [mb_ * px + md * py + mf for px, py in corners]
                         page[box] = pikepdf.Array([min(xs), min(ys), max(xs), max(ys)])
-            out = os.path.join(tempfile.gettempdir(), f"nup_canon_{uuid.uuid4().hex}.pdf")
+            owner = "".join(
+                char for char in str(job_id or "")
+                if char.isalnum() or char in "-_"
+            ) or "direct"
+            out = os.path.join(tempfile.gettempdir(), f"nup_canon_{owner}_{uuid.uuid4().hex}.pdf")
             _p.save(out)
             _p.close()
             return out, True
@@ -139,6 +178,54 @@ def _effective_diecut_grouping(layout_type, is_die_cut, grouping_strategy):
 
 
 def run_nup_engine(
+    source_path: str,
+    output_path: str,
+    settings: Dict[str, Any],
+    job_id: str = None,
+    progress_callback=None,
+) -> str:
+    """Own the rotated-source temporary file for the complete N-Up lifecycle."""
+    perf_stages = None
+    perf_path = None
+    try:
+        from app.core.perf_sampler import PerfStages, perf_enabled
+        if perf_enabled():
+            perf_stages = PerfStages()
+            if job_id:
+                perf_path = os.path.join(tempfile.gettempdir(), f"nup_perf_{job_id}.json")
+    except Exception:
+        perf_stages = None
+
+    canonical_path, is_temporary = _canonicalize_rotation(source_path, job_id)
+    if perf_stages is not None:
+        perf_stages.mark("canonical_s")
+    try:
+        return _run_nup_engine_impl(
+            canonical_path,
+            output_path,
+            settings,
+            job_id=job_id,
+            progress_callback=progress_callback,
+            _perf_stages=perf_stages,
+        )
+    finally:
+        if is_temporary:
+            try:
+                os.remove(canonical_path)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                logger.warning("[ROTATE-CANON] cannot remove %s: %s", canonical_path, error)
+        if perf_stages is not None and perf_path:
+            try:
+                perf_stages.mark("canonical_cleanup_s")
+                from app.core.perf_sampler import write_perf_stages
+                write_perf_stages(perf_path, perf_stages.finish())
+            except Exception:
+                pass
+
+
+def _run_nup_engine_impl(
 
     source_path: str,
 
@@ -149,6 +236,8 @@ def run_nup_engine(
     job_id: str = None,
 
     progress_callback=None,
+
+    _perf_stages=None,
 
 ) -> str:
 
@@ -162,7 +251,7 @@ def run_nup_engine(
     # TRƯỚC cả route CNC, để cả hai nhánh (nup + CNC) nhận file đã chuẩn hoá — mọi bước
     # hạ nguồn (die detection, trim, layout, placement) thấy trang KHÔNG xoay. File không
     # xoay giữ nguyên byte. Temp nup_canon_* được dọn bởi cơ chế dọn OS temp prefix nup_.
-    source_path, _rot_is_temp = _canonicalize_rotation(source_path)
+    # Rotation is canonicalized by the public wrapper before entering this implementation.
 
     # ── Định tuyến công cụ Bình Bế Rớt (CNC): renderer riêng, không đụng luồng repeat ──
     if settings.get('imposerMode') == 'cnc':
@@ -2929,6 +3018,11 @@ def run_nup_engine(
                 precalculated_placements = new_precalc
                 total_sheets = len(new_precalc)
 
+    repeat_sheet_metadata = (
+        _build_repeat_sheet_metadata(sheet_mapping)
+        if layout_type == 'repeat' else {}
+    )
+
     align = settings.get('align', 'center')
 
     active_grid_w = layout['overallWidth']
@@ -3021,6 +3115,11 @@ def run_nup_engine(
 
 
 
+            {
+                s: repeat_sheet_metadata[s] for s in range(start_sheet, end_sheet)
+                if s in repeat_sheet_metadata
+            } if repeat_sheet_metadata else None,
+
             (homogeneous_master_idx is not None),  # _homogeneousMode: bật registration đồng nhất (trộn mẫu)
 
             # Master path bế: homogeneous trộn mẫu HOẶC single-mold Bình trang (chỉ vẽ/geom khuôn).
@@ -3032,6 +3131,8 @@ def run_nup_engine(
 
         chunk_idx += 1
 
+    if _perf_stages is not None:
+        _perf_stages.mark("plan_s")
     chunk_paths = []
 
     if len(args_list) > 0:
@@ -3054,6 +3155,8 @@ def run_nup_engine(
 
                 chunk_paths = list(pool.map(process_chunk, args_list))
 
+    if _perf_stages is not None:
+        _perf_stages.mark("render_chunks_s")
     # Mốc tiến trình finalize (để chẩn đoán nếu kẹt ở bước nào)
     def _stage(msg):
         if prog_file:
@@ -3174,6 +3277,8 @@ def run_nup_engine(
         except OSError:
             pass
 
+    if _perf_stages is not None:
+        _perf_stages.mark("merge_save_s")
     _shared_master_cut = (
         homogeneous_master_idx is not None
         or (layout_type == 'repeat' and single_mold_master_idx is not None)
@@ -3392,4 +3497,6 @@ def run_nup_engine(
 
         report_lines.append(f"Hiệu suất: {total_capacity} tem / tấm kẽm.")
 
+    if _perf_stages is not None:
+        _perf_stages.mark("postprocess_s")
     return "\n".join(report_lines)

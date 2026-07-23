@@ -143,34 +143,70 @@ class Page:
 
 
 class Document:
+    _SOURCE_PAGE_WRAPPER_CACHE_LIMIT = 512
+
     def __init__(self, pikepdf_doc, path=None):
         self._pdf = pikepdf_doc
         self._path = path
+        # File-backed documents are immutable source inputs in the worker
+        # pipeline. Materialising pikepdf's page list once avoids an
+        # increasingly expensive page-tree lookup for every ``doc[i]`` on
+        # very large PDFs. Newly-created output documents remain uncached.
+        self._source_pages = list(pikepdf_doc.pages) if path else None
+        self._source_page_wrappers = {} if path else None
+
 
     def __len__(self):
-        return len(self._pdf.pages)
+        return len(self._source_pages) if self._source_pages is not None else len(self._pdf.pages)
 
     @property
     def page_count(self):
-        return len(self._pdf.pages)
+        return len(self)
 
     def __getitem__(self, i):
-        return Page(self, self._pdf.pages[i])
+        if self._source_pages is None:
+            return Page(self, self._pdf.pages[i])
+
+        page_count = len(self._source_pages)
+        normalized = i + page_count if i < 0 else i
+        if normalized < 0 or normalized >= page_count:
+            raise IndexError("page index out of range")
+        page = self._source_page_wrappers.get(normalized)
+        if page is None:
+            page = Page(self, self._source_pages[normalized])
+            self._source_page_wrappers[normalized] = page
+            if len(self._source_page_wrappers) > self._SOURCE_PAGE_WRAPPER_CACHE_LIMIT:
+                self._source_page_wrappers.pop(next(iter(self._source_page_wrappers)))
+        return page
 
     def __iter__(self):
-        for i in range(len(self)):
-            yield self[i]
+        if self._source_pages is not None:
+            for i in range(len(self._source_pages)):
+                yield self[i]
+            return
+        for page in self._pdf.pages:
+            yield Page(self, page)
 
     def new_page(self, width=-1, height=-1):
         if width == -1: width = 595.0
         if height == -1: height = 842.0
         p = self._pdf.add_blank_page(page_size=(width, height))
+        self.invalidate_page_cache()
         return Page(self, p)
+
+    def invalidate_page_cache(self):
+        """Drop cached source pages after an explicit page-tree mutation."""
+        if self._source_pages is not None:
+            self._source_pages = list(self._pdf.pages)
+            self._source_page_wrappers.clear()
 
     def save(self, path, garbage=0, deflate=True):
         self._pdf.save(path)
 
     def close(self):
+        if self._source_page_wrappers is not None:
+            self._source_page_wrappers.clear()
+        self._source_pages = None
         self._pdf.close()
 
     def add_ocg(self, name, on=True, add_to_order=True, **kwargs):

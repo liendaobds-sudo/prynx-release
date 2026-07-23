@@ -110,3 +110,34 @@ def test_sampler_tracks_peak_job_temp_usage(monkeypatch, tmp_path):
     assert sampler.peak_mb == 25.0
     assert sampler.peak_temp_mb == 3.0
     assert sampler.sample_count == 2
+
+
+def test_perf_stages_records_deltas_and_total(monkeypatch):
+    readings = iter((10.0, 10.25, 10.75))
+    monkeypatch.setattr(perf_sampler.time, "monotonic", lambda: next(readings))
+
+    stages = perf_sampler.PerfStages()
+    assert stages.mark("render_s") == 0.25
+
+    assert stages.finish() == {"render_s": 0.25, "engine_total_s": 0.75}
+
+
+def test_perf_stage_file_round_trip_is_gated(monkeypatch, tmp_path):
+    path = tmp_path / "stages.json"
+    monkeypatch.delenv("PRYNX_PERF", raising=False)
+    perf_sampler.write_perf_stages(str(path), {"render_s": 1.5})
+    assert not path.exists()
+
+    monkeypatch.setenv("PRYNX_PERF", "1")
+    perf_sampler.write_perf_stages(str(path), {"render_s": 1.5})
+    assert perf_sampler.read_perf_stages(str(path)) == {"render_s": 1.5}
+
+
+def test_read_perf_stages_ignores_invalid_values(tmp_path):
+    path = tmp_path / "stages.json"
+    path.write_text(
+        '{"render_s": 1.25, "bad": "value", "flag": true}',
+        encoding="utf-8",
+    )
+
+    assert perf_sampler.read_perf_stages(str(path)) == {"render_s": 1.25}

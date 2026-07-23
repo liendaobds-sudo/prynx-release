@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import logging
 import re
+import time
 import asyncio
 from pathlib import Path
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
@@ -1071,12 +1072,18 @@ def _purge_old_nup_jobs():
 
 def _cleanup_nup_chunk_files(job_id: str):
     """Remove chunk PDFs left by completed, failed, or cancelled N-Up workers."""
-    pattern = os.path.join(tempfile.gettempdir(), f"prynx_nup_{job_id}_*.pdf")
-    for path in glob.glob(pattern):
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    temp_dir = tempfile.gettempdir()
+    patterns = (
+        os.path.join(temp_dir, f"prynx_nup_{job_id}_*.pdf"),
+        os.path.join(temp_dir, f"nup_canon_{job_id}_*.pdf"),
+        os.path.join(temp_dir, f"nup_perf_{job_id}.json"),
+    )
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _cleanup_job_temp(job_id: str):
@@ -1140,6 +1147,7 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
             # Publish only a genuinely started Process so cancellation never
             # attempts to terminate an unstarted multiprocessing object.
             job["status"] = "running"
+            job["started_at"] = time.time()
             proc.start()
             job["process"] = proc
             job["pid"] = proc.pid
@@ -1151,6 +1159,8 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
                     proc.pid or 0,
                     temp_patterns=(
                         os.path.join(temp_dir, f"prynx_nup_{job_id}_*.pdf"),
+                        os.path.join(temp_dir, f"nup_canon_{job_id}_*.pdf"),
+                        os.path.join(temp_dir, f"nup_perf_{job_id}.json"),
                         os.path.join(temp_dir, f"nup_state_{job_id}.txt"),
                         os.path.join(temp_dir, f"nup_prog_{job_id}.txt"),
                     ),
@@ -1165,6 +1175,8 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
                 current_job
                 and (current_job.get("cancel_requested") or current_job.get("status") == "cancelled")
             )
+            if current_job:
+                current_job["completed_at"] = current_job.get("completed_at") or time.time()
             if current_job and current_job.get("process") is proc:
                 current_job["process"] = None
         if proc.exitcode not in (0, None) and not cancelled:
@@ -1183,11 +1195,11 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
                 pass
         if perf_on:
             try:
-                from app.core.perf_sampler import write_job_perf
+                from app.core.perf_sampler import read_perf_stages, write_job_perf
                 out_mb = None
                 if os.path.exists(output_path):
                     out_mb = round(os.path.getsize(output_path) / (1024.0 * 1024.0), 1)
-                write_job_perf({
+                perf_record = {
                     "job": "nup",
                     "job_id": job_id,
                     "duration_s": round(time.monotonic() - t_start, 2),
@@ -1195,7 +1207,10 @@ def _spawn_nup_process(source_path: str, output_path: str, settings: dict, job_i
                     "peak_temp_mb": round(sampler.peak_temp_mb, 1) if sampler and sampler.peak_temp_mb is not None else None,
                     "samples": sampler.sample_count if sampler else None,
                     "output_mb": out_mb,
-                })
+                }
+                stage_path = os.path.join(tempfile.gettempdir(), f"nup_perf_{job_id}.json")
+                perf_record.update(read_perf_stages(stage_path))
+                write_job_perf(perf_record)
             except Exception:
                 pass
         _cleanup_nup_chunk_files(job_id)
@@ -1265,7 +1280,6 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     job_id = str(uuid.uuid4())[:8]
     output_path = os.path.join(RESULTS_DIR, f"{prefix}_{job_id}.pdf")
 
-    import time
     nup_jobs[job_id] = {
         "status": "queued",
         "progress": "0/0",
@@ -1273,6 +1287,8 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         "output_path": output_path,
         "error": None,
         "created_at": time.time(),
+        "started_at": None,
+        "completed_at": None,
         "cancel_requested": False,
         "process": None,
         "pid": None,
@@ -1336,6 +1352,8 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
             with open(state_file, 'r', encoding='utf-8') as f:
                 parts = f.read().split('|||', 1)
                 job["status"] = parts[0]
+                if parts[0] in {"completed", "failed"}:
+                    job["completed_at"] = job.get("completed_at") or time.time()
                 if parts[0] == "completed":
                     job["report"] = parts[1] if len(parts) > 1 else ""
                 else:
@@ -1348,6 +1366,14 @@ async def get_nup_status(job_id: str, _: dict = Depends(require_license)):
         "progress": job["progress"],
         "report": job.get("report", ""),
         "error": job.get("error"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+        "output_path": (
+            job.get("output_path")
+            if settings.IS_DESKTOP_APP and job.get("status") == "completed"
+            else None
+        ),
     }
 
 
@@ -1383,6 +1409,7 @@ async def cancel_nup_job(job_id: str, _: dict = Depends(require_license)):
         job["cancel_requested"] = True
         job["status"] = "cancelled"
         job["error"] = None
+        job["completed_at"] = job.get("completed_at") or time.time()
         proc = job.get("process")
 
     stopped = True

@@ -264,3 +264,39 @@ def test_cancel_nup_is_idempotent_for_missing_and_terminal_jobs():
         assert terminal["cancelled"] is False
     finally:
         imposition.nup_jobs.pop("done", None)
+
+
+@pytest.mark.parametrize(
+    ("is_desktop", "expected_path"),
+    [
+        (True, "result.pdf"),
+        (False, None),
+    ],
+)
+def test_nup_status_exposes_timestamps_and_desktop_output_path(
+    monkeypatch,
+    tmp_path,
+    is_desktop,
+    expected_path,
+):
+    job_id = f"status-{int(is_desktop)}"
+    monkeypatch.setattr(imposition.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(imposition.settings, "IS_DESKTOP_APP", is_desktop)
+    imposition.nup_jobs[job_id] = {
+        "status": "completed",
+        "progress": "1/1",
+        "report": "ok",
+        "error": None,
+        "output_path": "result.pdf",
+        "created_at": 1.0,
+        "started_at": 2.0,
+        "completed_at": 3.0,
+    }
+    try:
+        status = asyncio.run(imposition.get_nup_status(job_id, {}))
+        assert status["created_at"] == 1.0
+        assert status["started_at"] == 2.0
+        assert status["completed_at"] == 3.0
+        assert status["output_path"] == expected_path
+    finally:
+        imposition.nup_jobs.pop(job_id, None)
