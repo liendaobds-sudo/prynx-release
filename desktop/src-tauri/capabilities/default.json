@@ -21,7 +21,8 @@
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
         { "path": "$HOME/**" },
-        { "path": "$APPDATA/**" }
+        { "path": "$APPDATA/**" },
+        { "path": "$TEMP/**" }
       ],
       "deny": [
         { "path": "$HOME/.ssh/**" },
@@ -40,7 +41,8 @@
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
         { "path": "$HOME/**" },
-        { "path": "$APPDATA/**" }
+        { "path": "$APPDATA/**" },
+        { "path": "$TEMP/**" }
       ],
       "deny": [
         { "path": "$HOME/.ssh/**" },
@@ -78,7 +80,8 @@
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
         { "path": "$HOME/**" },
-        { "path": "$APPDATA/**" }
+        { "path": "$APPDATA/**" },
+        { "path": "$TEMP/**" }
       ],
       "deny": [
         { "path": "$HOME/.ssh/**" },

@@ -69,10 +69,10 @@ def _log_sticker_response_complete(started: float, job_id: str, output_path: str
 
 
 def _finish_sticker_response(started: float, job_id: str, output_path: str) -> None:
-    try:
-        _log_sticker_response_complete(started, job_id, output_path)
-    finally:
-        _cleanup_file(output_path)
+    # Không xóa output ở đây: frontend dùng lại file qua đường dẫn (native render
+    # path-based sau khi crop → tem bế), nên xóa ngay sau response gây 404. File nằm
+    # trong results/ và được cleanup theo tuổi lo (app/core/cleanup.py) như job khác.
+    _log_sticker_response_complete(started, job_id, output_path)
 
 UPLOAD_DIR = settings.UPLOAD_DIR
 RESULTS_DIR = settings.RESULTS_DIR
