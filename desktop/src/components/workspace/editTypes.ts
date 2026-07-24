@@ -24,7 +24,7 @@ export type Matrix = [number, number, number, number, number, number];
 export type ResizeAnchor = 'nw' | 'ne' | 'sw' | 'se';
 
 /** Loại thao tác sửa hỗ trợ. */
-export type EditKind = 'delete' | 'move' | 'affine' | 'resize' | 'rotate' | 'editText' | 'replaceImage' | 'clipImage' | 'add' | 'objectVisibility'
+export type EditKind = 'delete' | 'move' | 'affine' | 'resize' | 'rotate' | 'editText' | 'replaceImage' | 'clipImage' | 'add' | 'paste' | 'objectVisibility'
     | 'layerVisibility' | 'layerLock' | 'layerRename' | 'layerReorder' | 'layerDelete';
 
 /**
@@ -105,6 +105,8 @@ export interface EditOp {
     page: number;
     kind: EditKind;
     targetIds: string[];
+    /** Trang nguồn cho `paste` (object được trích từ đây; `page` là trang đích). */
+    sourcePage?: number;
     delta?: MoveDelta;
     affine?: Matrix;
     scale?: ResizeScale;

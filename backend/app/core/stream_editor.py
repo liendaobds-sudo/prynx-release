@@ -3352,12 +3352,344 @@ def add_object(
     return add_image(page, image_source, bbox, pdf)
 
 
+# ── Copy/Paste (task paste) ─────────────────────────────────────────────────
+
+@dataclass
+class PasteResult:
+    """
+    Kết quả của một thao tác dán (paste / nhân bản object).
+
+    - `changed`      : có ghi thay đổi hay không (False = no-op).
+    - `pasted_spans` : các OpSpan nguồn đã được nhân bản.
+    - `dx`, `dy`     : offset (hệ PDF bottom-left) đã áp cho bản dán.
+    - `count`        : số object đã dán.
+    - `cross_page`   : True nếu dán sang trang khác trang nguồn.
+    - `message`      : mô tả ngắn.
+    """
+
+    changed: bool
+    pasted_spans: list[OpSpan] = field(default_factory=list)
+    dx: float = 0.0
+    dy: float = 0.0
+    count: int = 0
+    cross_page: bool = False
+    message: str = ""
+
+
+_IDENTITY_M = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+
+# Các operator SET graphics-state (màu fill/stroke, colorspace, line-width, gs…).
+# CHÚNG NẰM NGOÀI OpSpan (segment_ops chỉ bao path-construct→paint), nên khi TRÍCH
+# slice ra cuối stream để dán, phải REPLAY lại các op này bên trong q…Q — nếu không
+# object dán MẤT MÀU (về đen mặc định). Đây là ràng buộc an-toàn-màu (Yêu cầu 4.7).
+_STATE_OPS = frozenset({
+    "g", "G", "rg", "RG", "k", "K", "cs", "CS", "sc", "SC", "scn", "SCN",
+    "w", "J", "j", "M", "d", "ri", "i", "gs",
+})
+
+# Colorspace dựng sẵn — KHÔNG phải resource của trang, không remap khi cross-page.
+_DEVICE_COLORSPACES = frozenset({
+    "DeviceGray", "DeviceRGB", "DeviceCMYK", "Pattern",
+})
+
+
+def _capture_graphics_state(instructions: list, upto: int):
+    """
+    Replay `instructions[0:upto]` mô phỏng q/Q stack, trả về:
+      - danh sách instruction SET-state đang hiệu lực tại `upto` (theo thứ tự,
+        outer→inner scope) để tái dựng màu/gs cho slice dán;
+      - CTM tích lũy tại `upto` (6 phần tử) để tái dựng vị trí/scale gốc.
+
+    Vì slice được append ra CUỐI stream (CTM=identity), phải tự dựng lại cả màu
+    lẫn CTM; nếu không bản dán sai màu và sai chỗ.
+    """
+    state_stack: list[list] = [[]]
+    ctm: list[float] = list(_IDENTITY_M)
+    ctm_stack: list[list[float]] = []
+    limit = min(upto, len(instructions))
+    for i in range(limit):
+        instr = instructions[i]
+        op = str(instr.operator)
+        if op == "q":
+            state_stack.append([])
+            ctm_stack.append(list(ctm))
+        elif op == "Q":
+            if len(state_stack) > 1:
+                state_stack.pop()
+            if ctm_stack:
+                ctm = ctm_stack.pop()
+        elif op == "cm":
+            vals = [_as_float(o) for o in instr.operands]
+            if len(vals) == 6 and all(v is not None for v in vals):
+                ctm = mult_matrix([float(v) for v in vals], ctm)
+        elif op in _STATE_OPS:
+            state_stack[-1].append(instr)
+    flat: list = []
+    for scope in state_stack:
+        flat.extend(scope)
+    return flat, ctm
+
+
+def _resource_subdict(pg: pikepdf.Page, category: str):
+    """Trả `/Resources/<category>` (read-only) của trang, hoặc None."""
+    try:
+        resources = pg.obj.get("/Resources")
+        if resources is None:
+            return None
+        return resources.get("/" + category)
+    except Exception:  # noqa: BLE001 - resource lạ → coi như không có
+        return None
+
+
+def _ensure_resource_subdict(pg: pikepdf.Page, category: str):
+    """Trả `/Resources/<category>`, tạo mới nếu chưa có."""
+    resources = pg.obj.get("/Resources")
+    if resources is None:
+        resources = pikepdf.Dictionary()
+        pg.obj[pikepdf.Name("/Resources")] = resources
+    sub = resources.get("/" + category)
+    if sub is None:
+        sub = pikepdf.Dictionary()
+        resources[pikepdf.Name("/" + category)] = sub
+    return sub
+
+
+def _same_indirect(a, b) -> bool:
+    """True nếu hai object PDF trỏ cùng một indirect object (theo objgen)."""
+    try:
+        ga = getattr(a, "objgen", None)
+        gb = getattr(b, "objgen", None)
+        return ga is not None and ga == gb and ga != (0, 0)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _copy_resource(src_pg, dest_pg, category: str, name: str | None, cache: dict) -> str | None:
+    """
+    Copy một resource (theo tên) từ `/Resources/<category>` trang nguồn sang trang
+    đích với TÊN DUY NHẤT, trả tên mới. Vì edit-session giữ CÙNG một `pikepdf.Pdf`
+    cho cả tài liệu nên object đã indirect — chỉ cần thêm entry tham chiếu vào
+    `/Resources` trang đích, KHÔNG cần copy_foreign.
+
+    - Trả None nếu không tìm thấy (giữ operand cũ nguyên).
+    - Nếu trang đích đã có entry cùng tên TRỎ CÙNG object → tái dùng tên cũ.
+    - Va chạm tên khác object → sinh hậu tố `_pp{n}`.
+    """
+    if not name:
+        return None
+    ck = (category, name)
+    if ck in cache:
+        return cache[ck]
+    src_sub = _resource_subdict(src_pg, category)
+    if src_sub is None:
+        return None
+    src_key = pikepdf.Name("/" + name)
+    try:
+        if src_key not in src_sub:
+            return None
+        obj = src_sub[src_key]
+    except Exception:  # noqa: BLE001
+        return None
+    dest_sub = _ensure_resource_subdict(dest_pg, category)
+    existing = None
+    try:
+        existing = dest_sub.get(src_key)
+    except Exception:  # noqa: BLE001
+        existing = None
+    if existing is not None and _same_indirect(existing, obj):
+        cache[ck] = name
+        return name
+    new_name = name
+    suffix = 0
+    while pikepdf.Name("/" + new_name) in dest_sub:
+        suffix += 1
+        new_name = f"{name}_pp{suffix}"
+    dest_sub[pikepdf.Name("/" + new_name)] = obj
+    cache[ck] = new_name
+    return new_name
+
+
+def remap_span_resources(src_pg, dest_pg, instrs: list, cache: dict) -> list:
+    """
+    Copy mọi resource mà `instrs` tham chiếu (XObject/Font/ExtGState/ColorSpace/
+    Pattern/Shading/Properties) từ trang nguồn sang trang đích, rồi VIẾT LẠI tên
+    trong operand. Chỉ gọi khi dán CROSS-PAGE (cùng trang thì tên đã resolve sẵn).
+
+    Đây là bước không có sẵn trong edit-path; cần thiết để `/Im0 Do`, `/F1 Tf`,
+    `/GS0 gs`… trong slice trỏ đúng resource sau khi sang trang khác.
+    """
+    out: list = []
+    for instr in instrs:
+        op = str(instr.operator)
+        operands = list(instr.operands)
+        new_operands = operands
+        if op == "Do" and operands:
+            nm = _name_str(operands[0])
+            new = _copy_resource(src_pg, dest_pg, "XObject", nm, cache)
+            if new and new != nm:
+                new_operands = [pikepdf.Name("/" + new)]
+        elif op == "Tf" and operands:
+            nm = _name_str(operands[0])
+            new = _copy_resource(src_pg, dest_pg, "Font", nm, cache)
+            if new and new != nm:
+                new_operands = [pikepdf.Name("/" + new)] + operands[1:]
+        elif op == "gs" and operands:
+            nm = _name_str(operands[0])
+            new = _copy_resource(src_pg, dest_pg, "ExtGState", nm, cache)
+            if new and new != nm:
+                new_operands = [pikepdf.Name("/" + new)]
+        elif op == "sh" and operands:
+            nm = _name_str(operands[0])
+            new = _copy_resource(src_pg, dest_pg, "Shading", nm, cache)
+            if new and new != nm:
+                new_operands = [pikepdf.Name("/" + new)]
+        elif op in ("cs", "CS") and operands:
+            nm = _name_str(operands[0])
+            if nm and nm not in _DEVICE_COLORSPACES:
+                new = _copy_resource(src_pg, dest_pg, "ColorSpace", nm, cache)
+                if new and new != nm:
+                    new_operands = [pikepdf.Name("/" + new)]
+        elif op in ("scn", "SCN") and operands:
+            nm = _name_str(operands[-1])  # tên Pattern (nếu có) là operand cuối
+            if nm:
+                new = _copy_resource(src_pg, dest_pg, "Pattern", nm, cache)
+                if new and new != nm:
+                    new_operands = operands[:-1] + [pikepdf.Name("/" + new)]
+        elif op in ("BDC", "DP") and len(operands) >= 2:
+            nm = _name_str(operands[1])  # /OC /MC0 → operand[1] là tên Properties
+            if nm:
+                new = _copy_resource(src_pg, dest_pg, "Properties", nm, cache)
+                if new and new != nm:
+                    new_operands = [operands[0], pikepdf.Name("/" + new)]
+        if new_operands is operands:
+            out.append(instr)
+        else:
+            out.append(pikepdf.ContentStreamInstruction(new_operands, instr.operator))
+    return out
+
+
+def paste_objects(
+    source_page,
+    dest_page,
+    obj_metas,
+    dx: float,
+    dy: float,
+    pdf: pikepdf.Pdf,
+    coord_space: str = "pdf",
+) -> PasteResult:
+    """
+    Nhân bản (copy/paste) đúng tập object mục tiêu từ `source_page`, dán lệch
+    (dx, dy) vào `dest_page`. Hỗ trợ cùng trang lẫn cross-page (cùng một `pikepdf.Pdf`).
+
+    An-toàn-màu (Yêu cầu 4.7):
+      - object nào `map_object_spans` không phân giải DUY NHẤT (Form đa nghĩa/clip)
+        → raise `ObjectMapError`, HỦY, KHÔNG ghi.
+      - slice được bọc `q <state> <cm gốc> <cm dịch> <slice> Q`: replay lại graphics
+        state (màu/gs) + CTM gốc tại span.start, nên bản dán giữ đúng màu và vị trí.
+
+    Cross-page còn copy resource (XObject/Font/ExtGState/ColorSpace/Pattern/…) sang
+    `/Resources` trang đích và viết lại tên trong slice (`remap_span_resources`).
+    """
+    src_pg = _as_page(source_page)
+    dest_pg = _as_page(dest_page)
+
+    pdf_dx = float(dx)
+    pdf_dy = float(dy)
+    if coord_space == "canvas":
+        pdf_dy = -pdf_dy
+    elif coord_space != "pdf":
+        raise ValueError(f"coord_space không hợp lệ: {coord_space!r} (chỉ 'pdf' hoặc 'canvas')")
+
+    if not obj_metas:
+        return PasteResult(changed=False, dx=pdf_dx, dy=pdf_dy,
+                           message="Không có object mục tiêu — không thay đổi.")
+
+    same_page = _same_indirect(src_pg.obj, dest_pg.obj)
+
+    # Gộp + parse trang NGUỒN.
+    try:
+        contents_coalesce(pdf, src_pg)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("contents_coalesce (source) thất bại, parse trực tiếp: %s", exc)
+    src_instructions = parse_page_ops(src_pg)
+
+    resource_cache: dict = {}
+    blocks: list[list] = []
+    pasted_spans: list[OpSpan] = []
+
+    for meta in obj_metas:
+        meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
+        spans = map_object_spans(src_pg, meta, pdf=pdf, prebuilt_spans=None)
+        if not spans:
+            raise ObjectMapError(
+                f"Không thể ánh xạ object '{meta_id}' sang dải operator duy nhất "
+                f"(đa nghĩa/clip/Form XObject/inline image). HỦY thao tác để bảo "
+                f"toàn màu (Yêu cầu 4.7) — KHÔNG ghi kết quả."
+            )
+        for span in spans:
+            start = max(0, span.start)
+            end = min(len(src_instructions), span.end)
+            if start >= end:
+                continue
+            slice_instrs = list(src_instructions[start:end])
+            state_instrs, ctm_start = _capture_graphics_state(src_instructions, start)
+            if not same_page:
+                state_instrs = remap_span_resources(src_pg, dest_pg, state_instrs, resource_cache)
+                slice_instrs = remap_span_resources(src_pg, dest_pg, slice_instrs, resource_cache)
+            block: list = [_q_instruction()]
+            block.extend(state_instrs)
+            # Dựng lại CTM gốc rồi mới dịch (cm post-multiply: CTM = T × ctm_start).
+            if ctm_start != _IDENTITY_M:
+                block.append(_cm_instruction(ctm_start))
+            block.append(_cm_translate_instruction(pdf_dx, pdf_dy))
+            block.extend(slice_instrs)
+            block.append(_Q_instruction())
+            blocks.append(block)
+            pasted_spans.append(span)
+
+    if not blocks:
+        return PasteResult(changed=False, dx=pdf_dx, dy=pdf_dy,
+                           message="Không trích được slice hợp lệ — không thay đổi.")
+
+    # Append vào CUỐI content stream trang ĐÍCH.
+    if same_page:
+        dest_instructions = list(src_instructions)
+    else:
+        try:
+            contents_coalesce(pdf, dest_pg)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("contents_coalesce (dest) thất bại, parse trực tiếp: %s", exc)
+        dest_instructions = parse_page_ops(dest_pg)
+
+    new_instructions = list(dest_instructions)
+    for block in blocks:
+        new_instructions.extend(block)
+
+    new_bytes = pikepdf.unparse_content_stream(new_instructions)
+    dest_pg.obj[pikepdf.Name("/Contents")] = pdf.make_stream(new_bytes)
+
+    return PasteResult(
+        changed=True,
+        pasted_spans=pasted_spans,
+        dx=pdf_dx,
+        dy=pdf_dy,
+        count=len(blocks),
+        cross_page=not same_page,
+        message=(
+            f"Đã dán {len(blocks)} object (dx={pdf_dx:.3f}, dy={pdf_dy:.3f}, "
+            f"cross_page={not same_page})."
+        ),
+    )
+
+
 # Re-export build_op_spans để caller (vd. API route) dùng chung tiện ích phân đoạn.
 __all__ = [
     "delete_objects",
     "DeleteResult",
     "move_objects",
     "MoveResult",
+    "paste_objects",
+    "PasteResult",
     "affine_transform_objects",
     "AffineResult",
     "resize_objects",

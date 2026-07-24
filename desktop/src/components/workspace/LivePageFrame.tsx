@@ -38,6 +38,8 @@ import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectio
 
 // Mảng rỗng ỔN ĐỊNH — không tạo `[]` mới mỗi effect (tránh cascade setState).
 const EMPTY_OBJECT_IDS: string[] = [];
+// Offset lệch cố định (mm) cho mỗi lần dán — cộng dồn theo pasteCount.
+const PASTE_OFFSET_MM = 3;
 
 // Công thức renderZoom TÁCH ra hàm thuần để PREFETCH (AcrobatViewer) tính ĐÚNG cùng
 // giá trị mà view chính dùng → cache key tile Rust khớp bit-chính-xác → cuộn tới là
@@ -617,7 +619,8 @@ export const LivePageFrame = (props: any) => {
         pdfUrl, setSelectedVdpFieldIds, selectedObjectIds, setSelectedObjectIds,
         setObjectSelectionContext,
         isCropMode, cropSelection, setCropSelection, commitCropSelection,
-        recordCropSelectionSnapshot, viewerToolMode, editAddMode, setEditAddMode
+        recordCropSelectionSnapshot, viewerToolMode, editAddMode, setEditAddMode,
+        editClipboard, setEditClipboard
     } = useWorkspaceStore(useShallow(state => ({
         isObjectEditMode: state.isObjectEditMode,
         editAddMode: state.editAddMode,
@@ -626,6 +629,8 @@ export const LivePageFrame = (props: any) => {
         selectionFileId: state.selectionFileId,
         selectedObjectIds: state.selectedObjectIds,
         setSelectedObjectIds: state.setSelectedObjectIds,
+        editClipboard: state.editClipboard,
+        setEditClipboard: state.setEditClipboard,
         setObjectSelectionContext: state.setObjectSelectionContext,
         hiddenObjectIds: state.hiddenObjectIds,
         setHiddenObjectIds: state.setHiddenObjectIds,
@@ -1216,6 +1221,40 @@ export const LivePageFrame = (props: any) => {
             if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
                 e.preventDefault();
                 setSelectedObjectIds(editObjects.filter(o => !lockedObjectIds.includes(o.id)).map(o => o.id));
+            } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+                // Copy: chỉ ghi nhớ {trang nguồn, id} vào clipboard store — KHÔNG gọi backend.
+                if (selectedObjectIds.length === 0) return;
+                e.preventDefault();
+                setEditClipboard({ sourcePage: originalPageNum - 1, objectIds: [...selectedObjectIds], pasteCount: 0 });
+            } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+                // Paste: dựng op vào trang ĐANG active; offset lệch cộng dồn theo pasteCount.
+                if (editBusy || !editClipboard || editClipboard.objectIds.length === 0) return;
+                e.preventDefault();
+                const bump = editClipboard.pasteCount + 1;
+                const off = mmToPt(PASTE_OFFSET_MM * bump);
+                const op: EditOp = {
+                    page: originalPageNum - 1,
+                    sourcePage: editClipboard.sourcePage,
+                    kind: 'paste',
+                    targetIds: [...editClipboard.objectIds],
+                    delta: { dx: off, dy: -off },
+                };
+                void sendEditAndPreview(op).then((success) => {
+                    if (success) setEditClipboard({ ...editClipboard, pasteCount: bump });
+                });
+            } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+                // Duplicate nhanh: copy + paste tức thì trong CÙNG trang, lệch một offset.
+                if (editBusy || selectedObjectIds.length === 0) return;
+                e.preventDefault();
+                const off = mmToPt(PASTE_OFFSET_MM);
+                const op: EditOp = {
+                    page: originalPageNum - 1,
+                    sourcePage: originalPageNum - 1,
+                    kind: 'paste',
+                    targetIds: [...selectedObjectIds],
+                    delta: { dx: off, dy: -off },
+                };
+                void sendEditAndPreview(op);
             } else if (e.key === 'Delete' || e.key === 'Backspace') {
                 // Xóa tập object đang chọn → POST /edit/delete → Working_File mới.
                 if (editBusy || selectedObjectIds.length === 0) return;
@@ -1239,7 +1278,7 @@ export const LivePageFrame = (props: any) => {
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [isObjectEditMode, isVdpMode, isActiveFrame, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds]);
+    }, [isObjectEditMode, isVdpMode, isActiveFrame, editObjects, selectedObjectIds, editBusy, originalPageNum, selectionFileId, onEditCommit, lockedObjectIds, editClipboard, setEditClipboard]);
 
     // ─── Edit PDF Object: reset transform tạm + preview khi đổi lựa chọn (10.2) ─
     // Khi tập chọn thay đổi (hoặc bỏ chọn), bỏ transform tạm và ảnh preview cũ để

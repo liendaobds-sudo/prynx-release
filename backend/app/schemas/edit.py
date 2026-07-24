@@ -199,7 +199,7 @@ class ImageClipPayload(BaseModel):
 
 EditKind = Literal[
     "delete", "move", "affine", "resize", "rotate", "editText", "replaceImage",
-    "clipImage", "add",
+    "clipImage", "add", "paste",
     "objectVisibility", "layerVisibility", "layerLock", "layerRename", "layerReorder",
     "layerDelete",
 ]
@@ -220,6 +220,9 @@ class EditOp(BaseModel):
     page: int = Field(ge=0)
     kind: EditKind
     targetIds: list[str] = Field(default_factory=list)
+
+    # paste: trang nguồn của object được copy (có thể khác `page` = trang đích).
+    sourcePage: int | None = Field(default=None, ge=0)
 
     # Tham số theo từng kind (đều optional ở mức field; ràng buộc bằng model_validator).
     delta: MoveDelta | None = None
@@ -260,6 +263,11 @@ class EditOp(BaseModel):
 
         if self.kind == "move" and self.delta is None:
             raise ValueError("Thao tác 'move' yêu cầu trường 'delta' (dx, dy)")
+        if self.kind == "paste":
+            if self.delta is None:
+                raise ValueError("Thao tác 'paste' yêu cầu trường 'delta' (offset dx, dy)")
+            if self.sourcePage is None:
+                raise ValueError("Thao tác 'paste' yêu cầu trường 'sourcePage'")
         if self.kind == "affine" and self.affine is None:
             raise ValueError("Thao tác 'affine' yêu cầu ma trận affine")
         if self.kind == "replaceImage":

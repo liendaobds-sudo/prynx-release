@@ -109,6 +109,9 @@ export interface WorkspaceState {
     hiddenObjectIds: string[];
     lockedObjectIds: string[];
     selectionFileId: string;
+    // Clipboard copy/paste cho edit PDF (lazy-reference: chỉ nhớ trang nguồn + id,
+    // resolve lại lúc paste). pasteCount cộng dồn offset khi paste liên tiếp.
+    editClipboard: { sourcePage: number; objectIds: string[]; pasteCount: number } | null;
     objectSelectionContext: EditObjectSelectionContext | null;
     // Chế độ "đặt object mới" (toolbar +Text/Ảnh). Nâng lên store để nút ở panel
     // phải điều khiển được: cú bấm kế tiếp lên BẤT KỲ trang nào sẽ đặt object tại đó.
@@ -200,6 +203,7 @@ export interface WorkspaceState {
     setCurrentEditObjects: (updater: any[] | ((prev: any[]) => any[])) => void;
     setPdfObjectsVersion: (updater: number | ((prev: number) => number)) => void;
     setSelectedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
+    setEditClipboard: (clip: { sourcePage: number; objectIds: string[]; pasteCount: number } | null) => void;
     setHiddenObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setLockedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setSelectionFileId: (id: string) => void;
@@ -291,6 +295,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     currentEditObjects: [],
     pdfObjectsVersion: 0,
     selectedObjectIds: [],
+    editClipboard: null,
     hiddenObjectIds: [],
     lockedObjectIds: [],
     selectionFileId: '',
@@ -484,6 +489,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
         }
         return { lockedObjectIds: next };
     }),
+    setEditClipboard: (clip) => set({ editClipboard: clip }),
     setSelectionFileId: (id) => set((state) => {
         if (state.selectionFileId === id) return state;
         return {
@@ -491,6 +497,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
             selectedObjectIds: [],
             hiddenObjectIds: [],
             lockedObjectIds: [],
+            editClipboard: null,
             objectSelectionContext: id && state.objectSelectionContext
                 ? { ...state.objectSelectionContext, fileId: id }
                 : null,

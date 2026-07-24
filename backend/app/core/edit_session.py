@@ -54,6 +54,7 @@ from app.core.stream_editor import (
     delete_objects,
     edit_text,
     move_objects,
+    paste_objects,
     replace_image,
     resize_objects,
     rotate_objects,
@@ -475,6 +476,20 @@ def _apply_op_to_pdf(pdf: pikepdf.Pdf, op: EditOp, by_id: dict[str, ObjMeta],
         results = [edit_text(pg, meta, new_text, pdf, chosen_font_path=chosen) for meta in metas]
         return results[0] if len(results) == 1 else results
 
+    if kind == "paste":
+        if op.delta is None:
+            raise ValueError("Thao tác paste yêu cầu 'delta'.")
+        source_page = op.sourcePage if op.sourcePage is not None else op.page
+        if source_page == op.page:
+            src_by_id = by_id
+        elif layer_view_bytes is not None:
+            src_by_id = _list_objects_from_bytes(layer_view_bytes, source_page)
+        else:
+            raise ValueError("paste cross-page yêu cầu bytes để resolve trang nguồn.")
+        metas = _resolve_targets(src_by_id, source_page, op.targetIds)
+        src_pg = _page_or_raise(pdf, source_page)
+        return paste_objects(src_pg, pg, metas, op.delta.dx, op.delta.dy, pdf)
+
     if kind == "add":
         if op.text is None and op.image is None:
             raise ValueError("Thao tác add yêu cầu 'text' hoặc 'image'.")
@@ -557,6 +572,18 @@ def _compute_new_bbox(op: EditOp, op_result, post_bytes: bytes,
 
     if kind == "delete":
         return None, []
+
+    if kind == "paste":
+        # Object dán là bản MỚI (old_metas rỗng): bbox = bbox nguồn của từng span
+        # đã dán + offset (dx, dy). Lấy từ pasted_spans của PasteResult.
+        dx = float(getattr(op_result, "dx", 0.0))
+        dy = float(getattr(op_result, "dy", 0.0))
+        spans = list(getattr(op_result, "pasted_spans", []) or [])
+        new_bboxes = [
+            [s.bbox[0] + dx, s.bbox[1] + dy, s.bbox[2] + dx, s.bbox[3] + dy]
+            for s in spans
+        ]
+        return (new_bboxes[0] if new_bboxes else None), new_bboxes
 
     # Transform hình học có kết quả xác định từ bbox cũ; tính trực tiếp để không chạy
     # PDFium lần hai trong backend. Frontend vẫn refetch đúng một lần sau op.
@@ -817,7 +844,7 @@ def apply_op(session: EditSession, op: EditOp) -> dict:
                 by_id = {}
             else:
                 by_id = _list_objects_from_bytes(pre_bytes, op.page)
-                if op.kind != "add":
+                if op.kind not in ("add", "paste"):
                     old_metas = _resolve_targets(by_id, op.page, op.targetIds)
 
             if op.kind in _EDIT_DEBUG_TRANSFORM_KINDS and edit_bug_log_enabled():
@@ -1908,7 +1935,7 @@ def redo(session: EditSession, scale: float = 2.0, clip_pad: float = 8.0) -> dic
                 by_id = {}
             else:
                 by_id = _list_objects_from_bytes(pre_bytes, op.page)
-                if op.kind != "add":
+                if op.kind not in ("add", "paste"):
                     old_metas = _resolve_targets(by_id, op.page, op.targetIds)
             op_result = _apply_op_to_pdf(session.pdf, op, by_id, pre_bytes)
         except Exception:
