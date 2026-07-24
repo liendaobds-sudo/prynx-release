@@ -18,3 +18,5 @@ export * from './artworkMapping';
 export * from './explodedView';
 export * from './dimensionFormat';
 export * from './exportSizing';
+export * from './proceduralTextures';
+export * from './heroTimeline';

@@ -19,12 +19,13 @@
 // ============================================================
 
 import React, { useEffect } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import type { CameraProps } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useWebGLSupport } from './useWebGLSupport';
 import WebGLFallback from './WebGLFallback';
 import { useMockupStore } from '../../store/useMockupStore';
+import { DEFAULT_TONE_EXPOSURE } from '../../lib/mockup3d/materialLibrary';
 import { useTranslation } from 'react-i18next';
 
 export interface MockupCanvasProps {
@@ -42,8 +43,24 @@ export interface MockupCanvasProps {
     fallbackMessage?: string;
 }
 
-/** Phơi sáng tone mapping mặc định cho cảnh studio. */
-const DEFAULT_TONE_MAPPING_EXPOSURE = 1.0;
+/**
+ * Đồng bộ toneMappingExposure từ store → renderer và invalidate frameloop demand.
+ * Phải render BÊN TRONG `<Canvas>`.
+ */
+function ToneMappingController() {
+    const toneExposure = useMockupStore((s) => s.toneExposure);
+    const gl = useThree((s) => s.gl);
+    const invalidate = useThree((s) => s.invalidate);
+
+    useEffect(() => {
+        gl.toneMapping = THREE.ACESFilmicToneMapping;
+        gl.toneMappingExposure = toneExposure;
+        gl.outputColorSpace = THREE.SRGBColorSpace;
+        invalidate();
+    }, [gl, toneExposure, invalidate]);
+
+    return null;
+}
 
 /**
  * Vỏ Canvas cho mockup 3D: guard WebGL + tone mapping ACES Filmic.
@@ -104,7 +121,7 @@ export default function MockupCanvas({
                     alpha: true,
                     preserveDrawingBuffer: false, // export dùng WebGLRenderTarget riêng
                     toneMapping: THREE.ACESFilmicToneMapping,
-                    toneMappingExposure: DEFAULT_TONE_MAPPING_EXPOSURE,
+                    toneMappingExposure: DEFAULT_TONE_EXPOSURE,
                     outputColorSpace: THREE.SRGBColorSpace,
                 }}
                 onCreated={({ gl }) => {
@@ -112,10 +129,11 @@ export default function MockupCanvas({
                     // áp dụng cho toàn bộ khung hình, không phụ thuộc mặc định
                     // của phiên bản three/r3f (Yêu cầu 3.4).
                     gl.toneMapping = THREE.ACESFilmicToneMapping;
-                    gl.toneMappingExposure = DEFAULT_TONE_MAPPING_EXPOSURE;
+                    gl.toneMappingExposure = DEFAULT_TONE_EXPOSURE;
                     gl.outputColorSpace = THREE.SRGBColorSpace;
                 }}
             >
+                <ToneMappingController />
                 {children}
             </Canvas>
         </div>

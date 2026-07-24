@@ -32,6 +32,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Environment, Lightformer, Html } from '@react-three/drei';
 import { useMockupStore } from '../../store/useMockupStore';
+import { envMapResolutionForTier } from '../../lib/mockup3d/materialLibrary';
 import { useTranslation } from 'react-i18next';
 
 // ─── Mô tả preset ───────────────────────────────────────────────────────────
@@ -124,6 +125,29 @@ export const HDRI_PRESETS: HdriPreset[] = [
             { form: 'circle', intensity: 1.0, color: '#fff0dc', position: [5, 3, 6], scale: 6 },
         ],
     },
+    // Product hero lookdev (key warm + fill cool + rim) — inspired showcase 3-point
+    {
+        id: 'product-hero',
+        label: 'Product hero',
+        ambient: '#d8dce4',
+        lightformers: [
+            { form: 'rect', intensity: 4.2, color: '#fff4e0', position: [4, 7, 5], rotation: [-Math.PI / 3, Math.PI / 8, 0], scale: [5, 7] },
+            { form: 'rect', intensity: 1.1, color: '#dfe6ff', position: [-5, 3, 2], rotation: [0, Math.PI / 3, 0], scale: [6, 8] },
+            { form: 'rect', intensity: 0.9, color: '#ffffff', position: [2, 2, 6], scale: [8, 5] },
+            { form: 'rect', intensity: 1.4, color: '#ffe8cf', position: [-3, 4, -6], rotation: [0, Math.PI / 2, 0], scale: [4, 8] },
+            { form: 'circle', intensity: 0.5, color: '#ffffff', position: [0, 1, 0], scale: 12 },
+        ],
+    },
+    {
+        id: 'product-lowkey',
+        label: 'Product low-key',
+        ambient: '#1a1d24',
+        lightformers: [
+            { form: 'rect', intensity: 5.5, color: '#ffffff', position: [3, 6, 4], rotation: [-Math.PI / 3, Math.PI / 6, 0], scale: [3, 5] },
+            { form: 'rect', intensity: 2.2, color: '#8fb6ff', position: [1, -1, -5], rotation: [0, 0, 0], scale: [4, 6] },
+            { form: 'circle', intensity: 0.35, color: '#bcd0ff', position: [-4, 2, 3], scale: 5 },
+        ],
+    },
 ];
 
 /** Preset mặc định nếu id không khớp preset nào. */
@@ -173,6 +197,8 @@ class EnvErrorBoundary extends React.Component<EnvErrorBoundaryProps, EnvErrorBo
 interface StudioEnvironmentProps {
     preset: HdriPreset;
     onReady: (presetId: string) => void;
+    /** Độ phân giải PMREM (256 balanced / 512 high). */
+    resolution: number;
 }
 
 /**
@@ -186,7 +212,7 @@ interface StudioEnvironmentProps {
  * Trong cả hai trường hợp, môi trường cung cấp IBL + phản chiếu cho mọi
  * vật liệu trong cảnh (Yêu cầu 3.1).
  */
-function StudioEnvironment({ preset, onReady }: StudioEnvironmentProps) {
+function StudioEnvironment({ preset, onReady, resolution }: StudioEnvironmentProps) {
     // Báo "ready" sau khi commit để Rig xóa timer và đặt hdriStatus='ready'.
     // Môi trường thủ tục sẵn sàng ngay khi mount (không tải dữ liệu ngoài),
     // nên luôn hoàn tất rất sớm so với ngưỡng 10 giây (Yêu cầu 3.3).
@@ -198,18 +224,18 @@ function StudioEnvironment({ preset, onReady }: StudioEnvironmentProps) {
     // 'loading' (xem readyPresetRef trong EnvironmentRig).
     useEffect(() => {
         onReady(preset.id);
-    }, [onReady, preset]);
+    }, [onReady, preset, resolution]);
 
     // Nạp HDRI cục bộ nếu preset chỉ định tệp (hiện chưa dùng — chưa có asset).
     if (preset.file) {
         return (
-            <Environment files={preset.file} resolution={256} background={false} />
+            <Environment files={preset.file} resolution={resolution} background={false} />
         );
     }
 
     // Môi trường studio thủ tục — bake 1 frame thành env map qua PMREM.
     return (
-        <Environment resolution={256} frames={1} background={false}>
+        <Environment resolution={resolution} frames={1} background={false}>
             <color attach="background" args={[preset.ambient]} />
             {preset.lightformers.map((lf, i) => {
                 // Lightformer scale nhận số đồng nhất hoặc vector 3 thành phần;
@@ -299,7 +325,9 @@ function HdriFailureBanner() {
 export default function EnvironmentRig() {
     const hdriPreset = useMockupStore((s) => s.hdriPreset);
     const hdriStatus = useMockupStore((s) => s.hdriStatus);
+    const qualityTier = useMockupStore((s) => s.qualityTier);
     const setHdriStatus = useMockupStore((s) => s.setHdriStatus);
+    const envResolution = envMapResolutionForTier(qualityTier);
 
     const [failed, setFailed] = useState(false);
     const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -339,12 +367,15 @@ export default function EnvironmentRig() {
         setHdriStatus('failed');
     }, [clearTimer, setHdriStatus]);
 
-    // Vòng đời mỗi lần đổi preset. Effect này chạy SAU effect của
+    // Vòng đời mỗi lần đổi preset / resolution. Effect này chạy SAU effect của
     // StudioEnvironment (con). Nếu con đã báo ready cho đúng preset hiện tại
     // (trường hợp môi trường thủ tục — sẵn sàng ngay khi mount), ta giữ
     // 'ready' và KHÔNG khởi động timer, tránh ghi đè 'loading'. Ngược lại
     // (vd HDRI cục bộ đang nạp/treo) mới đặt 'loading' + timer 10 giây để
     // còn fallback khi nạp lỗi/quá hạn (Yêu cầu 3.3, 3.6).
+    //
+    // Khi qualityTier đổi resolution, key remount StudioEnvironment → onReady
+    // chạy lại; readyPresetRef vẫn khớp presetId nên không false-fail timeout.
     useEffect(() => {
         setFailed(false);
         clearTimer();
@@ -361,7 +392,7 @@ export default function EnvironmentRig() {
         }, HDRI_LOAD_TIMEOUT_MS);
 
         return clearTimer;
-    }, [presetId, setHdriStatus, clearTimer]);
+    }, [presetId, envResolution, setHdriStatus, clearTimer]);
 
     // Đường dẫn dự phòng: đèn studio mặc định + banner trạng thái.
     if (failed || hdriStatus === 'failed') {
@@ -375,7 +406,13 @@ export default function EnvironmentRig() {
 
     return (
         <EnvErrorBoundary onError={handleError}>
-            <StudioEnvironment preset={preset} onReady={handleReady} />
+            {/* key remount khi resolution đổi để bake lại PMREM */}
+            <StudioEnvironment
+                key={`${presetId}-${envResolution}`}
+                preset={preset}
+                onReady={handleReady}
+                resolution={envResolution}
+            />
         </EnvErrorBoundary>
     );
 }

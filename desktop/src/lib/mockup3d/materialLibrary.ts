@@ -1,193 +1,371 @@
 // ============================================================
 // materialLibrary.ts — Mockup 3D Realism (Logic Layer)
 //
-// Thư viện vật liệu/finish thuần (pure). Cung cấp:
-//   - `FINISH_LIBRARY`: bảng tra cứu ≥6 finish theo `FinishId`, mỗi
-//     finish kèm tham số PBR (roughness/metalness) trong miền [0,1].
-//   - `getFinish`: tra cứu một finish theo id (an toàn, có fallback).
-//   - `applyFinishToAllPanels`: helper áp một finish ĐỒNG NHẤT cho
-//     toàn bộ panel của hộp (Yêu cầu 4.4).
+// Hai trục độc lập:
+//   - Substrate (chất liệu giấy): kraft | sbs-white
+//   - Surface finish (gia công): none | matte/gloss lam | spot-UV | foil | emboss
 //
-// Bổ sung (task 4.2):
-//   - `mapSpotUvRoughness` / `isSpotUvPixelActive`: ánh xạ mask spot-UV
-//     theo ngưỡng >50% (Yêu cầu 4.3).
-//   - `clampEmbossHeight`: giới hạn độ cao emboss về [0.0, 5.0] mm
-//     (Yêu cầu 4.5).
+// `composeAppearance(substrate, surface)` → PBR + baseColor cho render.
+// Legacy `FINISH_LIBRARY` / `getFinish` vẫn có để test + preset cũ.
 //
 // _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5_
 // ============================================================
 
-import type { FinishId, Panel } from './types';
+import type { FinishId, Panel, SubstrateId, SurfaceFinishId } from './types';
 
-/**
- * Đặc tả một kiểu gia công bề mặt (finish) cho vật liệu PBR.
- * `roughness` và `metalness` luôn nằm trong [0.0, 1.0] (Yêu cầu 4.2).
- */
-export interface FinishSpec {
-    /** Mã định danh finish */
-    id: FinishId;
-    /** Nhãn hiển thị (tiếng Việt) */
+// ─── Substrate (chất liệu giấy) ─────────────────────────────────────────────
+
+export interface SubstrateSpec {
+    id: SubstrateId;
     label: string;
-    /** Độ nhám bề mặt nền, miền hợp lệ [0.0, 1.0] */
+    /** Albedo giấy khi chưa in / không có artwork. */
+    baseColor: string;
     roughness: number;
-    /** Độ kim loại, miền hợp lệ [0.0, 1.0] */
     metalness: number;
-    /** Có cần mặt nạ (mask) do người dùng cung cấp hay không (spot-uv, emboss) */
-    needsMask: boolean;
+    clearcoat: number;
+    clearcoatRoughness: number;
+    sheen: number;
+    sheenColor: string;
+    sheenRoughness: number;
+    envMapIntensity: number;
+    grainBumpScale: number;
 }
 
-/**
- * Finish mặc định khi `getFinish` nhận id không hợp lệ.
- * Theo Yêu cầu 1/4, mặc định vật liệu là kraft.
- */
-export const DEFAULT_FINISH_ID: FinishId = 'kraft';
+export const DEFAULT_SUBSTRATE_ID: SubstrateId = 'kraft';
 
-/**
- * Thư viện finish — tối thiểu 6 lựa chọn (Yêu cầu 4.1):
- * kraft, SBS trắng, cán mờ, cán bóng, spot-UV, foil/metallic (+ emboss).
- *
- * Giá trị PBR khởi tạo (theo bảng thiết kế), mọi giá trị thuộc [0,1]
- * (Yêu cầu 4.2). Với spot-uv, `roughness` là độ nhám của bề mặt NỀN;
- * việc giảm nhám tại vùng mask (>50%) thuộc task 4.2, không xử lý ở đây.
- */
-export const FINISH_LIBRARY: Record<FinishId, FinishSpec> = {
+export const SUBSTRATE_LIBRARY: Record<SubstrateId, SubstrateSpec> = {
     kraft: {
         id: 'kraft',
         label: 'Giấy kraft',
+        baseColor: '#c8a16a',
         roughness: 0.85,
         metalness: 0.0,
-        needsMask: false,
+        clearcoat: 0.0,
+        clearcoatRoughness: 1.0,
+        sheen: 0.28,
+        sheenColor: '#c4a574',
+        sheenRoughness: 0.75,
+        envMapIntensity: 0.45,
+        grainBumpScale: 0.04,
     },
     'sbs-white': {
         id: 'sbs-white',
         label: 'Giấy SBS trắng',
+        baseColor: '#f3efe7',
         roughness: 0.55,
         metalness: 0.0,
+        clearcoat: 0.05,
+        clearcoatRoughness: 0.65,
+        sheen: 0.08,
+        sheenColor: '#ffffff',
+        sheenRoughness: 0.8,
+        envMapIntensity: 0.6,
+        grainBumpScale: 0.015,
+    },
+};
+
+// ─── Surface finish (gia công) ──────────────────────────────────────────────
+
+export interface SurfaceFinishSpec {
+    id: SurfaceFinishId;
+    label: string;
+    needsMask: boolean;
+    /** Nếu set, ghi đè albedo outer (vd foil). */
+    overrideBaseColor?: string;
+    /** Ghi đè / trộn PBR lên substrate (undefined = giữ substrate). */
+    roughness?: number;
+    metalness?: number;
+    clearcoat?: number;
+    clearcoatRoughness?: number;
+    sheen?: number;
+    sheenColor?: string;
+    sheenRoughness?: number;
+    envMapIntensity?: number;
+    /** Hệ số nhân grain substrate (0 = tắt grain khi đã cán/foil). */
+    grainScale?: number;
+}
+
+export const DEFAULT_SURFACE_FINISH_ID: SurfaceFinishId = 'none';
+
+export const SURFACE_FINISH_LIBRARY: Record<SurfaceFinishId, SurfaceFinishSpec> = {
+    none: {
+        id: 'none',
+        label: 'Không gia công',
         needsMask: false,
+        grainScale: 1,
     },
     'matte-lam': {
         id: 'matte-lam',
         label: 'Cán màng mờ',
+        needsMask: false,
         roughness: 0.7,
         metalness: 0.0,
-        needsMask: false,
+        clearcoat: 0.12,
+        clearcoatRoughness: 0.55,
+        sheen: 0,
+        envMapIntensity: 0.55,
+        grainScale: 0.25,
     },
     'gloss-lam': {
         id: 'gloss-lam',
         label: 'Cán màng bóng',
+        needsMask: false,
         roughness: 0.12,
         metalness: 0.0,
-        needsMask: false,
+        clearcoat: 0.85,
+        clearcoatRoughness: 0.08,
+        sheen: 0,
+        envMapIntensity: 0.85,
+        grainScale: 0,
     },
     'spot-uv': {
         id: 'spot-uv',
         label: 'Phủ UV định vị (spot-UV)',
+        needsMask: true,
+        // Nền matte; vùng mask → gloss (shader)
         roughness: 0.7,
         metalness: 0.0,
-        needsMask: true,
+        clearcoat: 0.08,
+        clearcoatRoughness: 0.5,
+        sheen: 0,
+        envMapIntensity: 0.6,
+        grainScale: 0.2,
     },
     'foil-metallic': {
         id: 'foil-metallic',
         label: 'Ép kim / metallic',
+        needsMask: false,
+        overrideBaseColor: '#d8d2c2',
         roughness: 0.25,
         metalness: 0.9,
-        needsMask: false,
+        clearcoat: 0.5,
+        clearcoatRoughness: 0.12,
+        sheen: 0,
+        envMapIntensity: 0.7,
+        grainScale: 0,
     },
     emboss: {
         id: 'emboss',
         label: 'Dập nổi (emboss)',
+        needsMask: true,
         roughness: 0.6,
         metalness: 0.0,
-        needsMask: true,
+        clearcoat: 0.05,
+        clearcoatRoughness: 0.7,
+        sheen: 0.05,
+        sheenColor: '#e8e0d0',
+        sheenRoughness: 0.7,
+        envMapIntensity: 0.5,
+        grainScale: 0.5,
     },
 };
 
+// ─── Compose appearance ─────────────────────────────────────────────────────
+
+export interface PhysicalFinishScalars {
+    roughness: number;
+    metalness: number;
+    clearcoat: number;
+    clearcoatRoughness: number;
+    sheen: number;
+    sheenColor: string;
+    sheenRoughness: number;
+    envMapIntensity: number;
+    grainBumpScale: number;
+}
+
+/** Kết quả gộp substrate + surface cho render. */
+export interface AppearanceSpec {
+    substrateId: SubstrateId;
+    surfaceFinishId: SurfaceFinishId;
+    /** Nhãn ngắn cho badge UI. */
+    label: string;
+    baseColor: string;
+    needsSpotUvMask: boolean;
+    needsEmbossMask: boolean;
+    phys: PhysicalFinishScalars;
+}
+
+function unit(value: number | undefined, fallback: number): number {
+    if (value === undefined || Number.isNaN(value)) return fallback;
+    if (value < 0) return 0;
+    if (value > 1) return 1;
+    return value;
+}
+
+export function getSubstrate(id: SubstrateId | string | undefined): SubstrateSpec {
+    if (id && id in SUBSTRATE_LIBRARY) return SUBSTRATE_LIBRARY[id as SubstrateId];
+    return SUBSTRATE_LIBRARY[DEFAULT_SUBSTRATE_ID];
+}
+
 /**
- * Tra cứu finish theo id. Nếu `id` không tồn tại trong thư viện
- * (dữ liệu hỏng/ngoài tập hợp lệ), trả về finish mặc định kraft để
- * cảnh vẫn render được.
- *
- * @param id Mã finish cần tra cứu
- * @returns `FinishSpec` tương ứng (hoặc kraft nếu id không hợp lệ)
- * _Requirements: 4.1, 4.2_
+ * Màu mặt trong (giấy bồi) theo chất liệu — độc lập với gia công bề mặt.
+ * SBS → trắng ngà; kraft → nâu kraft (không dùng edgeColor).
  */
+export function substrateInnerFaceColor(substrateId: SubstrateId | string | undefined): string {
+    const id = getSubstrate(substrateId).id;
+    return id === 'sbs-white' ? '#ebe6dc' : '#a9784a';
+}
+
+/** Gợi ý màu cạnh giấy khớp substrate (SBS → trắng, kraft → kraft). */
+export function substrateDefaultEdgeColor(substrateId: SubstrateId | string | undefined): 'kraft' | 'white' {
+    return getSubstrate(substrateId).id === 'sbs-white' ? 'white' : 'kraft';
+}
+
+export function getSurfaceFinish(id: SurfaceFinishId | string | undefined): SurfaceFinishSpec {
+    if (id && id in SURFACE_FINISH_LIBRARY) return SURFACE_FINISH_LIBRARY[id as SurfaceFinishId];
+    return SURFACE_FINISH_LIBRARY[DEFAULT_SURFACE_FINISH_ID];
+}
+
+/**
+ * Ghép chất liệu giấy + gia công → PBR/baseColor.
+ * Surface ghi đè kênh có set; grain = substrate × surface.grainScale.
+ */
+export function composeAppearance(
+    substrateId: SubstrateId | string | undefined,
+    surfaceFinishId: SurfaceFinishId | string | undefined,
+): AppearanceSpec {
+    const sub = getSubstrate(substrateId);
+    const surf = getSurfaceFinish(surfaceFinishId);
+    const grainScale = surf.grainScale === undefined ? 1 : unit(surf.grainScale, 1);
+
+    const phys: PhysicalFinishScalars = {
+        roughness: unit(surf.roughness ?? sub.roughness, 0.5),
+        metalness: unit(surf.metalness ?? sub.metalness, 0.0),
+        clearcoat: unit(surf.clearcoat ?? sub.clearcoat, 0.0),
+        clearcoatRoughness: unit(surf.clearcoatRoughness ?? sub.clearcoatRoughness, 1.0),
+        sheen: unit(surf.sheen !== undefined ? surf.sheen : sub.sheen, 0.0),
+        sheenColor: surf.sheenColor ?? sub.sheenColor,
+        sheenRoughness: unit(surf.sheenRoughness ?? sub.sheenRoughness, 1.0),
+        envMapIntensity: unit(surf.envMapIntensity ?? sub.envMapIntensity, 1.0),
+        grainBumpScale: unit(sub.grainBumpScale * grainScale, 0.0),
+    };
+
+    const label =
+        surf.id === 'none'
+            ? sub.label
+            : `${sub.label} · ${surf.label}`;
+
+    return {
+        substrateId: sub.id,
+        surfaceFinishId: surf.id,
+        label,
+        baseColor: surf.overrideBaseColor ?? sub.baseColor,
+        needsSpotUvMask: surf.id === 'spot-uv',
+        needsEmbossMask: surf.id === 'emboss',
+        phys,
+    };
+}
+
+/**
+ * Migrate legacy FinishId (1 trục) → substrate + surface.
+ * kraft/sbs → giấy + none; finish khác → kraft + finish đó.
+ */
+export function migrateLegacyFinishId(id: string | undefined | null): {
+    substrateId: SubstrateId;
+    surfaceFinishId: SurfaceFinishId;
+} {
+    if (id === 'kraft' || id === 'sbs-white') {
+        return { substrateId: id, surfaceFinishId: 'none' };
+    }
+    if (
+        id === 'matte-lam'
+        || id === 'gloss-lam'
+        || id === 'spot-uv'
+        || id === 'foil-metallic'
+        || id === 'emboss'
+    ) {
+        return { substrateId: DEFAULT_SUBSTRATE_ID, surfaceFinishId: id };
+    }
+    return { substrateId: DEFAULT_SUBSTRATE_ID, surfaceFinishId: DEFAULT_SURFACE_FINISH_ID };
+}
+
+// ─── Legacy FinishSpec / FINISH_LIBRARY (test + preset cũ) ──────────────────
+
+export interface FinishSpec {
+    id: FinishId;
+    label: string;
+    roughness: number;
+    metalness: number;
+    needsMask: boolean;
+    clearcoat?: number;
+    clearcoatRoughness?: number;
+    sheen?: number;
+    sheenColor?: string;
+    sheenRoughness?: number;
+    envMapIntensity?: number;
+    grainBumpScale?: number;
+}
+
+export const DEFAULT_FINISH_ID: FinishId = 'kraft';
+
+/** Legacy 1-axis library — mỗi id map sang composeAppearance tương đương. */
+export const FINISH_LIBRARY: Record<FinishId, FinishSpec> = (() => {
+    const ids: FinishId[] = [
+        'kraft', 'sbs-white', 'matte-lam', 'gloss-lam', 'spot-uv', 'foil-metallic', 'emboss',
+    ];
+    const out = {} as Record<FinishId, FinishSpec>;
+    for (const id of ids) {
+        const { substrateId, surfaceFinishId } = migrateLegacyFinishId(id);
+        const a = composeAppearance(substrateId, surfaceFinishId);
+        out[id] = {
+            id,
+            label: a.label,
+            roughness: a.phys.roughness,
+            metalness: a.phys.metalness,
+            needsMask: a.needsSpotUvMask || a.needsEmbossMask,
+            clearcoat: a.phys.clearcoat,
+            clearcoatRoughness: a.phys.clearcoatRoughness,
+            sheen: a.phys.sheen,
+            sheenColor: a.phys.sheenColor,
+            sheenRoughness: a.phys.sheenRoughness,
+            envMapIntensity: a.phys.envMapIntensity,
+            grainBumpScale: a.phys.grainBumpScale,
+        };
+    }
+    return out;
+})();
+
 export function getFinish(id: FinishId): FinishSpec {
     return FINISH_LIBRARY[id] ?? FINISH_LIBRARY[DEFAULT_FINISH_ID];
 }
 
-/**
- * Áp một finish ĐỒNG NHẤT cho toàn bộ panel của hộp (Yêu cầu 4.4).
- *
- * Trả về một mảng `FinishSpec` song song 1-1 với `panels` (cùng độ dài,
- * cùng thứ tự), trong đó MỌI phần tử đều là cùng một finish đã chọn.
- * Đây là hàm thuần: không biến đổi `panels`, không phụ thuộc tên panel.
- *
- * @param panels Danh sách panel của hộp (read-only)
- * @param id Mã finish được chọn
- * @returns Mảng `FinishSpec` cùng độ dài với `panels`, đồng nhất finish
- * _Requirements: 4.4_
- */
+export function resolvePhysicalScalars(spec: FinishSpec): PhysicalFinishScalars {
+    return {
+        roughness: unit(spec.roughness, 0.5),
+        metalness: unit(spec.metalness, 0.0),
+        clearcoat: unit(spec.clearcoat, 0.0),
+        clearcoatRoughness: unit(spec.clearcoatRoughness, 1.0),
+        sheen: unit(spec.sheen, 0.0),
+        sheenColor: typeof spec.sheenColor === 'string' && spec.sheenColor.length > 0
+            ? spec.sheenColor
+            : '#ffffff',
+        sheenRoughness: unit(spec.sheenRoughness, 1.0),
+        envMapIntensity: unit(spec.envMapIntensity, 1.0),
+        grainBumpScale: unit(spec.grainBumpScale, 0.0),
+    };
+}
+
 export function applyFinishToAllPanels(panels: readonly Panel[], id: FinishId): FinishSpec[] {
     const spec = getFinish(id);
     return panels.map(() => spec);
 }
 
-// ------------------------------------------------------------
-// Spot-UV: ánh xạ mask theo ngưỡng 50% (Yêu cầu 4.3)
-// ------------------------------------------------------------
+// ─── Spot-UV / emboss helpers ───────────────────────────────────────────────
 
-/**
- * Ngưỡng mask spot-UV. Một điểm ảnh được coi là thuộc vùng phủ UV
- * (vùng "bóng") KHI VÀ CHỈ KHI giá trị mask của nó LỚN HƠN 50%.
- *
- * Giá trị mask được hiểu là một phân số đã chuẩn hóa trong [0, 1]
- * (0 = đen/không phủ, 1 = trắng/phủ hoàn toàn). Ngưỡng 0.5 tương
- * ứng 50% theo Yêu cầu 4.3.
- */
 export const SPOT_UV_MASK_THRESHOLD = 0.5;
-
-/**
- * Độ nhám của vùng được phủ UV (vùng "bóng") của finish spot-UV.
- * Theo bảng thiết kế: vùng mask có roughness ≈ 0.08 (bóng cao), trong
- * khi bề mặt nền giữ roughness gốc (≈ 0.7).
- */
 export const SPOT_UV_GLOSS_ROUGHNESS = 0.08;
+export const SPOT_UV_GLOSS_CLEARCOAT = 0.9;
+export const SPOT_UV_GLOSS_CLEARCOAT_ROUGHNESS = 0.06;
 
-/**
- * Xác định một điểm ảnh mask có kích hoạt hiệu ứng spot-UV hay không.
- *
- * Trả về `true` khi và chỉ khi `maskValue` (phân số đã chuẩn hóa trong
- * [0, 1]) LỚN HƠN ngưỡng 50% (`SPOT_UV_MASK_THRESHOLD`). Giá trị `NaN`
- * được coi là KHÔNG kích hoạt (giữ bề mặt nền) để cảnh vẫn render an toàn.
- *
- * @param maskValue Giá trị mask đã chuẩn hóa, miền [0, 1]
- * @param threshold Ngưỡng kích hoạt (mặc định 0.5 = 50%)
- * @returns `true` nếu điểm ảnh thuộc vùng phủ UV, ngược lại `false`
- * _Requirements: 4.3_
- */
 export function isSpotUvPixelActive(
     maskValue: number,
     threshold: number = SPOT_UV_MASK_THRESHOLD,
 ): boolean {
-    if (Number.isNaN(maskValue)) {
-        return false;
-    }
+    if (Number.isNaN(maskValue)) return false;
     return maskValue > threshold;
 }
 
-/**
- * Ánh xạ một giá trị mask spot-UV sang độ nhám (roughness) áp dụng.
- *
- * Hàm thuần thực thi Yêu cầu 4.3: tại các điểm ảnh có giá trị mask
- * LỚN HƠN 50%, trả về độ nhám "bóng" (`glossRoughness`); tại mọi điểm
- * còn lại, GIỮ NGUYÊN độ nhám của bề mặt nền (`baseRoughness`).
- *
- * @param maskValue Giá trị mask đã chuẩn hóa, miền [0, 1]
- * @param baseRoughness Độ nhám của bề mặt nền (giữ nguyên ngoài vùng mask)
- * @param glossRoughness Độ nhám vùng phủ UV (mặc định `SPOT_UV_GLOSS_ROUGHNESS`)
- * @returns Độ nhám áp dụng tại điểm ảnh đó
- * _Requirements: 4.3_
- */
 export function mapSpotUvRoughness(
     maskValue: number,
     baseRoughness: number,
@@ -196,35 +374,40 @@ export function mapSpotUvRoughness(
     return isSpotUvPixelActive(maskValue) ? glossRoughness : baseRoughness;
 }
 
-// ------------------------------------------------------------
-// Emboss: giới hạn độ cao nổi/lõm về [0.0, 5.0] mm (Yêu cầu 4.5)
-// ------------------------------------------------------------
+export function mapSpotUvClearcoat(
+    maskValue: number,
+    baseClearcoat: number,
+    glossClearcoat: number = SPOT_UV_GLOSS_CLEARCOAT,
+): number {
+    return isSpotUvPixelActive(maskValue) ? glossClearcoat : baseClearcoat;
+}
 
-/** Cận dưới độ cao emboss (mm). _Requirements: 4.5_ */
 export const EMBOSS_MIN_HEIGHT_MM = 0.0;
-
-/** Cận trên độ cao emboss (mm). _Requirements: 4.5_ */
 export const EMBOSS_MAX_HEIGHT_MM = 5.0;
 
-/**
- * Giới hạn độ cao nổi/lõm (emboss) về miền hợp lệ [0.0, 5.0] mm.
- *
- * Hàm thuần thực thi Yêu cầu 4.5 (clamp về biên gần nhất):
- * - `< 0.0` → `0.0`
- * - `> 5.0` → `5.0`
- * - `NaN` / `undefined` → `0.0` (không emboss, mặc định an toàn)
- * - ngược lại → giữ nguyên giá trị đầu vào.
- *
- * @param rawHeight Độ cao emboss đầu vào (mm)
- * @returns Độ cao đã giới hạn trong [0.0, 5.0] mm
- * _Requirements: 4.5_
- */
 export function clampEmbossHeight(rawHeight: number | undefined): number {
     if (rawHeight === undefined || Number.isNaN(rawHeight) || rawHeight < EMBOSS_MIN_HEIGHT_MM) {
         return EMBOSS_MIN_HEIGHT_MM;
     }
-    if (rawHeight > EMBOSS_MAX_HEIGHT_MM) {
-        return EMBOSS_MAX_HEIGHT_MM;
-    }
+    if (rawHeight > EMBOSS_MAX_HEIGHT_MM) return EMBOSS_MAX_HEIGHT_MM;
     return rawHeight;
+}
+
+// ─── Lookdev quality / exposure ─────────────────────────────────────────────
+
+export type MockupQualityTier = 'balanced' | 'high';
+
+export function envMapResolutionForTier(tier: MockupQualityTier): number {
+    return tier === 'high' ? 512 : 256;
+}
+
+export const TONE_EXPOSURE_MIN = 0.7;
+export const TONE_EXPOSURE_MAX = 1.4;
+export const DEFAULT_TONE_EXPOSURE = 1.0;
+
+export function clampToneExposure(raw: number | undefined): number {
+    if (raw === undefined || Number.isNaN(raw)) return DEFAULT_TONE_EXPOSURE;
+    if (raw < TONE_EXPOSURE_MIN) return TONE_EXPOSURE_MIN;
+    if (raw > TONE_EXPOSURE_MAX) return TONE_EXPOSURE_MAX;
+    return raw;
 }

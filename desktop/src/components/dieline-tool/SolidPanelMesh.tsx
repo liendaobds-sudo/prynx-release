@@ -11,8 +11,9 @@
 //   - `computePanelUV`         → UV theo mode per-face/aligned-to-dieline,
 //                                mặt ngoài giữ hướng đọc (không lật gương),
 //                                mặt trong lật gương (Yêu cầu 5.1, 5.3).
-//   - `getFinish` + finish PBR → vật liệu `MeshStandardMaterial` (roughness/
-//                                metalness) áp ĐỒNG NHẤT cho toàn panel,
+//   - `getFinish` + Physical PBR → `MeshPhysicalMaterial` (roughness/
+//                                metalness/clearcoat/sheen/envMapIntensity)
+//                                áp ĐỒNG NHẤT cho toàn panel,
 //                                điều khiển bởi `useMockupStore.finishId`
 //                                (Yêu cầu 4.4); màu tường cạnh theo
 //                                `useMockupStore.edgeColor`.
@@ -43,6 +44,7 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Line } from '@react-three/drei';
+import { useFrame } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
 
 import { useMockupStore } from '../../store/useMockupStore';
@@ -51,9 +53,18 @@ import { buildPanelSolid, buildFoldFilletGeometry, clampThickness, normalizeEdge
 import { buildConeFrustumGeometry, buildConeGluePatchGeometry, buildConeOutlineGeometries, type ConeWarpParams } from '../../lib/mockup3d/cupSleeveCone';
 import { tracePerimeter } from '../../lib/dieline/tracePerimeter';
 import { clampArtworkTransform, computePanelUV } from '../../lib/mockup3d/artworkMapping';
-import { clampEmbossHeight, getFinish, SPOT_UV_GLOSS_ROUGHNESS } from '../../lib/mockup3d/materialLibrary';
+import {
+    clampEmbossHeight,
+    composeAppearance,
+    substrateInnerFaceColor,
+    SPOT_UV_GLOSS_CLEARCOAT,
+    SPOT_UV_GLOSS_CLEARCOAT_ROUGHNESS,
+    SPOT_UV_GLOSS_ROUGHNESS,
+} from '../../lib/mockup3d/materialLibrary';
+import { getKraftGrainBumpTexture } from '../../lib/mockup3d/proceduralTextures';
 import { applyFoldCompensation } from '../../lib/mockup3d/foldCompensation';
 import { applyExplodedOffset, type Vec3 } from '../../lib/mockup3d/explodedView';
+import { foldLive, seedFoldLiveFromStore } from '../../lib/mockup3d/foldLive';
 import { useDisposableResource } from './useDisposeResources';
 
 // ─── Bảng màu ───────────────────────────────────────────────────────────────
@@ -68,30 +79,6 @@ const EDGE_COLOR_HEX: Record<'kraft' | 'white', string> = {
     white: '#f3efe7',
 };
 
-/**
- * Màu albedo MẶT TRONG (mặt giấy bồi không in) theo `edgeColor`. Cố tình
- * chọn tông trầm/ấm KHÁC RÕ so với mặt ngoài để người dùng phân biệt được
- * mặt trước/mặt sau khi xoay mô hình (yêu cầu giữ độ tương phản hai mặt).
- */
-const INNER_FACE_COLOR: Record<'kraft' | 'white', string> = {
-    kraft: '#a9784a',
-    white: '#cbb896',
-};
-
-/**
- * Màu albedo NỀN của mặt panel theo finish (dùng khi KHÔNG có ảnh nghệ
- * thuật). Khi có texture, màu nền là trắng để không nhuộm màu ảnh.
- */
-const FINISH_BASE_COLOR: Record<string, string> = {
-    kraft: '#c8a16a',
-    'sbs-white': '#f3efe7',
-    'matte-lam': '#fbfaf7',
-    'gloss-lam': '#ffffff',
-    'spot-uv': '#fbfaf7',
-    'foil-metallic': '#d8d2c2',
-    emboss: '#ece6d8',
-};
-
 /** Khoảng cách tách rời cơ sở (mm) ứng với 1 đơn vị hệ số explodedFactor. */
 const DEFAULT_EXPLODE_SPACING_MM = 40;
 
@@ -103,14 +90,58 @@ const MAT_INNER = 2; // cap mặt trong (−Z)
 /** Ngưỡng |pháp tuyến.z| để coi một tam giác là cap (mặt phẳng) thay vì tường. */
 const CAP_NORMAL_Z_THRESHOLD = 0.7;
 
-const SPOT_UV_SHADER_TARGET = 'roughnessFactor *= texelRoughness.g;';
+const SPOT_UV_ROUGHNESS_SHADER_TARGET = 'roughnessFactor *= texelRoughness.g;';
 
 /** Chuyển mask Spot-UV trắng thành vùng bóng, thay vì phép nhân roughness mặc định. */
 export function patchSpotUvRoughnessShader(fragmentShader: string): string {
     return fragmentShader.replace(
-        SPOT_UV_SHADER_TARGET,
+        SPOT_UV_ROUGHNESS_SHADER_TARGET,
         `roughnessFactor = texelRoughness.g > 0.5 ? ${SPOT_UV_GLOSS_ROUGHNESS.toFixed(4)} : roughnessFactor;`,
     );
+}
+
+/**
+ * Patch clearcoat: vùng mask trắng (g channel của clearcoatMap / roughnessMap)
+ * dùng clearcoat bóng UV; nền giữ clearcoatFactor gốc.
+ *
+ * Three.js Physical dùng `clearcoatFactor *= texelClearcoat.x` khi có CLEARCOATMAP.
+ * Ta thay bằng ngưỡng 50% giống spot-UV roughness.
+ */
+export function patchSpotUvClearcoatShader(fragmentShader: string): string {
+    const targets = [
+        'clearcoatFactor *= texelClearcoat.x;',
+        'clearcoatFactor *= texelClearcoat.r;',
+    ];
+    let out = fragmentShader;
+    for (const target of targets) {
+        if (out.includes(target)) {
+            out = out.replace(
+                target,
+                `clearcoatFactor = texelClearcoat.x > 0.5 ? ${SPOT_UV_GLOSS_CLEARCOAT.toFixed(4)} : clearcoatFactor;`,
+            );
+            break;
+        }
+    }
+    // clearcoatRoughness similarly if map is present
+    const roughTargets = [
+        'clearcoatRoughnessFactor *= texelClearcoatRoughness.y;',
+        'clearcoatRoughnessFactor *= texelClearcoatRoughness.g;',
+    ];
+    for (const target of roughTargets) {
+        if (out.includes(target)) {
+            out = out.replace(
+                target,
+                `clearcoatRoughnessFactor = texelClearcoatRoughness.y > 0.5 ? ${SPOT_UV_GLOSS_CLEARCOAT_ROUGHNESS.toFixed(4)} : clearcoatRoughnessFactor;`,
+            );
+            break;
+        }
+    }
+    return out;
+}
+
+/** Áp cả roughness + clearcoat spot-UV lên fragment shader Physical. */
+export function patchSpotUvPhysicalShader(fragmentShader: string): string {
+    return patchSpotUvClearcoatShader(patchSpotUvRoughnessShader(fragmentShader));
 }
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -519,8 +550,11 @@ export default function SolidPanelMesh({
     const groupRef = useRef<THREE.Group>(null);
 
     // State trình bày từ store mockup (tách biệt khỏi đường dẫn dieline).
-    const finishId = useMockupStore((s) => s.finishId);
+    const substrateId = useMockupStore((s) => s.substrateId);
+    const surfaceFinishId = useMockupStore((s) => s.surfaceFinishId);
     const edgeColor = useMockupStore((s) => s.edgeColor);
+    const qualityTier = useMockupStore((s) => s.qualityTier);
+    const showPaperGrain = useMockupStore((s) => s.showPaperGrain);
     const explodedFactor = useMockupStore((s) => s.explodedFactor);
     const artworkMode = useMockupStore((s) => s.artwork.mode);
     const defaultOuter = useMockupStore((s) => s.artwork.outer);
@@ -639,58 +673,81 @@ export default function SolidPanelMesh({
     // ── 3. Vật liệu: mặt ngoài (finish/ảnh) ≠ mặt trong (giấy bồi) ≠ tường cạnh.
     //    Thứ tự material khớp chỉ số nhóm: [MAT_OUTER, MAT_WALL, MAT_INNER]
     //    (Yêu cầu 4.4 + giữ tương phản hai mặt).
-    const materials = useDisposableResource<THREE.MeshStandardMaterial[]>(() => {
-        const finish = getFinish(finishId);
+    const materials = useDisposableResource<THREE.Material[]>(() => {
+        const appearance = composeAppearance(substrateId, surfaceFinishId);
+        const phys = appearance.phys;
         const edge = normalizeEdgeColor(edgeColor);
-        const baseColor = FINISH_BASE_COLOR[finish.id] ?? '#ffffff';
+        const baseColor = appearance.baseColor;
         const edgeHex = EDGE_COLOR_HEX[edge];
-        const innerHex = INNER_FACE_COLOR[edge];
+        // Mặt trong = giấy bồi theo CHẤT LIỆU (substrate), không theo edgeColor.
+        const innerHex = substrateInnerFaceColor(substrateId);
 
         // Solid khép kín có pháp tuyến hướng RA NGOÀI, nên dùng `FrontSide`
         // cho cả ba nhóm: tránh vẽ thừa mặt sau (backface) của hai cap chỉ
         // cách nhau bằng độ dày giấy (rất mỏng) — nguyên nhân gây nhấp nháy
         // (Z-fighting) trên toàn bề mặt khi xoay. Cap ngoài hướng +Z, cap
         // trong hướng −Z, tường cạnh hướng ra ngoài → FrontSide hiển thị đúng.
-        const spotUvEnabled = finish.id === 'spot-uv' && !!spotUvTexture;
-        const embossEnabled = finish.id === 'emboss' && !!embossTexture && embossHeightMm > 0;
-        const outerMaterial = new THREE.MeshStandardMaterial({
+        const spotUvEnabled = appearance.needsSpotUvMask && !!spotUvTexture;
+        const embossEnabled = appearance.needsEmbossMask && !!embossTexture && embossHeightMm > 0;
+        // Grain: chỉ khi user BẬT (mặc định tắt — tránh lag GPU).
+        // Emboss luôn ưu tiên bumpMap. Size tối đa 256 live.
+        const wantGrain =
+            !embossEnabled
+            && showPaperGrain
+            && phys.grainBumpScale > 0;
+        const grainTex = wantGrain
+            ? (getKraftGrainBumpTexture(256, undefined, THREE) as THREE.Texture | null)
+            : null;
+        const grainScale = grainTex ? phys.grainBumpScale : 0;
+        // Sheen đắt GPU — chỉ khi grain bật hoặc quality high.
+        const useSheen = showPaperGrain || qualityTier === 'high';
+
+        const outerMaterial = new THREE.MeshPhysicalMaterial({
             color: texture ? '#ffffff' : baseColor,
             map: texture ?? null,
             roughnessMap: spotUvEnabled ? spotUvTexture : null,
-            bumpMap: embossEnabled ? embossTexture : null,
-            bumpScale: embossEnabled ? clampEmbossHeight(embossHeightMm) : 0,
-            roughness: finish.roughness,
-            metalness: finish.metalness,
+            clearcoatMap: spotUvEnabled ? spotUvTexture : null,
+            // Dùng cùng mask: vùng trắng → clearcoatRoughness thấp (bóng UV).
+            clearcoatRoughnessMap: spotUvEnabled ? spotUvTexture : null,
+            bumpMap: embossEnabled ? embossTexture : (grainTex ?? null),
+            bumpScale: embossEnabled ? clampEmbossHeight(embossHeightMm) : grainScale,
+            roughness: phys.roughness,
+            metalness: phys.metalness,
+            clearcoat: phys.clearcoat,
+            clearcoatRoughness: phys.clearcoatRoughness,
+            sheen: useSheen ? phys.sheen : 0,
+            sheenColor: new THREE.Color(phys.sheenColor),
+            sheenRoughness: phys.sheenRoughness,
+            envMapIntensity: phys.envMapIntensity,
             side: THREE.FrontSide,
         });
         if (spotUvEnabled) {
-            // Mask trắng (>50%) = vùng phủ UV bóng; vùng đen giữ roughness nền.
-            // Patch đúng shader chunk của Three để không phải sinh thêm texture/canvas.
+            // Mask trắng (>50%) = vùng phủ UV bóng (roughness thấp + clearcoat cao).
             outerMaterial.onBeforeCompile = (shader) => {
-                shader.fragmentShader = patchSpotUvRoughnessShader(shader.fragmentShader);
-
+                shader.fragmentShader = patchSpotUvPhysicalShader(shader.fragmentShader);
             };
-            outerMaterial.customProgramCacheKey = () => 'prynx-spot-uv-threshold-v1';
+            outerMaterial.customProgramCacheKey = () => 'prynx-spot-uv-physical-v2';
         }
         if (texture) {
             texture.colorSpace = THREE.SRGBColorSpace;
         }
 
-        // Tường cạnh: màu mép giấy.
+        // Tường / mặt trong: Standard (rẻ hơn Physical) — không clearcoat/sheen.
         const wallMaterial = new THREE.MeshStandardMaterial({
             color: edgeHex,
             roughness: 0.9,
             metalness: 0.0,
+            envMapIntensity: Math.min(0.4, phys.envMapIntensity),
             side: THREE.FrontSide,
         });
 
-        // Mặt trong: ảnh in (khi bật) hoặc màu giấy bồi tương phản.
         const hasInnerArt = !!innerTexture;
         const innerMaterial = new THREE.MeshStandardMaterial({
             color: hasInnerArt ? '#ffffff' : innerHex,
             map: innerTexture ?? null,
-            roughness: hasInnerArt ? finish.roughness : 0.95,
-            metalness: hasInnerArt ? finish.metalness : 0.0,
+            roughness: hasInnerArt ? phys.roughness : 0.95,
+            metalness: hasInnerArt ? phys.metalness : 0.0,
+            envMapIntensity: hasInnerArt ? phys.envMapIntensity * 0.85 : 0.35,
             side: THREE.FrontSide,
         });
         if (innerTexture) {
@@ -713,28 +770,29 @@ export default function SolidPanelMesh({
             ? [innerMaterial, wallMaterial, outerMaterial]
             : [outerMaterial, wallMaterial, innerMaterial];
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [finishId, edgeColor, texture, innerTexture, spotUvTexture, embossTexture, panel.stackZ, outerFaceNegativeZ]);
+    }, [substrateId, surfaceFinishId, edgeColor, texture, innerTexture, spotUvTexture, embossTexture, panel.stackZ, outerFaceNegativeZ, qualityTier, showPaperGrain]);
 
     // Slider emboss chỉ cập nhật uniform bumpScale, không dựng lại geometry/material
     // trên mọi panel. Nhờ đó kéo chỉnh vẫn mượt với khuôn có nhiều mặt.
     useEffect(() => {
-        const outerMaterial = materials[outerFaceNegativeZ ? MAT_INNER : MAT_OUTER];
-        const enabled = finishId === 'emboss' && !!embossTexture && embossHeightMm > 0;
-        outerMaterial.bumpScale = enabled ? clampEmbossHeight(embossHeightMm) : 0;
-    }, [materials, finishId, embossTexture, embossHeightMm, outerFaceNegativeZ]);
-    // Material riêng cho dải bo nếp gập: màu giấy mặt ngoài, 2 mặt (DoubleSide)
-    // để hiện đúng dù chiều winding nào.
+        const outerMaterial = materials[outerFaceNegativeZ ? MAT_INNER : MAT_OUTER] as THREE.MeshPhysicalMaterial;
+        const enabled = surfaceFinishId === 'emboss' && !!embossTexture && embossHeightMm > 0;
+        if ('bumpScale' in outerMaterial) {
+            outerMaterial.bumpScale = enabled ? clampEmbossHeight(embossHeightMm) : 0;
+        }
+    }, [materials, surfaceFinishId, embossTexture, embossHeightMm, outerFaceNegativeZ]);
+    // Material riêng cho dải bo nếp gập — Standard (rẻ).
     const filletMaterial = useDisposableResource<THREE.MeshStandardMaterial>(() => {
-        const finish = getFinish(finishId);
-        const baseColor = FINISH_BASE_COLOR[finish.id] ?? '#ffffff';
+        const appearance = composeAppearance(substrateId, surfaceFinishId);
         return new THREE.MeshStandardMaterial({
-            color: baseColor,
-            roughness: finish.roughness,
-            metalness: finish.metalness,
+            color: appearance.baseColor,
+            roughness: appearance.phys.roughness,
+            metalness: appearance.phys.metalness,
+            envMapIntensity: appearance.phys.envMapIntensity * 0.8,
             side: THREE.DoubleSide,
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [finishId]);
+    }, [substrateId, surfaceFinishId]);
 
     // ── 3b. Đường CAD cắt/cấn — bản phẳng (panel.paths) hoặc bám mặt nón ──
     const lineGeometries = useDisposableResource<THREE.BufferGeometry[]>(
@@ -763,58 +821,68 @@ export default function SolidPanelMesh({
     const cutOuterPts = useMemo(() => bufferToSegPoints(cutGeo, offsetZ), [cutGeo, offsetZ]);
     const creaseOuterPts = useMemo(() => bufferToSegPoints(creaseGeo, offsetZ), [creaseGeo, offsetZ]);
 
-    // ── 4. Ma trận gập + bù độ dày (Yêu cầu 2.1) ──
-    const foldResult = useMemo(
-        () => applyFoldCompensation(panel, allPanels, foldProgress, depthMap, maxD, thickness),
-        [panel, allPanels, foldProgress, depthMap, maxD, thickness],
-    );
+    // ── 4–5. Ma trận gập + exploded ──
+    // Khi animation driver chạy: đọc `foldLive` trong useFrame (60fps) — KHÔNG
+    // phụ thuộc re-render React. Khi user kéo slider: seed foldLive + áp ngay.
+    const foldScratch = useRef({
+        version: -1,
+        basePos: new THREE.Vector3(),
+        worldNormal: new THREE.Vector3(),
+        delta: new THREE.Matrix4(),
+        warned: false,
+    });
 
-    // Cảnh báo panel thiếu hình học (Yêu cầu 2.6) — không làm treo cảnh.
-    useEffect(() => {
-        if (foldResult.skipped && foldResult.warning) {
+    const applyFoldMatrix = (progress: number) => {
+        const group = groupRef.current;
+        if (!group || coneWarp) {
+            if (group && coneWarp) {
+                group.matrix.identity();
+                group.matrixWorldNeedsUpdate = true;
+            }
+            return;
+        }
+        const foldResult = applyFoldCompensation(
+            panel, allPanels, progress, depthMap, maxD, thickness,
+        );
+        if (foldResult.skipped && foldResult.warning && !foldScratch.current.warned) {
+            foldScratch.current.warned = true;
             console.warn(`[SolidPanelMesh] ${foldResult.warning}`);
         }
-    }, [foldResult]);
-
-    // ── 5. Dịch tách rời theo pháp tuyến panel (Yêu cầu 7.5) ──
-    const finalMatrix = useMemo(() => {
-        // Bọc ly: hình học đã đặt sẵn trong không gian nón (qua mapper); KHÔNG
-        // áp ma trận gập/tách rời (panel tai dán có quan hệ gập sẽ làm lệch).
-        if (coneWarp) {
-            return new THREE.Matrix4();
-        }
-        const m = foldResult.matrix.clone();
-
-        // Pháp tuyến panel ở trạng thái phẳng là +Z; biến đổi theo ma trận gập
-        // để lấy pháp tuyến trong không gian thế giới.
-        const worldNormal = new THREE.Vector3(0, 0, 1).transformDirection(m);
-        const normal: Vec3 = { x: worldNormal.x, y: worldNormal.y, z: worldNormal.z };
-
-        // Vị trí gập gốc (tịnh tiến của ma trận gập).
-        const basePos = new THREE.Vector3().setFromMatrixPosition(m);
+        const m = foldResult.matrix;
+        const { basePos, worldNormal, delta } = foldScratch.current;
+        worldNormal.set(0, 0, 1).transformDirection(m);
+        basePos.setFromMatrixPosition(m);
         const moved = applyExplodedOffset(
             { x: basePos.x, y: basePos.y, z: basePos.z },
-            normal,
+            { x: worldNormal.x, y: worldNormal.y, z: worldNormal.z },
             explodedFactor,
             explodeSpacing,
         );
-
-        // Áp phần dịch tách rời như tịnh tiến trong không gian thế giới.
-        const delta = new THREE.Matrix4().makeTranslation(
+        delta.makeTranslation(
             moved.x - basePos.x,
             moved.y - basePos.y,
             moved.z - basePos.z,
         );
-        return delta.multiply(m);
-    }, [foldResult, explodedFactor, explodeSpacing, coneWarp]);
+        group.matrix.copy(delta).multiply(m);
+        group.matrixWorldNeedsUpdate = true;
+    };
 
-    // Áp ma trận trực tiếp lên group (matrixAutoUpdate=false).
+    // Slider / store → live (khi không có driver animation).
     useEffect(() => {
-        if (groupRef.current) {
-            groupRef.current.matrix.copy(finalMatrix);
-            groupRef.current.matrixWorldNeedsUpdate = true;
+        seedFoldLiveFromStore(foldProgress);
+        if (!foldLive.driving) {
+            applyFoldMatrix(foldProgress);
+            foldScratch.current.version = foldLive.version;
         }
-    }, [finalMatrix]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [foldProgress, panel, allPanels, depthMap, maxD, thickness, explodedFactor, explodeSpacing, coneWarp]);
+
+    // Animation: cập nhật ma trận mỗi frame từ foldLive, không re-render React.
+    useFrame(() => {
+        if (foldLive.version === foldScratch.current.version) return;
+        foldScratch.current.version = foldLive.version;
+        applyFoldMatrix(foldLive.progress);
+    });
 
     // ── Kéo ảnh TRỰC TIẾP trên mặt 3D (artworkEditMode) ──
     // Bbox outline phẳng của panel (mm) để chuẩn hoá vị trí điểm chạm về [0,1].

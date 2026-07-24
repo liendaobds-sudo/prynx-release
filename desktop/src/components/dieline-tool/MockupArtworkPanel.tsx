@@ -256,7 +256,7 @@ function ArtworkUploader(props: {
 export default function MockupArtworkPanel() {
   const { t } = useTranslation();
     const artwork = useMockupStore((s) => s.artwork);
-    const setFinishId = useMockupStore((s) => s.setFinishId);
+    const setSurfaceFinishId = useMockupStore((s) => s.setSurfaceFinishId);
     const setArtworkMode = useMockupStore((s) => s.setArtworkMode);
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
     const setArtworkEditMode = useMockupStore((s) => s.setArtworkEditMode);
@@ -577,7 +577,7 @@ export default function MockupArtworkPanel() {
                                 const file = e.target.files?.[0];
                                 if (file) {
                                     void handleMaskUpload(file, setSpotUvMaskUrl).then((loaded) => {
-                                        if (loaded) setFinishId('spot-uv');
+                                        if (loaded) setSurfaceFinishId('spot-uv');
                                     });
                                 }
                                 e.target.value = '';
@@ -608,7 +608,7 @@ export default function MockupArtworkPanel() {
                                 if (file) {
                                     void handleMaskUpload(file, setEmbossMaskUrl).then((loaded) => {
                                         if (!loaded) return;
-                                        setFinishId('emboss');
+                                        setSurfaceFinishId('emboss');
                                         if (artwork.embossHeightMm <= 0) setEmbossHeightMm(0.5);
                                     });
                                 }

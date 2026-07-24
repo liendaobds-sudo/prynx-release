@@ -130,9 +130,49 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
     // Hệ số xuất mặc định lấy từ store mockup (Yêu cầu 6.2).
     const storeExportScale = useMockupStore((s) => s.exportScale);
     const exportTransparent = useMockupStore((s) => s.exportTransparent);
+    const qualityTier = useMockupStore((s) => s.qualityTier);
+    const setQualityTier = useMockupStore((s) => s.setQualityTier);
+    const invalidate = useThree((s) => s.invalidate);
 
     // Chặn xuất chồng lấn: một lần xuất phải hoàn tất trước khi bắt đầu lần kế.
     const busyRef = useRef(false);
+
+    /** Đợi N frame demand + env remount (quality high) trước khi chụp. */
+    const waitFrames = useCallback(
+        (n: number) =>
+            new Promise<void>((resolve) => {
+                let left = n;
+                const step = () => {
+                    invalidate();
+                    left -= 1;
+                    if (left <= 0) resolve();
+                    else requestAnimationFrame(step);
+                };
+                requestAnimationFrame(step);
+            }),
+        [invalidate],
+    );
+
+    /**
+     * Xuất 2×/4×: tạm bật quality high để env 512, rồi khôi phục tier cũ.
+     * balanced + 1× giữ nguyên để không tốn GPU khi preview.
+     */
+    const withExportQuality = useCallback(
+        async <T,>(scale: ExportScale, run: () => Promise<T>): Promise<T> => {
+            const bump = scale >= 2 && qualityTier !== 'high';
+            if (!bump) return run();
+            const prev = qualityTier;
+            setQualityTier('high');
+            try {
+                await waitFrames(3);
+                return await run();
+            } finally {
+                setQualityTier(prev);
+                invalidate();
+            }
+        },
+        [qualityTier, setQualityTier, waitFrames, invalidate],
+    );
 
     // Báo lỗi: ưu tiên callback tùy biến, ngược lại dùng toast mặc định.
     // Mọi nhánh lỗi đều BẢO TOÀN cảnh (Yêu cầu 6.7, 6.8).
@@ -231,10 +271,12 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
 
             busyRef.current = true;
             try {
-                const blob = await renderToBlob(
-                    exportTransparent,
-                    sizing.width,
-                    sizing.height,
+                const blob = await withExportQuality(effectiveScale, () =>
+                    renderToBlob(
+                        exportTransparent,
+                        sizing.width,
+                        sizing.height,
+                    ),
                 );
                 if (!blob) {
                     throw new Error(t('dieline.useSceneExport:trinh_duyet_khong_tao_duoc_du_lieu_anh'));
@@ -255,7 +297,7 @@ export function useSceneExport(options: UseSceneExportOptions = {}): SceneExport
                 busyRef.current = false;
             }
         },
-        [size.width, size.height, storeExportScale, maxTextureSize, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, t],
+        [size.width, size.height, storeExportScale, maxTextureSize, filePrefix, reportError, reportSuccess, renderToBlob, exportTransparent, withExportQuality, t],
     );
     // ── exportBatchPNG: nhiều góc camera ──────────────────────────────────────
     const exportBatchPNG = useCallback(async (): Promise<boolean> => {

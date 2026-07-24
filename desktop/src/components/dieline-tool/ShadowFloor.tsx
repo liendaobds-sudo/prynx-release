@@ -31,9 +31,16 @@ export interface BackgroundPreset {
     id: string;
     label: string;
     backgroundColor: string;
+    /**
+     * Nền radial gradient (inner→outer), lấy cảm hứng img2threejs showcase
+     * product stage — sinh CanvasTexture local, 0 mạng.
+     */
+    backgroundGradient?: { inner: string; outer: string };
     floorColor: string;
     floorRoughness: number;
     floorMetalness: number;
+    /** true = sàn ShadowMaterial trong suốt (chỉ bóng), kiểu product turntable. */
+    floorShadowOnly?: boolean;
     shadowColor: string;
     shadowOpacity: number;
     shadowBlur: number;
@@ -41,8 +48,7 @@ export interface BackgroundPreset {
 
 /**
  * Thư viện preset nền/sàn — tối thiểu 2 preset (Yêu cầu 7.3).
- * Preset đầu tiên (`studio-white`) là mặc định, khớp với
- * `DEFAULT_BACKGROUND_PRESET` trong `useMockupStore`.
+ * Bổ sung stage product (tối/xám mềm/cool/warm) tham khảo showcase lookdev.
  */
 export const BACKGROUND_PRESETS: readonly BackgroundPreset[] = [
     {
@@ -88,6 +94,69 @@ export const BACKGROUND_PRESETS: readonly BackgroundPreset[] = [
         shadowColor: '#4b3621',
         shadowOpacity: 0.4,
         shadowBlur: 3.0,
+    },
+    // ── Showcase-inspired product stages (offline canvas gradient) ──
+    {
+        id: 'product-black',
+        label: 'Product tối',
+        backgroundColor: '#0a0a0a',
+        backgroundGradient: { inner: '#1a1c22', outer: '#050506' },
+        floorColor: '#0e0f12',
+        floorRoughness: 0.75,
+        floorMetalness: 0.08,
+        floorShadowOnly: true,
+        shadowColor: '#000000',
+        shadowOpacity: 0.55,
+        shadowBlur: 2.4,
+    },
+    {
+        id: 'soft-gray-stage',
+        label: 'Studio xám mềm',
+        backgroundColor: '#eceded',
+        backgroundGradient: { inner: '#f7f8f9', outer: '#cfd3d8' },
+        floorColor: '#e6e8eb',
+        floorRoughness: 0.9,
+        floorMetalness: 0.0,
+        shadowColor: '#1a1a1a',
+        shadowOpacity: 0.28,
+        shadowBlur: 3.2,
+    },
+    {
+        id: 'cool-infinite',
+        label: 'Infinite cool',
+        backgroundColor: '#c5d0dc',
+        backgroundGradient: { inner: '#eaf0f7', outer: '#8fa3b8' },
+        floorColor: '#d0dae6',
+        floorRoughness: 0.88,
+        floorMetalness: 0.0,
+        shadowColor: '#243040',
+        shadowOpacity: 0.35,
+        shadowBlur: 2.8,
+    },
+    {
+        id: 'warm-product',
+        label: 'Warm product',
+        backgroundColor: '#e8d5c0',
+        backgroundGradient: { inner: '#f6ebe0', outer: '#c4a88a' },
+        floorColor: '#efe0d0',
+        floorRoughness: 0.86,
+        floorMetalness: 0.0,
+        shadowColor: '#4b3621',
+        shadowOpacity: 0.38,
+        shadowBlur: 3.0,
+    },
+    {
+        id: 'cyclorama-white',
+        label: 'Cyclorama trắng',
+        backgroundColor: '#f5f5f5',
+        backgroundGradient: { inner: '#ffffff', outer: '#e2e4e8' },
+        floorColor: '#fafafa',
+        floorRoughness: 0.92,
+        floorMetalness: 0.0,
+        floorShadowOnly: true,
+        shadowColor: '#000000',
+        shadowOpacity: 0.22,
+        shadowBlur: 3.5,
     },
 ] as const;
 
@@ -200,19 +269,41 @@ export default function ShadowFloor({
     const backgroundPreset = useMockupStore((s) => s.backgroundPreset);
     const preset = useMemo(() => getBackgroundPreset(backgroundPreset), [backgroundPreset]);
 
-    // Đặt màu nền TRỰC TIẾP lên scene (không dùng `<color attach="background">`
-    // bên trong <group> vì nó gắn nhầm vào group, không có hiệu lực — khiến nền
-    // giữ màu đen mặc định và sàn trắng "trôi" trên nền tối). Khôi phục nền khi
-    // unmount để không ảnh hưởng các khung xem khác.
+    // Đặt nền scene: solid Color hoặc CanvasTexture radial (showcase-style).
+    // Không dùng `<color attach="background">` trong <group>. Khôi phục khi unmount.
     const scene = useThree((s) => s.scene);
     useEffect(() => {
         if (!applyBackground) return;
         const prev = scene.background;
-        scene.background = new THREE.Color(preset.backgroundColor);
+        let tex: THREE.CanvasTexture | null = null;
+        if (preset.backgroundGradient) {
+            const sizePx = 512;
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = sizePx;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                const g = ctx.createRadialGradient(
+                    sizePx * 0.5, sizePx * 0.42, sizePx * 0.05,
+                    sizePx * 0.5, sizePx * 0.5, sizePx * 0.72,
+                );
+                g.addColorStop(0, preset.backgroundGradient.inner);
+                g.addColorStop(1, preset.backgroundGradient.outer);
+                ctx.fillStyle = g;
+                ctx.fillRect(0, 0, sizePx, sizePx);
+                tex = new THREE.CanvasTexture(canvas);
+                tex.colorSpace = THREE.SRGBColorSpace;
+                scene.background = tex;
+            } else {
+                scene.background = new THREE.Color(preset.backgroundColor);
+            }
+        } else {
+            scene.background = new THREE.Color(preset.backgroundColor);
+        }
         return () => {
             scene.background = prev;
+            tex?.dispose();
         };
-    }, [scene, applyBackground, preset.backgroundColor]);
+    }, [scene, applyBackground, preset.backgroundColor, preset.backgroundGradient]);
 
     // Bóng tiếp xúc nên hơi rộng hơn chân hộp để mép bóng mềm tự nhiên.
     const shadowScale = size * 1.4;
@@ -242,19 +333,24 @@ export default function ShadowFloor({
                 depthWrite={false}
             />
 
-            {/* Mặt sàn đặc theo preset (nhận bóng đổ của đèn studio) */}
+            {/* Mặt sàn đặc hoặc ShadowMaterial (product turntable) */}
             {showFloorPlane && (
                 <mesh
                     rotation={[-Math.PI / 2, 0, 0]}
                     position={[0, floorY, 0]}
+                    receiveShadow
                 >
                     <planeGeometry args={[floorSize, floorSize]} />
-                    <meshStandardMaterial
-                        color={preset.floorColor}
-                        roughness={preset.floorRoughness}
-                        metalness={preset.floorMetalness}
-                        side={THREE.FrontSide}
-                    />
+                    {preset.floorShadowOnly ? (
+                        <shadowMaterial opacity={Math.min(0.35, preset.shadowOpacity * 0.6)} />
+                    ) : (
+                        <meshStandardMaterial
+                            color={preset.floorColor}
+                            roughness={preset.floorRoughness}
+                            metalness={preset.floorMetalness}
+                            side={THREE.FrontSide}
+                        />
+                    )}
                 </mesh>
             )}
 

@@ -18,7 +18,7 @@
 // ============================================================
 
 import React, { useMemo, useRef, useEffect } from 'react';
-import { useLoader, useThree } from '@react-three/fiber';
+import { useLoader, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube } from '@react-three/drei';
 import * as THREE from 'three';
 import { useBoxStore } from '../../store/useBoxStore';
@@ -33,6 +33,14 @@ import DimensionOverlay from './DimensionOverlay';
 import SolidPanelMesh from './SolidPanelMesh';
 import GussetMesh from './GussetMesh';
 import { computeConeWarp } from '../../lib/mockup3d/cupSleeveCone';
+import { sampleHeroTimeline } from '../../lib/mockup3d/heroTimeline';
+import {
+    foldLive,
+    registerFoldLiveInvalidate,
+    seedFoldLiveFromStore,
+    setFoldLiveDriving,
+    writeFoldLive,
+} from '../../lib/mockup3d/foldLive';
 import { useSceneExport } from './useSceneExport';
 import { useTranslation } from 'react-i18next';
 
@@ -361,54 +369,163 @@ function BoxScene() {
 
 // ─── Controls ──────────────────────────────────────────────
 
+/**
+ * UI gập: animation chỉ ghi `foldLive` + state local (slider).
+ * Zustand `foldProgress` chỉ commit khi dừng/kết thúc — tránh re-render BoxScene.
+ */
 function FoldControls() {
   const { t } = useTranslation();
-    const { foldProgress, setFoldProgress, isAnimating, setIsAnimating } = useBoxStore();
+    const foldProgress = useBoxStore((s) => s.foldProgress);
+    const setFoldProgress = useBoxStore((s) => s.setFoldProgress);
+    const isAnimating = useBoxStore((s) => s.isAnimating);
+    const setIsAnimating = useBoxStore((s) => s.setIsAnimating);
+    const heroDemoPlaying = useMockupStore((s) => s.heroDemoPlaying);
+    const setHeroDemoPlaying = useMockupStore((s) => s.setHeroDemoPlaying);
     const animRef = useRef<number | null>(null);
+    const heroRef = useRef<number | null>(null);
+    /** Giá trị slider hiển thị — local khi đang animate. */
+    const [displayFold, setDisplayFold] = React.useState(foldProgress);
+    const driving = isAnimating || heroDemoPlaying;
 
+    // Đồng bộ display khi store đổi từ ngoài (và không đang animate).
+    useEffect(() => {
+        if (!driving) setDisplayFold(foldProgress);
+    }, [foldProgress, driving]);
+
+    const commitFold = (v: number) => {
+        const p = Math.max(0, Math.min(1, v));
+        writeFoldLive(p, 0);
+        setFoldProgress(p);
+        setDisplayFold(p);
+    };
+
+    const stopAllAnim = () => {
+        setFoldLiveDriving(false);
+        setIsAnimating(false);
+        setHeroDemoPlaying(false);
+        // Giữ pose hiện tại (foldLive) → commit store
+        commitFold(foldLive.progress);
+    };
+
+    // Ping-pong fold — 0 Zustand mid-flight
     useEffect(() => {
         if (!isAnimating) {
             if (animRef.current) cancelAnimationFrame(animRef.current);
             return;
         }
+        setHeroDemoPlaying(false);
+        setFoldLiveDriving(true);
+        writeFoldLive(useBoxStore.getState().foldProgress, 0);
 
         let start: number | null = null;
-        const duration = 2000; // 2s full fold
+        let lastUi = 0;
+        const duration = 2000;
 
         const animate = (timestamp: number) => {
             if (!start) start = timestamp;
             const elapsed = timestamp - start;
             const t = Math.min(elapsed / duration, 1);
-            // Ping-pong: go 0→1 then 1→0
             const pingPong = t <= 0.5 ? t * 2 : 2 - t * 2;
-            setFoldProgress(pingPong);
-
+            writeFoldLive(pingPong, 0);
+            // Chỉ cập nhật DOM slider ~15fps, không đụng store
+            if (timestamp - lastUi >= 66) {
+                lastUi = timestamp;
+                setDisplayFold(pingPong);
+            }
             if (t < 1) {
                 animRef.current = requestAnimationFrame(animate);
             } else {
+                setFoldLiveDriving(false);
                 setIsAnimating(false);
+                setFoldProgress(pingPong);
+                setDisplayFold(pingPong);
             }
         };
 
         animRef.current = requestAnimationFrame(animate);
         return () => {
             if (animRef.current) cancelAnimationFrame(animRef.current);
+            setFoldLiveDriving(false);
         };
-    }, [isAnimating, setFoldProgress, setIsAnimating]);
+    }, [isAnimating, setFoldProgress, setIsAnimating, setHeroDemoPlaying]);
+
+    // Hero demo — 0 Zustand mid-flight
+    useEffect(() => {
+        if (!heroDemoPlaying) {
+            if (heroRef.current) cancelAnimationFrame(heroRef.current);
+            return;
+        }
+        setIsAnimating(false);
+        setFoldLiveDriving(true);
+
+        const reducedMotion =
+            typeof window !== 'undefined'
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        let start: number | null = null;
+        let lastUi = 0;
+        writeFoldLive(0, 0);
+        setDisplayFold(0);
+
+        const tick = (timestamp: number) => {
+            if (!start) start = timestamp;
+            const elapsed = (timestamp - start) / 1000;
+            const pose = sampleHeroTimeline(elapsed, { cycleSec: 8, reducedMotion });
+            writeFoldLive(pose.foldProgress, pose.orbitYawRad);
+            if (timestamp - lastUi >= 66) {
+                lastUi = timestamp;
+                setDisplayFold(pose.foldProgress);
+            }
+            if (pose.done) {
+                setFoldLiveDriving(false);
+                setHeroDemoPlaying(false);
+                setFoldProgress(1);
+                setDisplayFold(1);
+                writeFoldLive(1, 0);
+                return;
+            }
+            heroRef.current = requestAnimationFrame(tick);
+        };
+        heroRef.current = requestAnimationFrame(tick);
+        return () => {
+            if (heroRef.current) cancelAnimationFrame(heroRef.current);
+            setFoldLiveDriving(false);
+        };
+    }, [heroDemoPlaying, setFoldProgress, setIsAnimating, setHeroDemoPlaying]);
 
     return (
         <div className="dt-fold-controls" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
 
             <button
                 className={`dt-fold-play-btn ${isAnimating ? 'active' : ''}`}
-                onClick={() => setIsAnimating(!isAnimating)}
+                onClick={() => {
+                    if (isAnimating) stopAllAnim();
+                    else {
+                        setHeroDemoPlaying(false);
+                        setIsAnimating(true);
+                    }
+                }}
                 title={isAnimating ? t('dieline.dielineScene3D:dung') : t('dieline.dielineScene3D:chay_hoat_anh_gap')}
             >
                 {isAnimating ? '⏸' : '▶'}
             </button>
             <button
+                className={`dt-fold-play-btn ${heroDemoPlaying ? 'active' : ''}`}
+                onClick={() => {
+                    if (heroDemoPlaying) stopAllAnim();
+                    else {
+                        setIsAnimating(false);
+                        setHeroDemoPlaying(true);
+                    }
+                }}
+                title={heroDemoPlaying ? 'Dừng demo gập' : 'Demo gập (fold → orbit)'}
+            >
+                {heroDemoPlaying ? '⏹' : '🎬'}
+            </button>
+            <button
                 className="dt-fold-step-btn"
-                onClick={() => { setIsAnimating(false); setFoldProgress(0); }}
+                onClick={() => { stopAllAnim(); commitFold(0); }}
                 title={t('dieline.dielineScene3D:trai_phang_0')}
             >
                 {t('dieline.dielineScene3D:trai')}
@@ -418,16 +535,16 @@ function FoldControls() {
                 min={0}
                 max={1}
                 step={0.01}
-                value={foldProgress}
+                value={displayFold}
                 onChange={(e) => {
-                    setIsAnimating(false);
-                    setFoldProgress(parseFloat(e.target.value));
+                    stopAllAnim();
+                    commitFold(parseFloat(e.target.value));
                 }}
                 className="dt-fold-slider"
             />
             <button
                 className="dt-fold-step-btn"
-                onClick={() => { setIsAnimating(false); setFoldProgress(1); }}
+                onClick={() => { stopAllAnim(); commitFold(1); }}
                 title={t('dieline.dielineScene3D:gap_hoan_tat_100')}
             >
                 {t('dieline.dielineScene3D:gap')}
@@ -438,12 +555,12 @@ function FoldControls() {
                     min={0}
                     max={100}
                     step={1}
-                    value={Math.round(foldProgress * 100)}
+                    value={Math.round(displayFold * 100)}
                     onChange={(e) => {
                         const v = parseFloat(e.target.value);
                         if (!Number.isNaN(v)) {
-                            setIsAnimating(false);
-                            setFoldProgress(Math.max(0, Math.min(1, v / 100)));
+                            stopAllAnim();
+                            commitFold(v / 100);
                         }
                     }}
                     className="dt-num-input"
@@ -509,13 +626,64 @@ function SceneExporter() {
     return null;
 }
 
+// ─── Live fold pump + orbit (trong Canvas, không re-render React) ───────────
+
+/** Đăng ký invalidate cho foldLive.write — giữ frameloop demand khi animate. */
+function FoldLivePump() {
+    const invalidate = useThree((s) => s.invalidate);
+    useEffect(() => {
+        registerFoldLiveInvalidate(() => invalidate());
+        // seed lần đầu từ store
+        seedFoldLiveFromStore(useBoxStore.getState().foldProgress);
+        return () => registerFoldLiveInvalidate(null);
+    }, [invalidate]);
+    return null;
+}
+
+/** Group xoay hero orbit từ foldLive — không subscribe Zustand. */
+function HeroOrbitGroup({
+    isStanding,
+    yOffset,
+    children,
+}: {
+    isStanding: boolean;
+    yOffset: number;
+    children: React.ReactNode;
+}) {
+    const ref = useRef<THREE.Group>(null);
+    useFrame(() => {
+        const g = ref.current;
+        if (!g) return;
+        const yaw = foldLive.orbitYawRad;
+        if (isStanding) {
+            g.rotation.set(0, yaw, 0);
+        } else {
+            g.rotation.set(-Math.PI / 2, 0, yaw);
+        }
+    });
+    return (
+        <group
+            ref={ref}
+            position={isStanding ? [0, yOffset, 0] : [0, 0, 0]}
+            rotation={isStanding ? [0, 0, 0] : [-Math.PI / 2, 0, 0]}
+        >
+            {children}
+        </group>
+    );
+}
+
 // ─── Main Export ────────────────────────────────────────────
 
 export default function DielineScene3D() {
   const { t } = useTranslation();
-    const { dieline, isStanding, foldProgress, isAnimating } = useBoxStore();
+    // Chỉ subscribe flag animation — KHÔNG foldProgress mỗi frame (tránh re-render cây 3D).
+    const dieline = useBoxStore((s) => s.dieline);
+    const isStanding = useBoxStore((s) => s.isStanding);
+    const isAnimating = useBoxStore((s) => s.isAnimating);
     const artworkEditMode = useMockupStore((s) => s.artworkEditMode);
     const showFloorGrid = useMockupStore((s) => s.showFloorGrid);
+    const heroDemoPlaying = useMockupStore((s) => s.heroDemoPlaying);
+    const setHeroDemoPlaying = useMockupStore((s) => s.setHeroDemoPlaying);
 
     if (!dieline) {
         return (
@@ -543,6 +711,8 @@ export default function DielineScene3D() {
                 }}
                 background="#0A0A0A"
             >
+                <FoldLivePump />
+
                 {/* ── HDRI/IBL + phản chiếu, fallback đèn studio (Yêu cầu 3.1) ── */}
                 <EnvironmentRig />
 
@@ -552,18 +722,14 @@ export default function DielineScene3D() {
                     size={bbExtent}
                     showFloorPlane
                     showGrid={showFloorGrid}
-                    shadowRevision={isAnimating ? 'animating' : Math.round(foldProgress * 1000)}
+                    shadowRevision={isAnimating || heroDemoPlaying ? 'animating' : 'idle'}
                 />
 
-                {/* Box layout orientation */}
-                <group
-                    position={isStanding ? [0, yOffset, 0] : [0, 0, 0]}
-                    rotation={isStanding ? [0, 0, 0] : [-Math.PI / 2, 0, 0]}
-                >
+                {/* Box + orbit live (không re-render React khi yaw đổi) */}
+                <HeroOrbitGroup isStanding={isStanding} yOffset={yOffset}>
                     <BoxScene />
-                    {/* Overlay kích thước L×W×H (Yêu cầu 7.7) */}
                     <DimensionOverlay />
-                </group>
+                </HeroOrbitGroup>
 
                 {/* ── Camera preset rig: 4 preset, chuyển cảnh ≤500ms (Yêu cầu 7.1) ── */}
                 <CameraRig center={[0, 0, 0]} distance={camDist} />
@@ -587,11 +753,19 @@ export default function DielineScene3D() {
                     enableZoom
                     enableRotate={!artworkEditMode}
                     enableDamping
-                    dampingFactor={0.05}
+                    dampingFactor={0.08}
                     makeDefault
                     maxPolarAngle={Math.PI / 2 + 0.15}
                     minDistance={camDist * 0.2}
                     maxDistance={camDist * 5}
+                    onStart={() => {
+                        if (heroDemoPlaying || isAnimating) {
+                            setFoldLiveDriving(false);
+                            setHeroDemoPlaying(false);
+                            useBoxStore.getState().setIsAnimating(false);
+                            writeFoldLive(foldLive.progress, 0);
+                        }
+                    }}
                 />
             </MockupCanvas>
 

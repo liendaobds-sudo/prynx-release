@@ -18,27 +18,9 @@ import * as THREE from 'three';
 
 import { useMockupStore } from '../../store/useMockupStore';
 import type { Panel } from '../../lib/mockup3d/types';
-import { getFinish } from '../../lib/mockup3d/materialLibrary';
-import { normalizeEdgeColor } from '../../lib/mockup3d/panelSolid';
+import { composeAppearance, substrateInnerFaceColor } from '../../lib/mockup3d/materialLibrary';
 import { computeGussetQuad } from '../../lib/mockup3d/gussetFold';
 import { useDisposableResource } from './useDisposeResources';
-
-/** Màu nền MẶT NGOÀI theo finish (khớp SolidPanelMesh.FINISH_BASE_COLOR). */
-const FINISH_BASE_COLOR: Record<string, string> = {
-    kraft: '#c8a16a',
-    'sbs-white': '#f3efe7',
-    'matte-lam': '#fbfaf7',
-    'gloss-lam': '#ffffff',
-    'spot-uv': '#fbfaf7',
-    'foil-metallic': '#d8d2c2',
-    emboss: '#ece6d8',
-};
-
-/** Màu giấy bồi MẶT TRONG (khớp SolidPanelMesh.INNER_FACE_COLOR). */
-const INNER_FACE_COLOR: Record<'kraft' | 'white', string> = {
-    kraft: '#a9784a',
-    white: '#cbb896',
-};
 
 export interface GussetMeshProps {
     panel: Panel;
@@ -64,8 +46,8 @@ export default function GussetMesh({
     thickness,
     hideCadLines = false,
 }: GussetMeshProps) {
-    const finishId = useMockupStore((s) => s.finishId);
-    const edgeColor = useMockupStore((s) => s.edgeColor);
+    const substrateId = useMockupStore((s) => s.substrateId);
+    const surfaceFinishId = useMockupStore((s) => s.surfaceFinishId);
 
     // Hình quạt 2 tam giác + nét khuôn — tính lại mỗi khung theo foldProgress.
     // Trả mảng [surface, cutOuter, cutInner, creaseOuter, creaseInner] để hook
@@ -116,28 +98,40 @@ export default function GussetMesh({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [panel, allPanels, foldProgress, depthMap, maxD, thickness]);
 
-    // Vật liệu mặt ngoài (finish) + mặt trong (giấy bồi) — khớp panel hộp.
-    const outerMaterial = useDisposableResource<THREE.MeshStandardMaterial>(() => {
-        const finish = getFinish(finishId);
-        return new THREE.MeshStandardMaterial({
-            color: FINISH_BASE_COLOR[finish.id] ?? '#ffffff',
-            roughness: finish.roughness,
-            metalness: finish.metalness,
+    // Vật liệu mặt ngoài (finish) + mặt trong (giấy bồi) — khớp panel hộp (Physical).
+    const outerMaterial = useDisposableResource<THREE.MeshPhysicalMaterial>(() => {
+        const appearance = composeAppearance(substrateId, surfaceFinishId);
+        const phys = appearance.phys;
+        return new THREE.MeshPhysicalMaterial({
+            color: appearance.baseColor,
+            roughness: phys.roughness,
+            metalness: phys.metalness,
+            clearcoat: phys.clearcoat,
+            clearcoatRoughness: phys.clearcoatRoughness,
+            sheen: phys.sheen,
+            sheenColor: new THREE.Color(phys.sheenColor),
+            sheenRoughness: phys.sheenRoughness,
+            envMapIntensity: phys.envMapIntensity,
             side: THREE.FrontSide,
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [finishId]);
+    }, [substrateId, surfaceFinishId]);
 
-    const innerMaterial = useDisposableResource<THREE.MeshStandardMaterial>(() => {
-        const edge = normalizeEdgeColor(edgeColor);
-        return new THREE.MeshStandardMaterial({
-            color: INNER_FACE_COLOR[edge],
+    const innerMaterial = useDisposableResource<THREE.MeshPhysicalMaterial>(() => {
+        const innerHex = substrateInnerFaceColor(substrateId);
+        return new THREE.MeshPhysicalMaterial({
+            color: innerHex,
             roughness: 0.95,
             metalness: 0.0,
+            clearcoat: 0.0,
+            sheen: 0.1,
+            sheenColor: new THREE.Color(innerHex),
+            sheenRoughness: 0.9,
+            envMapIntensity: 0.35,
             side: THREE.BackSide,
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [edgeColor]);
+    }, [substrateId]);
 
     if (!geos || geos.length < 5 || !outerMaterial || !innerMaterial) return null;
     const [surface, cutOuter, cutInner, creaseOuter, creaseInner] = geos;

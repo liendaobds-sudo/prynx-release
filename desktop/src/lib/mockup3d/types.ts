@@ -60,8 +60,25 @@ export interface ArtworkTransform {
 }
 
 /**
- * Mã định danh kiểu gia công bề mặt (finish).
- * Thư viện cung cấp tối thiểu 6 lựa chọn (xem `FINISH_LIBRARY`).
+ * Chất liệu giấy (substrate) — tách khỏi gia công bề mặt.
+ */
+export type SubstrateId = 'kraft' | 'sbs-white';
+
+/**
+ * Gia công bề mặt (finish) — cán / UV / ép kim / dập nổi.
+ * `none` = chỉ giấy trần, không phủ.
+ */
+export type SurfaceFinishId =
+    | 'none'
+    | 'matte-lam'
+    | 'gloss-lam'
+    | 'spot-uv'
+    | 'foil-metallic'
+    | 'emboss';
+
+/**
+ * @deprecated Legacy 1-axis id (gộp giấy + finish). Giữ cho test/preset cũ.
+ * Runtime mới dùng `SubstrateId` + `SurfaceFinishId`.
  * _Requirements: 4.1_
  */
 export type FinishId =

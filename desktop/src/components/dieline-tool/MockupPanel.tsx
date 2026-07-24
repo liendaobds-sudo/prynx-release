@@ -16,10 +16,15 @@
 // ============================================================
 
 import React from 'react';
-import { useMockupStore, type CameraPreset } from '../../store/useMockupStore';
+import { useMockupStore, type CameraPreset, type MockupQualityTier } from '../../store/useMockupStore';
 import {
-    FINISH_LIBRARY,
-    type FinishId,
+    SUBSTRATE_LIBRARY,
+    SURFACE_FINISH_LIBRARY,
+    composeAppearance,
+    TONE_EXPOSURE_MAX,
+    TONE_EXPOSURE_MIN,
+    type SubstrateId,
+    type SurfaceFinishId,
     type EdgeColor,
     type ExportScale,
 } from '../../lib/mockup3d';
@@ -48,8 +53,10 @@ const EDGE_COLORS: { id: EdgeColor; label: string }[] = [
 
 export default function MockupPanel() {
   const { t } = useTranslation();
-    const finishId = useMockupStore((s) => s.finishId);
-    const setFinishId = useMockupStore((s) => s.setFinishId);
+    const substrateId = useMockupStore((s) => s.substrateId);
+    const setSubstrateId = useMockupStore((s) => s.setSubstrateId);
+    const surfaceFinishId = useMockupStore((s) => s.surfaceFinishId);
+    const setSurfaceFinishId = useMockupStore((s) => s.setSurfaceFinishId);
     const edgeColor = useMockupStore((s) => s.edgeColor);
     const setEdgeColor = useMockupStore((s) => s.setEdgeColor);
     const hdriPreset = useMockupStore((s) => s.hdriPreset);
@@ -59,6 +66,12 @@ export default function MockupPanel() {
     const requestCameraReset = useMockupStore((s) => s.requestCameraReset);
     const backgroundPreset = useMockupStore((s) => s.backgroundPreset);
     const setBackgroundPreset = useMockupStore((s) => s.setBackgroundPreset);
+    const qualityTier = useMockupStore((s) => s.qualityTier);
+    const setQualityTier = useMockupStore((s) => s.setQualityTier);
+    const toneExposure = useMockupStore((s) => s.toneExposure);
+    const setToneExposure = useMockupStore((s) => s.setToneExposure);
+    const showPaperGrain = useMockupStore((s) => s.showPaperGrain);
+    const setShowPaperGrain = useMockupStore((s) => s.setShowPaperGrain);
     const showTechnicalLines = useMockupStore((s) => s.showTechnicalLines);
     const setShowTechnicalLines = useMockupStore((s) => s.setShowTechnicalLines);
     const showFloorGrid = useMockupStore((s) => s.showFloorGrid);
@@ -74,22 +87,40 @@ export default function MockupPanel() {
     const loadScenePreset = useMockupStore((s) => s.loadScenePreset);
     const scenePresetSaved = useMockupStore((s) => s.scenePresetSaved);
 
-    // Danh sách finish lấy trực tiếp từ thư viện (Yêu cầu 4.1).
-    const finishes = React.useMemo(() => Object.values(FINISH_LIBRARY), []);
-    const finishLabel = finishes.find((f) => f.id === finishId)?.label;
+    const substrates = React.useMemo(() => Object.values(SUBSTRATE_LIBRARY), []);
+    const surfaces = React.useMemo(() => Object.values(SURFACE_FINISH_LIBRARY), []);
+    const appearanceLabel = React.useMemo(
+        () => composeAppearance(substrateId, surfaceFinishId).label,
+        [substrateId, surfaceFinishId],
+    );
 
     return (
         <div className="dt-param-panel">
-            {/* ─── Vật liệu / Finish (mở sẵn) ─── */}
-            <CollapsibleSection title={t('dieline.mockup:vat_lieu_gia_cong_be_mat')} defaultOpen badge={finishLabel}>
+            {/* ─── Chất liệu giấy + Gia công bề mặt (tách trục) ─── */}
+            <CollapsibleSection title="Vật liệu & gia công" defaultOpen badge={appearanceLabel}>
+                <label className="dt-section-label">Chất liệu giấy</label>
                 <select
                     className="dt-param-select"
-                    value={finishId}
-                    onChange={(e) => setFinishId(e.target.value as FinishId)}
-                    title={t('dieline.mockup:kieu_gia_cong_be_mat_pbr_kraft_can_mo')}
+                    value={substrateId}
+                    onChange={(e) => setSubstrateId(e.target.value as SubstrateId)}
+                    title="Loại giấy/board (substrate) — độc lập với gia công"
                 >
-                    {finishes.map((f) => (
-                        <option key={f.id} value={f.id}>{tv(f.label)}</option>
+                    {substrates.map((s) => (
+                        <option key={s.id} value={s.id}>{tv(s.label)}</option>
+                    ))}
+                </select>
+
+                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>
+                    Gia công bề mặt
+                </label>
+                <select
+                    className="dt-param-select"
+                    value={surfaceFinishId}
+                    onChange={(e) => setSurfaceFinishId(e.target.value as SurfaceFinishId)}
+                    title="Cán màng, spot-UV, ép kim, emboss — độc lập với loại giấy"
+                >
+                    {surfaces.map((s) => (
+                        <option key={s.id} value={s.id}>{tv(s.label)}</option>
                     ))}
                 </select>
 
@@ -105,6 +136,18 @@ export default function MockupPanel() {
                             {tv(c.label)}
                         </button>
                     ))}
+                </div>
+
+                <div
+                    className="dt-param-cell"
+                    style={{ cursor: 'pointer', marginTop: '0.75rem' }}
+                    onClick={() => setShowPaperGrain(!showPaperGrain)}
+                    title="Bump sợi giấy procedural (kraft/SBS) — 0 mạng"
+                >
+                    <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>
+                        Sợi giấy (grain)
+                    </label>
+                    <input type="checkbox" checked={showPaperGrain} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                 </div>
             </CollapsibleSection>
 
@@ -132,6 +175,47 @@ export default function MockupPanel() {
                         <option key={p.id} value={p.id}>{tv(p.label)}</option>
                     ))}
                 </select>
+
+                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>
+                    Chất lượng render
+                </label>
+                <div className="dt-glue-side-toggle">
+                    {([
+                        { id: 'balanced' as MockupQualityTier, label: 'Cân bằng' },
+                        { id: 'high' as MockupQualityTier, label: 'Cao' },
+                    ]).map((q) => (
+                        <button
+                            key={q.id}
+                            type="button"
+                            className={`dt-glue-side-btn ${qualityTier === q.id ? 'active' : ''}`}
+                            onClick={() => setQualityTier(q.id)}
+                            title={q.id === 'high'
+                                ? 'Env map 512 — bóng/foil sắc hơn, tốn GPU hơn'
+                                : 'Env map 256 — mượt trên máy yếu'}
+                        >
+                            {q.label}
+                        </button>
+                    ))}
+                </div>
+
+                <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>
+                    Phơi sáng
+                </label>
+                <div className="dt-param-header" style={{ marginBottom: '0.25rem' }}>
+                    <input
+                        type="range"
+                        min={TONE_EXPOSURE_MIN}
+                        max={TONE_EXPOSURE_MAX}
+                        step={0.05}
+                        value={toneExposure}
+                        onChange={(e) => setToneExposure(Number(e.target.value))}
+                        style={{ width: '100%' }}
+                        title="Tone mapping exposure (ACES)"
+                    />
+                    <span className="dt-param-label" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {toneExposure.toFixed(2)}
+                    </span>
+                </div>
 
                 <label className="dt-section-label" style={{ marginTop: '0.75rem' }}>{t('dieline.mockup:goc_nhin_camera')}</label>
                 <div className="dt-glue-side-toggle">

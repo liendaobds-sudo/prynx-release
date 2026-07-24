@@ -17,12 +17,22 @@ import { create } from 'zustand';
 import type {
     EdgeColor,
     FinishId,
+    SubstrateId,
+    SurfaceFinishId,
     ExportScale,
     PlacementMode,
     ArtworkTransform,
 } from '../lib/mockup3d/types';
 import { DEFAULT_EDGE_COLOR } from '../lib/mockup3d/panelSolid';
-import { DEFAULT_FINISH_ID } from '../lib/mockup3d/materialLibrary';
+import {
+    DEFAULT_SUBSTRATE_ID,
+    DEFAULT_SURFACE_FINISH_ID,
+    DEFAULT_TONE_EXPOSURE,
+    clampToneExposure,
+    migrateLegacyFinishId,
+    substrateDefaultEdgeColor,
+    type MockupQualityTier,
+} from '../lib/mockup3d/materialLibrary';
 import { clampArtworkTransform } from '../lib/mockup3d/artworkMapping';
 
 // ─── Hằng số preset & miền giá trị ──────────────────────────────────────────
@@ -35,6 +45,11 @@ export const DEFAULT_HDRI_PRESET = 'studio-soft';
 
 /** Id preset nền/sàn mặc định (≥2 preset — Yêu cầu 7.3). */
 export const DEFAULT_BACKGROUND_PRESET = 'studio-white';
+
+/** Bậc chất lượng render mặc định (env res 256). */
+export const DEFAULT_QUALITY_TIER: MockupQualityTier = 'balanced';
+
+export type { MockupQualityTier };
 
 /** Miền hệ số tách exploded view (Yêu cầu 7.5). */
 export const EXPLODED_FACTOR_MIN = 0.0;
@@ -80,12 +95,33 @@ export interface ArtworkConfig {
 export interface MockupState {
     // ═══ Vật liệu / cạnh ═══
     edgeColor: EdgeColor; // 'kraft' | 'white', mặc định 'kraft'
-    finishId: FinishId; // mặc định 'kraft'
+    /** Chất liệu giấy (substrate). */
+    substrateId: SubstrateId;
+    /** Gia công bề mặt (cán/UV/foil/emboss). */
+    surfaceFinishId: SurfaceFinishId;
+    /**
+     * @deprecated Legacy 1-axis — đồng bộ từ substrate+surface để preset/test cũ.
+     * Ưu tiên `substrateId` + `surfaceFinishId`.
+     */
+    finishId: FinishId;
 
     // ═══ Môi trường / trình bày ═══
     hdriPreset: string; // id preset HDRI (≥3 preset)
     cameraPreset: CameraPreset;
     backgroundPreset: string; // ≥2 preset nền/sàn
+    /** Bậc chất lượng: balanced (env 256) | high (env 512). */
+    qualityTier: MockupQualityTier;
+    /** Phơi sáng tone mapping ACES (0.7–1.4). */
+    toneExposure: number;
+    /** Bật bump sợi giấy procedural (kraft/SBS). */
+    showPaperGrain: boolean;
+    /**
+     * Hero demo đang chạy (fold timeline + orbit nhẹ).
+     * Tách khỏi `useBoxStore.isAnimating` (ping-pong fold cũ).
+     */
+    heroDemoPlaying: boolean;
+    /** Góc orbit yaw (rad) do hero timeline ghi — BoxScene đọc. */
+    heroOrbitYawRad: number;
     explodedFactor: number; // 0.0..5.0, 0 = lắp ráp
     showDimensions: boolean;
     /** Overlay CUT/CREASE phục vụ kiểm tra kỹ thuật; mặc định tắt ở mockup sạch. */
@@ -129,10 +165,18 @@ export interface MockupState {
 
     // ─── Actions ──────────────────────────────────────────────────────────
     setEdgeColor: (color: EdgeColor) => void;
+    setSubstrateId: (id: SubstrateId) => void;
+    setSurfaceFinishId: (id: SurfaceFinishId) => void;
+    /** @deprecated Dùng setSubstrateId / setSurfaceFinishId. */
     setFinishId: (id: FinishId) => void;
     setHdriPreset: (preset: string) => void;
     setCameraPreset: (preset: CameraPreset) => void;
     setBackgroundPreset: (preset: string) => void;
+    setQualityTier: (tier: MockupQualityTier) => void;
+    setToneExposure: (exposure: number) => void;
+    setShowPaperGrain: (show: boolean) => void;
+    setHeroDemoPlaying: (playing: boolean) => void;
+    setHeroOrbitYawRad: (yaw: number) => void;
     setExplodedFactor: (factor: number) => void;
     setShowDimensions: (show: boolean) => void;
     setShowTechnicalLines: (show: boolean) => void;
@@ -259,8 +303,11 @@ function readScenePresetExists(): boolean {
 /** State khởi tạo (cũng dùng cho `resetMockup`). */
 function createInitialState(): Omit<
     MockupState,
-    | 'setEdgeColor' | 'setFinishId' | 'setHdriPreset' | 'setCameraPreset'
-    | 'setBackgroundPreset' | 'setExplodedFactor' | 'setShowDimensions'
+    | 'setEdgeColor' | 'setSubstrateId' | 'setSurfaceFinishId' | 'setFinishId'
+    | 'setHdriPreset' | 'setCameraPreset'
+    | 'setBackgroundPreset' | 'setQualityTier' | 'setToneExposure'
+    | 'setShowPaperGrain' | 'setHeroDemoPlaying' | 'setHeroOrbitYawRad'
+    | 'setExplodedFactor' | 'setShowDimensions'
     | 'setShowTechnicalLines' | 'setShowFloorGrid'
     | 'setExportScale' | 'setHdriStatus' | 'setWebglSupported'
     | 'setExportTransparent'
@@ -280,10 +327,17 @@ function createInitialState(): Omit<
 > {
     return {
         edgeColor: DEFAULT_EDGE_COLOR,
-        finishId: DEFAULT_FINISH_ID,
+        substrateId: DEFAULT_SUBSTRATE_ID,
+        surfaceFinishId: DEFAULT_SURFACE_FINISH_ID,
+        finishId: DEFAULT_SUBSTRATE_ID as FinishId,
         hdriPreset: DEFAULT_HDRI_PRESET,
         cameraPreset: 'isometric',
         backgroundPreset: DEFAULT_BACKGROUND_PRESET,
+        qualityTier: DEFAULT_QUALITY_TIER,
+        toneExposure: DEFAULT_TONE_EXPOSURE,
+        showPaperGrain: false,
+        heroDemoPlaying: false,
+        heroOrbitYawRad: 0,
         explodedFactor: EXPLODED_FACTOR_MIN,
         showDimensions: false,
         showTechnicalLines: false,
@@ -320,10 +374,52 @@ export const useMockupStore = create<MockupState>((set) => ({
     ...createInitialState(),
 
     setEdgeColor: (color) => set({ edgeColor: color }),
-    setFinishId: (id) => set({ finishId: id }),
+    setSubstrateId: (id) =>
+        set((state) => {
+            const substrateId: SubstrateId = id === 'sbs-white' ? 'sbs-white' : 'kraft';
+            return {
+                substrateId,
+                // Đổi giấy → đồng bộ màu cạnh (SBS→trắng, kraft→kraft)
+                edgeColor: substrateDefaultEdgeColor(substrateId),
+                // Legacy finishId: nếu surface = none thì mirror substrate
+                finishId: (state.surfaceFinishId === 'none'
+                    ? substrateId
+                    : state.surfaceFinishId) as FinishId,
+            };
+        }),
+    setSurfaceFinishId: (id) =>
+        set((state) => {
+            const surface: SurfaceFinishId =
+                id in { none: 1, 'matte-lam': 1, 'gloss-lam': 1, 'spot-uv': 1, 'foil-metallic': 1, emboss: 1 }
+                    ? id
+                    : 'none';
+            return {
+                surfaceFinishId: surface,
+                finishId: (surface === 'none' ? state.substrateId : surface) as FinishId,
+            };
+        }),
+    setFinishId: (id) => {
+        const m = migrateLegacyFinishId(id);
+        set({
+            substrateId: m.substrateId,
+            surfaceFinishId: m.surfaceFinishId,
+            finishId: id,
+        });
+    },
     setHdriPreset: (preset) => set({ hdriPreset: preset }),
     setCameraPreset: (preset) => set({ cameraPreset: preset }),
     setBackgroundPreset: (preset) => set({ backgroundPreset: preset }),
+    setQualityTier: (tier) => set({ qualityTier: tier === 'high' ? 'high' : 'balanced' }),
+    setToneExposure: (exposure) => set({ toneExposure: clampToneExposure(exposure) }),
+    setShowPaperGrain: (show) => set({ showPaperGrain: !!show }),
+    setHeroDemoPlaying: (playing) =>
+        set({
+            heroDemoPlaying: !!playing,
+            // Dừng demo → về yaw 0 để không kẹt góc orbit
+            ...(playing ? {} : { heroOrbitYawRad: 0 }),
+        }),
+    setHeroOrbitYawRad: (yaw) =>
+        set({ heroOrbitYawRad: Number.isFinite(yaw) ? yaw : 0 }),
     setExplodedFactor: (factor) =>
         set({ explodedFactor: clampNumber(factor, EXPLODED_FACTOR_MIN, EXPLODED_FACTOR_MAX, EXPLODED_FACTOR_MIN) }),
     setShowDimensions: (show) => set({ showDimensions: show }),
@@ -369,11 +465,15 @@ export const useMockupStore = create<MockupState>((set) => ({
         set((state) => {
             try {
                 const data = {
-                    finishId: state.finishId,
+                    substrateId: state.substrateId,
+                    surfaceFinishId: state.surfaceFinishId,
+                    finishId: state.finishId, // legacy
                     edgeColor: state.edgeColor,
                     hdriPreset: state.hdriPreset,
                     cameraPreset: state.cameraPreset,
                     backgroundPreset: state.backgroundPreset,
+                    qualityTier: state.qualityTier,
+                    toneExposure: state.toneExposure,
                     explodedFactor: state.explodedFactor,
                     showDimensions: state.showDimensions,
                     showTechnicalLines: state.showTechnicalLines,
@@ -405,11 +505,46 @@ export const useMockupStore = create<MockupState>((set) => ({
                 const d = JSON.parse(raw);
                 const a = d.artwork ?? {};
                 return {
-                    finishId: d.finishId ?? state.finishId,
+                    ...(() => {
+                        if (d.substrateId || d.surfaceFinishId) {
+                            const substrateId: SubstrateId =
+                                d.substrateId === 'sbs-white' ? 'sbs-white' : (d.substrateId === 'kraft' ? 'kraft' : state.substrateId);
+                            const surfaceFinishId = (
+                                d.surfaceFinishId && d.surfaceFinishId in {
+                                    none: 1, 'matte-lam': 1, 'gloss-lam': 1,
+                                    'spot-uv': 1, 'foil-metallic': 1, emboss: 1,
+                                }
+                                    ? d.surfaceFinishId
+                                    : state.surfaceFinishId
+                            ) as SurfaceFinishId;
+                            return {
+                                substrateId,
+                                surfaceFinishId,
+                                finishId: (surfaceFinishId === 'none' ? substrateId : surfaceFinishId) as FinishId,
+                            };
+                        }
+                        if (d.finishId) {
+                            const m = migrateLegacyFinishId(d.finishId);
+                            return {
+                                substrateId: m.substrateId,
+                                surfaceFinishId: m.surfaceFinishId,
+                                finishId: d.finishId as FinishId,
+                            };
+                        }
+                        return {
+                            substrateId: state.substrateId,
+                            surfaceFinishId: state.surfaceFinishId,
+                            finishId: state.finishId,
+                        };
+                    })(),
                     edgeColor: d.edgeColor ?? state.edgeColor,
                     hdriPreset: d.hdriPreset ?? state.hdriPreset,
                     cameraPreset: d.cameraPreset ?? state.cameraPreset,
                     backgroundPreset: d.backgroundPreset ?? state.backgroundPreset,
+                    qualityTier: d.qualityTier === 'high' ? 'high' : (d.qualityTier === 'balanced' ? 'balanced' : state.qualityTier),
+                    toneExposure: clampToneExposure(
+                        typeof d.toneExposure === 'number' ? d.toneExposure : state.toneExposure,
+                    ),
                     explodedFactor: clampNumber(d.explodedFactor, EXPLODED_FACTOR_MIN, EXPLODED_FACTOR_MAX, state.explodedFactor),
                     showDimensions: !!d.showDimensions,
                     showTechnicalLines: !!d.showTechnicalLines,
