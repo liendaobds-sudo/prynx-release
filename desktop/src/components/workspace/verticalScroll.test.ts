@@ -1,5 +1,11 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { getVerticalScrollTop } from './verticalScroll';
+import {
+    EDIT_OBJECT_FOCUS_EVENT,
+    getVerticalScrollTop,
+    readEditObjectFocusRequest,
+    requestEditObjectFocus,
+} from './verticalScroll';
 
 describe('getVerticalScrollTop', () => {
     const base = {
@@ -23,5 +29,27 @@ describe('getVerticalScrollTop', () => {
 
     it('centers an element using vertical geometry only', () => {
         expect(getVerticalScrollTop({ ...base, elementTop: 490 }, 'center')).toBe(460);
+    });
+});
+
+describe('edit object focus requests', () => {
+    it('accepts only the requested page', () => {
+        const event = new CustomEvent(EDIT_OBJECT_FOCUS_EVENT, {
+            detail: { objectId: 'vector-3', pageIndex: 1 },
+        });
+        expect(readEditObjectFocusRequest(event, 1)).toBe('vector-3');
+        expect(readEditObjectFocusRequest(event, 0)).toBeNull();
+    });
+
+    it('dispatches focus only when the panel explicitly requests it', () => {
+        const received: string[] = [];
+        const listener = (event: Event) => {
+            const objectId = readEditObjectFocusRequest(event, 2);
+            if (objectId) received.push(objectId);
+        };
+        window.addEventListener(EDIT_OBJECT_FOCUS_EVENT, listener);
+        requestEditObjectFocus('image-4', 2);
+        window.removeEventListener(EDIT_OBJECT_FOCUS_EVENT, listener);
+        expect(received).toEqual(['image-4']);
     });
 });

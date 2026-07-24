@@ -198,7 +198,8 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
             fd.append('file_id', up.id);
             fd.append('cut_mode', productType === 'rectangle' ? 'none' : (p.cutMode || 'original'));
             fd.append('offset_mm', productType === 'rectangle' ? '0' : String(p.offsetMm ?? 0));
-            fd.append('corner_style', productType === 'rectangle' ? 'miter' : (p.cornerStyle || 'round'));
+            const effectiveCornerStyle = productType === 'rectangle' ? 'miter' : (p.cornerStyle || 'preserve');
+            fd.append('corner_style', effectiveCornerStyle);
             fd.append('bleed_mm', String(p.bleedMm ?? 0));
             fd.append('fill_holes', productType === 'rectangle' ? 'true' : (p.fillHoles ? 'true' : 'false'));
             fd.append('remove_white_bg', productType === 'rectangle' ? 'false' : (p.removeWhiteBg ? 'true' : 'false'));
@@ -208,7 +209,12 @@ const runStickerDieline: RecipeRunner = async (ctx, params) => {
             // Lẹm mép chỉ Xén vuông. Bế tem dùng “Bỏ nền trắng” + sample viền tự động.
             fd.append('edge_bite_mm', productType === 'rectangle' ? String(p.edgeBiteMm ?? 0) : '0');
             fd.append('cut_first_page_only', productType === 'sticker' && p.cutFirstPageOnly ? 'true' : 'false');
-            fd.append('shape_mode', productType === 'sticker' ? (p.shapeMode || 'auto_safe') : 'contour');
+            fd.append(
+                'shape_mode',
+                productType === 'sticker'
+                    ? (effectiveCornerStyle === 'preserve' ? 'contour' : (p.shapeMode || 'auto_safe'))
+                    : 'contour',
+            );
             const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, { method: 'POST', body: fd });
             if (!response.ok) {
                 const err = await response.json().catch(() => null);

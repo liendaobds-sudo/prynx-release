@@ -41,11 +41,41 @@ def test_genuine_spot_detection():
     assert _is_genuine_spot(None) is False
 
 
-def test_color_match_magenta():
+def test_color_match_default_die_palette():
+    # Magenta / đen / xanh / vàng 100% (CMYK + RGB + gray)
     assert _color_matches_die((0.0, 1.0, 0.0, 0.0), CFG.die_colors, CFG.die_color_tol)
     assert _color_matches_die((1.0, 0.0, 1.0), CFG.die_colors, CFG.die_color_tol)
-    assert not _color_matches_die((0.0, 1.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)
+    assert _color_matches_die((0.0, 0.0, 0.0, 1.0), CFG.die_colors, CFG.die_color_tol)
+    assert _color_matches_die((0.0, 0.0, 0.0), CFG.die_colors, CFG.die_color_tol)
+    assert _color_matches_die((0.0,), CFG.die_colors, CFG.die_color_tol)
+    assert _color_matches_die((1.0, 0.0, 0.0, 0.0), CFG.die_colors, CFG.die_color_tol)
+    assert _color_matches_die((0.0, 0.0, 1.0), CFG.die_colors, CFG.die_color_tol)
+    assert _color_matches_die((0.0, 1.0, 1.0), CFG.die_colors, CFG.die_color_tol)
+    assert _color_matches_die((0.0, 0.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)
+    assert _color_matches_die((1.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)
+    # Dung sai: gần K100 vẫn khớp
+    assert _color_matches_die((0.02, 0.0, 0.0, 0.98), CFG.die_colors, CFG.die_color_tol)
+    # Không khớp màu hỗn hợp / trắng / thiếu
+    assert not _color_matches_die((0.0, 1.0, 1.0, 0.0), CFG.die_colors, CFG.die_color_tol)  # đỏ process
+    assert not _color_matches_die((1.0, 1.0, 1.0), CFG.die_colors, CFG.die_color_tol)
     assert not _color_matches_die(None, CFG.die_colors, CFG.die_color_tol)
+
+
+def test_select_picks_black_yellow_or_cyan_stroke_without_spot():
+    """Đường bế nét thuần đen/vàng/xanh (không spot) vẫn được chọn thay vì fill artwork."""
+    bg = _path(200, 200, type='f', fill=(0.9, 0.9, 0.9), color=None)
+    for color in (
+        (0.0, 0.0, 0.0, 1.0),  # K100
+        (0.0, 0.0, 1.0, 0.0),  # Y100
+        (1.0, 0.0, 0.0, 0.0),  # C100
+    ):
+        die = _path(80, 80, type='s', color=color, width=0.5)
+        picked, by_spot, is_fb = _select_from_paths(
+            [bg, die], PAGE, CFG.die_channel_names, CFG.die_colors, CFG.die_color_tol,
+        )
+        assert picked is die, f"expected die color {color}"
+        assert by_spot is False
+        assert is_fb is False
 
 
 def test_channel_name_normalized_variants():
@@ -69,8 +99,8 @@ def test_real_file_case_picks_spot_stroke_over_bigger_fill():
 
 
 def test_extra_artwork_stroke_does_not_steal():
-    # Có thêm stroke artwork to (không spot) → vẫn phải chọn đường bế spot.
-    art_stroke = _path(220.0, 200.0, type='s', spot=None, color=(0, 0, 0), width=3.0, close=False)
+    # Có thêm stroke artwork to (không spot, màu không trong palette bế) → vẫn chọn spot.
+    art_stroke = _path(220.0, 200.0, type='s', spot=None, color=(0.35, 0.2, 0.1), width=3.0, close=False)
     die = _path(197.2, 170.8, type='s', spot='Dieline', color=(1, 1, 1), width=0.9)
     chosen, by_spot, _ = _select_from_paths([art_stroke, die], PAGE, CFG.die_channel_names,
                                          CFG.die_colors, CFG.die_color_tol)
@@ -89,9 +119,10 @@ def test_magenta_diecut_without_spot():
 
 
 def test_magenta_fill_alone_is_not_die():
-    # Mảng tô magenta (logo/artwork) KHÔNG đủ tín hiệu bế — chỉ nét magenta mới là bế.
+    # Mảng tô magenta (logo/artwork) KHÔNG đủ tín hiệu bế — chỉ nét palette bế mới là bế.
+    # Artwork stroke dùng màu ngoài palette (nâu) — nét đen thuần giờ CŨNG là tín hiệu bế.
     fill_blob = _path(180.0, 160.0, type='f', spot=None, fill=(0.0, 1.0, 0.0, 0.0), width=1.0)
-    art = _path(100.0, 90.0, type='s', spot=None, color=(0, 0, 0), width=1.0)
+    art = _path(100.0, 90.0, type='s', spot=None, color=(0.4, 0.25, 0.1), width=1.0)
     chosen, _, _ = _select_from_paths([fill_blob, art], PAGE, CFG.die_channel_names,
                                       CFG.die_colors, CFG.die_color_tol)
     assert chosen is None
@@ -116,17 +147,17 @@ def test_stroke_with_fill_paint_not_die():
 
 
 def test_named_channel_fill_only_falls_back_to_page():
-    # Có "tên" CutContour nhưng chỉ là mảng tô → không nhận; không nét thuần → None.
+    # Có "tên" CutContour nhưng chỉ là mảng tô → không nhận; không nét palette bế → None.
     fill_named = _path(180.0, 160.0, type='f', spot='CutContour',
                        fill=(0.0, 1.0, 0.0, 0.0), width=1.0)
-    art = _path(100.0, 90.0, type='s', spot=None, color=(0, 0, 0), width=1.0)
+    art = _path(100.0, 90.0, type='s', spot=None, color=(0.4, 0.25, 0.1), width=1.0)
     chosen, _, _ = _select_from_paths([fill_named, art], PAGE, CFG.die_channel_names,
                                       CFG.die_colors, CFG.die_color_tol)
     assert chosen is None
 
 
 def test_no_signal_returns_none_not_largest_path():
-    # Không spot, không màu bế → KHÔNG đoán path/stroke lớn nhất (tránh miếng màu).
+    # Không spot, không màu bế (palette rỗng) → KHÔNG đoán path/stroke lớn nhất.
     s1 = _path(100.0, 90.0, type='s', spot=None, color=(0, 0, 0), width=1.0)
     s2 = _path(150.0, 120.0, type='s', spot=None, color=(0, 0, 0), width=1.0)
     fill = _path(180.0, 160.0, type='f', spot=None, fill=(0.2, 0.4, 0.1), width=1.0)
@@ -147,11 +178,11 @@ def test_channel_name_dominates_spot():
 
 
 def test_spot_fill_does_not_become_die():
-    # audit #8: mảng TÔ trên kênh spot (logo Pantone) + nét đen artwork → không có
-    # tín hiệu bế thật → None (không chọn nhầm fill, cũng không chọn nét đen).
+    # audit #8: mảng TÔ trên kênh spot (logo Pantone) + nét artwork ngoài palette
+    # → không có tín hiệu bế thật → None (không chọn nhầm fill).
     spot_fill = _path(220.0, 200.0, type='f', spot='Gold-Pantone',
                       fill=(0.1, 0.2, 0.3, 0.0), width=1.0, close=True)
-    art_stroke = _path(150.0, 130.0, type='s', spot=None, color=(0.0, 0.0, 0.0), width=0.5, close=True)
+    art_stroke = _path(150.0, 130.0, type='s', spot=None, color=(0.35, 0.2, 0.15), width=0.5, close=True)
     chosen, by_spot, _ = _select_from_paths([spot_fill, art_stroke], PAGE, CFG.die_channel_names,
                                          CFG.die_colors, CFG.die_color_tol)
     assert chosen is None

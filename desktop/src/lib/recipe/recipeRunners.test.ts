@@ -157,7 +157,7 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         const commit = vi.fn();
         await RECIPE_RUNNERS.sticker_dieline!(
             makeCtx({ commitWorkingFile: commit, file: new File([new Uint8Array([1])], 'tem.pdf', { type: 'application/pdf' }) }),
-            { productType: 'sticker', cutMode: 'original', offsetMm: 0, cornerStyle: 'round', fillHoles: true, bleedMm: 2, removeWhiteBg: true, bleedColorType: 'image', bleedColorHex: '#FFFFFF', cutFirstPageOnly: true, edgeBiteMm: 0.3 },
+            { productType: 'sticker', cutMode: 'original', offsetMm: 0, cornerStyle: 'preserve', shapeMode: 'auto_safe', fillHoles: true, bleedMm: 2, removeWhiteBg: true, bleedColorType: 'image', bleedColorHex: '#FFFFFF', cutFirstPageOnly: true, edgeBiteMm: 0.3 },
             null,
         );
         const call = (authenticatedFetch as any).mock.calls[0];
@@ -165,6 +165,8 @@ describe('recipeRunners — tạo đường cắt (sticker_dieline)', () => {
         const fd = call[1].body as FormData;
         expect(fd.get('cut_mode')).toBe('original');
         expect(fd.get('bleed_mm')).toBe('2');
+        expect(fd.get('corner_style')).toBe('preserve');
+        expect(fd.get('shape_mode')).toBe('contour');
         expect(fd.get('file_id')).toBe('fid-123');
         // Parity: "tạo đường cắt cho trang đầu" phải được phát lại (không bị đánh mất).
         expect(fd.get('cut_first_page_only')).toBe('true');

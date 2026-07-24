@@ -53,8 +53,10 @@ export async function runProcessEngine(
         const isDieCut = settings.imposerMode === 'diecut';
         const isGuillotine = settings.imposerMode === 'guillotine';
         const isCnc = settings.imposerMode === 'cnc';
-        // Task 16 / Req 6: capability khai báo theo profile (mark/pont) — không khóa cứng
-        const caps = getImposerCapability(settings.imposerMode);
+        const isPageSheet = isGuillotine && settings.pageSheetMode === true;
+        // Page-sheet dùng capability guillotine để giữ marks; raw UI state không đi qua boundary này.
+        const caps = getImposerCapability(isPageSheet ? 'guillotine' : settings.imposerMode);
+        const pontSettingsMode = caps.supportsPont || isPageSheet;
 
         // Task 11: MỌI job N-up (cắt xén + die-cut) đi backend → output dùng chung
         // solver với preview (nup_engine == /preview-layout, sau Task 10). Không còn
@@ -96,13 +98,14 @@ export async function runProcessEngine(
                 // CNC cũng là die-cut về bản chất → giữ cờ NHẤT QUÁN với UI (audit #C3).
                 // Routing backend vẫn theo imposerMode='cnc' (ưu tiên trước isDieCutMode).
                 isDieCutMode: isDieCut || isCnc,
+                page_sheet_mode: isPageSheet,
                 cutType: isDieCut ? (settings as any).cutType : undefined,
                 fillBlockGap: isDieCut ? (settings as any).fillBlockGap : undefined,
                 // 1 Dao: khuôn theo trang + offset co/mở (khớp resolve_one_dao_trim backend).
                 dieSizeMode: isDieCut ? (settings as any).dieSizeMode : undefined,
                 dieOffsetMm: isDieCut ? (settings as any).dieOffsetMm : undefined,
-                pontType: caps.supportsPont ? (settings as any).pontType : undefined, 
-                pontConfig: caps.supportsPont ? (settings as any).pontConfig : undefined,
+                pontType: pontSettingsMode ? (settings as any).pontType : undefined,
+                pontConfig: pontSettingsMode ? (settings as any).pontConfig : undefined,
                 detectedShapesByPage: isDieCut || isCnc ? (settings as any).detectedShapesByPage : undefined,
                 detectedShapeParamsByPage: isDieCut || isCnc ? (settings as any).detectedShapeParamsByPage : undefined,
                 targetQuantity: (settings as any).targetQuantity || 0,
@@ -127,18 +130,22 @@ export async function runProcessEngine(
                 clusterNesting: (settings as any).clusterNesting !== false,
                 tileGapX: (settings as any).tileGapX || 0,
                 tileGapY: (settings as any).tileGapY || 0,
-                separateCutPage: isDieCut && (settings as any).cutType === 'one_dao' ? true : (isDieCut ? (settings as any).separateCutPage || false : false),
-                pontsOnCutFile: caps.supportsPont ? (settings as any).pontsOnCutFile !== false : undefined,
+                separateCutPage: isPageSheet
+                    ? true
+                    : (isDieCut && (settings as any).cutType === 'one_dao'
+                        ? true
+                        : (isDieCut ? (settings as any).separateCutPage || false : false)),
+                pontsOnCutFile: pontSettingsMode ? (settings as any).pontsOnCutFile !== false : undefined,
                 hiddenOcgLayerIds: isDieCut ? (settings as any).hiddenOcgLayerIds || [] : [],
-                duplexFlow: (settings as any).duplexFlow,
+                duplexFlow: isPageSheet ? 'normal' : (settings as any).duplexFlow,
                 // Report & xuất tờ duy nhất (spec: binh-tem-be-report) — gồm cả CNC
-                exportUniqueSheets: isDieCut ? (settings as any).exportUniqueSheets !== false : false,
+                exportUniqueSheets: (isDieCut || isPageSheet) ? (settings as any).exportUniqueSheets !== false : false,
                 reportDisplay: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportDisplay : undefined,
                 reportMaterial: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportMaterial : undefined,
                 reportLamination: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportLamination : undefined,
                 reportLaminationSides: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportLaminationSides : undefined,
                 reportOrderCode: (isDieCut || isCnc || isGuillotine) ? (settings as any).reportOrderCode : undefined,
-                saveByReport: isDieCut ? (settings as any).saveByReport : undefined,
+                saveByReport: (isDieCut || isPageSheet) ? (settings as any).saveByReport : undefined,
                 // ═══ Bình Bế Rớt (CNC) — định tuyến renderer riêng ở backend ═══
                 imposerMode: isCnc ? 'cnc' : undefined,
                 cncTwoSided: isCnc ? (settings as any).cncTwoSided : undefined,
@@ -199,7 +206,7 @@ export async function runProcessEngine(
                             const { savePrintFilesToFolder, pagesPerTypeFor } = await import('../lib/savePrintFiles');
                             const cncMode = settings.imposerMode === 'cnc';
                             const cncTwoSided = !!(settings as any).cncTwoSided;
-                            const separateCut = !!(settings as any).separateCutPage;
+                            const separateCut = isPageSheet || !!(settings as any).separateCutPage;
                             const { ok } = await savePrintFilesToFolder(blob, sp.folder, {
                                 nameMode: sp.nameMode, folderMode: sp.folderMode,
                                 separateCut, includeOrderCode: sp.includeOrderCode, includeDate: sp.includeDate,

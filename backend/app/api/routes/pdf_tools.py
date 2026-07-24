@@ -1182,7 +1182,8 @@ async def office_convert_resize_output(
 async def sticker_dieline_endpoint(request: Request, license_info: dict = Depends(require_license)):
     """Generate Cut Contour and Bleed for Stickers."""
     request_started = time.perf_counter()
-    from app.workers.sticker_engine import StickerEngine
+    from app.workers.sticker_engine import StickerEngine, compute_cut_bleed_offsets
+    from app.workers.sticker_page_canvas import restore_sticker_page_canvas
     
     form = await request.form()
     
@@ -1253,6 +1254,55 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     do_cut_first_page_only = cut_first_page_only_raw.lower() in ("true", "1", "yes")
     # auto_safe | contour | force_circle | force_ellipse | force_rect | force_triangle
     shape_mode = (form.get("shape_mode") or "auto_safe").strip().lower()
+
+    selected_objects_by_page = None
+    selection_json_raw = form.get("selection_json")
+    if selection_json_raw:
+        import json as _selection_json
+        try:
+            selection_payload = _selection_json.loads(str(selection_json_raw))
+            pages_payload = selection_payload.get("pages")
+            if not isinstance(pages_payload, list) or not pages_payload:
+                raise ValueError("pages phải là danh sách không rỗng")
+
+            parsed_selection: dict[int, list[str]] = {}
+            total_selected = 0
+            for page_entry in pages_payload:
+                if not isinstance(page_entry, dict):
+                    raise ValueError("mỗi selection page phải là object")
+                page_number = page_entry.get("page")
+                object_ids = page_entry.get("object_ids")
+                if (
+                    isinstance(page_number, bool)
+                    or not isinstance(page_number, int)
+                    or page_number < 0
+                    or not isinstance(object_ids, list)
+                    or not object_ids
+                ):
+                    raise ValueError("page/object_ids không hợp lệ")
+                target_ids = parsed_selection.setdefault(page_number, [])
+                for object_id in object_ids:
+                    if not isinstance(object_id, str):
+                        raise ValueError("object id phải là chuỗi")
+                    kind, separator, draw_index = object_id.rpartition("-")
+                    if (
+                        separator != "-"
+                        or kind not in {"text", "image", "vector"}
+                        or not draw_index.isdigit()
+                    ):
+                        raise ValueError(f"object id không hợp lệ: {object_id!r}")
+                    if object_id not in target_ids:
+                        target_ids.append(object_id)
+                        total_selected += 1
+                        if total_selected > 500:
+                            raise ValueError("selection vượt quá 500 object")
+            selected_objects_by_page = parsed_selection
+        except (TypeError, ValueError, _selection_json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Selection object không hợp lệ: {exc}",
+            )
+
     try:
         edge_bite_mm = float(form.get("edge_bite_mm", 0.0))
     except (ValueError, TypeError):
@@ -1305,6 +1355,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 edge_bite_mm=edge_bite_mm,
                 cut_first_page_only=do_cut_first_page_only,
                 shape_mode=shape_mode,
+                selected_objects_by_page=selected_objects_by_page,
             )
         engine_seconds = time.perf_counter() - engine_started
         if not success or not os.path.exists(output_path):
@@ -1314,11 +1365,44 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 raise HTTPException(status_code=422, detail=biz_err)
             raise RuntimeError("Lỗi lưu file kết quả. (File not found)")
 
+
+        # Bỏ nền trắng chỉ thay đổi silhouette/alpha, tuyệt đối không sở hữu
+        # quyết định crop trang. StickerEngine dùng một canvas làm việc nới đều
+        # ``max_expansion_pts`` rồi legacy-tight-crop theo contour; khôi phục
+        # page box nguồn tại biên API (sàn tối thiểu = khổ nguồn). Nếu bù xén /
+        # đường cắt tràn ra ngoài mép trang nguồn, canvas được NỚI ra vừa đủ để
+        # chứa — không thu hẹp. Selection mode đã copy nguyên trang nên không
+        # cần hậu xử lý. Xén vuông giữ contract riêng: bleed có thể chủ động
+        # nới trang thành phẩm.
+        if selected_objects_by_page is None and not do_rectangle_mode:
+            bleed_pts = bleed_mm * 2.83465
+            offset_pts = offset_mm * 2.83465
+            if cut_mode == "none":
+                page_expansion_pts = max(0.0, bleed_pts)
+            else:
+                cut_edge_pts, outer_edge_pts = compute_cut_bleed_offsets(
+                    cut_mode,
+                    bleed_pts,
+                    offset_pts,
+                )
+                page_expansion_pts = max(
+                    0.0,
+                    cut_edge_pts,
+                    outer_edge_pts,
+                )
+            restore_sticker_page_canvas(
+                source_path,
+                output_path,
+                expansion_pts=page_expansion_pts,
+            )
+
         await run_in_threadpool(_safe_watermark, output_path, license_info)
 
         headers = {
             "X-Sticker-Output-Path": os.path.abspath(output_path),
         }
+        if isinstance(meta, dict) and meta.get("selection_count") is not None:
+            headers["X-Sticker-Selection-Count"] = str(meta["selection_count"])
         if meta and "width_mm" in meta and "height_mm" in meta:
             headers["X-Sticker-Width-MM"] = str(meta["width_mm"])
             headers["X-Sticker-Height-MM"] = str(meta["height_mm"])

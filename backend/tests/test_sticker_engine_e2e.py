@@ -25,7 +25,13 @@ pytest.importorskip("pypdfium2")
 pytest.importorskip("shapely")
 pytest.importorskip("skimage")
 
-from app.workers.sticker_engine import StickerEngine
+from shapely.geometry import Polygon
+from app.workers.sticker_engine import (
+    StickerEngine,
+    _PRESERVE_CORNER_QUAD_SEGS,
+    _PRESERVE_CORNER_RADIUS_MM,
+    _round_preserved_corners,
+)
 
 
 def _make_simple_pdf(path: str) -> None:
@@ -79,6 +85,56 @@ def test_process_pdf_original_round_succeeds(src_pdf, tmp_path):
         assert "/CutContour" in cs, "Phải đăng ký spot color CutContour"
         assert b"/CutContour CS" in _read_all_content(page), "Phải vẽ đường cắt CutContour"
         assert "/TrimBox" in page.obj, "Phải gắn TrimBox theo viền cắt"
+
+
+
+def test_preserve_corner_rounding_is_softer_without_node_explosion():
+    contour = Polygon([
+        (0, 0), (20, 0), (20, 20), (12, 20),
+        (12, 6), (8, 6), (8, 20), (0, 20),
+    ])
+    mm_to_pts = 72.0 / 25.4
+    previous = _round_preserved_corners(
+        contour, radius_pts=0.20 * mm_to_pts, quad_segs=2
+    )
+    softened = _round_preserved_corners(
+        contour,
+        radius_pts=_PRESERVE_CORNER_RADIUS_MM * mm_to_pts,
+        quad_segs=_PRESERVE_CORNER_QUAD_SEGS,
+    )
+
+    assert softened.is_valid
+    assert softened.bounds == pytest.approx(contour.bounds)
+    assert softened.area > previous.area + 0.10
+    assert len(softened.exterior.coords) <= 32
+
+def test_preserve_mode_bypasses_reconstruction_smoothing_and_bezier(src_pdf, tmp_path):
+    """Giữ nguyên phải bám contour raster, kể cả khi client gửi auto_safe."""
+    out = str(tmp_path / "preserve.pdf")
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src_pdf,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        draw_cut_contour=True,
+        shape_mode="auto_safe",
+    )
+
+    assert success is True
+    assert meta["pages"][0]["cut_kind"] is None
+    with pikepdf.Pdf.open(out) as result:
+        page = result.pages[0]
+        cut_stream = _read_all_content(page).split(b"/CutContour CS", 1)[1]
+        line_count = cut_stream.count(b" l\n")
+        assert 4 < line_count < 100, "contour still has production-unfriendly node density"
+        assert b" c\n" not in cut_stream
+        trim = [float(v) for v in page.TrimBox]
+        assert abs((trim[2] - trim[0]) - 140.0) < 0.6
+        assert abs((trim[3] - trim[1]) - 180.0) < 0.6
 
 
 @pytest.mark.parametrize(
@@ -345,6 +401,65 @@ def test_edge_color_source_skips_near_white_aa():
     rim = img[csm > 0]
     assert float(rim.min(axis=1).mean()) < 240, "nguồn vẫn toàn pixel trắng/AA"
     assert float(rim[:, 0].mean()) > 100
+
+
+def test_near_white_background_does_not_classify_light_neutral_gray_as_white():
+    """Neutral gray artwork must survive background detection.
+
+    The swatch reported by the audit is approximately RGB(213, 215, 214).
+    Its OpenCV HSV saturation quantizes to 2, which used to fall exactly on
+    the inclusive S<=2 background threshold.
+    """
+    import cv2
+    import numpy as np
+    from app.workers.sticker_engine import _near_white_background_candidate_rgb
+
+    img = np.full((20, 20, 3), 255, dtype=np.uint8)
+    img[5:15, 5:15] = (213, 215, 214)
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+    legacy_near_white = cv2.inRange(
+        hsv, np.array([0, 0, 200]), np.array([180, 2, 255])
+    )
+    strict_background = _near_white_background_candidate_rgb(img)
+
+    assert bool(legacy_near_white[10, 10]) is True
+    assert bool(strict_background[10, 10]) is False
+    assert bool(strict_background[0, 0]) is True
+
+
+def test_process_pdf_keeps_neutral_cmyk_gray_artwork(tmp_path):
+    """A light neutral CMYK object must still produce a non-empty cutline."""
+    src = str(tmp_path / "neutral_gray.pdf")
+    out = str(tmp_path / "neutral_gray_out.pdf")
+
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(100, 60))
+    page.Contents = pdf.make_stream(
+        b"1 1 1 rg 0 0 100 60 re f\n"
+        b"0.1569 0.1059 0.1216 0 k 20 15 60 30 re f\n"
+    )
+    pdf.save(src)
+
+    success, _meta = StickerEngine(dpi=150).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="miter",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        draw_cut_contour=True,
+        shape_mode="contour",
+    )
+    assert success is True
+
+    with pikepdf.Pdf.open(out) as result:
+        trim = [float(v) for v in result.pages[0].TrimBox]
+        assert trim[2] - trim[0] > 40.0
+        assert trim[3] - trim[1] > 15.0
+        assert b"/CutContour CS" in _read_all_content(result.pages[0])
 
 
 def _make_rectangle_white_edge_pdf(path: str, *, output_intent: bool = False):
@@ -883,3 +998,240 @@ def test_rectangle_inpaint_falls_back_when_ghostscript_is_unavailable(
             and str(xobjects[name].get("/ColorSpace")) != "/DeviceGray"
             for name in xobjects
         )
+
+
+
+def _make_selected_sticker_sheet(path: str, *, two_pages: bool = False) -> bytes:
+    """A5 sheet with decoration plus two independent Form-XObject stickers."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(419.53, 595.28))
+
+    def make_form(color_ops: bytes):
+        form = pdf.make_stream(color_ops + b"0 0 48 48 re f\n")
+        form.Type = pikepdf.Name.XObject
+        form.Subtype = pikepdf.Name.Form
+        form.BBox = pikepdf.Array([0, 0, 48, 48])
+        form.Resources = pikepdf.Dictionary()
+        return form
+
+    sticker_one = make_form(b"0 0.75 0.2 rg ")
+    sticker_two = make_form(b"0.95 0.55 0 rg ")
+    page.Resources = pikepdf.Dictionary({
+        "/XObject": pikepdf.Dictionary({
+            "/StickerOne": sticker_one,
+            "/StickerTwo": sticker_two,
+        }),
+    })
+    original_content = (
+        b"1 1 1 rg 0 0 419.53 595.28 re f\n"
+        b"0.1 0.25 0.95 rg 340 520 32 32 re f\n"
+        b"q 1 0 0 1 55 420 cm /StickerOne Do Q\n"
+        b"q 1 0 0 1 155 420 cm /StickerTwo Do Q\n"
+    )
+    page.Contents = pdf.make_stream(original_content)
+
+    if two_pages:
+        page_two = pdf.add_blank_page(page_size=(419.53, 595.28))
+        page_two.Contents = pdf.make_stream(
+            b"0.88 0.88 0.88 rg 0 0 419.53 595.28 re f\n"
+            b"0.75 0.1 0.35 rg 40 40 80 80 re f\n"
+        )
+
+    pdf.save(path)
+    return original_content
+
+
+def _selection_ids_for_sheet(path: str) -> dict[str, str]:
+    from app.core import geometry_reader
+
+    objects = geometry_reader.list_objects(path, 0)
+    by_left = {
+        round(float(obj.bbox[0])): obj.id
+        for obj in objects
+        if obj.type == "vector"
+    }
+    assert 55 in by_left and 155 in by_left
+    return {"one": by_left[55], "two": by_left[155]}
+
+
+def _box_lefts(meta: dict) -> list[float]:
+    return sorted(float(box["x_pt"]) for box in meta["boxes"])
+
+
+def test_object_selection_creates_two_cutlines_and_preserves_entire_sheet(tmp_path):
+    src = str(tmp_path / "selected_sheet.pdf")
+    out = str(tmp_path / "selected_sheet_out.pdf")
+    original_content = _make_selected_sticker_sheet(src, two_pages=True)
+    selection_ids = _selection_ids_for_sheet(src)
+
+    with pikepdf.Pdf.open(src) as source:
+        source_page_two = _read_all_content(source.pages[1])
+        source_boxes = {
+            name: [float(v) for v in source.pages[0].obj.get(name)]
+            for name in ("/MediaBox", "/CropBox")
+            if source.pages[0].obj.get(name) is not None
+        }
+        source_form_bytes = {
+            name: source.pages[0].Resources.XObject[name].read_bytes()
+            for name in ("/StickerOne", "/StickerTwo")
+        }
+
+    success, meta = StickerEngine(dpi=120).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        draw_cut_contour=True,
+        shape_mode="contour",
+        selected_objects_by_page={0: [selection_ids["one"], selection_ids["two"]]},
+    )
+
+    assert success is True
+    assert meta["selection_count"] == 2
+    assert meta["selection_pages"] == [1]
+    assert len(meta["boxes"]) == 2
+    assert _box_lefts(meta) == pytest.approx([55.0, 155.0], abs=1.2)
+    assert all(left < 250 for left in _box_lefts(meta)), "decoration must not become a cutline"
+
+    with pikepdf.Pdf.open(out) as result:
+        assert len(result.pages) == 2
+        page = result.pages[0]
+        for name, expected in source_boxes.items():
+            assert [float(v) for v in page.obj.get(name)] == pytest.approx(expected, abs=0.001)
+        assert "/TrimBox" not in page.obj
+        all_content = _read_all_content(page)
+        assert original_content in all_content
+        cut_content = all_content.split(b"/CutContour CS", 1)[1]
+        assert cut_content.count(b" m\n") == 2
+        for name, expected in source_form_bytes.items():
+            assert page.Resources.XObject[name].read_bytes() == expected
+        assert _read_all_content(result.pages[1]) == source_page_two
+        assert b"/CutContour CS" not in _read_all_content(result.pages[1])
+
+
+def test_object_selection_bleeds_only_target_and_leaves_other_artwork_unchanged(tmp_path):
+    import numpy as np
+    import pypdfium2 as pdfium
+
+    src = str(tmp_path / "one_selected_sheet.pdf")
+    out = str(tmp_path / "one_selected_sheet_out.pdf")
+    _make_selected_sticker_sheet(src)
+    selection_ids = _selection_ids_for_sheet(src)
+
+    success, meta = StickerEngine(dpi=120).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=2.0,
+        fill_holes=True,
+        remove_white_bg=True,
+        bleed_color_type="image",
+        draw_cut_contour=True,
+        shape_mode="contour",
+        selected_objects_by_page={0: [selection_ids["one"]]},
+    )
+
+    assert success is True
+    assert meta["selection_count"] == 1
+    assert len(meta["boxes"]) == 1
+    assert _box_lefts(meta) == pytest.approx([55.0], abs=1.2)
+
+    source_doc = pdfium.PdfDocument(src)
+    result_doc = pdfium.PdfDocument(out)
+    source_pixels = source_doc[0].render(scale=2, rev_byteorder=True).to_numpy()
+    result_pixels = result_doc[0].render(scale=2, rev_byteorder=True).to_numpy()
+
+    # Centers of the unselected sticker and top-right decoration remain pixel-identical.
+    height = source_pixels.shape[0]
+    probes_pdf = [(179, 444), (356, 536)]
+    for x_pt, y_pt in probes_pdf:
+        x_px = int(round(x_pt * 2))
+        y_px = int(round((595.28 - y_pt) * 2))
+        assert np.array_equal(
+            source_pixels[y_px, x_px, :3],
+            result_pixels[y_px, x_px, :3],
+        )
+
+    # The bleed ring must remain visible over a full-page white background.
+    bleed_x_px = int(round(52.0 * 2))
+    bleed_y_px = int(round((595.28 - 444.0) * 2))
+    assert np.all(source_pixels[bleed_y_px, bleed_x_px, :3] >= 250)
+    bleed_pixel = result_pixels[bleed_y_px, bleed_x_px, :3]
+    assert int(bleed_pixel[1]) > 120 and int(bleed_pixel[0]) < 100, bleed_pixel
+
+    # Every rendered pixel outside the selected sticker + bleed/cut guard stays
+    # identical, catching black boxes, lost decorations and accidental page clips.
+    changed = np.any(source_pixels[:, :, :3] != result_pixels[:, :, :3], axis=2)
+    allowed = np.zeros_like(changed, dtype=bool)
+    x0, x1 = int(47 * 2), int(111 * 2)
+    y0 = int((595.28 - 478) * 2)
+    y1 = int((595.28 - 410) * 2)
+    allowed[y0:y1 + 1, x0:x1 + 1] = True
+    assert np.count_nonzero(changed & ~allowed) == 0
+
+    with pikepdf.Pdf.open(out) as result:
+        page = result.pages[0]
+        assert [float(v) for v in page.MediaBox] == pytest.approx(
+            [0.0, 0.0, 419.53, 595.28], abs=0.001
+        )
+        assert page.Resources.XObject["/StickerTwo"].read_bytes().startswith(
+            b"0.95 0.55 0 rg"
+        )
+
+
+
+def test_sticker_endpoint_forwards_valid_object_selection(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    import shutil
+
+    from app.api.routes import pdf_tools
+    from app.workers import sticker_engine
+
+    source = tmp_path / "selection_route.pdf"
+    _make_selected_sticker_sheet(str(source))
+    selection_ids = _selection_ids_for_sheet(str(source))
+    captured = {}
+
+    class StubEngine:
+        def __init__(self, dpi=300):
+            self.dpi = dpi
+
+        def process_pdf(self, input_path, output_path, **kwargs):
+            captured.update(kwargs)
+            shutil.copyfile(input_path, output_path)
+            return True, {
+                "selection_count": 1,
+                "pages": [{"page": 1}],
+            }
+
+    class FakeRequest:
+        async def form(self):
+            return {
+                "file_path": str(source),
+                "selection_json": json.dumps({
+                    "pages": [{
+                        "page": 0,
+                        "object_ids": [selection_ids["one"]],
+                    }],
+                }),
+            }
+
+    monkeypatch.setattr(sticker_engine, "StickerEngine", StubEngine)
+    monkeypatch.setattr(pdf_tools, "RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(pdf_tools, "_safe_watermark", lambda *args: None)
+
+    response = asyncio.run(
+        pdf_tools.sticker_dieline_endpoint(FakeRequest(), license_info={})
+    )
+
+    assert captured["selected_objects_by_page"] == {
+        0: [selection_ids["one"]],
+    }
+    assert response.headers["X-Sticker-Selection-Count"] == "1"

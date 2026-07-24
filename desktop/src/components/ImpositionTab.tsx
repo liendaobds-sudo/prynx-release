@@ -18,6 +18,7 @@ import CutExportModal from './imposition-tools/cut-export/CutExportModal';
 import OpenInDesignModal from './imposition-tools/OpenInDesignModal';
 import { PREDEFINED_SIZES, resolveRightPanel, type BookletSettings, type NupSettings } from './imposition-tools/types';
 import { ImposerSettingsContext, createImposerSettingsStore, useImposerSettingsStore } from './imposition-tools/useImposerSettingsStore';
+import { resolveEffectiveSeparateCut } from './imposition-tools/pageSheetPolicy';
 import { disposeImposerPersistScope } from './imposition-tools/store/persist';
 import { generateBindingMap } from '../lib/imposerEngine/VirtualMap';
 import { applyRule, executeShuffle, getPresetById, parseRule, reversePages, shuffleEvenOdd } from '../lib/preprocessEngine/ShuffleEngine';
@@ -200,11 +201,19 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         activeDashboardTool, setActiveDashboardTool,
         batchOutput, setBatchOutput,
         confirmBookletSettings, setConfirmBookletSettings,
+        impositionUnit, separateCutPage,
     } = useImposerSettingsStore(useShallow(s => ({
         activeDashboardTool: s.activeDashboardTool, setActiveDashboardTool: s.setActiveDashboardTool,
         batchOutput: s.batchOutput, setBatchOutput: s.setBatchOutput,
         confirmBookletSettings: s.confirmBookletSettings, setConfirmBookletSettings: s.setConfirmBookletSettings,
+        impositionUnit: s.impositionUnit,
+        separateCutPage: s.separateCutPage,
     })));
+    const effectiveSeparateCut = resolveEffectiveSeparateCut(
+        activeDashboardTool,
+        impositionUnit,
+        separateCutPage,
+    );
 
     const { isWorkspaceSidebarOpen: isSidebarOpen, favoriteTools, hiddenTools } = useAppSettingsStore();
     const setIsSidebarOpen = useAppSettingsStore(state => state.setWorkspaceSidebarOpen);
@@ -1545,6 +1554,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             pageOrder: viewerPageOrder,
             pageRotations: viewerPageRotations,
             isDieCutMode: config.isDieCutMode,
+            pageSheetMode: config.pageSheetMode,
             cutType: config.cutType,
             fillBlockGap: config.fillBlockGap,
             dieSizeMode: config.dieSizeMode,
@@ -2281,7 +2291,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         onClose={() => setShowOpenInDesign(false)}
                         resultFilePath={(file as any)?.path}
                         resultBlob={file}
-                        separateCut={!!imposerStoreRef.current?.getState()?.separateCutPage}
+                        separateCut={effectiveSeparateCut}
                         cncMode={activeDashboardTool === 'cnc_imposer'}
                         cncTwoSided={imposerStoreRef.current?.getState()?.duplexFlow === 'double'}
                         originalName={file?.name}
@@ -2830,7 +2840,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 open={showSavePrintModal}
                 onClose={() => setShowSavePrintModal(false)}
                 resultBlob={file}
-                separateCut={!!imposerStoreRef.current?.getState()?.separateCutPage}
+                separateCut={effectiveSeparateCut}
                 cncMode={activeDashboardTool === 'cnc_imposer'}
                 cncTwoSided={imposerStoreRef.current?.getState()?.duplexFlow === 'double'}
                 originalName={file?.name}

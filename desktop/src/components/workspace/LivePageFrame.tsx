@@ -28,7 +28,12 @@ import {
 } from './editGeometry';
 import { formatPageNumber, applyTokens, effectiveLR } from '../../lib/stampFormat';
 import { useTranslation } from 'react-i18next';
-import { findNearestVerticalScrollContainer, scrollElementVerticallyIntoView } from './verticalScroll';
+import {
+    EDIT_OBJECT_FOCUS_EVENT,
+    findNearestVerticalScrollContainer,
+    readEditObjectFocusRequest,
+    scrollElementVerticallyIntoView,
+} from './verticalScroll';
 import { buildPropertyAffine, mmToPt, pickTopmostObjectAtPoint, ptToMm, selectionBounds } from './editTransformMath';
 
 // Mảng rỗng ỔN ĐỊNH — không tạo `[]` mới mỗi effect (tránh cascade setState).
@@ -610,6 +615,7 @@ export const LivePageFrame = (props: any) => {
         separationPlates, vdpFields, selectedVdpFieldIds,
         softProofImageUrl, gamutWarningUrl, tacHeatmapUrl, overprintPreviewUrl,
         pdfUrl, setSelectedVdpFieldIds, selectedObjectIds, setSelectedObjectIds,
+        setObjectSelectionContext,
         isCropMode, cropSelection, setCropSelection, commitCropSelection,
         recordCropSelectionSnapshot, viewerToolMode, editAddMode, setEditAddMode
     } = useWorkspaceStore(useShallow(state => ({
@@ -620,6 +626,7 @@ export const LivePageFrame = (props: any) => {
         selectionFileId: state.selectionFileId,
         selectedObjectIds: state.selectedObjectIds,
         setSelectedObjectIds: state.setSelectedObjectIds,
+        setObjectSelectionContext: state.setObjectSelectionContext,
         hiddenObjectIds: state.hiddenObjectIds,
         setHiddenObjectIds: state.setHiddenObjectIds,
         lockedObjectIds: state.lockedObjectIds,
@@ -1172,6 +1179,28 @@ export const LivePageFrame = (props: any) => {
         });
     }, [isObjectEditMode, isActiveFrame, editObjects, setCurrentEditObjects]);
 
+    // Persist the active-page selection for downstream tools. Edit mode clears
+    // selectedObjectIds while closing, so this effect intentionally does nothing
+    // after edit mode is off; the snapshot survives the mode transition.
+    useEffect(() => {
+        if (!isObjectEditMode || !isActiveFrame || !selectionFileId || originalPageNum < 1) return;
+        const availableIds = new Set(editObjects.map((obj) => obj.id));
+        const objectIds = selectedObjectIds.filter((id) => availableIds.has(id));
+        setObjectSelectionContext(objectIds.length > 0 ? {
+            fileId: selectionFileId,
+            pageIndex: originalPageNum - 1,
+            objectIds,
+        } : null);
+    }, [
+        isObjectEditMode,
+        isActiveFrame,
+        selectionFileId,
+        originalPageNum,
+        editObjects,
+        selectedObjectIds,
+        setObjectSelectionContext,
+    ]);
+
     // ─── Edit PDF Object: Ctrl+A chọn tất cả / Esc bỏ chọn / Delete xóa (task 10.1) ─
     // CHỈ frame ĐANG XEM (isActiveFrame) mới xử lý phím: listener gắn trên `window` nên
     // MỌI LivePageFrame còn mount (Virtuoso giữ nhiều frame sống) đều nghe. selectedObjectIds/
@@ -1581,26 +1610,24 @@ export const LivePageFrame = (props: any) => {
         window.addEventListener('prynx-crop-preview-change', onPreviewChange as EventListener);
         return () => window.removeEventListener('prynx-crop-preview-change', onPreviewChange as EventListener);
     }, [isCropMode, cropOwnerId, setCropSelection]);
-    // Panel → canvas: khi selection đổi (vd click dòng trong panel Thành phần), cuộn
-    // overlay object đầu được chọn vào tầm nhìn. Chỉ frame CHỨA overlay đó mới cuộn
-    // (query data-obj-id trong containerRef; frame khác không có node → bỏ qua). Dùng
-    // lastScrolledId để chỉ cuộn khi id đầu ĐỔI, tránh cuộn lặp mỗi render. Khung viền
-    // outline đã có sẵn ở overlay (isSelected) nên không cần thêm. (gộp F7↔edit 2026-07-07)
-    const lastScrolledIdRef = useRef<string | null>(null);
+    // Panel -> canvas uses an explicit focus request. Canvas clicks only update
+    // selection and must never recenter the document viewport.
     useEffect(() => {
-        if (!isObjectEditMode) { lastScrolledIdRef.current = null; return; }
-        const firstId = selectedObjectIds[0];
-        if (firstId == null) { lastScrolledIdRef.current = null; return; }
-        if (lastScrolledIdRef.current === firstId) return;
-        const node = containerRef.current?.querySelector(`[data-obj-id="${firstId}"]`);
-        if (node) {
-            lastScrolledIdRef.current = firstId;
-            const scrollContainer = findNearestVerticalScrollContainer(node as HTMLElement);
+        if (!isObjectEditMode) return;
+        const focusRequested = (event: Event) => {
+            const objectId = readEditObjectFocusRequest(event, originalPageNum - 1);
+            if (!objectId) return;
+            const nodes = containerRef.current?.querySelectorAll<HTMLElement>('[data-obj-id]');
+            const node = nodes ? Array.from(nodes).find(item => item.dataset.objId === objectId) : null;
+            if (!node) return;
+            const scrollContainer = findNearestVerticalScrollContainer(node);
             if (scrollContainer) {
-                scrollElementVerticallyIntoView(node as HTMLElement, scrollContainer, 'center');
+                scrollElementVerticallyIntoView(node, scrollContainer, 'center');
             }
-        }
-    }, [selectedObjectIds, isObjectEditMode]);
+        };
+        window.addEventListener(EDIT_OBJECT_FOCUS_EVENT, focusRequested);
+        return () => window.removeEventListener(EDIT_OBJECT_FOCUS_EVENT, focusRequested);
+    }, [isObjectEditMode, originalPageNum]);
 
     const renderWidth = actualWidth100 * renderZoom;
 
@@ -1932,8 +1959,27 @@ export const LivePageFrame = (props: any) => {
                 hideEditGhost();
                 return;
             }
-            // Overlay clip đã dán tại chỗ; ghost dashed bỏ đi (overlay là hình thật mới).
-            hideEditGhost();
+            // Move: cập nhật bbox khung chọn NGAY (canvas point) để không "giật về
+            // chỗ cũ" trong lúc chờ /edit/objects. Trước đây hide ghost ngay trong khi
+            // editObjects còn bbox cũ → user tưởng kéo chưa ăn, phải kéo lần 2.
+            // Resize/rotate: giữ ghost đến khi refetch xong (hideEditGhost trong effect).
+            if (lt.kind === 'move') {
+                const dxPt = lt.dx / scale;
+                const dyPt = lt.dy / scale;
+                if (Number.isFinite(dxPt) && Number.isFinite(dyPt)
+                    && (Math.abs(dxPt) > 1e-9 || Math.abs(dyPt) > 1e-9)) {
+                    const idSet = new Set(transformIds);
+                    setEditObjects((prev) => prev.map((obj) => {
+                        if (!idSet.has(obj.id)) return obj;
+                        const [x0, y0, x1, y1] = obj.bbox;
+                        return {
+                            ...obj,
+                            bbox: [x0 + dxPt, y0 + dyPt, x1 + dxPt, y1 + dyPt],
+                        };
+                    }));
+                }
+                hideEditGhost();
+            }
         } catch (err: any) {
             console.warn(t('misc.livePageFrame:edit_transform_session_that_bai'), err);
             const msg = String(err?.message || err);
@@ -1976,6 +2022,18 @@ export const LivePageFrame = (props: any) => {
                     targetIds,
                     delta,
                 });
+                // Đồng bộ khung chọn ngay (canvas point = PDF dx, đảo y).
+                const idSet = new Set(targetIds);
+                const dxPt = delta.dx;
+                const dyPt = -delta.dy;
+                setEditObjects((prev) => prev.map((obj) => {
+                    if (!idSet.has(obj.id)) return obj;
+                    const [x0, y0, x1, y1] = obj.bbox;
+                    return {
+                        ...obj,
+                        bbox: [x0 + dxPt, y0 + dyPt, x1 + dxPt, y1 + dyPt],
+                    };
+                }));
             } catch (error) {
                 console.warn('Edit nudge failed', error);
             } finally {

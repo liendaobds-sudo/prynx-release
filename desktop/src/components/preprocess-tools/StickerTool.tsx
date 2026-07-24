@@ -14,6 +14,11 @@ interface Props {
     onFileFixed?: (blob: Blob, filename: string, path?: string) => void;
 }
 
+interface CutlineRunOverrides {
+    cornerStyle?: string;
+    forceContour?: boolean;
+}
+
 const CUT_MODES_RICH = [
     { value: 'original', title: '✂️ Theo hình gốc', desc: 'Cắt bám theo viền ảnh hoặc vector.' },
     { value: 'bleed', title: '🩸 Theo mép tràn lề', desc: 'Đường cắt = mép ngoài lề bù xén (bao luôn tràn màu). Không cắt giữa vành.' },
@@ -21,6 +26,7 @@ const CUT_MODES_RICH = [
 ];
 
 const CORNER_STYLES = [
+    { id: 'preserve', label: '🎯 Giữ nguyên', desc: '' },
     { id: 'round', label: '🟢 Góc tròn', desc: '' },
     { id: 'miter', label: '🔺 Góc nhọn', desc: '' },
 ];
@@ -151,7 +157,15 @@ export function resetStickerPreferences(): boolean {
 export default function StickerTool({ pdfFile, onFileFixed }: Props) {
   const { t } = useTranslation();
     const getWorkingFile = useWorkingPdf();
-    const { setDetectedShapeType, setDetectedShapeParams } = useWorkspaceStore();
+    const {
+        setDetectedShapeType,
+        setDetectedShapeParams,
+        objectSelectionContext,
+        isObjectEditMode,
+        setIsObjectEditMode,
+        setIsCropMode,
+        setViewerToolMode,
+    } = useWorkspaceStore();
     const { setActiveDashboardTool } = useImposerSettingsStore();
     
     // Tab State
@@ -173,7 +187,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     // UI State for Sticker
     const [cutMode, setCutMode] = useState(() => readStickerEnum('cutMode', 'original', ['original', 'bleed', 'none']));
     const [offsetMm, setOffsetMm] = useState<number>(() => readStickerNumber('offsetMm', 0.0, -10, 10));
-    const [cornerStyle, setCornerStyle] = useState(() => readStickerEnum('cornerStyle', 'round', ['round', 'miter']));
+    const [cornerStyle, setCornerStyle] = useState(() => readStickerEnum('cornerStyle', 'preserve', ['preserve', 'round', 'miter']));
     const [fillHoles, setFillHoles] = useState<boolean>(() => readStickerBoolean('fillHoles', true));
     // "Tạo đường cắt cho trang đầu": file nhiều loại tem CÙNG khuôn → chỉ trang 1 mang
     // đường cắt (khuôn master), trang 2+ chỉ bù xén. Bước đệm sang Bình tem bế/CNC đồng nhất.
@@ -183,6 +197,23 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
     const [forceContour, setForceContour] = useState<boolean>(false);
     // Tên hình backend đã nhận (đọc từ header X-Sticker-Cut-Kind) → hiện làm van an toàn.
     const [detectedCutKind, setDetectedCutKind] = useState<string | null>(null);
+    const [useObjectSelection, setUseObjectSelection] = useState(true);
+    const activeObjectSelection = (
+        productType === 'sticker'
+        && useObjectSelection
+        && objectSelectionContext
+        && objectSelectionContext.objectIds.length > 0
+    ) ? objectSelectionContext : null;
+
+    // A fresh Edit PDF selection becomes the safe default. The user can still
+    // turn it off here to intentionally process the whole page.
+    useEffect(() => {
+        if (objectSelectionContext?.objectIds.length) setUseObjectSelection(true);
+    }, [
+        objectSelectionContext?.fileId,
+        objectSelectionContext?.pageIndex,
+        objectSelectionContext?.objectIds,
+    ]);
 
     // Shared State
     const [bleedMm, setBleedMm] = useState<number>(() => readStickerNumber('bleedMm', 0.0, 0, 10));
@@ -244,7 +275,9 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         return await finalRes.blob();
     };
 
-    const runOpenCVBleed = async () => {
+    const runOpenCVBleed = async (overrides?: CutlineRunOverrides) => {
+        const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
+        const requestedForceContour = overrides?.forceContour ?? forceContour;
         const targetFile = (await getWorkingFile()) || pdfFile!;
         const localPath = (
             (window as any).__TAURI_INTERNALS__
@@ -262,7 +295,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         else formData.append('file_id', String(uploadRes!.id));
         formData.append('cut_mode', productType === 'rectangle' ? 'none' : cutMode);
         formData.append('offset_mm', productType === 'rectangle' ? '0' : String(offsetMm));
-        formData.append('corner_style', productType === 'rectangle' ? 'miter' : cornerStyle);
+        formData.append('corner_style', productType === 'rectangle' ? 'miter' : requestedCornerStyle);
         formData.append('bleed_mm', String(bleedMm));
         formData.append('fill_holes', productType === 'rectangle' ? 'true' : (fillHoles ? 'true' : 'false'));
         formData.append('remove_white_bg', productType === 'rectangle' ? 'false' : (removeWhiteBg ? 'true' : 'false'));
@@ -275,9 +308,22 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         // "Tạo đường cắt cho trang đầu": chỉ tab Bế tem nhãn. Trang 1 mang khuôn
         // CutContour, trang 2+ chỉ bù xén → bước đệm cho Bình tem bế/CNC đồng nhất.
         formData.append('cut_first_page_only', productType === 'sticker' && cutFirstPageOnly ? 'true' : 'false');
-        formData.append('shape_mode', productType === 'sticker' ? (forceContour ? 'contour' : 'auto_safe') : 'contour');
+        formData.append(
+            'shape_mode',
+            productType === 'sticker'
+                ? ((requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe')
+                : 'contour',
+        );
         if (productType === 'rectangle') {
             formData.append('rectangle_mode', 'true');
+        }
+        if (activeObjectSelection) {
+            formData.append('selection_json', JSON.stringify({
+                pages: [{
+                    page: activeObjectSelection.pageIndex,
+                    object_ids: activeObjectSelection.objectIds,
+                }],
+            }));
         }
         
         const response = await authenticatedFetch(`${getApiUrl()}/pdf-tools/sticker-dieline`, {
@@ -298,7 +344,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             // Hình học đường cắt máy tự nhận (van an toàn thay dropdown đã ẩn):
             // có kind → tên hình; không có (die phức tạp / forceContour) → 'contour'.
             const cutKind = response.headers.get('X-Sticker-Cut-Kind');
-            setDetectedCutKind(cutKind || (forceContour ? 'contour' : null));
+            setDetectedCutKind(cutKind || ((requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : null));
         }
 
         // Cảnh báo nghiệp vụ (vd một số trang không dò được hình) — header được
@@ -312,20 +358,27 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
         return { blob: await response.blob(), path: outputPath };
     };
 
-    const handleRun = async () => {
+    const handleRun = async (overrides?: CutlineRunOverrides) => {
         if (!pdfFile) return;
+        const requestedCornerStyle = overrides?.cornerStyle ?? cornerStyle;
+        const requestedForceContour = overrides?.forceContour ?? forceContour;
 
         setIsSuccess(false);
         setIsProcessing(true);
         setError('');
         setWarning('');
 
-        // ─── Recipe record hook ─── (params tất định; phát lại dò contour lại trên file mới)
-        recipeRecorder.noteOperation('sticker_dieline', {
-            productType, cutMode, offsetMm, cornerStyle, fillHoles,
-            bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
-            cutFirstPageOnly, shapeMode: forceContour ? 'contour' : 'auto_safe',
-        });
+        // Selection ids belong to one concrete PDF revision and must not be
+        // replayed by a recipe on another file.
+        const recordedRecipeOperation = !activeObjectSelection;
+        if (recordedRecipeOperation) {
+            recipeRecorder.noteOperation('sticker_dieline', {
+                productType, cutMode, offsetMm, cornerStyle: requestedCornerStyle, fillHoles,
+                bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm,
+                cutFirstPageOnly,
+                shapeMode: (requestedCornerStyle === 'preserve' || requestedForceContour) ? 'contour' : 'auto_safe',
+            });
+        }
 
         try {
             let resultBlob: Blob;
@@ -334,7 +387,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             if (productType === 'rectangle' && bleedColorType === 'mirror') {
                 resultBlob = await runVectorMirror();
             } else {
-                const result = await runOpenCVBleed();
+                const result = await runOpenCVBleed(overrides);
                 resultBlob = result.blob;
                 resultPath = result.path;
             }
@@ -346,7 +399,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                 setIsSuccess(true);
             }
         } catch (e: any) {
-            recipeRecorder.discardPending();
+            if (recordedRecipeOperation) recipeRecorder.discardPending();
             setError(e.message || t('preprocess.sticker:da_xay_ra_loi_khong_xac_dinh'));
         } finally {
             setIsProcessing(false);
@@ -395,6 +448,102 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             {/* --- TAB 1: BẾ TEM NHÃN --- */}
             {productType === 'sticker' && (
                 <div className="animate-in slide-in-from-left-4 fade-in duration-300 space-y-4">
+                    <div className={`rounded-xl border px-3 py-2 transition-colors ${
+                        isObjectEditMode
+                            ? 'border-emerald-500 bg-emerald-500/10'
+                            : 'border-slate-200 bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900'
+                    }`}>
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                                <span className="text-[11px] font-bold text-slate-700 dark:text-zinc-200">
+                                    Chọn sticker cần bù xén
+                                </span>
+                                <span
+                                    role="note"
+                                    tabIndex={0}
+                                    aria-label="Chọn sticker trực tiếp trên trang. Bấm “Bắt đầu chọn”, rồi chọn các sticker cần xử lý trên cùng một trang; panel này luôn được giữ nguyên. Khi đã chọn, chỉ các đối tượng được tick mới được bù xén/đường cắt — bỏ tick để xử lý toàn trang."
+                                    className="relative group/help flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-white text-[10px] font-bold leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:border-zinc-600 dark:bg-zinc-950 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 cursor-help"
+                                >
+                                    ?
+                                    <span
+                                        role="tooltip"
+                                        className="pointer-events-none absolute bottom-full left-1/2 z-[100] mb-2 w-max max-w-[280px] -translate-x-1/2 rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/help:visible group-hover/help:opacity-100 group-focus-within/help:visible group-focus-within/help:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
+                                    >
+                                        Chọn sticker trực tiếp trên trang. Bấm “Bắt đầu chọn”, rồi chọn các sticker cần xử lý trên cùng một trang; panel này luôn được giữ nguyên.
+                                        Khi đã chọn, chỉ các đối tượng được tick mới được bù xén/đường cắt — bỏ tick để xử lý toàn trang.
+                                        <span
+                                            aria-hidden="true"
+                                            className="absolute top-full left-1/2 -mt-1 h-2 w-2 -translate-x-1/2 rotate-45 bg-slate-800 dark:bg-zinc-700"
+                                        />
+                                    </span>
+                                </span>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const next = !isObjectEditMode;
+                                    setIsObjectEditMode(next);
+                                    if (next) {
+                                        setIsCropMode(false);
+                                        setViewerToolMode('pointer');
+                                    }
+                                }}
+                                aria-pressed={isObjectEditMode}
+                                className={`h-8 shrink-0 rounded-lg border px-3 text-[11px] font-bold transition-colors ${
+                                    isObjectEditMode
+                                        ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700'
+                                        : 'border-emerald-500 bg-white text-emerald-700 hover:bg-emerald-50 dark:bg-zinc-950 dark:text-emerald-300'
+                                }`}
+                            >
+                                {isObjectEditMode ? 'Xong chọn' : (objectSelectionContext?.objectIds.length ? 'Chọn lại' : 'Bắt đầu chọn')}
+                            </button>
+                        </div>
+                    </div>
+
+                    {objectSelectionContext?.objectIds.length ? (
+                        <label
+                            className={`flex items-center gap-2.5 rounded-xl border px-3 py-2 cursor-pointer select-none transition-colors ${
+                                useObjectSelection
+                                    ? 'border-teal-500 bg-teal-500/10 text-teal-800 dark:text-teal-200'
+                                    : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400'
+                            }`}
+                        >
+                            <input
+                                type="checkbox"
+                                checked={useObjectSelection}
+                                onChange={(event) => setUseObjectSelection(event.target.checked)}
+                                className="h-4 w-4 shrink-0 accent-teal-600"
+                            />
+                            <span className="min-w-0 flex-1 text-[11px] font-bold leading-tight">
+                                Chỉ xử lý {objectSelectionContext.objectIds.length} đối tượng đã chọn
+                                {' · '}trang {objectSelectionContext.pageIndex + 1}
+                            </span>
+                            <span
+                                role="note"
+                                tabIndex={0}
+                                aria-label="Giữ nguyên khổ trang và toàn bộ hình/trang trí không được chọn. Bỏ tick để xử lý toàn trang."
+                                onClick={(event) => event.preventDefault()}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                    }
+                                }}
+                                className="relative group/help flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-current/25 bg-black/5 text-[10px] font-bold leading-none text-current/70 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15 cursor-help"
+                            >
+                                ?
+                                <span
+                                    role="tooltip"
+                                    className="pointer-events-none absolute bottom-full right-0 z-[100] mb-2 w-max max-w-[280px] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/help:visible group-hover/help:opacity-100 group-focus-within/help:visible group-focus-within/help:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
+                                >
+                                    Giữ nguyên khổ trang và toàn bộ hình/trang trí không được chọn. Bỏ tick để xử lý toàn trang.
+                                    <span
+                                        aria-hidden="true"
+                                        className="absolute top-full right-2 -mt-1 h-2 w-2 rotate-45 bg-slate-800 dark:bg-zinc-700"
+                                    />
+                                </span>
+                            </span>
+                        </label>
+                    ) : null}
                     {/* 1. Đường cắt */}
                     <div>
                         <ToolSectionLabel>{t('preprocess.sticker:1_duong_cat_dieline')}</ToolSectionLabel>
@@ -419,57 +568,79 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                                         max={10}
                                         className="w-[90px] shrink-0"
                                     />
-                                    <div className="flex gap-1.5 flex-1">
-                                        {CORNER_STYLES.map(opt => (
-                                            <button
-                                                key={opt.id}
-                                                onClick={() => setCornerStyle(opt.id)}
-                                                aria-pressed={cornerStyle === opt.id}
-                                                className={`flex-1 h-[32px] rounded border text-[12px] transition-all flex items-center justify-center font-bold ${
-                                                    cornerStyle === opt.id
-                                                        ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
-                                                        : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
-                                                }`}
-                                            >
-                                                {tv(opt.label)}
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                                <p className="text-[10px] text-slate-400 mt-1 mb-4">{t('preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong')}</p>
-                                <label
-                                    title={t('preprocess.sticker:file_nhieu_loai_tem_dung_chung_1_khuon')}
-                                    className={`w-full min-h-[38px] rounded-lg border px-3 py-2 flex items-center gap-2.5 cursor-pointer select-none transition-all ${
-                                        cutFirstPageOnly
-                                            ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
-                                            : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50 text-slate-700 dark:border-zinc-600 dark:bg-zinc-900 dark:hover:border-zinc-500 dark:hover:bg-zinc-800 dark:text-zinc-300'
-                                    }`}
-                                >
-                                    <input
-                                        type="checkbox"
-                                        checked={cutFirstPageOnly}
-                                        onChange={(event) => setCutFirstPageOnly(event.target.checked)}
-                                        className="peer sr-only"
-                                    />
-                                    <span
-                                        aria-hidden="true"
-                                        className={`h-[18px] w-[18px] shrink-0 rounded border-2 flex items-center justify-center transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2 dark:peer-focus-visible:ring-offset-zinc-900 ${
+                                    <label
+                                        className={`flex-1 h-[32px] rounded-lg border px-3 flex items-center gap-2 cursor-pointer select-none transition-all ${
                                             cutFirstPageOnly
-                                                ? 'border-teal-600 bg-teal-600 text-white'
-                                                : 'border-slate-400 bg-white dark:border-zinc-500 dark:bg-zinc-950'
+                                                ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50 text-slate-700 dark:border-zinc-600 dark:bg-zinc-900 dark:hover:border-zinc-500 dark:hover:bg-zinc-800 dark:text-zinc-300'
                                         }`}
                                     >
-                                        {cutFirstPageOnly && (
-                                            <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                                <path d="M3 8.25 6.5 11.5 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
-                                            </svg>
-                                        )}
-                                    </span>
-                                    <span className="text-[11px] font-bold leading-tight">
-                                        {t('preprocess.sticker:tao_duong_cat_cho_trang_dau_2')}
-                                    </span>
-                                </label>
-                                <p className="text-[10px] text-slate-400 mt-1 mb-4">{t('preprocess.sticker:nhieu_loai_tem_chung_khuon_chi_trang')}</p>
+                                        <input
+                                            type="checkbox"
+                                            checked={cutFirstPageOnly}
+                                            onChange={(event) => setCutFirstPageOnly(event.target.checked)}
+                                            className="peer sr-only"
+                                        />
+                                        <span
+                                            aria-hidden="true"
+                                            className={`h-[18px] w-[18px] shrink-0 rounded border-2 flex items-center justify-center transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2 dark:peer-focus-visible:ring-offset-zinc-900 ${
+                                                cutFirstPageOnly
+                                                    ? 'border-teal-600 bg-teal-600 text-white'
+                                                    : 'border-slate-400 bg-white dark:border-zinc-500 dark:bg-zinc-950'
+                                            }`}
+                                        >
+                                            {cutFirstPageOnly && (
+                                                <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                    <path d="M3 8.25 6.5 11.5 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                </svg>
+                                            )}
+                                        </span>
+                                        <span className="min-w-0 flex-1 text-[11px] font-bold leading-tight">
+                                            {t('preprocess.sticker:tao_duong_cat_cho_trang_dau_2')}
+                                        </span>
+                                        <span
+                                            role="note"
+                                            tabIndex={0}
+                                            aria-label={t('preprocess.sticker:file_nhieu_loai_tem_dung_chung_1_khuon')}
+                                            onClick={(event) => event.preventDefault()}
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Enter' || event.key === ' ') {
+                                                    event.preventDefault();
+                                                }
+                                            }}
+                                            className="relative group/help ml-auto flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-current/25 bg-black/5 text-[10px] font-bold leading-none text-current/70 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15 cursor-help"
+                                        >
+                                            ?
+                                            <span
+                                                role="tooltip"
+                                                className="pointer-events-none absolute bottom-full right-0 z-[100] mb-2 w-max max-w-[280px] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/help:visible group-hover/help:opacity-100 group-focus-within/help:visible group-focus-within/help:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
+                                            >
+                                                {t('preprocess.sticker:file_nhieu_loai_tem_dung_chung_1_khuon')}
+                                                <span
+                                                    aria-hidden="true"
+                                                    className="absolute top-full right-2 -mt-1 h-2 w-2 rotate-45 bg-slate-800 dark:bg-zinc-700"
+                                                />
+                                            </span>
+                                        </span>
+                                    </label>
+                                </div>
+                                <p className="text-[10px] text-slate-400 mt-1">{t('preprocess.sticker:so_am_vd_0_5_ep_duong_cat_lun_vao_trong')}</p>
+                                <div className="flex gap-1.5 mt-2 mb-4">
+                                    {CORNER_STYLES.map(opt => (
+                                        <button
+                                            key={opt.id}
+                                            onClick={() => setCornerStyle(opt.id)}
+                                            aria-pressed={cornerStyle === opt.id}
+                                            className={`flex-1 h-[32px] rounded border text-[12px] transition-all flex items-center justify-center font-bold ${
+                                                cornerStyle === opt.id
+                                                    ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                    : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                                            }`}
+                                        >
+                                            {tv(opt.label)}
+                                        </button>
+                                    ))}
+                                </div>
                             </>
                         )}
                     </div>
@@ -637,7 +808,7 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
             {/* Execute */}
             {!isSuccess ? (
                 <button
-                    onClick={handleRun}
+                    onClick={() => { void handleRun(); }}
                     disabled={isProcessing || !pdfFile}
                     className={`w-full h-12 rounded-xl text-[14px] font-bold transition-all mt-2 flex items-center justify-center gap-2 ${
                         isProcessing || !pdfFile
@@ -668,7 +839,11 @@ export default function StickerTool({ pdfFile, onFileFixed }: Props) {
                             </span>
                             {!forceContour && detectedCutKind !== 'contour' && (
                                 <button
-                                    onClick={() => { setForceContour(true); setIsSuccess(false); setTimeout(handleRun, 0); }}
+                                    onClick={() => {
+                                        setCornerStyle('preserve');
+                                        setForceContour(true);
+                                        void handleRun({ cornerStyle: 'preserve', forceContour: true });
+                                    }}
                                     className="text-[10.5px] font-bold text-amber-600 dark:text-amber-400 hover:underline shrink-0"
                                 >
                                     {t('preprocess.sticker:hinh_cat_sai_giu_mep_anh')}

@@ -35,6 +35,56 @@ describe('runProcessEngine N-Up native fast path', () => {
         vi.unstubAllGlobals();
     });
 
+    it('serializes whole-sheet decal as guillotine with marks and no die fields', async () => {
+        const context: ProcessContext = {
+            file: new File(['source'], 'sheet.pdf', { type: 'application/pdf' }),
+            commitWorkingFile: vi.fn().mockResolvedValue(undefined),
+            setError: vi.fn(),
+            setIsProcessing: vi.fn(),
+            setProcessStatus: vi.fn(),
+            setReportMsg: vi.fn(),
+            setBatchOutput: vi.fn(),
+            getWorkingBytes: vi.fn(),
+            getWorkingSourcePath: vi.fn().mockResolvedValue('D:\\sheet.pdf'),
+        };
+
+        await runProcessEngine(
+            context,
+            {
+                impositionMode: ImpositionMode.NUp,
+                imposerMode: 'guillotine',
+                pageSheetMode: true,
+                sheetWidth: 320,
+                sheetHeight: 450,
+                bleed: 3,
+                markType: 'guillotine',
+                cutType: 'one_dao',
+                pontType: 'corner',
+                pontConfig: { shape: 'l_corner', size: 5 },
+                pontsOnCutFile: true,
+                separateCutPage: false,
+                exportUniqueSheets: true,
+            } as any,
+            false,
+        );
+
+        const payload = api.startNupJobBackend.mock.calls[0][1];
+        expect(payload).toMatchObject({
+            page_sheet_mode: true,
+            isDieCutMode: false,
+            markType: 'guillotine',
+            duplexFlow: 'normal',
+            exportUniqueSheets: true,
+            separateCutPage: true,
+            pontType: 'corner',
+            pontConfig: { shape: 'l_corner', size: 5 },
+            pontsOnCutFile: true,
+        });
+        expect(payload.cutType).toBeUndefined();
+        expect(payload.detectedShapesByPage).toBeUndefined();
+        expect(payload).not.toHaveProperty('impositionUnit');
+    });
+
     it('skips source upload and result download for clean desktop files', async () => {
         const commitWorkingFile = vi.fn().mockResolvedValue(undefined);
         const getWorkingBytes = vi.fn();

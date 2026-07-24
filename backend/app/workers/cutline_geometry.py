@@ -76,7 +76,7 @@ def build_contour_path_stream(coords, page_h, corner_style="round", tension=0.33
     """Chọn cách vẽ contour theo kiểu góc.
 
     - 'round' → bezier mượt.
-    - khác (square/bevel/mitre…) → đường thẳng giữ góc.
+    - 'preserve' và các kiểu khác (square/bevel/mitre…) → đường thẳng giữ đúng đỉnh.
     """
     if corner_style == "round":
         return _coords_to_bezier_stream(coords, page_h, tension=tension)

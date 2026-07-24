@@ -2,6 +2,7 @@ import cv2
 import hashlib
 import numpy as np
 import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
 import pikepdf
 import io
 import os
@@ -18,6 +19,68 @@ from app.workers.shape_analyzer import ShapeType
 import json
 
 logger = logging.getLogger(__name__)
+
+
+def _pdfium_object_id(obj, draw_index: int) -> str:
+    """Return the same stable id used by geometry_reader.list_objects()."""
+    raw_type = int(pdfium_c.FPDFPageObj_GetType(obj))
+    if raw_type == pdfium_c.FPDF_PAGEOBJ_TEXT:
+        kind = "text"
+    elif raw_type == pdfium_c.FPDF_PAGEOBJ_IMAGE:
+        kind = "image"
+    else:
+        # PATH, FORM, SHADING and unknown non-text objects are exposed as vector.
+        kind = "vector"
+    return f"{kind}-{draw_index}"
+
+
+def _render_selected_objects_rgba(page, object_ids: list[str], scale: float) -> np.ndarray:
+    """Render only selected top-level PDFium objects on a transparent canvas.
+
+    The page belongs to the engine's disposable PDFium document. Removing objects
+    here is used only to derive a mask; the pikepdf source page copied to output is
+    never mutated or rasterized.
+    """
+    page_raw = page.raw
+    count = int(pdfium_c.FPDFPage_CountObjects(page_raw))
+    available: dict[str, int] = {}
+    for draw_index in range(count):
+        obj = pdfium_c.FPDFPage_GetObject(page_raw, draw_index)
+        if obj:
+            available[_pdfium_object_id(obj, draw_index)] = draw_index
+
+    requested = list(dict.fromkeys(str(obj_id) for obj_id in object_ids if str(obj_id)))
+    missing = [obj_id for obj_id in requested if obj_id not in available]
+    if missing:
+        raise ValueError(
+            "Selection không còn khớp với bản PDF hiện tại: " + ", ".join(missing)
+        )
+    selected_indices = {available[obj_id] for obj_id in requested}
+    if not selected_indices:
+        raise ValueError("Selection không chứa đối tượng hợp lệ.")
+
+    # Reverse order keeps lower draw indices stable while objects are removed.
+    for draw_index in range(count - 1, -1, -1):
+        if draw_index in selected_indices:
+            continue
+        obj = pdfium_c.FPDFPage_GetObject(page_raw, draw_index)
+        if not obj:
+            continue
+        if not pdfium_c.FPDFPage_RemoveObject(page_raw, obj):
+            raise RuntimeError(f"Không thể cô lập object PDFium #{draw_index}.")
+        # RemoveObject transfers ownership to the caller.
+        pdfium_c.FPDFPageObj_Destroy(obj)
+
+    bitmap = page.render(
+        scale=scale,
+        fill_color=(0, 0, 0, 0),
+        draw_annots=False,
+        rev_byteorder=True,
+    )
+    rgba = bitmap.to_numpy()
+    if rgba.ndim != 3 or rgba.shape[2] != 4:
+        raise RuntimeError("PDFium không trả về ảnh RGBA cho selection.")
+    return rgba
 
 
 # Hàm hình học đường cắt được tách sang module nhẹ (không deps nặng) để test được.
@@ -85,6 +148,59 @@ def _near_white_mask_rgb(img: np.ndarray, *, min_luma: int = 248, max_chroma: in
     mn = rgb.min(axis=2)
     chroma = mx.astype(np.int16) - mn.astype(np.int16)
     return (mx >= min_luma) & (chroma <= max_chroma)
+
+
+def _near_white_background_candidate_rgb(
+    img: np.ndarray, *, min_channel: int = 248, max_chroma: int = 18
+) -> np.ndarray:
+    """Candidate pixels for the actual white page background.
+
+    A light neutral artwork color must not be classified as background merely
+    because its HSV saturation is low. Requiring every RGB channel to be near
+    white keeps neutral grays such as RGB(213, 215, 214) in the silhouette,
+    while still recognizing white/near-white anti-aliased page edges.
+    """
+    if img is None or img.ndim != 3 or img.shape[2] < 3:
+        return np.zeros(img.shape[:2], dtype=bool) if img is not None else np.zeros((0, 0), dtype=bool)
+    rgb = img[:, :, :3]
+    mx = rgb.max(axis=2)
+    mn = rgb.min(axis=2)
+    chroma = mx.astype(np.int16) - mn.astype(np.int16)
+    return (mn >= min_channel) & (chroma <= max_chroma)
+
+
+_PRESERVE_CORNER_RADIUS_MM = 0.40
+_PRESERVE_CORNER_QUAD_SEGS = 3
+
+
+def _round_preserved_corners(geometry, radius_pts: float, quad_segs: int = 3):
+    """Bo nhẹ các góc sau khi đã lọc răng cưa, không tạo spline dày node.
+
+    Buffer dương/âm cùng bán kính là phép bo góc hình học có kiểm soát:
+    cạnh thẳng và bbox được giữ gần như nguyên, còn góc lồi/lõm được thay
+    bằng cung rất ngắn. ``quad_segs=3`` giữ cung mềm hơn nhưng vẫn chỉ thêm rất ít node,
+    phù hợp đường cắt sản xuất hơn Catmull-Rom toàn contour.
+    """
+    if geometry is None or getattr(geometry, "is_empty", True) or radius_pts <= 0:
+        return geometry
+
+    def _round_one(poly):
+        rounded = poly.buffer(radius_pts, join_style=1, quad_segs=quad_segs)
+        rounded = rounded.buffer(-radius_pts, join_style=1, quad_segs=quad_segs)
+        return rounded if not rounded.is_empty else poly
+
+    if isinstance(geometry, MultiPolygon):
+        parts = []
+        for part in geometry.geoms:
+            rounded = _round_one(part)
+            if isinstance(rounded, MultiPolygon):
+                parts.extend(g for g in rounded.geoms if not g.is_empty)
+            elif isinstance(rounded, Polygon) and not rounded.is_empty:
+                parts.append(rounded)
+        return MultiPolygon(parts) if parts else geometry
+
+    rounded = _round_one(geometry)
+    return rounded if isinstance(rounded, (Polygon, MultiPolygon)) else geometry
 
 
 def _erode_px(mask: np.ndarray, px: int, kernel_type: int = cv2.MORPH_ELLIPSE) -> np.ndarray:
@@ -1344,6 +1460,7 @@ class StickerEngine:
         edge_bite_mm: float = 0.0,
         cut_first_page_only: bool = False,
         shape_mode: str = "auto_safe",
+        selected_objects_by_page: dict | None = None,
         _page_subset: list = None,
     ) -> tuple:
         # _page_subset: khi != None, CHỈ xử lý các trang có index trong list (theo
@@ -1352,6 +1469,26 @@ class StickerEngine:
         # output_path lúc đó là file chunk tạm. page_idx trong log/meta vẫn là index
         # GLOBAL (index thật trong file gốc) để concat + cảnh báo trang đúng số.
         debug_step = "Init"
+        selection_targets: dict[int, list[str]] = {}
+        if selected_objects_by_page:
+            for raw_page, raw_ids in selected_objects_by_page.items():
+                page_number = int(raw_page)
+                object_ids = list(dict.fromkeys(
+                    str(obj_id).strip() for obj_id in (raw_ids or []) if str(obj_id).strip()
+                ))
+                if page_number < 0 or not object_ids:
+                    raise ValueError("Selection object không hợp lệ.")
+                selection_targets[page_number] = object_ids
+        selection_mode = bool(selection_targets)
+        if selection_mode and rectangle_mode:
+            raise ValueError("Selection object chỉ hỗ trợ chế độ Bế tem nhãn.")
+
+        corner_style = str(corner_style or "round").strip().lower()
+        preserve_contour = corner_style in {"preserve", "original"}
+        if preserve_contour:
+            # "Giữ nguyên" luôn theo contour raster gốc; không tự tái dựng hình chuẩn.
+            corner_style = "preserve"
+            shape_mode = "contour"
         doc_in_pdfium = None
         doc_in_pike = None
         doc_out = None
@@ -1359,13 +1496,23 @@ class StickerEngine:
             debug_step = "Open Original PDF"
             doc_in_pdfium = pdfium.PdfDocument(input_path)
             doc_in_pike = pikepdf.Pdf.open(input_path)
+            invalid_pages = sorted(page for page in selection_targets if page >= len(doc_in_pdfium))
+            if invalid_pages:
+                raise ValueError(
+                    "Selection tham chiếu trang không tồn tại: "
+                    + ", ".join(str(page + 1) for page in invalid_pages)
+                )
 
             # ── ORCHESTRATOR: song song hóa khi gọi top-level + file nhiều trang ──
             # _page_subset None = gọi top-level (không phải worker). File >= ngưỡng →
             # chia dải trang liền kề cho nhiều tiến trình con, mỗi con tự mở lại file
             # + xử lý chunk + trả file PDF, rồi merge ở đây. Overhead spawn Windows
             # ~2-3s/worker nên file nhỏ (< ngưỡng) chạy tuần tự tại chỗ (rơi xuống dưới).
-            if _page_subset is None and _n_pages_should_parallelize(len(doc_in_pdfium)):
+            if (
+                _page_subset is None
+                and not selection_mode
+                and _n_pages_should_parallelize(len(doc_in_pdfium))
+            ):
                 n_pages_probe = len(doc_in_pdfium)
                 try:
                     input_mb = os.path.getsize(input_path) / (1024 * 1024)
@@ -1435,6 +1582,14 @@ class StickerEngine:
                 debug_step = f"Rasterize Page {page_idx}"
                 page_in = doc_in_pdfium[page_idx]
                 page_in_pike = doc_in_pike.pages[page_idx]
+                selection_page_mode = page_idx in selection_targets
+                if selection_mode and not selection_page_mode:
+                    doc_out.pages.append(page_in_pike)
+                    all_pages_meta.append({
+                        "selection_skipped": True,
+                        "page": page_idx + 1,
+                    })
+                    continue
 
                 # ── Chặn OOM: giới hạn độ phân giải raster theo kích thước trang ──
                 # Khổ tem nhỏ vẫn render full DPI; sheet lớn (SRA3+) tự hạ scale để
@@ -1472,12 +1627,21 @@ class StickerEngine:
                     has_alpha = False
                 else:
                     img_native = None
+                    if selection_page_mode:
+                        img = _render_selected_objects_rgba(
+                            page_in,
+                            selection_targets[page_idx],
+                            self.scale,
+                        )
+                        img_native = img[:, :, :3].copy()
+                        has_alpha = True
+
                     use_color_managed_rectangle_raster = (
                         rectangle_mode
                         and bleed_color_type == "inpaint"
                         and bleed_pts > 0
                     )
-                    if use_color_managed_rectangle_raster:
+                    if not selection_page_mode and use_color_managed_rectangle_raster:
                         gs_started = time.perf_counter()
                         img_native = _render_page_rgb_ghostscript(
                             input_path,
@@ -1493,7 +1657,9 @@ class StickerEngine:
                                 page_idx + 1,
                             )
 
-                    if img_native is not None:
+                    if selection_page_mode:
+                        pass
+                    elif img_native is not None:
                         img = cv2.cvtColor(img_native, cv2.COLOR_RGB2RGBA)
                         has_alpha = False
                     else:
@@ -1524,15 +1690,25 @@ class StickerEngine:
                         if remove_white_bg:
                             hsv = cv2.cvtColor(img[:,:,:3], cv2.COLOR_RGB2HSV)
                             # Ngưỡng SIẾT MẠNH: chỉ coi là "trắng nền" khi RẤT sáng
-                            # (V>=200) VÀ GẦN NHƯ VÔ SẮC TUYỆT ĐỐI (S<=8 ≈ 3%). Lý do:
-                            # nền kem/ngà CMYK rất nhạt (vd C4 M5 Y10 → RGB≈(243,237,227),
-                            # S≈17 ≈ 6.6%) LÀ NỘI DUNG của nhãn, phải GIỮ. Ngưỡng cũ S<=25
-                            # ăn nhầm cả nền kem đó (bóc mất nửa nhãn). Chỉ trắng gần tuyệt
-                            # đối (S<3%) mới bị bóc; mọi ám màu nhẹ đều được giữ.
-                            # ĐÁNH ĐỔI: nền trắng-JPEG có ám vàng nhẹ sẽ KHÔNG còn bị bóc.
+                            # (V>=200) VÀ GẦN NHƯ VÔ SẮC TUYỆT ĐỐI (S<=2 ≈ 0.8%). Lý do:
+                            # màu nền gần-trung-tính rất nhạt vẫn LÀ NỘI DUNG nhãn, phải GIỮ.
+                            # Thực tế các màu như C9.8 M7.06 Y7.84 (S≈7.5) và C3.92 M2.35 Y5.1
+                            # (S≈7.2) — CMY xúm gần nhau nên chroma thấp — từng bị ngưỡng S<=8
+                            # bóc nhầm như nền trắng. Hạ xuống S<=2 để mọi màu gần-xám nhạt
+                            # (S>2) được giữ; chỉ trắng gần tuyệt đối (S<=2) mới bị bóc.
+                            # ĐÁNH ĐỔI: nền trắng-JPEG ám màu nhẹ (S>2) sẽ KHÔNG còn bị bóc.
                             lower_white = np.array([0, 0, 200])
-                            upper_white = np.array([180, 8, 255])
+                            upper_white = np.array([180, 2, 255])
                             white_mask = cv2.inRange(hsv, lower_white, upper_white)
+                            # HSV saturation alone cannot distinguish a light neutral gray
+                            # from white. Use strict RGB near-white candidates instead:
+                            # all channels must be near white, so RGB(213,215,214) survives.
+                            white_mask = (
+                                _near_white_background_candidate_rgb(
+                                    img[:, :, :3], min_channel=248, max_chroma=18
+                                ).astype(np.uint8)
+                                * 255
+                            )
                             # CHỈ bỏ vùng trắng NỐI với biên ảnh (nền thật) — dùng connected-components,
                             # giữ lại các mảng trắng chạm mép. Chi tiết sáng/pastel/xám nhạt NẰM GIỮA
                             # artwork (không chạm biên) được GIỮ → không đục lỗ nội dung như ngưỡng cứng
@@ -1551,10 +1727,6 @@ class StickerEngine:
                         else:
                             base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
 
-                    if remove_white_bg:
-                        fringe_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                        base_mask = cv2.erode(base_mask, fringe_kernel)
-
                     raw_mask = base_mask.copy()
 
                     if fill_holes:
@@ -1563,9 +1735,11 @@ class StickerEngine:
 
                     _, mask = cv2.threshold(base_mask, 10, 255, cv2.THRESH_BINARY)
 
-                    blur_size = 7 if corner_style == "round" else 1
-                    if blur_size > 1:
-                        aa_mask = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
+                    if preserve_contour:
+                        # Không blur/morphology: giữ nguyên cả góc, khe và chi tiết của mask.
+                        aa_mask = mask.copy()
+                    elif corner_style == "round":
+                        aa_mask = cv2.GaussianBlur(mask, (7, 7), 0)
                     else:
                         aa_mask = mask.copy()
                         clean_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
@@ -1595,7 +1769,11 @@ class StickerEngine:
                 # Không cộng vùng “safety” cố định: 50pt/cạnh tương đương 17.6mm trắng
                 # và làm MediaBox phình vô cớ. Offset âm co đường cắt vào trong nên cũng
                 # không cần abs(); chỉ phần thực sự nở ra ngoài mới cần pad.
-                if rectangle_mode:
+                if selection_page_mode:
+                    # Keep the original sheet dimensions. Bleed at the physical
+                    # page edge is clipped instead of expanding/cropping the A5.
+                    max_expansion_pts = 0.0
+                elif rectangle_mode:
                     max_expansion_pts = max(0.0, bleed_pts)
                 elif cut_mode == "none":
                     max_expansion_pts = max(0.0, bleed_pts)
@@ -1607,7 +1785,11 @@ class StickerEngine:
                 new_width = page_in_width + 2 * max_expansion_pts
                 new_height = page_in_height + 2 * max_expansion_pts
                 
-                page_out = doc_out.add_blank_page(page_size=(new_width, new_height))
+                if selection_page_mode:
+                    doc_out.pages.append(page_in_pike)
+                    page_out = doc_out.pages[-1]
+                else:
+                    page_out = doc_out.add_blank_page(page_size=(new_width, new_height))
                 
                 bleed_stream_data = None
                 mask_bytes_data = None
@@ -1676,9 +1858,9 @@ class StickerEngine:
                         if len(contour_pts) >= 3:
                             poly = Polygon(contour_pts)
                             if poly.is_valid:
-                                # KHÔNG nén điểm ở đây nữa! Nếu nén ở đây, hàm buffer() ở dưới sẽ khóa cứng các đường thẳng.
-                                # Chỉ dọn dẹp nhẹ để giữ topology
-                                poly = poly.simplify(0.1, preserve_topology=True)
+                                if not preserve_contour:
+                                    # Các kiểu cũ vẫn dọn nhẹ contour trước khi buffer.
+                                    poly = poly.simplify(0.1, preserve_topology=True)
                                 raw_polys.append(poly)
                                 
                     if raw_polys:
@@ -1768,21 +1950,37 @@ class StickerEngine:
                             elif bleed_outer_poly.geom_type == 'Polygon':
                                 bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
 
-                        # Reconstruct → nén nhẹ; contour → 1.0 pt (giữ hành vi cũ).
-                        _cut_simplify = 0.05 if recon_meta.get("reconstructed") else 1.0
-                        if isinstance(dieline_poly, MultiPolygon):
-                            _cut_parts = []
-                            for p in dieline_poly.geoms:
-                                _s = p.simplify(_cut_simplify, preserve_topology=False)
-                                if _s.is_empty:
-                                    continue
-                                if isinstance(_s, MultiPolygon):
-                                    _cut_parts.extend(g for g in _s.geoms if not g.is_empty)
-                                else:
-                                    _cut_parts.append(_s)
-                            cut_poly = MultiPolygon(_cut_parts) if _cut_parts else dieline_poly
+                        if preserve_contour:
+                            # Giữ hình học/góc gốc nhưng loại răng cưa raster dưới ngưỡng
+                            # sản xuất. 0,20 mm lớn hơn nhiễu một pixel ở 300 DPI, nhưng
+                            # nhỏ hơn các notch/góc có ý nghĩa trên tem thông thường.
+                            preserve_simplify_pts = 0.20 * mm_to_pts
+                            cut_poly = dieline_poly.simplify(
+                                preserve_simplify_pts, preserve_topology=True
+                            )
+                            # Bo rất nhẹ sau khi lọc node; vẫn dùng polyline ở bước
+                            # xuất PDF nên không quay lại lỗi Bezier/overshoot trước đây.
+                            cut_poly = _round_preserved_corners(
+                                cut_poly,
+                                radius_pts=_PRESERVE_CORNER_RADIUS_MM * mm_to_pts,
+                                quad_segs=_PRESERVE_CORNER_QUAD_SEGS,
+                            )
                         else:
-                            cut_poly = dieline_poly.simplify(_cut_simplify, preserve_topology=False)
+                            # Reconstruct → nén nhẹ; contour kiểu cũ → 1.0 pt.
+                            _cut_simplify = 0.05 if recon_meta.get("reconstructed") else 1.0
+                            if isinstance(dieline_poly, MultiPolygon):
+                                _cut_parts = []
+                                for p in dieline_poly.geoms:
+                                    _s = p.simplify(_cut_simplify, preserve_topology=False)
+                                    if _s.is_empty:
+                                        continue
+                                    if isinstance(_s, MultiPolygon):
+                                        _cut_parts.extend(g for g in _s.geoms if not g.is_empty)
+                                    else:
+                                        _cut_parts.append(_s)
+                                cut_poly = MultiPolygon(_cut_parts) if _cut_parts else dieline_poly
+                            else:
+                                cut_poly = dieline_poly.simplify(_cut_simplify, preserve_topology=False)
 
                 # ============================================================
                 # STEP B: Generate bleed using dieline_poly for perfect alignment
@@ -2031,8 +2229,10 @@ class StickerEngine:
 
                 # One source Form XObject is reused by the vector bleed strips and
                 # by the original artwork layer. Its resources retain CMYK/ICC/spot.
-                src_xobj = page_in_pike.as_form_xobject()
-                src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
+                src_xobj_name = None
+                if not selection_page_mode:
+                    src_xobj = page_in_pike.as_form_xobject()
+                    src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
 
                 page_content_stream = []
                 vector_bite_x = 0.0
@@ -2082,8 +2282,10 @@ class StickerEngine:
                     
                     img_name = page_out.add_resource(img_obj, pikepdf.Name.XObject)
                     
-                    shift_x = max_expansion_pts - (pad_b / self.scale)
-                    shift_y = max_expansion_pts - (pad_b / self.scale)
+                    content_origin_x = crop_x0 if selection_page_mode else max_expansion_pts
+                    content_origin_y = crop_y0 if selection_page_mode else max_expansion_pts
+                    shift_x = content_origin_x - (pad_b / self.scale)
+                    shift_y = content_origin_y - (pad_b / self.scale)
 
                     if self.debug:
                         # So khớp 2 layer: bleed (raster, neo self.scale) vs artwork
@@ -2104,6 +2306,12 @@ class StickerEngine:
                     page_content_stream.append(f"{img_w_pt:.4f} 0 0 {img_h_pt:.4f} {shift_x:.4f} {shift_y:.4f} cm")
                     page_content_stream.append(f"{str(img_name)} Do")
                     page_content_stream.append("Q")
+
+                selection_bleed_content_stream = []
+                if selection_page_mode:
+                    selection_bleed_content_stream = list(page_content_stream)
+                    page_content_stream = []
+                artwork_ops_start = len(page_content_stream)
 
                 # LAYER 2 (TOP): Artwork gốc — GIỮ NGUYÊN VECTOR, KHÔNG raster hoá.
                 # Trước đây artwork bị render thành JPEG 300 DPI (mất nét vector + lệch
@@ -2153,6 +2361,11 @@ class StickerEngine:
                 page_content_stream.append(f"1 0 0 1 {art_shift_x:.4f} {art_shift_y:.4f} cm")
                 page_content_stream.append(f"{str(src_xobj_name)} Do")
                 page_content_stream.append("Q")
+                if selection_page_mode:
+                    # The original sheet is already present because the source page
+                    # was copied intact. Drop the legacy re-draw layer to avoid
+                    # changing transparency/overprint by painting it twice.
+                    del page_content_stream[artwork_ops_start:]
 
 
 
@@ -2164,7 +2377,9 @@ class StickerEngine:
                     debug_step = "Draw Cut Contour"
                     
                     page_content_stream.append("q")
-                    page_content_stream.append(f"1 0 0 1 {max_expansion_pts:.4f} {max_expansion_pts:.4f} cm")
+                    cut_origin_x = crop_x0 if selection_page_mode else max_expansion_pts
+                    cut_origin_y = crop_y0 if selection_page_mode else max_expansion_pts
+                    page_content_stream.append(f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm")
                     
                     page_content_stream.append("/CutContour CS")
                     page_content_stream.append("1.0 SCN")
@@ -2196,8 +2411,22 @@ class StickerEngine:
                     page_content_stream.append("S")
                     page_content_stream.append("Q")
 
-                full_content = "\n".join(page_content_stream).encode('ascii')
-                page_out.contents_add(pikepdf.Stream(doc_out, full_content))
+                if selection_page_mode:
+                    if selection_bleed_content_stream:
+                        bleed_content = "\n".join(selection_bleed_content_stream).encode("ascii")
+                        # The copied sheet may contain a full-page white
+                        # background. Append the ring above that background so
+                        # bleed remains visible; its SMask excludes the selected
+                        # sticker footprint, and CutContour is appended afterward.
+                        page_out.contents_add(
+                            pikepdf.Stream(doc_out, bleed_content),
+                        )
+                    if page_content_stream:
+                        cut_content = "\n".join(page_content_stream).encode("ascii")
+                        page_out.contents_add(pikepdf.Stream(doc_out, cut_content))
+                else:
+                    full_content = "\n".join(page_content_stream).encode("ascii")
+                    page_out.contents_add(pikepdf.Stream(doc_out, full_content))
                 
                 if "/Resources" not in page_out:
                     page_out.Resources = pikepdf.Dictionary()
@@ -2218,8 +2447,9 @@ class StickerEngine:
                     pdf_maxy += max_expansion_pts
                     
                     box_arr = pikepdf.Array([minx, pdf_miny, maxx, pdf_maxy])
-                    page_out.TrimBox = box_arr
-                    page_out.ArtBox = box_arr
+                    if not selection_page_mode:
+                        page_out.TrimBox = box_arr
+                        page_out.ArtBox = box_arr
                     # Khung trang phải ôm đúng phần có thể nhìn/in: đường bế + mép ngoài
                     # bù xén. Trước đây chỉ có TrimBox, còn MediaBox/CropBox vẫn là canvas
                     # lớn nên nhiều viewer/RIP hiện khoảng trắng quanh tem.
@@ -2241,7 +2471,11 @@ class StickerEngine:
                         min(new_width, vis_maxx + max_expansion_pts + crop_guard),
                         min(new_height, page_in_height - vis_miny + max_expansion_pts + crop_guard),
                     ]
-                    if crop_box[2] > crop_box[0] and crop_box[3] > crop_box[1]:
+                    if (
+                        not selection_page_mode
+                        and crop_box[2] > crop_box[0]
+                        and crop_box[3] > crop_box[1]
+                    ):
                         # MediaBox cũng phải siết theo CropBox. Nhiều RIP/renderer mặc
                         # định hiển thị MediaBox (không phải CropBox); nếu chỉ set CropBox
                         # thì chúng vẫn cho thấy canvas trắng kỹ thuật ở bên ngoài.
@@ -2357,9 +2591,18 @@ class StickerEngine:
             # Instead of returning a single meta dict, we return a dict with a 'pages' array
             # And for backward compatibility, keep the first page's meta at the top level
             final_meta = {}
-            if len(all_pages_meta) > 0 and all_pages_meta[0]:
+            for candidate in all_pages_meta:
+                if candidate and candidate.get("boxes"):
+                    final_meta = candidate.copy()
+                    break
+            if not final_meta and len(all_pages_meta) > 0 and all_pages_meta[0]:
                 final_meta = all_pages_meta[0].copy()
             final_meta["pages"] = all_pages_meta
+            if selection_mode:
+                final_meta["selection_count"] = sum(
+                    len(object_ids) for object_ids in selection_targets.values()
+                )
+                final_meta["selection_pages"] = sorted(page + 1 for page in selection_targets)
 
             # Yêu cầu vẽ đường cắt nhưng KHÔNG dò được hình trên BẤT KỲ trang nào →
             # trả lỗi nghiệp vụ rõ ràng (route → 422) thay vì file "thành công" rỗng.

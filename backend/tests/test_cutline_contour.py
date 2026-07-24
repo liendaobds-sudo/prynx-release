@@ -37,7 +37,7 @@ def test_round_uses_bezier_only():
     assert 'l' not in ops, "Góc tròn không được dùng đoạn thẳng"
 
 
-@pytest.mark.parametrize("style", ["square", "bevel", "mitre"])
+@pytest.mark.parametrize("style", ["preserve", "square", "bevel", "mitre"])
 def test_non_round_uses_straight_lines(style):
     stream = build_contour_path_stream(SQUARE, PAGE_H, corner_style=style)
     ops = _ops(stream)

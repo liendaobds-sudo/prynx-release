@@ -49,11 +49,24 @@ class DetectionConfig:
         "Stanc", "Decoupe",
     )
     # Màu đường bế nhận diện kèm (ngoài tên kênh): bắt ca đường bế tô màu thuần,
-    # KHÔNG có kênh spot riêng. Mỗi phần tử là tuple màu: 4 số = CMYK, 3 số = RGB.
-    # Mặc định magenta 100% (quy ước phổ biến của thợ bế VN).
+    # KHÔNG có kênh spot riêng. Mỗi phần tử là tuple màu:
+    #   4 số = CMYK, 3 số = RGB, 1 số = DeviceGray.
+    # Quy ước prepress / thợ bế VN + file AI/Corel: magenta, đen, xanh (cyan/blue), vàng.
     die_colors: tuple[tuple[float, ...], ...] = (
-        (0.0, 1.0, 0.0, 0.0),  # CMYK magenta
+        # Magenta
+        (0.0, 1.0, 0.0, 0.0),  # CMYK M100
         (1.0, 0.0, 1.0),       # RGB magenta
+        # Đen
+        (0.0, 0.0, 0.0, 1.0),  # CMYK K100
+        (0.0, 0.0, 0.0),       # RGB black
+        (0.0,),                # DeviceGray black
+        # Xanh dương (process cyan / RGB blue)
+        (1.0, 0.0, 0.0, 0.0),  # CMYK C100
+        (0.0, 0.0, 1.0),       # RGB blue
+        (0.0, 1.0, 1.0),       # RGB cyan
+        # Vàng
+        (0.0, 0.0, 1.0, 0.0),  # CMYK Y100
+        (1.0, 1.0, 0.0),       # RGB yellow
     )
     die_color_tol: float = 0.06       # dung sai khớp màu (0..1)
     max_xobject_depth: int = 10        # giới hạn đệ quy Form XObject (R3.3, R3.4)
@@ -544,7 +557,7 @@ def _score_die_candidate(path, page_rect, names_lower, die_colors, die_color_tol
     Tín hiệu MẠNH (chỉ trên stroke-only):
       - Tên kênh khuôn (CutContour, Dieline, …)
       - Kênh spot dành riêng
-      - Màu bế cấu hình trên stroke (vd magenta 100%)
+      - Màu bế cấu hình trên stroke (magenta / đen / xanh / vàng 100%)
 
     Tín hiệu YẾU (xếp hạng giữa ứng viên đã strong>0): hairline, closePath, area.
 
@@ -688,11 +701,11 @@ def _collect_die_group(paths, anchor, page_rect, die_colors=(), die_color_tol=0.
     if anchor_spot_key is not None:
         return candidates or [anchor]
 
-    # Gộp theo MÀU bế (file không có spot riêng, vd magenta quy ước VN): chỉ so màu
-    # dễ NUỐT logo/chữ artwork cùng màu ở chỗ khác (audit bảo toàn nội dung 2026-07-07).
-    # Giới hạn theo KHÔNG GIAN: lan dần từ anchor, chỉ thu path có bbox chồng/kề (pad
-    # nhỏ) với nhóm hiện tại → viền ngoài + vòng trong + nét cắt lân cận được gộp; mảng
-    # magenta rời rạc ở góc khác bị loại.
+    # Gộp theo MÀU bế (file không có spot riêng, vd magenta/đen/xanh/vàng quy ước):
+    # chỉ so màu dễ NUỐT logo/chữ artwork cùng màu ở chỗ khác (audit bảo toàn nội dung
+    # 2026-07-07). Giới hạn theo KHÔNG GIAN: lan dần từ anchor, chỉ thu path có bbox
+    # chồng/kề (pad nhỏ) với nhóm hiện tại → viền ngoài + vòng trong + nét cắt lân cận
+    # được gộp; mảng cùng màu bế rời rạc ở góc khác bị loại.
     def _rects_touch(a, b, pad):
         return not (a.x1 + pad < b.x0 or b.x1 + pad < a.x0 or
                     a.y1 + pad < b.y0 or b.y1 + pad < a.y0)

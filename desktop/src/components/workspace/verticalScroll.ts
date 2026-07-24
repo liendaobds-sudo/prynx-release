@@ -1,5 +1,28 @@
 export type VerticalScrollAlignment = 'nearest' | 'center';
 
+export const EDIT_OBJECT_FOCUS_EVENT = 'prynx-edit-object-focus-request';
+
+export interface EditObjectFocusDetail {
+    objectId: string;
+    pageIndex: number;
+}
+
+export function requestEditObjectFocus(objectId: string, pageIndex: number): void {
+    window.dispatchEvent(new CustomEvent<EditObjectFocusDetail>(
+        EDIT_OBJECT_FOCUS_EVENT,
+        { detail: { objectId, pageIndex } },
+    ));
+}
+
+export function readEditObjectFocusRequest(event: Event, pageIndex: number): string | null {
+    const detail = (event as CustomEvent<Partial<EditObjectFocusDetail>>).detail;
+    if (!detail || detail.pageIndex !== pageIndex || typeof detail.objectId !== 'string') {
+        return null;
+    }
+    const objectId = detail.objectId.trim();
+    return objectId || null;
+}
+
 interface VerticalScrollGeometry {
     containerTop: number;
     containerHeight: number;
