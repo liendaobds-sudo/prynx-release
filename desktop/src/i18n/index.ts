@@ -93,11 +93,6 @@ const VI_TO_KEY_BY_NS = new Map<string, Map<string, string>>();
       console.groupCollapsed(`[tv] ${_divergent.length} va chạm divergent (chi tiết)`);
       console.warn(_divergent.join('\n'));
       console.groupEnd();
-    } else {
-      console.info(
-        `[tv] ${_divergent.length} chuỗi VN trùng có bản EN khác nhau giữa namespace ` +
-        `(vô hại — tv() match-đầu-tiên). Xem chi tiết: localStorage.tvDebug='1' rồi reload.`
-      );
     }
   }
 }

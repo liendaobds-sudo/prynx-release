@@ -7,6 +7,11 @@ import { tv } from '../i18n';
  */
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8321';
 
+// Cache trạng thái "endpoint /upload/local không khả dụng" (sidecar cũ hoặc backend
+// DEV_MODE tách rời tắt path-upload). Lần đầu gặp 403/404/405 → nhớ lại để các lần
+// upload sau bỏ qua thẳng, không gửi request chắc-chắn-fail (browser log 403 mỗi lần).
+let _localUploadUnavailable = false;
+
 type TauriCoreInvoker = Pick<typeof import('@tauri-apps/api/core'), 'invoke'>;
 
 export function formatApiErrorDetail(detail: unknown, fallback: string): string {
@@ -234,7 +239,8 @@ export async function uploadPDF(file: File, options: { signal?: AbortSignal } = 
     typeof window !== 'undefined' &&
     window.__TAURI_INTERNALS__ &&
     typeof file?.path === 'string' &&
-    file.path
+    file.path &&
+    !_localUploadUnavailable
   ) {
     const localRes = await authenticatedFetch(`${API_BASE}/api/upload/local`, {
       method: 'POST',
@@ -256,6 +262,9 @@ export async function uploadPDF(file: File, options: { signal?: AbortSignal } = 
       const detail = localErr.detail;
       throw new Error(typeof detail === 'string' ? detail : 'Upload th\u1ea5t b\u1ea1i');
     }
+    // Endpoint kh\u00f4ng kh\u1ea3 d\u1ee5ng \u1edf m\u00f4i tr\u01b0\u1eddng n\u00e0y \u2192 nh\u1edb l\u1ea1i, c\u00e1c l\u1ea7n upload sau b\u1ecf qua
+    // th\u1eb3ng (kh\u00f4ng g\u1eedi request ch\u1eafc-ch\u1eafn-403 \u2192 browser th\u00f4i log network 403 l\u1eb7p l\u1ea1i).
+    _localUploadUnavailable = true;
   }
 
   const formData = new FormData();

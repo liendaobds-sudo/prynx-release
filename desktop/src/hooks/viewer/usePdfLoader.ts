@@ -190,7 +190,9 @@ export function usePdfLoader({
                         const { invoke } = await import('@tauri-apps/api/core');
                         const __t0 = performance.now();
                         const meta: any = await invoke('get_pdf_metadata', { filePath });
-                        console.log(`[PERF-META] invoke=${(performance.now()-__t0).toFixed(0)}ms | RUST bind=${meta._dbgBindMs}ms load=${meta._dbgLoadMs}ms internal=${meta._dbgInternalMs}ms | numPages=${meta.numPages}`);
+                        if (typeof localStorage !== 'undefined' && localStorage.perfDebug === '1') {
+                            console.log(`[PERF-META] invoke=${(performance.now()-__t0).toFixed(0)}ms | RUST bind=${meta._dbgBindMs}ms load=${meta._dbgLoadMs}ms internal=${meta._dbgInternalMs}ms | numPages=${meta.numPages}`);
+                        }
                         numPagesFromEngine = meta.numPages || 0;
                         widthPt = meta.widthPt || 0;
                         heightPt = meta.heightPt || 0;
