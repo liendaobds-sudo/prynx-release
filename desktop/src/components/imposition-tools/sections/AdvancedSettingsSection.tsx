@@ -9,6 +9,7 @@ import { buildReportPreview } from '../../../lib/reportPreview';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../../i18n';
 import BookReportSettings from './BookReportSettings';
+import { resolveImpositionModes } from '../pageSheetPolicy';
 
 const REPORT_FIELD_LABELS: Record<string, string> = {
     orderCode: 'Mã đơn hàng', identifier: 'Mẫu/Trang', gangCount: 'Số mẫu ghép',
@@ -65,6 +66,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
   const { t } = useTranslation();
     const s = useImposerSettingsStore(useShallow(state => ({
         taskMode: state.taskMode,
+        impositionUnit: state.impositionUnit,
         scaleMode: state.scaleMode,
         // Bình 2 mặt (CNC) — Cạnh lật + Dấu canh in 2 mặt (chuyển vào đây cho gọn UI)
         duplexFlow: state.duplexFlow, setDuplexFlow: state.setDuplexFlow,
@@ -102,6 +104,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
         previewCapacity: state.previewCapacity,
         targetQuantity: state.targetQuantity,
         sourcePageDim: state.sourcePageDim,
+        sourceMediaPageDim: state.sourceMediaPageDim,
         formsize: state.formsize,
         customSheetWidth: state.customSheetWidth,
         customSheetHeight: state.customSheetHeight,
@@ -139,11 +142,17 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
     }, [s.taskMode, s.groupingStrategy, s.setGroupingStrategy]);
 
     const [isExpanded, setIsExpanded] = useState(false);
-    // CNC dùng chung profile die-cut với Bế tem (report, nesting; ẩn dấu xén/guillotine/căn lề).
-    const stickerLike = activeTool === 'sticker_imposer' || activeTool === 'cnc_imposer';
-    // Nhóm report (Thông tin sản phẩm) mở cho CẢ cắt xén (nup): backend + handler đã sẵn
-    // sàng nhận reportDisplay cho guillotine, chỉ UI trước đây gate nhầm theo stickerLike.
-    const labelReportCapable = stickerLike || activeTool === 'nup';
+    const {
+        pageSheetMode,
+        stickerGeometryMode,
+        dieGeometryMode,
+        pontSettingsMode,
+        stickerToolIdentity,
+    } = resolveImpositionModes(activeTool, s.impositionUnit);
+    // Giữ tên biến cũ cho các gate hình học; identity sản phẩm được tách riêng.
+    const stickerLike = dieGeometryMode;
+    const stickerProductMode = stickerToolIdentity || activeTool === 'cnc_imposer';
+    const labelReportCapable = stickerProductMode || activeTool === 'nup';
     const [infoModal, setInfoModal] = useState<{ title: string, content: React.ReactNode } | null>(null);
     const [showClusterModal, setShowClusterModal] = useState(false);
     const [matInput, setMatInput] = useState<string | null>(null); // null = không thêm; '' = đang nhập
@@ -233,11 +242,11 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         )}
 
                         {/* ══ NHÓM ① ĐỊNH VỊ & CẮT ══ */}
-                        {stickerLike && (
+                        {pontSettingsMode && (
                         <CollapsibleGroup title={t('imposition.advancedSettings:dinh_vi_cat')} defaultOpen>
 
                         {/* === BOONG ĐỊNH VỊ (Bế tem & CNC) === */}
-                        {stickerLike && (
+                        {pontSettingsMode && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:boong_dinh_vi')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
@@ -292,7 +301,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         )}
 
                         {/* === ĐƯỜNG CẮT (chỉ Bế tem) === */}
-                        {activeTool === 'sticker_imposer' && (
+                        {stickerGeometryMode && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:duong_cat')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
@@ -309,7 +318,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         )}
 
                         {/* KC CỤM PHỤ — chỉ khi 1 Dao */}
-                        {activeTool === 'sticker_imposer' && s.cutType === 'one_dao' && (
+                        {stickerGeometryMode && s.cutType === 'one_dao' && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]" title={t('imposition.advancedSettings:khoang_cach_giua_cum_chinh_va_cum_phu')}>{t('imposition.advancedSettings:kc_cum_phu')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
@@ -323,7 +332,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         )}
 
                         {/* KIỂU KHUÔN — chỉ khi 1 Dao: theo khuôn có sẵn / theo kích thước trang */}
-                        {activeTool === 'sticker_imposer' && s.cutType === 'one_dao' && (
+                        {stickerGeometryMode && s.cutType === 'one_dao' && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:kieu_khuon')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
@@ -361,7 +370,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         )}
 
                         {/* CO/MỞ — chỉ khi 1 Dao + theo kích thước trang */}
-                        {activeTool === 'sticker_imposer' && s.cutType === 'one_dao' && s.dieSizeMode === 'page' && (
+                        {stickerGeometryMode && s.cutType === 'one_dao' && s.dieSizeMode === 'page' && (
                             <div className="flex items-center gap-3 relative z-[20] pb-1">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">{t('imposition.advancedSettings:co_mo')}</label>
                                 <div className="flex flex-1 items-center gap-2 min-w-0">
@@ -595,18 +604,47 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                                             const _free = s.formsize === 'custom' || s.formsize === 'auto_100' || String(s.formsize).startsWith('custom_');
                                             const sw = _free ? s.customSheetWidth : (PREDEFINED_SIZES[s.formsize]?.w || s.customSheetWidth);
                                             const sh = _free ? s.customSheetHeight : (PREDEFINED_SIZES[s.formsize]?.h || s.customSheetHeight);
+                                            const _pageSheetPageCount = Math.max(
+                                                1,
+                                                s.sourceMediaPageDims?.length
+                                                    || s.sourcePageDims?.length
+                                                    || 1,
+                                            );
+                                            const _pageSheetRequestedQty = pageSheetMode
+                                                ? Array.from({ length: _pageSheetPageCount }, (_, pageIdx) => {
+                                                    const raw = s.targetQuantitiesByPage?.[String(pageIdx)]
+                                                        ?? s.targetQuantitiesByPage?.[pageIdx]
+                                                        ?? s.targetQuantity
+                                                        ?? 0;
+                                                    return Math.max(0, Number(raw) || 0);
+                                                }).reduce((sum, qty) => sum + qty, 0)
+                                                : s.targetQuantity;
+                                            // Không nhét gap tấm vào identifier — field 「Mẫu/Trang」
+                                            // để trống trừ khi user tự nhập (tên mẫu / nhãn).
                                             const previewStr = buildReportPreview(s.reportDisplay, {
                                                 orderCode: s.reportOrderCode,
+                                                identifier: undefined,
+                                                gangCount: pageSheetMode ? _pageSheetPageCount : undefined,
                                                 labelName: s.reportDisplay.labelNameText,
-                                                widthMm: s.sourcePageDim ? s.sourcePageDim.w * 0.352778 - 2 * (s.bleed || 0) : undefined,
-                                                heightMm: s.sourcePageDim ? s.sourcePageDim.h * 0.352778 - 2 * (s.bleed || 0) : undefined,
+                                                widthMm: (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim)
+                                                    ? (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim).w * 0.352778 - 2 * (s.bleed || 0)
+                                                    : undefined,
+                                                heightMm: (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim)
+                                                    ? (pageSheetMode ? s.sourceMediaPageDim : s.sourcePageDim).h * 0.352778 - 2 * (s.bleed || 0)
+                                                    : undefined,
                                                 paperSize: `Khổ ${Math.round(sw)}x${Math.round(sh)}mm`,
                                                 itemsPerSheet: s.previewCapacity,
-                                                requestedQty: s.targetQuantity,
+                                                requestedQty: _pageSheetRequestedQty,
                                                 material: s.reportMaterial,
                                                 laminationType: s.reportLamination,
                                                 laminationSides: s.reportLaminationSides,
-                                                modeLabel: activeTool === 'cnc_imposer' ? t('imposition.advancedSettings:binh_be_rot_cnc') : activeTool === 'nup' ? t('imposition.advancedSettings:cat_xen') : t('imposition.advancedSettings:be_tem'),
+                                                modeLabel: pageSheetMode
+                                                    ? t('imposition.advancedSettings:binh_nguyen_tam_decal')
+                                                    : activeTool === 'cnc_imposer'
+                                                      ? t('imposition.advancedSettings:binh_be_rot_cnc')
+                                                      : activeTool === 'nup'
+                                                        ? t('imposition.advancedSettings:cat_xen')
+                                                        : t('imposition.advancedSettings:be_tem'),
                                             });
                                             const posLabel = { top: t('imposition.advancedSettings:mep_tren_2'), bottom: t('imposition.advancedSettings:mep_duoi_2'), left: t('imposition.advancedSettings:mep_trai_2'), right: t('imposition.advancedSettings:mep_phai_2') }[s.reportDisplay.position] || t('imposition.advancedSettings:mep_tren_2');
                                             return (
@@ -626,7 +664,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         )}
 
                         {/* ══ NHÓM ③ XUẤT & LƯU FILE ══ */}
-                        {stickerLike && (
+                        {stickerProductMode && (
                         <CollapsibleGroup title={t('imposition.advancedSettings:xuat_luu_file')} infoButton={
                                 <div
                                     className="shrink-0 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-indigo-600 cursor-pointer transition-colors"
@@ -731,7 +769,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             (guillotine: activeTool 'nup' + markType 'guillotine'). Chia cụm
                             zone hợp guillotine (vùng chữ nhật = nhát dao thẳng). Ẩn cho các
                             tổ hợp khác để tránh control vô tác dụng. */}
-                        {s.taskMode !== 'booklet' && (stickerLike || (activeTool === 'nup' && s.markType === 'guillotine')) && (
+                        {s.taskMode !== 'booklet' && (stickerLike || pageSheetMode || (activeTool === 'nup' && s.markType === 'guillotine')) && (
                         <div>
                             <div className="flex items-center justify-between mb-2">
                                 <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:cach_chia_cum')}</label>
@@ -1079,7 +1117,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                             - Bình trang (step_repeat): chia cọc nhân bản cùng loại.
                             Ẩn với Xếp lần lượt / Xếp chồng (chia cọc chưa chạy đúng) → tránh
                             tổ hợp vô nghĩa "chọn cột/hàng mà không thấy gì". */}
-                        {((s.taskMode === 'nup' && s.layoutType === 'ratio_stack') || s.taskMode === 'step_repeat') && s.markType === 'guillotine' && !stickerLike && (
+                        {((s.taskMode === 'nup' && s.layoutType === 'ratio_stack') || s.taskMode === 'step_repeat') && s.markType === 'guillotine' && !stickerLike && !pageSheetMode && (
                             <div className="relative z-[10]">
                                 <div className="flex items-center justify-between mb-2">
                                     <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0">{t('imposition.advancedSettings:chia_coc_xen_title')}</label>
@@ -1172,7 +1210,7 @@ export default function AdvancedSettingsSection({ activeTool, sourceTotalPages =
                         {/* 6. Output Toggles */}
                         <Divider />
                         <div className="space-y-2">
-                            {activeTool === 'sticker_imposer' && (
+                            {stickerGeometryMode && (
                                 <Checkbox checked={s.separateCutPage} onChange={s.setSeparateCutPage} label={t('imposition.advancedSettings:tach_trang_khuon_be_rieng')} />
                             )}
                             <Checkbox checked={s.spawnNewTabByTool[activeTool] ?? true} onChange={(v) => s.setSpawnNewTab(activeTool, v)} label={t('imposition.advancedSettings:mo_ket_qua_sang_tab_moi')} />

@@ -80,7 +80,7 @@ def test_uniform_request_falls_back_to_maxrects_when_page_sizes_differ():
 
 
 def test_one_dao_page_mixed_preview_is_a_uniform_grid():
-    async def scenario(path):
+    def scenario(path):
         request = PreviewLayoutRequest(
             usable_w=150.0,
             usable_h=210.0,
@@ -101,7 +101,7 @@ def test_one_dao_page_mixed_preview_is_a_uniform_grid():
             sheet_w=150.0,
             sheet_h=210.0,
         )
-        return await preview_layout(request, PRO_LICENSE)
+        return preview_layout(request, PRO_LICENSE)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         path = os.path.join(temp_dir, 'same-size-pages.pdf')
@@ -111,7 +111,7 @@ def test_one_dao_page_mixed_preview_is_a_uniform_grid():
         document.save(path)
         document.close()
 
-        result = asyncio.run(scenario(path))
+        result = scenario(path)
 
     assert result['success'] is True
     assert result['totalItems'] == 21

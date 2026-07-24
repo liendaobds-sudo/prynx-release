@@ -48,109 +48,326 @@ def _spot_key(spot_name):
     return parts or None
 
 
-def strip_color_from_stream(page_or_xobj, target_color, die_names_lower=None, target_spot=None):
-    """Strip CHỈ nét vẽ của ĐƯỜNG BẾ khỏi content stream (khi tách trang khuôn).
+def _path_item_key(item, tolerance=0.1):
+    """Return a tolerance-stable geometry key for one parsed path item."""
+    if not item:
+        return None
 
-    Nét bị xoá khi: (a) màu stroke KHỚP `target_color` (màu đường bế đã nhận diện),
-    HOẶC (b) tên kênh spot của nét KHỚP kênh bế chuẩn (CutContour/Dieline/...),
-    HOẶC (c) tên kênh spot KHỚP `target_spot` — spot bế THẬT đã nhận diện của CHÍNH
-    file này (kể cả tên lạ ngoài danh sách chuẩn).
+    def _q(value):
+        return int(round(float(value) / tolerance))
 
-    Vì sao cần (c): file tạo SẴN đường cắt có thể dùng spot tên riêng (theo RIP/xưởng)
-    KHÔNG nằm trong danh sách chuẩn → chỉ (b) sẽ trượt → khuôn còn sót trên trang in
-    dù đã tách trang khuôn (bug 2026-07-08). Detection đã biết spot bế thật → truyền
-    vào đây để strip đúng của từng file.
+    command = item[0]
+    if command == 'l':
+        return (
+            'l',
+            _q(item[1].x), _q(item[1].y),
+            _q(item[2].x), _q(item[2].y),
+        )
+    if command == 'c':
+        values = []
+        for point in item[1:5]:
+            values.extend((_q(point.x), _q(point.y)))
+        return ('c', *values)
+    if command == 're':
+        rect = item[1]
+        return (
+            're',
+            _q(rect.x0), _q(rect.y0),
+            _q(rect.x1), _q(rect.y1),
+        )
+    return None
 
-    KHÔNG xoá "mọi nét spot" như bản rất cũ: nét spot trang trí của artwork (viền
-    Pantone, đường UV) có tên KHÁC spot bế → được GIỮ (bảo toàn nội dung 2026-07-07).
+
+def _numeric_path_item_key(item, tolerance=0.1):
+    """Geometry key for an item represented only by numeric coordinates."""
+    if not item:
+        return None
+
+    def _q(value):
+        return int(round(float(value) / tolerance))
+
+    return (item[0], *(_q(value) for value in item[1:]))
+
+
+def _path_matches_target_items(current_path, target_items):
+    """Whether every item in the current paint path belongs to the detected die group."""
+    from collections import Counter
+
+    if not current_path or not target_items:
+        return False
+    target = Counter(
+        key for key in (_path_item_key(item) for item in target_items)
+        if key is not None
+    )
+    candidate = Counter(
+        key for key in (_numeric_path_item_key(item) for item in current_path)
+        if key is not None
+    )
+    return bool(candidate) and all(
+        candidate[key] <= target.get(key, 0)
+        for key in candidate
+    )
+
+
+def strip_color_from_stream(
+    page_or_xobj,
+    target_color,
+    die_names_lower=None,
+    target_spot=None,
+    *,
+    inherited_resources=None,
+    strict=False,
+    target_items=None,
+    page_height=None,
+    initial_ctm=None,
+    called_forms_out=None,
+    dry_run=False,
+):
+    """Remove only the detected die strokes from one content stream.
+
+    Spot cutlines are matched by their real Separation/DeviceN channel. For
+    process-color cutlines, ``target_items`` limits removal to the exact
+    geometry selected by die detection, so unrelated artwork with the same
+    CMYK/RGB/Gray value is preserved.
     """
     import pikepdf
+    from app.workers.pdf_content_parser import _mat_mul, _resolve_spot_name
+
     try:
         stream = pikepdf.parse_content_stream(page_or_xobj)
-    except Exception as e:
-        logger.debug(f"[_strip_color] Parse stream error: {e}", flush=True)
+    except Exception as exc:
+        if strict:
+            raise RuntimeError(
+                "Không thể đọc content stream để tách đường khuôn bế."
+            ) from exc
+        logger.debug("[_strip_color] Parse stream error: %s", exc)
         return False
 
     if die_names_lower is None:
         die_names_lower = _die_channel_names_lower()
 
     target_spot_key = _spot_key(target_spot)
-
-    # Resources để resolve tên CS operand (vd /CS0) → tên kênh spot thật.
     try:
-        from app.workers.pdf_content_parser import _resolve_spot_name
-        _resources = page_or_xobj.get('/Resources')
+        resources = page_or_xobj.get('/Resources')
+        if resources is None:
+            resources = inherited_resources
     except Exception:
-        _resolve_spot_name = None
-        _resources = None
+        if strict:
+            raise
+        resources = inherited_resources
 
     def _spot_of(cs_token):
-        # Tên spot của colorspace đặt tên; None nếu là process/không resolve được.
-        if _resolve_spot_name is None or _resources is None or not cs_token:
+        if resources is None or not cs_token:
             return None
         try:
-            return _resolve_spot_name(cs_token, _resources, None)
+            return _resolve_spot_name(cs_token, resources, None)
         except Exception:
             return None
 
+    def _transform(x, y, matrix):
+        a, b, c, d, e, f = matrix
+        tx = float(x) * a + float(y) * c + e
+        ty = float(x) * b + float(y) * d + f
+        if page_height is not None:
+            ty = float(page_height) - ty
+        return tx, ty
+
     new_stream = []
-    current_stroke_color = None   # tuple màu process, hoặc None
-    current_stroke_spot = None    # tên kênh spot (chuỗi) nếu CS là Separation/DeviceN
-    stack = []
+    current_stroke_color = None
+    current_stroke_spot = None
+    current_ctm = list(initial_ctm or (1, 0, 0, 1, 0, 0))
+    graphics_stack = []
+    current_path = []
+    current_point = None
+    subpath_start = None
     stripped = False
 
     for operands, operator in stream:
         op = str(operator)
 
         if op == 'q':
-            stack.append((current_stroke_color, current_stroke_spot))
+            graphics_stack.append((
+                current_stroke_color,
+                current_stroke_spot,
+                list(current_ctm),
+            ))
         elif op == 'Q':
-            if stack:
-                current_stroke_color, current_stroke_spot = stack.pop()
+            if graphics_stack:
+                (
+                    current_stroke_color,
+                    current_stroke_spot,
+                    current_ctm,
+                ) = graphics_stack.pop()
+        elif op == 'cm':
+            try:
+                matrix = [float(value) for value in operands[-6:]]
+                if len(matrix) == 6:
+                    current_ctm = _mat_mul(matrix, current_ctm)
+            except Exception:
+                if strict:
+                    raise
         elif op == 'CS':
             if operands:
                 cs_name = str(operands[0])
-                if cs_name not in ('/DeviceRGB', '/DeviceCMYK', '/DeviceGray', '/Pattern'):
+                if cs_name not in (
+                    '/DeviceRGB', '/DeviceCMYK', '/DeviceGray',
+                    '/Pattern', '/RGB', '/CMYK', '/G',
+                ):
                     current_stroke_spot = _spot_of(cs_name)
                     current_stroke_color = None
                 else:
                     current_stroke_spot = None
                     current_stroke_color = None
         elif op in ('SCN', 'SC'):
-            pass
+            try:
+                values = tuple(round(float(value), 3) for value in operands)
+                if len(values) in (1, 3, 4):
+                    current_stroke_color = values
+            except Exception:
+                current_stroke_color = None
         elif op in ('RG', 'K', 'G'):
             try:
-                current_stroke_color = tuple(round(float(x), 3) for x in operands)
+                current_stroke_color = tuple(
+                    round(float(value), 3) for value in operands
+                )
             except Exception:
                 current_stroke_color = None
             current_stroke_spot = None
 
-        if op in ('S', 's', 'B', 'B*', 'b', 'b*'):
+        if op == 'm' and len(operands) >= 2:
+            current_point = _transform(operands[-2], operands[-1], current_ctm)
+            subpath_start = current_point
+        elif op == 'l' and len(operands) >= 2 and current_point is not None:
+            next_point = _transform(operands[-2], operands[-1], current_ctm)
+            current_path.append((
+                'l',
+                current_point[0], current_point[1],
+                next_point[0], next_point[1],
+            ))
+            current_point = next_point
+        elif op == 'c' and len(operands) >= 6 and current_point is not None:
+            cp1 = _transform(operands[-6], operands[-5], current_ctm)
+            cp2 = _transform(operands[-4], operands[-3], current_ctm)
+            end_point = _transform(operands[-2], operands[-1], current_ctm)
+            current_path.append((
+                'c',
+                current_point[0], current_point[1],
+                cp1[0], cp1[1],
+                cp2[0], cp2[1],
+                end_point[0], end_point[1],
+            ))
+            current_point = end_point
+        elif op == 'v' and len(operands) >= 4 and current_point is not None:
+            cp1 = current_point
+            cp2 = _transform(operands[-4], operands[-3], current_ctm)
+            end_point = _transform(operands[-2], operands[-1], current_ctm)
+            current_path.append((
+                'c',
+                current_point[0], current_point[1],
+                cp1[0], cp1[1],
+                cp2[0], cp2[1],
+                end_point[0], end_point[1],
+            ))
+            current_point = end_point
+        elif op == 'y' and len(operands) >= 4 and current_point is not None:
+            cp1 = _transform(operands[-4], operands[-3], current_ctm)
+            end_point = _transform(operands[-2], operands[-1], current_ctm)
+            cp2 = end_point
+            current_path.append((
+                'c',
+                current_point[0], current_point[1],
+                cp1[0], cp1[1],
+                cp2[0], cp2[1],
+                end_point[0], end_point[1],
+            ))
+            current_point = end_point
+        elif op == 're' and len(operands) >= 4:
+            x, y, width, height = (float(value) for value in operands[-4:])
+            corners = (
+                _transform(x, y, current_ctm),
+                _transform(x + width, y, current_ctm),
+                _transform(x + width, y + height, current_ctm),
+                _transform(x, y + height, current_ctm),
+            )
+            xs = [point[0] for point in corners]
+            ys = [point[1] for point in corners]
+            current_path.append((
+                're',
+                min(xs), min(ys), max(xs), max(ys),
+            ))
+            current_point = corners[0]
+            subpath_start = corners[0]
+        elif op == 'h':
+            if current_point is not None and subpath_start is not None:
+                if (
+                    abs(current_point[0] - subpath_start[0]) > 0.01
+                    or abs(current_point[1] - subpath_start[1]) > 0.01
+                ):
+                    current_path.append((
+                        'l',
+                        current_point[0], current_point[1],
+                        subpath_start[0], subpath_start[1],
+                    ))
+                current_point = subpath_start
+        elif op == 'Do' and operands and called_forms_out is not None:
+            called_forms_out.append((str(operands[-1]), list(current_ctm)))
+
+        paint_op = op in ('S', 's', 'B', 'B*', 'b', 'b*')
+        if paint_op:
+            # pdf_content_parser expands the implicit close of `s` into one
+            # final line item. Mirror that representation for exact matching.
+            if (
+                op == 's'
+                and current_point is not None
+                and subpath_start is not None
+                and (
+                    abs(current_point[0] - subpath_start[0]) > 0.01
+                    or abs(current_point[1] - subpath_start[1]) > 0.01
+                )
+            ):
+                current_path.append((
+                    'l',
+                    current_point[0], current_point[1],
+                    subpath_start[0], subpath_start[1],
+                ))
+
             match = False
-            # (b) tên spot khớp kênh bế chuẩn → chắc chắn là đường bế.
             if current_stroke_spot:
                 from app.workers.die_detection import _match_die_channel
                 if _match_die_channel(current_stroke_spot, die_names_lower):
                     match = True
-                # (c) tên spot khớp spot bế THẬT đã nhận diện của file này (tên lạ
-                # ngoài danh sách chuẩn vẫn strip đúng — file tạo sẵn đường cắt).
-                if not match and target_spot_key:
-                    if _spot_key(current_stroke_spot) == target_spot_key:
-                        match = True
-            # (a) màu khớp màu đường bế đã nhận diện (cho file bế bằng màu thuần,
-            # không có kênh spot riêng — vd magenta quy ước VN).
-            if not match and current_stroke_color and target_color:
-                if len(current_stroke_color) == len(target_color):
+                if (
+                    not match
+                    and target_spot_key
+                    and _spot_key(current_stroke_spot) == target_spot_key
+                ):
                     match = True
-                    for c1, c2 in zip(current_stroke_color, target_color):
-                        if abs(c1 - c2) > 0.01:
-                            match = False
-                            break
+
+            if (
+                not match
+                and not target_spot_key
+                and current_stroke_color
+                and target_color
+                and len(current_stroke_color) == len(target_color)
+            ):
+                color_match = all(
+                    abs(c1 - c2) <= 0.01
+                    for c1, c2 in zip(current_stroke_color, target_color)
+                )
+                if color_match:
+                    match = (
+                        _path_matches_target_items(current_path, target_items)
+                        if target_items is not None
+                        else True
+                    )
 
             if match:
                 stripped = True
-                if op in ('S', 's'):
-                    continue
+                if op == 'S':
+                    operator = pikepdf.Operator('n')
+                elif op == 's':
+                    new_stream.append(([], pikepdf.Operator('h')))
+                    operator = pikepdf.Operator('n')
                 elif op == 'B':
                     operator = pikepdf.Operator('f')
                 elif op == 'B*':
@@ -162,17 +379,231 @@ def strip_color_from_stream(page_or_xobj, target_color, die_names_lower=None, ta
                     new_stream.append(([], pikepdf.Operator('h')))
                     operator = pikepdf.Operator('f*')
 
+            current_path = []
+            current_point = None
+            subpath_start = None
+        elif op in ('f', 'F', 'f*', 'n'):
+            current_path = []
+            current_point = None
+            subpath_start = None
+
         new_stream.append((operands, operator))
 
-    if stripped:
+    if stripped and not dry_run:
         new_contents = pikepdf.unparse_content_stream(new_stream)
         if isinstance(page_or_xobj, pikepdf.Page):
             page_or_xobj.contents_coalesce()
-            page_or_xobj.get('/Contents').write(new_contents)
+            contents = page_or_xobj.get('/Contents')
+            if contents is None:
+                if strict:
+                    raise RuntimeError(
+                        "Trang nguồn không có content stream sau khi chuẩn hóa."
+                    )
+                return False
+            contents.write(new_contents)
         else:
             page_or_xobj.write(new_contents)
-        return True
-    return False
+    return stripped
+
+
+def strip_color_from_form_tree(
+    page_or_xobj,
+    target_color,
+    target_spot=None,
+    *,
+    inherited_resources=None,
+    strict=False,
+    target_items=None,
+    page_height=None,
+    owner_pdf=None,
+    initial_ctm=None,
+    max_depth=10,
+):
+    """Strip a die channel only through Form XObjects actually invoked by ``Do``.
+
+    Each used Form is cloned before rewriting. This isolates shared Forms and
+    inherited resource contexts across source pages while retaining vector
+    content, clipping, transparency, OCG membership and all resource objects.
+    """
+    import pikepdf
+    from app.workers.pdf_content_parser import _mat_mul
+
+    changed = False
+    resource_cache = {}
+    cloned_references = set()
+    visited_contexts = set()
+
+    def _object_key(node):
+        try:
+            objgen = tuple(node.objgen)
+        except Exception:
+            objgen = (0, 0)
+        return ("objgen", objgen) if objgen != (0, 0) else ("id", id(node))
+
+    def _context_key(matrix):
+        return tuple(round(float(value), 7) for value in matrix)
+
+    def _copy_dictionary(dictionary):
+        copied = pikepdf.Dictionary()
+        for key, value in dictionary.items():
+            copied[str(key)] = value
+        return copied
+
+    def _effective_resources(node, parent_resources):
+        node_key = _object_key(node)
+        if node_key in resource_cache:
+            return resource_cache[node_key]
+        try:
+            resources = node.get('/Resources')
+        except Exception as exc:
+            if strict:
+                raise
+            logger.debug("[STRIP_FORM_TREE] resources error: %s", exc)
+            resources = None
+        if resources is None:
+            resources = parent_resources
+        if resources is None:
+            resource_cache[node_key] = None
+            return None
+
+        # A private shallow dictionary is enough: resource objects themselves
+        # remain untouched; only the /XObject references that need cloned Form
+        # streams are replaced.
+        isolated = _copy_dictionary(resources)
+        xobjects = resources.get('/XObject')
+        if xobjects is not None:
+            isolated['/XObject'] = _copy_dictionary(xobjects)
+        if owner_pdf is not None:
+            if isinstance(node, pikepdf.Page):
+                node.obj['/Resources'] = isolated
+            else:
+                node['/Resources'] = isolated
+        resource_cache[node_key] = isolated
+        return isolated
+
+    def _clone_form(form):
+        if owner_pdf is None:
+            return form
+        clone = pikepdf.Stream(owner_pdf, form.read_bytes())
+        for key, value in form.items():
+            key_name = str(key)
+            if key_name in ('/Length', '/Filter', '/DecodeParms'):
+                continue
+            clone[key_name] = value
+        return clone
+
+    def _form_matrix(form):
+        matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        try:
+            raw = form.get('/Matrix')
+            if raw is not None and len(raw) == 6:
+                matrix = [float(value) for value in raw]
+        except Exception:
+            if strict:
+                raise
+        return matrix
+
+    def _visit(node, parent_resources, context_ctm, depth):
+        nonlocal changed
+        visit_key = (_object_key(node), _context_key(context_ctm))
+        if visit_key in visited_contexts:
+            return
+        visited_contexts.add(visit_key)
+
+        resources = _effective_resources(node, parent_resources)
+        called_forms = []
+        direct_changed = strip_color_from_stream(
+            node,
+            target_color,
+            target_spot=target_spot,
+            inherited_resources=resources,
+            strict=strict,
+            target_items=target_items,
+            page_height=page_height,
+            initial_ctm=context_ctm,
+            called_forms_out=called_forms,
+        )
+        changed = direct_changed or changed
+
+        if not called_forms:
+            return
+        if depth >= max_depth:
+            if strict:
+                raise RuntimeError(
+                    "Cây Form XObject vượt quá giới hạn an toàn khi tách khuôn."
+                )
+            return
+
+        xobjects = resources.get('/XObject') if resources is not None else None
+        if xobjects is None:
+            if strict:
+                raise RuntimeError(
+                    "Content stream gọi Form nhưng không có XObject resource."
+                )
+            return
+
+        calls_by_name = {}
+        for name, call_ctm in called_forms:
+            calls_by_name.setdefault(name, []).append(call_ctm)
+
+        for name, call_contexts in calls_by_name.items():
+            form = xobjects.get(name)
+            if form is None or '/Form' not in str(form.get('/Subtype', '')):
+                continue
+
+            ref_key = (_object_key(node), name)
+            if ref_key not in cloned_references:
+                form = _clone_form(form)
+                if owner_pdf is not None:
+                    xobjects[name] = form
+                cloned_references.add(ref_key)
+            else:
+                form = xobjects.get(name)
+
+            matrix = _form_matrix(form)
+            child_contexts = [
+                _mat_mul(matrix, call_ctm)
+                for call_ctm in call_contexts
+            ]
+
+            # One resource name cannot safely point to both a cut instance and
+            # a same-colored non-cut instance. Detect that before mutating the
+            # shared clone and fail instead of deleting artwork.
+            if (
+                target_spot is None
+                and target_items is not None
+                and len(child_contexts) > 1
+            ):
+                direct_matches = [
+                    strip_color_from_stream(
+                        form,
+                        target_color,
+                        target_spot=target_spot,
+                        inherited_resources=resources,
+                        strict=strict,
+                        target_items=target_items,
+                        page_height=page_height,
+                        initial_ctm=child_ctm,
+                        dry_run=True,
+                    )
+                    for child_ctm in child_contexts
+                ]
+                if any(direct_matches) and not all(direct_matches):
+                    raise RuntimeError(
+                        "Một Form XObject được dùng đồng thời cho đường khuôn "
+                        "và artwork cùng màu; không thể tách an toàn."
+                    )
+
+            for child_ctm in child_contexts:
+                _visit(form, resources, child_ctm, depth + 1)
+
+    _visit(
+        page_or_xobj,
+        inherited_resources,
+        list(initial_ctm or (1, 0, 0, 1, 0, 0)),
+        0,
+    )
+    return changed
 
 
 def compute_block_bbox(placements):
@@ -219,6 +650,8 @@ def place_one_artwork(
     homogeneous_rect=None,
     die_size_mode='die',
     die_offset_mm=0,
+    page_sheet_mode=False,
+    geometry_doc=None,
 ):
     """Đặt MỘT placement `p` lên `out_page`. Trả về (trim_rect, src_page_idx).
 
@@ -358,6 +791,59 @@ def place_one_artwork(
         cell_out_clip = pdf_lib.Rect(_cx0, _cy0, _cx1, _cy1)
     else:
         cell_out_clip = None
+
+    # Whole-sheet decal keeps rectangular page placement, but its internal
+    # CutContour still has to be extracted once and removed from the print
+    # artwork when a separate die page is requested. Do not route this mode
+    # through the die-cut placement branch below: that branch aligns one
+    # sticker by its die bbox, while page-sheet stays aligned by MediaBox.
+    if page_sheet_mode and separate_cut_page:
+        cache_key = f"{job_id}_{src_page_idx}"
+        if cache_key not in die_items_cache:
+            geometry_page = (
+                geometry_doc[src_page_idx]
+                if geometry_doc is not None
+                else src_page
+            )
+            largest_path = find_largest_die_path(geometry_page)
+            if largest_path:
+                die_items_cache[cache_key] = {
+                    'items': largest_path.get('items', []),
+                    'rect': largest_path['rect'],
+                    'color': largest_path.get('color', (0, 0, 0)),
+                    'width': largest_path.get('width', 0.5),
+                    'spot_name': largest_path.get('spot_name'),
+                }
+            else:
+                die_items_cache[cache_key] = None
+
+        cached_cut = die_items_cache.get(cache_key)
+        if cached_cut and src_page_idx not in local_stripped_pages:
+            target_color = cached_cut.get('color')
+            target_spot = cached_cut.get('spot_name')
+            try:
+                pike_page = src_doc._pdf.pages[src_page_idx]
+                pike_page.contents_coalesce()
+                media_box = pike_page.mediabox
+                did_strip = strip_color_from_form_tree(
+                    pike_page,
+                    target_color,
+                    target_spot=target_spot,
+                    strict=True,
+                    target_items=cached_cut.get('items'),
+                    page_height=float(media_box[3] - media_box[1]),
+                    owner_pdf=src_doc._pdf,
+                )
+                if not did_strip:
+                    raise RuntimeError(
+                        "Không tìm thấy toán tử vẽ khuôn tương ứng trong cây Form."
+                    )
+                local_stripped_pages.add(src_page_idx)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Không thể tách đường khuôn bế khỏi trang in "
+                    f"{src_page_idx + 1}."
+                ) from exc
 
     if is_die_cut:
         cache_key = f"{job_id}_{src_page_idx}"

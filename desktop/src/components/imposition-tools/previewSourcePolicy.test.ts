@@ -5,6 +5,7 @@ import {
   parsePreviewViewerState,
   resolvePreviewCellType,
   resolvePreviewPageCount,
+  shouldDeferPreviewLayout,
 } from './previewSourcePolicy';
 
 describe('previewSourcePolicy', () => {
@@ -27,6 +28,12 @@ describe('previewSourcePolicy', () => {
     expect(resolvePreviewCellType(0, 3, 'step_repeat', false)).toBe(3);
     expect(resolvePreviewCellType(2, 3, 'nup', false)).toBe(2);
     expect(resolvePreviewCellType(2, 3, 'step_repeat', true)).toBe(2);
+  });
+
+  it('waits for shape detection only for shape-aware die nesting', () => {
+    expect(shouldDeferPreviewLayout(true, true)).toBe(true);
+    expect(shouldDeferPreviewLayout(true, false)).toBe(false);
+    expect(shouldDeferPreviewLayout(false, true)).toBe(false);
   });
 
   it('materializes duplicated thumbnails as additional PDF pages', async () => {

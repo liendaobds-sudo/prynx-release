@@ -1,7 +1,16 @@
+import inspect
+
 from fastapi.testclient import TestClient
+
+from app.api.routes import imposition
 from app.main import app
 
 client = TestClient(app)
+
+
+def test_preview_layout_is_sync_to_avoid_blocking_the_event_loop():
+    assert not inspect.iscoroutinefunction(imposition.preview_layout)
+
 
 def test_preview_layout_validation_error():
     # Attempt to send payload with an extra field not in the model

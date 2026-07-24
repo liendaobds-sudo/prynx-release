@@ -128,10 +128,11 @@ def test_homogeneous_branch_routing_and_src_page_idx(monkeypatch):
     captured = {}
 
     def _capture_chunk(args):
-        # args[37] = chunk_precalc_placements ; args[-2] = homogeneous_mode ; args[-1] = master_idx
+        # args[37] = chunk_precalc_placements; tail = homogeneous_mode, master_idx, page_sheet_mode
         captured["precalc"] = args[37]
-        captured["homogeneous_mode"] = args[-2]
-        captured["master_idx"] = args[-1]
+        captured["homogeneous_mode"] = args[-3]
+        captured["master_idx"] = args[-2]
+        captured["page_sheet_mode"] = args[-1]
         raise _StopEngine()
 
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
@@ -161,6 +162,7 @@ def test_homogeneous_branch_routing_and_src_page_idx(monkeypatch):
     assert spy["auto_fill"] == 0, "solve_auto_fill_mixed KHÔNG được gọi ở nhánh đồng nhất"
     assert captured.get("homogeneous_mode") is True
     assert captured.get("master_idx") == 0
+    assert captured.get("page_sheet_mode") is False
 
     # (b) auto-fill chia đều thành khối liền theo mẫu; master = loại đầu.
     precalc = captured["precalc"]
@@ -207,8 +209,9 @@ def test_one_dao_page_mode_does_not_use_homogeneous_clip(monkeypatch):
     captured = {}
     def _capture_chunk(args):
         captured["precalc"] = args[37]
-        captured["homogeneous_mode"] = args[-2]
-        captured["master_idx"] = args[-1]
+        captured["homogeneous_mode"] = args[-3]
+        captured["master_idx"] = args[-2]
+        captured["page_sheet_mode"] = args[-1]
         raise _StopEngine()
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
 
@@ -233,6 +236,7 @@ def test_one_dao_page_mode_does_not_use_homogeneous_clip(monkeypatch):
 
     assert captured["homogeneous_mode"] is False
     assert captured["master_idx"] is None
+    assert captured["page_sheet_mode"] is False
     sheet0 = captured["precalc"][0]
     assert len({(p["width"], p["height"], p["cell"]["isRotated"]) for p in sheet0}) == 1
     src_order = [p["src_page_idx"] for p in sheet0]
@@ -288,8 +292,9 @@ def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
 
     def _capture_chunk(args):
         captured.setdefault("precalc", {}).update(args[37])
-        captured["homogeneous_mode"] = args[-2]
-        captured["master_idx"] = args[-1]
+        captured["homogeneous_mode"] = args[-3]
+        captured["master_idx"] = args[-2]
+        captured["page_sheet_mode"] = args[-1]
         return b""
 
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
@@ -322,6 +327,7 @@ def test_homogeneous_active_with_quantities_not_autofill(monkeypatch):
     assert spy["auto_fill"] == 0
     assert captured.get("homogeneous_mode") is True
     assert captured.get("master_idx") == 0
+    assert captured.get("page_sheet_mode") is False
 
     pre = captured["precalc"]
     assert sorted(pre.keys()) == list(range(6))
@@ -433,7 +439,8 @@ def test_fallback_two_dies_uses_old_binpack(monkeypatch):
     captured = {}
 
     def _capture_chunk(args):
-        captured["homogeneous_mode"] = args[-2]
+        captured["homogeneous_mode"] = args[-3]
+        captured["page_sheet_mode"] = args[-1]
         raise _StopEngine()
 
     monkeypatch.setattr(nup_engine, "process_chunk", _capture_chunk)
@@ -456,6 +463,7 @@ def test_fallback_two_dies_uses_old_binpack(monkeypatch):
     assert spy["build_hom"] == 0, "≥2 khuôn không được vào nhánh đồng nhất"
     assert spy["auto_fill"] == 1, "phải dùng solve_auto_fill_mixed (đường cũ)"
     assert captured.get("homogeneous_mode") is False
+    assert captured.get("page_sheet_mode") is False
 
 
 def test_fallback_no_die_uses_old_binpack(monkeypatch):

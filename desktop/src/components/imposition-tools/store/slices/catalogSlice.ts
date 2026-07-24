@@ -14,6 +14,11 @@ export interface CatalogSlice {
     setSourcePageDim: (v: { w: number; h: number } | null) => void;
     sourcePageDims: { w: number; h: number }[];
     setSourcePageDims: (v: { w: number; h: number }[]) => void;
+    /** MediaBox/page.rect dimensions used only by whole-sheet decal geometry. */
+    sourceMediaPageDim: { w: number; h: number } | null;
+    setSourceMediaPageDim: (v: { w: number; h: number } | null) => void;
+    sourceMediaPageDims: { w: number; h: number }[];
+    setSourceMediaPageDims: (v: { w: number; h: number }[]) => void;
     optimalData: any;
     setOptimalData: (v: any) => void;
     catalogPreview: string;
@@ -39,6 +44,10 @@ export const createCatalogSlice: ImposerSlice<CatalogSlice> = (set) => ({
     setSourcePageDim: (v) => set({ sourcePageDim: v }),
     sourcePageDims: [],
     setSourcePageDims: (v) => set({ sourcePageDims: v }),
+    sourceMediaPageDim: null,
+    setSourceMediaPageDim: (v) => set({ sourceMediaPageDim: v }),
+    sourceMediaPageDims: [],
+    setSourceMediaPageDims: (v) => set({ sourceMediaPageDims: v }),
     optimalData: null,
     setOptimalData: (v) => set({ optimalData: v }),
     catalogPreview: '',

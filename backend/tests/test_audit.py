@@ -32,7 +32,7 @@ async def test_large_sticker_imposer_still_bin_packs():
         
         mock_solve_mixed.return_value = {"placements": []}
 
-        await preview_layout(req, PRO_LICENSE)
+        preview_layout(req, PRO_LICENSE)
         
         # >100 trang vẫn đi nhánh bin-pack (theo quyết định (b))
         mock_solve_mixed.assert_called_once()
@@ -63,7 +63,7 @@ async def test_normal_sticker_imposer():
         
         mock_solve_mixed.return_value = {"placements": []}
 
-        await preview_layout(req, PRO_LICENSE)
+        preview_layout(req, PRO_LICENSE)
         
         # Should call solve_auto_fill_mixed since it's a multi-page sticker imposer
         mock_solve_mixed.assert_called_once()

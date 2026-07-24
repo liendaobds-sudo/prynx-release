@@ -19,7 +19,11 @@ from app.workers import pdf_wrapper as pdf_lib
 from app.workers.nup_layout_solver import get_src_page_idx
 from app.workers.nup_marks import _draw_ponts_on_page
 from app.workers.cluster_tile_engine import draw_tile_cut_marks
-from app.workers.nup_artwork import place_one_artwork, compute_block_bbox
+from app.workers.nup_artwork import (
+    place_one_artwork,
+    compute_block_bbox,
+    draw_die_lines_for_placement,
+)
 
 MM_TO_PTS = 2.83465
 logger = logging.getLogger(__name__)
@@ -131,11 +135,20 @@ def process_chunk(args):
     from app.workers.nup_engine import compute_sticker_layout_for_page, _find_largest_die_path
     from app.workers.nup_diecut import resolve_one_dao_trim
 
-    if len(args) > 56:
+    has_repeat_metadata_slot = (
+        len(args) > 56
+        and (args[54] is None or isinstance(args[54], dict))
+    )
+    if has_repeat_metadata_slot:
         chunk_repeat_metadata = args[54]
         base_args = args[:54] + args[55:]
     else:
         chunk_repeat_metadata, base_args = None, args
+
+    # New engine calls append page_sheet_mode after the legacy 56-value tuple.
+    # Keep direct/older process_chunk callers compatible.
+    page_sheet_mode = bool(base_args[56]) if len(base_args) > 56 else False
+    base_args = base_args[:56]
 
     (source_path, job_id, chunk_idx, start_sheet, end_sheet, 
 
@@ -149,6 +162,9 @@ def process_chunk(args):
      cut_type, grouping_strategy, chunk_cluster_tile_cuts, separate_cut_page, ponts_on_cut_file, fill_block_gap_mm, global_total_sheets, main_secondary_gap, mark_thick, mark_style, duplex_flow, die_size_mode, die_offset_mm, target_quantities_by_page, manual_cols, manual_rows, homogeneous_mode, homogeneous_master_idx) = base_args
 
     src_doc = pdf_lib.open(source_path)
+    # Geometry must remain immutable while the print copy is stripped. Shared
+    # Form XObjects can be referenced by more than one source page.
+    geometry_doc = pdf_lib.open(source_path) if page_sheet_mode else None
 
     local_stripped_pages = set()
 
@@ -643,7 +659,11 @@ def process_chunk(args):
         # --- Phase 2: Collision Detection ---
         
 
-        if is_die_cut and pont_config and not pont_config.get('disableCollision', False):
+        if (
+            (is_die_cut or page_sheet_mode)
+            and pont_config
+            and not pont_config.get('disableCollision', False)
+        ):
 
             from app.workers.pont_collision import calculate_forbidden_zones, smart_resolve_collisions, build_shapely_polygon_from_paths, detect_collisions, MM_TO_PTS
 
@@ -690,7 +710,8 @@ def process_chunk(args):
                     # — scale sai → boong "không va chạm". Dùng đúng chữ nhật ô tem.
                     # (cut_type lấy từ args process_chunk — không có dict `settings` ở đây.)
                     _is_rect_cell = (
-                        cut_type == 'one_dao'
+                        page_sheet_mode
+                        or cut_type == 'one_dao'
                         or str(shape_type).upper() == 'RECTANGLE'
                     )
                     if str(shape_type).upper() == 'CIRCLE_ELLIPSE' and not _is_rect_cell:
@@ -822,6 +843,8 @@ def process_chunk(args):
                 find_largest_die_path=_find_largest_die_path,
                 homogeneous_clip=_hom_clip,
                 die_size_mode=die_size_mode, die_offset_mm=die_offset_mm,
+                page_sheet_mode=page_sheet_mode,
+                geometry_doc=geometry_doc,
             )
 
             block_id = cell.get('blockId', 0)
@@ -841,6 +864,33 @@ def process_chunk(args):
             block_cuts[cluster_idx][block_id]['h'].add(round(trim_rect.y0, 2))
 
             block_cuts[cluster_idx][block_id]['h'].add(round(trim_rect.y1, 2))
+
+        if page_sheet_mode and separate_cut_page and placements:
+            missing_cut_pages = sorted({
+                int(p.get('cell', {}).get(
+                    'pageIdx',
+                    p.get('src_page_idx', 0),
+                ))
+                for p in placements
+                if not (
+                    _die_items_cache.get(
+                        f"{job_id}_{int(p.get('cell', {}).get('pageIdx', p.get('src_page_idx', 0)))}"
+                    )
+                    or {}
+                ).get('items')
+            })
+            if missing_cut_pages:
+                missing_labels = ", ".join(
+                    str(index + 1) for index in missing_cut_pages
+                )
+                out_doc.close()
+                if geometry_doc is not None:
+                    geometry_doc.close()
+                src_doc.close()
+                raise ValueError(
+                    "Không tìm thấy đường khuôn bế trên trang nguồn: "
+                    f"{missing_labels}."
+                )
 
         # Draw guillotine marks exactly around the cut lines
 
@@ -923,7 +973,7 @@ def process_chunk(args):
             except Exception:
                 pass
 
-        if is_die_cut and pont_config and separate_cut_page:
+        if (is_die_cut or page_sheet_mode) and pont_config and separate_cut_page:
             # If separate_cut_page is TRUE, we still MUST draw the marks on the printed artwork page!
             # But we draw them directly without an OCG layer, so they just print.
             _draw_ponts_on_page(out_page, placements, pont_config, sheet_w, sheet_h, margin_left, margin_bottom, ocg_xref=None)
@@ -1106,7 +1156,11 @@ def process_chunk(args):
         _shared_master_cut = homogeneous_mode or (
             layout_type == 'repeat' and homogeneous_master_idx is not None
         )
-        _emit_cut = separate_cut_page and is_die_cut and placements
+        _emit_cut = (
+            separate_cut_page
+            and (is_die_cut or page_sheet_mode)
+            and placements
+        )
         if _emit_cut and _shared_master_cut and sheet_idx != 0:
             _emit_cut = False
         if _emit_cut:
@@ -1184,6 +1238,28 @@ def process_chunk(args):
                     # We need to map it to the output page position.
                     is_rotated = cell.get('isRotated', False)
                     is_rotated_180 = cell.get('isRotated180', False)
+
+                    if page_sheet_mode:
+                        # The cell represents the page trim, not the union bbox
+                        # of its sticker paths. Map cut geometry from MediaBox
+                        # into the same bleed rectangle used for artwork.
+                        source_rect = src_doc[src_page_idx_c].rect
+                        draw_die_lines_for_placement(
+                            cut_shape,
+                            die_items,
+                            source_rect,
+                            abs_x - bleed_pt,
+                            abs_y - bleed_pt,
+                            is_rotated=is_rotated,
+                            is_rotated_180=is_rotated_180,
+                        )
+                        cut_shape.finish(
+                            color=die_color,
+                            width=die_width,
+                            closePath=False,
+                            oc=ocg_xref,
+                        )
+                        continue
 
                     for item in die_items:
                         cmd = item[0]  # 'l' (line), 'c' (curve), 're' (rect), 'qu' (quad)
@@ -1284,7 +1360,7 @@ def process_chunk(args):
                 draw_one_dao_cuts(out_page_cut, cut_segs_cut, color=global_die_color, stroke_width=global_die_width, oc=ocg_xref)
 
             # Draw pont marks on the cut page with SEPARATE OCG (child of Marks_Model_ group)
-            if pont_config:
+            if pont_config and ponts_on_cut_file:
                 pont_parent_name = pont_config.get('layerName', 'Marks_Model_')
                 boong_group_name = pont_config.get('groupName', 'MarkLine')
                 boong_item_name = pont_config.get('itemName', 'MKLINE')
@@ -1342,4 +1418,6 @@ def process_chunk(args):
         raise
     finally:
         out_doc.close()
+        if geometry_doc is not None:
+            geometry_doc.close()
         src_doc.close()

@@ -6,6 +6,7 @@ import {
     PROFILED_TOOLS,
     LAYOUT_TASK_TOOLS,
     normalizeProfileTaskMode,
+    resolveLayoutTypeForTaskMode,
 } from '../profiles';
 
 export interface WorkspaceSlice {
@@ -19,7 +20,7 @@ export interface WorkspaceSlice {
     setConfirmBookletSettings: (settings: { settings: any; spawnNewTab: boolean; report: string; totalPages: number; paddedPages: number } | null) => void;
     toolProfiles: Record<string, Record<string, any>>;
     switchToolProfile: (prevTool: string, nextTool: string) => void;
-    /** Nạp taskMode đã nhớ cho một công cụ (nup / tem bế / CNC / booklet). */
+    /** Nạp taskMode và tuỳ chọn đơn vị bình đã nhớ cho một công cụ. */
     restoreTaskModeForTool: (tool: string) => void;
 }
 
@@ -35,7 +36,18 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 mode === 'sticker_imposer' || mode === 'cnc_imposer'
             ) ? 'nup' as TaskMode : mode;
 
-            const updates: Record<string, any> = { taskMode: layoutMode };
+            // Đồng bộ layoutType NGAY (không chờ useEffect) — tránh preview lần đầu
+            // dùng layoutType='repeat' sót khi UI đã hiện "Dàn nhiều mẫu".
+            const nextLayoutType = resolveLayoutTypeForTaskMode(
+                layoutMode,
+                (state as any).layoutType,
+                tool,
+            );
+
+            const updates: Record<string, any> = {
+                taskMode: layoutMode,
+                layoutType: nextLayoutType,
+            };
 
             // Ghi ngay vào profile của công cụ đang mở → mỗi tool nhớ Tác vụ riêng
             // (kể cả khi user không switch tool trước khi đóng tab).
@@ -46,6 +58,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                     [tool]: {
                         ...(state.toolProfiles[tool] || {}),
                         taskMode: stored,
+                        layoutType: nextLayoutType,
                     },
                 };
             }
@@ -73,6 +86,19 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 if ('taskMode' in snap) {
                     snap.taskMode = normalizeProfileTaskMode(snap.taskMode, prevTool);
                 }
+                if ('layoutType' in snap) {
+                    snap.layoutType = resolveLayoutTypeForTaskMode(
+                        snap.taskMode,
+                        snap.layoutType,
+                        prevTool,
+                    );
+                }
+                // impositionUnit chỉ có nghĩa trong Bình tem bế. Không lưu
+                // page_sheet vào profile CNC/N-Up từ state phẳng.
+                snap.impositionUnit = prevTool === 'sticker_imposer'
+                    && snap.impositionUnit === 'page_sheet'
+                    ? 'page_sheet'
+                    : 'sticker';
                 newProfiles[prevTool] = snap;
             }
 
@@ -93,6 +119,27 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                     updates.taskMode = 'nup';
                 }
             }
+            // Luôn gán rõ để profile đích thiếu key không giữ page_sheet từ
+            // Bình tem bế. Khi quay lại sticker, chỉ profile sticker phục hồi.
+            updates.impositionUnit = nextTool === 'sticker_imposer'
+                && restored?.impositionUnit === 'page_sheet'
+                ? 'page_sheet'
+                : 'sticker';
+
+            // taskMode + layoutType phải khớp trước preview fetch đầu tiên.
+            const nextTaskMode = (updates.taskMode !== undefined
+                ? updates.taskMode
+                : (state as any).taskMode) as string;
+            const candidateLayout = updates.layoutType !== undefined
+                ? updates.layoutType
+                : (state as any).layoutType;
+            updates.layoutType = resolveLayoutTypeForTaskMode(
+                nextTaskMode,
+                candidateLayout,
+                nextTool,
+            );
+            updates.taskMode = normalizeProfileTaskMode(nextTaskMode, nextTool);
+
             // Dao cắt: luôn về mặc định khi vào tem bế / CNC (không nhớ 1 Dao lần trước)
             if (nextTool === 'sticker_imposer' || nextTool === 'cnc_imposer') {
                 Object.assign(updates, DIE_CUT_SESSION_DEFAULTS);
@@ -114,13 +161,31 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
             else source = 'nup';
         }
         const next = normalizeProfileTaskMode(source, tool) as TaskMode;
+        const rememberedUnit = state.toolProfiles[tool]?.impositionUnit;
+        // Profile/preset cũ thiếu key luôn mở ở hành vi cũ an toàn: Từng tem.
+        const nextUnit = tool === 'sticker_imposer' && rememberedUnit === 'page_sheet'
+            ? 'page_sheet'
+            : 'sticker';
+        // layoutType: ưu tiên profile tool, fallback state phẳng — rồi ép khớp taskMode.
+        // Trước đây chỉ nạp taskMode → layoutType='repeat' sót khiến preview Bình trang
+        // dù dropdown đã là "Dàn nhiều mẫu".
+        const rememberedLayout = state.toolProfiles[tool]?.layoutType;
+        const nextLayoutType = resolveLayoutTypeForTaskMode(
+            next,
+            rememberedLayout ?? (state as any).layoutType,
+            tool,
+        );
         set((s) => ({
             taskMode: next,
+            impositionUnit: nextUnit,
+            layoutType: nextLayoutType,
             toolProfiles: {
                 ...s.toolProfiles,
                 [tool]: {
                     ...(s.toolProfiles[tool] || {}),
                     taskMode: next,
+                    impositionUnit: nextUnit,
+                    layoutType: nextLayoutType,
                 },
             },
         }));

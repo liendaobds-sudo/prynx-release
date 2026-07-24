@@ -56,6 +56,18 @@ export function resolvePreviewCellType(
 }
 
 /**
+ * Shape-aware nesting is expensive and cannot be correct before detection has
+ * finished. Page-sheet/guillotine preview is rectangular, so it must not wait
+ * for a detector that it does not use.
+ */
+export function shouldDeferPreviewLayout(
+  isDieCut: boolean,
+  isDetectingShape: boolean,
+): boolean {
+  return isDieCut && isDetectingShape;
+}
+
+/**
  * Materialize the exact thumbnail order into a standalone PDF.
  * Repeated source page numbers are intentional duplicates; -1 is a blank page.
  */

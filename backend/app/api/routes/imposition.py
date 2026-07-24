@@ -46,10 +46,15 @@ def _imposition_feature(settings) -> str:
     is_diecut = bool(_setting_value(
         settings, "isDieCutMode", "is_die_cut", default=False
     ))
+    page_sheet_mode = bool(_setting_value(
+        settings, "page_sheet_mode", default=False
+    ))
 
     # CNC also carries isDieCutMode=true, so it must be checked first.
     if imposer_mode == "cnc" or task_mode in ("cnc", "cnc_imposer"):
         return "impo.cnc"
+    if page_sheet_mode:
+        return "impo.diecut"
     if task_mode == "booklet":
         return "impo.booklet"
     if is_diecut or imposer_mode in ("diecut", "sticker", "sticker_imposer"):
@@ -570,12 +575,16 @@ async def get_pdf_meta(body: dict):
             
             w *= user_unit
             h *= user_unit
+            media_w = float(page.mediabox.width) * user_unit
+            media_h = float(page.mediabox.height) * user_unit
             
             # Adjust visual dimensions for rotation
             if rot in (90, 270):
                 visual_w, visual_h = h, w
+                media_visual_w, media_visual_h = media_h, media_w
             else:
                 visual_w, visual_h = w, h
+                media_visual_w, media_visual_h = media_w, media_h
             
             if visual_w > max_w:
                 max_w = visual_w
@@ -586,6 +595,8 @@ async def get_pdf_meta(body: dict):
                 "index": i,
                 "width_pt": round(visual_w, 2),
                 "height_pt": round(visual_h, 2),
+                "media_width_pt": round(media_visual_w, 2),
+                "media_height_pt": round(media_visual_h, 2),
                 "rotation": rot,
             })
         
@@ -1257,7 +1268,16 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     Hai chế độ chỉ khác tiền tố tên file; mode thực do settings['isDieCutMode'].
     """
     source_path = _validate_file_path(body.get("source_path"))
-    settings = body.get("settings", {})
+    settings = dict(body.get("settings", {}) or {})
+    page_sheet_raw = settings.get("page_sheet_mode", False)
+    if type(page_sheet_raw) is not bool:
+        raise HTTPException(status_code=422, detail="page_sheet_mode phải là boolean.")
+    imposer_mode = str(settings.get("imposerMode", "") or "").strip().lower()
+    task_mode = str(settings.get("taskMode", "") or "").strip().lower()
+    if page_sheet_raw and (
+        imposer_mode == "cnc" or task_mode in ("cnc", "cnc_imposer")
+    ):
+        raise HTTPException(status_code=422, detail="Bình nguyên tấm decal không áp dụng cho CNC.")
 
     enforce_feature(_imposition_feature(settings), license_info or {})
     # Inject license info for stealth watermark (hashed in watermark module)
@@ -1314,8 +1334,10 @@ async def start_impose_job(body: dict, license_info: dict = Depends(require_lice
     Endpoint hợp nhất N-Up & Bế Tem. Tiền tố tên file theo settings.isDieCutMode.
     Expects body: { "source_path": "...", "settings": {...} }
     """
-    is_diecut = bool(body.get("settings", {}).get("isDieCutMode", False))
-    return _launch_impose_job(body, "sticker" if is_diecut else "nup", license_info)
+    job_settings = body.get("settings", {}) or {}
+    is_diecut = bool(job_settings.get("isDieCutMode", False))
+    is_page_sheet = job_settings.get("page_sheet_mode", False) is True
+    return _launch_impose_job(body, "sticker" if (is_diecut or is_page_sheet) else "nup", license_info)
 
 
 @router.post("/nup-start")
@@ -1447,7 +1469,7 @@ async def download_nup_result(job_id: str, _: dict = Depends(require_license)):
         background=BackgroundTask(_cleanup_job_temp, job_id),
     )
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from typing import Dict, Any, Optional, List
 
 class PreviewLayoutRequest(BaseModel):
@@ -1477,6 +1499,7 @@ class PreviewLayoutRequest(BaseModel):
     bleed: float = 0.0
     layout_type: Optional[str] = None
     is_die_cut: Optional[bool] = False
+    page_sheet_mode: StrictBool = False
     grouping_strategy: str = "none"
     cluster_sizing_mode: str = "dims"
     cluster_combine_mode: str = "replicate_mixed"
@@ -1694,11 +1717,35 @@ MAX_PREVIEW_CELLS = 100_000
 MAX_PREVIEW_PAGE_MAP = 200_000
 
 @router.post("/preview-layout")
-async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(require_license)):
+def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(require_license)):
     """
     Preview sticker layout — uses the SAME compute function as nup_engine
     to guarantee preview ≡ output.
     """
+    if req.page_sheet_mode:
+        _preview_imposer_mode = str(req.imposer_mode or "").strip().lower()
+        _preview_task_mode = str(req.task_mode or "").strip().lower()
+        if (
+            _preview_imposer_mode == "cnc"
+            or _preview_task_mode in ("cnc", "cnc_imposer")
+        ):
+            raise HTTPException(status_code=422, detail="Bình nguyên tấm decal không áp dụng cho CNC.")
+        from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+        try:
+            resolve_page_sheet_geometry(req.item_w, req.item_h, req.bleed)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        req.is_die_cut = False
+        req.task_mode = "step_repeat" if req.task_mode == "step_repeat" else "nup"
+        req.shape_type = "RECTANGLE"
+        req.shape_props = {}
+        # Whole-sheet layout is rectangular, but registration marks still
+        # reserve forbidden zones exactly like export.
+        req.cut_type = "default"
+        req.detected_shapes_by_page = {}
+        req.detected_shape_params_by_page = {}
+        req.duplex_flow = "normal"
+
     if req.strategy == 'manual' and (req.cols <= 0 or req.rows <= 0):
         raise HTTPException(
             status_code=422,
@@ -1884,9 +1931,11 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                 for pi in range(doc.page_count):
                     pg = doc[pi]
                     if _is_gui_cluster:
-                        # Guillotine: KHÔNG dò đường bế; trim = trimbox nếu lệch rect
-                        # else rect-2*bleed (khớp _gui_page_infos export).
-                        if abs(pg.trimbox.width - pg.rect.width) > 1.0:
+                        if req.page_sheet_mode:
+                            from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+                            _geo_c = resolve_page_sheet_geometry(pg.rect.width, pg.rect.height, bleed_pt)
+                            tw_c, th_c = _geo_c.trim_width, _geo_c.trim_height
+                        elif abs(pg.trimbox.width - pg.rect.width) > 1.0:
                             tw_c, th_c = pg.trimbox.width, pg.trimbox.height
                         else:
                             tw_c = pg.rect.width - 2 * bleed_pt
@@ -1987,9 +2036,11 @@ async def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends
                     _pg = doc[_geometry_idx_c]
                     _t_n = _time_c.perf_counter()
                     if _is_gui_cluster:
-                        # Guillotine: grid solver trong vùng (khớp _gui_zone_layout_fn export).
-                        # trim = trimbox nếu lệch rect else rect-2*bleed (KHÔNG dò đường bế).
-                        if abs(_pg.trimbox.width - _pg.rect.width) > 1.0:
+                        if req.page_sheet_mode:
+                            from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+                            _geo_g = resolve_page_sheet_geometry(_pg.rect.width, _pg.rect.height, bleed_pt)
+                            _tw_g, _th_g = _geo_g.trim_width, _geo_g.trim_height
+                        elif abs(_pg.trimbox.width - _pg.rect.width) > 1.0:
                             _tw_g, _th_g = _pg.trimbox.width, _pg.trimbox.height
                         else:
                             _tw_g = _pg.rect.width - 2 * bleed_pt
@@ -3639,6 +3690,14 @@ class PreviewLayoutBatchRequest(BaseModel):
     bleed: float = 0.0
     task_mode: Optional[str] = "sticker_imposer"
     is_die_cut: Optional[bool] = False
+    page_sheet_mode: StrictBool = False
+    pont_config: Optional[Dict[str, Any]] = None
+    sheet_w: float = 0.0
+    sheet_h: float = 0.0
+    margin_left: float = 0.0
+    margin_right: float = 0.0
+    margin_top: float = 0.0
+    margin_bottom: float = 0.0
     imposer_mode: Optional[str] = None
     # secondary_gap — PHẢI khớp _resolve_preview_secondary_gap (single preview + export).
     cut_type: Optional[str] = "default"
@@ -3720,6 +3779,17 @@ def _batch_single_mold_master(pages: list) -> Optional[dict]:
 
 @router.post("/preview-layouts-batch")
 def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = Depends(require_license)):
+    if req.page_sheet_mode:
+        _batch_imposer_mode = str(req.imposer_mode or "").strip().lower()
+        _batch_task_mode = str(req.task_mode or "").strip().lower()
+        if (
+            _batch_imposer_mode == "cnc"
+            or _batch_task_mode in ("cnc", "cnc_imposer")
+        ):
+            raise HTTPException(status_code=422, detail="Bình nguyên tấm decal không áp dụng cho CNC.")
+        req.is_die_cut = False
+        req.task_mode = "step_repeat" if req.task_mode == "step_repeat" else "nup"
+        req.cut_type = "default"
     enforce_feature(_imposition_feature(req), license_info)
     if req.strategy == 'manual' and (req.cols <= 0 or req.rows <= 0):
         raise HTTPException(
@@ -3789,7 +3859,9 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
         compute_w, compute_h = cw, ch
 
     _secondary_gap = _resolve_preview_secondary_gap(req)
-    _use_sticker = bool(req.is_die_cut) or req.task_mode not in ('nup', 'step_repeat', 'booklet')
+    _use_sticker = False if req.page_sheet_mode else (
+        bool(req.is_die_cut) or req.task_mode not in ('nup', 'step_repeat', 'booklet')
+    )
 
     # ── Cache: nesting shape-aware (parse vector + NFP Shapely) ĐẮT → cache theo
     # (file+mtime, page_idx, params layout). Đổi trang xem / nhập SL (không đổi params)
@@ -3805,16 +3877,41 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
     # 1 khuôn (die-cut): nest 1 trang master, copy capacity — nhiều khuôn: full loop.
     if not _use_sticker:
         invalid_pages = []
+        page_sheet_trim_dims = []
+        from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
         for p in pages_in:
             try:
                 _iw = float(p.get("item_w") or 0)
                 _ih = float(p.get("item_h") or 0)
+                if req.page_sheet_mode:
+                    _page_sheet_geo = resolve_page_sheet_geometry(_iw, _ih, bleed_pt)
+                    page_sheet_trim_dims.append((
+                        _page_sheet_geo.trim_width,
+                        _page_sheet_geo.trim_height,
+                    ))
+                elif _iw <= 2 * bleed_pt or _ih <= 2 * bleed_pt:
+                    raise ValueError
             except (TypeError, ValueError):
-                _iw, _ih = 0.0, 0.0
-            if _iw <= 2 * bleed_pt or _ih <= 2 * bleed_pt:
                 invalid_pages.append(p.get("page_idx"))
         if invalid_pages:
             raise HTTPException(status_code=422, detail="K\u00edch th\u01b0\u1edbc trang ch\u01b0a s\u1eb5n s\u00e0ng; ch\u01b0a th\u1ec3 t\u00ednh b\u1ed1 c\u1ee5c.")
+        if (
+            req.page_sheet_mode
+            and req.task_mode != "step_repeat"
+            and len(page_sheet_trim_dims) > 1
+        ):
+            _first_w, _first_h = page_sheet_trim_dims[0]
+            if any(
+                abs(_w - _first_w) > 0.5 or abs(_h - _first_h) > 0.5
+                for _w, _h in page_sheet_trim_dims[1:]
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "D\u00e0n nhi\u1ec1u m\u1eabu B\u00ecnh nguy\u00ean t\u1ea5m decal ch\u1ec9 h\u1ed7 tr\u1ee3 c\u00e1c trang "
+                        "c\u00f9ng k\u00edch th\u01b0\u1edbc th\u00e0nh ph\u1ea9m sau khi tr\u1eeb bleed."
+                    ),
+                )
 
     _mold_master = _batch_single_mold_master(pages_in) if _use_sticker else None
     if _mold_master is not None:
@@ -3866,6 +3963,14 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                 req.cut_type, req.die_size_mode, round(float(req.die_offset_mm or 0), 3),
                 round(p.get("item_w", 0) or 0, 3), round(p.get("item_h", 0) or 0, 3),
                 int(req.cols or 0), int(req.rows or 0),
+                bool(req.page_sheet_mode),
+                round(float(req.sheet_w or 0), 3),
+                round(float(req.sheet_h or 0), 3),
+                round(float(req.margin_left or 0), 3),
+                round(float(req.margin_right or 0), 3),
+                round(float(req.margin_top or 0), 3),
+                round(float(req.margin_bottom or 0), 3),
+                json.dumps(req.pont_config or {}, sort_keys=True),
             )
             with _NEST_CACHE_LOCK:
                 _cached = _BATCH_CAP_CACHE.get(_batch_ck)
@@ -3922,7 +4027,29 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                         strategy=req.strategy,
                         secondary_gap=_secondary_gap,
                     )
-                _cap = len(res.get('cells', []))
+                _cells = list(res.get('cells', []))
+                if (
+                    req.page_sheet_mode
+                    and req.pont_config
+                    and not req.pont_config.get('disableCollision', False)
+                ):
+                    try:
+                        from shapely.geometry import box as _box
+                        _cells = apply_preview_collisions(
+                            _cells,
+                            trim_w,
+                            trim_h,
+                            req,
+                            res.get('overallWidth', 0),
+                            res.get('overallHeight', 0),
+                            _box(0.0, 0.0, trim_w, trim_h),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[BATCH CAPACITY] page-sheet pont collision failed: %s",
+                            exc,
+                        )
+                _cap = len(_cells)
             if not _use_sticker and _batch_ck is not None:
                 with _NEST_CACHE_LOCK:
                     _BATCH_CAP_CACHE[_batch_ck] = _cap

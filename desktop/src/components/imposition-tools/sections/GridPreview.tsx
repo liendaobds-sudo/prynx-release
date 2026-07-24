@@ -4,12 +4,13 @@ import { previewPerfLog } from "../../../lib/previewPerfLog";
 import { getFileArrayBuffer } from "../../../lib/utils";
 import type { NupSettings } from "../types";
 import { inheritedSingleMoldMaster } from "../shapeDetectionPolicy";
-import { materializePreviewViewerPdf, parsePreviewViewerState, resolvePreviewCellType, resolvePreviewPageCount } from "../previewSourcePolicy";
+import { materializePreviewViewerPdf, parsePreviewViewerState, resolvePreviewCellType, resolvePreviewPageCount, shouldDeferPreviewLayout } from "../previewSourcePolicy";
 import { useTranslation } from 'react-i18next';
 
 export interface GridPreviewProps {
   taskMode: string;
   isDieCut?: boolean;
+  pageSheetMode?: boolean;
   /** Cách thức ráp N-Up: sequential | cut_stacks | ratio_stack | repeat */
   layoutType?: NupSettings["layoutType"] | string;
   /** 1 mặt / 2 mặt — sequential 2 mặt ghép cặp trang trước/sau */
@@ -732,6 +733,7 @@ export default function GridPreview(props: GridPreviewProps) {
   const {
     taskMode,
     isDieCut,
+    pageSheetMode = false,
     layoutType,
     duplexFlow = "normal",
     gridStrategy,
@@ -1070,6 +1072,7 @@ export default function GridPreview(props: GridPreviewProps) {
       lt: layoutType,
       df: duplexFlow,
       die: !!isDieCut,
+      psm: pageSheetMode,
       n: sourceTotalPages || 0,
       sw: sheetWidth,
       sh: sheetHeight,
@@ -1105,6 +1108,7 @@ export default function GridPreview(props: GridPreviewProps) {
       dsm: dieSizeMode,
       dom: dieOffsetMm,
       psk: previewSourceKey || "",
+      detecting: shouldDeferPreviewLayout(!!isDieCut, !!isDetectingShape),
     });
   }, [
     usableW,
@@ -1126,6 +1130,7 @@ export default function GridPreview(props: GridPreviewProps) {
     layoutType,
     duplexFlow,
     isDieCut,
+    pageSheetMode,
     sourceTotalPages,
     sheetWidth,
     sheetHeight,
@@ -1161,12 +1166,29 @@ export default function GridPreview(props: GridPreviewProps) {
     dieSizeMode,
     dieOffsetMm,
     previewSourceKey,
+    isDetectingShape,
   ]);
 
   useEffect(() => {
     // Clear any pending debounce
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    // A changed layout key makes the running response stale. Abort immediately
+    // instead of waiting for the next debounce callback to do it.
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+
+    // Never launch an expensive CUSTOM/NFP preview while its shape is still
+    // being detected. Detection completion changes the key and fetches once
+    // with the final geometry. Rectangular page-sheet preview is not deferred.
+    if (shouldDeferPreviewLayout(!!isDieCut, !!isDetectingShape)) {
+      setIsLoading(false);
+      setPreviewError(null);
+      return;
     }
 
     // Multi-sheet: không require itemW/itemH trang view (có thể 0 lúc scroll chưa detect).
@@ -1255,8 +1277,8 @@ export default function GridPreview(props: GridPreviewProps) {
           strategy: gridStrategy || "optimal_auto",
           cols: columns || 0,
           rows: rows || 0,
-          shape_type: _reqShapeType,
-          shape_props: _reqShapeProps,
+          shape_type: pageSheetMode ? "RECTANGLE" : _reqShapeType,
+          shape_props: pageSheetMode ? {} : _reqShapeProps,
           pont_config: pontType && pontType !== "none" ? pontConfig : null,
           sheet_w: sheetWidth * MM_TO_PT,
           sheet_h: sheetHeight * MM_TO_PT,
@@ -1276,10 +1298,10 @@ export default function GridPreview(props: GridPreviewProps) {
                   : {}),
           page_idx: _pageIdxForRequest,
           bleed: bleed * MM_TO_PT, // bleed in points to match nup_engine
-          cut_type: cutType || "default",
-          fill_block_gap: fillBlockGap ?? 0,
-          die_size_mode: dieSizeMode || "die",
-          die_offset_mm: dieOffsetMm ?? 0,
+          cut_type: pageSheetMode ? undefined : (cutType || "default"),
+          fill_block_gap: pageSheetMode ? undefined : (fillBlockGap ?? 0),
+          die_size_mode: pageSheetMode ? undefined : (dieSizeMode || "die"),
+          die_offset_mm: pageSheetMode ? undefined : (dieOffsetMm ?? 0),
           grouping_strategy: groupingStrategy,
           cluster_combine_mode: clusterCombineMode,
           cluster_nesting: clusterNesting !== false,
@@ -1291,7 +1313,8 @@ export default function GridPreview(props: GridPreviewProps) {
           tile_gap_x: tileGapX ? tileGapX * MM_TO_PT : undefined,
           tile_gap_y: tileGapY ? tileGapY * MM_TO_PT : undefined,
           task_mode: taskMode,
-          is_die_cut: isDieCut,
+          is_die_cut: pageSheetMode ? false : !!isDieCut,
+          page_sheet_mode: pageSheetMode,
           // N-Up cách thức ráp — backend nhánh ratio_stack / sequential cần field này.
           layout_type: layoutType || undefined,
           duplex_flow: duplexFlow || "normal",
@@ -1317,11 +1340,11 @@ export default function GridPreview(props: GridPreviewProps) {
           ),
           // Chế độ ĐỒNG NHẤT (sticker-homogeneous-nup): backend tự bật khi đúng 1 trang
           // có khuôn + còn lại không. Gửi hình/nội-suy nhận diện theo trang để detect.
-          detected_shapes_by_page: shapesByPage || {},
-          detected_shape_params_by_page: shapeParamsByPage || {},
-          imposer_mode: imposerMode,
-          cnc_two_sided: !!cncTwoSided,
-          cnc_flip_edge: cncFlipEdge || "long",
+          detected_shapes_by_page: pageSheetMode ? {} : (shapesByPage || {}),
+          detected_shape_params_by_page: pageSheetMode ? {} : (shapeParamsByPage || {}),
+          imposer_mode: pageSheetMode ? undefined : imposerMode,
+          cnc_two_sided: pageSheetMode ? false : !!cncTwoSided,
+          cnc_flip_edge: pageSheetMode ? undefined : (cncFlipEdge || "long"),
         };
 
         const res = await authenticatedFetch(`${getApiUrl()}/imposition/preview-layout`, {
@@ -1518,6 +1541,11 @@ export default function GridPreview(props: GridPreviewProps) {
     return () => {
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
       }
     };
     // Một khóa layoutFetchKey gộp toàn bộ input xếp tem (không gồm pageIdx view).

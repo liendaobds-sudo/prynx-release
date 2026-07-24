@@ -170,6 +170,8 @@ export interface NupSettings {
     separateCutPage?: boolean;
     pontsOnCutFile?: boolean;
     isDieCutMode?: boolean;
+    /** Cờ routing đã dẫn xuất: cả trang nguồn là một tấm decal, không phải die contour. */
+    pageSheetMode?: boolean;
     shapeType?: string | null;
     shapeParams?: string | null;
     detectedShapesByPage?: Record<number, string>;
@@ -403,6 +405,9 @@ export type RightPanelKind =
     | 'edit' | 'datamerge' | 'numbering' | 'cover_numbering' | 'stick_text_number' | 'dashboard';
 
 export function resolveRightPanel(activeDashboardTool: string, isObjectEditMode: boolean): RightPanelKind {
+    // Bù xén dùng Edit PDF như một chế độ chọn trực tiếp trên canvas. Giữ panel
+    // Sticker đang mở để số đối tượng cập nhật tại chỗ và không làm mất ngữ cảnh.
+    if (activeDashboardTool === 'sticker') return 'dashboard';
     if (isObjectEditMode) return 'edit';
     if (activeDashboardTool === 'datamerge') return 'datamerge';
     if (activeDashboardTool === 'numbering') return 'numbering';

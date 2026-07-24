@@ -193,7 +193,7 @@ export default function BookletSettingsSection() {
                             {s.signatureMode === 'cut_stacks' && (
                                 <div className="group relative flex items-center justify-center w-4 h-4 rounded-full bg-slate-200 dark:bg-zinc-700 text-slate-500 text-[10px] font-bold cursor-help">
                                     ?
-                                    <div className="absolute bottom-full right-0 mb-2 w-64 p-2.5 bg-slate-800 text-white text-xs rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                                    <div className="absolute bottom-full right-0 mb-2 w-max max-w-[280px] px-3 py-2.5 bg-slate-800 text-white text-[12px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
                                         <p className="mb-1 font-bold text-indigo-300">{t('imposition.bookletSettings:cut_stack_cat_doi_rap_xap')}</p>
                                         <p className="opacity-90 leading-relaxed">
                                             {t('imposition.bookletSettings:co_che_mac_dinh')} <strong>{t('imposition.bookletSettings:hut_gay_xen_up')}</strong> {t('imposition.bookletSettings:se_tu_dong_xoay_180_coc_ben_phai_de_dam')}

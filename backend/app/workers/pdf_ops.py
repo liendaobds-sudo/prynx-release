@@ -181,7 +181,8 @@ class ShapeBuilder:
         wrapped = preamble + new_part + [draw_op]
 
         if item_name:
-            wrapped = [f"/Span /NM_{item_name} BDC"] + wrapped + ["EMC"]
+            item_property = self._register_item_name(item_name)
+            wrapped = [f"/Span /{item_property} BDC"] + wrapped + ["EMC"]
 
         if oc is not None:
             oc_name = self._register_ocg(oc)
@@ -192,6 +193,46 @@ class ShapeBuilder:
         # finish() → O(N²) khi vẽ nhiều tem/đường bế. Thứ tự ops giữ nguyên y hệt.
         self._committed.extend(wrapped)
         self.stream = []
+
+    def _register_item_name(self, item_name) -> str:
+        """Register a valid marked-content property carrying the object name.
+
+        BDC requires its second operand to be an inline dictionary or a name
+        present in page /Resources /Properties. The former `/NM_*` operand was
+        never registered, which made Poppler report an invalid content stream.
+        """
+        resources = self.pike_page.get("/Resources")
+        if resources is None:
+            self.pike_page["/Resources"] = pikepdf.Dictionary()
+            resources = self.pike_page["/Resources"]
+
+        props = resources.get("/Properties")
+        if props is None:
+            resources["/Properties"] = pikepdf.Dictionary()
+            props = resources["/Properties"]
+
+        item_text = str(item_name)
+        for key, value in props.items():
+            try:
+                if str(value.get("/NM", "")) == item_text:
+                    return str(key).lstrip("/")
+            except Exception:
+                continue
+
+        safe = "".join(
+            char if char.isascii() and (char.isalnum() or char in "._-") else "_"
+            for char in item_text
+        ).strip("_")[:48] or "Item"
+        base = f"NM_{safe}"
+        prop_name = base
+        suffix = 1
+        while pikepdf.Name(f"/{prop_name}") in props:
+            prop_name = f"{base}_{suffix}"
+            suffix += 1
+        props[pikepdf.Name(f"/{prop_name}")] = pikepdf.Dictionary({
+            "/NM": pikepdf.String(item_text),
+        })
+        return prop_name
 
     def _register_ocg(self, ocg_ref) -> str:
         """Register OCG reference in page /Properties and return the property name."""
@@ -263,6 +304,147 @@ def new_shape(pdf: pikepdf.Pdf, pike_page: pikepdf.Page) -> ShapeBuilder:
     return ShapeBuilder(page_height(pike_page), pdf, pike_page)
 
 
+def _register_form_ocgs(pdf: pikepdf.Pdf, form, src_pdf: pikepdf.Pdf) -> None:
+    """Register the exact OCG objects referenced by an imported Form at document level."""
+    try:
+        source_props = src_pdf.Root.get("/OCProperties")
+        if not source_props:
+            return
+
+        def _ocg_names(values):
+            names = set()
+            for value in values or []:
+                try:
+                    if str(value.get("/Type", "")) == "/OCG":
+                        names.add(str(value.get("/Name", "")))
+                except Exception:
+                    continue
+            return names
+
+        source_default = source_props.get("/D", {})
+        source_off = _ocg_names(source_default.get("/OFF", []))
+        source_on = _ocg_names(source_default.get("/ON", []))
+
+        # Trạng thái ON/OFF được khớp theo /Name vì objgen đổi sau copy_foreign
+        # (form đã copy vào pdf đích trước khi gọi hàm này) → tên là khoá bền duy
+        # nhất. Rủi ro: file có NHIỀU OCG TRÙNG TÊN nhưng khác trạng thái → không
+        # phân biệt được bằng tên. Đếm tên trong toàn bộ /OCGs nguồn để phát hiện
+        # nhập nhằng và CẢNH BÁO rõ (thay vì gán nhầm trong im lặng).
+        _name_counts: dict[str, int] = {}
+        for _ocg in source_props.get("/OCGs", []) or []:
+            try:
+                if str(_ocg.get("/Type", "")) == "/OCG":
+                    _nm = str(_ocg.get("/Name", ""))
+                    _name_counts[_nm] = _name_counts.get(_nm, 0) + 1
+            except Exception:
+                continue
+        ambiguous_names = {_nm for _nm, _c in _name_counts.items() if _c > 1}
+        collected = []
+        seen = set()
+
+        def _collect(candidate):
+            try:
+                marker = getattr(candidate, "objgen", None)
+                marker = ("obj", marker) if marker and marker != (0, 0) else ("id", id(candidate))
+                if marker in seen:
+                    return
+                seen.add(marker)
+                kind = str(candidate.get("/Type", ""))
+                if kind == "/OCG":
+                    collected.append(candidate)
+                    return
+                if kind == "/OCMD":
+                    ocgs = candidate.get("/OCGs", [])
+                    if isinstance(ocgs, pikepdf.Array):
+                        for ocg in ocgs:
+                            _collect(ocg)
+                    elif ocgs:
+                        _collect(ocgs)
+            except Exception:
+                return
+
+        def _walk_resources(resources, depth=0):
+            if not resources or depth > 12:
+                return
+            try:
+                properties = resources.get("/Properties", {})
+                for _, value in properties.items():
+                    _collect(value)
+            except Exception:
+                pass
+            try:
+                xobjects = resources.get("/XObject", {})
+                for _, child in xobjects.items():
+                    _walk_resources(child.get("/Resources", {}), depth + 1)
+            except Exception:
+                pass
+
+        _walk_resources(form.get("/Resources", {}))
+        if not collected:
+            return
+
+        catalog = pdf.Root
+        oc_props = catalog.get("/OCProperties")
+        if not oc_props:
+            oc_props = pikepdf.Dictionary({
+                "/OCGs": pikepdf.Array([]),
+                "/D": pikepdf.Dictionary({
+                    "/Order": pikepdf.Array([]),
+                    "/ON": pikepdf.Array([]),
+                    "/OFF": pikepdf.Array([]),
+                }),
+            })
+            catalog["/OCProperties"] = oc_props
+
+        ocgs = oc_props.get("/OCGs")
+        if not isinstance(ocgs, pikepdf.Array):
+            ocgs = pikepdf.Array([])
+            oc_props["/OCGs"] = ocgs
+        default = oc_props.get("/D")
+        if not default:
+            default = pikepdf.Dictionary()
+            oc_props["/D"] = default
+        for key in ("/Order", "/ON", "/OFF"):
+            if not isinstance(default.get(key), pikepdf.Array):
+                default[key] = pikepdf.Array([])
+
+        existing = set()
+        for value in ocgs:
+            try:
+                existing.add(getattr(value, "objgen", None))
+            except Exception:
+                pass
+
+        for ocg in collected:
+            marker = getattr(ocg, "objgen", None)
+            if marker in existing and marker not in (None, (0, 0)):
+                continue
+            existing.add(marker)
+            ocgs.append(ocg)
+            default["/Order"].append(ocg)
+            name = str(ocg.get("/Name", ""))
+            if name in ambiguous_names:
+                # Không thể quyết định ON/OFF an toàn cho tên trùng → mặc định ON
+                # (không giấu nội dung) và cảnh báo để người dùng kiểm bằng mắt.
+                logger.warning(
+                    "OCG trùng tên %r trong PDF nguồn — không phân biệt được "
+                    "ON/OFF theo tên, mặc định ON. Kiểm layer trong file kết quả.",
+                    name,
+                )
+                default["/ON"].append(ocg)
+            elif name in source_off and name not in source_on:
+                default["/OFF"].append(ocg)
+            else:
+                default["/ON"].append(ocg)
+    except Exception as exc:
+        # Nuốt lỗi để không làm hỏng cả job bình vì một trang có OCG dị dạng,
+        # NHƯNG hậu quả là layer của trang đó mất khả năng bật/tắt trong output.
+        logger.warning(
+            "Không đăng ký được OCG của Form đã nhập (layer trang này sẽ mất "
+            "toggle trong file kết quả): %s", exc,
+        )
+
+
 def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
                   rect: Rect, src_pdf: pikepdf.Pdf, page_idx: int,
                   rotate: int = 0, clip: Rect = None, keep_proportion: bool = False,
@@ -316,6 +498,7 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
             # Đưa XObject vào output MỘT LẦN (phần nặng = copy_foreign object graph).
             if src_pdf is not pdf:
                 xobj = pdf.copy_foreign(xobj)
+            _register_form_ocgs(pdf, xobj, src_pdf)
             _res_name = pikepdf.Name(f"/NupXo{_key[0]}_{page_idx}")
             _cache[_key] = (xobj, _res_name)
         else:

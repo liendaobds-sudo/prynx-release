@@ -47,7 +47,7 @@ describe('WORKSPACE_TOOL_PANEL — nguồn chân lý routing', () => {
 });
 
 describe('resolveRightPanel — routing panel-phải ImpositionTab (lưới an toàn refactor)', () => {
-    it('isObjectEditMode = true LUÔN thắng (trả "edit") bất kể tool', () => {
+    it('isObjectEditMode = true mở Edit PDF ở các ngữ cảnh thông thường', () => {
         for (const t of ['none', 'nup', 'datamerge', 'numbering', 'merge', 'sticker_imposer']) {
             expect(resolveRightPanel(t, true)).toBe('edit');
         }
@@ -78,5 +78,18 @@ describe('resolveRightPanel — routing panel-phải ImpositionTab (lưới an t
                 expect(rp).toBe('dashboard');
             }
         }
+    });
+});
+
+
+describe('Sticker object-selection panel routing', () => {
+    it('keeps the Bleed/Cutline panel mounted while Edit PDF selects objects', () => {
+        expect(resolveRightPanel('sticker', true)).toBe('dashboard');
+        expect(resolveRightPanel('sticker', false)).toBe('dashboard');
+    });
+
+    it('keeps the normal Edit PDF panel for other workspace contexts', () => {
+        expect(resolveRightPanel('none', true)).toBe('edit');
+        expect(resolveRightPanel('preflight', true)).toBe('edit');
     });
 });

@@ -58,7 +58,7 @@ def test_45_thumbnails_fill_two_28_up_preview_sheets_in_grouped_order(tmp_path):
         },
     )
 
-    result = asyncio.run(preview_layout(req, PRO_LICENSE))
+    result = preview_layout(req, PRO_LICENSE)
 
     assert result["strategyUsed"] == "homogeneous"
     assert result["totalContentItems"] == 45
@@ -102,7 +102,7 @@ def test_capacity_is_not_confused_with_number_of_source_samples(tmp_path):
         },
     )
 
-    result = asyncio.run(preview_layout(req, PRO_LICENSE))
+    result = preview_layout(req, PRO_LICENSE)
 
     assert result["strategyUsed"] == "homogeneous"
     assert result["totalContentItems"] == 45
@@ -148,7 +148,7 @@ def test_live_thumbnail_count_can_exceed_physical_preview_pdf(tmp_path):
         },
     )
 
-    result = asyncio.run(preview_layout(req, PRO_LICENSE))
+    result = preview_layout(req, PRO_LICENSE)
 
     assert result["strategyUsed"] == "homogeneous"
     assert result["totalContentItems"] == 45

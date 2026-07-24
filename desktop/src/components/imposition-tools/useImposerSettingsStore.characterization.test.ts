@@ -210,6 +210,78 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         expect(st().taskMode).toBe('step_repeat');
     });
 
+    it('vào tem bế dàn nhiều mẫu: layoutType không còn sót repeat (preview không nhầm Bình trang)', () => {
+        localStorage.clear();
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+
+        // Session trước: Bình trang → layoutType=repeat
+        st().setActiveDashboardTool('nup');
+        st().setTaskMode('step_repeat');
+        expect(st().layoutType).toBe('repeat');
+
+        // Mở tem bế với profile "Dàn nhiều mẫu" — chỉ restore taskMode trước đây
+        // không đụng layoutType → preview-layout nhận layout_type=repeat (1 mẫu/tờ).
+        store.setState({
+            toolProfiles: {
+                sticker_imposer: { taskMode: 'nup' },
+            },
+        } as any);
+        st().setActiveDashboardTool('sticker_imposer');
+        st().restoreTaskModeForTool('sticker_imposer');
+
+        expect(st().taskMode).toBe('nup');
+        expect(st().layoutType).toBe('sequential');
+        expect(st().impositionUnit).toBe('sticker');
+    });
+
+    it('setTaskMode đồng bộ layoutType ngay (nup↔step_repeat)', () => {
+        localStorage.clear();
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+
+        st().setActiveDashboardTool('sticker_imposer');
+        st().setTaskMode('step_repeat');
+        expect(st().layoutType).toBe('repeat');
+
+        st().setTaskMode('nup');
+        expect(st().layoutType).toBe('sequential');
+        expect(st().toolProfiles.sticker_imposer?.layoutType).toBe('sequential');
+    });
+
+    it('cách ly nguyên tấm decal khỏi CNC/N-Up và phục hồi khi quay lại sticker', () => {
+        const store = createImposerSettingsStore();
+        const st = () => store.getState();
+
+        st().setActiveDashboardTool('sticker_imposer');
+        st().setImpositionUnit('page_sheet');
+        expect(st().impositionUnit).toBe('page_sheet');
+
+        st().switchToolProfile('sticker_imposer', 'cnc_imposer');
+        st().setActiveDashboardTool('cnc_imposer');
+        expect(st().impositionUnit).toBe('sticker');
+
+        st().switchToolProfile('cnc_imposer', 'nup');
+        st().setActiveDashboardTool('nup');
+        expect(st().impositionUnit).toBe('sticker');
+
+        st().switchToolProfile('nup', 'sticker_imposer');
+        st().setActiveDashboardTool('sticker_imposer');
+        expect(st().impositionUnit).toBe('page_sheet');
+    });
+
+    it('profile cũ thiếu impositionUnit luôn mở ở Từng tem', () => {
+        const store = createImposerSettingsStore();
+        store.setState({
+            activeDashboardTool: 'sticker_imposer',
+            impositionUnit: 'page_sheet',
+            toolProfiles: { sticker_imposer: { taskMode: 'nup' } },
+        } as any);
+
+        store.getState().restoreTaskModeForTool('sticker_imposer');
+        expect(store.getState().impositionUnit).toBe('sticker');
+    });
+
     it('dao cắt luôn mặc định khi vào tem bế / CNC (không nhớ 1 Dao lần trước)', () => {
         localStorage.clear();
         const store = createImposerSettingsStore();

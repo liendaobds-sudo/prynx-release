@@ -7,6 +7,7 @@
 
 export const ALGO_PROFILE_KEYS: string[] = [
     'taskMode',
+    'impositionUnit',
     'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy',
     'duplexFlow', 'align',
     'clusterMode', 'clusterCount', 'clusterGap', 'clusterGapMode',
@@ -48,4 +49,26 @@ export function normalizeProfileTaskMode(mode: unknown, tool: string): string {
     if (mode === 'nup' || mode === 'sticker_imposer' || mode === 'cnc_imposer') return 'nup';
     if (tool === 'booklet') return 'booklet';
     return 'nup';
+}
+
+/**
+ * Đồng bộ layoutType với Tác vụ (Bình trang / Dàn nhiều mẫu).
+ *
+ * `layoutType === 'repeat'` là cờ nội bộ của Bình trang (S&R). Khi Tác vụ là
+ * dàn nhiều mẫu mà layoutType vẫn còn 'repeat' (sót từ session step_repeat /
+ * tool khác / profile lệch) thì preview-layout đi nhánh 1 mẫu/tờ — UI hiện
+ * "Dàn nhiều mẫu" nhưng lưới vẫn nhìn như Bình trang cho đến khi user toggle.
+ */
+export function resolveLayoutTypeForTaskMode(
+    taskMode: unknown,
+    layoutType: unknown,
+    tool: string = 'nup',
+): 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack' {
+    const mode = normalizeProfileTaskMode(taskMode, tool);
+    if (mode === 'step_repeat') return 'repeat';
+    if (layoutType === 'cut_stacks' || layoutType === 'ratio_stack' || layoutType === 'sequential') {
+        return layoutType;
+    }
+    // 'repeat' | thiếu | giá trị lạ → sequential (dàn nhiều mẫu mặc định)
+    return 'sequential';
 }

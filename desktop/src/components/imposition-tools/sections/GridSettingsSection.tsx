@@ -6,6 +6,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAppSettingsStore } from "../../../stores/appSettingsStore";
 import { parsePastedQuantities } from "../../../lib/parsePastedQuantities";
 import { useTranslation } from 'react-i18next';
+import { resolveImpositionModes } from "../pageSheetPolicy";
 
 export interface GridSettingsProps {
   taskMode: string;
@@ -112,6 +113,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
       setTileGapY: state.setTileGapY,
       clusterNesting: state.clusterNesting,
       setClusterNesting: state.setClusterNesting,
+      impositionUnit: state.impositionUnit,
+      setImpositionUnit: state.setImpositionUnit,
       layoutType: state.layoutType,
       setLayoutType: state.setLayoutType,
       bleed: state.bleed,
@@ -121,7 +124,10 @@ export default function GridSettingsSection(props: GridSettingsProps) {
     })),
   );
   const quantityApplies = !(taskMode === "nup" && s.layoutType === "cut_stacks");
-
+  const { pageSheetMode, dieGeometryMode } = resolveImpositionModes(
+    activeTool,
+    s.impositionUnit,
+  );
 
   // Derived variables for shape selector
   const actualIndex = viewerPageOrder
@@ -174,6 +180,68 @@ export default function GridSettingsSection(props: GridSettingsProps) {
       {/* Grid Settings */}
       <div className="space-y-3">
         <div className="flex flex-col gap-3">
+          {activeTool === "sticker_imposer" && (
+            <div className="flex items-center gap-3">
+              <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
+                {t('imposition.gridSettings:don_vi_binh')}
+              </label>
+              <div className="flex flex-1 items-center gap-2 min-w-0">
+                <select
+                  value={s.impositionUnit}
+                  onChange={(e) => s.setImpositionUnit(e.target.value as 'sticker' | 'page_sheet')}
+                  className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                >
+                  <option value="sticker">{t('imposition.gridSettings:tung_tem')}</option>
+                  <option value="page_sheet">{t('imposition.gridSettings:nguyen_tam_decal')}</option>
+                </select>
+                <button
+                  type="button"
+                  aria-label={t('imposition.gridSettings:don_vi_binh_2')}
+                  className="shrink-0 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-indigo-600 dark:text-zinc-500 dark:hover:text-indigo-400 transition-colors"
+                  onClick={() =>
+                    setInfoModal({
+                      title: t('imposition.gridSettings:don_vi_binh_2'),
+                      content: (
+                        <div className="space-y-4">
+                          <div className="space-y-1">
+                            <h4 className="font-bold text-slate-800 dark:text-white">
+                              {t('imposition.gridSettings:tung_tem')}
+                            </h4>
+                            <p className="text-slate-600 dark:text-zinc-300">
+                              {t('imposition.gridSettings:tung_tem_mo_ta')}
+                            </p>
+                          </div>
+                          <div className="space-y-1">
+                            <h4 className="font-bold text-slate-800 dark:text-white">
+                              {t('imposition.gridSettings:nguyen_tam_decal')}
+                            </h4>
+                            <p className="text-slate-600 dark:text-zinc-300">
+                              {t('imposition.gridSettings:nguyen_tam_decal_mo_ta')}
+                            </p>
+                          </div>
+                        </div>
+                      ),
+                    })
+                  }
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* === TÁC VỤ — First in workflow === */}
           <div className="flex items-center gap-3">
             <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
@@ -239,7 +307,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           </div>
 
           {/* === CÁCH THỨC RÁP === */}
-          {taskMode === "nup" && activeTool !== "sticker_imposer" && (
+          {taskMode === "nup" && (activeTool !== "sticker_imposer" || pageSheetMode) && (
             <div className="flex items-center gap-3">
               <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
                 {t('imposition.gridSettings:cach_thuc_rap')}
@@ -323,7 +391,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           )}
 
           {/* === HÌNH DẠNG TEM (sticker_imposer + cnc_imposer) === */}
-          {(activeTool === "sticker_imposer" || activeTool === "cnc_imposer") && (
+          {dieGeometryMode && (
             <div className="flex items-center gap-3">
               <label
                 className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]"
@@ -491,7 +559,9 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           )}
           <div className="flex items-center gap-3">
             <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-              {t('imposition.gridSettings:ho_tem')}
+              {pageSheetMode
+                ? t('imposition.gridSettings:khoang_cach_tam')
+                : t('imposition.gridSettings:ho_tem')}
             </label>
             <div className="flex flex-1 items-center gap-3 min-w-0">
                 <div className="relative flex-1 min-w-0">
@@ -512,7 +582,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                 </div>
 
                 {/* Moved Bleed here — ẩn cho Bế tem & CNC (kích thước lấy từ ĐƯỜNG KHUÔN BẾ, bleed không tác dụng) */}
-                {activeTool !== "sticker_imposer" && activeTool !== "cnc_imposer" && (
+                {!dieGeometryMode && (
                   <>
                     <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide whitespace-nowrap shrink-0 pl-1">
                       BLEED
@@ -605,9 +675,11 @@ export default function GridSettingsSection(props: GridSettingsProps) {
           {/* === SỐ LƯỢNG — Adapts label based on TÁC VỤ === */}
           <div className="flex items-center gap-3">
             <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]">
-              {taskMode === "nup" || taskMode === "sticker_imposer"
-                ? t('imposition.gridSettings:sl_moi_loai')
-                : t('imposition.gridSettings:so_luong')}
+              {pageSheetMode
+                ? t('imposition.gridSettings:so_tam_decal')
+                : taskMode === "nup" || taskMode === "sticker_imposer"
+                  ? t('imposition.gridSettings:sl_moi_loai')
+                  : t('imposition.gridSettings:so_luong')}
             </label>
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <input
@@ -723,7 +795,9 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                       className="text-[10px] font-bold text-slate-500 uppercase text-center"
                       title={t('imposition.gridSettings:so_tem_san_pham_binh_duoc_tren_moi_to')}
                     >
-                      {t('imposition.gridSettings:tem_to')}
+                      {pageSheetMode
+                        ? t('imposition.gridSettings:tam_to')
+                        : t('imposition.gridSettings:tem_to')}
                     </div>
                     <div className="text-[10px] font-bold text-slate-500 uppercase text-right">
                       {t('imposition.gridSettings:so_to')}

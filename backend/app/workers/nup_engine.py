@@ -177,6 +177,47 @@ def _effective_diecut_grouping(layout_type, is_die_cut, grouping_strategy):
     return grouping_strategy
 
 
+def _normalize_page_sheet_settings(settings: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    """Normalize whole-sheet routing before any downstream isDieCutMode gate."""
+    normalized = dict(settings or {})
+    raw_mode = normalized.get("page_sheet_mode", False)
+    if type(raw_mode) is not bool:
+        raise ValueError("page_sheet_mode phải là boolean.")
+    if not raw_mode:
+        return normalized, False
+
+    imposer_mode = str(normalized.get("imposerMode", "") or "").strip().lower()
+    task_mode = str(normalized.get("taskMode", "") or "").strip().lower()
+    if imposer_mode == "cnc" or task_mode in ("cnc", "cnc_imposer"):
+        raise ValueError("Bình nguyên tấm decal không áp dụng cho CNC.")
+    try:
+        bleed_mm = float(normalized.get("bleed", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Bleed không hợp lệ.") from exc
+    if not math.isfinite(bleed_mm) or bleed_mm < 0:
+        raise ValueError("Bleed phải là số hữu hạn không âm.")
+
+    pont_type = str(normalized.get("pontType", "none") or "none")
+    normalized.update({
+        "page_sheet_mode": True,
+        "bleed": bleed_mm,
+        "isDieCutMode": False,
+        "cutType": "default",
+        # Whole-sheet decal is a hybrid: rectangular imposition plus a paired
+        # die page containing the sheet's existing kiss-cut paths.
+        "separateCutPage": True,
+        "pontType": pont_type,
+        "pontConfig": (
+            normalized.get("pontConfig") if pont_type != "none" else None
+        ),
+        "pontsOnCutFile": bool(normalized.get("pontsOnCutFile", True)),
+        "duplexFlow": "normal",
+        "detectedShapesByPage": {},
+        "detectedShapeParamsByPage": {},
+    })
+    return normalized, True
+
+
 def run_nup_engine(
     source_path: str,
     output_path: str,
@@ -185,6 +226,7 @@ def run_nup_engine(
     progress_callback=None,
 ) -> str:
     """Own the rotated-source temporary file for the complete N-Up lifecycle."""
+    settings, _ = _normalize_page_sheet_settings(settings)
     perf_stages = None
     perf_path = None
     try:
@@ -246,6 +288,8 @@ def _run_nup_engine_impl(
     import math
 
     import pypdfium2 as pdfium
+
+    page_sheet_mode = settings.get("page_sheet_mode", False) is True
 
     # ── Fix A (audit bảo toàn nội dung 2026-07-07): canonicalize /Rotate ≠ 0 MỘT LẦN,
     # TRƯỚC cả route CNC, để cả hai nhánh (nup + CNC) nhận file đã chuẩn hoá — mọi bước
@@ -388,7 +432,12 @@ def _run_nup_engine_impl(
 
     bleed_pt = bleed_mm * MM_TO_PTS
 
-    if geom_rect:
+    if page_sheet_mode:
+        from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+        _page_sheet_geo = resolve_page_sheet_geometry(src_w, src_h, bleed_pt)
+        trim_w = _page_sheet_geo.trim_width
+        trim_h = _page_sheet_geo.trim_height
+    elif geom_rect:
 
         trim_w = geom_rect[2] - geom_rect[0]
 
@@ -549,6 +598,31 @@ def _run_nup_engine_impl(
     # Check if all targets are 0 (Auto-Fill 1 Sheet mode)
 
     is_auto_fill = (target_quantity == 0 and not any(v > 0 for v in target_quantities_by_page.values()))
+
+    def _page_sheet_report_fields(extra_identifier: str = "") -> dict:
+        """Build the product-level fields required by the whole-sheet report.
+
+        Không nhét gapX/gapY vào identifier: field đó là 「Mẫu/Trang」cho người
+        đọc (tên mẫu, số tờ…), còn khe tấm là thông số layout đã có ô nhập riêng.
+        """
+        quantities = target_quantities_by_page or {}
+        requested_qty = 0
+        for page_idx in range(page_count):
+            raw_qty = quantities.get(
+                str(page_idx), quantities.get(page_idx, target_quantity)
+            )
+            try:
+                requested_qty += max(0, int(raw_qty or 0))
+            except (TypeError, ValueError):
+                continue
+
+        return {
+            "width_mm": trim_w / MM_TO_PTS,
+            "height_mm": trim_h / MM_TO_PTS,
+            "requested_qty": requested_qty,
+            "gang_count": max(1, page_count),
+            "identifier": (extra_identifier or "").strip(),
+        }
 
     if is_die_cut:
 
@@ -2082,15 +2156,22 @@ def _run_nup_engine_impl(
             try:
                 for _pi_dims in range(_gdoc_dims.page_count):
                     _pg_dims = _gdoc_dims[_pi_dims]
-                    _tw_dims = max(0.0, _pg_dims.rect.width - 2 * bleed_pt)
-                    _th_dims = max(0.0, _pg_dims.rect.height - 2 * bleed_pt)
+                    if page_sheet_mode:
+                        from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+                        _geo_dims = resolve_page_sheet_geometry(
+                            _pg_dims.rect.width, _pg_dims.rect.height, bleed_pt,
+                        )
+                        _tw_dims, _th_dims = _geo_dims.trim_width, _geo_dims.trim_height
+                    else:
+                        _tw_dims = max(0.0, _pg_dims.rect.width - 2 * bleed_pt)
+                        _th_dims = max(0.0, _pg_dims.rect.height - 2 * bleed_pt)
                     _guillotine_trim_by_page[_pi_dims] = (_tw_dims, _th_dims)
             finally:
                 _gdoc_dims.close()
 
             if (
                 layout_type in ('sequential', 'cut_stacks', 'ratio_stack')
-                and grouping_strategy != 'cluster_tile'
+                and (page_sheet_mode or grouping_strategy != 'cluster_tile')
                 and len(_guillotine_trim_by_page) > 1
             ):
                 _dims_values = list(_guillotine_trim_by_page.values())
@@ -2100,6 +2181,11 @@ def _run_nup_engine_impl(
                     for _w, _h in _dims_values[1:]
                 )
                 if _mixed_dims:
+                    if page_sheet_mode:
+                        raise ValueError(
+                            "D\u00e0n nhi\u1ec1u m\u1eabu B\u00ecnh nguy\u00ean t\u1ea5m decal ch\u1ec9 h\u1ed7 tr\u1ee3 c\u00e1c trang "
+                            "c\u00f9ng k\u00edch th\u01b0\u1edbc th\u00e0nh ph\u1ea9m sau khi tr\u1eeb bleed."
+                        )
                     raise ValueError(
                         "D\u00e0n nhi\u1ec1u m\u1eabu c\u1eaft x\u00e9n ch\u1ec9 h\u1ed7 tr\u1ee3 c\u00e1c trang c\u00f9ng k\u00edch th\u01b0\u1edbc. "
                         "H\u00e3y d\u00f9ng B\u00ecnh trang ho\u1eb7c Chia c\u1ee5m theo t\u1eebng lo\u1ea1i."
@@ -2148,7 +2234,13 @@ def _run_nup_engine_impl(
                     if _q <= 0:
                         _q = 1
                     _pg = _gdoc[_fp]
-                    if abs(_pg.trimbox.width - _pg.rect.width) > 1.0:
+                    if page_sheet_mode:
+                        from app.workers.page_sheet_geometry import resolve_page_sheet_geometry
+                        _geo_gui = resolve_page_sheet_geometry(
+                            _pg.rect.width, _pg.rect.height, bleed_pt,
+                        )
+                        _tw, _th = _geo_gui.trim_width, _geo_gui.trim_height
+                    elif abs(_pg.trimbox.width - _pg.rect.width) > 1.0:
                         _tw, _th = _pg.trimbox.width, _pg.trimbox.height
                     else:
                         _tw = _pg.rect.width - 2 * bleed_pt
@@ -2324,16 +2416,28 @@ def _run_nup_engine_impl(
                     _label_g = _rcfg_g.get('labelNameText') or ""
                     _n_sheets_g = len(precalculated_placements)
                     _ips_g = total_items_placed // max(1, _n_sheets_g)
+                    _ps_report_g = (
+                        _page_sheet_report_fields()
+                        if page_sheet_mode else {}
+                    )
                     _data_g = _nr_g.compute_report_data(
                         label_name=_label_g,
+                        width_mm=_ps_report_g.get("width_mm", 0),
+                        height_mm=_ps_report_g.get("height_mm", 0),
                         paper_size=_paper_g,
-                        items_per_sheet=_ips_g, requested_qty=0,
+                        items_per_sheet=_ips_g,
+                        requested_qty=_ps_report_g.get("requested_qty", 0),
                         material=settings.get('reportMaterial', '') or '',
                         lamination_type=settings.get('reportLamination', 0) or 0,
                         lamination_sides=settings.get('reportLaminationSides', 1) or 1,
-                        mode_label='Cắt xén',
+                        mode_label='Bình nguyên tấm decal' if page_sheet_mode else 'Cắt xén',
                         order_code=settings.get('reportOrderCode', '') or '',
-                        identifier=f"{len(_gui_page_infos)} mẫu · {combine_mode}",
+                        identifier=(
+                            _ps_report_g.get("identifier", "")
+                            if page_sheet_mode
+                            else f"{len(_gui_page_infos)} mẫu · {combine_mode}"
+                        ),
+                        gang_count=_ps_report_g.get("gang_count", 0),
                         sheet_count_override=_n_sheets_g,
                     )
                     _rep_str_g = _nr_g.build_report_string(_rcfg_g, _data_g)
@@ -2342,7 +2446,8 @@ def _run_nup_engine_impl(
                     _report_rows.append({
                         'label': _label_g or f"{len(_gui_page_infos)} mẫu",
                         'items_per_sheet': _ips_g,
-                        'requested_qty': 0, 'sheet_count': _n_sheets_g,
+                        'requested_qty': _ps_report_g.get("requested_qty", 0),
+                        'sheet_count': _n_sheets_g,
                     })
             except Exception as _e_g:
                 logger.warning(f"[REPORT] guillotine cluster report lỗi: {_e_g}")
@@ -2764,6 +2869,10 @@ def _run_nup_engine_impl(
                 from app.workers import nup_report as _nr_rs
                 _paper_rs = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
                 _PT_MM_rs = 1.0 / MM_TO_PTS
+                _ps_report_rs = (
+                    _page_sheet_report_fields()
+                    if page_sheet_mode else {}
+                )
                 _data_rs = _nr_rs.compute_report_data(
                     label_name=_label_rs,
                     width_mm=trim_w * _PT_MM_rs, height_mm=trim_h * _PT_MM_rs,
@@ -2772,9 +2881,18 @@ def _run_nup_engine_impl(
                     material=settings.get('reportMaterial', '') or '',
                     lamination_type=settings.get('reportLamination', 0) or 0,
                     lamination_sides=settings.get('reportLaminationSides', 1) or 1,
-                    mode_label='Cắt xén (chia tỷ lệ, 2 mặt)' if _duplex_rs else 'Cắt xén (chia tỷ lệ)',
+                    mode_label=(
+                        'Bình nguyên tấm decal'
+                        if page_sheet_mode
+                        else ('Cắt xén (chia tỷ lệ, 2 mặt)' if _duplex_rs else 'Cắt xén (chia tỷ lệ)')
+                    ),
                     order_code=settings.get('reportOrderCode', '') or '',
-                    identifier=f"{_n_types_rs} mẫu{_sides_lbl_rs}",
+                    identifier=(
+                        _ps_report_rs.get("identifier", "")
+                        if page_sheet_mode
+                        else f"{_n_types_rs} mẫu{_sides_lbl_rs}"
+                    ),
+                    gang_count=_ps_report_rs.get("gang_count", 0),
                     sheet_count_override=n_sheets,
                 )
                 _reports_by_sheet[0] = _nr_rs.build_report_string(_rcfg_rs, _data_rs)
@@ -3125,6 +3243,8 @@ def _run_nup_engine_impl(
             # Master path bế: homogeneous trộn mẫu HOẶC single-mold Bình trang (chỉ vẽ/geom khuôn).
             homogeneous_master_idx if homogeneous_master_idx is not None else single_mold_master_idx,
 
+            page_sheet_mode,
+
         )
 
         args_list.append(args)
@@ -3183,7 +3303,7 @@ def _run_nup_engine_impl(
         shutil.copyfile(chunk_paths[0], output_path)
         _remove_consumed_chunk(chunk_paths[0])
         chunk_paths.clear()
-    elif is_die_cut:
+    elif is_die_cut or page_sheet_mode:
         # PDFium import_pages strips Document Catalog /OCProperties (layers).
         # We must use pikepdf to merge chunks to preserve layers.
         # This is slightly slower but die-cut jobs rarely exceed 100 pages.
@@ -3356,7 +3476,15 @@ def _run_nup_engine_impl(
                 _g_paper = f"{settings.get('sheetWidth', 0)}x{settings.get('sheetHeight', 0)}mm"
                 _g_label = _gcfg.get('labelNameText') or ""
                 _g_cap = int(capacity or 0)
-                _g_mode = 'Bế tem' if is_die_cut else 'Cắt xén'
+                _ps_report_fallback = (
+                    _page_sheet_report_fields()
+                    if page_sheet_mode else {}
+                )
+                _g_mode = (
+                    'Bình nguyên tấm decal'
+                    if page_sheet_mode
+                    else ('Bế tem' if is_die_cut else 'Cắt xén')
+                )
                 # Die-cut: total_sheets = số tờ logic; capacity có thể = 1 (zone path).
                 # Ưu tiên đếm từ precalculated_placements nếu có.
                 _g_n = int(total_sheets)
@@ -3375,19 +3503,37 @@ def _run_nup_engine_impl(
                 )
                 _g_phys = (_g_n // 2) if _g_duplex else _g_n
                 for _gs in range(max(1, _g_phys)):
+                    _sheet_identifier = f"Tờ {_gs + 1}/{max(1, _g_phys)}"
+                    if page_sheet_mode:
+                        _sheet_identifier = " · ".join(filter(None, (
+                            _ps_report_fallback.get("identifier", ""),
+                            _sheet_identifier,
+                        )))
                     _gd = _nrg.compute_report_data(
-                        label_name=_g_label, paper_size=_g_paper,
-                        items_per_sheet=_g_cap, requested_qty=0,
+                        label_name=_g_label,
+                        width_mm=_ps_report_fallback.get("width_mm", 0),
+                        height_mm=_ps_report_fallback.get("height_mm", 0),
+                        paper_size=_g_paper,
+                        items_per_sheet=_g_cap,
+                        requested_qty=_ps_report_fallback.get("requested_qty", 0),
                         material=settings.get('reportMaterial', '') or '',
                         lamination_type=settings.get('reportLamination', 0) or 0,
                         lamination_sides=settings.get('reportLaminationSides', 1) or 1,
                         mode_label=_g_mode,
                         order_code=settings.get('reportOrderCode', '') or '',
-                        identifier=f"Tờ {_gs + 1}/{max(1, _g_phys)}",
+                        identifier=_sheet_identifier,
+                        gang_count=_ps_report_fallback.get("gang_count", 0),
                         sheet_count_override=max(1, _g_phys),
                     )
                     # Duplex: key = tờ mặt trước (chẵn) = _gs*2; 1 mặt: key = _gs.
                     _reports_by_sheet[(_gs * 2) if _g_duplex else _gs] = _nrg.build_report_string(_gcfg, _gd)
+                if page_sheet_mode:
+                    _report_rows.append({
+                        'label': _g_label or 'Bình nguyên tấm decal',
+                        'items_per_sheet': _g_cap,
+                        'requested_qty': _ps_report_fallback.get("requested_qty", 0),
+                        'sheet_count': max(1, _g_phys),
+                    })
         except Exception as _ge:
             logger.warning(f"[REPORT] fallback dựng report lỗi: {_ge}")
 
@@ -3403,7 +3549,10 @@ def _run_nup_engine_impl(
             #    không xen kẽ → stamp đúng index tờ logic (s), KHÔNG *2 (bug cũ: report
             #    rơi vào trang khuôn / trượt mất tờ sau).
             #  - Không tách khuôn: 1 trang/tờ → key = s.
-            _sep_cut = bool(settings.get('separateCutPage')) and is_die_cut
+            _sep_cut = (
+                bool(settings.get('separateCutPage'))
+                and (is_die_cut or page_sheet_mode)
+            )
             _shared_cut = _sep_cut and _shared_master_cut
             if _sep_cut and not _shared_cut:
                 _reports_to_stamp = {s_idx * 2: txt for s_idx, txt in _reports_by_sheet.items()}
@@ -3433,9 +3582,10 @@ def _run_nup_engine_impl(
         _total_sheets = sum(r['sheet_count'] for r in _report_rows)
         report_lines.append("")
         report_lines.append("📋 LỆNH IN (tổng hợp):")
+        _product_unit = "tấm decal" if page_sheet_mode else "tem"
         for r in _report_rows:
             report_lines.append(
-                f"  • {r['label']}: {r['requested_qty']} tem — SL/tờ {r['items_per_sheet']} → in {r['sheet_count']} tờ"
+                f"  • {r['label']}: {r['requested_qty']} {_product_unit} — SL/tờ {r['items_per_sheet']} → in {r['sheet_count']} tờ"
             )
         report_lines.append(f"  ⇒ Tổng số tờ cần in: {_total_sheets}")
         if layout_type == 'ratio_stack' and _total_sheets > 1:

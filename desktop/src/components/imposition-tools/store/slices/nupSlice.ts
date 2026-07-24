@@ -1,7 +1,11 @@
 import type { ImposerSlice } from '../sliceType';
 import type { NupSettings } from '../../types';
 
+export type ImpositionUnit = 'sticker' | 'page_sheet';
+
 export interface NupSlice {
+    impositionUnit: ImpositionUnit;
+    setImpositionUnit: (v: ImpositionUnit) => void;
     layoutType: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack';
     setLayoutType: (v: 'repeat' | 'sequential' | 'cut_stacks' | 'ratio_stack') => void;
     columns: number;
@@ -63,6 +67,7 @@ export interface NupSlice {
 }
 
 export const NUP_PERSIST_KEYS = [
+    'impositionUnit',
     'layoutType', 'columns', 'rows', 'gridStrategy', 'groupingStrategy',
     'clusterCombineMode',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
@@ -72,6 +77,24 @@ export const NUP_PERSIST_KEYS = [
 ] as const;
 
 export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
+    impositionUnit: 'sticker',
+    setImpositionUnit: (v) => set((state) => {
+        // This preference belongs only to Bình tem bế. Persist it in that
+        // tool profile immediately so closing the tab cannot lose it.
+        if (state.activeDashboardTool !== 'sticker_imposer') {
+            return { impositionUnit: 'sticker' };
+        }
+        return {
+            impositionUnit: v,
+            toolProfiles: {
+                ...state.toolProfiles,
+                sticker_imposer: {
+                    ...(state.toolProfiles.sticker_imposer || {}),
+                    impositionUnit: v,
+                },
+            },
+        };
+    }),
     layoutType: 'sequential',
     setLayoutType: (v) => set({ layoutType: v }),
     columns: 0,
