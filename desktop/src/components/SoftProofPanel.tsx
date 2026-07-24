@@ -30,6 +30,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
     const [outOfGamutPct, setOutOfGamutPct] = useState(0);
     const [profileName, setProfileName] = useState('');
     const [warning, setWarning] = useState('');
+    const [engineInfo, setEngineInfo] = useState('');
 
     // Fetch available ICC profiles
     useEffect(() => {
@@ -77,7 +78,10 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
             }
             setOutOfGamutPct(data.out_of_gamut_pct || 0);
             setProfileName(data.profile_name || '');
+            const eng = [data.engine, data.accuracy].filter(Boolean).join(' · ');
+            setEngineInfo(eng);
             if (data.warning) setWarning(data.warning);
+            else if (data.accuracy === 'rip_softproof') setWarning('');
         } catch (err: any) {
             setWarning(err.message || t('misc.softProof:loi_khi_tao_soft_proof'));
         } finally {
@@ -91,6 +95,7 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
         setGamutWarningUrl(null);
         setOutOfGamutPct(0);
         setWarning('');
+        setEngineInfo('');
     }, [setSoftProofActive, setSoftProofImageUrl, setGamutWarningUrl]);
 
     const INTENTS: Record<string, string> = {
@@ -182,6 +187,16 @@ export default function SoftProofPanel({ fileId: fileIdProp }: { fileId?: string
                         <span className="text-[11px] text-slate-500">Profile:</span>
                         <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">{profileName}</span>
                     </div>
+                    {engineInfo && (
+                        <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] text-slate-500">Engine:</span>
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                engineInfo.includes('rip_softproof')
+                                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                    : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                            }`}>{engineInfo}</span>
+                        </div>
+                    )}
                     <div className="flex items-center justify-between">
                         <span className="text-[11px] text-slate-500">Trang:</span>
                         <span className="text-[11px] font-semibold text-slate-600 dark:text-zinc-300">{activePage} / {numPages}</span>

@@ -1,0 +1,241 @@
+"""Shared ICC profile registry — Convert Colors, Soft-proof, Separations.
+
+Resolves profiles from the app bundle first (``settings.ICC_PROFILE_DIR``),
+then well-known OS color directories. Acrobat-style soft-proof needs a real
+CMYK output profile (FOGRA39) and an sRGB display profile.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# Bundle dir (FOGRA39.icc, sRGB.icc ship with the app).
+def _bundle_icc_dir() -> Path:
+    raw = getattr(settings, "ICC_PROFILE_DIR", "") or ""
+    p = Path(raw)
+    if not p.is_absolute():
+        # Relative to backend package / cwd
+        candidates = [
+            Path(raw).resolve(),
+            Path(__file__).resolve().parents[1] / "assets" / "icc",
+            Path.cwd() / "app" / "assets" / "icc",
+        ]
+        for c in candidates:
+            if c.is_dir():
+                return c
+        return Path(raw).resolve()
+    return p
+
+
+OS_ICC_SEARCH_PATHS = [
+    r"C:\Windows\System32\spool\drivers\color",
+    "/Library/ColorSync/Profiles",
+    "/System/Library/ColorSync/Profiles",
+    "/usr/share/color/icc",
+    "/usr/share/ghostscript",
+    "/usr/local/share/color/icc",
+]
+
+# id → metadata + candidate filenames (bundle names first)
+PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
+    "srgb": {
+        "name": "sRGB IEC61966-2.1",
+        "description": "Màn hình / web (sRGB)",
+        "category": "display",
+        "filenames": [
+            "sRGB.icc",
+            "sRGB Color Space Profile.icm",
+            "sRGB IEC61966-2.1.icc",
+            "sRGB Profile.icc",
+        ],
+    },
+    "fogra39": {
+        "name": "ISO Coated v2 (FOGRA39)",
+        "description": "Giấy couché offset châu Âu (ISO 12647-2)",
+        "category": "output",
+        "filenames": [
+            "FOGRA39.icc",  # app bundle
+            "CoatedFOGRA39.icc",
+            "ISOcoated_v2_300_bas.icc",
+            "ISOcoated_v2_300_eci.icc",
+            "Coated FOGRA39 (ISO 12647-2_2004).icc",
+        ],
+    },
+    "fogra27": {
+        "name": "ISO Coated (FOGRA27)",
+        "description": "Giấy couché offset châu Âu (cũ)",
+        "category": "output",
+        "filenames": ["CoatedFOGRA27.icc", "ISOcoated.icc", "FOGRA27.icc"],
+    },
+    "gracol": {
+        "name": "GRACoL 2006 / 2013",
+        "description": "Giấy couché offset Bắc Mỹ",
+        "category": "output",
+        "filenames": [
+            "GRACoL2006_Coated1v2.icc",
+            "GRACoL2013_CRPC6.icc",
+            "GRACoL.icc",
+        ],
+    },
+    "swop": {
+        "name": "US Web Coated (SWOP) v2",
+        "description": "In web offset Bắc Mỹ",
+        "category": "output",
+        "filenames": [
+            "USWebCoatedSWOP.icc",
+            "WebCoatedSWOP2006Grade3.icc",
+            "USWebCoatedSWOP v2.icc",
+            "SWOP.icc",
+        ],
+    },
+    "japan_color": {
+        "name": "Japan Color 2001 Coated",
+        "description": "In offset Nhật Bản",
+        "category": "output",
+        "filenames": [
+            "JapanColor2001Coated.icc",
+            "JapanColor2001_Coated_bas.icc",
+            "JapanColor.icc",
+        ],
+    },
+    "uncoated": {
+        "name": "ISO Uncoated (FOGRA29)",
+        "description": "Giấy không tráng phủ",
+        "category": "output",
+        "filenames": [
+            "UncoatedFOGRA29.icc",
+            "ISOuncoated.icc",
+            "Uncoated FOGRA29 (ISO 12647-2_2004).icc",
+            "FOGRA29.icc",
+        ],
+    },
+    "newspaper": {
+        "name": "ISOnewspaper26v4",
+        "description": "In báo (newsprint)",
+        "category": "output",
+        "filenames": ["ISOnewspaper26v4.icc", "ISOnewspaper.icc"],
+    },
+}
+
+# Convert-Colors UI keys → registry id
+CONVERT_ICC_FILE_MAP = {
+    "fogra39": "fogra39",
+    "swop": "swop",
+    "japan_color": "japan_color",
+    "gracol": "gracol",
+    "uncoated": "uncoated",
+}
+
+
+def _search_dirs() -> list[Path]:
+    dirs: list[Path] = [_bundle_icc_dir()]
+    for d in OS_ICC_SEARCH_PATHS:
+        p = Path(d)
+        if p.is_dir():
+            dirs.append(p)
+    return dirs
+
+
+def _find_file(filenames: list[str]) -> Path | None:
+    for directory in _search_dirs():
+        try:
+            for fn in filenames:
+                candidate = directory / fn
+                if candidate.is_file():
+                    return candidate.resolve()
+            # one-level subdirs
+            for sub in directory.iterdir():
+                if not sub.is_dir():
+                    continue
+                for fn in filenames:
+                    candidate = sub / fn
+                    if candidate.is_file():
+                        return candidate.resolve()
+        except OSError:
+            continue
+    return None
+
+
+@lru_cache(maxsize=32)
+def resolve_profile_path(profile_id: str) -> str | None:
+    """Return absolute path to an ICC file, or None if missing."""
+    key = (profile_id or "").strip().lower()
+    if key in ("auto", ""):
+        key = "fogra39"
+    info = PROFILE_REGISTRY.get(key)
+    if not info:
+        return None
+    found = _find_file(list(info["filenames"]))
+    if found:
+        logger.debug("[ICC] %s → %s", key, found)
+        return str(found)
+    logger.warning("[ICC] profile '%s' not found (tried %s)", key, info["filenames"][:3])
+    return None
+
+
+def resolve_cmyk_profile_path(profile_id: str | None = None) -> str | None:
+    """CMYK output profile for print simulation (default FOGRA39 bundle)."""
+    return resolve_profile_path(profile_id or "fogra39")
+
+
+def resolve_srgb_profile_path() -> str | None:
+    path = resolve_profile_path("srgb")
+    if path:
+        return path
+    # Pillow can create sRGB; callers may fall back.
+    return None
+
+
+def default_cmyk_profile_filename() -> str:
+    return getattr(settings, "DEFAULT_CMYK_PROFILE", "FOGRA39.icc") or "FOGRA39.icc"
+
+
+def list_output_profiles() -> list[dict[str, Any]]:
+    """Profiles exposed to Soft-proof / Convert Colors UI."""
+    out: list[dict[str, Any]] = []
+    for profile_id, info in PROFILE_REGISTRY.items():
+        if info.get("category") != "output":
+            continue
+        path = resolve_profile_path(profile_id)
+        out.append({
+            "id": profile_id,
+            "name": info["name"],
+            "description": info["description"],
+            "available": path is not None,
+            "path": path,
+        })
+    return out
+
+
+def ghostscript_color_args(
+    *,
+    cmyk_profile_id: str = "fogra39",
+    for_display_rgb: bool = False,
+) -> list[str]:
+    """Extra Ghostscript flags for color-managed render / separation.
+
+    ``for_display_rgb``: map CMYK through the print profile into sRGB for
+    soft-proof style PNG (Acrobat-like screen proof).
+    """
+    args: list[str] = []
+    cmyk = resolve_cmyk_profile_path(cmyk_profile_id)
+    srgb = resolve_srgb_profile_path()
+    if cmyk:
+        args.append(f"-sDefaultCMYKProfile={cmyk}")
+        # Also set as process profile when converting
+        args.append(f"-sOutputICCProfile={cmyk if not for_display_rgb else (srgb or cmyk)}")
+    if for_display_rgb and srgb:
+        args.append(f"-sOutputICCProfile={srgb}")
+        if cmyk:
+            args.append(f"-sDefaultCMYKProfile={cmyk}")
+    if cmyk or srgb:
+        args.append("-dOverrideICC=true")
+        args.append("-dUseFastColor=false")
+    return args

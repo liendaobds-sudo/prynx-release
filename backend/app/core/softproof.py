@@ -1,100 +1,39 @@
+"""ICC Soft-Proofing & Gamut Warning — Acrobat-style screen proof.
+
+Pipeline (preferred):
+  PDF (native CMYK/RGB) → Ghostscript with DefaultCMYKProfile (FOGRA39) +
+  OutputICCProfile (sRGB) → display PNG.
+
+Fallback (no GS):
+  pypdfium2 RGB → LittleCMS soft-proof with bundled FOGRA39 (less accurate
+  for CMYK sources but better than unprofiled RGB).
 """
-ICC Soft-Proofing & Gamut Warning Engine
 
-Uses Pillow's ImageCms (backed by LittleCMS2) to simulate how a PDF page
-will look when printed on a specific device (paper/printer profile).
+from __future__ import annotations
 
-Supports:
-- Soft-proofing with any ICC output profile (FOGRA39, GRACoL, JapanColor, etc.)
-- Gamut warning overlay (highlights out-of-gamut pixels in neon green)
-- Multiple rendering intents (perceptual, relative, saturation, absolute)
-"""
-
-import os
-import io
-import base64
-import logging
 import asyncio
-import numpy as np
+import base64
+import io
+import logging
+import os
+import subprocess
+import tempfile
 
-from pathlib import Path
+import numpy as np
 from PIL import Image, ImageCms
+
+from app.config import settings
+from app.core.icc_profiles import (
+    PROFILE_REGISTRY,
+    list_output_profiles,
+    resolve_cmyk_profile_path,
+    resolve_profile_path,
+    resolve_srgb_profile_path,
+)
+from app.utils.subprocess_utils import run_hidden
 
 logger = logging.getLogger(__name__)
 
-# ══════════════════════════════════════════════════════════════
-#  BUNDLED ICC PROFILE REGISTRY
-# ══════════════════════════════════════════════════════════════
-
-# Standard ICC profiles that ship with most systems or can be downloaded freely.
-# We check multiple known paths on Windows, Mac, and Linux.
-ICC_SEARCH_PATHS = [
-    # Windows
-    r"C:\Windows\System32\spool\drivers\color",
-    # macOS
-    "/Library/ColorSync/Profiles",
-    "/System/Library/ColorSync/Profiles",
-    # Linux
-    "/usr/share/color/icc",
-    "/usr/share/ghostscript",
-]
-
-# Well-known profile filenames and their display names
-KNOWN_PROFILES: dict[str, dict] = {
-    "srgb": {
-        "name": "sRGB IEC61966-2.1",
-        "description": "Màn hình tiêu chuẩn (sRGB)",
-        "category": "input",
-        "filenames": ["sRGB Color Space Profile.icm", "sRGB.icc", "sRGB IEC61966-2.1.icc", "sRGB Profile.icc"],
-    },
-    "fogra39": {
-        "name": "ISO Coated v2 (FOGRA39)",
-        "description": "Giấy couché, in offset châu Âu",
-        "category": "output",
-        "filenames": ["CoatedFOGRA39.icc", "ISOcoated_v2_300_bas.icc", "ISOcoated_v2_300_eci.icc", "Coated FOGRA39 (ISO 12647-2_2004).icc"],
-    },
-    "fogra27": {
-        "name": "ISO Coated (FOGRA27)",
-        "description": "Giấy couché, in offset châu Âu (cũ)",
-        "category": "output",
-        "filenames": ["CoatedFOGRA27.icc", "ISOcoated.icc"],
-    },
-    "gracol": {
-        "name": "GRACoL 2006",
-        "description": "Giấy couché, in offset Bắc Mỹ",
-        "category": "output",
-        "filenames": ["GRACoL2006_Coated1v2.icc", "GRACoL2013_CRPC6.icc"],
-    },
-    "swop": {
-        "name": "US Web Coated (SWOP) v2",
-        "description": "In web offset Bắc Mỹ",
-        "category": "output",
-        "filenames": ["USWebCoatedSWOP.icc", "WebCoatedSWOP2006Grade3.icc", "USWebCoatedSWOP v2.icc"],
-    },
-    "japan_color": {
-        "name": "Japan Color 2001 Coated",
-        "description": "In offset Nhật Bản",
-        "category": "output",
-        "filenames": ["JapanColor2001Coated.icc", "JapanColor2001_Coated_bas.icc"],
-    },
-    "uncoated": {
-        "name": "ISO Uncoated (FOGRA29)",
-        "description": "Giấy không tráng phủ",
-        "category": "output",
-        "filenames": ["UncoatedFOGRA29.icc", "ISOuncoated.icc", "Uncoated FOGRA29 (ISO 12647-2_2004).icc"],
-    },
-    "newspaper": {
-        "name": "ISOnewspaper26v4",
-        "description": "In báo giấy newsprint",
-        "category": "output",
-        "filenames": ["ISOnewspaper26v4.icc", "ISOnewspaper.icc"],
-    },
-}
-
-# Gamut warning alarm color (neon green — highly visible)
-GAMUT_ALARM_COLOR = (0, 255, 0)
-
-# Rendering intent map
 INTENT_MAP = {
     "perceptual": ImageCms.Intent.PERCEPTUAL,
     "relative": ImageCms.Intent.RELATIVE_COLORIMETRIC,
@@ -102,59 +41,32 @@ INTENT_MAP = {
     "absolute": ImageCms.Intent.ABSOLUTE_COLORIMETRIC,
 }
 
-
-def _find_icc_file(filenames: list[str]) -> str | None:
-    """Search known system directories for an ICC profile file."""
-    for search_dir in ICC_SEARCH_PATHS:
-        if not os.path.isdir(search_dir):
-            continue
-        for fn in filenames:
-            candidate = os.path.join(search_dir, fn)
-            if os.path.isfile(candidate):
-                return candidate
-            # Also search subdirectories one level deep
-            for sub in os.listdir(search_dir):
-                sub_path = os.path.join(search_dir, sub)
-                if os.path.isdir(sub_path):
-                    candidate = os.path.join(sub_path, fn)
-                    if os.path.isfile(candidate):
-                        return candidate
-    return None
+# Ghostscript RenderIntent: 0=Perceptual 1=Relative 2=Saturation 3=Absolute
+GS_INTENT = {
+    "perceptual": "0",
+    "relative": "1",
+    "saturation": "2",
+    "absolute": "3",
+}
 
 
 class SoftProofEngine:
     def __init__(self):
-        self._profile_cache: dict[str, str] = {}  # profile_id -> file_path
         self._srgb_profile = ImageCms.createProfile("sRGB")
 
     def list_available_profiles(self) -> list[dict]:
-        """List all ICC profiles found on this system."""
-        results = []
-        for profile_id, info in KNOWN_PROFILES.items():
-            if info["category"] != "output":
-                continue
-            path = self._resolve_profile(profile_id)
-            results.append({
-                "id": profile_id,
-                "name": info["name"],
-                "description": info["description"],
-                "available": path is not None,
-            })
-        return results
+        return [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "description": p["description"],
+                "available": p["available"],
+            }
+            for p in list_output_profiles()
+        ]
 
     def _resolve_profile(self, profile_id: str) -> str | None:
-        """Resolve a profile ID to a file path, with caching."""
-        if profile_id in self._profile_cache:
-            return self._profile_cache[profile_id]
-
-        info = KNOWN_PROFILES.get(profile_id)
-        if not info:
-            return None
-
-        path = _find_icc_file(info["filenames"])
-        if path:
-            self._profile_cache[profile_id] = path
-        return path
+        return resolve_profile_path(profile_id)
 
     async def render_softproof(
         self,
@@ -165,126 +77,228 @@ class SoftProofEngine:
         show_gamut_warning: bool = False,
         dpi: int = 150,
     ) -> dict:
-        """
-        Render a PDF page with ICC soft-proofing simulation.
-
-        Returns:
-        - softproof_b64: base64 JPEG of the soft-proofed page
-        - gamut_b64: base64 PNG of the gamut warning overlay (if requested)
-        - out_of_gamut_pct: percentage of pixels that are out of gamut
-        - profile_name: display name of the profile used
-        """
+        profile_id = (profile_id or "fogra39").strip().lower()
+        if profile_id in ("auto", ""):
+            profile_id = "fogra39"
+        profile_name = PROFILE_REGISTRY.get(profile_id, {}).get("name", profile_id)
         profile_path = self._resolve_profile(profile_id)
-        profile_name = KNOWN_PROFILES.get(profile_id, {}).get("name", profile_id)
         cms_intent = INTENT_MAP.get(intent, ImageCms.Intent.RELATIVE_COLORIMETRIC)
 
-        # 1. Render page to RGB image using pypdfium2
-        def _render():
-            import pypdfium2 as pdfium
-            pdf_doc = pdfium.PdfDocument(pdf_path)
-            page = pdf_doc[page_num - 1]
-            scale = dpi / 72.0
-            bitmap = page.render(scale=scale)
-            img = bitmap.to_pil()  # RGB PIL Image
-            pdf_doc.close()
-            return img
-
-        img = await asyncio.to_thread(_render)
-        width, height = img.size
-
         if not profile_path:
-            # No ICC profile found — return original image with warning
+            img = await asyncio.to_thread(self._render_pdfium_rgb, pdf_path, page_num, dpi)
             buf = io.BytesIO()
-            img.save(buf, "JPEG", quality=85)
+            img.save(buf, "JPEG", quality=88)
             return {
+                "success": True,
                 "softproof_b64": base64.b64encode(buf.getvalue()).decode(),
                 "gamut_b64": None,
                 "out_of_gamut_pct": 0,
                 "profile_name": profile_name,
                 "profile_available": False,
-                "width": width,
-                "height": height,
-                "warning": f"ICC profile '{profile_name}' không tìm thấy trên hệ thống. Vui lòng cài đặt profile.",
+                "width": img.size[0],
+                "height": img.size[1],
+                "engine": "pdfium",
+                "accuracy": "display_rgb",
+                "warning": (
+                    f"ICC '{profile_name}' không tìm thấy. "
+                    f"Đặt FOGRA39.icc vào {getattr(settings, 'ICC_PROFILE_DIR', 'app/assets/icc')}."
+                ),
             }
 
-        # 2. Build soft-proof transform (sRGB → simulate output device → sRGB display)
-        def _apply_softproof():
-            output_profile = ImageCms.getOpenProfile(profile_path)
+        gs_path = getattr(settings, "GHOSTSCRIPT_PATH", None) or ""
+        proofed = None
+        engine = "pdfium+lcms"
+        accuracy = "approximate"
 
-            # Soft-proof transform: shows how the image would look when printed
-            softproof_transform = ImageCms.buildProofTransform(
-                inputProfile=self._srgb_profile,
-                outputProfile=self._srgb_profile,
-                proofProfile=output_profile,
-                inMode="RGB",
-                outMode="RGB",
-                renderingIntent=cms_intent,
-                proofRenderingIntent=cms_intent,
-                flags=ImageCms.Flags.SOFTPROOFING,
-            )
-            proofed = img.copy()
-            ImageCms.applyTransform(proofed, softproof_transform, inPlace=True)
-
-            # Encode soft-proofed image
-            buf = io.BytesIO()
-            proofed.save(buf, "JPEG", quality=85)
-            softproof_b64 = base64.b64encode(buf.getvalue()).decode()
-
-            gamut_b64 = None
-            out_of_gamut_pct = 0.0
-
-            if show_gamut_warning:
-                # Gamut check transform: out-of-gamut pixels get replaced by alarm color
-                # Pillow 10.x default alarm color is (0,0,0) — we detect by comparing
-                # the gamut-checked output against the soft-proofed output
-                gamut_transform = ImageCms.buildProofTransform(
-                    inputProfile=self._srgb_profile,
-                    outputProfile=self._srgb_profile,
-                    proofProfile=output_profile,
-                    inMode="RGB",
-                    outMode="RGB",
-                    renderingIntent=cms_intent,
-                    proofRenderingIntent=cms_intent,
-                    flags=ImageCms.Flags.SOFTPROOFING | ImageCms.Flags.GAMUTCHECK,
+        if gs_path and os.path.isfile(gs_path):
+            try:
+                proofed = await asyncio.to_thread(
+                    self._render_gs_softproof,
+                    gs_path,
+                    pdf_path,
+                    page_num,
+                    dpi,
+                    profile_path,
+                    intent,
                 )
-                gamut_img = img.copy()
-                ImageCms.applyTransform(gamut_img, gamut_transform, inPlace=True)
+                engine = "ghostscript+icc"
+                accuracy = "rip_softproof"
+            except Exception as exc:
+                logger.warning("GS soft-proof failed (%s); LCMS fallback", exc)
 
-                # Compare gamut-checked image vs soft-proofed image
-                # Pixels that were replaced by the alarm color (default black 0,0,0)
-                # will differ significantly from the proofed version
-                arr_gamut = np.array(gamut_img)
-                arr_proof = np.array(proofed)
+        if proofed is None:
+            proofed = await asyncio.to_thread(
+                self._render_lcms_softproof,
+                pdf_path,
+                page_num,
+                dpi,
+                profile_path,
+                cms_intent,
+            )
+            engine = "pdfium+lcms"
+            accuracy = "approximate"
 
-                # Detect alarm pixels: GAMUTCHECK replaces out-of-gamut with alarm (0,0,0)
-                # These pixels become pure black while the proofed version has actual color
-                alarm_black = np.array([0, 0, 0], dtype=np.uint8)
-                is_alarm = np.all(arr_gamut == alarm_black, axis=2)
-                # Exclude pixels that are naturally very dark in the original
-                is_dark_original = np.all(arr_proof < 15, axis=2)
-                mask = is_alarm & ~is_dark_original
+        width, height = proofed.size
+        buf = io.BytesIO()
+        proofed.save(buf, "JPEG", quality=90)
+        softproof_b64 = base64.b64encode(buf.getvalue()).decode()
 
-                out_of_gamut_pct = round(np.sum(mask) / (width * height) * 100, 2)
-
-                # Build RGBA overlay: out-of-gamut pixels are neon green, rest transparent
-                overlay = np.zeros((height, width, 4), dtype=np.uint8)
-                overlay[mask] = [0, 255, 0, 180]  # neon green, 70% opacity
-
-                overlay_img = Image.fromarray(overlay, "RGBA")
-                buf2 = io.BytesIO()
-                overlay_img.save(buf2, "PNG")
-                gamut_b64 = base64.b64encode(buf2.getvalue()).decode()
-
-            return softproof_b64, gamut_b64, out_of_gamut_pct
-
-        sp_b64, gw_b64, oog_pct = await asyncio.to_thread(_apply_softproof)
+        gamut_b64 = None
+        out_of_gamut_pct = 0.0
+        if show_gamut_warning:
+            try:
+                gamut_b64, out_of_gamut_pct = await asyncio.to_thread(
+                    self._gamut_overlay,
+                    pdf_path,
+                    page_num,
+                    dpi,
+                    profile_path,
+                    cms_intent,
+                    proofed,
+                )
+            except Exception as exc:
+                logger.warning("Gamut warning failed: %s", exc)
 
         return {
-            "softproof_b64": sp_b64,
-            "gamut_b64": gw_b64,
-            "out_of_gamut_pct": oog_pct,
+            "success": True,
+            "softproof_b64": softproof_b64,
+            "gamut_b64": gamut_b64,
+            "out_of_gamut_pct": out_of_gamut_pct,
             "profile_name": profile_name,
             "profile_available": True,
             "width": width,
             "height": height,
+            "engine": engine,
+            "accuracy": accuracy,
+            "warning": None if accuracy == "rip_softproof" else (
+                "Soft-proof gần đúng (PDF→RGB→ICC). Cài Ghostscript để proof CMYK giống RIP hơn."
+                if engine.startswith("pdfium") else None
+            ),
         }
+
+    # ── Render paths ──────────────────────────────────────────────────────
+
+    def _render_pdfium_rgb(self, pdf_path: str, page_num: int, dpi: int) -> Image.Image:
+        import pypdfium2 as pdfium
+        doc = pdfium.PdfDocument(pdf_path)
+        try:
+            page = doc[page_num - 1]
+            bitmap = page.render(scale=dpi / 72.0)
+            return bitmap.to_pil().convert("RGB")
+        finally:
+            doc.close()
+
+    def _render_gs_softproof(
+        self,
+        gs_exe: str,
+        pdf_path: str,
+        page_num: int,
+        dpi: int,
+        cmyk_profile: str,
+        intent: str,
+    ) -> Image.Image:
+        """Acrobat-like: interpret PDF colors with CMYK print profile → sRGB PNG."""
+        srgb = resolve_srgb_profile_path()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            out_png = tmp.name
+        try:
+            # -dNOSAFER: GS 10 SAFER blocks reading bundled ICC outside cwd.
+            cmd = [
+                gs_exe,
+                "-dBATCH", "-dNOPAUSE", "-dNOSAFER", "-dQUIET",
+                "-sDEVICE=png16m",
+                f"-r{dpi}",
+                f"-dFirstPage={page_num}",
+                f"-dLastPage={page_num}",
+                "-dTextAlphaBits=4",
+                "-dGraphicsAlphaBits=4",
+                "-dSimulateOverprint=true",
+                f"-sDefaultCMYKProfile={cmyk_profile}",
+                f"-dRenderIntent={GS_INTENT.get(intent, '1')}",
+                "-dOverrideICC=true",
+                "-dUseFastColor=false",
+            ]
+            if srgb:
+                cmd.append(f"-sOutputICCProfile={srgb}")
+                cmd.append(f"-sDefaultRGBProfile={srgb}")
+            cmd.extend([f"-sOutputFile={out_png}", pdf_path])
+
+            res = run_hidden(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=180,
+            )
+            if res.returncode != 0 or not os.path.isfile(out_png):
+                err = (res.stderr or b"").decode("utf-8", errors="replace")[:400]
+                raise RuntimeError(f"GS softproof exit {res.returncode}: {err}")
+            img = Image.open(out_png).convert("RGB")
+            # Load fully before deleting temp
+            img.load()
+            return img.copy()
+        finally:
+            try:
+                os.unlink(out_png)
+            except OSError:
+                pass
+
+    def _render_lcms_softproof(
+        self,
+        pdf_path: str,
+        page_num: int,
+        dpi: int,
+        profile_path: str,
+        cms_intent,
+    ) -> Image.Image:
+        img = self._render_pdfium_rgb(pdf_path, page_num, dpi)
+        output_profile = ImageCms.getOpenProfile(profile_path)
+        transform = ImageCms.buildProofTransform(
+            inputProfile=self._srgb_profile,
+            outputProfile=self._srgb_profile,
+            proofProfile=output_profile,
+            inMode="RGB",
+            outMode="RGB",
+            renderingIntent=cms_intent,
+            proofRenderingIntent=cms_intent,
+            flags=ImageCms.Flags.SOFTPROOFING,
+        )
+        proofed = img.copy()
+        ImageCms.applyTransform(proofed, transform, inPlace=True)
+        return proofed
+
+    def _gamut_overlay(
+        self,
+        pdf_path: str,
+        page_num: int,
+        dpi: int,
+        profile_path: str,
+        cms_intent,
+        proofed: Image.Image,
+    ) -> tuple[str | None, float]:
+        """Out-of-gamut mask relative to print profile (from display RGB source)."""
+        src = self._render_pdfium_rgb(pdf_path, page_num, dpi)
+        output_profile = ImageCms.getOpenProfile(profile_path)
+        gamut_transform = ImageCms.buildProofTransform(
+            inputProfile=self._srgb_profile,
+            outputProfile=self._srgb_profile,
+            proofProfile=output_profile,
+            inMode="RGB",
+            outMode="RGB",
+            renderingIntent=cms_intent,
+            proofRenderingIntent=cms_intent,
+            flags=ImageCms.Flags.SOFTPROOFING | ImageCms.Flags.GAMUTCHECK,
+        )
+        gamut_img = src.copy()
+        ImageCms.applyTransform(gamut_img, gamut_transform, inPlace=True)
+        arr_gamut = np.array(gamut_img)
+        arr_proof = np.array(proofed.resize(gamut_img.size) if proofed.size != gamut_img.size else proofed)
+        is_alarm = np.all(arr_gamut == 0, axis=2)
+        is_dark = np.all(arr_proof < 15, axis=2)
+        mask = is_alarm & ~is_dark
+        h, w = mask.shape
+        pct = round(float(np.sum(mask)) / max(1, w * h) * 100, 2)
+        overlay = np.zeros((h, w, 4), dtype=np.uint8)
+        overlay[mask] = [0, 255, 0, 180]
+        buf = io.BytesIO()
+        Image.fromarray(overlay, "RGBA").save(buf, "PNG")
+        return base64.b64encode(buf.getvalue()).decode(), pct

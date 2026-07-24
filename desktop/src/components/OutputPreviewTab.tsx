@@ -28,6 +28,8 @@ interface SeparationsData {
     has_spot_colors?: boolean;
     detected_spots?: string[];
     engine?: string;
+    accuracy?: string;
+    quality_note?: string;
     page_has_transparency?: boolean;
     blending_color_space?: string;
 }
@@ -76,7 +78,8 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const [pageNum, setPageNum] = useState(initialPageNum);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [useGhostscript, setUseGhostscript] = useState(false);
+    // Default ON: Ghostscript tiffsep ≈ Acrobat Output Preview (real plates + ICC).
+    const [useGhostscript, setUseGhostscript] = useState(true);
     const [convertingSpot, setConvertingSpot] = useState('');
 
     const [plateList, setPlateList] = useState<{ name: string; color: number[]; dataUrl: string; is_spot?: boolean }[]>([]);
@@ -89,6 +92,8 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const [showTacWarning, setShowTacWarning] = useState(false);
     const [spotInksMeta, setSpotInksMeta] = useState<SpotInkMeta[]>([]);
     const [engineUsed, setEngineUsed] = useState('');
+    const [accuracyLabel, setAccuracyLabel] = useState('');
+    const [qualityNote, setQualityNote] = useState('');
     const [detectedSpots, setDetectedSpots] = useState<string[]>([]);
     const [showSoftProof, setShowSoftProof] = useState(false);
     const [showTacHeatmap, setShowTacHeatmap] = useState(false);
@@ -174,8 +179,11 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             setError('');
             setSoloPlate(null);
             try {
-                const gsParam = useGhostscript ? '&use_gs=true' : '';
-                const res = await authenticatedFetch(`${getApiUrl()}/preflight/separations/${fileId}/${pageNum}?dpi=150${gsParam}`);
+                // true → GS tiffsep (chuẩn); false → xấp xỉ RGB→CMYK
+                const gsParam = useGhostscript ? '&use_gs=true' : '&use_gs=false';
+                const res = await authenticatedFetch(
+                    `${getApiUrl()}/preflight/separations/${fileId}/${pageNum}?dpi=150${gsParam}&profile_id=fogra39`
+                );
                 if (!res.ok) throw new Error(t('tabs.outputPreview:khong_the_phan_tach_kem'));
                 const result: SeparationsData = await res.json();
                 if (!isMounted) return;
@@ -191,7 +199,9 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                 setPageHasTransparency(result.page_has_transparency ?? false);
                 setBlendingColorSpace(result.blending_color_space ?? 'DeviceCMYK');
                 setSpotInksMeta(result.spot_inks ?? []);
-                setEngineUsed(result.engine ?? 'pikepdf');
+                setEngineUsed(result.engine ?? '');
+                setAccuracyLabel(result.accuracy ?? '');
+                setQualityNote(result.quality_note ?? '');
                 setDetectedSpots(result.detected_spots ?? []);
             } catch (err: any) {
                 if (isMounted) setError(err.message);
@@ -393,6 +403,13 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                         </button>
                     </div>
 
+                    {/* C4: composite nhiều plate chỉ là preview thị giác (CSS multiply),
+                        KHÔNG mô phỏng chồng mực CMYK thật → không dùng để chốt màu cuối.
+                        Từng plate riêng (solo) mới phản ánh đúng vùng phủ mực. */}
+                    <div className="text-[10px] leading-snug text-slate-500 dark:text-zinc-400 bg-slate-50 dark:bg-zinc-800/50 rounded px-2 py-1.5 mb-1.5">
+                        ⓘ Chồng nhiều bản kẽm cùng lúc chỉ để xem vùng phủ — KHÔNG phải màu in thật. Xem từng bản riêng để đánh giá chính xác.
+                    </div>
+
                     {loading ? (
                         <div className="flex flex-col items-center gap-3 py-8 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-100 dark:border-zinc-800">
                             <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
@@ -525,30 +542,58 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                            <input 
-                                type="checkbox" 
-                                checked={useGhostscript} 
-                                onChange={(e) => setUseGhostscript(e.target.checked)} 
-                                className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer" 
-                            />
-                            <span className="text-[12px] text-slate-600 dark:text-zinc-300">
-                                Chế độ tách màu chuyên sâu {detectedSpots.length > 0 ? t('tabs.outputPreview:da_tu_bat') : t('tabs.outputPreview:cham_hon')}
-                            </span>
-                        </label>
-                        
-                        {/* Tooltip Icon */}
-                        <div className="relative group/tooltip flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-[10px] text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors cursor-help">
-                            ?
-                            {/* Tooltip Content */}
-                            <div className="absolute bottom-full right-1/2 translate-x-[20%] mb-2 w-max max-w-[260px] p-3 bg-slate-800 dark:bg-zinc-700 text-white text-[11px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words">
-                                <p className="mb-1 text-emerald-300">{t('tabs.outputPreview:he_thong_se_tu_dong_bat_che_do_nay_neu')}</p>
-                                <p className="mb-1 opacity-90"><strong className="text-white">{t('tabs.outputPreview:mac_dinh')}</strong> {t('tabs.outputPreview:tach_4_mau_cmyk_tieu_chuan_toc_do_sieu')}</p>
-                                <p className="opacity-90"><strong className="text-white">{t('tabs.outputPreview:chuyen_sau')}</strong> {t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}</p>
-                                <div className="absolute top-full right-[20%] translate-x-1/2 w-2 h-2 bg-slate-800 dark:bg-zinc-700 transform rotate-45 -mt-1"></div>
+                    <div className="flex flex-col gap-1.5">
+                        <div className="flex items-center gap-2">
+                            <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
+                                <input 
+                                    type="checkbox" 
+                                    checked={useGhostscript} 
+                                    onChange={(e) => setUseGhostscript(e.target.checked)} 
+                                    className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer" 
+                                />
+                                <span className="text-[12px] text-slate-600 dark:text-zinc-300">
+                                    Ghostscript RIP (chuẩn Acrobat)
+                                    {!useGhostscript ? ' — đang xấp xỉ' : ''}
+                                </span>
+                            </label>
+                            <div className="relative group/tooltip flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-[10px] text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors cursor-help shrink-0">
+                                ?
+                                <div className="absolute bottom-full right-0 mb-2 w-max max-w-[280px] px-3 py-2.5 bg-slate-800 dark:bg-zinc-700 text-white text-[12px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words">
+                                    <p className="mb-1 text-emerald-300">Mặc định bật Ghostscript tiffsep — tách kẽm C/M/Y/K + Spot giống RIP/Acrobat Output Preview, có ICC FOGRA39.</p>
+                                    <p className="opacity-90">Tắt = PDF→RGB→CMYK giả (nhanh nhưng màu không chuẩn — chỉ debug).</p>
+                                </div>
                             </div>
                         </div>
+                        {(engineUsed || accuracyLabel || qualityNote) && (
+                            <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                                {engineUsed && (
+                                    <span className={`px-1.5 py-0.5 rounded font-bold ${
+                                        accuracyLabel === 'rip_separations'
+                                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                            : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                                    }`}>
+                                        {accuracyLabel === 'rip_separations' ? 'RIP' : 'XẤP XỈ'} · {engineUsed}
+                                    </span>
+                                )}
+                                {qualityNote && (
+                                    <span className="text-slate-500 dark:text-zinc-400 leading-snug">{qualityNote}</span>
+                                )}
+                            </div>
+                        )}
+                        {/* C11: user chủ động chọn Ghostscript RIP nhưng backend rơi về xấp xỉ
+                            (thường do không tìm thấy Ghostscript) → cảnh báo nổi bật, không chỉ badge nhỏ. */}
+                        {useGhostscript && accuracyLabel && accuracyLabel !== 'rip_separations' && (
+                            <div className="mt-1.5 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                                ⚠️ Bạn đã chọn <strong>Ghostscript RIP</strong> nhưng hệ thống đang chạy ở chế độ <strong>XẤP XỈ</strong> (không tìm thấy Ghostscript). Màu và tách kẽm KHÔNG chuẩn để chốt với xưởng. Kiểm tra cài đặt Ghostscript.
+                            </div>
+                        )}
+                        {/* C4: composite nhiều plate = CSS multiply, KHÔNG mô phỏng chồng mực thật.
+                            Nhắc rõ để user không dùng ảnh ghép chốt màu. */}
+                        {plateList.length > 1 && (
+                            <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-zinc-800/50 border border-slate-200 dark:border-zinc-700 text-[10px] text-slate-500 dark:text-zinc-400 leading-snug">
+                                ℹ️ Ảnh ghép nhiều bản kẽm chỉ là <strong>preview thị giác</strong> — không phải màu in cuối. Chốt màu bằng cách xem <strong>từng bản kẽm riêng</strong> hoặc soft-proof ICC.
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -596,6 +641,14 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                                     <span key={s} className="text-[9px] px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded font-medium">{s}</span>
                                 ))}
                             </div>
+                        </div>
+                    )}
+                    {/* C2: chế độ xấp xỉ KHÔNG tách được bản kẽm spot riêng (spot bị trộn vào
+                        RGB→CMYK). detected_spots vẫn liệt kê tên → cảnh báo để user không tưởng
+                        là đã tách spot. */}
+                    {detectedSpots.length > 0 && accuracyLabel && accuracyLabel !== 'rip_separations' && (
+                        <div className="mt-1 pt-1.5 border-t border-slate-200 dark:border-zinc-700 text-[10px] text-amber-700 dark:text-amber-300 leading-snug">
+                            ⚠️ Chế độ XẤP XỈ KHÔNG tách bản kẽm spot riêng — các màu spot trên bị trộn vào C/M/Y/K. Bật Ghostscript RIP để tách kẽm spot đúng.
                         </div>
                     )}
                 </div>

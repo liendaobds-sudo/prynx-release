@@ -886,17 +886,29 @@ async def flatten_layers(req: FlattenLayersRequest):
         raise_http(e, "Lỗi khi flatten layers")
 
 @router.get("/preflight/separations/{file_id}/{page}")
-async def get_separations(file_id: str, page: int, dpi: int = 150, use_gs: bool = False):
+async def get_separations(
+    file_id: str,
+    page: int,
+    dpi: int = 150,
+    use_gs: bool | None = None,
+    profile_id: str = "fogra39",
+):
     """
-    Trích xuất các bản kẽm (Separations) của trang PDF.
-    Mặc định dùng pikepdf (nhanh, CMYK process).
-    Thêm ?use_gs=true để dùng Ghostscript (chậm, hỗ trợ Spot Color/Pantone).
+    Trích xuất bản kẽm (Separations) — gần Acrobat Output Preview.
+
+    Mặc định: Ghostscript tiffsep (kẽm process + spot, ICC FOGRA39 khi có).
+    ``use_gs=false``: fallback nhanh PDF→RGB→CMYK giả (chỉ debug).
     """
     pdf_path = _get_file_path(file_id)
 
     try:
         engine = SeparationEngine()
-        result = await engine.extract_separations(pdf_path, page, dpi, use_ghostscript=use_gs)
+        # Query ``use_gs`` omitted → None → engine prefers GS.
+        result = await engine.extract_separations(
+            pdf_path, page, dpi,
+            use_ghostscript=use_gs,
+            cmyk_profile_id=profile_id or "fogra39",
+        )
         return result
     except Exception as e:
         raise_http(e, "Lỗi khi tạo Separations")
@@ -906,7 +918,9 @@ class SeparationsPathRequest(BaseModel):
     file_path: str
     page: int = 1
     dpi: int = 150
-    use_gs: bool = False
+    # None = prefer Ghostscript (Acrobat-like). False = force approximate.
+    use_gs: bool | None = None
+    profile_id: str = "fogra39"
 
 @router.post("/preflight/separations-by-path")
 async def get_separations_by_path(req: SeparationsPathRequest):
@@ -918,7 +932,11 @@ async def get_separations_by_path(req: SeparationsPathRequest):
 
     try:
         engine = SeparationEngine()
-        result = await engine.extract_separations(safe_path, req.page, req.dpi, use_ghostscript=req.use_gs)
+        result = await engine.extract_separations(
+            safe_path, req.page, req.dpi,
+            use_ghostscript=req.use_gs,
+            cmyk_profile_id=req.profile_id or "fogra39",
+        )
         return result
     except Exception as e:
         raise_http(e, "Lỗi khi tạo Separations (by path)")
@@ -1245,11 +1263,13 @@ class ConvertColorsRequest(BaseModel):
     preserve_black: bool = True
 
 
-# Map lựa chọn ICC ở UI → tên file trong settings.ICC_PROFILE_DIR.
-# Hiện chỉ bundle FOGRA39 (+ sRGB nguồn). Thêm profile khác = thả file .icc vào
-# thư mục ICC rồi thêm một dòng vào map này (UI cũng cần thêm lựa chọn tương ứng).
+# Map UI key → bundle filename; resolve_cmyk_profile_path() is preferred (bundle + OS).
 ICC_FILE_MAP = {
     "fogra39": "FOGRA39.icc",
+    "swop": "SWOP.icc",
+    "japan_color": "JapanColor.icc",
+    "gracol": "GRACoL.icc",
+    "uncoated": "UncoatedFOGRA29.icc",
 }
 
 
@@ -1325,22 +1345,26 @@ async def convert_colors(req: ConvertColorsRequest):
                 # 'auto' = không ép (giữ profile nhúng / mặc định GS). -dNOSAFER ở trên
                 # cho phép GS đọc file ICC bundle (GS 10 mặc định SAFER chặn).
                 if conv == "rgb_to_cmyk" and req.icc_profile and req.icc_profile != "auto":
-                    icc_file = ICC_FILE_MAP.get(req.icc_profile)
-                    if icc_file:
-                        icc_path = os.path.join(settings.ICC_PROFILE_DIR, icc_file)
-                        if os.path.exists(icc_path):
-                            gs_args += [
-                                "-sProcessColorModel=DeviceCMYK",
-                                f"-sOutputICCProfile={icc_path}",
-                                "-dOverrideICC=true",
-                            ]
-                        else:
-                            logger.warning(
-                                "ICC profile '%s' không tồn tại (%s) — dùng mặc định GS.",
-                                req.icc_profile, icc_path,
-                            )
+                    from app.core.icc_profiles import resolve_cmyk_profile_path
+                    icc_path = resolve_cmyk_profile_path(req.icc_profile)
+                    if not icc_path:
+                        icc_file = ICC_FILE_MAP.get(req.icc_profile)
+                        if icc_file:
+                            cand = os.path.join(settings.ICC_PROFILE_DIR, icc_file)
+                            if os.path.exists(cand):
+                                icc_path = cand
+                    if icc_path and os.path.exists(icc_path):
+                        gs_args += [
+                            "-sProcessColorModel=DeviceCMYK",
+                            f"-sOutputICCProfile={icc_path}",
+                            f"-sDefaultCMYKProfile={icc_path}",
+                            "-dOverrideICC=true",
+                        ]
                     else:
-                        logger.warning("ICC profile '%s' chưa được hỗ trợ — dùng mặc định GS.", req.icc_profile)
+                        logger.warning(
+                            "ICC profile '%s' không tìm thấy — dùng mặc định GS.",
+                            req.icc_profile,
+                        )
 
                 gs_args.append(gs_input)
 
@@ -1376,10 +1400,29 @@ async def convert_colors(req: ConvertColorsRequest):
 class SoftProofRequest(BaseModel):
     file_id: str
     page: int = 1
-    profile_id: str
+    profile_id: str = "fogra39"
     intent: str = "relative"
     show_gamut_warning: bool = False
     dpi: int = 150
+
+
+@router.get("/preflight/icc-profiles")
+async def list_icc_profiles():
+    """Danh sách ICC output (soft-proof / convert) — bundle FOGRA39 + OS."""
+    from app.core.icc_profiles import list_output_profiles
+    profiles = list_output_profiles()
+    return {
+        "profiles": [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "description": p["description"],
+                "available": p["available"],
+            }
+            for p in profiles
+        ]
+    }
+
 
 @router.post("/preflight/softproof")
 async def render_softproof(req: SoftProofRequest):
@@ -1390,7 +1433,7 @@ async def render_softproof(req: SoftProofRequest):
         result = await engine.render_softproof(
             pdf_path=pdf_path,
             page_num=req.page,
-            profile_id=req.profile_id,
+            profile_id=req.profile_id or "fogra39",
             intent=req.intent,
             show_gamut_warning=req.show_gamut_warning,
             dpi=req.dpi,

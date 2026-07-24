@@ -181,44 +181,63 @@ class SeparationEngine:
 
     async def extract_separations(
         self, pdf_path: str, page_num: int, dpi: int = 72,
-        use_ghostscript: bool = False
+        use_ghostscript: bool | None = None,
+        cmyk_profile_id: str = "fogra39",
     ) -> dict:
         """
-        Extracts separation plates for a specific page.
+        Extract separation plates (Acrobat Output Preview style).
 
-        Strategy (Hybrid Auto-Detect):
-        1. If use_ghostscript=True → force Ghostscript mode
-        2. Else → quick-scan for Spot inks in the PDF:
-           - If Spot found → auto-use Ghostscript (with fallback)
-           - If CMYK only → use fast pikepdf
+        Strategy:
+        1. **Default / recommended:** Ghostscript ``tiffsep`` — real process + spot
+           plates (color-managed when ICC available). Matches RIP much better than
+           RGB→pseudo-CMYK.
+        2. Fallback: pypdfium2 RGB → naive CMYK split (fast, **approximate only**).
+
+        ``use_ghostscript``:
+          - None / True → prefer GS when installed
+          - False → force approximate path (debug / no GS)
         """
-        has_spots = False
-        spot_names: list[str] = []
+        spot_names = self._detect_spot_inks(pdf_path)
+        has_spots = len(spot_names) > 0
 
-        if not use_ghostscript:
-            # Quick scan for spot colors (< 50ms)
-            spot_names = self._detect_spot_inks(pdf_path)
-            has_spots = len(spot_names) > 0
-            if has_spots:
-                logger.info(f"Auto-detected {len(spot_names)} spot inks: {spot_names}. Switching to Ghostscript.")
-                use_ghostscript = True
+        gs_available = bool(self.gs_path and os.path.isfile(str(self.gs_path)))
+        prefer_gs = gs_available if use_ghostscript is None else bool(use_ghostscript)
 
-        if use_ghostscript:
+        if prefer_gs and gs_available:
             try:
-                result = await self._run_ghostscript_tiffsep(pdf_path, page_num, dpi)
+                result = await self._run_ghostscript_tiffsep(
+                    pdf_path, page_num, dpi, cmyk_profile_id=cmyk_profile_id,
+                )
                 if result and len(result.get("plates", [])) > 0:
-                    result["has_spot_colors"] = True
-                    result["detected_spots"] = spot_names
+                    result["has_spot_colors"] = has_spots or any(
+                        p.get("is_spot") for p in result.get("plates", [])
+                    )
+                    result["detected_spots"] = spot_names or [
+                        p["name"] for p in result.get("plates", []) if p.get("is_spot")
+                    ]
                     result["engine"] = "ghostscript"
+                    result["accuracy"] = "rip_separations"
+                    result["quality_note"] = (
+                        "Ghostscript tiffsep — kẽm process/spot gần RIP (Acrobat Output Preview)."
+                    )
                     return result
             except Exception as e:
-                logger.warning(f"Ghostscript tiffsep failed: {e}. Falling back to pikepdf.")
+                logger.warning(
+                    "Ghostscript tiffsep failed: %s. Falling back to approximate RGB→CMYK.",
+                    e,
+                )
 
-        # pikepdf is the fast default (Process CMYK only)
         result = self._run_pikepdf_fallback(pdf_path, page_num, dpi)
         result["has_spot_colors"] = has_spots
         result["detected_spots"] = spot_names
-        result["engine"] = "pikepdf"
+        result["engine"] = "pdfium_approx"
+        result["accuracy"] = "approximate"
+        result["quality_note"] = (
+            "Xấp xỉ: PDF→RGB→tách CMYK giả (không ICC). "
+            "Cài Ghostscript để separations chuẩn hơn."
+        )
+        if prefer_gs and not gs_available:
+            result["quality_note"] += " Ghostscript chưa được cấu hình (GHOSTSCRIPT_PATH)."
         return result
 
     # ──────────────────────────────────────────────────────────
@@ -299,11 +318,18 @@ class SeparationEngine:
     #  GHOSTSCRIPT TIFFSEP (supports Spot Colors)
     # ──────────────────────────────────────────────────────────
 
-    async def _run_ghostscript_tiffsep(self, pdf_path: str, page_num: int, dpi: int) -> dict:
+    async def _run_ghostscript_tiffsep(
+        self,
+        pdf_path: str,
+        page_num: int,
+        dpi: int,
+        cmyk_profile_id: str = "fogra39",
+    ) -> dict:
         """Run Ghostscript tiffsep to generate plate TIFFs, then convert to base64 PNGs."""
         import subprocess
         import shutil
         from app.utils.subprocess_utils import run_hidden
+        from app.core.icc_profiles import resolve_cmyk_profile_path
 
         job_id = uuid.uuid4().hex[:8]
         job_dir = self.output_dir / job_id
@@ -311,18 +337,27 @@ class SeparationEngine:
 
         output_base = str(job_dir / "plate")
 
+        # NOSAFER so GS can read bundled FOGRA39.icc outside process cwd.
         cmd = [
             self.gs_path,
             "-sDEVICE=tiffsep",
-            "-dNOPAUSE", "-dBATCH", "-dSAFER",
+            "-dNOPAUSE", "-dBATCH", "-dNOSAFER",
             f"-dFirstPage={page_num}", f"-dLastPage={page_num}",
             f"-r{dpi}",
             "-dGraphicsAlphaBits=4",
             "-dTextAlphaBits=4",
             "-dMaxSpots=32",
-            f"-sOutputFile={output_base}.tif",
-            pdf_path
+            "-dSimulateOverprint=true",
+            "-dUseFastColor=false",
         ]
+        cmyk_icc = resolve_cmyk_profile_path(cmyk_profile_id)
+        if cmyk_icc:
+            cmd.append(f"-sDefaultCMYKProfile={cmyk_icc}")
+            cmd.append("-dOverrideICC=true")
+        cmd.extend([
+            f"-sOutputFile={output_base}.tif",
+            pdf_path,
+        ])
 
         def _run_sync():
             return run_hidden(
@@ -353,7 +388,8 @@ class SeparationEngine:
         #   Pattern A: plate(Cyan).tif, plate(PANTONE 485 C).tif
         #   Pattern B: plate.Cyan.tif, plate.PANTONE 485 C.tif
         #   Composite: plate.tif (skip this)
-        for file in os.listdir(job_dir):
+        try:
+          for file in os.listdir(job_dir):
             if not file.endswith(".tif"):
                 continue
 
@@ -419,8 +455,9 @@ class SeparationEngine:
                 logger.warning(f"Failed to read tiffsep plate '{file}': {e}")
                 continue
 
-        # Cleanup
-        shutil.rmtree(job_dir, ignore_errors=True)
+        finally:
+            # Luôn dọn temp plate dir kể cả khi lỗi giữa chừng (C15).
+            shutil.rmtree(job_dir, ignore_errors=True)
 
         # Sort plates: Cyan, Magenta, Yellow, Black, then Spots alphabetically
         order = {"Cyan": 0, "Magenta": 1, "Yellow": 2, "Black": 3}
@@ -476,7 +513,10 @@ class SeparationEngine:
         arr_rgb = np.array(img)
         width, height = img.size
 
-        # Simple RGB → CMYK conversion (same as Ghostscript's formula)
+        # XẤP XỈ: RGB → CMYK bằng công thức GCR/UCR naive (KHÔNG ICC, KHÔNG dot gain,
+        # KHÔNG FOGRA). ĐÂY KHÔNG PHẢI công thức của Ghostscript — GS tiffsep tách kẽm
+        # qua ICC devicelink. Path này chỉ để xem nhanh khi thiếu GS; % mực C/M/Y/K
+        # lệch xa RIP/Acrobat. Kết quả LUÔN gắn accuracy="approximate" (xem caller).
         r = arr_rgb[:, :, 0].astype(np.float32) / 255.0
         g = arr_rgb[:, :, 1].astype(np.float32) / 255.0
         b = arr_rgb[:, :, 2].astype(np.float32) / 255.0
