@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 
 import pikepdf
 
+from app.core.edit_debug_log import edit_text_move_log_enabled, log_text_move
 from app.core.object_mapper import (
     _as_float,
     _name_str,
@@ -53,6 +54,93 @@ from app.core.text_shaping import needs_shaping, shape_text
 from app.schemas.edit import OpSpan, normalize_bbox
 
 logger = logging.getLogger(__name__)
+
+
+def _instr_op_name(instr) -> str:
+    try:
+        return str(instr.operator)
+    except Exception:
+        return "?"
+
+
+def _show_operand_preview(instr, limit: int = 80) -> str:
+    """Xem nhanh nội dung Tj/TJ/'/\" (CID/hex → độ dài + hex head)."""
+    try:
+        op = _instr_op_name(instr)
+        operands = list(instr.operands)
+        if not operands:
+            return f"{op}()"
+
+        def _one(raw) -> str:
+            try:
+                b = bytes(raw)
+            except Exception:
+                s = str(raw)
+                return s if len(s) <= limit else s[:limit] + "…"
+            # Thử utf-8; nếu toàn control/không đọc được → hex
+            try:
+                t = b.decode("utf-8")
+                if t.isprintable() or any(c.isalpha() for c in t):
+                    t = t.replace("\n", "\\n")
+                    return t if len(t) <= limit else t[:limit] + "…"
+            except Exception:
+                pass
+            hx = b.hex()
+            return f"<{len(b)}B:{hx[: min(24, len(hx))]}{'…' if len(hx) > 24 else ''}>"
+
+        if op == "TJ":
+            arr = operands[0] if operands else []
+            if isinstance(arr, (list, tuple, pikepdf.Array)):
+                parts = []
+                total_b = 0
+                for item in arr:
+                    if isinstance(item, (int, float)):
+                        parts.append(f"[{item}]")
+                        continue
+                    try:
+                        total_b += len(bytes(item))
+                    except Exception:
+                        pass
+                    parts.append(_one(item))
+                text = "".join(parts)
+                if len(text) > limit:
+                    text = text[:limit] + "…"
+                return f"TJ(parts={len(list(arr))},bytes≈{total_b},{text!r})"
+            return f"TJ({_one(arr)!r})"
+        raw = operands[-1] if op == '"' and len(operands) >= 3 else operands[0]
+        return f"{op}({_one(raw)!r})"
+    except Exception as exc:
+        return f"<preview-error {type(exc).__name__}>"
+
+
+def _ops_window(instructions: list, center: int, radius: int = 8) -> list[dict]:
+    """Cửa sổ op quanh index để debug multi-run."""
+    lo = max(0, center - radius)
+    hi = min(len(instructions), center + radius + 1)
+    out = []
+    for i in range(lo, hi):
+        instr = instructions[i]
+        op = _instr_op_name(instr)
+        entry: dict = {"i": i, "op": op, "mark": i == center}
+        if op in {"Tj", "TJ", "'", '"'}:
+            entry["text"] = _show_operand_preview(instr)
+        elif op == "Tm" and instr.operands:
+            try:
+                entry["tm"] = [float(v) for v in instr.operands]
+            except Exception:
+                entry["tm"] = str(list(instr.operands))[:80]
+        out.append(entry)
+    return out
+
+
+def _stream_text_shows(instructions: list) -> list[dict]:
+    """Mọi show-op text trong stream (index + preview)."""
+    rows = []
+    for i, instr in enumerate(instructions):
+        op = _instr_op_name(instr)
+        if op in {"Tj", "TJ", "'", '"'}:
+            rows.append({"i": i, "preview": _show_operand_preview(instr)})
+    return rows
 
 
 class ObjectMapError(ValueError):
@@ -462,6 +550,52 @@ def _Tm_instruction(tm: list[float]) -> pikepdf.ContentStreamInstruction:
     )
 
 
+def _BT_instruction() -> pikepdf.ContentStreamInstruction:
+    return pikepdf.ContentStreamInstruction([], pikepdf.Operator("BT"))
+
+
+def _ET_instruction() -> pikepdf.ContentStreamInstruction:
+    return pikepdf.ContentStreamInstruction([], pikepdf.Operator("ET"))
+
+
+def _show_as_Tj(show_instr) -> pikepdf.ContentStreamInstruction:
+    """Chuẩn hoá Tj/TJ/'/\" thành một show an toàn trong BT…ET tách riêng."""
+    op = str(show_instr.operator)
+    operands = list(show_instr.operands)
+    if op == "Tj":
+        return show_instr
+    if op == "TJ":
+        return show_instr
+    if op == "'" and operands:
+        return pikepdf.ContentStreamInstruction([operands[0]], pikepdf.Operator("Tj"))
+    if op == '"' and len(operands) >= 3:
+        return pikepdf.ContentStreamInstruction([operands[2]], pikepdf.Operator("Tj"))
+    if operands:
+        return pikepdf.ContentStreamInstruction([operands[-1]], pikepdf.Operator("Tj"))
+    return pikepdf.ContentStreamInstruction([pikepdf.String("")], pikepdf.Operator("Tj"))
+
+
+def _active_tf_before(instructions: list, index: int):
+    """Tf gần nhất trước `index` (kể cả ngoài BT — text state bền)."""
+    for j in range(index - 1, -1, -1):
+        if str(instructions[j].operator) == "Tf":
+            return instructions[j]
+    return None
+
+
+def _should_drop_tm_before_show(instructions: list, tm_index: int, show_index: int) -> bool:
+    """True nếu `tm_index` là Tm ngay trước show và không còn show nào dùng nó."""
+    if tm_index < 0 or show_index != tm_index + 1:
+        return False
+    if str(instructions[tm_index].operator) != "Tm":
+        return False
+    # Sau show: ET / Tm / Td / TD / T* / BMC… → Tm này chỉ phục vụ show này.
+    if show_index + 1 >= len(instructions):
+        return True
+    nxt = str(instructions[show_index + 1].operator)
+    return nxt in {"ET", "Tm", "Td", "TD", "T*", "BT", "Q", "EMC"}
+
+
 def _shifted_text_tm(tm: list[float], ctm: list[float], dx: float, dy: float) -> list[float]:
     """
     Tính text-matrix MỚI để glyph dịch `(dx, dy)` trong hệ tọa độ TRANG (page-space).
@@ -836,24 +970,18 @@ def move_objects(
     coord_space: str = "pdf",
 ) -> MoveResult:
     """
-    Di chuyển (tịnh tiến) đúng tập object mục tiêu bằng cách BỌC CÔ LẬP `q/cm/Q`.
+    Di chuyển (tịnh tiến) đúng tập object mục tiêu.
 
-    Với mỗi object mục tiêu (text / image / vector), chèn
-    `q <translate(dx,dy) cm>` NGAY TRƯỚC dải operator và `Q` NGAY SAU — bao cô
-    lập để KHÔNG ảnh hưởng graphics-state (CTM/màu/clip) của op khác.
+    IMAGE/VECTOR (và text 1 run trong BT…ET): bọc `q <translate cm> … Q` page-space
+    + mở rộng clip lồng nhau (InDesign/Illustrator) — `cm` ngoài BT…ET.
 
-    TEXT: bọc cả cụm `BT…ET` (và khối `q…clip…Q` cô lập nếu có) — KHÔNG ghim
-    `Tm` từng show-op. Cách cũ (Tm) dễ làm chữ RA NGOÀI clip path → biến mất
-    trên PDF InDesign/Illustrator. `cm` đặt NGOÀI BT…ET (hợp lệ) và dịch cả
-    clip + text cùng lúc.
+    TEXT nhiều run chung một BT…ET (PDFium tách "hotline" / "@asia…" thành
+    object riêng): TÁCH run được chọn ra BT…ET mới + bọc cm, XOÁ show gốc
+    trong cụm — không ghim Tm ước lượng (tránh cắt/nhân bản email).
 
     Quy ước hệ tọa độ của `(dx, dy)` — xác định bởi `coord_space`:
-      - `"pdf"`    (MẶC ĐỊNH): `(dx, dy)` đã ở hệ trang PDF (gốc dưới-trái,
-                   trục y hướng LÊN). Áp thẳng vào `cm` translate.
-      - `"canvas"`: `(dx, dy)` ở hệ canvas frontend (gốc trên-trái, trục y
-                   hướng XUỐNG). `dy_pdf = -dy`; `dx` giữ nguyên.
-
-    CÙNG một `(dx, dy)` được áp cho TẤT CẢ object trong `obj_metas` (Yêu cầu 5.5).
+      - `"pdf"`    (MẶC ĐỊNH): hệ trang PDF (gốc dưới-trái, y lên).
+      - `"canvas"`: hệ canvas (gốc trên-trái, y xuống); `dy_pdf = -dy`.
 
     Raises:
         ObjectMapError: nếu BẤT KỲ target nào không map được duy nhất → HỦY,
@@ -887,18 +1015,232 @@ def move_objects(
     instructions = parse_page_ops(pg)
     n = len(instructions)
 
-    # ── Map MỌI target (text/image/vector) → span rồi bọc q/cm/Q thống nhất ─
+    _dbg = edit_text_move_log_enabled()
+    shows_before = _stream_text_shows(instructions) if _dbg else []
+    if _dbg:
+        log_text_move(
+            "text.move.begin",
+            dx=pdf_dx,
+            dy=pdf_dy,
+            coordSpace=coord_space,
+            metaCount=len(obj_metas),
+            streamOpCount=n,
+            showsBefore=shows_before,
+            targets=[
+                {
+                    "id": (m.get("id") if isinstance(m, dict) else getattr(m, "id", "?")),
+                    "type": (m.get("type") if isinstance(m, dict) else getattr(m, "type", None)),
+                    "bbox": list(
+                        m.get("bbox") if isinstance(m, dict)
+                        else getattr(m, "bbox", None) or []
+                    ),
+                    "drawIndex": (
+                        m.get("drawIndex") if isinstance(m, dict)
+                        else getattr(m, "drawIndex", None)
+                    ),
+                }
+                for m in obj_metas
+            ],
+        )
+
+    # ── Map targets ────────────────────────────────────────────────────────
+    # wrap_spans: bọc q/cm/Q (image/vector + text 1-run).
+    # text_extracts: multi-run — xoá show gốc, chèn BT…ET mới sau ET cụm.
     wrap_spans: list[OpSpan] = []
+    text_extracts: list[dict] = []
+    remove_indices: set[int] = set()
+    # et_index (instruction ET) → các block instruction cần chèn SAU nó
+    append_after: dict[int, list[list]] = {}
+    path_decisions: list[dict] = []
+
     for meta in obj_metas:
         meta_type = meta.get("type") if isinstance(meta, dict) else getattr(meta, "type", None)
         meta_id = meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", "?")
+        meta_bbox = list(
+            meta.get("bbox") if isinstance(meta, dict)
+            else getattr(meta, "bbox", [0.0, 0.0, 0.0, 0.0])
+        )
         if meta_type == "text":
-            span = _resolve_text_move_span(pg, meta, pdf, instructions)
-            wrap_spans.append(span)
+            info = text_show_op_for_move(pg, meta, pdf=pdf)
+            if info is None:
+                span = _resolve_text_move_span(pg, meta, pdf, instructions)
+                wrap_spans.append(span)
+                path_decisions.append({
+                    "metaId": meta_id,
+                    "path": "wrap_full_bt_et",
+                    "reason": "text_show_op_for_move_none",
+                    "bbox": meta_bbox,
+                    "wrap": [span.start, span.end],
+                })
+                continue
+
+            cluster = info.get("cluster") or []
+            target_index = int(info["target_index"])
+            cluster_preview = []
+            for s in cluster:
+                si = int(s["index"])
+                if 0 <= si < n:
+                    cluster_preview.append({
+                        "i": si,
+                        "preview": _show_operand_preview(instructions[si]),
+                        "tm": list(s.get("tm") or []),
+                    })
+            if len(cluster) <= 1:
+                # QUAN TRỌNG: bọc ĐÚNG BT…ET chứa target_index từ text_show_op_for_move.
+                # map_object (bbox) trên file AI/InDesign từng trả span LÂN CẬN
+                # (vd show@286 nhưng wrap [253,265]) → kéo hotline phá email.
+                bounds = _find_bt_et_bounds(instructions, target_index)
+                if bounds is not None:
+                    start, end = _expand_text_span_for_move(
+                        instructions, bounds[0], bounds[1]
+                    )
+                    show_ctm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+                    if cluster:
+                        show_ctm = list(cluster[0].get("ctm") or show_ctm)
+                    span = OpSpan(
+                        start=start,
+                        end=end,
+                        kind="text",
+                        ctm=show_ctm,
+                        bbox=meta_bbox,
+                        resource_name=None,
+                    )
+                else:
+                    span = _resolve_text_move_span(pg, meta, pdf, instructions)
+                wrap_spans.append(span)
+                path_decisions.append({
+                    "metaId": meta_id,
+                    "path": "wrap_single_run",
+                    "targetIndex": target_index,
+                    "clusterSize": len(cluster),
+                    "cluster": cluster_preview,
+                    "bbox": meta_bbox,
+                    "wrap": [span.start, span.end],
+                    "btEtBounds": list(bounds) if bounds else None,
+                    "window": _ops_window(instructions, target_index),
+                    "wrapContainsTarget": (
+                        span.start <= target_index < span.end
+                    ),
+                })
+                if not (span.start <= target_index < span.end):
+                    logger.error(
+                        "[EDIT_TEXT_MOVE] wrap KHÔNG chứa target! meta=%s "
+                        "target_i=%d wrap=[%d,%d) — HUỶ để không phá run khác",
+                        meta_id, target_index, span.start, span.end,
+                    )
+                    log_text_move(
+                        "text.move.wrap_miss_target",
+                        metaId=meta_id,
+                        targetIndex=target_index,
+                        wrap=[span.start, span.end],
+                    )
+                    raise ObjectMapError(
+                        f"Map text '{meta_id}' lệch span (show@{target_index} "
+                        f"vs wrap [{span.start},{span.end})). HỦY — không ghi."
+                    )
+                continue
+
+            # Multi-run: tách run ra khỏi cụm (extract) — an toàn hơn ghim Tm.
+            if not (0 <= target_index < n):
+                raise ObjectMapError(
+                    f"Show-op text '{meta_id}' ngoài phạm vi stream."
+                )
+            if target_index in remove_indices:
+                path_decisions.append({
+                    "metaId": meta_id,
+                    "path": "extract_skip_already_removed",
+                    "targetIndex": target_index,
+                })
+                continue  # đã extract trong batch selection
+            show_by_idx = {int(s["index"]): s for s in cluster}
+            target_show = show_by_idx.get(target_index)
+            if target_show is None:
+                raise ObjectMapError(
+                    f"Không tìm thấy show-op mục tiêu cho text '{meta_id}'."
+                )
+            bounds = _find_bt_et_bounds(instructions, target_index)
+            if bounds is None:
+                # Không tìm được ET → fallback bọc cả cụm
+                span = _resolve_text_move_span(pg, meta, pdf, instructions)
+                wrap_spans.append(span)
+                path_decisions.append({
+                    "metaId": meta_id,
+                    "path": "wrap_full_bt_et",
+                    "reason": "no_bt_et_bounds",
+                    "targetIndex": target_index,
+                    "cluster": cluster_preview,
+                    "bbox": meta_bbox,
+                    "wrap": [span.start, span.end],
+                })
+                continue
+            _bt, et_end = bounds
+            et_index = et_end - 1
+
+            show_instr = instructions[target_index]
+            base_tm = list(target_show["tm"])
+            tf_instr = _active_tf_before(instructions, target_index)
+            drop_tm = _should_drop_tm_before_show(
+                instructions, target_index - 1, target_index
+            )
+
+            # Block độc lập: vị trí cũ (Tm gốc) + cm dịch page-space.
+            block: list = [
+                _q_instruction(),
+                _cm_translate_instruction(pdf_dx, pdf_dy),
+                _BT_instruction(),
+            ]
+            if tf_instr is not None:
+                block.append(tf_instr)
+            block.append(_Tm_instruction(base_tm))
+            block.append(_show_as_Tj(show_instr))
+            block.append(_ET_instruction())
+            block.append(_Q_instruction())
+
+            append_after.setdefault(et_index, []).append(block)
+            remove_indices.add(target_index)
+            # Gỡ Tm chỉ phục vụ show này (tránh Tm mồ côi ảnh hưởng run sau).
+            if drop_tm:
+                remove_indices.add(target_index - 1)
+
+            text_extracts.append({
+                "target_index": target_index,
+                "meta_id": meta_id,
+                "bbox": meta_bbox,
+                "showPreview": _show_operand_preview(show_instr),
+                "baseTm": base_tm,
+                "etIndex": et_index,
+                "btIndex": _bt,
+                "dropPrecedingTm": drop_tm,
+            })
+            path_decisions.append({
+                "metaId": meta_id,
+                "path": "extract_multi_run",
+                "targetIndex": target_index,
+                "clusterSize": len(cluster),
+                "cluster": cluster_preview,
+                "bbox": meta_bbox,
+                "showPreview": _show_operand_preview(show_instr),
+                "baseTm": base_tm,
+                "etIndex": et_index,
+                "btIndex": _bt,
+                "dropPrecedingTm": drop_tm,
+                "window": _ops_window(instructions, target_index),
+                "siblingShowsNotTouched": [
+                    c for c in cluster_preview if c["i"] != target_index
+                ],
+            })
+            if _dbg:
+                logger.info(
+                    "[EDIT_TEXT_MOVE] EXTRACT meta=%s target_i=%d show=%s "
+                    "cluster=%d dropTm=%s et=%d",
+                    meta_id,
+                    target_index,
+                    _show_operand_preview(show_instr),
+                    len(cluster),
+                    drop_tm,
+                    et_index,
+                )
         else:
-            # Gộp fill+stroke: 1 object vẽ nhiều lượt (cùng path) → nhiều span cùng
-            # bbox, đều phải dịch CÙNG (dx,dy). map_object_spans trả HẾT span đó;
-            # rỗng = không map được duy nhất → HỦY (bảo toàn màu, Yêu cầu 4.7).
             obj_spans = map_object_spans(pg, meta, pdf=pdf)
             if not obj_spans:
                 raise ObjectMapError(
@@ -929,9 +1271,7 @@ def move_objects(
     def _add_suffix(i: int, instrs: list) -> None:
         suffix.setdefault(i, []).extend(instrs)
 
-    # Clip LỒNG NHAU (InDesign/Illustrator): mở rộng clip của các khối q…Q BAO
-    # NGOÀI vùng bọc `cm` để glyph đã dịch không bị clip ngoài cắt mất (§bug
-    # "kéo text mất chữ"). Gom thay-thế `re` từ mọi span rồi áp một lần.
+    # Clip LỒNG NHAU (InDesign/Illustrator): mở rộng clip bao ngoài vùng cm.
     clip_replacements: dict[int, object] = {}
     for span in unique:
         start = max(0, span.start)
@@ -943,29 +1283,84 @@ def move_objects(
         clip_replacements.update(
             _shift_enclosing_clip_rects(instructions, start, pdf_dx, pdf_dy)
         )
+    # Clip expand cho extract (neo tại show gốc — trước khi xoá).
+    for ex in text_extracts:
+        ti = int(ex["target_index"])
+        if 0 <= ti < n:
+            clip_replacements.update(
+                _shift_enclosing_clip_rects(instructions, ti, pdf_dx, pdf_dy)
+            )
 
     # ── Dựng instruction list mới ──────────────────────────────────────────
     new_instructions: list = []
     for i, instr in enumerate(instructions):
+        if i in remove_indices:
+            # Vẫn chèn extract sau ET dù ET không bị xoá; skip show/Tm đã extract.
+            if i in append_after:
+                for block in append_after[i]:
+                    new_instructions.extend(block)
+            continue
         if i in prefix:
             new_instructions.extend(prefix[i])
         new_instructions.append(clip_replacements.get(i, instr))
         if i in suffix:
             new_instructions.extend(suffix[i])
+        if i in append_after:
+            for block in append_after[i]:
+                new_instructions.extend(block)
 
     # ── Ghi lại content stream qua pikepdf (đường ghi DUY NHẤT) ─────────────
     new_bytes = pikepdf.unparse_content_stream(new_instructions)
     pg.obj[pikepdf.Name("/Contents")] = pdf.make_stream(new_bytes)
 
+    if _dbg:
+        shows_after = _stream_text_shows(new_instructions)
+        log_text_move(
+            "text.move.end",
+            dx=pdf_dx,
+            dy=pdf_dy,
+            pathDecisions=path_decisions,
+            removeIndices=sorted(remove_indices),
+            appendAfterEt=sorted(append_after.keys()),
+            wrapRanges=[[s.start, s.end] for s in unique],
+            extractCount=len(text_extracts),
+            extracts=text_extracts,
+            showsBefore=shows_before,
+            showsAfter=shows_after,
+            showTextsBefore=[s.get("preview") for s in shows_before],
+            showTextsAfter=[s.get("preview") for s in shows_after],
+            newOpCount=len(new_instructions),
+        )
+        logger.info(
+            "[EDIT_TEXT_MOVE] end extracts=%d wraps=%d remove=%s shows %d→%d decisions=%s",
+            len(text_extracts),
+            len(unique),
+            sorted(remove_indices),
+            len(shows_before),
+            len(shows_after),
+            [d.get("path") for d in path_decisions],
+        )
+
+    granular_spans = [
+        OpSpan(
+            start=0, end=0, kind="text",
+            ctm=[1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            bbox=list(ex["bbox"]),
+            resource_name=None,
+        )
+        for ex in text_extracts
+    ]
+    all_spans = list(wrap_spans) + granular_spans
+    wrapped = len(unique) + len(text_extracts)
     return MoveResult(
         changed=True,
-        moved_spans=wrap_spans,
+        moved_spans=all_spans,
         dx=pdf_dx,
         dy=pdf_dy,
-        wrapped_count=len(unique),
+        wrapped_count=wrapped,
         message=(
-            f"Đã di chuyển {len(wrap_spans)} object (dx={pdf_dx:.3f}, dy={pdf_dy:.3f}); "
-            f"bọc q/cm/Q page-space (text gồm clip group nếu có)."
+            f"Đã di chuyển {len(obj_metas)} object (dx={pdf_dx:.3f}, dy={pdf_dy:.3f}); "
+            f"cm-wrap={len(unique)}, text-extract={len(text_extracts)}."
         ),
     )
 

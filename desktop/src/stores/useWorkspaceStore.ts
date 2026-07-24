@@ -22,6 +22,15 @@ export interface CropSelectionState {
     selectedIndex: number;
 }
 
+export interface EditObjectSelectionContext {
+    /** File id used by Edit PDF when the selection was captured. */
+    fileId: string;
+    /** Zero-based source page index. */
+    pageIndex: number;
+    /** Stable object ids from /edit/objects for that page. */
+    objectIds: string[];
+}
+
 type CropSelectionUpdater = CropSelectionState | null | ((prev: CropSelectionState | null) => CropSelectionState | null);
 const CROP_HISTORY_LIMIT = 64;
 
@@ -100,6 +109,7 @@ export interface WorkspaceState {
     hiddenObjectIds: string[];
     lockedObjectIds: string[];
     selectionFileId: string;
+    objectSelectionContext: EditObjectSelectionContext | null;
     // Chế độ "đặt object mới" (toolbar +Text/Ảnh). Nâng lên store để nút ở panel
     // phải điều khiển được: cú bấm kế tiếp lên BẤT KỲ trang nào sẽ đặt object tại đó.
     editAddMode: 'text' | 'image' | null;
@@ -193,6 +203,7 @@ export interface WorkspaceState {
     setHiddenObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setLockedObjectIds: (updater: string[] | ((prev: string[]) => string[])) => void;
     setSelectionFileId: (id: string) => void;
+    setObjectSelectionContext: (context: EditObjectSelectionContext | null) => void;
     setEditAddMode: (updater: ('text' | 'image' | null) | ((prev: 'text' | 'image' | null) => 'text' | 'image' | null)) => void;
 
     setPdfOcgLayers: (layers: any[]) => void;
@@ -283,6 +294,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     hiddenObjectIds: [],
     lockedObjectIds: [],
     selectionFileId: '',
+    objectSelectionContext: null,
     editAddMode: null,
 
     pdfOcgLayers: [],
@@ -474,7 +486,33 @@ export const createWorkspaceStore = () => createStore<WorkspaceState>()((set) =>
     }),
     setSelectionFileId: (id) => set((state) => {
         if (state.selectionFileId === id) return state;
-        return { selectionFileId: id, selectedObjectIds: [], hiddenObjectIds: [], lockedObjectIds: [] };
+        return {
+            selectionFileId: id,
+            selectedObjectIds: [],
+            hiddenObjectIds: [],
+            lockedObjectIds: [],
+            objectSelectionContext: id && state.objectSelectionContext
+                ? { ...state.objectSelectionContext, fileId: id }
+                : null,
+        };
+    }),
+    setObjectSelectionContext: (context) => set((state) => {
+        const prev = state.objectSelectionContext;
+        if (prev === context) return state;
+        if (
+            prev && context
+            && prev.fileId === context.fileId
+            && prev.pageIndex === context.pageIndex
+            && prev.objectIds.length === context.objectIds.length
+            && prev.objectIds.every((id, index) => id === context.objectIds[index])
+        ) {
+            return state;
+        }
+        return {
+            objectSelectionContext: context
+                ? { ...context, objectIds: [...context.objectIds] }
+                : null,
+        };
     }),
     setEditAddMode: (updater) => set((state) => ({
         editAddMode: typeof updater === 'function' ? updater(state.editAddMode) : updater,

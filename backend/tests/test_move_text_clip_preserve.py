@@ -89,7 +89,7 @@ def test_move_text_inside_clip_stays_visible():
 
 
 def test_move_text_quote_operator_stays_visible():
-    """Show-op `'` trong BT…ET: bọc q/cm/Q page-space → chữ vẫn hiện đủ."""
+    """Show-op `'` trong BT…ET nhiều run: ghim Tm granular, chữ vẫn hiện đủ."""
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "quote.pdf")
         out = os.path.join(td, "out.pdf")
@@ -118,8 +118,8 @@ ET
         with pikepdf.open(src) as pdf:
             move_objects(pdf.pages[0], [target], 20.0, -30.0, pdf)
             raw = bytes(pdf.pages[0].Contents.read_bytes())
-            # Bọc q … cm … Q quanh cụm text.
-            assert b" cm\n" in raw or b" cm" in raw
+            # `'` multi-run → fallback bọc cm cả cụm (tránh double leading).
+            assert b" cm" in raw or b"cm\n" in raw
             pdf.save(out)
 
         after = _dark_pixels(out)

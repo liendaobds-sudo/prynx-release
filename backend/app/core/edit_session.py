@@ -41,6 +41,7 @@ import pikepdf
 from pydantic import BaseModel
 
 from app.core import edit_io, geometry_reader
+from app.core.edit_debug_log import edit_bug_log_enabled, edit_bug_log_path, log_edit_bug
 from app.core.object_mapper import contents_coalesce, map_object_spans, map_text_show_op, parse_page_ops
 from app.core.stream_editor import (
     _has_overlapping_object_sibling,
@@ -609,6 +610,155 @@ def _compute_new_bbox(op: EditOp, op_result, post_bytes: bytes,
     return primary, new_bboxes
 
 
+_EDIT_DEBUG_TRANSFORM_KINDS = frozenset({"move", "affine", "resize", "rotate"})
+
+
+def _debug_pdf_value(value):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, pikepdf.Array)):
+        return [_debug_pdf_value(item) for item in list(value)]
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    try:
+        return float(value)
+    except Exception:
+        return str(value)
+
+
+def _debug_instruction(instruction, index: int, inside: bool = False) -> dict:
+    return {
+        "index": index,
+        "insideTargetSpan": inside,
+        "operator": str(instruction.operator),
+        "operands": [str(value)[:240] for value in list(instruction.operands)[:32]],
+    }
+
+
+def _debug_active_clips(instructions: list, stop_index: int) -> list[dict]:
+    depth = 0
+    active: list[dict] = []
+    for index, instruction in enumerate(instructions[:max(0, stop_index)]):
+        operator = str(instruction.operator)
+        if operator == "q":
+            depth += 1
+        elif operator in {"W", "W*"}:
+            active.append({"index": index, "operator": operator, "qDepth": depth})
+        elif operator == "Q":
+            active = [entry for entry in active if entry["qDepth"] < depth]
+            depth = max(0, depth - 1)
+    return active
+
+
+def _debug_form_resource(page, resource_name: str | None) -> dict | None:
+    if not resource_name:
+        return None
+    try:
+        resources = page.obj.get("/Resources") or {}
+        xobjects = resources.get("/XObject") or {}
+        form = xobjects.get(pikepdf.Name("/" + resource_name.lstrip("/")))
+        if form is None:
+            return {"name": resource_name, "missing": True}
+        decoded = form.read_bytes()
+        group = form.get("/Group") or {}
+        form_resources = form.get("/Resources") or {}
+        return {
+            "name": resource_name,
+            "objgen": list(form.objgen) if hasattr(form, "objgen") else None,
+            "subtype": str(form.get("/Subtype", "")),
+            "bbox": _debug_pdf_value(form.get("/BBox")),
+            "matrix": _debug_pdf_value(form.get("/Matrix")),
+            "group": {
+                "S": str(group.get("/S", "")),
+                "CS": str(group.get("/CS", "")),
+                "I": _debug_pdf_value(group.get("/I")),
+                "K": _debug_pdf_value(group.get("/K")),
+            } if group else None,
+            "resourceKeys": sorted(str(key) for key in form_resources.keys()),
+            "streamLength": len(decoded),
+            "streamSha256": hashlib.sha256(decoded).hexdigest(),
+        }
+    except Exception as exc:
+        return {"name": resource_name, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _debug_transform_snapshot(
+    pdf: pikepdf.Pdf,
+    op: EditOp,
+    metas: list[ObjMeta],
+    all_metas: list[ObjMeta],
+) -> dict:
+    try:
+        page = _page_or_raise(pdf, op.page)
+        instructions = parse_page_ops(page)
+        target_rows = []
+        for meta in metas:
+            try:
+                if meta.type == "text":
+                    span = map_text_show_op(page, meta, pdf=pdf)
+                    spans = [span] if span is not None else []
+                else:
+                    spans = map_object_spans(
+                        page,
+                        meta,
+                        pdf=pdf,
+                        separate_same_bbox=_has_overlapping_object_sibling(meta, all_metas),
+                    )
+                span_rows = []
+                for span in spans:
+                    context_start = max(0, span.start - 12)
+                    context_end = min(len(instructions), span.end + 12)
+                    span_rows.append({
+                        "start": span.start,
+                        "end": span.end,
+                        "kind": span.kind,
+                        "bbox": list(span.bbox),
+                        "ctm": list(span.ctm),
+                        "resourceName": span.resource_name,
+                        "ocgIds": list(span.ocgIds),
+                        "activeClipOpsBeforeSpan": _debug_active_clips(instructions, span.start),
+                        "operatorContext": [
+                            _debug_instruction(
+                                instructions[index],
+                                index,
+                                span.start <= index < span.end,
+                            )
+                            for index in range(context_start, context_end)
+                        ],
+                        "form": _debug_form_resource(page, span.resource_name),
+                    })
+                target_rows.append({
+                    "id": meta.id,
+                    "drawIndex": meta.drawIndex,
+                    "type": meta.type,
+                    "bbox": list(meta.bbox),
+                    "matrix": list(meta.matrix) if meta.matrix else None,
+                    "ocgIds": list(meta.ocgIds),
+                    "mappedSpans": span_rows,
+                })
+            except Exception as exc:
+                target_rows.append({
+                    "id": meta.id,
+                    "drawIndex": meta.drawIndex,
+                    "type": meta.type,
+                    "bbox": list(meta.bbox),
+                    "mappingError": f"{type(exc).__name__}: {exc}",
+                })
+        page_box = _read_page_box(pdf, op.page) if "_read_page_box" in globals() else None
+        return {
+            "pageBox": page_box,
+            "instructionCount": len(instructions),
+            "pageClipOps": [
+                {"index": index, "operator": str(instruction.operator)}
+                for index, instruction in enumerate(instructions)
+                if str(instruction.operator) in {"W", "W*"}
+            ][:200],
+            "targets": target_rows,
+        }
+    except Exception as exc:
+        return {"snapshotError": f"{type(exc).__name__}: {exc}"}
+
+
 # ── Áp Edit_Op in-memory ─────────────────────────────────────────────────────
 def apply_op(session: EditSession, op: EditOp) -> dict:
     """
@@ -659,8 +809,10 @@ def apply_op(session: EditSession, op: EditOp) -> dict:
             session.pdf.save(pre_buf, compress_streams=False)
             pre_bytes = pre_buf.getvalue()
             session.live_bytes = pre_bytes
+        debug_before = None
+        old_metas: list[ObjMeta] = []
+        by_id: dict[str, ObjMeta] = {}
         try:
-            old_metas: list[ObjMeta] = []
             if op.kind in LAYER_EDIT_KINDS:
                 by_id = {}
             else:
@@ -668,9 +820,38 @@ def apply_op(session: EditSession, op: EditOp) -> dict:
                 if op.kind != "add":
                     old_metas = _resolve_targets(by_id, op.page, op.targetIds)
 
+            if op.kind in _EDIT_DEBUG_TRANSFORM_KINDS and edit_bug_log_enabled():
+                debug_before = _debug_transform_snapshot(
+                    session.pdf, op, old_metas, list(by_id.values())
+                )
+                log_edit_bug(
+                    "transform.before",
+                    logPath=str(edit_bug_log_path()),
+                    sessionId=session.session_id,
+                    sourceFid=session.source_fid,
+                    sourcePath=session.source_path,
+                    page=op.page,
+                    op=op.model_dump(mode="json"),
+                    livePdfSha256=hashlib.sha256(pre_bytes).hexdigest(),
+                    snapshot=debug_before,
+                )
+
             # 2) Áp op IN-PLACE qua stream_editor/OCG editor.
             op_result = _apply_op_to_pdf(session.pdf, op, by_id, pre_bytes)
-        except Exception:
+        except Exception as exc:
+            if op.kind in _EDIT_DEBUG_TRANSFORM_KINDS and edit_bug_log_enabled():
+                log_edit_bug(
+                    "transform.error",
+                    logPath=str(edit_bug_log_path()),
+                    sessionId=session.session_id,
+                    sourceFid=session.source_fid,
+                    sourcePath=session.source_path,
+                    page=op.page,
+                    op=op.model_dump(mode="json"),
+                    errorType=type(exc).__name__,
+                    error=str(exc),
+                    snapshot=debug_before,
+                )
             # 3) Lỗi map/glyph/tham số (hoặc bất kỳ) → KHÔI PHỤC Live_Document từ
             #    bytes pre-op để giữ nguyên trạng thái; KHÔNG ghi op_log (Yêu cầu 10.2, 10.3).
             try:
@@ -697,6 +878,35 @@ def apply_op(session: EditSession, op: EditOp) -> dict:
         primary_bbox, new_bboxes = _compute_new_bbox(op, op_result, post_bytes, old_metas)
         old_bboxes = [normalize_bbox(list(m.bbox)) for m in old_metas]
         changed = bool(getattr(op_result, "changed", True))
+
+        if op.kind in _EDIT_DEBUG_TRANSFORM_KINDS and edit_bug_log_enabled():
+            try:
+                post_by_id = _list_objects_from_bytes(post_bytes, op.page)
+                post_metas = [
+                    post_by_id[target_id]
+                    for target_id in op.targetIds
+                    if target_id in post_by_id
+                ]
+                debug_after = _debug_transform_snapshot(
+                    session.pdf, op, post_metas, list(post_by_id.values())
+                )
+            except Exception as exc:
+                debug_after = {"snapshotError": f"{type(exc).__name__}: {exc}"}
+            log_edit_bug(
+                "transform.after",
+                logPath=str(edit_bug_log_path()),
+                sessionId=session.session_id,
+                sourceFid=session.source_fid,
+                sourcePath=session.source_path,
+                page=op.page,
+                op=op.model_dump(mode="json"),
+                changed=changed,
+                oldBboxes=old_bboxes,
+                newBboxes=new_bboxes,
+                result=_serialize_result(op_result),
+                livePdfSha256=hashlib.sha256(post_bytes).hexdigest(),
+                snapshot=debug_after,
+            )
 
         # Ghi nhận op vào Op_Log theo đúng thứ tự; op mới → nhánh redo bị loại bỏ
         # (Yêu cầu 2.2, 7.4). Cập nhật trạng thái phiên (Yêu cầu 2.3).
@@ -1296,6 +1506,31 @@ def _union_bbox(bboxes: list[list[float]]) -> list[float] | None:
     return [x0, y0, x1, y1]
 
 
+def _result_touches_atomic_form(op_result_dict: dict) -> bool:
+    """Return True when an edit result contains a page-level Form XObject span."""
+    detail = op_result_dict.get("detail") or {}
+    if not isinstance(detail, dict):
+        return False
+    for key in (
+        "moved_spans",
+        "transformed_spans",
+        "resized_spans",
+        "rotated_spans",
+        "removed_spans",
+    ):
+        spans = detail.get(key) or []
+        if not isinstance(spans, list):
+            continue
+        for span in spans:
+            if (
+                isinstance(span, dict)
+                and span.get("kind") == "vector"
+                and bool(span.get("resource_name"))
+            ):
+                return True
+    return False
+
+
 def _compute_clip_region(op: EditOp, op_result_dict: dict,
                          page_box: list[float] | None,
                          clip_pad: float) -> list[float] | None:
@@ -1316,6 +1551,13 @@ def _compute_clip_region(op: EditOp, op_result_dict: dict,
     if op.kind == "delete":
         return None
     if page_box is None:
+        return None
+    # Form XObjects are atomic groups whose transparency group, soft masks,
+    # overprint and Form /BBox all render in the surrounding page context.
+    # A cropped incremental bitmap can therefore show a truncated/stale group
+    # even though the edited PDF stream is correct. Use one full-page preview
+    # for these relatively rare operations; the PDF itself remains vector.
+    if _result_touches_atomic_form(op_result_dict):
         return None
 
     new_bboxes = op_result_dict.get("bboxes") or []
@@ -1409,6 +1651,25 @@ def render_clip(session: EditSession, op: EditOp, op_result: dict,
 
         # 3+4) Render: clip nếu xác định được vùng, ngược lại toàn trang.
         b64, _w, _h = _render_clip_blocking(pdf_bytes, op.page, scale, clip_rect)
+        if op.kind in _EDIT_DEBUG_TRANSFORM_KINDS and edit_bug_log_enabled():
+            log_edit_bug(
+                "preview.render",
+                logPath=str(edit_bug_log_path()),
+                sessionId=session.session_id,
+                sourceFid=session.source_fid,
+                sourcePath=session.source_path,
+                page=op.page,
+                op=op.model_dump(mode="json"),
+                pageBox=page_box,
+                absoluteRegion=region,
+                clipRect=clip_rect,
+                full=clip_rect is None,
+                scale=scale,
+                clipPad=clip_pad,
+                previewWidth=_w,
+                previewHeight=_h,
+                livePdfSha256=hashlib.sha256(pdf_bytes).hexdigest(),
+            )
 
     full = clip_rect is None
     preview = f"data:image/png;base64,{b64}"
@@ -1795,6 +2056,26 @@ def commit(session: EditSession) -> dict:
         session.last_commit_path = abs_output_path
         session.dirty = False
         session.last_access = time.monotonic()
+
+        if (
+            edit_bug_log_enabled()
+            and any(item.kind in _EDIT_DEBUG_TRANSFORM_KINDS for item in session.op_log)
+        ):
+            log_edit_bug(
+                "session.commit",
+                logPath=str(edit_bug_log_path()),
+                sessionId=session.session_id,
+                sourceFid=session.source_fid,
+                sourcePath=session.source_path,
+                outputFid=output_fid,
+                outputPath=abs_output_path,
+                opCount=len(session.op_log),
+                transformOps=[
+                    item.model_dump(mode="json")
+                    for item in session.op_log
+                    if item.kind in _EDIT_DEBUG_TRANSFORM_KINDS
+                ],
+            )
 
         logger.info(
             "Commit phiên %s → Working_File mới fid=%s (%s).",

@@ -8,7 +8,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { UseEditSession } from '../../hooks/useEditSession';
 import { confirmDialog } from '../ui/confirmDialog';
 import { assignComponentsToDeepestLayers } from './layerComponentTree';
-import { scrollElementVerticallyIntoView } from './verticalScroll';
+import { requestEditObjectFocus, scrollElementVerticallyIntoView } from './verticalScroll';
 
 // ═══════════════════════════════════════════════════════════
 //  Edit PDF Layers & Components Panel (unified)
@@ -136,6 +136,7 @@ export default function EditLayersPanel({
     // → không có feedback loop. Object không thuộc trang active không có ref → bỏ qua
     // (danh sách "Thành phần" chỉ chứa object trang đang xem). (gộp F7↔edit 2026-07-07)
     const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
+    const pendingCanvasFocusRef = useRef<string | null>(null);
     useEffect(() => {
         const syncVisibility = (event: Event) => {
             const detail = (event as CustomEvent).detail || {};
@@ -149,6 +150,12 @@ export default function EditLayersPanel({
         window.addEventListener('edit-object-visibility-changed', syncVisibility);
         return () => window.removeEventListener('edit-object-visibility-changed', syncVisibility);
     }, [viewerActivePage, setHiddenObjectIds]);
+    useEffect(() => {
+        const objectId = pendingCanvasFocusRef.current;
+        if (!objectId || !selectedObjectIds.includes(objectId)) return;
+        pendingCanvasFocusRef.current = null;
+        requestEditObjectFocus(objectId, Math.max(0, viewerActivePage - 1));
+    }, [selectedObjectIds, viewerActivePage]);
     useEffect(() => {
         const firstId = selectedObjectIds[0];
         if (firstId == null) return;
@@ -289,6 +296,12 @@ export default function EditLayersPanel({
         setContextMenu({ x: e.clientX, y: e.clientY, layer });
     }, []);
 
+    const selectComponentFromPanel = (objectId: string, alreadySelected: boolean) => {
+        if (!alreadySelected) pendingCanvasFocusRef.current = objectId;
+        setSelectedObjectIds(prev =>
+            prev.includes(objectId) ? prev.filter(id => id !== objectId) : [...prev, objectId]
+        );
+    };
     const renderComponentItem = (obj: any, keyPrefix: string = 'component') => {
         const isSelected = selectedObjectIds.includes(obj.id);
         const isHidden = hiddenObjectIds.includes(obj.id);
@@ -353,9 +366,7 @@ export default function EditLayersPanel({
                     onClick={(e) => {
                         e.stopPropagation();
                         if (isLocked) return;
-                        setSelectedObjectIds(prev =>
-                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
-                        );
+                        selectComponentFromPanel(obj.id, isSelected);
                     }}
                     className={`rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3 h-3 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                 />
@@ -371,9 +382,7 @@ export default function EditLayersPanel({
                     title={obj._displayName}
                     onClick={() => {
                         if (isLocked) return;
-                        setSelectedObjectIds(prev =>
-                            prev.includes(obj.id) ? prev.filter(id => id !== obj.id) : [...prev, obj.id]
-                        );
+                        selectComponentFromPanel(obj.id, isSelected);
                     }}
                 >
                     {obj._displayName}

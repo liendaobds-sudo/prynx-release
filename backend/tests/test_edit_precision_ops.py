@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from app.core import edit_session as edit_session_core
 from app.core.edit_session import _apply_op_to_pdf, _bbox_after_matrix
 from app.core.geometry_reader import list_objects
+from app.core.object_mapper import build_op_spans, parse_page_ops
 from app.core.stream_editor import _build_image_xobject, _ensure_xobject_resource, add_image
 from app.schemas.edit import EditOp
 
@@ -418,3 +419,73 @@ def test_clip_image_undo_redo_roundtrip(monkeypatch):
             assert len(session.op_log) == 1
         finally:
             edit_session_core.close_session(session.session_id)
+
+
+def _make_nested_page_clipped_image_pdf(path: str) -> None:
+    """Create the exact clip/setup nesting emitted by the reproduced desktop PDF."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page(page_size=(400, 300))
+    xobj, _, _ = _build_image_xobject(pdf, _solid_png((240, 20, 20)))
+    name = _ensure_xobject_resource(page, xobj, "NestedClipImage")
+
+    gs = pdf.make_indirect(
+        pikepdf.Dictionary(Type=pikepdf.Name("/ExtGState"), ca=1.0, CA=1.0)
+    )
+    ext = pikepdf.Dictionary()
+    ext[pikepdf.Name("/GS1")] = gs
+    page.Resources[pikepdf.Name("/ExtGState")] = ext
+    page.Contents = pdf.make_stream(
+        (
+            "q\n"
+            "50 50 m 150 50 l 150 130 l 50 130 l h W n\n"
+            "q /GS1 gs\n"
+            f"100 0 0 80 50 50 cm /{name} Do\n"
+            "Q\n"
+            "Q\n"
+            "q 0 0 1 rg 300 20 30 30 re f Q\n"
+        ).encode("ascii")
+    )
+    pdf.save(path)
+    pdf.close()
+
+
+def test_nested_page_clip_moves_atomically_with_image():
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "nested-page-clip.pdf")
+        moved = os.path.join(td, "nested-page-clip-moved.pdf")
+        _make_nested_page_clipped_image_pdf(src)
+
+        targets = [obj for obj in list_objects(src, 0) if obj.type == "image"]
+        assert len(targets) == 1
+        target = targets[0]
+
+        with pikepdf.open(src) as pdf:
+            page = pdf.pages[0]
+            instructions = parse_page_ops(page)
+            operators = [str(item.operator) for item in instructions]
+            image_spans = [
+                span for span in build_op_spans(page, pdf=pdf) if span.kind == "image"
+            ]
+            assert len(image_spans) == 1
+            span = image_spans[0]
+            assert operators[span.start:span.end] == [
+                "q", "m", "l", "l", "l", "h", "W", "n",
+                "q", "gs", "cm", "Do", "Q", "Q",
+            ]
+
+            op = EditOp.model_validate({
+                "page": 0,
+                "kind": "move",
+                "targetIds": [target.id],
+                "delta": {"dx": 120, "dy": 0},
+            })
+            _apply_op_to_pdf(pdf, op, {target.id: target})
+            pdf.save(moved)
+
+        rendered = _render_rgb(moved)
+        old_center = rendered.getpixel((100, 210))
+        new_center = rendered.getpixel((220, 210))
+        unrelated_blue = rendered.getpixel((315, 265))
+        assert min(old_center) > 240
+        assert new_center[0] > 200 and new_center[1] < 80 and new_center[2] < 80
+        assert unrelated_blue[2] > 200 and unrelated_blue[0] < 80
