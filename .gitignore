@@ -29,6 +29,7 @@ backend/bin/pdfcpu
 src-tauri/target/
 native/target/
 imposition_core/target/
+print_engine/target/
 *.rs.bk
 
 # Sidecar binaries (237 MB each — built by build_production.ps1, too large for GitHub)

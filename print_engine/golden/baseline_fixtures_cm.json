@@ -1,0 +1,566 @@
+[
+  {
+    "pdf": "cmyk_k_only.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "cmyk_rich_black.pdf",
+    "gs_max_tac_pct": 240.0,
+    "ppe_max_tac_pct": 240.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.06,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "cmyk_solid_400.pdf",
+    "gs_max_tac_pct": 400.0,
+    "ppe_max_tac_pct": 400.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "gray_black.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "gray_mid.pdf",
+    "gs_max_tac_pct": 49.804,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": 0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "image_cmyk_solid_400.pdf",
+    "gs_max_tac_pct": 400.0,
+    "ppe_max_tac_pct": 400.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "image_gray_black.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "image_rgb_black.pdf",
+    "gs_max_tac_pct": 327.059,
+    "ppe_max_tac_pct": 326.598,
+    "delta_tac_points": -0.461,
+    "worst_plate_mae_255": 0.455,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "image_rgb_mid_gray.pdf",
+    "gs_max_tac_pct": 144.706,
+    "ppe_max_tac_pct": 145.343,
+    "delta_tac_points": 0.637,
+    "worst_plate_mae_255": 0.813,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "knockout_black_on_cyan.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "overprint_black_on_cyan.pdf",
+    "gs_max_tac_pct": 200.0,
+    "ppe_max_tac_pct": 200.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_black.pdf",
+    "gs_max_tac_pct": 327.059,
+    "ppe_max_tac_pct": 326.598,
+    "delta_tac_points": -0.461,
+    "worst_plate_mae_255": 0.455,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_blue.pdf",
+    "gs_max_tac_pct": 167.451,
+    "ppe_max_tac_pct": 167.373,
+    "delta_tac_points": -0.078,
+    "worst_plate_mae_255": 0.363,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_dark_brown.pdf",
+    "gs_max_tac_pct": 279.216,
+    "ppe_max_tac_pct": 278.555,
+    "delta_tac_points": -0.661,
+    "worst_plate_mae_255": 1.078,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_green.pdf",
+    "gs_max_tac_pct": 194.902,
+    "ppe_max_tac_pct": 194.823,
+    "delta_tac_points": -0.079,
+    "worst_plate_mae_255": 0.272,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_mid_gray.pdf",
+    "gs_max_tac_pct": 145.49,
+    "ppe_max_tac_pct": 145.798,
+    "delta_tac_points": 0.308,
+    "worst_plate_mae_255": 0.61,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_red.pdf",
+    "gs_max_tac_pct": 172.549,
+    "ppe_max_tac_pct": 172.059,
+    "delta_tac_points": -0.49,
+    "worst_plate_mae_255": 0.795,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_white.pdf",
+    "gs_max_tac_pct": 0.0,
+    "ppe_max_tac_pct": 0.124,
+    "delta_tac_points": 0.124,
+    "worst_plate_mae_255": 0.315,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "spot_half_tint.pdf",
+    "gs_max_tac_pct": 49.804,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": 0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "PANTONE 485 C",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black",
+      "PANTONE 485 C"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "Separation"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "spot_solid.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "PANTONE 485 C",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black",
+      "PANTONE 485 C"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "Separation"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  }
+]

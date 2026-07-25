@@ -22,4 +22,6 @@ numpy = "0.26"
 rayon = "1.12.0"
 geo = "0.28"
 imposition_core = { path = "../imposition_core" }
+# PrynX Print Engine — lõi prepress ink-space thay Ghostscript.
+print_engine = { path = "../print_engine" }
 

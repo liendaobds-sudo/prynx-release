@@ -1,0 +1,40 @@
+[package]
+name = "print_engine"
+version = "0.1.0"
+edition = "2021"
+description = "PrynX Print Engine (PPE) — clean-room CMYK/spot ink-space PDF rasterizer for prepress"
+license = "MIT"
+
+# Pure Rust library: KHÔNG pyo3, KHÔNG tauri. Lớp binding PyO3 nằm ở native/.
+# Lý do: unit test được bằng `cargo test` không cần Python, và giữ lõi prepress
+# độc lập khỏi ABI Python (giống imposition_core).
+[lib]
+name = "print_engine"
+crate-type = ["rlib"]
+
+[dependencies]
+# PDF object model / xref / stream decode / content stream tokenizer.
+lopdf = { version = "0.44", default-features = false }
+# Path fill/stroke → coverage mask (BSD-3). CHỈ dùng làm bộ sinh coverage;
+# việc trộn mực do print_engine tự làm trong không gian n-kênh.
+tiny-skia = "0.11"
+thiserror = "2"
+# Chuỗi filter của image stream. PPE tự giải nén thay vì dùng lopdf vì lopdf
+# không áp predictor PNG/TIFF — thiếu bước đó thì ảnh nén Flate ra rác.
+flate2 = "1"
+weezl = "0.1"
+# JPEG. Bắt buộc phải là bộ giải mã hiểu **CMYK/YCCK** (Adobe APP14): ảnh in
+# thường là JPEG CMYK, bộ giải mã chỉ biết RGB sẽ phá dữ liệu mực.
+jpeg-decoder = "0.3"
+# Quản lý màu ICC. Chọn Little CMS (MIT) chứ không phải một CMM khác vì
+# Ghostscript cũng dùng Little CMS: dùng chung engine màu là điều kiện để phép so
+# golden nói lên chất lượng của PPE, chứ không nói lên khác biệt giữa hai CMM.
+lcms2 = "6.1"
+# Glyph outline cho TrueType / OpenType.
+ttf-parser = "0.25"
+# CFF **thô** (`FontFile3 /Subtype /Type1C`) và Type1 (`FontFile`). Hai dạng này
+# không phải file OpenType nên bộ đọc TrueType không mở được, mà chúng lại rất
+# phổ biến trong PDF — thiếu chúng là mất phần lớn chữ của file thật.
+hayro-font = "0.4"
+
+[dev-dependencies]
