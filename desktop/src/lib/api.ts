@@ -97,7 +97,7 @@ async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
       }) as Record<string, string>;
       Object.assign(headers, signedHeaders);
     } catch (signErr) {
-      // sign_api_request fail thường do Rust cache 2h expired → re-register rồi thử lại.
+      // sign_api_request fail thường do Rust cache (8h — security.rs) đã hết → re-register rồi thử lại.
       // Nếu vẫn fail thì trả headers thiếu token → request sẽ bị 403 rõ ràng.
       console.debug('[API] Rust signing failed, attempting re-register:', signErr);
       try {

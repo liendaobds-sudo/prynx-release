@@ -119,13 +119,28 @@ async def lifespan(app: FastAPI):
     logger.info(f"👋 {settings.APP_NAME} shutting down")
 
 
+# ── OpenAPI docs: CHỈ bật khi chạy từ source (dev) ──
+# SECURITY (audit 2026-07-25): /docs, /redoc và /openapi.json là các endpoint DUY NHẤT
+# dưới quyền app mà license guard KHÔNG che (guard gắn ở router, không gắn cho schema).
+# Trên bản đóng gói chúng đưa cho kẻ trinh sát BẢN ĐỒ API đầy đủ (mọi path + schema
+# body) — đúng thứ cần để dò tìm endpoint hở. Dev chạy Python thông dịch vẫn có docs
+# như cũ; binary compiled (Nuitka `__compiled__` / PyInstaller `sys.frozen`) thì tắt.
+# Dùng cùng cờ với license_guard._is_dev_mode để không thể bật lại bằng env.
+def _running_as_compiled_binary() -> bool:
+    import sys as _sys
+    return "__compiled__" in globals() or getattr(_sys, "frozen", False)
+
+
+_DOCS_ENABLED = not _running_as_compiled_binary()
+
 # ── Create App ──
 app = FastAPI(
     title=settings.APP_NAME,
     description="Print made easy!",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _DOCS_ENABLED else None,
     lifespan=lifespan,
 )
 

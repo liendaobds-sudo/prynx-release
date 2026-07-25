@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import time
+import uuid
 from pathlib import Path
 
 import pikepdf
@@ -48,9 +49,14 @@ def _make_free_token(signing_key: Ed25519PrivateKey) -> str:
 
 
 def _headers(path: str, license_token: str) -> dict[str, str]:
+    """Dựng bộ header y như Rust `sign_api_request`.
+
+    Nonce mới cho MỖI request (dùng-một-lần phía sidecar, audit 2026-07-25).
+    """
     timestamp = str(int(time.time()))
+    nonce = uuid.uuid4().hex
     token_hash = hashlib.sha256(license_token.encode()).hexdigest()
-    payload = f"{timestamp}:{path}:{LICENSE_KEY}:{HARDWARE_ID}:{token_hash}"
+    payload = f"{timestamp}:{nonce}:{path}:{LICENSE_KEY}:{HARDWARE_ID}:{token_hash}"
     signature = hmac.new(
         SIDECAR_TOKEN.encode(),
         payload.encode(),
@@ -58,6 +64,7 @@ def _headers(path: str, license_token: str) -> dict[str, str]:
     ).hexdigest()
     return {
         "X-PrynX-Timestamp": timestamp,
+        "X-PrynX-Nonce": nonce,
         "X-PrynX-Signature": signature,
         "X-License-Key": LICENSE_KEY,
         "X-Hardware-Id": HARDWARE_ID,

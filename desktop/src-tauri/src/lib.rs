@@ -1289,10 +1289,21 @@ fn verify_frontend_integrity(app: &tauri::App) -> Result<(), String> {
     } else if resource_dir.join("index.html").exists() {
         resource_dir.clone()
     } else {
+        // ĐỪNG NHẦM: đây KHÔNG phải "đã kiểm tra và OK". Trên bản NSIS đã cài, nhánh này
+        // LUÔN chạy (Tauri nhúng dist vào binary) ⇒ hash directory KHÔNG bao giờ được so
+        // ⇒ VECTOR #4/#10 (patch JS bundle) THỰC TẾ KHÔNG ĐƯỢC PHỦ bởi hàm này.
+        // Audit 2026-07-25: nói thẳng trạng thái thay vì log warn mờ rồi Ok().
+        // Phần còn giữ giá trị: nếu kẻ nghịch THÊM dist/ hoặc index.html ra đĩa để tráo
+        // frontend, nhánh trên sẽ bắt buộc khớp hash → cửa "shadowing" vẫn đóng.
+        // Bù trừ (detect, không prevent): log SHA-256 của chính exe đang chạy để support
+        // đối chiếu với release-manifest.txt do build_production.ps1 phát hành.
         log::warn!(
-            "[INTEGRITY] Frontend dist not on disk under {} (Tauri nhúng vào binary) — skipping directory hash check.",
+            "[INTEGRITY][POSTURE] Frontend embedded in binary (no dist/ under {}) — \
+             directory hash check DOES NOT APPLY. Patched-JS detection relies on \
+             executable integrity, which requires Authenticode code signing (not enabled).",
             resource_dir.display()
         );
+        log_self_exe_hash();
         return Ok(());
     };
     
@@ -1305,6 +1316,25 @@ fn verify_frontend_integrity(app: &tauri::App) -> Result<(), String> {
     
     log::info!("[INTEGRITY] Frontend integrity verified OK (full directory hash)");
     Ok(())
+}
+
+/// Log SHA-256 của chính executable đang chạy (audit 2026-07-25).
+///
+/// Vì sao chỉ LOG mà không so sánh: hash của exe không thể nhúng vào chính exe đó
+/// (chicken-egg) và app hiện KHÔNG được code-sign, nên không có neo tin cậy để verify
+/// tại runtime. Lớp này là PHÁT HIỆN, không phải NGĂN CHẶN: support đối chiếu giá trị
+/// trong log với `Ban_Phat_Hanh\release-manifest.txt` (build_production.ps1 phát hành)
+/// để biết máy khách có đang chạy đúng binary đã phát hành hay không.
+/// Cách bịt hẳn: bật Authenticode code signing rồi verify bằng WinVerifyTrust.
+#[cfg(not(debug_assertions))]
+fn log_self_exe_hash() {
+    match std::env::current_exe() {
+        Ok(exe) => match sha256_file(&exe) {
+            Ok(hash) => log::warn!("[INTEGRITY][SELF] exe={} sha256={}", exe.display(), hash),
+            Err(e) => log::warn!("[INTEGRITY][SELF] cannot hash exe: {}", e),
+        },
+        Err(e) => log::warn!("[INTEGRITY][SELF] cannot resolve exe path: {}", e),
+    }
 }
 
 /// Hash all files in a directory recursively, sorted by relative path.
@@ -1529,7 +1559,7 @@ pub fn run() {
                 startup_breadcrumb("release setup: begin");
                 match ensure_pdfium() {
                     Ok(_) => {
-                        log::info!("[SECURITY] pdfium warmed up at startup (no process mitigations)");
+                        log::info!("[SECURITY] pdfium warmed up at startup");
                         startup_breadcrumb("pdfium: OK");
                     }
                     Err(e) => {
@@ -1537,6 +1567,12 @@ pub fn run() {
                         startup_breadcrumb(&format!("pdfium: FAIL {e}"));
                     }
                 }
+
+                // Mitigations OPT-IN sau khi pdfium đã nạp (audit 2026-07-25). Mặc định
+                // TẮT → hành vi bản release không đổi. Đặt PRYNX_MITIGATIONS=1 để QA thử
+                // trên BẢN ĐÃ CÀI, đặc biệt phải test kỹ đường IN (Ctrl+P) vì đó chính là
+                // chỗ từng làm process chết khi bật MicrosoftSignedOnly.
+                security::apply_optional_process_mitigations();
 
                 // Chỉ log, KHÔNG exit — tránh false-positive giết app khi user in.
                 security::start_anti_debug_monitor();
@@ -1687,9 +1723,11 @@ pub fn run() {
                                 if cfg!(debug_assertions) { "false" } else { "true" }
                             ),
                         ),
-                        // Cận chống-lùi-giờ PHẢI ≥ TTL token edge function cấp (hiện 7 ngày).
+                        // Cận chống-lùi-giờ PHẢI ≥ TTL token edge function cấp.
                         // Set qua env để override default compiled cũ mà KHÔNG cần recompile Nuitka.
-                        // 8 ngày = 8*24*60*60 = 691200s (7 ngày TTL + 1 ngày dư).
+                        // TTL server đã rút 7 ngày → 72h (audit 2026-07-25); cận GIỮ 8 ngày
+                        // (691200s) trong giai đoạn chuyển tiếp vì token 7 ngày cũ còn hạn.
+                        // Sau khi chúng hết hạn (≥7 ngày kể từ deploy), hạ xuống "345600" (4 ngày).
                         ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
                     ])
                     .spawn();

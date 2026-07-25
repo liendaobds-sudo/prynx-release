@@ -789,3 +789,52 @@ security-guards, release-integrity-gate); 5 guard chạy thử trên trạng th�
   chạy offline ngay, hoặc thêm UI tiến độ tải.
 - 🟡 **Rò chi tiết lỗi:** ✅ ĐÃ VÁ (BG2) — endpoint `remove-background` nay trả `type(e).__name__`
   thay vì `str(e)`, chi tiết vào log nội bộ. Nhất quán anti-recon với toàn backend.
+
+---
+
+## 23. Audit 2026-07-25 — vá bảo mật + rủi ro tồn dư đã chấp nhận
+
+### 23.1. Đã vá
+| # | Mức | Vấn đề | Vá |
+|---|---|---|---|
+| A1 | 🟠 | Replay chữ ký trong cửa sổ 30s: payload HMAC chỉ gồm `ts:path:...`, không có body/nonce → một chữ ký bắt được dùng lại được cho body KHÁC trên cùng path. | Thêm nonce CSPRNG 16 byte: `security.rs::sign_api_request` sinh nonce, đưa vào payload (`ts:nonce:path:key:hwid:token_hash`) + header `X-PrynX-Nonce`; sidecar `verify_sidecar_signature` dựng lại payload y hệt và **chỉ nhận mỗi nonce MỘT lần** (`_consume_nonce`, bảng tự quét sau 65s). Nonce chỉ được tiêu SAU khi HMAC hợp lệ (nếu tiêu trước, kẻ ngoài có thể "đốt" nonce của request thật → DoS). 3 test mới. **BREAKING: Rust host và sidecar phải build/ship CÙNG LÚC.** |
+| A2 | 🟠 | Asset protocol `scope: ["**","**/*"]` cho WebView đọc file bất kỳ, **đi vòng** qua deny-list đã cấu hình cẩn thận cho plugin `fs` trong `capabilities/default.json`. | `tauri.conf.json` chuyển sang `scope: {allow, deny}` (deny ưu tiên hơn allow). Giữ `allow: **` vì người dùng mở file ở ổ bất kỳ; deny `.ssh`/`.aws`/`.gnupg`/`.kube`/`.docker`, Microsoft **Protect** (master key DPAPI)/Vault/Credentials, profile Chrome/Edge/Firefox, `PrynX/*.dat`, `**/.env`, `*.pem|pfx|p12`, `id_rsa*`, `id_ed25519*`. Bổ sung cùng danh sách vào `capabilities/default.json`. |
+| A3 | 🟠 | `/docs`, `/redoc`, `/openapi.json` là endpoint DUY NHẤT không được license guard che → đưa bản đồ API đầy đủ cho kẻ trinh sát trên bản đóng gói. | `main.py`: bật docs CHỈ khi chạy từ source; binary compiled (`__compiled__`/`sys.frozen`) → `None`. Cùng cờ với `_is_dev_mode` nên không bật lại được bằng env. |
+| A4 | 🟠 | Độ trễ thu hồi license khi client offline = TTL token = **7 ngày** (sidecar production không giữ service key nên không gọi RPC được; token là biên giới duy nhất). | `license-verify/index.ts`: `TOKEN_TTL_SECONDS` 7 ngày → **72h**. Cận chống-lùi-giờ CỐ Ý giữ 8 ngày trong giai đoạn chuyển tiếp (token 7 ngày cũ còn hạn; siết ngay sẽ từ chối chúng → khoá oan khách offline). **Việc còn lại: sau ≥7 ngày kể từ deploy, hạ `PRYNX_MAX_TOKEN_LIFETIME_SECONDS` → `345600` (4 ngày) ở `lib.rs`, `license_guard.py`, `security.rs`.** |
+| A5 | 🟠 | Test E2E duy nhất chứng minh "Free không gọi được endpoint Pro" bị vô hiệu trong lượt chạy full suite (nhận 200 thay vì 403) — pass khi chạy riêng nên tạo an toàn giả. Nguyên nhân: `test_integration.py` và `test_preflight_download_containment.py` gán `app.dependency_overrides[require_license]` ở MỨC MODULE (chạy lúc pytest *collect*, trước mọi test) và không bao giờ dọn → rò license Pro. | `conftest.py::_auto_pro_license` dọn override trước khi chạy các test dùng chuỗi license thật; hai module trên chuyển sang fixture có teardown. Tái lập 3/3 lần trước khi vá, xanh 3/3 sau khi vá kể cả thứ tự e2e-first. |
+| A6 | 🟢 | Process mitigations bị gỡ hẳn (từng làm app chết khi in) → tiến trình không có lớp chặn DLL injection/Frida. | `security::apply_optional_process_mitigations()` chạy SAU warmup pdfium, **mặc định TẮT** (hành vi release không đổi). `PRYNX_MITIGATIONS=dynamiccode\|signed\|all`. Hằng enum theo `PROCESS_MITIGATION_POLICY`: DynamicCode = 2, Signature = 8. QA phải test đường IN (Ctrl+P) trên **bản đã cài** (§15.1). |
+
+### 23.2. Rủi ro tồn dư ĐÃ CHẤP NHẬN — integrity của exe/frontend không được cưỡng chế
+
+**Trạng thái thật (đừng nhầm là đã phủ):** Tauri v2 **nhúng** `dist/` vào trong `PrynX.exe`,
+nên `verify_frontend_integrity` không tìm thấy `dist/` trên đĩa và trả `Ok(())`. Nghĩa là
+VECTOR #4/#10 ("patch JS bundle") **KHÔNG được phát hiện** trên mọi bản NSIS đã cài.
+Phần còn giữ giá trị: nếu kẻ nghịch **thêm** `dist/`/`index.html` ra đĩa để tráo frontend
+thì nhánh trên bắt buộc khớp hash → cửa "shadowing" vẫn đóng.
+
+**Vì sao không vá được bằng code:** không thể nhúng hash của exe vào chính exe đó
+(chicken-egg), nên runtime **không có neo tin cậy** để tự verify. Cách đúng duy nhất là
+ký **Authenticode** rồi gọi `WinVerifyTrust` lúc khởi động. Dự án hiện **không có
+certificate ký code** (build script không có `signtool`) → quyết định 2026-07-25: **không
+làm**, ghi nhận là rủi ro tồn dư.
+
+**Bù trừ (PHÁT HIỆN, không NGĂN CHẶN):**
+- `lib.rs::log_self_exe_hash()` ghi SHA-256 của exe đang chạy vào log; nhánh bỏ qua giờ
+  log `[INTEGRITY][POSTURE]` nói thẳng là check không áp dụng, thay vì `warn` mờ rồi `Ok()`.
+- `build_production.ps1` phát hành `Ban_Phat_Hanh\release-manifest.txt`: hash exe /
+  installer / sidecar / frontend + git commit + cờ `GIT_DIRTY` + `CODE_SIGNED = no`.
+- Quy trình khi nghi máy khách chạy binary bị patch: so dòng `[INTEGRITY][SELF] ... sha256=`
+  trong `%APPDATA%\PrynX\logs` với `EXE_SHA256` trong manifest của bản đã phát hành.
+
+**Đường crack hiện thực nhất còn lại** (ghi rõ để không tự ru ngủ): patch `PrynX.exe` để vô
+hiệu `verify_sidecar_integrity` → patch public key Ed25519 nhúng trong sidecar Nuitka → tự
+ký token `plan=pro`. Không có code signing thì không lớp nào chặn được bước đầu.
+
+### 23.3. Dọn harness debug (§15.6)
+- `_debug_open.test.ts` — **xoá**: trùng lặp hoàn toàn với `geometry.test.ts:196` và
+  `contourValidator.test.ts:264` (đã property-test `validateClosedContours` trên mọi loại
+  hộp gồm `auto_bottom`), lại còn nới điều kiện hơn.
+- `_debug_pts.test.ts` — **nâng cấp** thành `autoBottomDeepFlap.test.ts`: chứa bất biến
+  hình học DUY NHẤT cho `computeDeepBottomKeyPoints`/`buildDeepBottomFlap` (A/B trên fold,
+  M sâu hơn & lệch phải C, fillet tại fold, CREASE 45° từ B). Không test nào khác phủ —
+  `bleedContours.test.ts:156` chỉ kiểm `outline.length > 8`. Đã bỏ `console.log` (§9).

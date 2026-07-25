@@ -597,6 +597,31 @@ if (-not $SkipTauri) {
 
         Write-Host "  Installer: $finalInstallerPath"
         Write-Host "  Size:      $([math]::Round((Get-Item $finalInstallerPath).Length / 1MB, 1)) MB"
+
+        # ---- Release manifest (audit 2026-07-25) ----
+        # App KHONG duoc code-sign nen runtime khong the tu verify exe (xem
+        # lib.rs::log_self_exe_hash). Manifest nay la neo DOI CHIEU: khi nghi may khach
+        # chay binary bi patch, so hash trong %APPDATA%\PrynX\logs (dong
+        # "[INTEGRITY][SELF] ... sha256=") voi gia tri EXE_SHA256 ben duoi.
+        $exePath = "$ROOT\desktop\src-tauri\target\release\PrynX.exe"
+        $exeHash = if (Test-Path $exePath) { (Get-FileHash $exePath -Algorithm SHA256).Hash.ToLower() } else { "NOT_FOUND" }
+        $installerHash = (Get-FileHash $finalInstallerPath -Algorithm SHA256).Hash.ToLower()
+        $manifestPath = "$publishDir\release-manifest.txt"
+        $manifestLines = @(
+            "PrynX release manifest",
+            "BUILT_AT_UTC   = $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))",
+            "GIT_COMMIT     = $(git -C $ROOT rev-parse HEAD 2>$null)",
+            "GIT_DIRTY      = $(if ((git -C $ROOT status --porcelain 2>$null)) { 'YES (artifact khong tai lap duoc tu cay da commit)' } else { 'no' })",
+            "INSTALLER      = $($installer.Name)",
+            "INSTALLER_SHA256 = $installerHash",
+            "EXE_SHA256     = $exeHash",
+            "SIDECAR_SHA256 = $HASH",
+            "FRONTEND_SHA256 = $($env:PRYNX_FRONTEND_HASH)",
+            "CODE_SIGNED    = no (Authenticode chua bat -> runtime khong the tu verify exe)"
+        )
+        Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII
+        Write-Host "  Manifest:  $manifestPath" -ForegroundColor Cyan
+        Write-Host "  EXE SHA-256: $exeHash" -ForegroundColor DarkGray
         if (-not $Release -and -not $NoOpenExplorer) {
             Write-Host ""
             Write-Host "  >> Da copy file cai dat ra ngoai thu muc de de lay hon..." -ForegroundColor Cyan

@@ -370,10 +370,13 @@ fn verify_token_with_pubkey(
     }
 
     // V3 (đối xứng backend license_guard.py): cận trên tuổi thọ token — chống replay token
-    // cũ bằng cách LÙI đồng hồ hệ thống. Token TTL 2h nên (exp - now) hợp lệ luôn ≤ TTL;
+    // cũ bằng cách LÙI đồng hồ hệ thống. Token TTL 72h nên (exp - now) hợp lệ luôn ≤ TTL;
     // vượt cận (TTL + dư + skew) ⇒ đồng hồ đã bị lùi xa lúc cấp token. Không phụ thuộc file
     // trên đĩa nên không thể vô hiệu bằng cách xoá state.
-    const MAX_TOKEN_LIFETIME_SECS: i64 = 8 * 24 * 60 * 60; // TTL server 7 ngày + 1 ngày dư (PHẢI ≥ TTL token edge function cấp)
+    // 8 ngày. TTL server đã rút 7 ngày → 72h (audit 2026-07-25) nhưng cận này GIỮ
+    // NGUYÊN trong giai đoạn chuyển tiếp: token 7 ngày phát trước đó vẫn còn hạn.
+    // Siết xuống 4 ngày SAU KHI chúng hết hạn. Bất biến: PHẢI ≥ TTL token edge function cấp.
+    const MAX_TOKEN_LIFETIME_SECS: i64 = 8 * 24 * 60 * 60;
     if exp - now > MAX_TOKEN_LIFETIME_SECS {
         return Err("license token lifetime implausible (clock rollback?)".to_string());
     }
@@ -618,6 +621,81 @@ fn security_kill_log(reason: &str) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════
+// Process mitigations — OPT-IN (audit 2026-07-25).
+//
+// Lịch sử (xem lib.rs): `MicrosoftSignedOnly` + `ProhibitDynamicCode` từng được bật
+// vô điều kiện ở release và làm app CHẾT khi in (Ctrl+P): đường in GDI nạp driver máy
+// in của hãng thứ ba (không do Microsoft ký) và đôi khi cấp bộ nhớ thực thi.
+// Vì vậy chúng bị gỡ hẳn → tiến trình hiện KHÔNG có lớp chặn DLL injection / Frida.
+//
+// Giải pháp ở đây: bật LẠI dạng opt-in, tách riêng từng chính sách, chạy SAU khi pdfium
+// đã nạp, và mặc định TẮT để không thay đổi hành vi bản release đang phát hành:
+//   PRYNX_MITIGATIONS=dynamiccode  → chỉ ProhibitDynamicCode (ít rủi ro hơn)
+//   PRYNX_MITIGATIONS=signed       → chỉ MicrosoftSignedOnly (RỦI RO CAO với máy in)
+//   PRYNX_MITIGATIONS=1|all        → cả hai
+// Chỉ đổi mặc định sang bật sau khi QA đường IN trên BẢN ĐÃ CÀI (§15.1: dev không lộ lỗi).
+#[cfg(not(debug_assertions))]
+pub fn apply_optional_process_mitigations() {
+    let raw = std::env::var("PRYNX_MITIGATIONS").unwrap_or_default();
+    let mode = raw.trim().to_lowercase();
+    if mode.is_empty() || mode == "0" || mode == "false" || mode == "off" {
+        log::info!("[SECURITY] process mitigations: disabled (default) — set PRYNX_MITIGATIONS to test");
+        return;
+    }
+
+    let want_dynamic_code = matches!(mode.as_str(), "1" | "all" | "true" | "dynamiccode");
+    let want_signed_only = matches!(mode.as_str(), "1" | "all" | "true" | "signed");
+
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // Chỉ số theo enum PROCESS_MITIGATION_POLICY (winnt.h/ntddk.h), ĐÚNG THỨ TỰ:
+        //   0 DEP, 1 ASLR, 2 DynamicCode, 3 StrictHandleCheck, 4 SystemCallDisable,
+        //   5 MitigationOptionsMask, 6 ExtensionPointDisable, 7 ControlFlowGuard,
+        //   8 Signature, 9 FontDisable, 10 ImageLoad, ...
+        // Truyền sai chỉ số thì API trả ERROR_INVALID_PARAMETER (hoặc áp SAI chính sách),
+        // nên hai hằng này phải khớp tuyệt đối với enum.
+        const PROCESS_DYNAMIC_CODE_POLICY: u32 = 2;
+        const PROCESS_SIGNATURE_POLICY: u32 = 8;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetProcessMitigationPolicy(
+                policy: u32,
+                buffer: *const std::ffi::c_void,
+                size: usize,
+            ) -> i32;
+        }
+
+        if want_dynamic_code {
+            // Bit 0 = ProhibitDynamicCode.
+            let flags: u32 = 1;
+            let ok = SetProcessMitigationPolicy(
+                PROCESS_DYNAMIC_CODE_POLICY,
+                &flags as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<u32>(),
+            );
+            log::warn!("[SECURITY] mitigation ProhibitDynamicCode applied={}", ok != 0);
+        }
+
+        if want_signed_only {
+            // Bit 0 = MicrosoftSignedOnly. CẢNH BÁO: chặn MỌI DLL không do Microsoft ký
+            // được nạp SAU thời điểm này (driver máy in!). pdfium đã warm-up ở trên nên
+            // an toàn, nhưng driver in nạp muộn thì KHÔNG.
+            let flags: u32 = 1;
+            let ok = SetProcessMitigationPolicy(
+                PROCESS_SIGNATURE_POLICY,
+                &flags as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<u32>(),
+            );
+            log::warn!(
+                "[SECURITY] mitigation MicrosoftSignedOnly applied={} — VERIFY PRINTING (Ctrl+P) NOW",
+                ok != 0
+            );
+        }
+    }
+}
+
 #[cfg(not(debug_assertions))]
 pub fn start_anti_debug_monitor() {
     // Chỉ GHI LOG — không process::exit.
@@ -797,10 +875,22 @@ pub fn sign_api_request(
     // Gate 3: Bind the proof to the native-verified license and hardware id.
     // A patched WebView cannot substitute different entitlement headers after
     // obtaining a signature with a valid Free license.
+    //
+    // NONCE (audit 2026-07-25): trước đây payload chỉ gồm ts + path, nên trong cửa sổ
+    // 30s một chữ ký bắt được dùng lại được cho BODY KHÁC trên cùng path (replay). Thêm
+    // nonce CSPRNG 16 byte vào payload + gửi kèm header; backend chỉ nhận mỗi nonce MỘT
+    // LẦN → chữ ký bắt được trở thành vô dụng ngay sau lần dùng đầu. Cũng loại luôn
+    // trường hợp 2 request cùng giây/cùng path sinh chữ ký y hệt nhau.
+    let nonce: String = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let bytes: [u8; 16] = rng.gen();
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    };
     let timestamp = now_secs.to_string();
     let sign_payload = format!(
-        "{}:{}:{}:{}:{}",
-        timestamp, url_path, license_key, binding.hardware_id, binding.license_token_hash
+        "{}:{}:{}:{}:{}:{}",
+        timestamp, nonce, url_path, license_key, binding.hardware_id, binding.license_token_hash
     );
 
     use hmac::{Hmac, Mac};
@@ -816,6 +906,7 @@ pub fn sign_api_request(
     headers.insert("X-License-Key".to_string(), license_key);
     headers.insert("X-Hardware-Id".to_string(), binding.hardware_id);
     headers.insert("X-PrynX-Timestamp".to_string(), timestamp);
+    headers.insert("X-PrynX-Nonce".to_string(), nonce);
     headers.insert("X-PrynX-Signature".to_string(), signature);
 
     Ok(headers)

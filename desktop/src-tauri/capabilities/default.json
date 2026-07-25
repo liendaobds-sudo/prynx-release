@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for PrynX",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-close",
@@ -31,7 +33,13 @@
         { "path": "$HOME/.config/**" },
         { "path": "$HOME/.kube/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
-        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" }
+        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Protect/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Vault/**" },
+        { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
+        { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
       ]
     },
     {
@@ -51,7 +59,13 @@
         { "path": "$HOME/.config/**" },
         { "path": "$HOME/.kube/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
-        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" }
+        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Protect/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Vault/**" },
+        { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
+        { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
       ]
     },
     {
@@ -70,7 +84,13 @@
         { "path": "$HOME/.config/**" },
         { "path": "$HOME/.kube/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
-        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" }
+        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Protect/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Vault/**" },
+        { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
+        { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
       ]
     },
     {
@@ -91,7 +111,13 @@
         { "path": "$HOME/.kube/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
         { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" },
-        { "path": "$HOME/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**" }
+        { "path": "$HOME/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Protect/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Vault/**" },
+        { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
+        { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
       ]
     },
     {
@@ -109,7 +135,13 @@
         { "path": "$HOME/.gnupg/**" },
         { "path": "$HOME/.config/**" },
         { "path": "$HOME/.kube/**" },
-        { "path": "$HOME/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**" }
+        { "path": "$HOME/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Protect/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Vault/**" },
+        { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
+        { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
+        { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
       ]
     }
   ]

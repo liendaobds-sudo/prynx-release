@@ -30,10 +30,35 @@
       "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://tauri.localhost asset: http://asset.localhost https://asset.localhost http://localhost:8321 https://*.supabase.co https://www.gstatic.com https://1.1.1.1; script-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com asset: http://asset.localhost https://asset.localhost data: blob:; img-src 'self' asset: http://asset.localhost https://asset.localhost http://tauri.localhost http://tile.localhost http://localhost:8321 data: blob: tile:; worker-src 'self' blob:;",
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "**",
-          "**/*"
-        ]
+        "scope": {
+          "allow": [
+            "**",
+            "**/*"
+          ],
+          "deny": [
+            "$HOME/.ssh/**",
+            "$HOME/.aws/**",
+            "$HOME/.gnupg/**",
+            "$HOME/.config/**",
+            "$HOME/.kube/**",
+            "$HOME/.docker/**",
+            "$HOME/AppData/Local/Microsoft/Credentials/**",
+            "$HOME/AppData/Roaming/Microsoft/Credentials/**",
+            "$HOME/AppData/Roaming/Microsoft/Protect/**",
+            "$HOME/AppData/Local/Microsoft/Vault/**",
+            "$HOME/AppData/Local/Google/Chrome/User Data/**",
+            "$HOME/AppData/Local/Microsoft/Edge/User Data/**",
+            "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**",
+            "$DATA/PrynX/*.dat",
+            "$HOME/AppData/Roaming/PrynX/*.dat",
+            "**/.env",
+            "**/*.pem",
+            "**/*.pfx",
+            "**/*.p12",
+            "**/id_rsa*",
+            "**/id_ed25519*"
+          ]
+        }
       }
     }
   },

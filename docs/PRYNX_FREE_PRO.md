@@ -34,4 +34,4 @@ N-Up hiện được khóa theo toàn bộ công cụ. Nếu sau này cần N-Up
 4. Build desktop với VITE_FEATURE_GATING_ENABLED=true và PRYNX_FEATURE_GATING_ENABLED=true.
 5. Phát hành theo nhóm nhỏ trước khi cập nhật toàn bộ khách hàng.
 
-Không đảo thứ tự: bật desktop trước server có thể làm sai quyền. Token có TTL 7 ngày để khách hợp lệ không bị khóa sau cuối tuần hoặc kỳ nghỉ ngắn.
+Không đảo thứ tự: bật desktop trước server có thể làm sai quyền. Token có TTL 72h để khách hợp lệ không bị khóa sau cuối tuần hoặc kỳ nghỉ ngắn, đồng thời giới hạn độ trễ thu hồi khi máy khách offline (audit 2026-07-25 rút từ 7 ngày).

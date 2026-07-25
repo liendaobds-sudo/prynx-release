@@ -117,7 +117,7 @@ async function deleteTokenFromDPAPI(): Promise<void> {
 
 // ── Xoá cache VALIDATED_KEYS phía Rust (chặn ký request → backend 403) ──
 // Gọi khi khóa cứng/thu hồi/đăng xuất. Nếu KHÔNG gọi, dù UI đã khóa, sign_api_request
-// (Rust) vẫn ký request hợp lệ tới hết TTL cache (2h) → backend vẫn xử lý PDF.
+// (Rust) vẫn ký request hợp lệ tới hết TTL cache (8h — security.rs) → backend vẫn xử lý PDF.
 // Best-effort: không có Tauri (dev/web) thì bỏ qua êm.
 async function clearValidatedKeysInRust(): Promise<void> {
   try {
@@ -879,7 +879,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   // Hết giờ ân hạn → khóa cứng: overlay + XOÁ cache ký Rust (chặn mọi request backend
-  // ngay trong phiên, không đợi TTL 2h) + dọn token đã lưu.
+  // ngay trong phiên, không đợi TTL cache 8h) + dọn token đã lưu.
   enforceHardLock: async (reason: string) => {
     if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
     await clearValidatedKeysInRust();

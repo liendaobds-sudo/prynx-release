@@ -17,17 +17,27 @@ from app.config import settings
 from app.core.license_guard import require_license
 
 
-# Bỏ guard license để test riêng logic containment (guard đã có test khác).
-# plan=pro: release QA bật feature gating; download preflight không cần Pro nhưng
-# override không có plan bị suy ra free và có thể rò sang test khác.
-app.dependency_overrides[require_license] = lambda: {
-    "license_key": "TEST",
-    "hwid": "TEST",
-    "verified": True,
-    "plan": "pro",
-    "features": ["*"],
-}
 client = TestClient(app)
+
+
+# Bỏ guard license để test riêng logic containment (guard đã có test khác).
+# QUAN TRỌNG: cài override bằng FIXTURE có teardown, KHÔNG gán ở mức module.
+# Gán mức module chạy lúc pytest COLLECT (trước mọi test) và không bao giờ được dọn
+# → rò license Pro sang các test kiểm chứng chuỗi license thật
+# (test_free_token_e2e nhận 200 thay vì 403). Xem audit 2026-07-25.
+@pytest.fixture(autouse=True)
+def _license_override():
+    app.dependency_overrides[require_license] = lambda: {
+        "license_key": "TEST",
+        "hwid": "TEST",
+        "verified": True,
+        "plan": "pro",
+        "features": ["*"],
+    }
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(require_license, None)
 
 
 @pytest.fixture

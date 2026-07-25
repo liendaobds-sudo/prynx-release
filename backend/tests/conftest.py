@@ -65,7 +65,20 @@ def _auto_pro_license(request):
     free context across the whole suite and caused 403s on Pro-only routes.
     """
     if _node_opts_out_of_auto_pro(request.node.nodeid):
-        yield
+        # SECURITY-TEST ISOLATION (audit 2026-07-25): các test trong danh sách này
+        # chạy ĐÚNG chuỗi license thật (HMAC + Ed25519 + entitlement). Nếu một module
+        # khác gán `app.dependency_overrides[require_license]` ở MỨC MODULE thì lệnh
+        # đó chạy lúc pytest COLLECT — tức TRƯỚC mọi test — và rò một license Pro vào
+        # đây, khiến `test_free_token_cannot_call_pro_sidecar_endpoints` nhận 200 thay
+        # vì 403 (test tự bịt mắt: pass khi chạy riêng, fail/vô nghĩa khi chạy full
+        # suite). Dọn sạch override TRƯỚC khi chạy để guard thật được kiểm chứng.
+        clear_license_override()
+        try:
+            yield
+        finally:
+            # Không "phục hồi" override lạ: mọi test KHÔNG opt-out đều tự cài Pro qua
+            # nhánh dưới, nên trả về trạng thái sạch là đúng và ngăn rò tiếp.
+            clear_license_override()
         return
 
     install_license_override(PRO_LICENSE)

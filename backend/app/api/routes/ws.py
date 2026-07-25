@@ -20,6 +20,7 @@ async def job_progress_ws(
     job_id: str,
     ts: str = Query(default=""),
     sig: str = Query(default=""),
+    nonce: str = Query(default=""),
     license_key: str = Query(default=""),
     hwid: str = Query(default=""),
     license_token: str = Query(default=""),
@@ -30,12 +31,12 @@ async def job_progress_ws(
     SECURITY: xác thực chữ ký HMAC đã ràng buộc license key, HWID và license token
     (giống require_license). WebSocket nhận credentials qua query param vì trình
     duyệt không gửi được custom headers. Bỏ qua ở dev mode. Chữ ký ký trên path
-    "/ws/jobs/{job_id}/progress".
+    "/ws/jobs/{job_id}/progress" và phải kèm `nonce` dùng-một-lần (audit 2026-07-25).
     """
     from app.core.license_guard import verify_sidecar_signature
     url_path = f"/ws/jobs/{job_id}/progress"
     ok, _reason = verify_sidecar_signature(
-        url_path, ts, sig, license_key, hwid, license_token
+        url_path, ts, sig, license_key, hwid, license_token, nonce
     )
     if not ok:
         await websocket.close(code=4001, reason="Unauthorized")

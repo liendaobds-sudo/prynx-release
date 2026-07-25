@@ -2,6 +2,8 @@ from fastapi.testclient import TestClient
 import os
 import sys
 
+import pytest
+
 # Add backend to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -10,14 +12,24 @@ from app.core.license_guard import require_license
 
 client = TestClient(app)
 
-# Bypass license check for tests (Pro plan — feature gating may be on in release QA)
-app.dependency_overrides[require_license] = lambda: {
-    "license_key": "TEST_LICENSE",
-    "hwid": "TEST",
-    "verified": True,
-    "plan": "pro",
-    "features": ["*"],
-}
+
+# Bypass license check for tests (Pro plan — feature gating may be on in release QA).
+# QUAN TRỌNG: dùng FIXTURE có teardown, KHÔNG gán ở mức module — gán mức module chạy
+# lúc pytest COLLECT nên rò license Pro sang các test kiểm chứng chuỗi license thật
+# (test_free_token_e2e nhận 200 thay vì 403). Xem audit 2026-07-25.
+@pytest.fixture(autouse=True)
+def _license_override():
+    app.dependency_overrides[require_license] = lambda: {
+        "license_key": "TEST_LICENSE",
+        "hwid": "TEST",
+        "verified": True,
+        "plan": "pro",
+        "features": ["*"],
+    }
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(require_license, None)
 
 def test_health_check():
     response = client.get("/")
