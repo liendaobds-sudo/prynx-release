@@ -39,31 +39,68 @@ def test_unknown_profile_returns_none():
     assert resolve_profile_path("not_a_real_profile_xyz") is None
 
 
-@pytest.mark.asyncio
-async def test_separations_prefer_gs_when_available(tmp_path):
-    """With GS present, default path should not be forced approximate-only."""
-    from app.config import settings
-    from app.core.separations import SeparationEngine
+def _make_cmyk_page(tmp_path, name="cmyk_page.pdf"):
+    """Trang CMYK vector thuần: `0 1 1 0 k` ⇒ TAC 200% ở vùng tô."""
     import pikepdf
 
-    pdf_path = tmp_path / "cmyk_page.pdf"
+    pdf_path = tmp_path / name
     pdf = pikepdf.Pdf.new()
     page = pdf.add_blank_page(page_size=(200, 200))
-    # Simple CMYK fill via content
     page.Contents = pdf.make_stream(b"0 1 1 0 k 10 10 80 80 re f\n")
     pdf.save(pdf_path)
     pdf.close()
+    return pdf_path
+
+
+@pytest.mark.asyncio
+async def test_separations_default_path_is_rip_quality_not_approximate(tmp_path):
+    """Đường mặc định không được rơi về đường xấp xỉ khi có engine chất lượng RIP.
+
+    Test này CỐ Ý không khoá *danh tính* engine. Ý định cần bảo vệ là "kẽm đủ tin
+    để chốt bản", và từ khi có PrynX Print Engine (PPE) thì có hai engine đạt mức
+    đó — PPE chạy trước Ghostscript. Khoá tên engine sẽ biến một thay đổi kiến
+    trúc hợp lệ thành test đỏ, còn nới `accuracy` thành "bất kỳ" thì mất luôn thứ
+    đáng bảo vệ. Vì vậy khoá theo `accuracy`.
+    """
+    from app.core.separations import SeparationEngine
+
+    pdf_path = _make_cmyk_page(tmp_path)
 
     engine = SeparationEngine()
     result = await engine.extract_separations(str(pdf_path), 1, dpi=36, use_ghostscript=None)
     assert "plates" in result
     assert len(result["plates"]) >= 4
-    assert result.get("engine") in ("ghostscript", "pdfium_approx")
-    assert result.get("accuracy") in ("rip_separations", "approximate")
-    # If GS configured, expect rip path
-    if settings.GHOSTSCRIPT_PATH and os.path.isfile(settings.GHOSTSCRIPT_PATH):
-        assert result["engine"] == "ghostscript"
-        assert result["accuracy"] == "rip_separations"
+
+    # Trang CMYK vector thuần: cả PPE lẫn GS đều phải cho kết quả chuẩn RIP.
+    # `rip_separations_approx_geometry` (font không nhúng đã thay) cũng được tính:
+    # đỉnh mực vẫn đúng, chỉ diện tích phủ là xấp xỉ — nhưng trang này không có chữ.
+    assert result.get("accuracy") == "rip_separations", result.get("quality_note")
+    assert result.get("engine") in ("ppe", "ghostscript")
+
+
+@pytest.mark.asyncio
+async def test_separations_ghostscript_path_still_works(tmp_path):
+    """Đường Ghostscript phải giữ nguyên tác dụng khi PPE bị tắt.
+
+    GS vẫn là lưới an toàn cho những trang PPE chưa vẽ đủ (shading, transparency),
+    nên nó cần test riêng — nếu chỉ còn test đường mặc định thì đường fallback có
+    thể mục đi mà không ai biết, và nó chỉ được dùng đúng lúc quan trọng nhất.
+    """
+    from app.config import settings
+    from app.core.separations import SeparationEngine
+
+    if not (settings.GHOSTSCRIPT_PATH and os.path.isfile(str(settings.GHOSTSCRIPT_PATH))):
+        pytest.skip("máy này chưa cấu hình Ghostscript")
+
+    pdf_path = _make_cmyk_page(tmp_path, "cmyk_page_gs.pdf")
+
+    engine = SeparationEngine()
+    result = await engine.extract_separations(
+        str(pdf_path), 1, dpi=36, use_ghostscript=True, use_ppe=False
+    )
+    assert result["engine"] == "ghostscript"
+    assert result["accuracy"] == "rip_separations"
+    assert len(result["plates"]) >= 4
 
 
 @pytest.mark.asyncio

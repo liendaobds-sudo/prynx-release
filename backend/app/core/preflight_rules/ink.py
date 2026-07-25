@@ -23,6 +23,16 @@ TAC_THRESHOLD_MAX = 400
 TAC_MAX_BBOXES = 50           # trần số vùng vi phạm báo cáo mỗi trang (Yêu cầu 8.2)
 TAC_TILE_PX = 16              # kích thước ô grid-tiling khi gom vùng vi phạm
 
+# Engine được phép dùng để KẾT LUẬN về tổng mực.
+#
+# Chỉ gồm engine tách kênh mực THẬT. `pdfium_approx` (PDF→RGB→CMYK giả) cố tình
+# KHÔNG có trong danh sách: con số TAC của nó phụ thuộc một phép quy đổi tuỳ ý,
+# nên dùng nó để kết luận "đạt ngưỡng mực" là báo sạch oan trên file quá mực.
+#
+# `ppe` vào được danh sách vì facade đã loại sẵn mọi trang mà chính engine khai là
+# lượng mực chưa đủ tin (`ink_unsound`) — xem `app/core/print_engine/facade.py`.
+TAC_TRUSTED_ENGINES = frozenset({"ghostscript", "ppe"})
+
 
 def _normalize_tac_threshold(value) -> int:
     """
@@ -170,20 +180,32 @@ class InkRulesMixin:
                 mb = doc.pages[page_idx].get("/MediaBox")
                 page_h_pt = float(mb[3]) - float(mb[1]) if mb else None
 
-                # TAC cần tổng mực thật trên từng kênh CMYK — pikepdf fallback chỉ ~100%/điểm
-                # với fill CMYK đặc; bắt buộc Ghostscript tiffsep (giống Separations preview).
+                # TAC = tổng mực DeviceCMYK (ink coverage), KHÔNG phải soft-proof FOGRA.
+                # ink_accurate=True: UseFastColor, không ICC, không AA — solid 400% TAC
+                # không bị nén xuống ~292% (false-clean dưới ngưỡng 300).
                 sep = _run_coro_sync(
                     engine.extract_separations(
-                        pdf_path, page_num, dpi=TAC_RENDER_DPI, use_ghostscript=True
+                        pdf_path,
+                        page_num,
+                        dpi=TAC_RENDER_DPI,
+                        use_ghostscript=True,
+                        ink_accurate=True,
                     )
                 )
-                if sep.get("engine") != "ghostscript":
-                    # KHÔNG im lặng bỏ qua: nếu thiếu Ghostscript, TAC chưa hề chạy →
-                    # phát issue để user biết báo cáo "sạch TAC" là KHÔNG đáng tin,
-                    # thay vì tưởng file đạt ngưỡng mực (false-clean nguy hiểm).
+                if sep.get("engine") not in TAC_TRUSTED_ENGINES:
+                    # KHÔNG im lặng bỏ qua: nếu không engine nào tách được kênh thật,
+                    # TAC chưa hề chạy → phát issue để user biết báo cáo "sạch TAC" là
+                    # KHÔNG đáng tin, thay vì tưởng file đạt ngưỡng mực.
+                    #
+                    # Điều kiện là danh sách engine ĐÁNG TIN, không phải so bằng với
+                    # "ghostscript": PPE cũng tách kênh thật trong không gian mực, và
+                    # facade đã loại sẵn mọi trang mà chính engine khai là lượng mực
+                    # chưa đủ tin. So bằng một tên engine sẽ ném kết quả PPE đúng vào
+                    # nhánh "chưa kiểm tra được" và cảnh báo oan trên file sạch.
                     logger.warning(
-                        "TAC trang %d: Ghostscript không khả dụng, không kiểm tra được TAC.",
+                        "TAC trang %d: không có engine tách kênh đáng tin (engine=%s).",
                         page_num,
+                        sep.get("engine"),
                     )
                     issues.append(PreflightIssue(
                         rule_id="TAC_EXCEEDED",
@@ -191,9 +213,10 @@ class InkRulesMixin:
                         page=page_num,
                         object_ref="Tổng mực (TAC)",
                         description=(
-                            f"Chưa kiểm tra được TAC trang {page_num}: thiếu Ghostscript "
-                            "(công cụ tách kênh). Hãy cài Ghostscript để kiểm tổng mực; "
-                            "ĐỪNG coi trang này là đạt ngưỡng mực."
+                            f"Chưa kiểm tra được TAC trang {page_num}: không tách được "
+                            "kênh mực (PrynX Print Engine chưa vẽ đủ trang này và "
+                            "Ghostscript không khả dụng). ĐỪNG coi trang này là đạt "
+                            "ngưỡng mực."
                         ),
                         auto_fixable=False,
                     ))

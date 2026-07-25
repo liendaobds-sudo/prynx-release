@@ -10,6 +10,7 @@ import pikepdf
 from PIL import Image
 from pathlib import Path
 from app.config import settings
+from app.core.print_engine import facade as ppe_facade
 
 logger = logging.getLogger(__name__)
 
@@ -182,20 +183,34 @@ class SeparationEngine:
     async def extract_separations(
         self, pdf_path: str, page_num: int, dpi: int = 72,
         use_ghostscript: bool | None = None,
-        cmyk_profile_id: str = "fogra39",
+        cmyk_profile_id: str | None = "fogra39",
+        *,
+        ink_accurate: bool = False,
+        use_ppe: bool = True,
     ) -> dict:
         """
         Extract separation plates (Acrobat Output Preview style).
 
-        Strategy:
-        1. **Default / recommended:** Ghostscript ``tiffsep`` — real process + spot
-           plates (color-managed when ICC available). Matches RIP much better than
-           RGB→pseudo-CMYK.
-        2. Fallback: pypdfium2 RGB → naive CMYK split (fast, **approximate only**).
+        Strategy (theo thứ tự ưu tiên):
+        1. **PrynX Print Engine (PPE)** — tách kẽm trong không gian mực n kênh
+           (Rust, không subprocess). Chỉ dùng khi engine tự khai lượng mực đáng
+           tin; trang có shading/transparency chưa dựng bị nhường xuống bước 2
+           thay vì trả số thấp hơn thực tế.
+        2. Ghostscript ``tiffsep`` — real process + spot plates (color-managed
+           when ICC available).
+        3. Fallback: pypdfium2 RGB → naive CMYK split (fast, **approximate only**).
 
         ``use_ghostscript``:
           - None / True → prefer GS when installed
-          - False → force approximate path (debug / no GS)
+          - False → force approximate path (debug / no GS); cũng tắt luôn PPE để
+            giữ đúng ý nghĩa "buộc đường xấp xỉ" của tham số này.
+
+        ``use_ppe``: tắt PPE riêng lẻ (so sánh engine / gỡ lỗi) mà vẫn dùng GS.
+
+        ``ink_accurate``:
+          - True → DeviceCMYK ink coverage (no ICC, no AA) for TAC / ink-limit.
+            Color-managed FOGRA soft-proof plates under-report solid TAC and must
+            not be used for total-area-coverage gates.
         """
         spot_names = self._detect_spot_inks(pdf_path)
         has_spots = len(spot_names) > 0
@@ -203,10 +218,46 @@ class SeparationEngine:
         gs_available = bool(self.gs_path and os.path.isfile(str(self.gs_path)))
         prefer_gs = gs_available if use_ghostscript is None else bool(use_ghostscript)
 
+        # ── Nhánh 1: PrynX Print Engine (PPE) ───────────────────────────────
+        # Thử PPE TRƯỚC Ghostscript, nhưng chỉ nhận kết quả khi chính engine khai
+        # là lượng mực đáng tin (`ink_unsound=False`). PPE tách kẽm trong không
+        # gian mực n kênh nên spot/overprint là mô hình gốc, không phải mô phỏng;
+        # bù lại nó chưa vẽ được shading/transparency, và những trang đó bị facade
+        # loại thẳng thay vì trả số thấp hơn thực tế.
+        #
+        # `use_ghostscript=False` là cờ "buộc đường xấp xỉ" của caller (debug /
+        # máy không có GS) nên KHÔNG được lặng lẽ đưa PPE vào thay: giữ đúng ý
+        # nghĩa cũ của tham số.
+        if use_ppe and use_ghostscript is not False:
+            try:
+                result = await asyncio.to_thread(
+                    ppe_facade.separations,
+                    pdf_path,
+                    page_num,
+                    dpi,
+                    ink_accurate=ink_accurate,
+                    cmyk_profile_id=cmyk_profile_id,
+                )
+                if result.get("plates"):
+                    result["has_spot_colors"] = bool(result.get("has_spot_colors")) or has_spots
+                    result["detected_spots"] = result.get("detected_spots") or spot_names
+                    return result
+            except ppe_facade.PpeResultUntrusted as e:
+                # Không phải lỗi: engine tự khai giới hạn của chính nó. Nhường GS.
+                logger.info("PPE nhường Ghostscript (trang %d): %s", page_num, e)
+            except ppe_facade.PpeUnavailable as e:
+                logger.debug("PPE chưa khả dụng: %s", e)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("PPE lỗi (trang %d): %s. Chuyển Ghostscript.", page_num, e)
+
         if prefer_gs and gs_available:
             try:
                 result = await self._run_ghostscript_tiffsep(
-                    pdf_path, page_num, dpi, cmyk_profile_id=cmyk_profile_id,
+                    pdf_path,
+                    page_num,
+                    dpi,
+                    cmyk_profile_id=None if ink_accurate else cmyk_profile_id,
+                    ink_accurate=ink_accurate,
                 )
                 if result and len(result.get("plates", [])) > 0:
                     result["has_spot_colors"] = has_spots or any(
@@ -323,7 +374,9 @@ class SeparationEngine:
         pdf_path: str,
         page_num: int,
         dpi: int,
-        cmyk_profile_id: str = "fogra39",
+        cmyk_profile_id: str | None = "fogra39",
+        *,
+        ink_accurate: bool = False,
     ) -> dict:
         """Run Ghostscript tiffsep to generate plate TIFFs, then convert to base64 PNGs."""
         import subprocess
@@ -337,6 +390,9 @@ class SeparationEngine:
 
         output_base = str(job_dir / "plate")
 
+        # ink_accurate: measure DeviceCMYK coverage (TAC) — no ICC, no AA, fast color.
+        # Preview path: color-managed FOGRA plates with mild AA (Acrobat-like).
+        alpha_bits = 1 if ink_accurate else 4
         # NOSAFER so GS can read bundled FOGRA39.icc outside process cwd.
         cmd = [
             self.gs_path,
@@ -344,16 +400,24 @@ class SeparationEngine:
             "-dNOPAUSE", "-dBATCH", "-dNOSAFER",
             f"-dFirstPage={page_num}", f"-dLastPage={page_num}",
             f"-r{dpi}",
-            "-dGraphicsAlphaBits=4",
-            "-dTextAlphaBits=4",
+            f"-dGraphicsAlphaBits={alpha_bits}",
+            f"-dTextAlphaBits={alpha_bits}",
             "-dMaxSpots=32",
             "-dSimulateOverprint=true",
-            "-dUseFastColor=false",
+            "-dUseFastColor=true" if ink_accurate else "-dUseFastColor=false",
         ]
-        cmyk_icc = resolve_cmyk_profile_path(cmyk_profile_id)
-        if cmyk_icc:
-            cmd.append(f"-sDefaultCMYKProfile={cmyk_icc}")
-            cmd.append("-dOverrideICC=true")
+        if not ink_accurate and cmyk_profile_id:
+            cmyk_icc = resolve_cmyk_profile_path(cmyk_profile_id)
+            if cmyk_icc:
+                # `-sDefaultCMYKProfile` là profile NGUỒN — nó dạy Ghostscript cách
+                # hiểu dữ liệu DeviceCMYK trong file. Profile ĐÍCH (kết xuất) là
+                # `-sOutputICCProfile`. Thiếu cờ đích thì GS kết xuất ra profile CMYK
+                # mặc định dựng sẵn của nó, nghĩa là "kẽm FOGRA39" mà app quảng cáo
+                # thực chất KHÔNG phải FOGRA39. Đo được: thiếu cờ này lệch tới 30
+                # điểm TAC và MAE 42/255 so với khi đặt đúng (< 1 điểm, MAE < 1.1).
+                cmd.append(f"-sDefaultCMYKProfile={cmyk_icc}")
+                cmd.append(f"-sOutputICCProfile={cmyk_icc}")
+                cmd.append("-dOverrideICC=true")
         cmd.extend([
             f"-sOutputFile={output_base}.tif",
             pdf_path,
