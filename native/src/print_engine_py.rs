@@ -27,6 +27,15 @@ use print_engine::page::{open as ppe_open, render_page_managed, PageBox};
 /// * `cmyk_profile` → bật quản lý màu ICC (thường là FOGRA39.icc).
 /// * `rgb_profile` → profile RGB nguồn cho `DeviceRGB`; bỏ trống thì dùng sRGB.
 /// * `render_intent` → 0 perceptual, 1 relative, 2 saturation, 3 absolute.
+/// * `fallback_font` → file TrueType dùng thay khi PDF **không nhúng** font.
+///
+/// # Vì sao `fallback_font` là đường dẫn do Python truyền vào
+///
+/// Không hardcode trong Rust: layout thư mục assets do lớp đóng gói quyết định
+/// (dev chạy từ repo, bản phát hành nằm trong sidecar), nên chỉ Python biết font
+/// thật ở đâu. Truyền `None` là lựa chọn trung thực nhất nhưng để lại lỗ đo —
+/// trang toàn chữ không nhúng font sẽ báo **0% mực**, tức báo *thiếu* mực, đúng
+/// chiều sai làm hỏng lô in.
 ///
 /// Trả dict với `plates[i]["ink"]` là `bytes` dài `width * height`.
 #[pyfunction]
@@ -39,6 +48,7 @@ use print_engine::page::{open as ppe_open, render_page_managed, PageBox};
     cmyk_profile = None,
     rgb_profile = None,
     render_intent = 1,
+    fallback_font = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn ppe_separations(
@@ -51,6 +61,7 @@ pub fn ppe_separations(
     cmyk_profile: Option<&str>,
     rgb_profile: Option<&str>,
     render_intent: i32,
+    fallback_font: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
     if page == 0 {
         return Err(PyValueError::new_err("page là chỉ số 1-based, không nhận 0"));
@@ -67,10 +78,22 @@ pub fn ppe_separations(
             )))
         }
     };
-    let opts = if ink_accurate {
+    let base_opts = if ink_accurate {
         RenderOptions::ink_accurate()
     } else {
         RenderOptions::default()
+    };
+    // Đọc font ngay ở đây để đường dẫn sai **nổ** thành lỗi Python, thay vì lặng
+    // lẽ chạy tiếp ở chế độ không-fallback. Bỏ qua âm thầm sẽ cho ra một trang
+    // chữ báo 0% mực mà không có dấu hiệu nào cho biết vì sao.
+    let opts = match fallback_font {
+        Some(path) => {
+            let data = std::fs::read(path).map_err(|e| {
+                PyRuntimeError::new_err(format!("không đọc được fallback_font {path}: {e}"))
+            })?;
+            base_opts.with_fallback_font(std::sync::Arc::new(data))
+        }
+        None => base_opts,
     };
 
     let intent = RenderIntent::from_pdf(render_intent);
@@ -133,7 +156,22 @@ pub fn ppe_separations(
     out.set_item("plates", plates)?;
     // `degraded = true` nghĩa là trang có thứ PPE chưa vẽ đúng ⇒ lớp Python PHẢI
     // hạ `accuracy` và KHÔNG được kết luận "đạt ngưỡng mực".
+    //
+    // Giữ `degraded` (hợp của hai trục) để contract cũ không vỡ, nhưng phơi thêm
+    // hai trục riêng vì chúng dẫn tới quyết định KHÁC NHAU:
+    //
+    // * `ink_unsound` — lượng mực không đáng tin (thiếu object / transparency chưa
+    //   dựng / màu xấp xỉ / nội dung có thể đang bị ẩn). Cấm chốt kẽm.
+    // * `geometry_approximate` — chữ ĐÃ lên mực nhưng hình khác bản gốc (font thay
+    //   thế). Đỉnh mực vùng đặc vẫn đúng, chỉ % diện tích phủ là ước lượng.
+    //
+    // Gộp hai thứ này vào một cờ khiến gần như mọi file xưởng thật bị hạ tin cậy
+    // (file nào cũng có chữ) — cảnh báo báo oan rồi cũng bị bỏ qua như không có.
     out.set_item("degraded", warnings.degrades_accuracy())?;
+    out.set_item("ink_unsound", warnings.ink_unsound())?;
+    out.set_item("geometry_approximate", warnings.geometry_approximate())?;
+    out.set_item("substituted_fonts", warnings.substituted_fonts.clone())?;
+    out.set_item("hidden_content_risk", warnings.hidden_content_risk)?;
     out.set_item("dropped_objects", warnings.dropped_objects)?;
     out.set_item("unsupported_transparency", warnings.unsupported_transparency)?;
     out.set_item(
@@ -194,8 +232,22 @@ pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     )?;
     caps.set_item("soft_proof_cmyk_to_srgb", true)?;
 
+    // Chữ: Type1 / CFF / TrueType / Type0-CID / Type3 → outline, có clip theo chữ.
+    caps.set_item("text", true)?;
+    caps.set_item(
+        "text_font_formats",
+        vec!["Type1", "Type1C/CFF", "TrueType", "Type0-CID", "Type3"],
+    )?;
+    // Font KHÔNG nhúng: engine chỉ vẽ được khi caller cấp `fallback_font`, và khi
+    // đó hình chữ là xấp xỉ ⇒ bật `geometry_approximate`, KHÔNG bật `ink_unsound`.
+    caps.set_item("text_substitute_font_requires_caller_asset", true)?;
+    // Hai trục hỏng — lớp Python phải đọc đúng trục để không hạ tin cậy oan.
+    caps.set_item(
+        "degraded_axes",
+        vec!["ink_unsound", "geometry_approximate"],
+    )?;
+
     // Chưa xong — giữ đúng sự thật, đừng hứa trước.
-    caps.set_item("text", false)?;
     caps.set_item("shading", false)?;
     caps.set_item("transparency_groups", false)?;
     caps.set_item("soft_mask", false)?;

@@ -23,6 +23,8 @@ if not hasattr(pdfcompare_native, "ppe_separations"):
 FIXTURES = Path(__file__).parent / "preflight_fixtures" / "pdfs"
 TAC_HEAVY = FIXTURES / "17_tac_heavy_cmyk.pdf"
 BLANK = FIXTURES / "01_clean_blank.pdf"
+# Font thay thế do caller cấp (engine không hardcode đường dẫn assets).
+FALLBACK_FONT = Path(__file__).parent.parent / "app" / "assets" / "fonts" / "DejaVuSans.ttf"
 
 
 @pytest.fixture(scope="module")
@@ -66,8 +68,12 @@ def test_ink_accurate_page_is_not_flagged_degraded(tac_result):
 
     Nếu test này đỏ, nghĩa là engine đang tự hạ độ tin cậy quá tay và mọi báo cáo
     TAC sẽ mang cảnh báo vô nghĩa — người dùng sẽ học cách bỏ qua cảnh báo.
+
+    Fixture này có một nhãn chữ dùng font không nhúng nhưng **không có `Tj` nào**
+    dùng nó, nên không mất nội dung nào và đỉnh 400% là chắc. Một cờ gộp sẽ bật ở
+    đây và làm hỏng chính mục đích của nó.
     """
-    assert tac_result["degraded"] is False
+    assert tac_result["ink_unsound"] is False
     assert tac_result["dropped_objects"] == 0
 
 
@@ -79,15 +85,55 @@ def test_blank_page_has_no_ink():
     assert all(max(p["ink"]) == 0 for p in r["plates"])
 
 
-def test_page_with_text_reports_degraded():
-    """Text chưa vẽ ⇒ PHẢI khai báo, để lớp trên hạ accuracy."""
+def test_text_without_fallback_font_is_reported_not_silently_dropped():
+    """Font KHÔNG nhúng + caller không cấp font thay ⇒ chữ không vẽ được, PHẢI khai.
+
+    Đây là chiều sai nguy hiểm: trang toàn chữ mà báo 0% mực là báo **thiếu** mực.
+    Nên `ink_unsound` phải bật để lớp trên không kết luận "đạt ngưỡng mực".
+    """
     text_pdf = FIXTURES / "03_live_text.pdf"
     if not text_pdf.is_file():
         pytest.skip("thiếu fixture text")
     r = pdfcompare_native.ppe_separations(str(text_pdf), page=1, dpi=72.0, ink_accurate=True)
-    assert r["degraded"] is True
+    assert r["ink_unsound"] is True
     assert r["dropped_objects"] > 0
-    assert any("text" in op["op"] for op in r["skipped_ops"])
+    assert any("font không nhúng" in op["op"] for op in r["skipped_ops"])
+
+
+def test_fallback_font_makes_text_paint_ink_but_flags_geometry_only():
+    """Cấp font thay ⇒ chữ lên mực thật, và cờ phải nói đúng *kiểu* xấp xỉ.
+
+    Hai trục tách nhau có lý do: hình glyph khác bản gốc nên **diện tích phủ** là
+    xấp xỉ (`geometry_approximate`), nhưng lượng mực không còn bị hụt nên
+    `ink_unsound` phải TẮT. Gộp hai thứ này vào một cờ sẽ khiến gần như mọi file
+    xưởng thật bị hạ tin cậy và người dùng học cách bỏ qua cảnh báo.
+    """
+    text_pdf = FIXTURES / "03_live_text.pdf"
+    if not text_pdf.is_file():
+        pytest.skip("thiếu fixture text")
+    if not FALLBACK_FONT.is_file():
+        pytest.skip("thiếu DejaVuSans.ttf")
+    r = pdfcompare_native.ppe_separations(
+        str(text_pdf), page=1, dpi=72.0, ink_accurate=True, fallback_font=str(FALLBACK_FONT)
+    )
+    assert r["max_tac_pct"] > 0.0, "chữ phải lên mực khi đã có font thay"
+    assert r["dropped_objects"] == 0
+    assert r["ink_unsound"] is False
+    assert r["geometry_approximate"] is True
+    assert r["substituted_fonts"], "phải nêu tên font đã bị thay"
+
+
+def test_missing_fallback_font_path_raises_instead_of_running_unsubstituted():
+    """Đường dẫn font sai phải nổ, không được lặng lẽ chạy chế độ không-thay.
+
+    Bỏ qua âm thầm sẽ cho ra trang chữ báo 0% mực mà caller vẫn tưởng đã cấp font.
+    """
+    if not BLANK.is_file():
+        pytest.skip("thiếu fixture")
+    with pytest.raises(RuntimeError):
+        pdfcompare_native.ppe_separations(
+            str(BLANK), page=1, dpi=72.0, fallback_font="khong_ton_tai.ttf"
+        )
 
 
 def test_dpi_controls_raster_size():
@@ -167,8 +213,10 @@ def test_icc_removes_approximation_flag_for_rgb():
         cmyk_profile=str(FOGRA39),
         rgb_profile=str(SRGB) if SRGB.is_file() else None,
     )
-    assert plain["degraded"] is True
-    assert managed["degraded"] is False, managed["approximated_colorspaces"]
+    assert plain["ink_unsound"] is True
+    # ICC khử hết xấp xỉ MÀU. Dùng `ink_unsound`, không dùng cờ gộp: cờ gộp còn
+    # mang cả xấp xỉ hình học (font thay thế) — thứ ICC không liên quan.
+    assert managed["ink_unsound"] is False, managed["approximated_colorspaces"]
     assert managed["approximated_colorspaces"] == []
 
 
@@ -223,8 +271,13 @@ def test_capabilities_do_not_overclaim():
     # ICC chỉ áp cho nội dung chưa phải mực — khai rõ để lớp trên không hiểu sai.
     assert "DeviceRGB" in caps["icc_applies_to"]
     assert "DeviceCMYK" in caps["icc_never_applies_to"]
+    # Text đã vẽ được (Type1/CFF/TrueType/Type0-CID/Type3).
+    assert caps["text"] is True
+    # Nhưng font KHÔNG nhúng chỉ vẽ được khi caller cấp asset — khai rõ để lớp
+    # trên biết vì sao một trang chữ có thể vẫn báo thiếu mực.
+    assert caps["text_substitute_font_requires_caller_asset"] is True
     # Chưa xong tại milestone này:
-    assert caps["text"] is False
+    assert caps["shading"] is False
 
 
 def test_image_codec_gaps_are_declared_separately():

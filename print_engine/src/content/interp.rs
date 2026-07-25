@@ -397,9 +397,12 @@ impl<'a> Renderer<'a> {
                     self.warnings.dropped_objects += 1;
                 }
                 "BDC" | "BMC" | "EMC" | "MP" | "DP" => {
-                    // Optional content (/OC) có thể ẩn nội dung. Chưa xử lý ⇒ ghi
-                    // nhận, vì in nội dung đang tắt là lỗi nghiêm trọng.
+                    // Optional content (/OC) có thể ẩn nội dung. Chưa xét trạng thái
+                    // bật/tắt ⇒ nội dung đang TẮT vẫn bị vẽ lên kẽm. Đây là rủi ro
+                    // ngược chiều với `dropped_objects` (thừa mực, không phải thiếu),
+                    // nên đi vào cờ riêng thay vì gộp chung.
                     if op.operator == "BDC" && name_operand(operands, 0).as_deref() == Some("OC") {
+                        self.warnings.hidden_content_risk = true;
                         self.warnings.note_skipped_op("BDC /OC (optional content)");
                     }
                 }
@@ -1025,16 +1028,20 @@ impl<'a> Renderer<'a> {
                 Some(data) => {
                     // Thay font: lấp được lỗ đo (trang chữ không còn báo 0% mực)
                     // nhưng bề rộng và hình chữ khác bản gốc ⇒ diện tích phủ mực
-                    // chỉ là xấp xỉ. PHẢI hạ accuracy, không được im lặng.
+                    // chỉ là xấp xỉ. Ghi vào trục *hình học*, KHÔNG vào
+                    // `approximated_colorspaces`: font chẳng liên quan colorspace,
+                    // và làm bẩn danh sách đó sẽ khiến lớp trên tưởng quản lý màu
+                    // còn thiếu trong khi ICC đã áp đủ.
                     loaded.substitute_program(FontProgram::TrueType(data.clone()));
-                    self.warnings.note_approximated_colorspace(&format!(
-                        "font không nhúng, đã thay thế: {}",
-                        loaded.base_font
-                    ));
+                    self.warnings.note_substituted_font(&loaded.base_font);
                     self.warnings
                         .note_skipped_op(&format!("font thay thế: {}", loaded.base_font));
                 }
                 None => {
+                    // Chỉ ghi vết chẩn đoán. Font được khai trong /Resources nhưng
+                    // không có `Tj` nào dùng thì không mất nội dung nào — hạ tin cậy
+                    // ở đây là báo oan. Chữ thật sự bị bỏ được đếm ở `draw_glyph`
+                    // (`dropped_objects`), đúng chỗ nó xảy ra.
                     self.warnings
                         .note_skipped_op(&format!("font không nhúng: {}", loaded.describe()));
                 }
