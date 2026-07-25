@@ -24,10 +24,16 @@ pypdfium2==4.30.0
 # Chọn 0.11.9 (KHÔNG 0.11.10) vì 0.11.10 ép pypdfium2>=5.9.0 (nhảy major 4->5);
 # 0.11.9 vẫn giữ pypdfium2>=4.18.0 nên pin pypdfium2==4.30.0 bên dưới không đổi.
 pdfplumber==0.11.9
-pypdf==6.13.3
+# SECURITY (audit 2026-07-25, pip-audit): 6.13.3 -> 6.14.2 vá 4 CVE
+# (CVE-2026-59935/59936/59937/59938). pypdf parse PDF do người dùng nạp nên nằm
+# thẳng trên đường chạy — không phải dep ngủ.
+pypdf==6.14.2
 opencv-python-headless==4.10.0.84
 scikit-image==0.24.0
-Pillow==12.2.0
+# SECURITY (audit 2026-07-25, pip-audit): 12.2.0 -> 12.3.0 vá 20 advisory
+# (PYSEC-2026-2253..2257, 3451..3454, 3493..3496, ...). Pillow decode ảnh nhúng
+# trong PDF / ảnh người dùng nạp (tách nền, upscale, OCR) → đường chạy thật.
+Pillow==12.3.0
 python-multipart==0.0.31
 reportlab==4.2.0
 fonttools==4.60.2
