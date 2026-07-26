@@ -304,9 +304,12 @@ Config:
 
 **Gate Phase 2:**
 
-- [ ] 4/6 action GS có path non-GS trên PDF đơn giản  
-- [ ] Action log ghi `engine=ppe|pikepdf|gs`  
-- [ ] Test regression action_engine  
+- [ ] 4/6 action GS có path non-GS trên PDF đơn giản — **2/6 xong**
+  (`DOWNSCALE_IMAGES`, `EMBED_FONTS`; xem §17)
+- [x] Action log ghi `engine=ppe|pikepdf|gs` — `ActionLogEntry.engine` mang
+  engine **thực tế đã chạy**, khác `AVAILABLE_ACTIONS[id]["engine"]` (dự kiến)
+- [x] Test regression action_engine — `backend/tests/test_action_engine_native.py`
+  (15 test)
 
 ---
 
@@ -1345,10 +1348,77 @@ không-đảo như cũ).
 
 ---
 
+## 17. Phase 2 — hai action đầu rời Ghostscript (v3.1)
+
+`backend/app/core/pdf_actions_native.py`. Nguyên tắc chung: **không đoán** —
+object nào chưa chắc sửa đúng thì bỏ qua kèm lý do, và caller fallback GS.
+
+### 17.1 `DOWNSCALE_IMAGES` — pikepdf + Pillow
+
+Đường native chỉ ghi đè image XObject vượt ngưỡng, giữ nguyên phần còn lại của
+file; đo được: content stream của trang **giống nhau từng byte** trước/sau (test
+`test_downscale_preserves_page_text_and_structure`). Ghostscript thì dựng lại
+toàn bộ tài liệu để làm cùng việc đó.
+
+Mấu chốt là **DPI hiệu dụng**, không phải số pixel: phải biết ảnh được đặt to
+cỡ nào. `list_image_placements` (PDFium) sẵn có nhưng KHÔNG lộ tên XObject nên
+`preflight_rules/images.py` phải ghép heuristic theo kích thước pixel — đủ cho
+việc *báo lỗi*, quá rủi ro cho việc *ghi đè*. Nên module này tự duyệt content
+stream bằng pikepdf, tích luỹ CTM qua `q`/`Q`/`cm`, đệ quy vào Form XObject
+(nhân `/Matrix`, kế thừa `/Resources` theo §8.10.1, chặn tự-tham-chiếu và độ
+sâu 12). Khoá theo `objgen` chứ không theo tên resource — cùng một ảnh mang tên
+khác nhau ở mỗi trang. Lấy kích thước đặt **lớn nhất** khi ảnh dùng lại nhiều
+chỗ, nếu không chính chỗ to nhất bị mờ. Công thức `placed_size` dùng chung
+`hypot` với rule phát hiện, để không có file "sửa xong vẫn báo lỗi".
+
+Bỏ qua có chủ ý: ảnh 1-bit/`ImageMask` (nội suy stencil → xám lem, hỏng đường
+bế), Indexed (nội suy chỉ số bảng màu là vô nghĩa), `Separation`/`DeviceN`
+(Pillow không biểu diễn được kênh spot), codec JPX/JBIG2 (ghi lại là đổi
+codec). Ảnh và `/SMask` hạ **cùng tỉ lệ**; không hạ được mặt nạ thì không hạ
+ảnh. Ghi lại bằng Flate + mẫu thô để giữ nguyên `/ColorSpace` gốc (kể cả
+ICCBased) thay vì để Pillow tự quy về RGB/CMYK của nó; xoá `/Decode`,
+`/DecodeParms` vì chúng mô tả dữ liệu cũ.
+
+Bẫy đã sập và đã đóng bằng test: `/SMask` là image XObject **không bao giờ
+theo sau một `Do`**, nên nó luôn "không xác định được kích thước đặt". Đếm nó
+là ảnh-không-xử-lý-được thì mọi file có ảnh mờ đều bị đẩy sang Ghostscript.
+Đo trên corpus thật trước khi lọc: 6/16/3 mặt nạ bị tính oan mỗi file; sau khi
+lọc, `blocked` về 0 ở 10/12 file.
+
+Smoke test 12 PDF corpus thật: `3 - rúp danago.pdf` 8,6 MB → 6,7 MB; các file
+còn lại `changed=0` vì ảnh vốn đã dưới 600 DPI (đúng, không phải bất lực).
+
+### 17.2 `EMBED_FONTS` — pikepdf phân tích, GS chỉ khi thật cần
+
+Phần lớn file đã nhúng đủ font hoặc chỉ dùng base-14 (§9.6.2.2 — mọi consumer
+phải có sẵn). Với chúng, chạy Ghostscript là dựng lại cả tài liệu để thu về
+đúng thứ đang có, đổi lại subset lại font và quy đổi colorspace ngoài ý muốn.
+`analyze_font_embedding` phân loại embedded / base-14 / thiếu-thật (bóc tiền tố
+subset `ABCDEF+` trước khi so, xử lý Type0 qua `/DescendantFonts`); không thiếu
+gì thì chỉ sao chép file, `engine=pikepdf`.
+
+Khi có font thiếu thật, đường native cố tình **không** tự nhúng thay: muốn nhúng
+một font không có trong file thì phải mượn font hệ thống rồi dựng lại
+`/Widths`/`/Encoding`; sai bảng width là **chạy chữ** — tràn khung, lệch ngắt
+dòng — và lỗi đó chỉ lộ lúc in. Việc đó giao cho Ghostscript.
+
+### 17.3 Bẫy API đã đóng
+
+`hasattr(obj, "resolve")` — thành ngữ đang dùng ở vài chỗ trong repo — **luôn
+đúng** với mọi `pikepdf.Object`, nhưng gọi `.resolve()` trên object trực tiếp
+(Name, Array) ném `ValueError`. Trong `try/except` rộng, nhánh đúng bị nuốt: ảnh
+`/DeviceRGB` thường bị đọc thành "không rõ colorspace" và không hạ được gì.
+Phải kiểm `is_indirect` (helper `_deref`).
+
+Số chốt: backend **1320 pass** (1305 + 15 test mới), gồm cả smoke corpus thật.
+
+---
+
 ## 15. Lịch sử tài liệu
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.1 | 2026-07-27 | Phase 2 mở màn: `DOWNSCALE_IMAGES` và `EMBED_FONTS` có đường non-GS (`pdf_actions_native.py`). Downscale tự duyệt content stream lấy CTM (đệ quy Form + `/Matrix`, khoá theo objgen, lấy placement lớn nhất) thay vì ghép heuristic của PDFium; giữ nguyên content stream từng byte, hạ `/SMask` cùng tỉ lệ, bỏ qua 1-bit/Indexed/spot/JPX. Embed-fonts chỉ phân tích rồi copy khi đã đủ font, cố ý KHÔNG tự thay font thiếu (rủi ro chạy chữ). Bug đã đóng: `/SMask` bị đếm là ảnh-không-xử-lý-được → fallback GS oan (6/16/3 mặt nạ mỗi file trên corpus thật); `hasattr(o,"resolve")` luôn đúng nên nuốt nhánh colorspace hợp lệ → dùng `is_indirect`. `ActionLogEntry.engine` ghi engine THỰC TẾ. Gate Phase 2: 2/6 action, log engine ✔, regression ✔. Backend **1320 pass**. §17. |
 | 3.0 | 2026-07-26 | P0 downscale đóng bằng đo, không threshold corpus: fixture một-biến BÁC giả thuyết "GS béo hoá ratio ≥ 3" (GS = nearest thuần tới ratio 11,5; số cũ là artifact tie suy biến). Bốn root cause thật: neo raster dồn dư lên đỉnh (đóng `banner`/`Seminar`); ảnh có `/SMask` lấy mẫu trên bbox pixel-nguyên căng ~1px (khớp GS từng pixel 184/184@75, 371/371@150); tie nửa-mở-trái + f64 + tie-alternate max-TAC trong 1e-3 texel (`tra gung` −8,2 → −0,0 PASS); parser APP14 thay substring "Adobe" (fixture DCT meanΔ 0,00). Gỡ footprint-avg-alpha (bù lệch pha cũ, bơm mực ma sau khi căn lưới). Corpus @72 **28/31** (còn `50 hộp` +10,2 có sẵn, Steam Iron 3,56 quyết định sản phẩm, `túi` 3,15 tái phân loại hairline vector); @150 **28/30 không đổi**; @100 **30/31** — `banner` −2,4 là PHƠI LỘ thiếu hụt blend-stack có sẵn (đỉnh này @150 đã −2,4 từ trước; ảnh đơn lẻ khớp GS từng byte, chỉ composite lệch ~1%) → P0 kế tiếp. Fixture **50+1/51 ở cả 72 lẫn 100**. Rust **545**, backend **1305**. §16.9. |
 | 2.9 | 2026-07-26 | Audit độc lập tái hiện đúng v2.8 rồi đóng hai residual: kaptone là bug đo (mean f32 → f64, thật 0,46 PASS); Steam Iron do GS nở fill ~0,15 px — thêm vành fill-adjust 0,16 px (TAC-guard, tắt trong ô pattern, không áp nét) → 1,28 PASS; raw golden 100 DPI **31/31**. Đo đủ 72 DPI lần đầu (13/31) rồi mở conservative cho fill đục từ scale 1.0 + phục hồi footprint alpha ảnh: **25/31, 0 hồi quy**; residual còn 6 (bảng §16.8). Ghi nhận GS chỉ áp một trong hai lớp image-SMask × luminosity-SMask (PPE theo spec §11.6.4). Rust **541**, facade smoke **58**, backend 1192 pass (37 test shapely không chạy được trong môi trường audit). Gate unbundle vẫn đóng. |
 | 2.8 | 2026-07-26 | Theo dõi CTM khởi đầu riêng cho mỗi content stream lồng và dùng nó cho `/Matrix` của shading/tiling pattern; Business Card giảm mean **7,92→1,62** và PASS, raw golden đạt **29/31 PASS, 2 FAIL mean-only**. Soft mask luminosity DeviceRGB giữ độ sáng trên RGB sidecar trước ICC; thêm 3 regression. 72 DPI còn `banner`, `Seminar` và Business Card mean 3,23. Rust **540 pass**, Python backend **1305 pass**. |

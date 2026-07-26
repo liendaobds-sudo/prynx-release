@@ -35,6 +35,10 @@ class ActionLogEntry:
     status: str           # "success" | "failed" | "skipped"
     message: str
     duration_ms: int = 0
+    # Engine đã THỰC SỰ chạy: "ppe" | "pikepdf" | "gs" | "channel_remover".
+    # Cần cho gate Phase 2 (§5) và để người dùng biết file vừa qua tay
+    # Ghostscript (dựng lại toàn bộ) hay chỉ bị sửa đúng object cần sửa.
+    engine: str | None = None
     # Dữ liệu báo cáo bổ sung (vd report gỡ kênh: max/avg ΔE, OOG, warnings).
     # Để None với các action không sinh report. Task 11.2 sẽ surface lên FixResponse.
     report: dict | None = None
@@ -66,15 +70,18 @@ AVAILABLE_ACTIONS = {
         "description": "Convert toàn bộ chữ thành Vector (Curves) để chống lỗi font 100% khi in.",
         "engine": "ghostscript",
     },
+    # Hai action dưới chạy pikepdf khi làm được và chỉ rơi về Ghostscript khi
+    # cần; `engine` ở đây là engine DỰ KIẾN, còn engine thật của mỗi lần chạy
+    # nằm trong `ActionLogEntry.engine`.
     "EMBED_FONTS": {
         "title": "Nhúng Font (Embed)",
         "description": "Thử nhúng các font chưa được embedded vào file PDF (kém an toàn hơn).",
-        "engine": "ghostscript",
+        "engine": "pikepdf+ghostscript",
     },
     "DOWNSCALE_IMAGES": {
         "title": "Giảm độ phân giải ảnh",
         "description": "Downscale ảnh > 600 DPI xuống 300 DPI để giảm dung lượng file.",
-        "engine": "ghostscript",
+        "engine": "pikepdf+ghostscript",
     },
     "FIX_METADATA": {
         "title": "Sửa Metadata",
@@ -163,6 +170,10 @@ class ActionEngine:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         # Buffer chứa report bổ sung của handler gần nhất (vd REMOVE_CHANNELS).
         self._last_report: dict | None = None
+        # Engine THỰC TẾ đã chạy của handler gần nhất. Khác `AVAILABLE_ACTIONS
+        # [id]["engine"]` — đó chỉ là engine dự kiến; action có đường non-GS kèm
+        # fallback sẽ khai ở đây cái nào đã thật sự chạy.
+        self._last_engine: str | None = None
 
     async def execute(
         self, pdf_path: str, action_id: str, params: dict | None = None, original_name: str | None = None
@@ -189,6 +200,7 @@ class ActionEngine:
             # Reset report buffer; handlers sinh report (vd REMOVE_CHANNELS) sẽ
             # gán self._last_report để execute đính vào ActionLogEntry.report.
             self._last_report = None
+            self._last_engine = None
 
             logger.debug(f"Calling handler for {action_id}...")
             success = await handler(pdf_path, output_path, params)
@@ -224,6 +236,8 @@ class ActionEngine:
                 message=base_msg,
                 duration_ms=duration,
                 report=report,
+                # Handler nào không tự khai thì lấy engine dự kiến trong registry.
+                engine=self._last_engine or AVAILABLE_ACTIONS[action_id].get("engine"),
             )
 
             return ActionResult(
@@ -512,7 +526,56 @@ class ActionEngine:
     async def _action_embed_fonts(
         self, input_path: str, output_path: str, params: dict
     ) -> bool:
-        """Force-embed all fonts using Ghostscript."""
+        """Nhúng font còn thiếu — bỏ qua Ghostscript khi file vốn đã đủ font.
+
+        Phần lớn file thực tế đã nhúng hết font (hoặc chỉ dùng base-14, thứ theo
+        §9.6.2.2 không cần nhúng). Với những file đó, chạy Ghostscript là dựng
+        lại toàn bộ tài liệu để thu về đúng thứ đang có — đổi lại là subset lại
+        font, quy đổi colorspace và mất optional content. Ở đây ta kiểm tra
+        trước bằng pikepdf và chỉ sao chép file.
+
+        Khi có font **thiếu thật**, đường native cố tình KHÔNG tự nhúng thay:
+        muốn nhúng một font không nằm trong file thì phải mượn font hệ thống
+        rồi dựng lại ``/Widths``/``/Encoding``; sai một bảng width là chữ chạy
+        — tràn khung, lệch ngắt dòng — và lỗi đó chỉ lộ ra lúc in. Việc đó giao
+        cho Ghostscript, nơi đã có sẵn bộ font thay thế và logic dựng lại.
+
+        ``params``: ``force_gs`` — bỏ qua kiểm tra, dùng thẳng Ghostscript.
+        """
+        if not params.get("force_gs"):
+            try:
+                from app.core import pdf_actions_native
+
+                info = await asyncio.to_thread(
+                    pdf_actions_native.analyze_font_embedding, input_path
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("EMBED_FONTS phân tích font lỗi, fallback GS: %s", e)
+                info = None
+
+            if info is not None and not info.get("missing"):
+                shutil.copyfile(input_path, output_path)
+                self._last_engine = "pikepdf"
+                warnings = list(info.get("warnings", []))
+                n_emb = len(info.get("embedded", []))
+                n_b14 = len(info.get("base14", []))
+                self._last_report = {
+                    "fonts_embedded": n_emb,
+                    "fonts_base14": n_b14,
+                    "warnings": warnings,
+                }
+                logger.info(
+                    "EMBED_FONTS: %d font đã nhúng, %d base-14 — không cần dựng lại file.",
+                    n_emb, n_b14,
+                )
+                return True
+            if info is not None:
+                logger.info(
+                    "EMBED_FONTS: %d font chưa nhúng (%s) → Ghostscript",
+                    len(info["missing"]), ", ".join(info["missing"][:5]),
+                )
+
+        self._last_engine = "gs"
         cmd = [
             self.gs_path,
             "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
@@ -684,8 +747,71 @@ class ActionEngine:
     async def _action_downscale_images(
         self, input_path: str, output_path: str, params: dict
     ) -> bool:
-        """Downscale high-res images to 300 DPI using Ghostscript."""
+        """Hạ ảnh vượt ngưỡng DPI — ưu tiên object-level (pikepdf), fallback GS.
+
+        Đường pikepdf chỉ sửa đúng những image XObject vượt ngưỡng và giữ nguyên
+        phần còn lại của file; Ghostscript thì dựng lại toàn bộ tài liệu, kéo
+        theo subset lại font và quy đổi colorspace mà người dùng không yêu cầu.
+
+        Fallback sang GS khi đường native **không đụng được ảnh nào** dù file có
+        ảnh vượt ngưỡng (codec lạ, colorspace spot, ảnh Indexed): thà để GS làm
+        còn hơn báo thành công mà không sửa gì.
+
+        ``params``:
+          * ``target_dpi`` (mặc định 300) — DPI đích sau khi hạ.
+          * ``max_dpi``    (mặc định 600) — chỉ hạ ảnh vượt mức này. Trùng
+            ``ImageRules.MAX_IMAGE_DPI`` để action và rule phát hiện dùng chung
+            một thước đo.
+          * ``force_gs``   — bỏ qua đường native, dùng thẳng Ghostscript.
+        """
         target_dpi = params.get("target_dpi", 300)
+        max_dpi = params.get("max_dpi", 600)
+
+        if not params.get("force_gs"):
+            try:
+                from app.core import pdf_actions_native
+
+                result = await asyncio.to_thread(
+                    pdf_actions_native.downscale_images,
+                    input_path,
+                    output_path,
+                    float(target_dpi),
+                    float(max_dpi),
+                )
+            except Exception as e:  # noqa: BLE001 — hỏng đường native thì còn GS
+                logger.warning("DOWNSCALE_IMAGES pikepdf lỗi, fallback GS: %s", e)
+                result = None
+
+            if result is not None:
+                skipped = result.get("skipped", {})
+                blocked = sum(
+                    n for reason, n in skipped.items() if reason != "đã dưới ngưỡng"
+                )
+                if result.get("changed", 0) > 0 or blocked == 0:
+                    # Có sửa được, HOẶC không có gì để sửa (mọi ảnh đã dưới
+                    # ngưỡng) — cả hai đều là kết quả đúng, không cần GS.
+                    self._last_engine = "pikepdf"
+                    warnings = list(result.get("warnings", []))
+                    if blocked:
+                        warnings.append(
+                            "Bỏ qua "
+                            + ", ".join(f"{n} ảnh ({r})" for r, n in skipped.items()
+                                        if r != "đã dưới ngưỡng")
+                            + "."
+                        )
+                    self._last_report = {
+                        "images_downscaled": result.get("changed", 0),
+                        "images_skipped": skipped,
+                        "details": result.get("details", []),
+                        "warnings": warnings,
+                    }
+                    return True
+                logger.info(
+                    "DOWNSCALE_IMAGES: pikepdf không hạ được ảnh nào (%s) → fallback GS",
+                    skipped,
+                )
+
+        self._last_engine = "gs"
         cmd = [
             self.gs_path,
             "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
