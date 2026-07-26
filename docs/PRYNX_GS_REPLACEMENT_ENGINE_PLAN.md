@@ -1651,7 +1651,7 @@ những gì đã gỡ không lặng lẽ quay về.
 | **PDF/X-4** | **chạy** — 31/33 file corpus đạt chuẩn (xem 19.2) |
 | `FLATTEN_TRANSPARENCY` | **chạy** (§19.4) |
 | `PDF/X-1a` | **chạy** (§19.4) |
-| `OUTLINE_FONTS` | **chạy** — 12/33 file corpus; còn lại rơi về GS vì font Type1 `/FontFile` hoặc toán tử chữ chưa mô hình hoá, 1 file do verify chặn (§19.5) |
+| `OUTLINE_FONTS` | **chạy** — 17/33 file corpus (đã thêm CFF trần); còn lại: 9 file có toán tử chữ chưa mô hình hoá, **5 file bị verify chặn vì kết quả sai**, 2 font ngoài phạm vi (§19.5) |
 | `/preflight/convert-colors` | **chạy** — RGB→CMYK dùng `convert_to_cmyk`, nhánh đen trắng dùng `convert_to_grayscale` (§19.6) |
 | `/pdf-tools/optimize` | **chạy** — lắp từ `downscale_images` + `convert_to_grayscale` + nén cấu trúc qpdf (§19.6) |
 
@@ -1745,6 +1745,22 @@ Hồi quy tự gây ra và đã đóng: đường native ban đầu bỏ sót te
 annotation/AcroForm — đúng lỗi mà đợt hardening §16.7 đã sửa công phu cho đường
 GS, và test cũ bắt được. Nay bake annotation bằng pypdfium2 trước khi outline.
 
+**CFF trần (`/FontFile3` Subtype `/Type1C`)**: đo corpus cho thấy đây mới là
+dạng font Type1 nhúng thực tế (75/302 font), **không phải `/FontFile` PFB** —
+corpus không có file `/FontFile` nào. `TTFont()` không mở được CFF trần (thiếu
+container OpenType) nên phải đi qua `CFFFontSet`. Thêm nhánh này đưa outline từ
+12 lên **17/33 file**.
+
+Nhưng nó cũng làm **số file bị verify chặn tăng từ 1 lên 5**: CFF outline ra
+được nhưng chưa đúng ở vài file (kẽm lệch 4–233/255). Ngưỡng verify **giữ
+nguyên** — nới nó để có con số đẹp hơn là phá chính cái lưới đã chặn 5 bản in
+sai. Đây là việc còn mở, và nó *đang được chặn an toàn* chứ không âm thầm lọt.
+
+Bẫy tái phạm đáng ghi: `hasattr(obj, "resolve")` — đã tài liệu hoá ở §17.5 —
+**vẫn bị lặp lại khi viết module mới**, làm toàn bộ nhánh CFF im lặng thất bại.
+Nay `outline_text` có helper `_deref` riêng. Thành ngữ sai này cần bị loại khỏi
+mọi module, không chỉ được ghi chú.
+
 ### 19.6 `/preflight/convert-colors` — điểm bị bỏ sót khi kiểm kê
 
 Route này gọi Ghostscript **thẳng, không fallback** (`proc.returncode != 0` là
@@ -1774,6 +1790,7 @@ corpus: giảm 0–24% tuỳ file.
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 4.1 | 2026-07-27 | `OUTLINE_FONTS` đọc được **CFF trần** (`/FontFile3` `/Type1C`) — dạng font Type1 nhúng thực tế trong corpus (75/302 font; KHÔNG có `/FontFile` PFB nào). Outline 12 → **17/33 file**, đồng thời số file bị verify chặn tăng 1 → 5 vì CFF chưa đúng ở vài file: **ngưỡng verify giữ nguyên**, nới nó để có con số đẹp là phá lưới đã chặn 5 bản in sai. Sửa `_objkey` thiếu và bẫy `hasattr(o,"resolve")` **tái phạm** dù đã tài liệu hoá ở §17.5. Backend **1372 pass**. §19.5. |
 | 4.0 | 2026-07-27 | Đóng nốt `/pdf-tools/optimize` — điểm gọi GS thẳng thứ hai nằm trong file route (có người dùng thật: OptimizeTool + recipe runner). Lắp từ `downscale_images` + `convert_to_grayscale` + nén qpdf; giữ bản gốc nếu kết quả phình ra. **Mọi đường sản xuất nay đều có path non-GS**; Ghostscript chỉ còn là fallback, và chỗ duy nhất còn rơi về nó trên file thật là `OUTLINE_FONTS` với font Type1 `/FontFile`. Backend **1372 pass**. §19.6. |
 | 3.9 | 2026-07-27 | Đóng `/preflight/convert-colors` — điểm gọi GS thẳng KHÔNG fallback, bị bỏ sót vì kiểm kê §2 chỉ grep `app/core` chứ không grep file route. RGB→CMYK dùng lại `convert_to_cmyk`; thêm `convert_to_grayscale` (§10.4 cho CMYK, Rec.601 cho RGB, spot không bị đụng) — 10/10 file corpus, 0 fallback. `outline_text` đệ quy vào Form XObject (font kế thừa theo §8.10.1, mỗi form outline một lần). Backend **1369 pass**. §19.6. |
 | 3.8 | 2026-07-27 | `OUTLINE_FONTS` mở sang **Type0/Identity-H/CIDFontType2** — dạng Type0 duy nhất có trong corpus (52/52 font). Corpus 12/33 file xong bằng pikepdf. Chốt verify bắt được **hai bug thật** trong lúc phát triển: path glyph bị nhân CTM hai lần (lệnh `cm` vẫn còn trong stream — trang không có `cm` thì không lộ), và glyph không tra được bị bỏ qua âm thầm làm chữ biến mất. Thêm cmap (1,0) Mac Roman cho subset TrueType. Từ chối trang có Form XObject thay vì xoá `/Font` làm mất chữ bên trong. Backend **1367 pass**. §19.5. |

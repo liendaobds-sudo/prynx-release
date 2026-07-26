@@ -39,6 +39,29 @@ _TEXT_OPS = {
 _MAX_FORM_DEPTH = 12
 
 
+def _deref(obj):
+    """Giải tham chiếu gián tiếp, trả nguyên object nếu vốn đã trực tiếp.
+
+    `hasattr(obj, "resolve")` LUÔN đúng với mọi `pikepdf.Object`, nhưng gọi
+    `.resolve()` trên object trực tiếp (Name, số, Array) ném `ValueError`. Bẫy
+    này đã được ghi ở §17.5 của plan — và vẫn vấp lại khi viết module mới, nên
+    dùng helper chứ đừng lặp lại thành ngữ sai.
+    """
+    try:
+        return obj.resolve() if getattr(obj, "is_indirect", False) else obj
+    except Exception:  # noqa: BLE001
+        return obj
+
+
+def _objkey(obj) -> tuple[int, int] | None:
+    """Danh tính object, để mỗi Form XObject chỉ được outline một lần."""
+    try:
+        og = obj.objgen
+    except Exception:  # noqa: BLE001
+        return None
+    return None if og == (0, 0) else tuple(og)
+
+
 class _Matrix:
     __slots__ = ("a", "b", "c", "d", "e", "f")
 
@@ -115,6 +138,35 @@ class _OutlinePen:
         pass  # thành phần ghép được getGlyphSet phẳng hoá sẵn
 
 
+def _is_bare_cff(data: bytes) -> bool:
+    """CFF trần bắt đầu bằng header `major=1, minor=0, hdrSize, offSize`.
+
+    Container OpenType/TrueType bắt đầu bằng `OTTO`, `true`, `ttcf` hoặc
+    `0x00010000` — không lẫn với CFF được.
+    """
+    if len(data) < 4:
+        return False
+    if data[:4] in (b"OTTO", b"true", b"ttcf", bytes([0, 1, 0, 0])):
+        return False
+    return data[0] == 1 and data[1] == 0
+
+
+class _CffGlyphSet:
+    """Bọc `CharStrings` của CFF cho giống giao diện glyph set của fontTools."""
+
+    def __init__(self, charstrings):
+        self._cs = charstrings
+
+    def __contains__(self, name):
+        return name in self._cs
+
+    def __getitem__(self, name):
+        return self._cs[name]
+
+    def keys(self):
+        return self._cs.keys()
+
+
 class _EmbeddedFont:
     """Font đã nhúng, sẵn sàng tra outline theo mã ký tự."""
 
@@ -152,10 +204,18 @@ class _EmbeddedFont:
 
             import io
 
-            tt = TTFont(io.BytesIO(data), fontNumber=0, lazy=True)
-            self.glyph_set = tt.getGlyphSet()
-            self.upem = float(tt["head"].unitsPerEm) if "head" in tt else 1000.0
-            self._build_encoding(font_dict, tt)
+            if _is_bare_cff(data):
+                # `/FontFile3` Subtype `/Type1C` là **CFF trần**, không có
+                # container OpenType — `TTFont()` không mở được. Đây là dạng
+                # chiếm đa số font Type1 nhúng trong file thật (đo corpus:
+                # 75/302 font), nên bỏ qua nó là bỏ qua phần lớn công việc.
+                if not self._load_cff(data, font_dict):
+                    return
+            else:
+                tt = TTFont(io.BytesIO(data), fontNumber=0, lazy=True)
+                self.glyph_set = tt.getGlyphSet()
+                self.upem = float(tt["head"].unitsPerEm) if "head" in tt else 1000.0
+                self._build_encoding(font_dict, tt)
             self._build_widths(font_dict)
             self.ok = bool(self.code_to_glyph)
         except Exception as exc:  # noqa: BLE001
@@ -239,6 +299,71 @@ class _EmbeddedFont:
                     i += 3
         except Exception as exc:  # noqa: BLE001
             logger.debug("không đọc được /W: %s", exc)
+
+    def _load_cff(self, data: bytes, font_dict) -> bool:
+        """Nạp CFF trần. Trả `False` nếu không dựng được bảng mã→glyph."""
+        import io as _io
+
+        from fontTools.cffLib import CFFFontSet
+
+        try:
+            cff = CFFFontSet()
+            cff.decompile(_io.BytesIO(data), None)
+            top = cff[cff.fontNames[0]]
+            charstrings = top.CharStrings
+            self.glyph_set = _CffGlyphSet(charstrings)
+
+            # CFF khai tỉ lệ qua `FontMatrix`; mặc định 1/1000 (§9.6.6.2).
+            matrix = top.rawDict.get("FontMatrix")
+            if matrix and float(matrix[0]) != 0:
+                self.upem = 1.0 / float(matrix[0])
+            else:
+                self.upem = 1000.0
+
+            names = list(charstrings.keys())
+            # Encoding: `/Differences` của PDF thắng, rồi tới encoding trong
+            # chính CFF, cuối cùng là StandardEncoding.
+            self._build_cff_encoding(font_dict, top, names)
+            return bool(self.code_to_glyph)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("không nạp được CFF: %s", exc)
+            return False
+
+    def _build_cff_encoding(self, font_dict, top, names) -> None:
+        from fontTools.encodings.StandardEncoding import StandardEncoding
+
+        base: dict[int, str] = {}
+        try:
+            enc = top.rawDict.get("Encoding")
+            if isinstance(enc, list):
+                for code, gname in enumerate(enc):
+                    if gname and gname != ".notdef":
+                        base[code] = gname
+        except Exception:  # noqa: BLE001
+            pass
+        if not base:
+            for code, gname in enumerate(StandardEncoding):
+                if gname and gname != ".notdef":
+                    base[code] = gname
+
+        encoding = font_dict.get("/Encoding")
+        if encoding is not None:
+            enc_obj = encoding if isinstance(encoding, (pikepdf.Dictionary, pikepdf.Name)) else encoding.resolve()
+            if isinstance(enc_obj, pikepdf.Dictionary):
+                differences = enc_obj.get("/Differences")
+                if differences is not None:
+                    current = 0
+                    for item in differences:
+                        item = _deref(item)
+                        if isinstance(item, (int, float)):
+                            current = int(item)
+                        else:
+                            base[current] = str(item).lstrip("/")
+                            current += 1
+
+        for code, gname in base.items():
+            if gname in names:
+                self.code_to_glyph[code] = gname
 
     def _build_encoding(self, font_dict, tt) -> None:
         """Mã 1 byte → tên glyph.
@@ -362,7 +487,7 @@ class _EmbeddedFont:
                 return self.glyph_set[name].width * 1000.0 / self.upem
             except Exception:  # noqa: BLE001
                 return 500.0
-        return 500.0
+        return 500.0  # không tra được: `/Widths` của PDF thường đã phủ hết
 
     def draw(self, code: int, matrix: _Matrix, out: list[str]) -> bool:
         name = self.code_to_glyph.get(code)
