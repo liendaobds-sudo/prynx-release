@@ -16,78 +16,30 @@
 //
 // B = free-edge đáy chạm đoạn gấp = ĐẦU đường nhấn
 //     (KHÔNG phải W — không kéo free-edge đáy tới góc đáy↔tai)
+//
+// [AUTO-BOTTOM FIX 2026-07-26]
+//   - Bỏ bo góc bezier tại A/B trên đoạn gấp (fillet cũ bị ép điểm đầu/cuối
+//     mà không tính lại control points → free-edge "quăn"/vòng lặp, và sau
+//     retarget ở AutoBottomBox làm points[] ↔ controlPoints[] phân kỳ).
+//     Góc trên fold nay là góc SẮC như mẫu 100010-01; chỉ bo nhẹ các góc sâu.
+//   - `computeDeepBottomKeyPoints` nhận `opts.glueEdgeGap` để cột góc dán
+//     KHÉP QUA ĐƯỜNG MAY (WLWL, mép ngoài x5) dùng khe = 0 → CREASE 45°
+//     chạm đúng đỉnh kệ E, không còn đuôi cấn lơ lửng.
+//   - Thêm `buildDeepBottomFreeEdge` + `splitDeepBottomPaths`: tách chuỗi
+//     free-edge tại đỉnh kệ E thành phần THÂN (A→…→E) và TAM GIÁC DÁN
+//     (E→…→B) để AutoBottomBox dựng panel `bottom_tab_*` gập 180° quanh
+//     nếp chéo [B,E] trong 3D.
+//   - Bỏ import chết AB_GLUE_LEG_RATIO (glueLeg dẫn xuất = hWing − step).
 // ============================================================
 
 import { PathSegment, Point2D } from './types';
 import { pt, line, snap, filletBezier } from './utils';
 import {
-    AB_DEEP_DEPTH_RATIO, AB_WING_DEPTH_RATIO, AB_GLUE_LEG_RATIO,
+    AB_DEEP_DEPTH_RATIO, AB_WING_DEPTH_RATIO,
     AB_STEP_RATIO, AB_EAR_WIDTH_RATIO, AB_EAR_INSET_RATIO,
     AB_SHELF_RATIO, AB_NOTCH_RATIO, AB_SHOULDER_RATIO, AB_BOT_INSET_RATIO,
     AB_WING_INNER_TAPER_RATIO, AB_WING_OUTER_TAPER_RATIO,
 } from './constants';
-
-/**
- * Đẩy polyline free-edge với bo tròn tại mọi góc giữa (giống junction SLB).
- * points[0]…points[n-1] là các đỉnh; bo tại points[1]…points[n-2].
- */
-function filletedPolyline(points: Point2D[], radius: number): PathSegment[] {
-    if (points.length < 2) return [];
-    if (points.length === 2) return [line(points[0], points[1], 'CUT')];
-
-    const r = Math.max(0.3, radius);
-    const paths: PathSegment[] = [];
-    let prevAnchor = points[0];
-
-    for (let i = 1; i < points.length - 1; i++) {
-        const corner = points[i];
-        const prev = points[i - 1];
-        const next = points[i + 1];
-        const fil = filletBezier(corner, prev, next, r, 'CUT');
-        const t1 = fil.points[0];
-        const t2 = fil.points[fil.points.length - 1];
-        // Cạnh vào góc
-        if (Math.hypot(prevAnchor.x - t1.x, prevAnchor.y - t1.y) > 0.05) {
-            paths.push(line(prevAnchor, t1, 'CUT'));
-        } else {
-            // BUG ĐÃ VÁ (audit 2026-07-26): bản cũ chỉ BỎ QUA đoạn nối cực ngắn
-            // (≤0.05mm) mà KHÔNG hàn hai đầu → để lại khe 0.05mm giữa hai fillet
-            // liền kề, vượt SNAP_TOLERANCE (0.01mm) ⇒ biên ngoài phôi HỞ (khuôn cắt
-            // không khép kín). Chỉ lộ ra khi hai góc free-edge gần nhau (vd ABD ≥ 28
-            // với W=30 → mảnh đáy sâu, các đỉnh dồn lại). Bỏ đoạn thì phải HÀN.
-            weldFilletStart(fil, prevAnchor);
-        }
-        paths.push(fil);
-        prevAnchor = fil.points[fil.points.length - 1];
-    }
-    // Cạnh ra đỉnh cuối
-    const last = points[points.length - 1];
-    if (Math.hypot(prevAnchor.x - last.x, prevAnchor.y - last.y) > 0.05) {
-        paths.push(line(prevAnchor, last, 'CUT'));
-    } else if (paths.length > 0) {
-        // Cùng lý do trên: kéo đầu cuối của segment cuối về đúng đỉnh cuối.
-        weldFilletEnd(paths[paths.length - 1], last);
-    }
-    return paths;
-}
-
-/** Kéo ĐẦU của một segment (line/bezier) về đúng `target` — giữ chuỗi liền mạch. */
-function weldFilletStart(seg: PathSegment, target: Point2D): void {
-    const p = pt(target.x, target.y);
-    seg.points[0] = p;
-    if (seg.type === 'bezier' && seg.controlPoints && seg.controlPoints.length >= 4) {
-        seg.controlPoints[0] = p;
-    }
-}
-
-/** Kéo CUỐI của một segment (line/bezier) về đúng `target` — giữ chuỗi liền mạch. */
-function weldFilletEnd(seg: PathSegment, target: Point2D): void {
-    const p = pt(target.x, target.y);
-    seg.points[seg.points.length - 1] = p;
-    if (seg.type === 'bezier' && seg.controlPoints && seg.controlPoints.length >= 4) {
-        seg.controlPoints[3] = p;
-    }
-}
 
 /** Khe free-edge đáy vs góc cột (W) trên đoạn gấp — mẫu ≈ 0.0134W */
 export const AB_FOLD_GAP_RATIO = 0.0134;
@@ -179,16 +131,20 @@ export function autoBottomDims(
 }
 
 /**
- * Đỉnh free-edge đáy chính (trước bo) — dùng chung path + chú thích DEV.
+ * Đỉnh free-edge đáy chính — dùng chung path + chú thích DEV.
  *
- * Mẫu 100010-01 (outer free-edge đo từ SVG):
- *   A → I → H → G → F → E → EarL → EarR → M → C → B
- * A,B trên đoạn gấp (kéo lên giao fold, bo tròn góc);
- * ear vòng ngoài — M lệch phải BC (gần B hơn đường 45°) để góc C ≠ 180°;
- * C = góc step 45° (depth ≈ step); M = đỉnh tai (depth ≈ 1.71·step, sâu hơn C).
+ * Mẫu 100010-01 (đo SVG, free-edge = ĐƯỜNG THẲNG + bo nhẹ 1–2 góc sâu):
  *
- * Canvas y-up: yM < yC < yB (M sâu nhất trong {M,C,B}, nông dần lên B).
- * Trên file mẫu SVG y↓: C.y < M.y (đúng «C Y thấp hơn» theo toạ độ mẫu).
+ *   A ════════fold════════ B ···gap··· W
+ *   |                      ／
+ *   |                     C   step 45° (depth ≈ step)
+ *   |                    ／
+ *   |                   M     đỉnh tai outer (depth ≈ 1.71·step, sâu hơn C)
+ *   |                   |
+ *   I—H … G—F ──── E   EarR—EarL
+ *
+ * Outer CUT: A→I→H→G→F→E→EarL→EarR→M→C→B
+ * CREASE: B→E (45°)
  */
 export type DeepBottomKeyPoints = {
     A: Point2D;
@@ -202,48 +158,56 @@ export type DeepBottomKeyPoints = {
     M: Point2D | null;
     C: Point2D;
     B: Point2D;
-    /** Polyline free-edge A…B (chưa bo) */
+    /** Polyline free-edge A…B (thẳng) */
     verts: Point2D[];
+    /** Bo nhẹ chỉ góc sâu (I/H/ear) — KHÔNG fillet mọi góc */
     filletR: number;
     yBase: number;
 };
 
 export function computeDeepBottomKeyPoints(
     xL: number, xR: number, yBase: number, dims: AutoBottomDims,
+    opts?: {
+        /** [AUTO-BOTTOM FIX 2026-07-26] Ghi đè khe B↔mép phải (mm).
+         *  Cột góc dán khép QUA ĐƯỜNG MAY keo (WLWL, mép ngoài x5) truyền 0:
+         *  B trùng góc blank, E = B − (hWing, hWing) trùng đúng đỉnh kệ. */
+        glueEdgeGap?: number;
+    },
 ): DeepBottomKeyPoints {
     const {
-        hDeep, hWing, step, earW, earInset,
+        hDeep, hWing, step, earW,
         shelfW, notchH, shoulder, botInsetRatio, foldGap,
     } = dims;
     const span = Math.max(1, xR - xL);
 
     const st = Math.min(step, span * 0.2, hWing * 0.4);
-    const gl = Math.max(1, hWing - st); // giữ 45° B→E
-    const gap = Math.min(foldGap, span * 0.05, st * 0.5);
+    const gl = Math.max(1, hWing - st);
+    const gapBase = opts?.glueEdgeGap ?? foldGap;
+    const gap = Math.max(0, Math.min(gapBase, span * 0.05, st * 0.5));
 
-    // B: free-edge chạm đoạn gấp (khe foldGap so với cột W = xR)
+    // B trên fold, khe foldGap so với cột W = xR
     const xB = snap(xR - gap);
-    // C: góc step 45° từ B — sâu st
-    const depthC = st;
-    const xC = snap(xB - depthC);
-    const yC = snap(yBase - depthC);
-    // E: đuôi CREASE / đầu kệ — hWing, 45° từ B
+    // C = góc step 45° từ B
+    const xC = snap(xB - st);
+    const yC = snap(yBase - st);
+    // E = đuôi CREASE / đầu kệ — 45° từ B, depth hWing
     const xE = snap(xB - st - gl); // = xB - hWing
     const yE = snap(yBase - hWing);
     const yW = yE;
     const yD = snap(yBase - hDeep);
 
-    // Tai khóa — mẫu: outer x ≈ B − 0.013·span (gần B hơn điểm BC tại cùng depth)
+    // Tai — mẫu: outer x ≈ B − gap (gần B), đáy yD, đỉnh M depth ≈ 1.71·step
     const earZone = Math.max(0, xB - xE);
-    // xFromB_ear ≈ gap (mẫu 5.54/414 ≈ 0.013) — giữ M lệch phải khỏi BC
     let xEarR = snap(xB - Math.min(Math.max(gap, st * 0.12), earZone * 0.12, 4));
     let xEarL = snap(xEarR - Math.min(earW, earZone * 0.4, Math.max(2, (xEarR - xE) * 0.45)));
     if (xEarL < xE + 0.5) xEarL = snap(xE + Math.min(1, Math.max(0.5, earZone * 0.1)));
     const hasEar = xEarR > xEarL + 0.5 && earZone >= 2.5 && hDeep > hWing + 1;
 
-    // M sâu hơn C (mẫu depth_M/depth_C ≈ 1.71) — góc C rõ (đến từ dưới, ra lên B)
+    // M sâu hơn C (mẫu), nông hơn đáy tai — trên dọc ear outer
     const depthM = Math.min(st * 1.71, hWing * 0.75, Math.max(st + 2.5, st * 1.5));
-    const yM = snap(yBase - depthM);
+    let yM = snap(yBase - depthM);
+    yM = snap(Math.min(yM, yC - Math.max(2, st * 0.5)));
+    yM = snap(Math.max(yM, yD + Math.max(4, hDeep * 0.08)));
 
     // Kệ + vai + đáy trái
     const shelfMax = Math.max(0, xE - xL - span * 0.05);
@@ -258,7 +222,8 @@ export function computeDeepBottomKeyPoints(
         xShoulder = snap(xBotL + Math.min(1, Math.max(0, xShelfL - xBotL)));
     }
 
-    const filletR = snap(Math.min(2.5, Math.max(0.8, st * 0.35, gl * 0.08)));
+    // Bo NHẸ chỉ góc sâu (mẫu bo 1 góc ear ngoài) — không > ~1.2mm
+    const filletR = snap(Math.min(1.2, Math.max(0.4, st * 0.15)));
 
     const A = pt(xL, yBase);
     const I = pt(xBotL, yD);
@@ -268,19 +233,6 @@ export function computeDeepBottomKeyPoints(
     const E = pt(xE, yW);
     const B = pt(xB, yBase);
     const C = pt(xC, yC);
-
-    // ── Free-edge mẫu 100010-01 ────────────────────────────────
-    //
-    //   A ════════fold════════ B ···gap··· W
-    //   |                      ／  ← bo tròn A,B (giao free-edge × fold)
-    //   |                     C     step 45° (nông hơn M)
-    //   |                    ／
-    //   |                   M       đỉnh tai (sâu hơn C — mẫu)
-    //   |                   |
-    //   I…H…G…F ──── E    EarR—EarL
-    //
-    // Outer free-edge: A→I→H→G→F→E→EarL→EarR→M→C→B
-    // CREASE: B→E (45°)
 
     const verts: Point2D[] = [A, I];
     if (H.x > I.x + 0.2) verts.push(H);
@@ -297,25 +249,12 @@ export function computeDeepBottomKeyPoints(
     if (hasEar) {
         EarL = pt(xEarL, yD);
         EarR = pt(xEarR, yD);
-        // M sâu hơn C (yM < yC), nông hơn đáy tai
-        let yMuse = snap(Math.min(yM, yC - Math.max(2.5, st * 0.55)));
-        yMuse = snap(Math.max(yMuse, yD + Math.max(4, hDeep * 0.08)));
-        M = pt(xEarR, yMuse);
-        // C nông hơn M
-        let Cuse = C;
-        if (!(Cuse.y > M.y + 1.5)) {
-            const yC2 = snap(Math.min(yBase - Math.max(1.5, st * 0.6), M.y + Math.max(2.5, st * 0.55)));
-            const xC2 = snap(xB - (yBase - yC2));
-            Cuse = pt(xC2, yC2);
-        }
-        verts.push(EarL, EarR, M, Cuse, B);
-        return {
-            A, I, H, G, F, E, EarL, EarR, M, C: Cuse, B,
-            verts, filletR, yBase,
-        };
+        M = pt(xEarR, yM);
+        verts.push(EarL, EarR, M, C, B);
+    } else {
+        verts.push(C, B);
     }
 
-    verts.push(C, B);
     return {
         A, I, H, G, F, E, EarL, EarR, M, C, B,
         verts, filletR, yBase,
@@ -323,130 +262,133 @@ export function computeDeepBottomKeyPoints(
 }
 
 /**
- * Free-edge: bo mọi góc giữa + bo A,B với tiếp tuyến fold (giống junction khác).
- * - A,B đúng trên fold
- * - Không để CUT dài trên fold (chỉ tiếp điểm fillet)
- * - Đoạn cuối = LINE → B (D5 retarget endpoint an toàn)
+ * Free-edge = polyline THẲNG + bo nhẹ có chọn lọc.
+ *
+ * [AUTO-BOTTOM FIX 2026-07-26] Viết lại:
+ *  - KHÔNG bo góc tại A và B trên đoạn gấp nữa. Bản cũ ép điểm đầu/cuối của
+ *    fillet về A/B mà GIỮ NGUYÊN control points tính cho tiếp điểm gốc →
+ *    đường cong móc ngược ("quăn" tại A, vòng lặp đè lên đường nhấn tại B);
+ *    và khi AutoBottomBox retarget endpoint chỉ ghi `points[]` (bỏ sót
+ *    `controlPoints[]`) → hai mảng phân kỳ, canvas/export vẽ hở 0.25mm.
+ *    Góc trên fold nay là góc SẮC đúng mẫu 100010-01.
+ *  - Chỉ bo nhẹ các góc ở dải ĐÁY SÂU NHẤT (I/H/EarR) như trước.
+ *  - Mọi đoạn chạm đoạn gấp đều là LINE → an toàn với mọi retarget về sau.
  */
-function filletedFreeEdgeOnFold(
+function buildCleanFreeEdge(
     verts: Point2D[],
     radius: number,
-    yBase: number,
 ): PathSegment[] {
     if (verts.length < 2) return [];
     if (verts.length === 2) return [line(verts[0], verts[1], 'CUT')];
 
-    const A = verts[0];
     const B = verts[verts.length - 1];
-    const afterA = verts[1];
-    const beforeB = verts[verts.length - 2];
+    const r = Math.max(0.3, Math.min(radius, 1.2));
 
-    // Bo A,B riêng với tiếp tuyến fold — không chèn đoạn fold ảo vào polyline
-    const foldA = pt(snap(A.x + Math.min(8, Math.abs(B.x - A.x) * 0.06)), yBase);
-    const foldB = pt(snap(B.x - Math.min(8, Math.abs(B.x - A.x) * 0.06)), yBase);
-    const filA = filletBezier(A, foldA, afterA, radius, 'CUT');
-    const filB = filletBezier(B, beforeB, foldB, radius, 'CUT');
+    // Chỉ bo góc ở ĐÁY SÂU NHẤT (gần yD). Không bo kệ E/F, step C, đỉnh M —
+    // filletBezier ở đó overshoot → free-edge quăn (xem báo cáo user).
+    const yDeep = Math.min(...verts.map((v) => v.y));
+    const deepBand = yDeep + Math.max(1.5, r * 2); // chỉ dải ± bo quanh yD
+    const canFillet = (i: number): boolean => {
+        if (i <= 0 || i >= verts.length - 1) return false;
+        const prev = verts[i - 1];
+        const cur = verts[i];
+        const next = verts[i + 1];
+        if (cur.y > deepBand) return false;
+        const len1 = Math.hypot(prev.x - cur.x, prev.y - cur.y);
+        const len2 = Math.hypot(next.x - cur.x, next.y - cur.y);
+        if (len1 < r * 3 || len2 < r * 3) return false;
+        // Ưu tiên góc ~90° (dot gần 0)
+        const ux1 = (prev.x - cur.x) / len1, uy1 = (prev.y - cur.y) / len1;
+        const ux2 = (next.x - cur.x) / len2, uy2 = (next.y - cur.y) / len2;
+        const dot = ux1 * ux2 + uy1 * uy2;
+        if (Math.abs(dot) > 0.35) return false; // không bo góc nhọn/tù
+        return true;
+    };
 
-    // Tangent trên free-edge sau A / trước B
-    const tA = filA.points[filA.points.length - 1]; // trên A→afterA
-    const tB = filB.points[0]; // trên beforeB→B
+    const paths: PathSegment[] = [];
+    let cursor = verts[0];
 
-    // Polyline giữa: tA → afterA → … → beforeB → tB (bỏ A,B — đã bo)
-    const midVerts: Point2D[] = [tA];
-    for (let i = 1; i < verts.length - 1; i++) midVerts.push(verts[i]);
-    midVerts.push(tB);
+    // --- Các góc giữa: line + fillet chọn lọc (A→…→B) ---
+    for (let i = 1; i < verts.length - 1; i++) {
+        const cur = verts[i];
+        const next = verts[i + 1];
 
-    const mid = filletedPolyline(midVerts, radius);
-
-    // Nối: filA + mid (skip first mid seg if trùng tA) + filB + line→B
-    const paths: PathSegment[] = [filA];
-
-    // filA bắt đầu trên fold (t1) — kéo endpoint đầu về đúng A
-    if (filA.points.length >= 1) {
-        filA.points[0] = pt(A.x, A.y);
-        if (filA.type === 'bezier' && filA.controlPoints && filA.controlPoints.length >= 4) {
-            filA.controlPoints[0] = pt(A.x, A.y);
-        }
-    }
-
-    for (const seg of mid) {
-        paths.push(seg);
-    }
-
-    // filB: chỉnh t2 về hướng B, rồi line tới B
-    paths.push(filB);
-    const filBEnd = filB.points[filB.points.length - 1];
-    // filB kết thúc trên fold (t2) — không giữ đoạn fold; cắt tại tB rồi line to B
-    // filB.points = [tB_on_beforeB, t2_on_fold]; ta chỉ cần phần cong tới gần B
-    // Đơn giản: thay endpoint cuối filB bằng điểm gần B trên free-edge, line → B
-    if (Math.hypot(filBEnd.x - B.x, filBEnd.y - B.y) > 0.05) {
-        // Nếu filB kết thúc trên fold, chuyển endpoint về B dọc fold rất ngắn → bỏ, line từ tB
-        if (Math.abs(filBEnd.y - yBase) < 0.15) {
-            // Bo kết thúc trên fold: coi filB là bo góc, endpoint cuối = B
-            filB.points[filB.points.length - 1] = pt(B.x, B.y);
-            if (filB.type === 'bezier' && filB.controlPoints && filB.controlPoints.length >= 4) {
-                filB.controlPoints[3] = pt(B.x, B.y);
+        if (canFillet(i)) {
+            const prev = verts[i - 1];
+            const fil = filletBezier(cur, prev, next, r, 'CUT');
+            const t1 = fil.points[0];
+            const t2 = fil.points[fil.points.length - 1];
+            if (Math.hypot(cursor.x - t1.x, cursor.y - t1.y) > 0.05) {
+                paths.push(line(cursor, t1, 'CUT'));
             }
+            paths.push(fil);
+            cursor = t2;
         } else {
-            paths.push(line(filBEnd, B, 'CUT'));
+            if (Math.hypot(cursor.x - cur.x, cursor.y - cur.y) > 0.05) {
+                paths.push(line(cursor, cur, 'CUT'));
+            }
+            cursor = cur;
         }
-    } else {
-        filB.points[filB.points.length - 1] = pt(B.x, B.y);
     }
 
-    // Đảm bảo đoạn cuối là LINE (D5)
-    const last = paths[paths.length - 1];
-    if (last.type !== 'line') {
-        const end = last.points[last.points.length - 1];
-        if (Math.hypot(end.x - B.x, end.y - B.y) > 0.02) {
-            paths.push(line(end, B, 'CUT'));
-        } else {
-            // D5 cần đoạn cuối là LINE, nhưng segment cong đã kết thúc ĐÚNG ở B.
-            // Cắt ngắn segment cong về điểm `near` (2% về phía đầu của nó) rồi nối
-            // LINE near→B.
-            //
-            // BUG ĐÃ VÁ (audit 2026-07-26): bản cũ chỉ `push(line(near, B))` mà KHÔNG
-            // kéo endpoint của segment cong về `near`. Kết quả: `near` là một đầu cắt
-            // LƠ LỬNG — lệch ~0.012mm (> SNAP_TOLERANCE 0.01) khỏi mọi đầu mút khác và
-            // khỏi cả đường gập → biên ngoài phôi auto_bottom KHÔNG khép kín (khuôn cắt
-            // hở tại góc dán). Property 4 (`contourValidator.test.ts`) bắt đúng lỗi này.
-            const prev = last.points[0];
-            // Lệch TUYỆT ĐỐI 0.05mm theo hướng B→prev (KHÔNG phải 2% chiều dài: với
-            // segment dài ~75mm, 2% = 1.5mm ⇒ méo hình rõ rệt).
-            const dx = prev.x - B.x;
-            const dy = prev.y - B.y;
-            const len = Math.hypot(dx, dy) || 1;
-            const step = Math.min(0.05, len * 0.5);
-            const near = pt(snap(B.x + (dx / len) * step), snap(B.y + (dy / len) * step));
-            last.points[last.points.length - 1] = near;
-            if (last.type === 'bezier' && last.controlPoints && last.controlPoints.length >= 4) {
-                last.controlPoints[3] = near;
-            }
-            paths.push(line(near, B, 'CUT'));
-        }
-    } else {
-        last.points[last.points.length - 1] = pt(B.x, B.y);
+    // --- Đoạn cuối: LINE thẳng tới B (góc sắc trên đoạn gấp) ---
+    if (Math.hypot(cursor.x - B.x, cursor.y - B.y) > 0.005) {
+        paths.push(line(cursor, B, 'CUT'));
     }
 
     return paths;
 }
 
 /**
+ * [AUTO-BOTTOM FIX 2026-07-26] Chuỗi free-edge CUT (A→…→B) từ key points —
+ * KHÔNG kèm CREASE, để AutoBottomBox tự tách thân/tam giác dán rồi gắn
+ * đường nhấn 45° vào panel thân.
+ */
+export function buildDeepBottomFreeEdge(kp: DeepBottomKeyPoints): PathSegment[] {
+    return buildCleanFreeEdge(kp.verts, kp.filletR);
+}
+
+/**
+ * [AUTO-BOTTOM FIX 2026-07-26] Tách chuỗi free-edge tại đỉnh kệ E:
+ *  - `mainPaths` (A→…→E): phần THÂN mảnh đáy chính (trái đường nhấn 45°).
+ *  - `tabPaths`  (E→…→B): TAM GIÁC DÁN (EarL/EarR/M/C) — phải đường nhấn,
+ *    dựng panel `bottom_tab_*` gập 180° quanh nếp chéo [B,E].
+ * E không bao giờ bị fillet (nằm ngoài dải bo đáy sâu) nên luôn là endpoint
+ * chính xác của một đoạn. Nếu không tìm thấy E (suy biến) → `tabPaths` rỗng,
+ * phía gọi giữ nguyên một panel duy nhất như hành vi cũ.
+ */
+export function splitDeepBottomPaths(
+    freeEdge: PathSegment[],
+    E: Point2D,
+): { mainPaths: PathSegment[]; tabPaths: PathSegment[] } {
+    let splitIdx = freeEdge.length;
+    for (let i = 0; i < freeEdge.length; i++) {
+        const seg = freeEdge[i];
+        const end = seg.type === 'bezier' && seg.controlPoints
+            ? seg.controlPoints[3]
+            : seg.points[seg.points.length - 1];
+        if (Math.hypot(end.x - E.x, end.y - E.y) < 0.01) {
+            splitIdx = i + 1;
+            break;
+        }
+    }
+    return {
+        mainPaths: freeEdge.slice(0, splitIdx),
+        tabPaths: splitIdx < freeEdge.length ? freeEdge.slice(splitIdx) : [],
+    };
+}
+
+/**
  * Mảnh đáy CHÍNH — góc dán mép phải.
  *
- * Free-edge CUT (mẫu 100010-01):
- *   A → I → H → G → F → E → (ear) → M → C → B
- * A,B trên đoạn gấp, bo tròn góc free-edge×fold.
- * B cách cột W một khe foldGap.
- *
+ * Free-edge CUT (mẫu 100010-01): đường thẳng + bo nhẹ.
  * CREASE 45°: B → E
  */
 export function buildDeepBottomFlap(
     xL: number, xR: number, yBase: number, dims: AutoBottomDims,
 ): PathSegment[] {
     const kp = computeDeepBottomKeyPoints(xL, xR, yBase, dims);
-    const paths = filletedFreeEdgeOnFold(kp.verts, kp.filletR, yBase);
-    // CREASE 45° B → E
+    const paths = buildCleanFreeEdge(kp.verts, kp.filletR);
     paths.push(line(kp.B, kp.E, 'CREASE'));
     return paths;
 }

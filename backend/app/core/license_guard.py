@@ -335,14 +335,19 @@ _CLOCK_SKEW_SECONDS = 300  # dung sai NTP 5 phút
 # có thể bị XOÁ để reset mốc), kiểm tra này KHÔNG có trạng thái trên đĩa nên không
 # thể vô hiệu bằng cách xoá file. Để dư 1h trên TTL nhằm không false-positive nếu
 # chính sách TTL đổi nhẹ; phải LUÔN ≥ TTL token thật. Có thể chỉnh qua env (dev/test).
-_MAX_TOKEN_LIFETIME_SECONDS = int(
-    # Mặc định 8 ngày. CỐ Ý chưa siết xuống 4 ngày (TTL 72h + dư) dù TTL server đã rút:
-    # token 7 ngày phát trước đợt deploy vẫn còn hạn, siết ngay sẽ từ chối chúng
-    # ("lifetime implausible") → khách đang offline bị khoá oan. Siết xuống 345600
-    # (4 ngày) SAU KHI mọi token 7 ngày đã hết hạn (≥ 7 ngày kể từ khi deploy edge
-    # function TTL 72h). Bất biến bắt buộc: giá trị này LUÔN ≥ TTL token thật.
-    os.environ.get("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", str(8 * 24 * 60 * 60))
-)
+# SEC (audit 2026-07-26 F3): cận này CHỈ đọc từ env ở DEV. Trên binary production, nếu
+# cho đọc env thì kẻ chạy sidecar đã trích có thể đặt PRYNX_MAX_TOKEN_LIFETIME_SECONDS =
+# số khổng lồ rồi quay ngược đồng hồ ⇒ vô hiệu chống-rollback (replay token hết hạn).
+# Mặc định 8 ngày (CỐ Ý chưa siết 4 ngày: token 7 ngày cũ còn hạn, siết ngay sẽ khoá oan
+# khách offline; siết _MAX_TOKEN_LIFETIME_DEFAULT xuống 345600 SAU KHI token 7 ngày hết
+# hạn). Bất biến bắt buộc: giá trị này LUÔN ≥ TTL token thật.
+_MAX_TOKEN_LIFETIME_DEFAULT = 8 * 24 * 60 * 60
+if _is_dev_mode():
+    _MAX_TOKEN_LIFETIME_SECONDS = int(
+        os.environ.get("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", str(_MAX_TOKEN_LIFETIME_DEFAULT))
+    )
+else:
+    _MAX_TOKEN_LIFETIME_SECONDS = _MAX_TOKEN_LIFETIME_DEFAULT
 
 
 def _clock_guard_path() -> str:

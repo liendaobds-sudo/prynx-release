@@ -318,8 +318,25 @@ if (-not $SkipNuitka) {
     Write-Host "  Building pdfcompare_native for the active Python..." -ForegroundColor DarkGray
     $previousVirtualEnv = $env:VIRTUAL_ENV
     $env:VIRTUAL_ENV = "$ROOT\backend\venv"
+    # PERF (audit 2026-07 muc 5.7): bat SSE4.2+ baseline cho vong per-pixel Rust.
+    # x86-64-v2 an toan cho CPU ~2009+ (Nehalem tro len) - may van phong cu van chay.
+    $previousRustFlags = $env:RUSTFLAGS
+    $env:RUSTFLAGS = "-C target-cpu=x86-64-v2"
+    # PERF: LTO/CGU chi bat cho BAN DONG GOI qua env - Cargo.toml khong dat [profile.release]
+    # de maturin develop --release trong run_dev.bat van build nhanh (dev loop khong cho LTO).
+    $previousLto = $env:CARGO_PROFILE_RELEASE_LTO
+    $previousCgu = $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS
+    $previousStripSym = $env:CARGO_PROFILE_RELEASE_STRIP
+    $env:CARGO_PROFILE_RELEASE_LTO = "thin"
+    $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
+    $env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
     & $VENV_PYTHON -m maturin develop --release --manifest-path "$ROOT\native\Cargo.toml"
     $nativeExit = $LASTEXITCODE
+    if ($null -eq $previousRustFlags) { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
+    else { $env:RUSTFLAGS = $previousRustFlags }
+    if ($null -eq $previousLto) { Remove-Item Env:CARGO_PROFILE_RELEASE_LTO -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_LTO = $previousLto }
+    if ($null -eq $previousCgu) { Remove-Item Env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = $previousCgu }
+    if ($null -eq $previousStripSym) { Remove-Item Env:CARGO_PROFILE_RELEASE_STRIP -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_STRIP = $previousStripSym }
     if ($null -eq $previousVirtualEnv) { Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue }
     else { $env:VIRTUAL_ENV = $previousVirtualEnv }
     # Xoa khoa khoi moi truong NGAY sau khi maturin dung xong: cac buoc sau (Nuitka,
@@ -424,6 +441,7 @@ if (-not $SkipNuitka) {
         --jobs=$NuitkaJobs `
         --no-prefer-source-code `
         --onefile `
+        --onefile-tempdir-spec="{CACHE_DIR}\PrynX\sidecar-{VERSION}" `
         --output-filename="$SIDECAR_NAME.exe" `
         --output-dir="$SIDECAR_DIR" `
         --include-package=app `
@@ -728,8 +746,24 @@ if (-not $SkipTauri) {
     # -Release: use config with createUpdaterArtifacts (needs TAURI_SIGNING_PRIVATE_KEY).
     # Default: externalBin-only config (manual installer, no signing required).
     $tauriConfig = if ($Release) { "src-tauri/tauri.release.conf.json" } else { "src-tauri/tauri.prod.conf.json" }
+    # PERF (audit 2026-07 muc 5.7): target-cpu baseline nhu buoc native (SSE4.2+).
+    $previousRustFlags = $env:RUSTFLAGS
+    $env:RUSTFLAGS = "-C target-cpu=x86-64-v2"
+    # PERF: LTO/CGU chi bat cho BAN DONG GOI qua env - Cargo.toml khong dat [profile.release]
+    # de maturin develop --release trong run_dev.bat van build nhanh (dev loop khong cho LTO).
+    $previousLto = $env:CARGO_PROFILE_RELEASE_LTO
+    $previousCgu = $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS
+    $previousStripSym = $env:CARGO_PROFILE_RELEASE_STRIP
+    $env:CARGO_PROFILE_RELEASE_LTO = "thin"
+    $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
+    $env:CARGO_PROFILE_RELEASE_STRIP = "symbols"
     npx @tauri-apps/cli build --config $tauriConfig
     $tauriExit = $LASTEXITCODE
+    if ($null -eq $previousRustFlags) { Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue }
+    else { $env:RUSTFLAGS = $previousRustFlags }
+    if ($null -eq $previousLto) { Remove-Item Env:CARGO_PROFILE_RELEASE_LTO -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_LTO = $previousLto }
+    if ($null -eq $previousCgu) { Remove-Item Env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = $previousCgu }
+    if ($null -eq $previousStripSym) { Remove-Item Env:CARGO_PROFILE_RELEASE_STRIP -ErrorAction SilentlyContinue } else { $env:CARGO_PROFILE_RELEASE_STRIP = $previousStripSym }
     Pop-Location
 
     if ($tauriExit -ne 0) {
@@ -783,22 +817,4 @@ if (-not $SkipTauri) {
             "DIELINE_LOCKED = $(if ($script:DIELINE_LOCKED) { $script:DIELINE_LOCKED } else { 'no' })"
         )
         Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII
-        Write-Host "  Manifest:  $manifestPath" -ForegroundColor Cyan
-        Write-Host "  EXE SHA-256: $exeHash" -ForegroundColor DarkGray
-        if (-not $Release -and -not $NoOpenExplorer) {
-            Write-Host ""
-            Write-Host "  >> Da copy file cai dat ra ngoai thu muc de de lay hon..." -ForegroundColor Cyan
-            Start-Process explorer.exe -ArgumentList "/select,`"$finalInstallerPath`""
-        }
-    } else {
-        Write-Host "  WARNING: Khong tim thay installer trong bundle\nsis\." -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "`n[4/5] Skipped Tauri build." -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "  Build complete (Nuitka only)." -ForegroundColor Green
-    Write-Host "  Sidecar: $SIDECAR_FINAL"
-    Write-Host "  SHA-256: $HASH"
-}
-
-Write-Host ""
+        Write-Host "  Manife

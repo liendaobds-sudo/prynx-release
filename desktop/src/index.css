@@ -1,4 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+/* UIUX (audit 2026-07-27 §A-05): font Inter self-host thay vì Google Fonts CDN —
+ * máy trong xưởng in thường không có internet, tải CDN hỏng là cả UI rơi về
+ * system-ui và layout xê dịch giữa các máy. Xem src/assets/fonts/inter.css. */
+@import "./assets/fonts/inter.css";
 @import "tailwindcss";
 @source "./**/*.{js,ts,jsx,tsx}";
 
@@ -24,23 +27,120 @@
 @utility z-confirm { z-index: 1200; }
 @utility z-toast { z-index: 1300; }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * UIUX (audit 2026-07-27 §A-03/§A-07/§A-14): DESIGN TOKENS CẤP APP
+ *
+ * Trước đây app chỉ có 7 biến glassmorphism + bộ --dt-* (nhốt trong dieline-tool),
+ * nên nền dark mỗi vùng một tông (#1a1a1a / #323639 / #2d3236 / #1e1e1e / #252525),
+ * accent lệch (indigo / cobalt #0f52ba / blue-500) và radius chạy 4→32px.
+ *
+ * Thang nền (thấp → cao):
+ *   chrome  — titlebar / thanh hệ thống
+ *   bg-0    — nền shell (ngoài cùng vùng nội dung)
+ *   bg-1    — nền vùng làm việc / canvas viewer
+ *   bg-2    — bề mặt nổi: panel, menu, modal, dropdown
+ *   bg-3    — hàng hover / bề mặt nổi cấp 2
+ *
+ * Dùng trong TSX qua utility Tailwind sinh từ @theme inline bên dưới:
+ *   bg-app-0/1/2/3, bg-app-chrome, text-app-1/2/3, border-app-line,
+ *   text-app-accent, bg-app-accent, rounded-app-sm/md/lg/xl
+ * ────────────────────────────────────────────────────────────────────────── */
 :root {
-  --gradient-primary: linear-gradient(135deg, #a855f7 0%, #ec4899 100%);
-  --gradient-accent: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-  --bg-base: #f8fafc;
+  /* Nền */
+  --app-chrome: #f0f0f0;
+  --app-bg-0: #e6e8eb;
+  --app-bg-1: #f3f4f6;
+  --app-bg-2: #ffffff;
+  --app-bg-3: #eef1f4;
+  /* Chữ */
+  --app-text-1: #1e293b;
+  --app-text-2: #475569;
+  --app-text-3: #94a3b8;
+  /* Đường kẻ */
+  --app-line: rgba(0, 0, 0, 0.10);
+  --app-line-soft: rgba(0, 0, 0, 0.06);
+  /* Accent + ngữ nghĩa */
+  --app-accent: #4f46e5;
+  --app-accent-hover: #4338ca;
+  --app-accent-soft: rgba(79, 70, 229, 0.10);
+  --app-success: #059669;
+  --app-warning: #d97706;
+  --app-danger: #dc2626;
+  /* Bo góc — 4 nấc duy nhất cho toàn app */
+  --app-radius-sm: 4px;
+  --app-radius-md: 8px;
+  --app-radius-lg: 12px;
+  --app-radius-xl: 16px;
+  /* Chuyển động (bị vô hiệu ở prefers-reduced-motion / máy yếu, xem cuối file) */
+  --app-motion-fast: 120ms;
+  --app-motion: 180ms;
+  --app-motion-slow: 300ms;
+
+  /* — Token cũ (glassmorphism) giữ lại cho các màn chưa chuyển, nhưng màu tím-hồng
+       đã quy về accent chung để hết cảnh 2 ngôn ngữ thiết kế — §A-02 — */
+  --gradient-primary: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+  --gradient-accent: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+  --bg-base: var(--app-bg-0);
   --glass-bg: rgba(255, 255, 255, 0.85);
-  --glass-border: rgba(0, 0, 0, 0.05);
-  --text-primary: #0f172a;
-  --text-secondary: #64748b;
+  --glass-border: var(--app-line-soft);
+  --text-primary: var(--app-text-1);
+  --text-secondary: var(--app-text-2);
 }
 
 .dark {
   color-scheme: dark;
-  --bg-base: #121212;
+  --app-chrome: #121212;
+  --app-bg-0: #1a1a1a;
+  /* Giữ tông xám Chrome-PDF quen thuộc cho canvas xem trang (không làm tối hơn:
+     nền quá tối làm lệch cảm nhận màu khi soi bài in) */
+  --app-bg-1: #323639;
+  --app-bg-2: #2d3033;
+  --app-bg-3: #383c40;
+  --app-text-1: #e4e4e7;
+  --app-text-2: #a1a1aa;
+  --app-text-3: #71717a;
+  --app-line: rgba(255, 255, 255, 0.10);
+  --app-line-soft: rgba(255, 255, 255, 0.06);
+  --app-accent: #6366f1;
+  --app-accent-hover: #818cf8;
+  --app-accent-soft: rgba(99, 102, 241, 0.16);
+  --app-success: #10b981;
+  --app-warning: #f59e0b;
+  --app-danger: #ef4444;
+
   --glass-bg: rgba(24, 24, 27, 0.7);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --text-primary: #f8fafc;
-  --text-secondary: #a1a1aa;
+}
+
+/* Phơi token thành utility Tailwind v4. `inline` = giữ nguyên var() nên đổi
+   theme (class .dark) là utility đổi theo, không cần sinh 2 bộ class. */
+@theme inline {
+  --color-app-chrome: var(--app-chrome);
+  --color-app-0: var(--app-bg-0);
+  --color-app-1: var(--app-bg-1);
+  --color-app-2: var(--app-bg-2);
+  --color-app-3: var(--app-bg-3);
+  --color-app-text-1: var(--app-text-1);
+  --color-app-text-2: var(--app-text-2);
+  --color-app-text-3: var(--app-text-3);
+  --color-app-line: var(--app-line);
+  --color-app-line-soft: var(--app-line-soft);
+  --color-app-accent: var(--app-accent);
+  --color-app-accent-hover: var(--app-accent-hover);
+  --color-app-accent-soft: var(--app-accent-soft);
+  --color-app-success: var(--app-success);
+  --color-app-warning: var(--app-warning);
+  --color-app-danger: var(--app-danger);
+  --radius-app-sm: var(--app-radius-sm);
+  --radius-app-md: var(--app-radius-md);
+  --radius-app-lg: var(--app-radius-lg);
+  --radius-app-xl: var(--app-radius-xl);
+}
+
+/* UIUX §A-14: MỌI số đo (mm, số trang, tọa độ, %) dùng class này — chữ số cùng
+   bề rộng nên số không "nhảy" khi giá trị đổi, và không lẫn Consolas với Inter. */
+@utility num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 @layer base {
@@ -49,19 +149,12 @@
 
 body {
   font-family: 'Inter', system-ui, sans-serif;
-  background-color: var(--bg-base);
-  background-image: 
-    radial-gradient(circle at 15% 50%, rgba(168, 85, 247, 0.08), transparent 40%),
-    radial-gradient(circle at 85% 30%, rgba(236, 72, 153, 0.08), transparent 40%);
-  background-attachment: fixed;
-  color: var(--text-primary);
+  /* UIUX §A-02: bỏ 2 lớp radial-gradient tím-hồng cố định (background-attachment:
+     fixed → repaint mỗi lần cuộn) — vốn luôn bị shell h-screen che kín, chỉ còn
+     lộ ra như ánh tím lạc tông ở mép. Nền phẳng theo token. */
+  background-color: var(--app-bg-0);
+  color: var(--app-text-1);
   min-height: 100vh;
-}
-
-.dark body {
-  background-image: 
-    radial-gradient(circle at 15% 50%, rgba(168, 85, 247, 0.15), transparent 40%),
-    radial-gradient(circle at 85% 30%, rgba(236, 72, 153, 0.15), transparent 40%);
 }
 
 /* ── UI Enhancements: OhMyShot Signature Grid ── */
@@ -134,14 +227,14 @@ body {
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--glass-border);
-  border-radius: 16px;
+  border-radius: var(--app-radius-xl); /* UIUX §A-07 */
 }
 .glass-card {
   background: var(--glass-bg);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--glass-border);
-  border-radius: 20px;
+  border-radius: var(--app-radius-xl); /* UIUX §A-07: 20px → thang 16px chung */
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 0 4px 20px -4px rgba(0, 0, 0, 0.05);
 }
@@ -161,22 +254,22 @@ body {
 /* ── Buttons ── */
 .btn-primary {
   background: var(--gradient-primary);
-  color: white; padding: 14px 32px; border-radius: 14px;
+  color: white; padding: 14px 32px; border-radius: var(--app-radius-md); /* UIUX §A-07 */
   font-weight: 600; font-size: 15px; letter-spacing: 0.3px;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border: none; cursor: pointer;
-  box-shadow: 0 4px 12px rgba(168, 85, 247, 0.3);
+  box-shadow: 0 4px 12px var(--app-accent-soft);
 }
 .btn-primary:hover {
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 8px 24px rgba(168, 85, 247, 0.5), 0 0 12px rgba(236, 72, 153, 0.4);
+  box-shadow: 0 8px 24px var(--app-accent-soft);
 }
 .btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
 .btn-secondary {
   background: #ffffff;
-  color: #0f172a; padding: 14px 32px; border-radius: 14px;
+  color: #0f172a; padding: 14px 32px; border-radius: var(--app-radius-md); /* UIUX §A-07 */
   font-weight: 600; font-size: 15px; letter-spacing: 0.3px;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border: 1px solid #e2e8f0; cursor: pointer;
@@ -204,23 +297,24 @@ body {
 /* ── Upload Area ── */
 .upload-zone {
   border: 2px dashed #cbd5e1;
-  border-radius: 24px; padding: 64px 32px; text-align: center;
+  border-radius: var(--app-radius-xl); padding: 64px 32px; text-align: center; /* UIUX §A-07 */
   transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); cursor: pointer;
   background-color: #ffffff;
   background-image: radial-gradient(rgba(0, 0, 0, 0.03) 1.5px, transparent 1.5px);
   background-size: 20px 20px;
   box-shadow: 0 10px 30px -10px rgba(0,0,0,0.05);
 }
+/* UIUX §A-02: hover/has-file quy về accent + success thay vì tím/hồng lạc tông */
 .upload-zone:hover, .upload-zone.drag-over {
-  border-color: #a855f7; border-style: solid;
-  background-color: #fcf8ff;
-  box-shadow: 0 20px 40px -10px rgba(168, 85, 247, 0.15);
+  border-color: var(--app-accent); border-style: solid;
+  background-color: var(--app-accent-soft);
+  box-shadow: 0 20px 40px -10px var(--app-accent-soft);
   transform: translateY(-4px) scale(1.02);
 }
-.upload-zone.has-file { 
-  border-color: #ec4899; border-style: solid;
-  background-color: #fff5f8; 
-  box-shadow: 0 20px 40px -10px rgba(236, 72, 153, 0.15);
+.upload-zone.has-file {
+  border-color: var(--app-success); border-style: solid;
+  background-color: color-mix(in srgb, var(--app-success) 8%, transparent);
+  box-shadow: 0 20px 40px -10px color-mix(in srgb, var(--app-success) 18%, transparent);
   transform: translateY(-2px);
 }
 
@@ -230,12 +324,12 @@ body {
   background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1.5px, transparent 1.5px);
 }
 .dark .upload-zone:hover, .dark .upload-zone.drag-over {
-  border-color: #a855f7;
-  background-color: rgba(168, 85, 247, 0.05);
+  border-color: var(--app-accent);
+  background-color: var(--app-accent-soft);
 }
 .dark .upload-zone.has-file {
-  border-color: #ec4899;
-  background-color: rgba(236, 72, 153, 0.05);
+  border-color: var(--app-success);
+  background-color: color-mix(in srgb, var(--app-success) 10%, transparent);
 }
 
 /* ── Progress Bar ── */
@@ -469,3 +563,39 @@ body {
   }
 }
 
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * UIUX (audit 2026-07-27 §A-15): GIẢM HIỆU ỨNG
+ * Nguyên tắc dự án: máy mạnh chạy hiệu ứng đầy đủ, máy yếu tự giảm, và luôn
+ * tôn trọng prefers-reduced-motion của hệ điều hành.
+ *   - .perf-low: gắn vào <html> lúc khởi động khi máy ít nhân/ít RAM (main.tsx)
+ *   - prefers-reduced-motion: người dùng bật "Giảm chuyển động" trong Windows
+ * Dùng 0.01ms thay 0s để sự kiện transitionend/animationend VẪN bắn — nhiều
+ * chỗ trong app chờ sự kiện này để dọn state.
+ * ────────────────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html.perf-low *, html.perf-low *::before, html.perf-low *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+/* Máy yếu: blur nền là thứ đắt nhất trên iGPU — hạ hẳn thay vì giảm nửa vời */
+html.perf-low [class*="backdrop-blur"] {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.perf-low .glass,
+html.perf-low .glass-card,
+html.perf-low .glass-panel {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: var(--app-bg-2);
+}

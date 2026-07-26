@@ -19,19 +19,28 @@ logger = logging.getLogger(__name__)
 # Bundle dir (FOGRA39.icc, sRGB.icc ship with the app).
 def _bundle_icc_dir() -> Path:
     raw = getattr(settings, "ICC_PROFILE_DIR", "") or ""
-    p = Path(raw)
-    if not p.is_absolute():
-        # Relative to backend package / cwd
-        candidates = [
-            Path(raw).resolve(),
-            Path(__file__).resolve().parents[1] / "assets" / "icc",
-            Path.cwd() / "app" / "assets" / "icc",
-        ]
-        for c in candidates:
-            if c.is_dir():
-                return c
-        return Path(raw).resolve()
-    return p
+    configured = Path(raw)
+    package_dir = Path(__file__).resolve().parents[1] / "assets" / "icc"
+
+    # Đường tuyệt đối cấu hình từ một cwd khác có thể trỏ vào thư mục không tồn tại.
+    # Không được vì thế mà âm thầm nhảy sang profile hệ điều hành: cùng một PDF sẽ cho
+    # kẽm khác nhau giữa máy dev và máy khách. Bundle đi kèm app là fallback xác định.
+    if configured.is_absolute():
+        if configured.is_dir():
+            return configured
+        if package_dir.is_dir():
+            return package_dir
+        return configured
+
+    candidates = [
+        configured.resolve(),
+        package_dir,
+        Path.cwd() / "app" / "assets" / "icc",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return configured.resolve()
 
 
 OS_ICC_SEARCH_PATHS = [

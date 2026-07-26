@@ -175,8 +175,9 @@ export interface BoxParams {
     DFH: number;
 
     // ── Auto-Bottom (Hộp đáy dán) params ──
-    /** Chiều sâu mảnh đáy dán chính (mm), 0 = tự động (0.7 × W).
-     *  Phải ≥ W/2 để hai mảnh chồng nhau tạo đáy kín. */
+    /** Chiều sâu mảnh đáy dán chính (mm), 0 = tự động (0.76 × W — AB_DEEP_DEPTH_RATIO).
+     *  Phải ≥ W/2 để hai mảnh chồng nhau tạo đáy kín.
+     *  [AUTO-BOTTOM FIX 2026-07-26: sửa doc 0.7 → 0.76 khớp constants.ts] */
     ABD: number;
 
     // ── Paper Bag params ──

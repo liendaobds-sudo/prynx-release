@@ -132,16 +132,18 @@ fn store_hwid_to_disk(hwid: &str) -> Result<(), String> {
     let ps_script = format!(
         r#"
         Add-Type -AssemblyName System.Security
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes('{}')
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:PRYNX_DPAPI_IN)
         $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
             $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
         )
         [System.IO.File]::WriteAllBytes('{}', $encrypted)
         "#,
-        ps_single_quote_escape(hwid),
         path_str
     );
     let output = Command::new("powershell")
+        // SEC (audit 2026-07-26 F5): secret truyen qua BIEN MOI TRUONG cho child powershell,
+        // KHONG noi suy vao -Command -> khong lo tren command line (WMI/Sysmon/EDR log argv).
+        .env("PRYNX_DPAPI_IN", hwid)
         .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
         .creation_flags(0x08000000)
         .output()
@@ -979,17 +981,19 @@ pub fn store_license(license_key: String) -> Result<(), String> {
     let ps_script = format!(
         r#"
         Add-Type -AssemblyName System.Security
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes('{}')
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:PRYNX_DPAPI_IN)
         $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
             $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
         )
         [System.IO.File]::WriteAllBytes('{}', $encrypted)
         "#,
-        ps_single_quote_escape(&license_key),
         cred_path_str
     );
 
     let output = Command::new("powershell")
+        // SEC (audit 2026-07-26 F5): secret truyen qua BIEN MOI TRUONG cho child powershell,
+        // KHONG noi suy vao -Command -> khong lo tren command line (WMI/Sysmon/EDR log argv).
+        .env("PRYNX_DPAPI_IN", &license_key)
         .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
         .creation_flags(0x08000000)
         .output()
@@ -1110,16 +1114,19 @@ pub fn store_last_online(timestamp_ms: u64) -> Result<(), String> {
     let ps_script = format!(
         r#"
         Add-Type -AssemblyName System.Security
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes('{}')
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:PRYNX_DPAPI_IN)
         $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
             $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
         )
         [System.IO.File]::WriteAllBytes('{}', $encrypted)
         "#,
-        ts_str, cred_path_str
+        cred_path_str
     );
 
     let output = Command::new("powershell")
+        // SEC (audit 2026-07-26 F5): secret truyen qua BIEN MOI TRUONG cho child powershell,
+        // KHONG noi suy vao -Command -> khong lo tren command line (WMI/Sysmon/EDR log argv).
+        .env("PRYNX_DPAPI_IN", &ts_str)
         .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
         .creation_flags(0x08000000)
         .output()
@@ -1196,16 +1203,18 @@ pub fn store_license_token(token: String) -> Result<(), String> {
     let ps_script = format!(
         r#"
         Add-Type -AssemblyName System.Security
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes('{}')
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($env:PRYNX_DPAPI_IN)
         $encrypted = [System.Security.Cryptography.ProtectedData]::Protect(
             $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser
         )
         [System.IO.File]::WriteAllBytes('{}', $encrypted)
         "#,
-        ps_single_quote_escape(&token),
         path_str
     );
     let output = Command::new("powershell")
+        // SEC (audit 2026-07-26 F5): secret truyen qua BIEN MOI TRUONG cho child powershell,
+        // KHONG noi suy vao -Command -> khong lo tren command line (WMI/Sysmon/EDR log argv).
+        .env("PRYNX_DPAPI_IN", &token)
         .args(["-NoProfile", "-NoLogo", "-Command", &ps_script])
         .creation_flags(0x08000000)
         .output()

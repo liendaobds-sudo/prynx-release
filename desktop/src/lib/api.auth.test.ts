@@ -32,7 +32,12 @@ describe('API request authentication', () => {
   });
 
   it('does not let caller headers replace native authentication headers', async () => {
-    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    // Khai kiểu tham số cho mock: `vi.fn(async () => …)` suy ra tuple đối số
+    // RỖNG nên `calls[0][1]` không tồn tại dưới mắt tsc và build gate đỏ.
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 204 }),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await authenticatedFetch('http://localhost:8321/api/secure', {
@@ -53,7 +58,10 @@ describe('API request authentication', () => {
   });
 
   it('signs and sends the effective Request after init overrides', async () => {
-    const transport = vi.fn(async () => new Response(null, { status: 204 }));
+    const transport = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 204 }),
+    );
     vi.stubGlobal('fetch', transport);
     installBackendFetchAuth();
 

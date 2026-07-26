@@ -21,11 +21,19 @@ def test_fogra39_resolves_from_bundle():
     assert Path(path).name.lower() in ("fogra39.icc", "coatedfogra39.icc")
 
 
-def test_srgb_resolves_from_bundle_or_os():
+def test_srgb_resolves_from_bundle():
     path = resolve_srgb_profile_path()
-    # Bundle has sRGB.icc — must resolve
+    expected = Path(__file__).resolve().parents[1] / "app" / "assets" / "icc" / "sRGB.icc"
     assert path is not None
-    assert Path(path).is_file()
+    assert Path(path).resolve() == expected.resolve()
+
+
+def test_missing_configured_icc_dir_falls_back_to_package(monkeypatch, tmp_path):
+    import app.core.icc_profiles as registry
+
+    monkeypatch.setattr(registry.settings, "ICC_PROFILE_DIR", str(tmp_path / "missing"))
+    expected = Path(__file__).resolve().parents[1] / "app" / "assets" / "icc"
+    assert registry._bundle_icc_dir().resolve() == expected.resolve()
 
 
 def test_list_output_profiles_marks_fogra_available():

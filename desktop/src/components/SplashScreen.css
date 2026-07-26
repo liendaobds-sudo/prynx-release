@@ -282,3 +282,41 @@
     letter-spacing: 0.2em;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * UIUX (audit 2026-07-27 §A-09): SPLASH THEO DARK MODE
+ * Trước đây splash luôn nền sáng #f5f5f7 cố định: người dùng dark mode mở app là
+ * bị một mảng trắng chói giữa phòng chế bản (vốn để ánh sáng yếu để soi màu), rồi
+ * mới chuyển sang shell tối. Class `dark` được gắn lên <html> ngay ở main.tsx
+ * (bootstrapAppearance) nên các rule dưới đây có hiệu lực từ frame đầu tiên.
+ * Tên class bám đúng markup hiện có: draw-path-gray/dark, fill-gray/dark,
+ * __letter, __slogan, __status, __spinner.
+ * ────────────────────────────────────────────────────────────────────────── */
+.dark .prynx-intro {
+  background: #1a1a1a;
+}
+.dark .prynx-intro .draw-path-gray {
+  stroke: #4a4a4e;
+}
+.dark .prynx-intro .draw-path-dark {
+  stroke: #f0f0f2;
+}
+.dark .prynx-intro .fill-gray {
+  fill: #4a4a4e;
+}
+.dark .prynx-intro .fill-dark {
+  fill: #f0f0f2;
+}
+.dark .prynx-intro__letter {
+  color: #f0f0f2;
+}
+.dark .prynx-intro__slogan {
+  color: #a0a0a6;
+}
+.dark .prynx-intro__status {
+  color: #6b6b70;
+}
+.dark .prynx-intro__spinner {
+  border-color: rgba(255, 255, 255, 0.12);
+  border-top-color: #a0a0a6;
+}

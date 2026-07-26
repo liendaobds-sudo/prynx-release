@@ -148,10 +148,15 @@ describe('computeBleedContours', () => {
     it('auto_bottom: bleed bám free-edge CUT đáy (~3mm), không theo outline rút gọn', () => {
         const generated = generateDieline({ ...DEFAULT_PARAMS, boxType: 'auto_bottom', L: 120, W: 80, D: 180 });
         const bottomPanels = generated.panels.filter((panel) => panel.name.startsWith('bottom_'));
-        expect(bottomPanels.length).toBe(4);
-        // Outline đáy phải chi tiết (nhiều hơn tứ giác rút gọn)
+        // [AUTO-BOTTOM FIX 2026-07-26] 4 → 6: mỗi mảnh đáy chính được tách thành
+        // bottom_main_* + bottom_tab_* (tam giác dán gập 180° quanh nếp chéo 45°
+        // cho 3D). Tổng: 2 tai hông + 2 thân + 2 tam giác dán.
+        expect(bottomPanels.length).toBe(6);
+        // Outline đáy phải chi tiết (nhiều hơn tứ giác rút gọn); tam giác dán
+        // là đa giác ≥ 3 đỉnh (E/EarL/EarR/M/C/B).
         for (const panel of bottomPanels) {
-            expect(panel.outline && panel.outline.length, panel.name).toBeGreaterThanOrEqual(4);
+            const minVerts = panel.name.startsWith('bottom_tab_') ? 3 : 4;
+            expect(panel.outline && panel.outline.length, panel.name).toBeGreaterThanOrEqual(minVerts);
         }
         const deep = bottomPanels.find((panel) => panel.name === 'bottom_main_front');
         expect(deep?.outline && deep.outline.length).toBeGreaterThan(8);

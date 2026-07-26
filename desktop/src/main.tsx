@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client'
 import * as Sentry from "@sentry/react"
 import './index.css'
 import './i18n'
+import { bootstrapAppearance } from './lib/appearanceBootstrap'
 import App from './App'
 import { ErrorBoundary } from './ErrorBoundary'
 import { installBackendFetchAuth } from './lib/api'
@@ -38,6 +39,10 @@ if ((window as any).__TAURI__) {
     });
   } catch { /* ignore in non-Tauri env */ }
 }
+
+// UIUX §A-01/§A-09/§A-15: theme + mức hiệu ứng phải có ngay ở frame đầu tiên,
+// trước cả splash — nếu để React effect làm thì dark mode bị nháy trắng lúc mở app.
+bootstrapAppearance();
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,

@@ -10,6 +10,21 @@
 //                    tự bung thành đáy kín khi dựng lên.
 //
 // Thuật toán: Mọi tọa độ nội suy từ biến số (L, W, D, T, C, G, TH, ABD).
+//
+// [AUTO-BOTTOM FIX 2026-07-26] Viết lại toàn bộ mục D (đáy dán):
+//   1. Tọa độ flap đáy tính THẲNG từ key points — bỏ bước mutate hậu kỳ
+//      (D2 cũ) từng làm points[]/controlPoints[] của bezier phân kỳ 0.25mm
+//      và kéo đuôi đường nhấn 45° của mảnh sau lơ lửng 1.32mm (WLWL).
+//   2. Cột góc dán khép QUA ĐƯỜNG MAY (WLWL, mép ngoài x5) dùng khe = 0:
+//      B trùng góc blank, CREASE 45° chạm đúng đỉnh kệ E.
+//   3. Khe foldGap tại góc dán trong được ĐÓNG bằng nét CUT ngắn dọc y=0
+//      (khép kín biên ngoài blank — hết cảnh báo outer-silhouette khi xuất);
+//      đường cấn đáy x1→x5 tách đoạn để né khe.
+//   4. Mỗi mảnh đáy chính TÁCH thành 2 panel: `bottom_main_*` (thân) +
+//      `bottom_tab_*` (tam giác dán, con của thân, pivotEdge = nếp chéo
+//      [B,E], gập 180°, renderZShift âm) → 3D gập thật theo nếp chéo và
+//      xếp lớp trên tai hông, thay vì cả mảnh quay cứng 90°.
+//   5. Cảnh báo sản xuất đẩy vào model.warnings (attachWarnings hợp nhất).
 // ============================================================
 
 import {
@@ -30,16 +45,32 @@ import {
 
 import { buildDustFlap, buildTuckFlap } from './sharedHelpers';
 import { GLUE_TAPER_RATIO, SLIT_OFFSET_MM, SLIT_DEPTH_MM, SLIT_FILLET_R, KAPPA } from './constants';
+// [AUTO-BOTTOM FIX 2026-07-26] Dùng buildDeepBottomFreeEdge + splitDeepBottomPaths
+// (tách thân / tam giác dán) thay cho buildDeepBottomFlap nguyên khối.
 import {
     autoBottomDims,
-    buildDeepBottomFlap,
+    buildDeepBottomFreeEdge,
     buildWingBottomFlap,
     outlineFromCutChain,
     buildDeepBottomAnnotations,
     buildWingBottomAnnotations,
     computeDeepBottomKeyPoints,
-    type DeepBottomKeyPoints,
+    splitDeepBottomPaths,
 } from './autoBottomHelpers';
+
+/**
+ * [AUTO-BOTTOM FIX 2026-07-26] Diện tích vòng kín (shoelace, mm²) — dùng để
+ * phát hiện tam giác dán SUY BIẾN (hDeep ≈ hWing) trước khi tách panel.
+ */
+function ringArea(ring: Point2D[]): number {
+    let s = 0;
+    for (let i = 0; i < ring.length; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        s += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(s / 2);
+}
 
 /**
  * Sinh bản vẽ khuôn bế Hộp Đáy Dán từ thông số đầu vào.
@@ -246,8 +277,10 @@ export function generateAutoBottomBox(params: BoxParams): DielineModel {
         foldDirection: -1,
     });
 
-    // --- Đường CREASE đáy liên tục (gộp 4 cột thành 1 đoạn) ---
-    allPaths.push(line(pt(x1, yBot), pt(x5, yBot), 'CREASE'));
+    // --- Đường CREASE đáy ---
+    // [AUTO-BOTTOM FIX 2026-07-26] Không còn push 1 đoạn liền x1→x5 tại đây:
+    // đường cấn đáy được tách đoạn ở mục D2 để NÉ khe foldGap tại góc dán
+    // (khe được đóng bằng nét CUT — cấn không được vẽ đè lên mép cắt hở).
 
     // ============================================================
     // C. PHẦN TRÊN — giống SLB (Dust Flaps + Closure + Tuck + Lock Tab)
@@ -492,6 +525,7 @@ export function generateAutoBottomBox(params: BoxParams): DielineModel {
 
     // ============================================================
     // D. ĐÁY DÁN TỰ ĐỘNG (Auto-Bottom / Crash-Lock đã dán keo)
+    // [AUTO-BOTTOM FIX 2026-07-26 — viết lại toàn bộ mục D]
     //
     // 4 mảnh đáy, dán keo theo 2 CẶP ở hai góc ĐỐI DIỆN:
     //     (front + right)  và  (back + left)
@@ -500,62 +534,132 @@ export function generateAutoBottomBox(params: BoxParams): DielineModel {
     // (hông) luôn ở cột bên PHẢI góc dán. Cặp (back, left) khép qua mối
     // dán hông nên nằm ở hai đầu bố cục — đúng như thực tế sau khi dán.
     //
-    //   Mảnh chính : sâu hDeep ≈ 0.74W (≥ W/2) → 2 mảnh chồng ⇒ đáy kín
-    //                + bước vát + cấn chéo 45° + kệ + tai khóa (male ear)
-    //   Tai dán    : sâu hWing ≈ W/2, hình thang vát lệch (nhẹ phía dán)
+    //   Mảnh chính : sâu hDeep = 0.76W (≥ W/2) → 2 mảnh chồng ⇒ đáy kín
+    //                + bước vát + cấn chéo 45° + kệ + tai khóa (male ear).
+    //                TÁCH thành 2 panel: bottom_main_* (thân, trái đường
+    //                nhấn 45° B→E) + bottom_tab_* (tam giác dán, phải đường
+    //                nhấn — panel CON gập 180° quanh nếp chéo [B,E]).
+    //   Tai dán    : sâu hWing ≈ W/2, hình thang vát lệch (nhẹ phía dán).
+    //
+    // Tọa độ tính THẲNG từ key points, không mutate hậu kỳ:
+    //   - Mép trái mảnh chính & 2 mép tai hông phủ trọn bề rộng cột
+    //     (không inset h rồi retarget như bản cũ — nguồn lỗi bezier
+    //     points[]/controlPoints[] phân kỳ).
+    //   - Cột góc dán trong: mép phải inset h, khe foldGap so với góc cột.
+    //   - Cột góc dán NGOÀI (khép qua đường may keo): khe = 0 → B trùng
+    //     góc blank, CREASE 45° chạm đúng đỉnh kệ E.
     // ============================================================
     const abDims = autoBottomDims(L, W, T, C, params.ABD);
     const colX: Array<[number, number]> = [[x1, x2], [x2, x3], [x3, x4], [x4, x5]];
+    const modelWarnings: string[] = [];
 
-    // Inset h = T/2 giống SLB (female/male/dust) — D5 sẽ nối khe bằng V-peak.
-    // Deep: paths[0]=mép trái CUT; paths[len-2]=bước vát→góc dán; paths[len-1]=CREASE.
-    // Wing: paths[0]=mép góc dán; paths[len-1]=mép tự do.
-    type BottomFlapRef = {
-        paths: PathSegment[];
-        leftIdx: number; leftIsStart: boolean;
-        rightIdx: number; rightIsStart: boolean;
-        /** Key points free-edge (deep only) — chú thích sau D5 */
-        keyPoints?: DeepBottomKeyPoints;
-    };
-    const bottomFlaps: BottomFlapRef[] = [];
+    // Khe B↔góc cột trên đoạn gấp tại các GÓC DÁN TRONG — ghi lại để đóng
+    // bằng nét CUT và tách đường cấn đáy ở D2. Mỗi phần tử: [xB, xGócCột].
+    const foldSlits: Array<[number, number]> = [];
 
     for (let col = 0; col < 4; col++) {
         const role = pn[col];
         const [cxL, cxR] = colX[col];
-        const xFL = snap(cxL + h);
-        const xFR = snap(cxR - h);
         const pivotEdge: [Point2D, Point2D] = [pt(cxL, yBot), pt(cxR, yBot)];
 
         if (role === 'front' || role === 'back') {
-            const keyPoints = computeDeepBottomKeyPoints(xFL, xFR, yBot, abDims);
-            const flapPaths = buildDeepBottomFlap(xFL, xFR, yBot, abDims);
-            allPaths.push(...flapPaths);
-            bottomFlaps.push({
-                paths: flapPaths,
-                leftIdx: 0, leftIsStart: true,
-                rightIdx: Math.max(0, flapPaths.length - 2), rightIsStart: false,
-                keyPoints,
-            });
-            // outline gán SAU D5 (khớp CUT cuối + V-peak) — xem bên dưới
-            panels.push({
-                name: role === 'front' ? 'bottom_main_front' : 'bottom_main_back',
+            // ── Mảnh đáy CHÍNH ──
+            // Góc dán luôn ở mép PHẢI cột. Cột cuối (col 3) chỉ có thể là
+            // mảnh chính khi panelOrder = WLWL — khi đó góc dán khép qua
+            // ĐƯỜNG MAY keo (x5): dùng khe 0 để B trùng góc blank.
+            const isSeamGlue = col === 3;
+            const xFL = cxL;
+            const xFR = isSeamGlue ? cxR : snap(cxR - h);
+            const kp = computeDeepBottomKeyPoints(
+                xFL, xFR, yBot, abDims,
+                isSeamGlue ? { glueEdgeGap: 0 } : undefined,
+            );
+            const freeEdge = buildDeepBottomFreeEdge(kp);
+            const creaseSeg = line(kp.B, kp.E, 'CREASE');
+            allPaths.push(...freeEdge, creaseSeg);
+
+            // Tách chuỗi free-edge tại đỉnh kệ E: thân (A→…→E) / tam giác dán (E→…→B).
+            // Tam giác SUY BIẾN (hDeep ≈ hWing → không tai khóa, vùng dán co
+            // sát đường nhấn, diện tích ≈ 0) thì KHÔNG tách — giữ 1 panel như
+            // cũ, tránh sinh panel rỗng cho 3D.
+            const split = splitDeepBottomPaths(freeEdge, kp.E);
+            const tabOutline = split.tabPaths.length > 0
+                ? outlineFromCutChain(split.tabPaths)
+                : [];
+            const tabUsable = tabOutline.length >= 3 && ringArea(tabOutline) > 1;
+            const mainPaths = tabUsable ? split.mainPaths : freeEdge;
+            const tabPaths = tabUsable ? split.tabPaths : [];
+
+            const mainName = role === 'front' ? 'bottom_main_front' : 'bottom_main_back';
+
+            // Outline thân: chuỗi CUT A→…→E + đỉnh B (cạnh cấn E→B và đoạn
+            // gấp B→A khép vòng ngầm). Outline tam giác dán: E→…→B (cạnh cấn
+            // B→E khép vòng ngầm).
+            const mainOutline = outlineFromCutChain(mainPaths);
+            if (tabUsable && mainOutline.length >= 2) {
+                mainOutline.push(pt(kp.B.x, kp.B.y));
+            }
+
+            const mainPanel: Panel = {
+                name: mainName,
                 label: role === 'front' ? 'Đáy dán mặt trước' : 'Đáy dán mặt sau',
-                paths: flapPaths,
+                paths: [...mainPaths, creaseSeg],
                 parent: role,
                 pivotEdge,
                 foldAngle: -90,
                 foldDirection: -1,
                 foldPhase: [0.78, 0.95],
-            });
+            };
+            if (mainOutline.length >= 3) mainPanel.outline = mainOutline;
+            // Chú thích DEV: giữ TRỌN bộ key points (A…M/C/B) trên panel thân
+            // như trước khi tách — test đọc mốc theo tên từ bottom_main_front.
+            mainPanel.annotations = buildDeepBottomAnnotations(mainPanel, kp);
+            panels.push(mainPanel);
+
+            if (tabUsable && tabPaths.length > 0) {
+                // ── TAM GIÁC DÁN (bottom_tab_*) — gập 180° quanh nếp chéo ──
+                // pivotEdge = [B, E] nằm đúng trên biên chung với panel thân.
+                // foldAngle 180 × foldDirection −1 → góc net −180°: nửa hành
+                // trình tam giác quét về phía −Z (phía LÒNG hộp — thân hộp
+                // cuộn về −Z), kết thúc áp phẳng đối xứng gương qua nếp chéo
+                // = đúng vị trí dán trên tai hông khi đáy bung.
+                // renderZShift ÂM = đẩy theo −z cục bộ của panel THÂN
+                // (foldCompensation.buildFoldMatrix áp ngoài cùng, tỉ lệ theo
+                // mức gập của chính tab): khi thân còn phẳng → tam giác lùi
+                // vào lòng hộp (đúng trạng thái dán bẹp); khi thân đã gập 90°
+                // (z cục bộ thân ↦ −Y thế giới) → tam giác được nâng +Y đúng
+                // (T + 0.1)mm lên TRÊN mặt tai hông — hết z-fighting với cả
+                // thân lẫn tai hông.
+                panels.push({
+                    name: role === 'front' ? 'bottom_tab_front' : 'bottom_tab_back',
+                    label: role === 'front' ? 'Tam giác dán đáy trước' : 'Tam giác dán đáy sau',
+                    paths: tabPaths,
+                    outline: tabOutline,
+                    parent: mainName,
+                    pivotEdge: [pt(kp.B.x, kp.B.y), pt(kp.E.x, kp.E.y)],
+                    foldAngle: 180,
+                    foldDirection: -1,
+                    foldPhase: [0.5, 0.62],
+                    renderZShift: -snap(T + 0.1),
+                });
+            }
+
+            // Khe B↔góc cột (chỉ góc dán TRONG; góc qua đường may có khe 0)
+            if (!isSeamGlue && cxR - kp.B.x > 0.02) {
+                foldSlits.push([kp.B.x, cxR]);
+            }
+
+            // Cảnh báo sản xuất: hộp nhỏ → tai khóa bị lược bỏ
+            if (!kp.EarL && !modelWarnings.some((w) => w.includes('tai khóa'))) {
+                modelWarnings.push(
+                    'Đáy dán: hộp nhỏ — tai khóa (ear) của mảnh đáy chính đã được lược bỏ.',
+                );
+            }
         } else {
-            const flapPaths = buildWingBottomFlap(xFL, xFR, yBot, abDims);
+            // ── TAI DÁN hông — hình thang phủ trọn bề rộng cột ──
+            const flapPaths = buildWingBottomFlap(cxL, cxR, yBot, abDims);
             allPaths.push(...flapPaths);
-            bottomFlaps.push({
-                paths: flapPaths,
-                leftIdx: 0, leftIsStart: true,
-                rightIdx: flapPaths.length - 1, rightIsStart: false,
-            });
-            panels.push({
+            const wingPanel: Panel = {
                 name: role === 'right' ? 'bottom_wing_right' : 'bottom_wing_left',
                 label: role === 'right' ? 'Tai dán đáy phải' : 'Tai dán đáy trái',
                 paths: flapPaths,
@@ -564,135 +668,56 @@ export function generateAutoBottomBox(params: BoxParams): DielineModel {
                 foldAngle: -90,
                 foldDirection: -1,
                 foldPhase: [0.62, 0.78],
-            });
+            };
+            const wingOutline = outlineFromCutChain(flapPaths);
+            if (wingOutline.length >= 3) wingPanel.outline = wingOutline;
+            wingPanel.annotations = buildWingBottomAnnotations(wingPanel);
+            panels.push(wingPanel);
         }
+    }
+
+    // Cảnh báo sản xuất: mảnh chính không sâu hơn W/2 → hai mảnh không chồng mí
+    if (abDims.hDeep <= W / 2 + 0.5) {
+        modelWarnings.push(
+            'Đáy dán: chiều sâu mảnh đáy chính (ABD) không lớn hơn W/2 — '
+            + 'hai mảnh đáy không chồng mí, đáy có thể hở. Hãy tăng ABD.',
+        );
     }
 
     // ============================================================
-    // D2. Nối flap đáy — bám mẫu 100010-01
+    // D2. Đóng khe foldGap + đường cấn đáy tách đoạn
+    // [AUTO-BOTTOM FIX 2026-07-26]
     //
-    //   đoạn gấp: ──●B════════●W──  W=góc cột đáy↔tai, B=điểm gấp đáy
-    //               | khe foldGap
-    //               ＼ CREASE 45° (đường nhấn) B→E
-    //                ＼
-    //                 ●E
-    //
-    // Free-edge đáy CHỈ tới B — không kéo tới W.
-    // Đường gấp ngang thân (x1→x5) vẫn giữ (allPaths CREASE đáy).
+    // Tại mỗi góc dán TRONG, free-edge mảnh chính dừng ở B, tai hông bắt đầu
+    // ở góc cột W → giữa B và W có khe ≈ foldGap + T/2 trên đường gấp:
+    //   - Nét CUT ngắn B→W dọc y=0: tách rời mảnh phế liệu hình nêm và KHÉP
+    //     KÍN biên ngoài blank (bản cũ hở 1.32mm → chuỗi CUT đứt, cổng
+    //     outer-silhouette cảnh báo "biên hở" mỗi lần xuất).
+    //   - Đường cấn đáy vẽ thành các đoạn [x1..xB], [W..x5] né khe (cấn
+    //     không được vẽ đè lên mép cắt hở).
     // ============================================================
-    {
-        const f = bottomFlaps[0];
-        const seg = f.paths[f.leftIdx];
-        if (f.leftIsStart) seg.points[0] = pt(x1, yBot);
-        else seg.points[seg.points.length - 1] = pt(x1, yBot);
+    foldSlits.sort((a, b) => a[0] - b[0]);
+    for (const [xa, xb] of foldSlits) {
+        allPaths.push(line(pt(xa, yBot), pt(xb, yBot), 'CUT'));
     }
-    {
-        const f = bottomFlaps[3];
-        const seg = f.paths[f.rightIdx];
-        if (f.rightIsStart) seg.points[0] = pt(x5, yBot);
-        else seg.points[seg.points.length - 1] = pt(x5, yBot);
-        // Deep mép phải ngoài cùng: B = x5, giữ CREASE 45° B→E
-        const last = f.paths[f.paths.length - 1];
-        if (last.tag === 'CREASE' && last.points.length >= 2) {
-            const ptB = pt(x5, yBot);
-            last.points[0] = ptB;
-            last.points[1] = pt(snap(x5 - abDims.hWing), snap(yBot - abDims.hWing));
-            if (f.keyPoints) {
-                f.keyPoints = { ...f.keyPoints, B: ptB, E: last.points[1] };
-            }
+    let creaseCursor = x1;
+    for (const [xa, xb] of foldSlits) {
+        if (xa > creaseCursor + 0.01) {
+            allPaths.push(line(pt(creaseCursor, yBot), pt(xa, yBot), 'CREASE'));
         }
+        creaseCursor = Math.max(creaseCursor, xb);
+    }
+    if (x5 > creaseCursor + 0.01) {
+        allPaths.push(line(pt(creaseCursor, yBot), pt(x5, yBot), 'CREASE'));
     }
 
-    const junctionXs = [x2, x3, x4];
-    for (let j = 0; j < 3; j++) {
-        const fL = bottomFlaps[j];
-        const fR = bottomFlaps[j + 1];
-        const xJ = junctionXs[j]; // W — góc free-edge đáy ↔ tai
-
-        const segL = fL.paths[fL.rightIdx];
-        const ptsL = segL.points;
-        const jPtIdxL = fL.rightIsStart ? 0 : ptsL.length - 1;
-
-        const segR = fR.paths[fR.leftIdx];
-        const ptsR = segR.points;
-        const jPtIdxR = fR.leftIsStart ? 0 : ptsR.length - 1;
-
-        const creaseL = fL.paths[fL.paths.length - 1];
-        const isDeepWingGlue = creaseL.tag === 'CREASE';
-
-        if (isDeepWingGlue) {
-            // Giữ E (đuôi CREASE = free-edge kệ); B = E + (hWing, hWing) trên fold = 45°
-            const endE = creaseL.points.length >= 2
-                ? creaseL.points[1]
-                : pt(snap(xJ - abDims.foldGap - abDims.hWing), snap(yBot - abDims.hWing));
-
-            let xB = snap(endE.x + abDims.hWing);
-            const xW = xJ;
-            // B luôn trái W (khe trên đoạn gấp, mẫu ~0.013W)
-            if (xB > xW - abDims.foldGap) {
-                xB = snap(xW - abDims.foldGap);
-            }
-            const ptB = pt(xB, yBot);
-            const ptW = pt(xW, yBot);
-
-            // Free-edge đáy → B (không tới W)
-            ptsL[jPtIdxL] = ptB;
-            // Free-edge tai → W
-            ptsR[jPtIdxR] = ptW;
-
-            // CREASE: B → E (đầu trên đoạn gấp, đuôi trên free-edge)
-            if (creaseL.points.length >= 2) {
-                creaseL.points[0] = ptB;
-                creaseL.points[1] = pt(endE.x, endE.y);
-            }
-        } else {
-            ptsL[jPtIdxL] = pt(xJ, yBot);
-            ptsR[jPtIdxR] = pt(xJ, yBot);
-        }
-    }
-
-    // Outline đáy = chuỗi CUT thật (sau D5) → bleed bám free-edge khuôn.
-    // Kẹp y ≤ yBot: V-peak D5 có thể nhô nhẹ lên thân; nếu để nguyên sẽ chồng
-    // outline panel thân (geometry overlap test + union bleed).
+    // Kẹp outline đáy y ≤ yBot (an toàn cho overlap test + union bleed —
+    // giữ hành vi cũ; mọi đỉnh flap đáy đều phải nằm dưới đường gấp).
     for (const panel of panels) {
         if (!panel.name.startsWith('bottom_')) continue;
-        const ring = outlineFromCutChain(panel.paths);
-        if (ring.length < 3) continue;
-        for (const p of ring) {
+        if (!panel.outline) continue;
+        for (const p of panel.outline) {
             if (p.y > yBot) p.y = yBot;
-        }
-        panel.outline = ring;
-    }
-
-    // Chú thích điểm (DEV: "Chú thích điểm") — key points hình học (sau D5 cập nhật B)
-    {
-        let deepIdx = 0;
-        for (const panel of panels) {
-            if (panel.name.startsWith('bottom_main_')) {
-                // Map panel → matching deep bottomFlap keyPoints
-                const flap = bottomFlaps.filter((_, i) => {
-                    const role = pn[i];
-                    return role === 'front' || role === 'back';
-                })[deepIdx++];
-                let kp = flap?.keyPoints ?? null;
-                if (kp) {
-                    const crease = panel.paths.find((s) => s.tag === 'CREASE');
-                    if (crease?.points[0]) {
-                        kp = { ...kp, B: pt(crease.points[0].x, crease.points[0].y) };
-                    }
-                    if (crease?.points[1]) {
-                        kp = { ...kp, E: pt(crease.points[1].x, crease.points[1].y) };
-                    }
-                    // A có thể bị D5 kéo về x1
-                    const firstCut = panel.paths.find((s) => s.tag === 'CUT');
-                    if (firstCut?.points[0] && Math.abs(firstCut.points[0].y - yBot) < 0.2) {
-                        kp = { ...kp, A: pt(firstCut.points[0].x, firstCut.points[0].y) };
-                    }
-                }
-                panel.annotations = buildDeepBottomAnnotations(panel, kp);
-            } else if (panel.name.startsWith('bottom_wing_')) {
-                panel.annotations = buildWingBottomAnnotations(panel);
-            }
         }
     }
 
@@ -706,5 +731,9 @@ export function generateAutoBottomBox(params: BoxParams): DielineModel {
         standardCode: 'AUTO-BOTTOM',
         description: 'Hộp đáy dán tự động — Mỹ phẩm, Dược phẩm, Thực phẩm',
         panels, allPaths, boundingBox: bb, params,
+        // [AUTO-BOTTOM FIX 2026-07-26] Cảnh báo sản xuất phát sinh khi sinh
+        // mô hình — attachWarnings (engine.ts) sẽ hợp nhất + khử trùng lặp
+        // với cảnh báo từ validateParams (Requirement 3.2/3.3).
+        warnings: modelWarnings,
     };
 }

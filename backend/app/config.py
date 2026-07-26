@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     PRYNX_ALLOW_GS_FALLBACK: bool = True
     PRYNX_FORCE_GS: bool = False
     PRYNX_PPE_MEMORY_BUDGET_MB: int = 512
-    ICC_PROFILE_DIR: str = str(Path("./app/assets/icc").resolve())
+    ICC_PROFILE_DIR: str = str((Path(__file__).resolve().parent / "assets" / "icc").resolve())
     DEFAULT_CMYK_PROFILE: str = "FOGRA39.icc"
 
     # CORS

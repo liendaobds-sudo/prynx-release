@@ -147,3 +147,6 @@ tmp/research/
 
 # Supabase CLI temp/link state (machine-local, not source).
 supabase/.temp/
+
+# Release env scripts (chua secret — KHONG commit ban da dien)
+scripts/set_release_env.ps1

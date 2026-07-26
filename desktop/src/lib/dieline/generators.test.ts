@@ -509,3 +509,126 @@ describe('generateMatchboxTray', () => {
     });
 });
 
+// ─── Auto-Bottom Box (Hộp đáy dán tự động) ──────────────────
+// [AUTO-BOTTOM FIX 2026-07-26] Bổ sung lưới test cấu trúc cho generator
+// đáy dán (trước đây generator này KHÔNG có describe nào ở file này).
+
+import { generateAutoBottomBox } from './AutoBottomBox';
+
+describe('generateAutoBottomBox', () => {
+    it('generates valid dieline with default params', () => {
+        const model = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180 }));
+        assertValidDieline(model);
+        expect(model.standardCode).toContain('AUTO-BOTTOM');
+    });
+
+    it('generates 16 panels (thân + nắp + 4 flap đáy + 2 tam giác dán)', () => {
+        // glue_flap + 4 thân + 2 tai bụi + closure_top + tuck_top + lock_tab
+        // + 2 tai đáy hông + 2 mảnh đáy chính + 2 tam giác dán = 16
+        const model = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180 }));
+        expect(model.panels.length).toBe(16);
+        // Không bật lockTab → 15
+        const noLock = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180, lockTab: false }));
+        expect(noLock.panels.length).toBe(15);
+    });
+
+    it('có đủ 6 panel đáy với parent/pivot đúng cấu trúc dán chéo', () => {
+        for (const panelOrder of ['WLWL', 'LWLW'] as const) {
+            const model = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180, panelOrder }));
+            const names = model.panels.map(p => p.name);
+            for (const expected of [
+                'bottom_wing_left', 'bottom_wing_right',
+                'bottom_main_front', 'bottom_main_back',
+                'bottom_tab_front', 'bottom_tab_back',
+            ]) {
+                expect(names, `${panelOrder} thiếu ${expected}`).toContain(expected);
+            }
+            const by = (n: string) => model.panels.find(p => p.name === n)!;
+            expect(by('bottom_main_front').parent).toBe('front');
+            expect(by('bottom_main_back').parent).toBe('back');
+            expect(by('bottom_wing_left').parent).toBe('left');
+            expect(by('bottom_wing_right').parent).toBe('right');
+            expect(by('bottom_tab_front').parent).toBe('bottom_main_front');
+            expect(by('bottom_tab_back').parent).toBe('bottom_main_back');
+
+            // Tam giác dán: gập 180° quanh nếp chéo 45°, renderZShift âm.
+            for (const side of ['front', 'back'] as const) {
+                const tab = by(`bottom_tab_${side}`);
+                expect(tab.foldAngle).toBe(180);
+                expect(tab.renderZShift ?? 0).toBeLessThan(0);
+                const [b, e] = tab.pivotEdge!;
+                expect(Math.abs(Math.abs(b.x - e.x) - Math.abs(b.y - e.y))).toBeLessThan(0.01);
+                // 2 đầu pivot nằm trên đường CREASE 45° của panel thân (biên chung).
+                const crease = by(`bottom_main_${side}`).paths.find(s => s.tag === 'CREASE')!;
+                expect(Math.hypot(crease.points[0].x - b.x, crease.points[0].y - b.y)).toBeLessThan(0.001);
+                expect(Math.hypot(crease.points[1].x - e.x, crease.points[1].y - e.y)).toBeLessThan(0.001);
+            }
+        }
+    });
+
+    it('đuôi CREASE 45° chạm đúng đỉnh kệ E của free-edge (kể cả góc qua đường may WLWL)', () => {
+        for (const panelOrder of ['WLWL', 'LWLW'] as const) {
+            const model = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180, panelOrder }));
+            for (const side of ['front', 'back'] as const) {
+                const main = model.panels.find(p => p.name === `bottom_main_${side}`)!;
+                const crease = main.paths.find(s => s.tag === 'CREASE')!;
+                const E = crease.points[1];
+                // E phải trùng một đỉnh CUT của free-edge thân (không còn lơ lửng).
+                let best = Infinity;
+                for (const seg of main.paths.filter(s => s.tag === 'CUT')) {
+                    for (const p of seg.points) {
+                        best = Math.min(best, Math.hypot(p.x - E.x, p.y - E.y));
+                    }
+                }
+                expect(best, `${panelOrder}/${side}: đuôi CREASE lơ lửng ${best.toFixed(3)}mm`).toBeLessThan(0.01);
+            }
+        }
+    });
+
+    it('khe foldGap tại góc dán trong được đóng bằng nét CUT trên đường gấp', () => {
+        // WLWL: 1 khe trong (góc dán front↔right); LWLW: 2 khe trong.
+        const cases: Array<['WLWL' | 'LWLW', number]> = [['WLWL', 1], ['LWLW', 2]];
+        for (const [panelOrder, expectedNicks] of cases) {
+            const model = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180, panelOrder }));
+            const nicks = model.allPaths.filter(s =>
+                s.tag === 'CUT' && s.type === 'line' && s.points.length === 2
+                && Math.abs(s.points[0].y) < 0.001 && Math.abs(s.points[1].y) < 0.001
+                && Math.abs(s.points[1].x - s.points[0].x) < 5);
+            expect(nicks.length, panelOrder).toBe(expectedNicks);
+        }
+    });
+
+    it('bounding box scales with dimensions', () => {
+        const small = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 60, W: 40, D: 100 }));
+        const large = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 200, W: 100, D: 300 }));
+        expect(large.boundingBox.width).toBeGreaterThan(small.boundingBox.width);
+        expect(large.boundingBox.height).toBeGreaterThan(small.boundingBox.height);
+    });
+
+    it('handles glue side right + ABD tùy chỉnh + kích thước nhỏ', () => {
+        assertValidDieline(generateAutoBottomBox(make({ boxType: 'auto_bottom', glueSide: 'right', L: 120, W: 80, D: 180 })));
+        const abd = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180, ABD: 55 }));
+        assertValidDieline(abd);
+        const smallBox = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 40, W: 20, D: 60 }));
+        assertValidDieline(smallBox);
+    });
+
+    it('cảnh báo sản xuất khi ABD = W/2 (hai mảnh đáy không chồng mí)', () => {
+        const model = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180, ABD: 40 }));
+        expect(model.warnings?.some(w => w.includes('không chồng mí'))).toBe(true);
+        // hDeep = hWing → tam giác dán suy biến: KHÔNG tách panel (14 thay vì 16)
+        expect(model.panels.length).toBe(14);
+        expect(model.panels.some(p => p.name.startsWith('bottom_tab_'))).toBe(false);
+        const ok = generateAutoBottomBox(make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180 }));
+        expect(ok.warnings?.some(w => w.includes('không chồng mí')) ?? false).toBe(false);
+    });
+
+    it('stores params in output model', () => {
+        const params = make({ boxType: 'auto_bottom', L: 130, W: 70, D: 190 });
+        const model = generateAutoBottomBox(params);
+        expect(model.params.L).toBe(130);
+        expect(model.params.W).toBe(70);
+        expect(model.params.D).toBe(190);
+    });
+});
+

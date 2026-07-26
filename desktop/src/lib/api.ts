@@ -183,11 +183,18 @@ export function installBackendFetchAuth(): void {
           return origFetch(outgoing);
         } else {
           const merged = new Headers((init?.headers as HeadersInit) || undefined);
-          if (!merged.has('X-PrynX-Signature')) {
-            const auth = await getLicenseHeaders(url, init?.method || 'GET');
-            for (const k in auth) if (!merged.has(k)) merged.set(k, auth[k]);
-            return origFetch(url, { ...init, headers: merged });
+          // SEC (audit 2026-07-26 F10): khong cho caller tu dat header auth. Xoa moi
+          // X-License-*/X-Hardware-Id/X-PrynX-* roi moi dinh header native da ky (ghi de
+          // vo dieu kien) — chan ca meo preset X-PrynX-Signature de bo ky.
+          for (const k of [...merged.keys()]) {
+            const lk = k.toLowerCase();
+            if (lk.startsWith('x-license-') || lk.startsWith('x-prynx-') || lk === 'x-hardware-id') {
+              merged.delete(k);
+            }
           }
+          const auth = await getLicenseHeaders(url, init?.method || 'GET');
+          for (const k in auth) merged.set(k, auth[k]);
+          return origFetch(url, { ...init, headers: merged });
         }
       }
     } catch {
