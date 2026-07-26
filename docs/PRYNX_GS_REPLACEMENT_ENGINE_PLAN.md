@@ -1649,9 +1649,12 @@ những gì đã gỡ không lặng lẽ quay về.
 | Flatten OCG (`layer_engine`) | **chạy** (fallback pypdfium2 có sẵn) |
 | Resize + downsample | **chạy** |
 | **PDF/X-4** | **chạy** — 31/33 file corpus đạt chuẩn (xem 19.2) |
-| `OUTLINE_FONTS` | **GÃY** |
-| `FLATTEN_TRANSPARENCY` | **GÃY** |
-| `PDF/X-1a` | **GÃY** (chuẩn đòi flatten + PDF 1.3) |
+| `FLATTEN_TRANSPARENCY` | **chạy** (§19.4) |
+| `PDF/X-1a` | **chạy** (§19.4) |
+| `OUTLINE_FONTS` | **chạy cho font simple đã nhúng** — 4/12 file corpus; font Type0/CID vẫn cần GS (§19.5) |
+
+Nghĩa là **không còn đường nào gãy hẳn**. `OUTLINE_FONTS` là chỗ duy nhất còn
+rơi về Ghostscript trên file thật, và chỉ với một lớp font cụ thể.
 
 ### 19.2 PDF/X-4 object-level
 
@@ -1674,21 +1677,56 @@ khổ trang ngầm tuyên bố "trang này không có bleed", và với file th�
 bleed thì đó là lời khai sai dẫn tới xén hỏng. Cảnh báo được trả kèm trong
 response của route, không chỉ nằm trong log.
 
-### 19.3 Ba đường còn lại — vì sao khó
+### 19.4 `FLATTEN_TRANSPARENCY` và `PDF/X-1a`
 
-* `FLATTEN_TRANSPARENCY`: flatten đúng nghĩa là bài toán hình học (chia vùng
-  chồng lấp, tính màu tổng hợp, dựng lại vector). MVP raster hoá cả trang thì
-  làm được nhưng **mất vector** — với tem bế và đường CutContour là không dùng
-  được. PPE đã có đủ blend/group để làm nền cho bản raster có cảnh báo; bản
-  vector thì còn xa.
-* `OUTLINE_FONTS`: cần lấy outline glyph (fontTools đọc `glyf`/CFF) rồi dựng
-  lại path theo đúng ma trận text — làm được nhưng là một engine nhỏ, và sai
-  một phép biến đổi là chữ lệch mà chỉ lộ lúc in.
-* `PDF/X-1a`: đòi flatten, nên nó chờ mục đầu tiên.
+Flatten đi hai nhánh. File **không có** trong suốt (ca phổ biến nhất — người
+dùng bấm nút phòng xa) chỉ được sao chép; Ghostscript thì vẫn dựng lại cả tài
+liệu, hạ PDF 1.3 và gộp/mất OCG để thu về đúng thứ đang có. File **có** trong
+suốt được rasterize qua PPE thành ảnh CMYK, giữ nguyên page boxes. Đây là bản
+MVP mà §5 cho phép: nó **mất vector**, nên luôn kèm cảnh báo, và spot bị gộp
+vào CMYK cũng được nêu đích danh. Ghostscript phá y hệt nhưng phá âm thầm.
 
-Cả ba đều KHÔNG chặn việc dùng Prynx hằng ngày: chúng là action người dùng
-chủ động bấm, còn toàn bộ đường xem/đo/kiểm và PDF/X-4 đã chạy không cần
-Ghostscript.
+PPE fail-loud khi trang vượt ngân sách bộ nhớ raster — đúng cho việc *đo* mực,
+nhưng ở đây ta chỉ raster hoá nên bỏ cuộc là để người dùng tay trắng. Hạ DPI
+dần 300→200→150→100 và nói rõ mức thực dùng (đo: một trang A1 cần 554 MiB @300,
+vượt giới hạn 512; xuống 200 DPI là qua).
+
+`PDF/X-1a` = flatten rồi đi tiếp đường X-4, ép version **1.3** bằng
+`force_version` (`min_version` chỉ nâng). Chính phiên bản 1.3 mới bảo đảm hết
+trong suốt; ghi 1.6 rồi khai X-1a là mâu thuẫn tự thân — `check_compliance` nay
+kiểm cả version cho X-1a.
+
+Hai bug lộ ra khi làm: `analyze_font_embedding` trả `missing: []` **khi không mở
+được file** (fail-open — caller đọc "không thiếu font" rồi bỏ qua bước nhúng
+đúng trên file đang hỏng); và `detect_transparency` quét `pdf.objects` nên đếm
+cả object **mồ côi** còn `/Group` trong xref, báo "vẫn còn trong suốt" cho chính
+file mình vừa làm sạch — nay duyệt từ cây trang, vì câu hỏi thật là "nội dung
+SẼ RENDER có trong suốt không".
+
+### 19.5 `OUTLINE_FONTS` — chốt verify quan trọng hơn phép chuyển
+
+Dựng lại chữ thành path từ outline glyph (fontTools), chỉ thay toán tử chữ
+trong content stream.
+
+Phần đáng nói không phải phép chuyển mà là **chốt verify**: một ma trận chữ sai
+vẫn cho ra file "có chữ", trông bình thường trên màn hình, và lỗi chỉ lộ khi
+bản in đã chạy. Nên kết quả luôn được so kẽm PPE với bản gốc (diện tích phủ +
+sai lệch trung bình mỗi kẽm); verify hỏng thì coi như không làm được. Có test
+kiểm chính chốt đó — dịch chữ 30 pt thì verify phải từ chối, vì một chốt an
+toàn không bao giờ kêu thì bằng không có.
+
+Đo trên trang chữ TrueType nhúng: meanΔ **0,47/255**, phủ 2,284% → 2,469% (path
+outline dày hơn glyph gốc chút ở biên do vành fill-adjust). Chữ đặt sai chỗ cho
+phủ gần **gấp đôi** nên ngưỡng bắt được ngay.
+
+Phạm vi có chủ ý: font **đã nhúng** + **simple font 1 byte**. `Type0`/CID cần
+giải CMap và `/CIDToGIDMap`; sai ở đó ra glyph khác hẳn chứ không phải lệch
+nhẹ. Đo corpus 12 file: **4 xong bằng pikepdf, 8 cần GS** vì dùng Type0 — phổ
+biến với tiếng Việt, nên **mở rộng Identity-H là bước tiếp theo rõ ràng**.
+
+Hồi quy tự gây ra và đã đóng: đường native ban đầu bỏ sót text trong
+annotation/AcroForm — đúng lỗi mà đợt hardening §16.7 đã sửa công phu cho đường
+GS, và test cũ bắt được. Nay bake annotation bằng pypdfium2 trước khi outline.
 
 ---
 
@@ -1696,6 +1734,7 @@ Ghostscript.
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.7 | 2026-07-27 | Đóng nốt 3 đường còn gãy: `FLATTEN_TRANSPARENCY` (no-op khi không có trong suốt; raster PPE + hạ DPI tự động khi vượt ngân sách, kèm cảnh báo mất vector/gộp spot), `PDF/X-1a` (flatten → đường X-4, ép version 1.3), `OUTLINE_FONTS` (fontTools text→path, **luôn verify bằng so kẽm**, có test chứng minh chốt bắt được chữ dịch 30pt). **Không còn đường nào gãy hẳn** khi tắt Ghostscript; `OUTLINE_FONTS` còn rơi về GS với font Type0/CID (4/12 file corpus xong bằng pikepdf). Ba bug đóng kèm: `analyze_font_embedding` fail-open khi không đọc được file; `detect_transparency` đếm object mồ côi; đường native outline bỏ sót annotation (hồi quy so với §16.7, test cũ bắt). Backend **1367 pass**. §19.4, §19.5. |
 | 3.6 | 2026-07-27 | **Phép thử quyết định**: tắt hẳn Ghostscript rồi chạy mọi đường sản xuất (§19, `test_no_ghostscript_survival.py`). Chạy được: separations ink-accurate, soft-proof, preflight đầy đủ, 6 action, spot→CMYK, flatten OCG, resize, **và PDF/X-4** (31/33 file corpus đạt chuẩn). Còn GÃY đúng 3: `OUTLINE_FONTS`, `FLATTEN_TRANSPARENCY`, `PDF/X-1a` — đều là action người dùng chủ động bấm, không chặn dùng hằng ngày. PDF/X-4 object-level lắp từ các mảnh đã có; tự đặt TrimBox khi file thiếu (GS **không** thêm — nó báo thành công rồi trả file không đạt chuẩn) kèm cảnh báo bắt buộc về bleed, trả kèm trong response. Backend **1357 pass**. |
 | 3.5 | 2026-07-27 | Đo tỉ lệ GS trên corpus bằng bộ đếm vừa dựng: **66/66 thao tác (33 PDF × separations ink-accurate + soft-proof) KHÔNG cần GS = 100%**, 0 lỗi — §8.1 giờ chỉ còn chờ dữ liệu khách. PDF/X-4: dùng output GS làm golden thì lộ bug — `-dPDFX=true` ép version về 1.3 và ghi định danh vào Info, trong khi ISO 15930-7 đòi PDF 1.6 + XMP `pdfxid:GTS_PDFXVersion`; file KHAI X-4 mà cấu trúc là X-3. Sửa bằng hậu xử lý pikepdf, thêm kiểm `PDFX_IDENTIFICATION` (trước đó `check_compliance` không kiểm định danh nên file khai sai vẫn PASS). Corpus 7/8 PASS, 1 FAIL đúng lý do (thiếu TrimBox trong file gốc). Backend **1345 pass**. §18.2b, §18.4. |
 | 3.4 | 2026-07-27 | Spot alternate **Lab** → CMYK (Pantone hiện đại) — đo đối chứng `gs -dMaxSpots=0`: mặc định `ImageCms` lệch 13–14/255, `+BLACKPOINTCOMPENSATION` còn 1, `+NOOPTIMIZE` khớp **0/255**. Áp cùng hai cờ cho đường RGB→CMYK của `CONVERT_TO_CMYK` (vốn lệch tới 19/255 so với cấu hình mà separations/soft-proof/TAC dùng — cùng file ra màu khác nhau tuỳ đi qua action nào). Corpus: **6/6 file có spot chuyển được, 0 fallback**. Backend **1343 pass**. §17.4. |
