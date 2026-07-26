@@ -20,6 +20,7 @@ import { BoxParams, DielineModel, PathSegment, PathTag } from './types';
 
 import { generateReverseTuckEnd } from './ReverseTuckEnd';
 import { generateSnapLockBottom } from './SnapLockBottom';
+import { generateAutoBottomBox } from './AutoBottomBox';
 import { generateGableBox } from './GableBox';
 import { generatePaperBag } from './PaperBag';
 import { generateCupSleeve } from './CupSleeve';
@@ -31,6 +32,7 @@ import { generateMatchboxTray } from './MatchboxTray';
 const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     rte: generateReverseTuckEnd,
     slb: generateSnapLockBottom,
+    auto_bottom: generateAutoBottomBox,
     gable: generateGableBox,
     paper_bag: generatePaperBag,
     cup_sleeve: generateCupSleeve,
@@ -40,7 +42,7 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
 };
 
 const ALL_TYPES: GeneratorBoxType[] = [
-    'rte', 'slb', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+    'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
 ];
 
 /** Tập tag thực sự xuất hiện trên các PathSegment trong allPaths (nguồn sự thật). */

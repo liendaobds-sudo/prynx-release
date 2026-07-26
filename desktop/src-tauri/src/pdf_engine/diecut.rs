@@ -5,6 +5,29 @@ use std::path::Path;
 /// Trả về đường dẫn của file PDF đã làm sạch.
 #[tauri::command]
 pub fn strip_diecut_lines(input_path: String, output_path: String) -> Result<String, String> {
+    // Guard path (đối xứng launch_external_app / render lệnh): renderer nếu bị chèn mã
+    // KHÔNG được đọc file nhạy cảm làm nguồn, cũng KHÔNG được GHI PDF (do pdfium dựng ra,
+    // nội dung do attacker định hình) đè lên vị trí hệ thống / thư mục bí mật. Chỉ nhận .pdf hai đầu.
+    let in_ext = Path::new(&input_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let out_ext = Path::new(&output_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if in_ext != "pdf" || out_ext != "pdf" {
+        return Err("Chỉ hỗ trợ file .pdf".to_string());
+    }
+    if crate::is_sensitive_path(&input_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+    if crate::is_sensitive_write_path(&output_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
+
     // Dùng ensure_pdfium() dùng chung (đường dẫn release cạnh exe / bin/) — KHÔNG
     // bind_to_system_library riêng: release có thể không thấy pdfium trên PATH,
     // còn dev may mắn tìm thấy → lỗi "chỉ bản cài".

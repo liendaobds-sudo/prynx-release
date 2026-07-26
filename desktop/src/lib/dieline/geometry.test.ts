@@ -39,6 +39,7 @@ import { BoxParams, DielineModel, Panel, PathSegment, Point2D } from './types';
 
 import { generateReverseTuckEnd } from './ReverseTuckEnd';
 import { generateSnapLockBottom } from './SnapLockBottom';
+import { generateAutoBottomBox } from './AutoBottomBox';
 import { generateGableBox } from './GableBox';
 import { generatePaperBag } from './PaperBag';
 import { generateCupSleeve } from './CupSleeve';
@@ -50,6 +51,7 @@ import { generateMatchboxTray } from './MatchboxTray';
 const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     rte: generateReverseTuckEnd,
     slb: generateSnapLockBottom,
+    auto_bottom: generateAutoBottomBox,
     gable: generateGableBox,
     paper_bag: generatePaperBag,
     cup_sleeve: generateCupSleeve,
@@ -59,7 +61,7 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
 };
 
 const ALL_TYPES: GeneratorBoxType[] = [
-    'rte', 'slb', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+    'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
 ];
 
 // ─── Dung sai (tập trung, theo design Data Models) ──────────
@@ -209,8 +211,8 @@ describe('Property 2 — Mọi Cut_Piece do generator sinh ra đều khép kín'
     }
 
     // Ghi nhận tường minh 3 loại bị loại khỏi khẳng định khép-kín-toàn-phần.
-    it('documents intentionally-open generators (rte, slb, envelope) — scoped out with rationale', () => {
-        const intentionallyOpen: GeneratorBoxType[] = ['rte', 'slb', 'envelope'];
+    it('documents intentionally-open generators (rte, slb, auto_bottom, envelope) — scoped out with rationale', () => {
+        const intentionallyOpen: GeneratorBoxType[] = ['rte', 'slb', 'auto_bottom', 'envelope'];
         expect(intentionallyOpen).not.toContain(CLOSEABLE_TYPES[0]);
         // Không khẳng định allClosed cho các loại này (xem ghi chú phạm vi ở trên).
     });
@@ -334,7 +336,7 @@ function measuredFlatArea(model: DielineModel): number {
 }
 
 /** Generator dạng hộp có chiều sâu D ảnh hưởng trực tiếp diện tích thân. */
-const DEPTH_TYPES: GeneratorBoxType[] = ['rte', 'slb', 'gable', 'paper_bag', 'pizza', 'tray'];
+const DEPTH_TYPES: GeneratorBoxType[] = ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'pizza', 'tray'];
 
 describe('Property 4 — Diện tích phẳng khớp công thức kỳ vọng', () => {
     // (1) Bất biến hữu-hạn & dương trên toàn miền — cả 8 generator.

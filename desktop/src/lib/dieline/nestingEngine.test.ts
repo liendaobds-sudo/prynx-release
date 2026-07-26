@@ -731,7 +731,7 @@ const arbAnyNestingInput: fc.Arbitrary<RawAnyInput> = fc.record({
     orientation: fc.constantFrom<'auto' | 'portrait' | 'landscape'>('auto', 'portrait', 'landscape'),
     nestingMode: fc.constantFrom<'grid' | 'smart'>('grid', 'smart'),
     boxType: fc.constantFrom<BoxParams['boxType']>(
-        'rte', 'slb', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+        'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
     ),
 });
 

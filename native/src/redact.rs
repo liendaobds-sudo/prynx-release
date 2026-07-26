@@ -4,7 +4,7 @@ use pdfium_render::prelude::*;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-pub fn delete_objects(py: Python<'_>, pdf_path: &str, page_num: usize, indices: Vec<usize>) -> PyResult<PyObject> {
+pub fn delete_objects(py: Python<'_>, pdf_path: &str, page_num: usize, indices: Vec<usize>) -> PyResult<Py<PyAny>> {
     let pdfium = crate::pdfium_init::load_pdfium();
     let mut doc = pdfium
         .load_pdf_from_file(pdf_path, None)

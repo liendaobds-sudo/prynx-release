@@ -138,8 +138,8 @@ export interface BoxParams {
     TH: number;
     /** Vị trí tai dán: 'left' hoặc 'right', mặc định 'left' */
     glueSide: 'left' | 'right';
-    /** Loại hộp: 'rte' = Reverse Tuck End, 'slb' = Snap-Lock Bottom, 'gable' = Gable Box, 'paper_bag' = Túi giấy SOS, 'cup_sleeve' = Bọc ly, 'pizza' = Pizza Box FEFCO 0426, 'envelope' = Bì thư, 'tray' = Hộp diêm / Khay */
-    boxType: 'rte' | 'slb' | 'gable' | 'paper_bag' | 'cup_sleeve' | 'pizza' | 'envelope' | 'tray';
+    /** Loại hộp: 'rte' = Reverse Tuck End, 'slb' = Snap-Lock Bottom, 'auto_bottom' = Hộp đáy dán tự động, 'gable' = Gable Box, 'paper_bag' = Túi giấy SOS, 'cup_sleeve' = Bọc ly, 'pizza' = Pizza Box FEFCO 0426, 'envelope' = Bì thư, 'tray' = Hộp diêm / Khay */
+    boxType: 'rte' | 'slb' | 'auto_bottom' | 'gable' | 'paper_bag' | 'cup_sleeve' | 'pizza' | 'envelope' | 'tray';
     /** Thứ tự panel: 'WLWL' = Hông→Mặt→Hông→Lưng, 'LWLW' = Mặt→Hông→Lưng→Hông */
     panelOrder: 'WLWL' | 'LWLW';
     /** Chiều cao phần tay cầm vượt khỏi cạnh trên thân hộp (mm), mặc định 40 */
@@ -173,6 +173,11 @@ export interface BoxParams {
 
     /** Chiều cao tai phụ bụi (mm), 0 = tự động theo công thức min(L/2-1, W+T) */
     DFH: number;
+
+    // ── Auto-Bottom (Hộp đáy dán) params ──
+    /** Chiều sâu mảnh đáy dán chính (mm), 0 = tự động (0.7 × W).
+     *  Phải ≥ W/2 để hai mảnh chồng nhau tạo đáy kín. */
+    ABD: number;
 
     // ── Paper Bag params ──
     /** Chiều cao gấp đáy (mm), 0 = tự động (W/2 + 10) */
@@ -269,6 +274,7 @@ export const DEFAULT_PARAMS: BoxParams = {
     LTH: 20,
     lockTab: true,
     DFH: 0,
+    ABD: 0,
     BF: 0,
     HR: 0,
     HM: 0,

@@ -40,6 +40,7 @@ const LIMITS = {
     HM: { min: 0, max: 100 },
     HS: { min: 0, max: 200 },
     DFH: { min: 0, max: 300 },
+    ABD: { min: 0, max: 400 },
     cupD1: { min: 20, max: 500 },
     cupD2: { min: 25, max: 500 },  // min 25 = cupD1 min(20) + 5mm gap tối thiểu
     cupH: { min: 10, max: 500 },
@@ -222,12 +223,36 @@ export function validateParams(
     }
 
     // --- 11. Ràng buộc DFH: không vượt quá min(L/2, W+T) ---
-    if (p.DFH > 0 && (p.boxType === 'rte' || p.boxType === 'slb')) {
+    if (p.DFH > 0 && (p.boxType === 'rte' || p.boxType === 'slb' || p.boxType === 'auto_bottom')) {
         const maxDFH = Math.min(p.L / 2 - 1, p.W + p.T);
         if (p.DFH > maxDFH) {
             p.DFH = Math.floor(clamp(maxDFH, 0, LIMITS.DFH.max));
             wasClamped = true;
             warnings.push(`Tai bụi quá cao, đã giảm về ${p.DFH}mm`);
+        }
+    }
+
+    // --- 11b. Ràng buộc Auto-Bottom (hộp đáy dán) ---
+    if (p.boxType === 'auto_bottom') {
+        // ABD = chiều sâu mảnh đáy chính. Phải ≥ W/2 để hai mảnh chồng nhau
+        // tạo đáy kín, và ≤ W − T để không vượt qua vách đối diện.
+        if (p.ABD > 0) {
+            const minABD = Math.ceil(p.W / 2);
+            const maxABD = Math.max(minABD, Math.floor(p.W - p.T));
+            if (p.ABD < minABD) {
+                p.ABD = minABD;
+                wasClamped = true;
+                warnings.push(`Đáy dán quá ngắn (hở đáy), đã tăng về ${p.ABD}mm`);
+            } else if (p.ABD > maxABD) {
+                p.ABD = maxABD;
+                wasClamped = true;
+                warnings.push(`Đáy dán quá sâu, đã giảm về ${p.ABD}mm`);
+            }
+        }
+        // Đáy dán cần L > W: hai tai đáy hông (mỗi tai ~W/2) không được đè
+        // lên nhau khi hộp bẹp lại. Engine tự co tai khi thiếu chỗ.
+        if (p.W > p.L - 4) {
+            warnings.push('Đáy dán cần L lớn hơn W — với kích thước này tai đáy đã bị co lại, nên chuyển sang hộp đáy gài hoặc nắp cài.');
         }
     }
 

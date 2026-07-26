@@ -20,11 +20,25 @@ fn now_seconds() -> Result<u64, String> {
         .map_err(|_| "System clock is invalid".to_string())
 }
 
-pub fn authorize_dieline(token: &str, hwid: &str, license_key: &str) -> Result<(), String> {
+/// Quyền dùng engine dieline, KÈM khoá mở engine.
+///
+/// ANTICRACK (audit 2026-07-26): trước đây hàm này trả `Result<(), String>` — kết quả
+/// kiểm license chỉ là BOOLEAN nên patch một chỗ là bỏ được. Nay nó trả về `resource_key`
+/// lấy từ claim `rk` của token ĐÃ VERIFY; `dieline_engine` cần đúng khoá đó để giải mã
+/// engine đã mã hoá lúc build. Patch bỏ verify không giúp gì: không có khoá thì không có
+/// engine. Xem `native/build.rs`.
+#[derive(Debug, Clone, Default)]
+pub struct DielineGrant {
+    /// Khoá AES-256 mở engine. `None` khi binary nhúng plaintext (dev/CI) hoặc khi
+    /// token do server cũ cấp (chưa có `rk`) — runtime tự quyết định có cần hay không.
+    pub resource_key: Option<[u8; 32]>,
+}
+
+pub fn authorize_dieline(token: &str, hwid: &str, license_key: &str) -> Result<DielineGrant, String> {
     // This convenience exists only in debug/test binaries. A release DLL can
     // never enable it by changing an environment variable.
     if cfg!(debug_assertions) && hwid == "DEV_MODE" && license_key == "DEV_MODE" {
-        return Ok(());
+        return Ok(DielineGrant::default());
     }
     if token.is_empty() || hwid.is_empty() || license_key.is_empty() {
         return Err("Dieline entitlement credentials are required".to_string());
@@ -57,8 +71,10 @@ pub fn authorize_dieline(token: &str, hwid: &str, license_key: &str) -> Result<(
     if claims.get("k").and_then(Value::as_str) != Some(&digest[..16]) {
         return Err("License token key mismatch".to_string());
     }
-    if let Some(product) = claims.get("p").and_then(Value::as_str) {
-        if product != "prynx" { return Err("License token product mismatch".to_string()); }
+    match claims.get("p").and_then(Value::as_str) {
+        Some("prynx") => {}
+        Some(_) => return Err("License token product mismatch".to_string()),
+        None => return Err("License token missing required field: product".to_string()),
     }
     let plan = claims.get("plan").and_then(Value::as_str).unwrap_or("free");
     let feature_allowed = claims.get("features").and_then(Value::as_array)
@@ -68,14 +84,30 @@ pub fn authorize_dieline(token: &str, hwid: &str, license_key: &str) -> Result<(
     if !matches!(plan, "pro" | "dev") && !feature_allowed {
         return Err("Feature 'packaging.dieline' requires Pro".to_string());
     }
-    Ok(())
+
+    // Khoá tài nguyên (`rk`) — chỉ đọc SAU khi mọi kiểm tra trên đã qua, nên khoá chỉ
+    // rời khỏi token khi token thật sự hợp lệ, đúng máy, đúng license và đủ quyền.
+    let resource_key = match claims.get("rk").and_then(Value::as_str) {
+        None => None,
+        Some(raw) => {
+            let bytes = decode_url(raw)
+                .or_else(|_| STANDARD.decode(raw).map_err(|_| "Malformed resource key".to_string()))?;
+            let key: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| "Resource key has invalid length".to_string())?;
+            Some(key)
+        }
+    };
+
+    Ok(DielineGrant { resource_key })
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn debug_dev_identity_is_allowed() {
-        super::authorize_dieline("", "DEV_MODE", "DEV_MODE").expect("debug bypass");
+        let grant = super::authorize_dieline("", "DEV_MODE", "DEV_MODE").expect("debug bypass");
+        assert!(grant.resource_key.is_none());
     }
 
     #[test]

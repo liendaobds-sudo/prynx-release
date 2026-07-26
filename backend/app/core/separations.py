@@ -216,7 +216,36 @@ class SeparationEngine:
         has_spots = len(spot_names) > 0
 
         gs_available = bool(self.gs_path and os.path.isfile(str(self.gs_path)))
-        prefer_gs = gs_available if use_ghostscript is None else bool(use_ghostscript)
+        configured_mode = str(
+            getattr(settings, "PRYNX_PRINT_ENGINE", "auto")
+        ).strip().lower()
+        if configured_mode not in {"auto", "ppe", "gs"}:
+            logger.warning(
+                "PRYNX_PRINT_ENGINE=%r is invalid; using 'auto'.",
+                configured_mode,
+            )
+            configured_mode = "auto"
+
+        force_approximate = use_ghostscript is False
+        force_gs = (
+            not force_approximate
+            and (
+                bool(getattr(settings, "PRYNX_FORCE_GS", False))
+                or configured_mode == "gs"
+            )
+        )
+        try_ppe = bool(use_ppe) and not force_approximate and not force_gs
+        request_gs = (
+            not force_approximate
+            and (
+                force_gs
+                or not use_ppe
+                or (
+                    configured_mode == "auto"
+                    and bool(getattr(settings, "PRYNX_ALLOW_GS_FALLBACK", True))
+                )
+            )
+        )
 
         # ── Nhánh 1: PrynX Print Engine (PPE) ───────────────────────────────
         # Thử PPE TRƯỚC Ghostscript, nhưng chỉ nhận kết quả khi chính engine khai
@@ -228,7 +257,7 @@ class SeparationEngine:
         # `use_ghostscript=False` là cờ "buộc đường xấp xỉ" của caller (debug /
         # máy không có GS) nên KHÔNG được lặng lẽ đưa PPE vào thay: giữ đúng ý
         # nghĩa cũ của tham số.
-        if use_ppe and use_ghostscript is not False:
+        if try_ppe:
             try:
                 result = await asyncio.to_thread(
                     ppe_facade.separations,
@@ -244,13 +273,37 @@ class SeparationEngine:
                     return result
             except ppe_facade.PpeResultUntrusted as e:
                 # Không phải lỗi: engine tự khai giới hạn của chính nó. Nhường GS.
-                logger.info("PPE nhường Ghostscript (trang %d): %s", page_num, e)
+                logger.info("PPE không đủ tin cậy (trang %d), dùng fallback đã cấu hình: %s", page_num, e)
+                # ── Ngoại lệ: đo mực trên nội dung RGB thì GS KHÔNG phải thước ──
+                #
+                # Ở chế độ `ink_accurate`, GS buộc phải chạy `-dUseFastColor=true`
+                # (tắt quản lý màu) vì với GS, ICC là all-or-nothing: bật lên thì
+                # `DeviceCMYK` 400% bị nén xuống ~292% và file quá mực thành "đạt".
+                # Hệ quả đo được trên fixture: với ảnh RGB, GS lệch PPE −9.4 đến
+                # +30.6 điểm TAC (GS không sinh đen: RGB đen → C+M+Y 300%).
+                #
+                # Cả hai con số không thể cùng đúng trên một cổng ngưỡng 300%: cùng
+                # một file sẽ "đạt" hay "vượt" tuỳ engine nào tình cờ chạy. Nên khi
+                # lý do PPE bị loại ĐÚNG LÀ màu RGB, thà báo "chưa kiểm được" còn
+                # hơn trả một con số mà ta đã biết là lệch.
+                #
+                # Chỉ chặn đúng nguyên nhân màu. PPE bị loại vì shading /
+                # transparency / `/OC` thì GS vẫn chạy: trên trang không có ảnh RGB,
+                # chế độ UseFastColor của GS khớp PPE tuyệt đối (0.0 điểm — đo trên
+                # `17_tac_heavy_cmyk` và `10_overprint`), nên cấm rộng sẽ tự tay bỏ
+                # mất cổng TAC trên chính lớp file mà PPE chưa vẽ được.
+                if ink_accurate and e.detail.get("approximated_colorspaces"):
+                    return self._tac_unverifiable(
+                        spot_names,
+                        reason=str(e),
+                        approximated=list(e.detail.get("approximated_colorspaces") or []),
+                    )
             except ppe_facade.PpeUnavailable as e:
                 logger.debug("PPE chưa khả dụng: %s", e)
             except Exception as e:  # noqa: BLE001
-                logger.warning("PPE lỗi (trang %d): %s. Chuyển Ghostscript.", page_num, e)
+                logger.warning("PPE lỗi (trang %d): %s. Dùng fallback đã cấu hình.", page_num, e)
 
-        if prefer_gs and gs_available:
+        if request_gs and gs_available:
             try:
                 result = await self._run_ghostscript_tiffsep(
                     pdf_path,
@@ -285,11 +338,42 @@ class SeparationEngine:
         result["accuracy"] = "approximate"
         result["quality_note"] = (
             "Xấp xỉ: PDF→RGB→tách CMYK giả (không ICC). "
-            "Cài Ghostscript để separations chuẩn hơn."
+            "Bật chế độ RIP chính xác để dùng PPE hoặc Ghostscript."
         )
-        if prefer_gs and not gs_available:
+        if request_gs and not gs_available:
             result["quality_note"] += " Ghostscript chưa được cấu hình (GHOSTSCRIPT_PATH)."
         return result
+
+    def _tac_unverifiable(
+        self, spot_names: list[str], *, reason: str, approximated: list[str]
+    ) -> dict:
+        """Kết quả "không kiểm được tổng mực" — KHÔNG kèm plate nào.
+
+        Cố ý trả `plates = []` thay vì plate của GS: nếu trả plate, `ink.py` sẽ tính
+        TAC trên đó và kết luận, mà đó đúng là con số ta vừa xác định là lệch. Không
+        có plate thì không thể kết luận sai.
+
+        `engine` KHÔNG nằm trong `TAC_TRUSTED_ENGINES`, nên `ink.py` tự động phát
+        issue "chưa kiểm được TAC" thay vì coi trang là đạt ngưỡng — đường fail-loud
+        đã có sẵn, không cần nhánh riêng.
+        """
+        return {
+            "width": 0,
+            "height": 0,
+            "plates": [],
+            "has_spot_colors": bool(spot_names),
+            "detected_spots": spot_names,
+            "engine": "unverifiable_ink",
+            "accuracy": "unverifiable",
+            "quality_note": (
+                "Chưa kiểm được tổng mực: nội dung dùng màu chưa quản lý được "
+                f"({', '.join(approximated) or 'không rõ'}). "
+                "PrynX Print Engine cần profile ICC cho phần này, còn Ghostscript ở "
+                "chế độ đo mực phải tắt quản lý màu nên con số của nó lệch tới ~30 "
+                "điểm TAC. Thà không kết luận còn hơn kết luận sai."
+            ),
+            "ppe_reject_reason": reason,
+        }
 
     # ──────────────────────────────────────────────────────────
     #  SPOT COLOR DETECTION (Quick Scan)
@@ -390,7 +474,9 @@ class SeparationEngine:
 
         output_base = str(job_dir / "plate")
 
-        # ink_accurate: measure DeviceCMYK coverage (TAC) — no ICC, no AA, fast color.
+        # ink_accurate: đo lượng mực DeviceCMYK (TAC) — không khử răng cưa, và
+        # DeviceCMYK phải đi qua ánh xạ ĐỒNG NHẤT (cùng profile nguồn/đích) chứ
+        # không phải qua đường fast color: fast color tắt overprint.
         # Preview path: color-managed FOGRA plates with mild AA (Acrobat-like).
         alpha_bits = 1 if ink_accurate else 4
         # NOSAFER so GS can read bundled FOGRA39.icc outside process cwd.
@@ -403,11 +489,38 @@ class SeparationEngine:
             f"-dGraphicsAlphaBits={alpha_bits}",
             f"-dTextAlphaBits={alpha_bits}",
             "-dMaxSpots=32",
-            "-dSimulateOverprint=true",
-            "-dUseFastColor=true" if ink_accurate else "-dUseFastColor=false",
+            # `-dSimulateOverprint` đã bị Ghostscript 10.x LOẠI BỎ; GS chỉ in một
+            # dòng cảnh báo ra stderr rồi chạy tiếp với mặc định. Cờ đúng bây giờ là
+            # `-sOverprint=simulate`. Truyền cờ chết ở đây nghĩa là mọi kẽm đo được
+            # đều mất overprint — báo **thiếu** mực, đúng chiều sai làm hỏng lô in.
+            "-sOverprint=simulate",
+            # Và `-dUseFastColor=true` TẮT overprint trong Ghostscript: đường fast
+            # color bỏ qua toàn bộ logic overprint. Đo được: đen K-only overprint
+            # trên nền Cyan cho 100% TAC với fast color, 200% khi tắt nó.
+            #
+            # Nhưng tắt fast color thì DeviceCMYK bị quy đổi qua profile CMYK mặc
+            # định của GS và vùng đặc 400% nén xuống ~292%. Cách giữ được cả hai:
+            # tắt fast color rồi đặt **cùng một** profile cho nguồn và đích, biến
+            # DeviceCMYK→DeviceCMYK thành ánh xạ đồng nhất (đã kiểm: solid vẫn
+            # 400.0, rich black 240.0, overprint 200.0).
+            "-dUseFastColor=false",
         ]
-        if not ink_accurate and cmyk_profile_id:
-            cmyk_icc = resolve_cmyk_profile_path(cmyk_profile_id)
+        cmyk_icc = resolve_cmyk_profile_path(cmyk_profile_id) if cmyk_profile_id else None
+        if ink_accurate:
+            if cmyk_icc:
+                cmd.append(f"-sDefaultCMYKProfile={cmyk_icc}")
+                cmd.append(f"-sOutputICCProfile={cmyk_icc}")
+                cmd.append("-dOverrideICC=true")
+            else:
+                # Không có profile ⇒ không giữ được đồng nhất DeviceCMYK. Quay về
+                # fast color và nói rõ: overprint sẽ KHÔNG được tính.
+                cmd = [c for c in cmd if c != "-dUseFastColor=false"]
+                cmd.append("-dUseFastColor=true")
+                logger.warning(
+                    "GS tiffsep ink_accurate: không có profile CMYK ⇒ dùng fast color, "
+                    "overprint sẽ không được tính vào lượng mực."
+                )
+        elif cmyk_profile_id:
             if cmyk_icc:
                 # `-sDefaultCMYKProfile` là profile NGUỒN — nó dạy Ghostscript cách
                 # hiểu dữ liệu DeviceCMYK trong file. Profile ĐÍCH (kết xuất) là
@@ -439,6 +552,21 @@ class SeparationEngine:
         gs_spot_names = [n.strip() for n in gs_spot_names if n.strip()]
         if gs_spot_names:
             logger.info(f"GS detected spot inks from stderr: {gs_spot_names}")
+
+        # Ghostscript KHÔNG lỗi khi gặp cờ đã bị loại bỏ — nó chỉ in cảnh báo rồi
+        # chạy tiếp với mặc định. Nếu không đọc cảnh báo đó, một cờ chết sẽ âm thầm
+        # đổi ý nghĩa của kẽm (đúng chuyện đã xảy ra với `-dSimulateOverprint`).
+        if "no longer supported" in stderr_text:
+            dead = [
+                line.strip()
+                for line in stderr_text.splitlines()
+                if "no longer supported" in line
+            ]
+            logger.error(
+                "GS báo cờ đã bị loại bỏ — kẽm đo được có thể KHÔNG đúng cấu hình "
+                "mong muốn: %s",
+                "; ".join(dead[:3]),
+            )
 
         if res.returncode != 0:
             logger.error(f"GS tiffsep stderr: {stderr_text[:500]}")

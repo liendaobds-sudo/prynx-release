@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 /// Placeholder — OCG listing is done in Python via pikepdf.
-pub fn get_layers(_py: Python<'_>, pdf_path: &str) -> PyResult<Vec<PyObject>> {
+pub fn get_layers(_py: Python<'_>, pdf_path: &str) -> PyResult<Vec<Py<PyAny>>> {
     let _pdfium = crate::pdfium_init::load_pdfium();
     let _doc = _pdfium
         .load_pdf_from_file(pdf_path, None)
@@ -20,7 +20,7 @@ pub fn render_with_visibility(
     page_num: usize,
     dpi: u32,
     _hidden_indices: Vec<usize>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let pdfium = crate::pdfium_init::load_pdfium();
     let doc = pdfium
         .load_pdf_from_file(pdf_path, None)

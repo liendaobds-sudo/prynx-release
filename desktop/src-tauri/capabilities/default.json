@@ -22,7 +22,6 @@
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
-        { "path": "$HOME/**" },
         { "path": "$APPDATA/**" },
         { "path": "$TEMP/**" }
       ],
@@ -39,7 +38,22 @@
         { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
         { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
-        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" },
+        { "path": "$HOME/.docker/**" },
+        { "path": "**/.env" },
+        { "path": "**/.git-credentials" },
+        { "path": "**/.npmrc" },
+        { "path": "**/.pypirc" },
+        { "path": "**/.netrc" },
+        { "path": "**/credentials.json" },
+        { "path": "**/*.kdbx" },
+        { "path": "**/*.pem" },
+        { "path": "**/*.pfx" },
+        { "path": "**/*.p12" },
+        { "path": "**/*.key" },
+        { "path": "**/id_rsa*" },
+        { "path": "**/id_ed25519*" },
+        { "path": "$DATA/PrynX/*.dat" }
       ]
     },
     {
@@ -48,7 +62,6 @@
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
-        { "path": "$HOME/**" },
         { "path": "$APPDATA/**" },
         { "path": "$TEMP/**" }
       ],
@@ -65,7 +78,22 @@
         { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
         { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
-        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" },
+        { "path": "$HOME/.docker/**" },
+        { "path": "**/.env" },
+        { "path": "**/.git-credentials" },
+        { "path": "**/.npmrc" },
+        { "path": "**/.pypirc" },
+        { "path": "**/.netrc" },
+        { "path": "**/credentials.json" },
+        { "path": "**/*.kdbx" },
+        { "path": "**/*.pem" },
+        { "path": "**/*.pfx" },
+        { "path": "**/*.p12" },
+        { "path": "**/*.key" },
+        { "path": "**/id_rsa*" },
+        { "path": "**/id_ed25519*" },
+        { "path": "$DATA/PrynX/*.dat" }
       ]
     },
     {
@@ -74,7 +102,6 @@
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
-        { "path": "$HOME/**" },
         { "path": "$APPDATA/**" }
       ],
       "deny": [
@@ -90,7 +117,22 @@
         { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
         { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
-        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" },
+        { "path": "$HOME/.docker/**" },
+        { "path": "**/.env" },
+        { "path": "**/.git-credentials" },
+        { "path": "**/.npmrc" },
+        { "path": "**/.pypirc" },
+        { "path": "**/.netrc" },
+        { "path": "**/credentials.json" },
+        { "path": "**/*.kdbx" },
+        { "path": "**/*.pem" },
+        { "path": "**/*.pfx" },
+        { "path": "**/*.p12" },
+        { "path": "**/*.key" },
+        { "path": "**/id_rsa*" },
+        { "path": "**/id_ed25519*" },
+        { "path": "$DATA/PrynX/*.dat" }
       ]
     },
     {
@@ -99,7 +141,6 @@
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
-        { "path": "$HOME/**" },
         { "path": "$APPDATA/**" },
         { "path": "$TEMP/**" }
       ],
@@ -117,7 +158,22 @@
         { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
         { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
-        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" },
+        { "path": "$HOME/.docker/**" },
+        { "path": "**/.env" },
+        { "path": "**/.git-credentials" },
+        { "path": "**/.npmrc" },
+        { "path": "**/.pypirc" },
+        { "path": "**/.netrc" },
+        { "path": "**/credentials.json" },
+        { "path": "**/*.kdbx" },
+        { "path": "**/*.pem" },
+        { "path": "**/*.pfx" },
+        { "path": "**/*.p12" },
+        { "path": "**/*.key" },
+        { "path": "**/id_rsa*" },
+        { "path": "**/id_ed25519*" },
+        { "path": "$DATA/PrynX/*.dat" }
       ]
     },
     {
@@ -126,7 +182,6 @@
         { "path": "$DOCUMENT/**" },
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" },
-        { "path": "$HOME/**" },
         { "path": "$APPDATA/**" }
       ],
       "deny": [
@@ -141,7 +196,24 @@
         { "path": "$HOME/AppData/Local/Google/Chrome/User Data/**" },
         { "path": "$HOME/AppData/Local/Microsoft/Edge/User Data/**" },
         { "path": "$HOME/AppData/Roaming/Mozilla/Firefox/Profiles/**" },
-        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" }
+        { "path": "$HOME/AppData/Roaming/PrynX/*.dat" },
+        { "path": "$HOME/.docker/**" },
+        { "path": "**/.env" },
+        { "path": "**/.git-credentials" },
+        { "path": "**/.npmrc" },
+        { "path": "**/.pypirc" },
+        { "path": "**/.netrc" },
+        { "path": "**/credentials.json" },
+        { "path": "**/*.kdbx" },
+        { "path": "**/*.pem" },
+        { "path": "**/*.pfx" },
+        { "path": "**/*.p12" },
+        { "path": "**/*.key" },
+        { "path": "**/id_rsa*" },
+        { "path": "**/id_ed25519*" },
+        { "path": "$DATA/PrynX/*.dat" },
+        { "path": "$HOME/AppData/Local/Microsoft/Credentials/**" },
+        { "path": "$HOME/AppData/Roaming/Microsoft/Credentials/**" }
       ]
     }
   ]

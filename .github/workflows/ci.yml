@@ -101,6 +101,82 @@ jobs:
       - name: pip-audit backend
         run: pip-audit -r backend/requirements.txt --progress-spinner off
 
+  rust-audit:
+    name: Rust Audit & Tests
+    runs-on: ubuntu-latest
+
+    # AUDIT 2026-07-26: trước đây CI KHÔNG hề chạy cargo audit / cargo test, đúng bài
+    # học §14.3 (lopdf 7.5 HIGH + pyo3 buffer-overflow từng bị bỏ sót vì không ai quét).
+    # Quét CẢ BỐN lockfile; `cargo test` chỉ cho crate thuần Rust (imposition_core,
+    # print_engine) — desktop/src-tauri và native cần toolchain Windows/Python nên
+    # được kiểm ở máy build, không chạy được trên runner ubuntu.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit (4 lockfile)
+        run: |
+          status=0
+          for lock in desktop/src-tauri native imposition_core print_engine; do
+            echo "::group::cargo audit $lock"
+            cargo audit -f "$lock/Cargo.lock" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
+      - name: cargo test (crate thuần Rust)
+        run: |
+          cargo test --manifest-path imposition_core/Cargo.toml --locked
+          cargo test --manifest-path print_engine/Cargo.toml --locked
+
+  ppe-native:
+    name: PPE Native Binding
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install native test tools
+        run: >-
+          python -m pip install
+          maturin==1.13.3
+          pytest==9.0.3
+          pytest-asyncio==1.4.0
+          pydantic-settings==2.5.0
+          numpy
+          pikepdf==9.5.0
+          Pillow==12.3.0
+
+      - name: Build and install PPE native wheel
+        shell: pwsh
+        run: |
+          python -m maturin build --release --locked --manifest-path native/Cargo.toml --out wheels
+          $wheel = (Get-ChildItem -LiteralPath wheels -Filter *.whl | Select-Object -First 1).FullName
+          python -m pip install $wheel
+
+      - name: Run PPE binding and facade tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "$pwd\backend"
+          $env:PATH = "$pwd\native\pdfium_lib\bin;$env:PATH"
+          python -m pytest -q backend/tests/test_ppe_native.py backend/tests/test_ppe_facade.py
+
   security-guards:
     name: Security Regression Guards
     runs-on: ubuntu-latest
@@ -142,6 +218,120 @@ jobs:
             exit 1
           fi
           echo "OK: CSP không có nguồn script ngoài/eval."
+
+      # AUDIT 2026-07-26: deny-list của assetProtocol và của plugin `fs` từng LỆCH nhau
+      # 7 pattern (asset chặn `**/.env`, `*.pem`, `id_rsa*`… còn fs thì không) trong khi
+      # tài liệu tuyên bố "cùng danh sách". Ratchet này chặn tái phát.
+      - name: Asset-protocol deny và fs capability deny phải TRÙNG nhau
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+          raw = open('desktop/src-tauri/tauri.conf.json', encoding='utf-8').read()
+          asset = set(json.loads(raw)['app']['security']['assetProtocol']['scope']['deny'])
+          caps = json.loads(open('desktop/src-tauri/capabilities/default.json', encoding='utf-8').read())
+          bad = False
+          for perm in caps['permissions']:
+              if isinstance(perm, str):
+                  continue
+              have = {e['path'] for e in perm.get('deny', [])}
+              missing = asset - have
+              if missing:
+                  bad = True
+                  print(f"ERROR: {perm['identifier']} thiếu deny: {sorted(missing)}")
+          if bad:
+              sys.exit(1)
+          print('OK: deny-list assetProtocol ⊆ mọi fs capability deny.')
+          PY
+
+      - name: Filesystem scopes must not expose the entire home or filesystem
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          conf = json.load(open('desktop/src-tauri/tauri.conf.json', encoding='utf-8'))
+          asset = set(conf['app']['security']['assetProtocol']['scope']['allow'])
+          forbidden_asset = {'**', '**/*', '$HOME/**', '$HOME/**/*'}
+          if asset & forbidden_asset:
+              print('ERROR: asset protocol contains a broad filesystem scope:', sorted(asset & forbidden_asset))
+              sys.exit(1)
+          caps = json.load(open('desktop/src-tauri/capabilities/default.json', encoding='utf-8'))
+          for perm in caps['permissions']:
+              if not isinstance(perm, dict):
+                  continue
+              allow = {entry['path'] for entry in perm.get('allow', [])}
+              if allow & {'$HOME/**', '$HOME/**/*'}:
+                  print(f"ERROR: {perm['identifier']} exposes the entire home directory")
+                  sys.exit(1)
+          print('OK: filesystem and asset scopes are least-privilege.')
+          PY
+
+      - name: PrynX token audience and Edge-only verification must remain enforced
+        run: |
+          if grep -R "rpc('verify_license'" desktop/src --include='*.ts' --include='*.tsx'; then
+            echo "ERROR: renderer calls verify_license SECURITY DEFINER RPC directly."
+            exit 1
+          fi
+          grep -q 'token_product != "prynx"' backend/app/core/license_guard.py
+          grep -q 'Some("prynx")' desktop/src-tauri/src/security.rs
+          grep -q 'Some("prynx")' native/src/dieline_license.rs
+          echo "OK: product audience is mandatory and renderer uses Edge verification."
+
+      - name: API proofs and generated results must remain request-scoped
+        run: |
+          grep -q 'normalized_method' desktop/src-tauri/src/security.rs
+          grep -q 'normalized_method' backend/app/core/license_guard.py
+          grep -q 'protect_result_artifacts' backend/app/main.py
+          grep -q 'result_access_url' backend/app/core/highlight_renderer.py
+          grep -q 'result_access_url' backend/app/core/edit_session.py
+          grep -q 'result_access_url' backend/app/api/routes/edit.py
+          echo "OK: API HMAC includes the method and result artifacts require path-scoped access."
+
+      - name: Native license storage must not fall back to plaintext localStorage
+        run: |
+          grep -Fq 'licenseKey: isNativeRuntime() ? null : loadStoredKeySync()' desktop/src/stores/useAuthStore.ts
+          grep -Fq 'return saved ? localKey : null;' desktop/src/stores/useAuthStore.ts
+          grep -Fq "localStorage.removeItem(LICENSE_STORAGE_KEY);" desktop/src/stores/useAuthStore.ts
+          echo "OK: native startup and DPAPI failure remain fail-closed."
+      - name: Release build script must fail closed
+        run: |
+          grep -Fq 'if ($Release -and $SkipNuitka)' build_production.ps1
+          grep -Fq 'if ($Release -or -not $AllowPlaintextDieline)' build_production.ps1
+          grep -Fq 'Reusing immutable dieline resource key' build_production.ps1
+          if grep -q 'resolution=merge-duplicates' build_production.ps1; then
+            echo "ERROR: release resource key can be overwritten during a rebuild."
+            exit 1
+          fi
+          echo "OK: release script rejects stale/plaintext/rotated-key paths."
+      # Anticrack 2026-07-26: engine dieline phải nạp qua payload do build.rs sinh (có
+      # thể mã hoá), và gate license phải TRẢ VỀ KHOÁ chứ không phải boolean. Nếu ai đó
+      # quay lại nhúng trực tiếp bundle hoặc trả Result<(), _> thì việc kiểm license lại
+      # thành một chỗ patch-một-lần-xong.
+      - name: Engine dieline phải khoá theo bản phát hành (không nhúng plaintext trực tiếp)
+        run: |
+          if grep -q 'include_str!("generated/dieline_engine.bundle.js")' native/src/dieline_engine.rs; then
+            echo "ERROR: dieline_engine.rs nhúng THẲNG bundle → mất lớp khoá tài nguyên."
+            exit 1
+          fi
+          if ! grep -q 'dieline_payload.txt' native/src/dieline_engine.rs; then
+            echo "ERROR: dieline_engine.rs không còn dùng payload của build.rs."
+            exit 1
+          fi
+          if ! grep -q 'pub resource_key' native/src/dieline_license.rs; then
+            echo "ERROR: authorize_dieline không còn trả khoá tài nguyên (quay lại boolean)."
+            exit 1
+          fi
+          if ! grep -q 'PRYNX_DIELINE_KEY_B64' build_production.ps1; then
+            echo "ERROR: build_production.ps1 không còn khoá engine khi phát hành."
+            exit 1
+          fi
+          echo "OK: engine dieline khoá theo bản phát hành."
+
+      - name: Lệnh Rust đọc thư mục phải giới hạn trong app data dir
+        run: |
+          if ! grep -q 'app_data_dir()' desktop/src-tauri/src/lib.rs; then
+            echo "ERROR: read_dir_json không còn giới hạn theo app_data_dir → đọc được .json ở mọi thư mục."
+            exit 1
+          fi
+          echo "OK: read_dir_json có giới hạn phạm vi."
 
       - name: Release sidecar spawn must enforce token + DEV_MODE=false
         run: |

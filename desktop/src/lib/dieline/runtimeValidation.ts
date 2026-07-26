@@ -8,7 +8,7 @@ const MAX_GAP_MM = 100;
 
 const ENUM_VALUES: Partial<Record<keyof BoxParams, readonly string[]>> = {
     glueSide: ['left', 'right'],
-    boxType: ['rte', 'slb', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray'],
+    boxType: ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray'],
     panelOrder: ['WLWL', 'LWLW'],
     handleShape: ['oval', 'roundRect'],
     handleY: ['bottom', 'center'],

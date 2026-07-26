@@ -1,5 +1,6 @@
 //! Ảnh XObject: giải mã và lấy mẫu trong không gian mực.
 
+pub mod ccitt;
 pub mod filters;
 pub mod sampler;
 

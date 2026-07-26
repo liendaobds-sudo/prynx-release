@@ -49,6 +49,7 @@ use print_engine::page::{open as ppe_open, render_page_managed, PageBox};
     rgb_profile = None,
     render_intent = 1,
     fallback_font = None,
+    memory_budget_mb = 512,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn ppe_separations(
@@ -62,9 +63,12 @@ pub fn ppe_separations(
     rgb_profile: Option<&str>,
     render_intent: i32,
     fallback_font: Option<&str>,
+    memory_budget_mb: usize,
 ) -> PyResult<Py<PyDict>> {
     if page == 0 {
-        return Err(PyValueError::new_err("page là chỉ số 1-based, không nhận 0"));
+        return Err(PyValueError::new_err(
+            "page là chỉ số 1-based, không nhận 0",
+        ));
     }
     let which_box = match page_box {
         "media" => PageBox::Media,
@@ -83,6 +87,12 @@ pub fn ppe_separations(
     } else {
         RenderOptions::default()
     };
+    let memory_budget_bytes = memory_budget_mb
+        .checked_mul(1024 * 1024)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| PyValueError::new_err("memory_budget_mb must be greater than zero"))?;
+    let base_opts = base_opts.with_memory_budget_bytes(memory_budget_bytes);
+
     // Đọc font ngay ở đây để đường dẫn sai **nổ** thành lỗi Python, thay vì lặng
     // lẽ chạy tiếp ở chế độ không-fallback. Bỏ qua âm thầm sẽ cho ra một trang
     // chữ báo 0% mực mà không có dấu hiệu nào cho biết vì sao.
@@ -112,7 +122,7 @@ pub fn ppe_separations(
     // được round-trip qua ICC. Profile chỉ áp cho DeviceRGB / Lab / ICCBased.
     // Nhờ vậy `ink_accurate` vẫn cho vùng đặc đúng 400% dù đã bật ICC.
     let rendered = py
-        .allow_threads(|| {
+        .detach(|| {
             let manager = match cmyk_profile {
                 Some(path) => Some(ColorManager::from_profiles(
                     Path::new(path),
@@ -173,7 +183,10 @@ pub fn ppe_separations(
     out.set_item("substituted_fonts", warnings.substituted_fonts.clone())?;
     out.set_item("hidden_content_risk", warnings.hidden_content_risk)?;
     out.set_item("dropped_objects", warnings.dropped_objects)?;
-    out.set_item("unsupported_transparency", warnings.unsupported_transparency)?;
+    out.set_item(
+        "unsupported_transparency",
+        warnings.unsupported_transparency,
+    )?;
     out.set_item(
         "approximated_colorspaces",
         warnings.approximated_colorspaces.clone(),
@@ -186,12 +199,128 @@ pub fn ppe_separations(
 
 /// Năng lực hiện tại của PPE — nguồn duy nhất cho capability matrix ở lớp Python.
 ///
+/// Soft-proof một trang: render trong không gian mực rồi quy sang sRGB qua ICC.
+///
+/// Trả `(width, height, rgb_bytes, degraded, ink_unsound)` — `rgb_bytes` dài
+/// `width * height * 3`.
+///
+/// # Khác `ppe_separations` ở hai điểm, và cả hai là có chủ ý
+///
+/// 1. **Khử răng cưa bật.** Đây là đường để *xem*, không phải để *đo*.
+/// 2. **Mực pha được quy về CMYK** qua tint transform. Màn hình không có mực pha; giữ
+///    kênh riêng rồi chỉ đọc bốn kênh process sẽ làm một trang chỉ dùng Pantone hiện
+///    ra trắng.
+///
+/// Vì lý do (1) và (2), kết quả của hàm này **không được** dùng để kết luận về lượng
+/// mực. Đó là lý do nó là một hàm riêng chứ không phải một cờ của `ppe_separations`.
+///
+/// `cmyk_profile` là **bắt buộc**: không có profile thì "soft-proof" chỉ là một công
+/// thức đoán, và hứa một thứ không có là tệ hơn không hứa.
+#[pyfunction]
+#[pyo3(signature = (
+    pdf_path,
+    page = 1,
+    dpi = 150.0,
+    cmyk_profile = "",
+    rgb_profile = None,
+    render_intent = 1,
+    page_box = "crop",
+    fallback_font = None,
+    memory_budget_mb = 512,
+))]
+#[allow(clippy::too_many_arguments)]
+pub fn ppe_softproof(
+    py: Python<'_>,
+    pdf_path: &str,
+    page: usize,
+    dpi: f32,
+    cmyk_profile: &str,
+    rgb_profile: Option<&str>,
+    render_intent: i32,
+    page_box: &str,
+    fallback_font: Option<&str>,
+    memory_budget_mb: usize,
+) -> PyResult<Py<PyDict>> {
+    if page == 0 {
+        return Err(PyValueError::new_err(
+            "page là chỉ số 1-based, không nhận 0",
+        ));
+    }
+    if cmyk_profile.is_empty() {
+        return Err(PyValueError::new_err(
+            "soft-proof cần cmyk_profile; không có profile thì không có soft-proof",
+        ));
+    }
+    let which_box = match page_box {
+        "media" => PageBox::Media,
+        "crop" => PageBox::Crop,
+        "trim" => PageBox::Trim,
+        "bleed" => PageBox::Bleed,
+        "art" => PageBox::Art,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "page_box không hợp lệ: {other}"
+            )))
+        }
+    };
+    let memory_budget_bytes = memory_budget_mb
+        .checked_mul(1024 * 1024)
+        .filter(|bytes| *bytes > 0)
+        .ok_or_else(|| PyValueError::new_err("memory_budget_mb must be greater than zero"))?;
+    let base_opts = RenderOptions::softproof().with_memory_budget_bytes(memory_budget_bytes);
+    let opts = match fallback_font {
+        Some(path) => {
+            let data = std::fs::read(path).map_err(|e| {
+                PyRuntimeError::new_err(format!("không đọc được fallback_font {path}: {e}"))
+            })?;
+            base_opts.with_fallback_font(std::sync::Arc::new(data))
+        }
+        None => base_opts,
+    };
+    let intent = RenderIntent::from_pdf(render_intent);
+
+    let (width, height, rgb, degraded, ink_unsound) = py
+        .detach(|| -> print_engine::error::PpeResult<_> {
+            let manager = ColorManager::from_profiles(
+                Path::new(cmyk_profile),
+                rgb_profile.map(Path::new),
+                intent,
+            )?;
+            let doc = ppe_open(pdf_path)?;
+            let rendered = render_page_managed(&doc, page, dpi, which_box, opts, Some(&manager))?;
+            let rgb = rendered.buffer.to_srgb(&manager).ok_or_else(|| {
+                print_engine::error::PpeError::Unsupported(
+                    "không quy được mực sang sRGB".to_string(),
+                )
+            })?;
+            Ok((
+                rendered.buffer.width(),
+                rendered.buffer.height(),
+                rgb,
+                rendered.warnings.degrades_accuracy(),
+                rendered.warnings.ink_unsound(),
+            ))
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("PPE: {e}")))?;
+
+    let out = PyDict::new(py);
+    out.set_item("width", width)?;
+    out.set_item("height", height)?;
+    out.set_item("rgb", PyBytes::new(py, &rgb))?;
+    out.set_item("degraded", degraded)?;
+    // Trả cả cờ này dù đây là đường xem: một trang mà engine chưa vẽ đủ thì ảnh
+    // soft-proof cũng thiếu nội dung, và lớp UI cần nói ra chứ không im lặng.
+    out.set_item("ink_unsound", ink_unsound)?;
+    Ok(out.into())
+}
+
 /// Để ở Rust (cạnh code thật) thay vì hardcode trong Python: khi một tính năng
 /// được hoàn thiện, cờ đổi cùng lúc với code, không thể quên cập nhật.
 #[pyfunction]
 pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     let caps = PyDict::new(py);
     caps.set_item("version", env!("CARGO_PKG_VERSION"))?;
+    caps.set_item("memory_budget_default_mb", 512)?;
     caps.set_item("process_separations", true)?;
     caps.set_item("spot_separations", true)?;
     caps.set_item("overprint", true)?;
@@ -214,12 +343,10 @@ pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
             "ASCIIHexDecode",
             "RunLengthDecode",
             "DCTDecode",
+            "CCITTFaxDecode",
         ],
     )?;
-    caps.set_item(
-        "image_filters_missing",
-        vec!["JPXDecode", "CCITTFaxDecode", "JBIG2Decode"],
-    )?;
+    caps.set_item("image_filters_missing", vec!["JPXDecode", "JBIG2Decode"])?;
 
     caps.set_item("icc_color_management", true)?;
     // ICC chỉ áp cho nội dung CHƯA phải mực. Dữ liệu đã là mực thì không bao giờ
@@ -242,16 +369,62 @@ pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     // đó hình chữ là xấp xỉ ⇒ bật `geometry_approximate`, KHÔNG bật `ink_unsound`.
     caps.set_item("text_substitute_font_requires_caller_asset", true)?;
     // Hai trục hỏng — lớp Python phải đọc đúng trục để không hạ tin cậy oan.
-    caps.set_item(
-        "degraded_axes",
-        vec!["ink_unsound", "geometry_approximate"],
-    )?;
+    caps.set_item("degraded_axes", vec!["ink_unsound", "geometry_approximate"])?;
 
-    // Chưa xong — giữ đúng sự thật, đừng hứa trước.
-    caps.set_item("shading", false)?;
-    caps.set_item("transparency_groups", false)?;
-    caps.set_item("soft_mask", false)?;
-    caps.set_item("blend_modes", false)?;
-    caps.set_item("inline_images", false)?;
+    // Shading: kiểu 1/2/3 đã dựng, lưới 4–7 thì chưa. Khai riêng từng kiểu thay vì
+    // một cờ `shading` duy nhất — "có shading" mà thực ra thiếu lưới Coons sẽ khiến
+    // lớp trên tin rằng mọi trang gradient đều đo được.
+    caps.set_item("shading", true)?;
+    caps.set_item("shading_types", vec![1, 2, 3, 4, 5, 6, 7])?;
+    caps.set_item("shading_types_missing", Vec::<i32>::new())?;
+    caps.set_item("shading_pattern", true)?;
+    caps.set_item("tiling_pattern", true)?;
+    // Tiling pattern được vẽ thật (lặp lại ô mẫu), nhưng có trần số ô: vượt trần thì
+    // báo thiếu tính năng chứ không vẽ một phần — vẽ một phần cho lượng mực thấp hơn
+    // thực tế, đúng chiều sai nguy hiểm.
+    caps.set_item("tiling_pattern_max_tiles", 1024)?;
+
+    // Optional content: đọc theo cấu hình **in** (`/AS` + `/Usage /Print`), không
+    // theo cấu hình xem. Một lớp hiện trên màn hình nhưng khai không-in thì KHÔNG
+    // được tính mực.
+    caps.set_item("optional_content", true)?;
+    caps.set_item("optional_content_config", "print")?;
+    caps.set_item("inline_images", true)?;
+    // Soft-proof: đường **xem**, khử răng cưa và quy mực pha về CMYK ⇒ tuyệt đối
+    // không dùng kết quả của nó để kết luận lượng mực.
+    caps.set_item("softproof", true)?;
+    caps.set_item("softproof_requires_icc", true)?;
+
+    // Trong suốt: blend mode và soft mask đã dựng; group đã dựng cả ba đường
+    // (đục / không cách ly / cách ly). Riêng knockout group thì chưa — khai riêng
+    // thay vì để `transparency_groups = true` che mất phần thiếu.
+    caps.set_item("transparency_groups", true)?;
+    caps.set_item("transparency_knockout_groups", false)?;
+    caps.set_item("soft_mask", true)?;
+    caps.set_item("soft_mask_types", vec!["Luminosity", "Alpha"])?;
+    caps.set_item("blend_modes", true)?;
+    // Bốn mode không tách kênh phải đi qua xấp xỉ RGB và **không** chạm kênh spot,
+    // nên chúng không cùng mức tin cậy với mười một mode tách kênh.
+    caps.set_item(
+        "blend_modes_separable",
+        vec![
+            "Normal",
+            "Multiply",
+            "Screen",
+            "Overlay",
+            "Darken",
+            "Lighten",
+            "ColorDodge",
+            "ColorBurn",
+            "HardLight",
+            "SoftLight",
+            "Difference",
+            "Exclusion",
+        ],
+    )?;
+    caps.set_item(
+        "blend_modes_approximated",
+        vec!["Hue", "Saturation", "Color", "Luminosity"],
+    )?;
     Ok(caps.into())
 }

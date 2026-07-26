@@ -48,7 +48,7 @@ from app.config import settings
 from app.core import edit_session, geometry_reader, object_mapper
 from app.core.edit_io import apply_and_save
 from app.core.edit_session import SessionNotFoundError, get_active_session, list_objects_from_session
-from app.core.license_guard import require_license
+from app.core.license_guard import require_license, result_access_url
 from app.core.stream_editor import (
     GlyphCoverageError,
     ObjectMapError,
@@ -448,7 +448,7 @@ def _build_output_response(output_path: str, op_result, license_info: dict | Non
     return EditResponse(
         success=True,
         output_filename=filename,
-        output_url=f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}",
+        output_url=result_access_url(f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}"),
         output_path=abs_output_path,
         output_fid=output_fid,
         result=_serialize_result(op_result),

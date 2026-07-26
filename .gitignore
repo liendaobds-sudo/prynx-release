@@ -35,6 +35,11 @@ print_engine/target/
 # Sidecar binaries (237 MB each — built by build_production.ps1, too large for GitHub)
 desktop/src-tauri/binaries/
 
+# Ban copy THIRD_PARTY_NOTICES.md dung de dong goi vao installer.
+# Ban duoc theo doi la ban o goc repo; build_production.ps1 copy no vao day.
+# Theo doi ca hai ban se sinh ra hai ban le nhau, va ban le se la ban ship.
+desktop/src-tauri/THIRD_PARTY_NOTICES.md
+
 # OS Files
 .DS_Store
 Thumbs.db
@@ -132,3 +137,13 @@ desktop/scripts/intro/out/
 
 # Research clones (img2threejs etc.)
 tmp/research/
+
+# Private production PDFs used for local PPE validation.
+# Never commit customer artwork or generated corpus reports.
+/private_test_corpus/
+
+# Scratch patch files from experimental Codex sessions (never source-of-truth).
+.codex_*.patch
+
+# Supabase CLI temp/link state (machine-local, not source).
+supabase/.temp/

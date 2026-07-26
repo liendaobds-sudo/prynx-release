@@ -23,7 +23,12 @@ PAGE_W = 200
 PAGE_H = 200
 
 
-def build_pdf(content: str, extra_resources: str = "") -> bytes:
+def build_pdf(
+    content: str,
+    extra_resources: str = "",
+    extra_objects: tuple[bytes, ...] = (),
+    oc_properties: str = "",
+) -> bytes:
     """Dựng PDF một trang tối giản, không nén, không phụ thuộc thư viện ngoài.
 
     Viết tay để fixture golden **không** đi qua thư viện nào có thể tự ý thêm
@@ -32,7 +37,8 @@ def build_pdf(content: str, extra_resources: str = "") -> bytes:
     stream = content.encode("latin-1")
     objects: list[bytes] = []
 
-    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    oc = f" /OCProperties {oc_properties}" if oc_properties else ""
+    objects.append(f"<< /Type /Catalog /Pages 2 0 R{oc} >>".encode("latin-1"))
     objects.append(
         f"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".encode("latin-1")
     )
@@ -45,6 +51,8 @@ def build_pdf(content: str, extra_resources: str = "") -> bytes:
     objects.append(
         b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream"
     )
+    # Object phụ (Form XObject cho transparency group / soft mask) bắt đầu từ 5 0 R.
+    objects.extend(extra_objects)
 
     out = bytearray(b"%PDF-1.7\n")
     offsets = [0]
@@ -65,6 +73,98 @@ def build_pdf(content: str, extra_resources: str = "") -> bytes:
 
 def full_page(ops: str) -> str:
     return f"{ops} 0 0 {PAGE_W} {PAGE_H} re f\n"
+
+
+def form_object(
+    content: str,
+    bbox: tuple[int, int, int, int] = (0, 0, PAGE_W, PAGE_H),
+    group: str = "",
+) -> bytes:
+    """Form XObject dạng thô.
+
+    `group` là dict `/Group` nếu form là transparency group. Ghostscript **bắt
+    buộc** phải có `/Group` để nhận form làm nguồn soft mask, nên fixture soft mask
+    luôn khai nó — thiếu thì GS lặng lẽ bỏ mặt nạ và phép so sẽ so hai thứ khác nhau.
+    """
+    data = content.encode("latin-1")
+    extra = f" /Group {group}" if group else ""
+    head = (
+        f"<< /Type /XObject /Subtype /Form "
+        f"/BBox [{bbox[0]} {bbox[1]} {bbox[2]} {bbox[3]}]{extra} /Length {len(data)} >>"
+    ).encode("latin-1")
+    return head + b"\nstream\n" + data + b"\nendstream"
+
+
+def tiling_object(
+    content: str,
+    bbox: tuple[int, int, int, int],
+    paint_type: int = 1,
+    xstep: int | None = None,
+    ystep: int | None = None,
+) -> bytes:
+    """Tiling pattern (`/PatternType 1`) dạng thô.
+
+    `paint_type = 2` là **uncoloured**: ô mẫu không khai màu, màu tới từ `scn` bên
+    ngoài. Đó là dạng dễ cài sai nhất — nếu operator màu trong ô không bị bỏ qua thì
+    mẫu ra đen thay vì màu mà file yêu cầu.
+    """
+    data = content.encode("latin-1")
+    xs = xstep if xstep is not None else bbox[2] - bbox[0]
+    ys = ystep if ystep is not None else bbox[3] - bbox[1]
+    head = (
+        f"<< /Type /Pattern /PatternType 1 /PaintType {paint_type} /TilingType 1 "
+        f"/BBox [{bbox[0]} {bbox[1]} {bbox[2]} {bbox[3]}] /XStep {xs} /YStep {ys} "
+        f"/Resources << >> /Length {len(data)} >>"
+    ).encode("latin-1")
+    return head + b"\nstream\n" + data + b"\nendstream"
+
+
+_GROUP_CMYK = "<< /S /Transparency /CS /DeviceCMYK >>"
+_GROUP_GRAY = "<< /S /Transparency /CS /DeviceGray >>"
+
+
+# ── Shading dictionary dùng lại ──────────────────────────────────────────────
+#
+# Viết dạng chuỗi PDF thô cùng lý do như phần còn lại của file: fixture phải chứa
+# đúng những gì ta khai.
+
+_CMYK_RANGE = "/Range [0 1 0 1 0 1 0 1]"
+
+# K từ 0% tới 100% — cô lập đúng một kênh nên lệch đo được quy về một nguyên nhân.
+_FN_K_RAMP = (
+    "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0 0 1] /N 1 "
+    f"{_CMYK_RANGE} >>"
+)
+# Chuyển sang rich black: cả 4 kênh cùng tăng ⇒ đỉnh TAC ở cuối trục lên 340%.
+# Đây là dạng gradient hay làm vượt giới hạn mực trong thực tế.
+_FN_RICH = (
+    "<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0.6 0.5 0.5 1] /N 1 "
+    f"{_CMYK_RANGE} >>"
+)
+
+_AXIAL_K = (
+    "<< /ShadingType 2 /ColorSpace /DeviceCMYK "
+    f"/Coords [0 0 {PAGE_W} 0] /Function {_FN_K_RAMP} >>"
+)
+_AXIAL_RICH = (
+    "<< /ShadingType 2 /ColorSpace /DeviceCMYK "
+    f"/Coords [0 0 {PAGE_W} 0] /Function {_FN_RICH} >>"
+)
+_AXIAL_K_EXTEND = (
+    "<< /ShadingType 2 /ColorSpace /DeviceCMYK "
+    f"/Coords [0 0 {PAGE_W} 0] /Extend [true true] /Function {_FN_K_RAMP} >>"
+)
+# Trục chỉ dài nửa trang + extend: kiểm đúng phần `/Extend` mà nếu bỏ qua sẽ làm
+# dải chuyển kết thúc đột ngột và sai diện tích phủ mực.
+_AXIAL_K_HALF_EXTEND = (
+    "<< /ShadingType 2 /ColorSpace /DeviceCMYK "
+    f"/Coords [0 0 {PAGE_W // 2} 0] /Extend [true true] /Function {_FN_K_RAMP} >>"
+)
+_RADIAL_K = (
+    "<< /ShadingType 3 /ColorSpace /DeviceCMYK "
+    f"/Coords [{PAGE_W // 2} {PAGE_H // 2} 0 {PAGE_W // 2} {PAGE_H // 2} {PAGE_W // 2}] "
+    f"/Extend [false true] /Function {_FN_K_RAMP} >>"
+)
 
 
 # ── Bộ fixture ───────────────────────────────────────────────────────────────
@@ -111,7 +211,303 @@ FIXTURES: dict[str, tuple[str, str]] = {
         f"0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f\n",
         "",
     ),
+    # Gradient. Đây là lớp file mà đỉnh TAC dễ vượt ngưỡng nhất mà mắt không thấy:
+    # vùng tối của một dải chuyển sang đen có thể lên rất cao trong khi phần còn
+    # lại của trang rất nhẹ.
+    "shading_axial_k.pdf": (
+        "/Sh0 sh\n",
+        "/Shading << /Sh0 " + _AXIAL_K + " >>",
+    ),
+    "shading_axial_k_extend.pdf": (
+        "/Sh0 sh\n",
+        "/Shading << /Sh0 " + _AXIAL_K_HALF_EXTEND + " >>",
+    ),
+    "shading_radial_k.pdf": (
+        "/Sh0 sh\n",
+        "/Shading << /Sh0 " + _RADIAL_K + " >>",
+    ),
+    "shading_axial_rich.pdf": (
+        "/Sh0 sh\n",
+        "/Shading << /Sh0 " + _AXIAL_RICH + " >>",
+    ),
+    # Shading pattern: cùng gradient nhưng bị giới hạn bởi đường dẫn, không phải
+    # bởi clip. Hai đường này dễ lẫn nhau.
+    "shading_pattern_half.pdf": (
+        f"/Pattern cs /P0 scn 0 0 {PAGE_W // 2} {PAGE_H} re f\n",
+        "/Pattern << /P0 << /Type /Pattern /PatternType 2 /Shading "
+        + _AXIAL_K_EXTEND
+        + " >> >>",
+    ),
+    # Blend mode. Cùng một nội dung (Cyan đặc + đen K-only), chỉ đổi `/BM`, nên số
+    # đo được chỉ có thể lệch vì công thức blend. `Multiply` phải cho 200% (giữ nền)
+    # còn `Normal` cho 100% (khoét nền) — nếu quên bù không gian trừ thì hai con số
+    # đổi chỗ nhau và đây là chỗ phát hiện.
+    "blend_multiply_black_on_cyan.pdf": (
+        f"1 0 0 0 k 0 0 {PAGE_W} {PAGE_H} re f\n"
+        f"/GSbm gs 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ExtGState << /GSbm << /BM /Multiply >> >>",
+    ),
+    "blend_screen_black_on_cyan.pdf": (
+        f"1 0 0 0 k 0 0 {PAGE_W} {PAGE_H} re f\n"
+        f"/GSbm gs 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ExtGState << /GSbm << /BM /Screen >> >>",
+    ),
+    "blend_darken_k40_k80.pdf": (
+        f"0 0 0 0.4 k 0 0 {PAGE_W} {PAGE_H} re f\n"
+        f"/GSbm gs 0 0 0 0.8 k 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ExtGState << /GSbm << /BM /Darken >> >>",
+    ),
+    # Alpha hằng không có group: đường đơn giản nhất của trong suốt, dùng làm mốc
+    # để tách lỗi "alpha sai" khỏi lỗi "group sai".
+    "alpha_half_k.pdf": (
+        f"/GSa gs 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ExtGState << /GSa << /ca 0.5 /CA 0.5 >> >>",
+    ),
 }
+
+
+# ── Fixture cần object phụ (Form XObject) ────────────────────────────────────
+
+FIXTURES_MULTI: dict[str, tuple] = {
+    # Group đục: phải bằng đúng việc vẽ trực tiếp ⇒ 100% K.
+    "group_opaque_k.pdf": (
+        "/Fm0 Do\n",
+        "/XObject << /Fm0 5 0 R >>",
+        (form_object(full_page("0 0 0 1 k"), group=_GROUP_CMYK),),
+    ),
+    # Group alpha 0.5 trên K đặc ⇒ 50%.
+    "group_alpha_half_k.pdf": (
+        "/GSa gs /Fm0 Do\n",
+        "/XObject << /Fm0 5 0 R >> /ExtGState << /GSa << /ca 0.5 /CA 0.5 >> >>",
+        (form_object(full_page("0 0 0 1 k"), group=_GROUP_CMYK),),
+    ),
+    # HAI hình K đặc chồng nhau trong cùng group, alpha 0.5.
+    #
+    # Đây là fixture quan trọng nhất của nhóm này: alpha của group phải áp MỘT lần
+    # cho cả group (⇒ 50%), không áp cho từng phần tử (⇒ 75%). Sai kiểu này báo
+    # **thừa** mực nên không làm hỏng lô in, nhưng nó cảnh báo oan hàng loạt file
+    # có bóng mờ và làm người dùng bỏ qua cảnh báo.
+    "group_alpha_overlap.pdf": (
+        "/GSa gs /Fm0 Do\n",
+        "/XObject << /Fm0 5 0 R >> /ExtGState << /GSa << /ca 0.5 /CA 0.5 >> >>",
+        (
+            form_object(
+                full_page("0 0 0 1 k") + full_page("0 0 0 1 k"),
+                group=_GROUP_CMYK,
+            ),
+        ),
+    ),
+    # Group cách ly: đường tính khác hẳn (chia lại alpha) nhưng kết quả phải trùng.
+    "group_isolated_alpha_half_k.pdf": (
+        "/GSa gs /Fm0 Do\n",
+        "/XObject << /Fm0 5 0 R >> /ExtGState << /GSa << /ca 0.5 /CA 0.5 >> >>",
+        (
+            form_object(
+                full_page("0 0 0 1 k"),
+                group="<< /S /Transparency /CS /DeviceCMYK /I true >>",
+            ),
+        ),
+    ),
+    # Soft mask luminosity: nền xám 50% ⇒ mực còn một nửa.
+    "smask_luminosity_half.pdf": (
+        f"/GSm gs 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ExtGState << /GSm << /SMask << /S /Luminosity /G 5 0 R >> >> >>",
+        (form_object(full_page("0.5 g"), group=_GROUP_GRAY),),
+    ),
+    # Mặt nạ chỉ phủ nửa trang. Ngoài `/BBox`, nền mặc định là ĐEN ⇒ nửa phải không
+    # được in. Nếu cài sai (nền trắng) thì mực tràn ra cả trang và GS sẽ khác hẳn.
+    "smask_luminosity_bbox_half.pdf": (
+        f"/GSm gs 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ExtGState << /GSm << /SMask << /S /Luminosity /G 5 0 R >> >> >>",
+        (
+            form_object(
+                f"1 g 0 0 {PAGE_W // 2} {PAGE_H} re f\n",
+                bbox=(0, 0, PAGE_W // 2, PAGE_H),
+                group=_GROUP_GRAY,
+            ),
+        ),
+    ),
+    # Mặt nạ kiểu Alpha: chỉ vùng group đã vẽ mới cho mực qua, màu không liên quan.
+    "smask_alpha_half.pdf": (
+        f"/GSm gs 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/ExtGState << /GSm << /SMask << /S /Alpha /G 5 0 R >> >> >>",
+        (
+            form_object(
+                f"0 g 0 0 {PAGE_W // 2} {PAGE_H} re f\n",
+                group=_GROUP_GRAY,
+            ),
+        ),
+    ),
+    # Tiling pattern. Lượng mực phụ thuộc **diện tích nét** của ô mẫu, nên đây là lớp
+    # file mà mọi cách xấp xỉ đều cho số bịa: ô tô nửa ⇒ đúng 50% diện tích phủ, còn
+    # đỉnh mực ở chỗ có nét vẫn phải là 100%.
+    "tiling_half_cell.pdf": (
+        f"/Pattern cs /P0 scn 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/Pattern << /P0 5 0 R >>",
+        (
+            tiling_object(
+                f"0 0 0 1 k 0 0 {PAGE_W // 20} {PAGE_H // 10} re f\n",
+                bbox=(0, 0, PAGE_W // 10, PAGE_H // 10),
+            ),
+        ),
+    ),
+    # Uncoloured pattern: màu do `scn` bên ngoài quyết định, mọi operator màu trong ô
+    # bị bỏ qua. Cài sai cho ra mẫu ĐEN thay vì Cyan — sai cả kẽm lẫn lượng mực.
+    "tiling_uncoloured_cyan.pdf": (
+        f"/CS0 cs 1 0 0 0 /P0 scn 0 0 {PAGE_W} {PAGE_H} re f\n",
+        "/Pattern << /P0 5 0 R >> /ColorSpace << /CS0 [/Pattern /DeviceCMYK] >>",
+        (
+            tiling_object(
+                f"0 0 0 1 k 0 0 {PAGE_W // 10} {PAGE_H // 10} re f\n",
+                bbox=(0, 0, PAGE_W // 10, PAGE_H // 10),
+                paint_type=2,
+            ),
+        ),
+    ),
+    # Optional content: lớp TẮT tuyệt đối không được lên kẽm. Đây là chiều sai **ngược**
+    # với mọi fixture khác — đo *thừa* mực, không phải thiếu.
+    "oc_layer_off.pdf": (
+        f"/OC /MC0 BDC 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f EMC\n",
+        "/Properties << /MC0 5 0 R >>",
+        (b"<< /Type /OCG /Name (Lop tat) >>",),
+        "<< /OCGs [5 0 R] /D << /OFF [5 0 R] >> >>",
+    ),
+    # Cùng nội dung nhưng lớp BẬT — mốc đối chiếu, để chắc fixture trên không trắng
+    # chỉ vì engine bỏ cả trang.
+    "oc_layer_on.pdf": (
+        f"/OC /MC0 BDC 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f EMC\n",
+        "/Properties << /MC0 5 0 R >>",
+        (b"<< /Type /OCG /Name (Lop bat) >>",),
+        "<< /OCGs [5 0 R] /D << >> >>",
+    ),
+    # Lớp hiện trên màn hình nhưng khai KHÔNG IN. Engine đo mực phải coi là tắt; một
+    # renderer xem-trước thì không. Ghostscript cũng đọc cấu hình in nên so được.
+    "oc_print_state_off.pdf": (
+        f"/OC /MC0 BDC 0 0 0 1 k 0 0 {PAGE_W} {PAGE_H} re f EMC\n",
+        "/Properties << /MC0 5 0 R >>",
+        (
+            b"<< /Type /OCG /Name (Watermark) "
+            b"/Usage << /Print << /PrintState /OFF >> >> >>",
+        ),
+        "<< /OCGs [5 0 R] /D << /AS [ << /Event /Print /Category [/Print] "
+        "/OCGs [5 0 R] >> ] >> >>",
+    ),
+}
+
+
+def _q(v: float) -> int:
+    """Lượng hoá toạ độ về byte theo `/Decode [0 PAGE_W 0 PAGE_H]`."""
+    return max(0, min(255, round(v / PAGE_W * 255)))
+
+
+def _mesh_stream(body: bytes, shading_type: int, extra: str = "") -> bytes:
+    head = (
+        f"<< /ShadingType {shading_type} /ColorSpace /DeviceCMYK "
+        f"/BitsPerCoordinate 8 /BitsPerComponent 8 /BitsPerFlag 8 "
+        f"/Decode [0 {PAGE_W} 0 {PAGE_H} 0 1 0 1 0 1 0 1]{extra} "
+        f"/Length {len(body)} >>"
+    ).encode("latin-1")
+    return head + b"\nstream\n" + body + b"\nendstream"
+
+
+def write_mesh_fixtures() -> int:
+    """Shading lưới kiểu 4 và 6, tô K đặc phủ kín trang.
+
+    Chọn màu **đặc một kênh** thay vì một dải chuyển đẹp: mục đích là chốt *hình học*
+    của lưới (có phủ kín không, các patch có nối liền không), và một dải chuyển sẽ làm
+    con số phụ thuộc cả phép nội suy nên không tách được nguyên nhân khi lệch.
+    """
+    black = bytes([0, 0, 0, 255])  # C=0 M=0 Y=0 K=1
+
+    # Kiểu 4: hai tam giác nối bằng cờ 1 ⇒ phủ kín trang.
+    t4 = bytearray()
+    for flag, x, y in [
+        (0, 0, 0),
+        (0, PAGE_W, 0),
+        (0, 0, PAGE_H),
+        (1, PAGE_W, PAGE_H),
+    ]:
+        t4 += bytes([flag, _q(x), _q(y)]) + black
+    (OUT_DIR / "mesh_type4_solid.pdf").write_bytes(
+        build_pdf("/Sh0 sh\n", "/Shading << /Sh0 5 0 R >>", (_mesh_stream(bytes(t4), 4),))
+    )
+
+    # Kiểu 6: một Coons patch là hình chữ nhật phủ kín trang.
+    def edge(t: float, x0: float, y0: float, x1: float, y1: float) -> tuple[float, float]:
+        return (x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
+
+    pts = [
+        (0, 0),
+        edge(1 / 3, 0, 0, PAGE_W, 0),
+        edge(2 / 3, 0, 0, PAGE_W, 0),
+        (PAGE_W, 0),
+        edge(1 / 3, PAGE_W, 0, PAGE_W, PAGE_H),
+        edge(2 / 3, PAGE_W, 0, PAGE_W, PAGE_H),
+        (PAGE_W, PAGE_H),
+        edge(1 / 3, PAGE_W, PAGE_H, 0, PAGE_H),
+        edge(2 / 3, PAGE_W, PAGE_H, 0, PAGE_H),
+        (0, PAGE_H),
+        edge(1 / 3, 0, PAGE_H, 0, 0),
+        edge(2 / 3, 0, PAGE_H, 0, 0),
+    ]
+    t6 = bytearray([0])
+    for x, y in pts:
+        t6 += bytes([_q(x), _q(y)])
+    t6 += black * 4
+    (OUT_DIR / "mesh_type6_solid.pdf").write_bytes(
+        build_pdf("/Sh0 sh\n", "/Shading << /Sh0 5 0 R >>", (_mesh_stream(bytes(t6), 6),))
+    )
+    return 2
+
+
+def write_ccitt_fixture() -> int:
+    """Ảnh scan G4 thật, mã hoá bởi libtiff — không phải bởi chính PPE.
+
+    Dùng encoder ngoài là điểm quan trọng: nếu fixture do PPE tự sinh thì một mã sai
+    trong bảng T.4 vẫn khớp với chính nó và test sẽ xanh trên dữ liệu sai.
+
+    Chiều bit: libtiff coi **bit 0 là run trắng**, còn Pillow chế độ `'1'` lưu trắng
+    bằng bit 1 — nên bitmap nguồn bị đảo để chiều stream khớp quy ước fax, cũng là quy
+    ước PDF dùng khi `/BlackIs1` là `false`.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        print("  bỏ qua fixture CCITT: thiếu Pillow")
+        return 0
+
+    import tempfile
+
+    w = h = 200
+    img = Image.new("1", (w, h), 0)
+    px = img.load()
+    for y in range(50, 150):
+        for x in range(50, 150):
+            px[x, y] = 1  # vùng sẽ là ĐEN sau khi giải mã
+
+    with tempfile.TemporaryDirectory() as td:
+        tif = Path(td) / "src.tif"
+        img.save(tif, compression="group4")
+        with Image.open(tif) as opened:
+            offsets = opened.tag_v2[273]
+            counts = opened.tag_v2[279]
+        raw = tif.read_bytes()
+        data = b"".join(raw[o : o + c] for o, c in zip(offsets, counts))
+
+    image_obj = (
+        f"<< /Type /XObject /Subtype /Image /Width {w} /Height {h} "
+        f"/BitsPerComponent 1 /ColorSpace /DeviceGray /Filter /CCITTFaxDecode "
+        f"/DecodeParms << /K -1 /Columns {w} /Rows {h} >> /Length {len(data)} >>"
+    ).encode("latin-1") + b"\nstream\n" + data + b"\nendstream"
+
+    (OUT_DIR / "ccitt_group4.pdf").write_bytes(
+        build_pdf(
+            f"q {PAGE_W} 0 0 {PAGE_H} 0 0 cm /Im0 Do Q\n",
+            "/XObject << /Im0 5 0 R >>",
+            (image_obj,),
+        )
+    )
+    return 1
 
 
 def write_image_fixture(path: Path, colorspace: str, n_comps: int, sample: list[int]) -> None:
@@ -161,6 +557,15 @@ def main() -> int:
     for name, (content, resources) in FIXTURES.items():
         (OUT_DIR / name).write_bytes(build_pdf(content, resources))
         written += 1
+
+    for name, entry in FIXTURES_MULTI.items():
+        content, resources, extra = entry[0], entry[1], entry[2]
+        oc_props = entry[3] if len(entry) > 3 else ""
+        (OUT_DIR / name).write_bytes(build_pdf(content, resources, extra, oc_props))
+        written += 1
+
+    written += write_mesh_fixtures()
+    written += write_ccitt_fixture()
 
     # Ảnh: cùng màu với các fixture vector tương ứng để so chéo được hai đường.
     write_image_fixture(OUT_DIR / "image_rgb_black.pdf", "/DeviceRGB", 3, [0, 0, 0])

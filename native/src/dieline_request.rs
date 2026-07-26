@@ -46,7 +46,7 @@ pub fn validate_request_json(request_json: &str) -> Result<Value, String> {
             return Err(format!("params.{key} must be a string"));
         }
     }
-    one_of(params.get("boxType"), "params.boxType", &["rte", "slb", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray"])?;
+    one_of(params.get("boxType"), "params.boxType", &["rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray"])?;
     one_of(params.get("glueSide"), "params.glueSide", &["left", "right"])?;
     one_of(params.get("panelOrder"), "params.panelOrder", &["WLWL", "LWLW"])?;
     one_of(params.get("handleShape"), "params.handleShape", &["oval", "roundRect"])?;

@@ -107,7 +107,7 @@ pub fn render_svg(pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<String>
 }
 
 /// Render page to JPEG image bytes.
-pub fn render_image(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<PyObject> {
+pub fn render_image(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<Py<PyAny>> {
     let pdfium = crate::pdfium_init::load_pdfium();
     let doc = pdfium
         .load_pdf_from_file(pdf_path, None)

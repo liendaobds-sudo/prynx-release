@@ -234,6 +234,13 @@ impl ColorSpace {
                 let Some(colorant) = colorant else {
                     return Ok(None); // `/None` — không vẽ
                 };
+                // Soft-proof: màn hình không có mực pha. Quy qua tint transform về
+                // alternate space rồi mới sang mực. Giữ kênh riêng ở chế độ này sẽ
+                // làm một trang chỉ dùng Pantone hiện ra trắng.
+                if space.is_process_only() {
+                    let alt_comps = tint.eval(&[t]);
+                    return alternate.to_ink_depth(&alt_comps, space, warn, cm, depth + 1);
+                }
                 let ch = space.register(colorant.clone())?;
                 let mut ink = vec![0.0; space.len()];
                 ink[ch] = t;
@@ -243,6 +250,13 @@ impl ColorSpace {
 
             ColorSpace::DeviceN { colorants, alternate, tint } => {
                 warn.note_colorspace_used("DeviceN");
+                if space.is_process_only() {
+                    let comps: Vec<f32> = (0..colorants.len())
+                        .map(|i| comp(comps, i).clamp(0.0, 1.0))
+                        .collect();
+                    let alt_comps = tint.eval(&comps);
+                    return alternate.to_ink_depth(&alt_comps, space, warn, cm, depth + 1);
+                }
                 let mut ink: Vec<f32> = vec![0.0; space.len()];
                 let mut mask = ChannelMask::EMPTY;
                 let mut any = false;

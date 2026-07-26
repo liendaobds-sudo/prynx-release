@@ -210,3 +210,145 @@ mod tests {
         assert!(a.intersect(&b).is_none());
     }
 }
+
+/// Vùng pixel nửa mở `[x0, x1) × [y0, y1)` trong toạ độ thiết bị.
+///
+/// # Vì sao mọi thao tác vẽ đều mang theo một vùng
+///
+/// Buffer mực của một trang A4 @300 DPI là ~8.7 triệu pixel × n kênh. Nếu mỗi
+/// operator trộn mực trên **cả** buffer thì chi phí một trang tỉ lệ với
+/// `số_operator × diện_tích_trang`, chứ không với diện tích thật của nét vẽ.
+///
+/// Với vector và chữ điều đó chỉ là chậm. Với **tiling pattern** thì nó là bất khả
+/// thi: một mẫu gạch chéo bước 4pt trên A4 có hơn 30 000 ô, mỗi ô vài operator.
+/// Quét cả trang cho từng operator biến một trang thành hàng phút.
+///
+/// Nên `Rasterizer` trả về vùng bao của nét vẽ, và tầng mực chỉ trộn trong vùng đó.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+}
+
+impl Region {
+    pub const EMPTY: Region = Region { x0: 0, y0: 0, x1: 0, y1: 0 };
+
+    pub fn full(width: u32, height: u32) -> Region {
+        Region { x0: 0, y0: 0, x1: width, y1: height }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.x1 <= self.x0 || self.y1 <= self.y0
+    }
+
+    /// Kẹp vào khung `width × height`, trả [`Region::EMPTY`] nếu không còn gì.
+    pub fn clamped(self, width: u32, height: u32) -> Region {
+        let x0 = self.x0.min(width);
+        let y0 = self.y0.min(height);
+        let x1 = self.x1.min(width);
+        let y1 = self.y1.min(height);
+        if x1 <= x0 || y1 <= y0 {
+            Region::EMPTY
+        } else {
+            Region { x0, y0, x1, y1 }
+        }
+    }
+
+    /// Hộp bao chung của hai vùng (bỏ qua vùng rỗng).
+    pub fn union(self, other: Region) -> Region {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        Region {
+            x0: self.x0.min(other.x0),
+            y0: self.y0.min(other.y0),
+            x1: self.x1.max(other.x1),
+            y1: self.y1.max(other.y1),
+        }
+    }
+
+    /// Từ hộp bao dạng số thực (toạ độ thiết bị), nới ra một pixel mỗi phía.
+    ///
+    /// Nới một pixel vì bộ rasterize khử răng cưa có thể chạm pixel ngay ngoài hộp
+    /// bao hình học. Thiếu lề đó sẽ cắt mất viền mờ của nét — trên kẽm là mất nét.
+    pub fn from_bounds(left: f32, top: f32, right: f32, bottom: f32, width: u32, height: u32) -> Region {
+        if !left.is_finite() || !top.is_finite() || !right.is_finite() || !bottom.is_finite() {
+            return Region::full(width, height);
+        }
+        let x0 = (left.floor() as i64 - 1).max(0) as u32;
+        let y0 = (top.floor() as i64 - 1).max(0) as u32;
+        let x1 = (right.ceil() as i64 + 1).max(0) as u32;
+        let y1 = (bottom.ceil() as i64 + 1).max(0) as u32;
+        Region { x0, y0, x1, y1 }.clamped(width, height)
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::Region;
+
+    #[test]
+    fn full_region_covers_everything() {
+        let r = Region::full(10, 20);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (0, 0, 10, 20));
+        assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn empty_is_detected() {
+        assert!(Region::EMPTY.is_empty());
+        assert!(Region { x0: 5, y0: 0, x1: 5, y1: 10 }.is_empty());
+    }
+
+    #[test]
+    fn clamped_drops_region_outside_frame() {
+        let r = Region { x0: 20, y0: 20, x1: 30, y1: 30 }.clamped(10, 10);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn clamped_trims_partial_overlap() {
+        let r = Region { x0: 5, y0: 5, x1: 30, y1: 30 }.clamped(10, 10);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (5, 5, 10, 10));
+    }
+
+    #[test]
+    fn union_ignores_empty() {
+        let a = Region { x0: 1, y0: 1, x1: 2, y1: 2 };
+        assert_eq!(a.union(Region::EMPTY), a);
+        assert_eq!(Region::EMPTY.union(a), a);
+    }
+
+    #[test]
+    fn union_takes_outer_hull() {
+        let a = Region { x0: 1, y0: 1, x1: 3, y1: 3 };
+        let b = Region { x0: 5, y0: 0, x1: 6, y1: 9 };
+        let u = a.union(b);
+        assert_eq!((u.x0, u.y0, u.x1, u.y1), (1, 0, 6, 9));
+    }
+
+    #[test]
+    fn from_bounds_adds_one_pixel_margin() {
+        // Lề một pixel để không cắt viền khử răng cưa.
+        let r = Region::from_bounds(4.0, 4.0, 6.0, 6.0, 100, 100);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (3, 3, 7, 7));
+    }
+
+    #[test]
+    fn from_bounds_clamps_to_frame() {
+        let r = Region::from_bounds(-50.0, -50.0, 500.0, 500.0, 10, 10);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (0, 0, 10, 10));
+    }
+
+    #[test]
+    fn from_bounds_with_non_finite_falls_back_to_full_frame() {
+        // Toạ độ NaN/inf: thà quét cả trang còn hơn bỏ mất nét.
+        let r = Region::from_bounds(f32::NAN, 0.0, 10.0, 10.0, 8, 9);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (0, 0, 8, 9));
+    }
+}

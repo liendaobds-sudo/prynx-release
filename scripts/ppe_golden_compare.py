@@ -45,6 +45,10 @@ except ImportError:  # pragma: no cover
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROCESS_NAMES = ("Cyan", "Magenta", "Yellow", "Black")
 SRGB_PROFILE = REPO_ROOT / "backend" / "app" / "assets" / "icc" / "sRGB.icc"
+# Profile CMYK dùng làm **ánh xạ đồng nhất** ở chế độ đo mực. Xem `run_gs_tiffsep`.
+CMYK_IDENTITY_PROFILE = REPO_ROOT / "backend" / "app" / "assets" / "icc" / "FOGRA39.icc"
+# Cùng font thay thế mà facade dùng ở đường chạy thật.
+FALLBACK_FONT = REPO_ROOT / "backend" / "app" / "assets" / "fonts" / "DejaVuSans.ttf"
 
 # Ngưỡng gate — cố tình BẤT ĐỐI XỨNG cho TAC.
 # Báo thiếu mực khiến file quá ngưỡng bị coi là đạt (false-clean) → hỏng lô in.
@@ -52,6 +56,24 @@ SRGB_PROFILE = REPO_ROOT / "backend" / "app" / "assets" / "icc" / "sRGB.icc"
 TAC_UNDER_REPORT_LIMIT = 2.0
 TAC_OVER_REPORT_LIMIT = 10.0
 PLATE_MAE_LIMIT = 3.0
+
+# Fixture mà PPE **cố ý** khác Ghostscript, kèm con số lệch mong đợi.
+#
+# Vì sao pin bằng số thay vì chỉ ghi tên: một danh sách miễn trừ theo tên sẽ che luôn
+# mọi hồi quy trên fixture đó. Pin `(d_tac, dung_sai)` thì lệch đúng như dự kiến là
+# PASS, còn lệch khác đi vẫn FAIL.
+#
+# `oc_print_state_off`: lớp hiện trên màn hình nhưng khai `/Usage /Print /PrintState
+# /OFF`. Ghostscript đọc cấu hình mặc định `/D` và **bỏ qua** `/AS`, nên nó vẫn in lớp
+# đó (100% mực). PPE đọc cấu hình in vì nó đo mực sẽ lên giấy (0%). Acrobat và các RIP
+# hiện đại theo phía PPE.
+INTENTIONAL_DIVERGENCE: dict[str, tuple[float, float, str]] = {
+    "oc_print_state_off.pdf": (
+        -100.0,
+        1.0,
+        "GS bỏ qua /AS nên vẫn in lớp khai không-in; PPE theo cấu hình in",
+    ),
+}
 
 
 @dataclass
@@ -71,6 +93,9 @@ class PageStats:
     skipped_ops: list[str] = field(default_factory=list)
     approximated_colorspaces: list[str] = field(default_factory=list)
     colorspaces_used: list[str] = field(default_factory=list)
+    ink_unsound: bool = False
+    geometry_approximate: bool = False
+    substituted_fonts: list[str] = field(default_factory=list)
 
     def max_tac(self) -> float:
         if not self.plates:
@@ -125,7 +150,10 @@ def run_gs_tiffsep(gs: str, pdf: Path, page: int, dpi: int, icc: Path | None = N
             "-dGraphicsAlphaBits=1",
             "-dTextAlphaBits=1",
             "-dMaxSpots=32",
-            "-dSimulateOverprint=true",
+            # `-dSimulateOverprint` đã bị GS 10.x loại bỏ — nó chỉ in cảnh báo rồi
+            # chạy tiếp với mặc định, nên bộ đo đã im lặng so PPE (có overprint) với
+            # GS (không overprint) trong suốt thời gian dùng cờ đó.
+            "-sOverprint=simulate",
         ]
         if icc:
             cmd += [
@@ -148,17 +176,43 @@ def run_gs_tiffsep(gs: str, pdf: Path, page: int, dpi: int, icc: Path | None = N
             # Và ép luôn intent + bù điểm đen cho khớp ColorManager của PPE.
             cmd += ["-dRenderIntent=1", "-dBlackPtComp=1"]
         else:
-            cmd += ["-dUseFastColor=true"]
+            # KHÔNG dùng `-dUseFastColor=true`: đường fast color của Ghostscript bỏ
+            # qua toàn bộ logic overprint (đo được: K-only overprint trên Cyan cho
+            # 100% thay vì 200%). Thay vào đó tắt fast color và đặt **cùng một**
+            # profile CMYK cho nguồn và đích ⇒ DeviceCMYK→DeviceCMYK là ánh xạ đồng
+            # nhất, vùng đặc vẫn đọc đúng 400%, mà overprint được tính.
+            cmd += ["-dUseFastColor=false"]
+            if CMYK_IDENTITY_PROFILE.is_file():
+                cmd += [
+                    f"-sDefaultCMYKProfile={CMYK_IDENTITY_PROFILE}",
+                    f"-sOutputICCProfile={CMYK_IDENTITY_PROFILE}",
+                    "-dOverrideICC=true",
+                    "-dRenderIntent=1",
+                    "-dBlackPtComp=1",
+                ]
+            else:
+                cmd = [c for c in cmd if c != "-dUseFastColor=false"]
+                cmd += ["-dUseFastColor=true"]
+                print(
+                    "  CẢNH BÁO: không có FOGRA39.icc ⇒ dùng fast color, GS sẽ KHÔNG "
+                    "tính overprint.",
+                    file=sys.stderr,
+                )
         cmd += [
             f"-sOutputFile={base}.tif",
             str(pdf),
         ]
         proc = subprocess.run(cmd, capture_output=True, timeout=600)
+        stderr_text = proc.stderr.decode("utf-8", "replace")
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"GS thất bại ({proc.returncode}): "
-                f"{proc.stderr.decode('utf-8', 'replace')[:300]}"
-            )
+            raise RuntimeError(f"GS thất bại ({proc.returncode}): {stderr_text[:300]}")
+        # Cờ đã bị loại bỏ KHÔNG làm GS trả mã lỗi. Không đọc stderr thì bộ đo sẽ
+        # tiếp tục so với một cấu hình khác cấu hình mình nghĩ mình đang dùng.
+        if "no longer supported" in stderr_text:
+            dead = [
+                ln.strip() for ln in stderr_text.splitlines() if "no longer supported" in ln
+            ]
+            raise RuntimeError("GS có cờ đã bị loại bỏ: " + "; ".join(dead[:3]))
 
         stats = PageStats(width=0, height=0)
         for entry in sorted(os.listdir(tmp)):
@@ -203,6 +257,11 @@ def run_ppe(pdf: Path, page: int, dpi: int, icc: Path | None = None) -> PageStat
             # Cùng profile RGB nguồn với GS: nếu hai bên khác profile nguồn thì
             # chênh lệch đo được là chênh lệch profile, không phải chất lượng.
             str(SRGB_PROFILE) if icc and SRGB_PROFILE.is_file() else "",
+            # Font thay thế — PHẢI khớp thứ facade truyền ở đường chạy thật.
+            # Ghostscript cũng thay font không nhúng bằng bộ font URW của nó, nên
+            # nếu PPE không thay thì phép so là so "có vẽ chữ" với "không vẽ chữ",
+            # và bộ đo lại đang đo một cấu hình khác cấu hình sản phẩm.
+            str(FALLBACK_FONT) if FALLBACK_FONT.is_file() else "",
         ],
         capture_output=True,
         timeout=600,
@@ -224,6 +283,9 @@ def run_ppe(pdf: Path, page: int, dpi: int, icc: Path | None = None) -> PageStat
         skipped_ops=[o["op"] for o in data.get("skipped_ops", [])],
         approximated_colorspaces=data.get("approximated_colorspaces", []),
         colorspaces_used=data.get("colorspaces_used", []),
+        ink_unsound=data.get("ink_unsound", False),
+        geometry_approximate=data.get("geometry_approximate", False),
+        substituted_fonts=data.get("substituted_fonts", []),
     )
     # `plate_stats` chỉ trả thống kê, không trả pixel — đủ để so TAC/max/mean.
     stats._summary = {p["name"]: p for p in data["plates"]}  # type: ignore[attr-defined]
@@ -261,6 +323,9 @@ class Comparison:
     colorspaces_used: list[str] = field(default_factory=list)
     dropped: int = 0
     color_managed: bool = False
+    ink_unsound: bool = False
+    geometry_approximate: bool = False
+    substituted_fonts: list[str] = field(default_factory=list)
     note: str = ""
 
     @property
@@ -275,7 +340,18 @@ class Comparison:
         # Thứ tự kiểm rất quan trọng: phải phân biệt "PPE chưa vẽ được" với "phép
         # so sánh vô nghĩa". Gộp hai thứ này lại sẽ che mất việc pipeline hình học
         # đã đúng và chỉ còn thiếu quản lý màu.
-        if self.dropped > 0:
+        # Chỉ trục `ink_unsound` mới làm kết quả không so được. `geometry_approximate`
+        # (font không nhúng đã thay) VẪN so được: chữ đã lên mực, đỉnh TAC vẫn đúng,
+        # chỉ diện tích phủ là xấp xỉ — và chính đó là cấu hình sản phẩm đang chạy.
+        expected = INTENTIONAL_DIVERGENCE.get(self.pdf)
+        if expected is not None:
+            want, tol, _ = expected
+            if abs(self.d_tac - want) <= tol:
+                return "KHÁC GS (có chủ ý)"
+            return "FAIL (lệch khác dự kiến)"
+        if self.ink_unsound:
+            return "CHƯA ĐỦ TÍNH NĂNG"
+        if self.dropped > 0 and not self.approximated:
             return "CHƯA ĐỦ TÍNH NĂNG"
         # Ghi chú: trước đây ở đây có luật loại nội dung DeviceCMYK khỏi phép so,
         # vì GS nén vùng đặc 400% → ~292%. Nguyên nhân thật không phải "GS nén
@@ -295,7 +371,11 @@ class Comparison:
         if not self.plates_match:
             return "FAIL (lệch số kẽm)"
         if self.worst_mae > PLATE_MAE_LIMIT:
-            return "FAIL (mae)"
+            return "FAIL (mean kẽm)"
+        if self.geometry_approximate:
+            # Đạt ngưỡng, nhưng nói rõ là đạt với font thay thế: hình glyph khác
+            # bản gốc nên con số diện tích phủ không phải con số của file thật.
+            return "PASS (font thay thế)"
         return "PASS"
 
 
@@ -333,6 +413,9 @@ def compare(pdf: Path, gs: str, page: int, dpi: int, icc: Path | None = None) ->
         colorspaces_used=ppe_stats.colorspaces_used,
         dropped=ppe_stats.dropped_objects,
         color_managed=icc is not None,
+        ink_unsound=ppe_stats.ink_unsound,
+        geometry_approximate=ppe_stats.geometry_approximate,
+        substituted_fonts=ppe_stats.substituted_fonts,
         note=note,
     )
 
@@ -388,7 +471,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  {pdf.name}: LỖI — {exc}")
 
-    header = f"{'file':<28} {'gs_tac':>8} {'ppe_tac':>8} {'d_tac':>8} {'mae':>7} {'kẽm':>7}  kết luận"
+    header = f"{'file':<28} {'gs_tac':>8} {'ppe_tac':>8} {'d_tac':>8} {'meanΔ':>7} {'kẽm':>7}  kết luận"
     print(header)
     print("-" * len(header))
     failures = 0
@@ -403,17 +486,24 @@ def main() -> int:
         )
         if r.note:
             print(f"{'':<28} ↳ {r.note}")
-        if r.dropped and r.skipped:
-            print(f"{'':<28} ↳ PPE chưa vẽ: {', '.join(r.skipped[:4])}")
+        if verdict.startswith("KHÁC GS"):
+            print(f"{'':<28} ↳ {INTENTIONAL_DIVERGENCE[r.pdf][2]}")
+        if verdict == "CHƯA ĐỦ TÍNH NĂNG" and r.skipped:
+            print(f"{'':<28} ↳ PPE chưa bảo đảm: {', '.join(r.skipped[:4])}")
         elif r.approximated:
             print(f"{'':<28} ↳ {', '.join(r.approximated[:2])}")
+        if r.substituted_fonts:
+            print(f"{'':<28} ↳ font đã thay: {', '.join(r.substituted_fonts[:4])}")
 
     print()
     incomplete = sum(1 for r in rows if r.verdict() == "CHƯA ĐỦ TÍNH NĂNG")
     no_ref = sum(1 for r in rows if r.verdict().startswith("KHÔNG SO ĐƯỢC"))
-    passed = sum(1 for r in rows if r.verdict() == "PASS")
+    passed = sum(1 for r in rows if r.verdict().startswith("PASS"))
+    substituted = sum(1 for r in rows if r.verdict() == "PASS (font thay thế)")
+    divergent = sum(1 for r in rows if r.verdict().startswith("KHÁC GS"))
     print(
-        f"Tổng {len(rows)} file: {passed} PASS, {failures} FAIL, "
+        f"Tổng {len(rows)} file: {passed} PASS ({substituted} với font thay thế), "
+        f"{failures} FAIL, {divergent} khác GS có chủ ý, "
         f"{incomplete} chưa đủ tính năng, {no_ref} không so được (thiếu ICC)."
     )
 
@@ -427,6 +517,7 @@ def main() -> int:
                         "ppe_max_tac_pct": round(r.ppe_tac, 3),
                         "delta_tac_points": round(r.d_tac, 3),
                         "worst_plate_mae_255": round(r.worst_mae, 3),
+                        "worst_plate_mean_delta_255": round(r.worst_mae, 3),
                         "gs_plates": r.gs_plates,
                         "ppe_plates": r.ppe_plates,
                         "ppe_degraded": r.degraded,
@@ -434,6 +525,9 @@ def main() -> int:
                         "ppe_skipped_ops": r.skipped,
                         "ppe_approximated_colorspaces": r.approximated,
                         "ppe_colorspaces_used": r.colorspaces_used,
+                        "ppe_ink_unsound": r.ink_unsound,
+                        "ppe_geometry_approximate": r.geometry_approximate,
+                        "ppe_substituted_fonts": r.substituted_fonts,
                         "color_managed": r.color_managed,
                         "verdict": r.verdict(),
                     }

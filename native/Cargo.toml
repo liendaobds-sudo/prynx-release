@@ -8,17 +8,24 @@ description = "Rust native module for PDF page object operations via PDFium FFI"
 name = "pdfcompare_native"
 crate-type = ["cdylib"]
 
+[build-dependencies]
+# build.rs mã hoá bundle dieline khi phát hành (xem build.rs — anticrack 2026-07-26).
+aes-gcm = "0.10"
+base64 = "0.22"
+sha2 = "0.10"
+
 [dependencies]
-pyo3 = { version = "0.26", features = ["extension-module"] }
+pyo3 = { version = "0.29", features = ["extension-module"] }
+aes-gcm = "0.10"
 pdfium-render = "0.8"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 ed25519-dalek = "2.1"
 sha2 = "0.10"
 boa_engine = { version = "0.21.1", default-features = false }
-numpy = "0.26"
+numpy = "0.29"
 rayon = "1.12.0"
 geo = "0.28"
 imposition_core = { path = "../imposition_core" }

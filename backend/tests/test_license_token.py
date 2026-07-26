@@ -35,7 +35,7 @@ def signing(monkeypatch):
     return sk
 
 
-def _payload(hwid="HW123", key="ABCDE-FGHIJ-KLMNO", product="sticker", ttl=3600):
+def _payload(hwid="HW123", key="ABCDE-FGHIJ-KLMNO", product="prynx", ttl=3600):
     import hashlib
     return {
         "k": hashlib.sha256(key.encode()).hexdigest()[:16],
@@ -67,6 +67,20 @@ def test_key_mismatch(signing):
     tok = _make_token(signing, _payload(key="ABCDE-FGHIJ-KLMNO"))
     ok, reason = lg.verify_license_token(tok, "HW123", "WRONG-KEY-00000")
     assert not ok and "key" in reason.lower()
+
+
+def test_wrong_product_rejected(signing):
+    tok = _make_token(signing, _payload(product="sticker"))
+    ok, reason = lg.verify_license_token(tok, "HW123", "ABCDE-FGHIJ-KLMNO")
+    assert not ok and "product" in reason.lower()
+
+
+def test_missing_product_rejected(signing):
+    payload = _payload()
+    del payload["p"]
+    tok = _make_token(signing, payload)
+    ok, reason = lg.verify_license_token(tok, "HW123", "ABCDE-FGHIJ-KLMNO")
+    assert not ok and "product" in reason.lower()
 
 
 def test_tampered_signature(signing):
@@ -103,15 +117,21 @@ BOUND_HWID = "HW123"
 BOUND_LICENSE_TOKEN = "SIGNED_LICENSE_TOKEN"
 
 
-def _sign(token: str, ts: str, path: str, nonce: str | None = None) -> tuple[str, str]:
+def _sign(
+    token: str,
+    ts: str,
+    path: str,
+    nonce: str | None = None,
+    method: str = "GET",
+) -> tuple[str, str]:
     """Dựng chữ ký HMAC như Rust `sign_api_request` → trả (signature, nonce).
 
-    Payload PHẢI khớp Rust: ts:nonce:path:key:hwid:sha256(token) (audit 2026-07-25).
+    Payload PHẢI khớp Rust: ts:nonce:method:path:key:hwid:sha256(token).
     """
     if nonce is None:
         nonce = uuid.uuid4().hex
     token_hash = hashlib.sha256(BOUND_LICENSE_TOKEN.encode()).hexdigest()
-    payload = f"{ts}:{nonce}:{path}:{BOUND_KEY}:{BOUND_HWID}:{token_hash}"
+    payload = f"{ts}:{nonce}:{method}:{path}:{BOUND_KEY}:{BOUND_HWID}:{token_hash}"
     return _hmac.new(token.encode(), payload.encode(), hashlib.sha256).hexdigest(), nonce
 
 
@@ -171,6 +191,16 @@ def test_sidecar_signature_path_mismatch(sidecar):
     ts = str(int(time.time()))
     sig, nonce = _sign(sidecar, ts, "/api/upload")
     ok, reason = lg.verify_sidecar_signature("/api/admin", ts, sig, BOUND_KEY, BOUND_HWID, BOUND_LICENSE_TOKEN, nonce)
+    assert not ok and "signature" in reason.lower()
+
+
+def test_sidecar_signature_method_mismatch(sidecar):
+    ts = str(int(time.time()))
+    path = "/api/upload"
+    sig, nonce = _sign(sidecar, ts, path, method="POST")
+    ok, reason = lg.verify_sidecar_signature(
+        path, ts, sig, BOUND_KEY, BOUND_HWID, BOUND_LICENSE_TOKEN, nonce, "DELETE"
+    )
     assert not ok and "signature" in reason.lower()
 
 
@@ -331,3 +361,35 @@ def test_license_context_without_entitlements_is_free():
     context = lg._license_context("KEY", "HWID", True)
     assert context["plan"] == "free"
     assert context["features"] is None
+
+def test_result_access_url_is_path_scoped(monkeypatch):
+    monkeypatch.setattr(lg, "_SIDECAR_TOKEN", "test-sidecar-secret")
+    path = "/results/job-1/page.png"
+    signed = lg.result_access_url(path)
+    signed_path, query = signed.split("?access=", 1)
+
+    assert signed_path == path
+    assert lg.verify_result_access(path, query)
+    assert not lg.verify_result_access("/results/job-2/page.png", query)
+    assert not lg.verify_result_access(path, "0" * 64)
+
+
+def test_result_access_fails_closed_without_sidecar_token(monkeypatch):
+    monkeypatch.setattr(lg, "_SIDECAR_TOKEN", None)
+    monkeypatch.setattr(lg, "_enforce_license_token", lambda: True)
+
+    with pytest.raises(RuntimeError, match="sidecar token"):
+        lg.result_access_url("/results/job-1/page.png")
+    assert not lg.verify_result_access("/results/job-1/page.png", "")
+
+def test_results_mount_requires_path_signature(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    monkeypatch.setattr(lg, "_SIDECAR_TOKEN", "test-sidecar-secret")
+    client = TestClient(app)
+    path = "/results/security-audit-does-not-exist.png"
+
+    assert client.get(path).status_code == 403
+    signed = lg.result_access_url(path)
+    assert client.get(signed).status_code == 404

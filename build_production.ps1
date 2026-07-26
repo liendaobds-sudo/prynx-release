@@ -14,6 +14,7 @@
 #    .\build_production.ps1 -SkipPreflightQA # Emergency build without automated QA
 #    .\build_production.ps1 -NoOpenExplorer  # Do not open Explorer after build
 #    .\build_production.ps1 -Version 1.0.0-beta.13  # Bump version before build
+#    .\build_production.ps1 -NoGhostscript   # Build WITHOUT bundling Ghostscript (AGPL)
 #
 # ============================================================
 
@@ -22,8 +23,15 @@ param(
     [switch]$SkipTauri,
     [switch]$NuitkaOnly,
     [switch]$Release,
+    [switch]$AllowPlaintextDieline,
     [switch]$SkipPreflightQA,
     [switch]$NoOpenExplorer,
+    # Khong dong goi Ghostscript vao installer.
+    # Ghostscript la AGPL-3.0: dong goi vao san pham closed-source la rui ro ban
+    # quyen. Co nay cho phep dung mot ban KHONG chua AGPL de kiem thu tien do cua
+    # PrynX Print Engine (docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md).
+    # Cung co the dat bang bien moi truong: PRYNX_BUNDLE_GS=0
+    [switch]$NoGhostscript,
     [ValidateRange(1, 8)]
     [int]$NuitkaJobs = 4,
     [string]$Version = ""
@@ -31,6 +39,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
+
+# Release artifacts must be rebuilt from current sources and must pass the full QA gate.
+if ($Release -and $SkipNuitka) {
+    throw "Release build refuses -SkipNuitka: the sidecar/native payload could be stale or unlocked."
+}
+if ($Release -and $SkipPreflightQA) {
+    throw "Release build refuses -SkipPreflightQA: security regression tests are mandatory."
+}
 
 Write-Host ""
 Write-Host "  ===========================================" -ForegroundColor Cyan
@@ -212,6 +228,79 @@ if (-not $SkipNuitka) {
         exit 1
     }
 
+    # ============================================================
+    #  Step 1a-pre: KHOA ENGINE DIELINE THEO BAN PHAT HANH (anticrack 2026-07-26)
+    #
+    #  Vi sao: truoc day viec kiem license cho engine dieline chi la mot ham tra
+    #  Result<(), String> -> ke crack patch thanh Ok(()) la dung duoc. Nay engine bi
+    #  MA HOA AES-256-GCM bang khoa RIENG cua tung ban phat hanh; khoa KHONG nam trong
+    #  binary ma do edge function license-verify cap trong token da ky (claim "rk").
+    #  Patch bo verify => khong co khoa => giai ma ra rac => engine khong nap duoc.
+    #
+    #  Release/prod builds are fail-closed. Plaintext is available only behind the
+    #  explicit -AllowPlaintextDieline switch for local development diagnostics.
+    # ============================================================
+    $env:PRYNX_DIELINE_KEY_B64 = ""
+    $env:PRYNX_DIELINE_VERSION = $APP_VERSION
+    $lockDieline = $env:PRYNX_SUPABASE_URL -and $env:PRYNX_SUPABASE_SERVICE_KEY
+    if (-not $lockDieline) {
+        if ($Release -or -not $AllowPlaintextDieline) {
+            throw "Missing PRYNX_SUPABASE_URL/PRYNX_SUPABASE_SERVICE_KEY. Refusing an unlocked build. Use -AllowPlaintextDieline only for local development."
+        }
+        Write-Host "  WARNING: explicit development override enabled; dieline engine is plaintext." -ForegroundColor Yellow
+    } else {
+        $keyHeaders = @{
+            apikey        = $env:PRYNX_SUPABASE_SERVICE_KEY
+            Authorization = "Bearer $($env:PRYNX_SUPABASE_SERVICE_KEY)"
+        }
+        $restBase = $env:PRYNX_SUPABASE_URL.TrimEnd('/')
+        $encodedVersion = [Uri]::EscapeDataString($APP_VERSION)
+        $keyUri = "$restBase/rest/v1/release_resource_keys?select=resource_key&product_id=eq.prynx&app_version=eq.$encodedVersion&resource=eq.dieline_engine&limit=2"
+
+        try {
+            $existingRows = @(Invoke-RestMethod -Method Get -Uri $keyUri -Headers $keyHeaders -ErrorAction Stop)
+        } catch {
+            throw "Cannot query the existing dieline resource key: $($_.Exception.Message)"
+        }
+        if ($existingRows.Count -gt 1) {
+            throw "Multiple resource keys found for prynx/$APP_VERSION/dieline_engine. Refusing an ambiguous build."
+        }
+
+        if ($existingRows.Count -eq 1) {
+            $keyB64 = [string]$existingRows[0].resource_key
+            try { $decodedKey = [Convert]::FromBase64String($keyB64) } catch { $decodedKey = $null }
+            if ($null -eq $decodedKey -or $decodedKey.Length -ne 32) {
+                throw "Existing dieline resource key is malformed; refusing to rotate or overwrite it."
+            }
+            Write-Host "  Reusing immutable dieline resource key for version $APP_VERSION." -ForegroundColor Green
+            $decodedKey = $null
+        } else {
+            $keyBytes = New-Object byte[] 32
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            try { $rng.GetBytes($keyBytes) } finally { $rng.Dispose() }
+            $keyB64 = [Convert]::ToBase64String($keyBytes)
+            $body = @{
+                product_id   = "prynx"
+                app_version  = $APP_VERSION
+                resource     = "dieline_engine"
+                resource_key = $keyB64
+            } | ConvertTo-Json -Compress
+            try {
+                $null = Invoke-RestMethod -Method Post -Uri "$restBase/rest/v1/release_resource_keys" `
+                    -Headers ($keyHeaders + @{
+                        'Content-Type' = 'application/json'
+                        Prefer = 'return=minimal'
+                    }) -Body $body -ErrorAction Stop
+                Write-Host "  Created immutable dieline resource key for version $APP_VERSION." -ForegroundColor Green
+            } catch {
+                throw "Cannot create dieline resource key (existing keys are never overwritten): $($_.Exception.Message)"
+            } finally {
+                if ($keyBytes) { [Array]::Clear($keyBytes, 0, $keyBytes.Length) }
+                $keyBytes = $null
+            }
+        }
+        $env:PRYNX_DIELINE_KEY_B64 = $keyB64
+    }
     # ---- Step 1a: Build the Rust/Python native extension ----
 
     # Rebuild the Rust/Python extension for the active Python ABI on every full
@@ -233,6 +322,10 @@ if (-not $SkipNuitka) {
     $nativeExit = $LASTEXITCODE
     if ($null -eq $previousVirtualEnv) { Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue }
     else { $env:VIRTUAL_ENV = $previousVirtualEnv }
+    # Xoa khoa khoi moi truong NGAY sau khi maturin dung xong: cac buoc sau (Nuitka,
+    # Tauri, NSIS) khong duoc thay khoa, va khong de khoa roi vao log/child process.
+    $script:DIELINE_LOCKED = if ($env:PRYNX_DIELINE_KEY_B64) { "yes" } else { "no" }
+    Remove-Item Env:PRYNX_DIELINE_KEY_B64 -ErrorAction SilentlyContinue
     if ($nativeExit -ne 0) {
         Write-Host "ERROR: Failed to build/install pdfcompare_native" -ForegroundColor Red
         exit 1
@@ -464,7 +557,44 @@ if (Test-Path $gsRoot) {
     if ($gsDir) { $GS_SRC = $gsDir.FullName }
 }
 $GS_DEST = "$SIDECAR_DIR\gs"
-if ($GS_SRC -and (Test-Path $GS_SRC)) {
+
+# Quyet dinh co dong goi Ghostscript hay khong.
+$BUNDLE_GS = $true
+if ($NoGhostscript -or $env:PRYNX_BUNDLE_GS -eq "0") { $BUNDLE_GS = $false }
+
+if (-not $BUNDLE_GS) {
+    # Ban KHONG chua AGPL. Phai xoa sach ban copy cu: neu de lai, installer van
+    # gom Ghostscript tu lan build truoc va ta tuong la da go -- day la kieu loi
+    # nguy hiem nhat vi khong ai thay.
+    if (Test-Path $GS_DEST) {
+        Write-Host "  Removing previously bundled Ghostscript..." -ForegroundColor DarkGray
+        Remove-Item -Recurse -Force $GS_DEST
+    }
+    # tauri.conf.json khai resource "binaries/gs/**/*". Glob khong khop gi se lam
+    # Tauri bao loi, nen de lai dung mot file giai thich -- vua thoa glob, vua tu
+    # ghi lai quyet dinh ngay trong ban da cai.
+    New-Item -ItemType Directory -Force -Path $GS_DEST | Out-Null
+    @(
+        "Ghostscript is NOT bundled in this build.",
+        "",
+        "Reason: Ghostscript is licensed AGPL-3.0-or-later. Bundling it inside a",
+        "closed-source installer creates licensing obligations, so this build was",
+        "produced with -NoGhostscript.",
+        "",
+        "Prepress features that still depend on Ghostscript will report a degraded",
+        "engine instead of silently returning wrong colour data. See",
+        "docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md for the replacement engine (PPE)."
+    ) | Set-Content -Path (Join-Path $GS_DEST "NO_GHOSTSCRIPT.txt") -Encoding UTF8
+
+    Write-Host "  Ghostscript NOT bundled (-NoGhostscript)." -ForegroundColor Yellow
+    Write-Host "  Cac tinh nang sau se KHONG chay tren may khong co Ghostscript:" -ForegroundColor Yellow
+    Write-Host "    - Tach kem (separations) chinh xac + kem spot" -ForegroundColor DarkYellow
+    Write-Host "    - Kiem tong muc TAC / ink-limit" -ForegroundColor DarkYellow
+    Write-Host "    - Soft-proof ICC giong RIP" -ForegroundColor DarkYellow
+    Write-Host "    - Xuat PDF/X, chuyen mau CMYK, spot->CMYK" -ForegroundColor DarkYellow
+    Write-Host "    - Flatten transparency, outline/embed font, downsample anh, nen PDF" -ForegroundColor DarkYellow
+    Write-Host "  Chi dung ban nay de KIEM THU. Khong phat hanh cho khach." -ForegroundColor Yellow
+} elseif ($GS_SRC -and (Test-Path $GS_SRC)) {
     Write-Host "  Ghostscript detected: $GS_SRC" -ForegroundColor DarkGray
     Write-Host "  Copying Ghostscript..." -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $GS_DEST | Out-Null
@@ -475,10 +605,14 @@ if ($GS_SRC -and (Test-Path $GS_SRC)) {
         if (Test-Path $p) { Remove-Item -Recurse -Force $p }
     }
     Write-Host "  Ghostscript bundled (doc/examples pruned)." -ForegroundColor Green
+    Write-Host "  LUU Y BAN QUYEN: Ghostscript la AGPL-3.0-or-later." -ForegroundColor Yellow
+    Write-Host "    Dong goi vao installer closed-source la rui ro ban quyen chua giai quyet." -ForegroundColor Yellow
+    Write-Host "    Xem THIRD_PARTY_NOTICES.md muc 1 va docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md." -ForegroundColor DarkYellow
 } else {
     Write-Host "ERROR: Ghostscript not found at $GS_SRC." -ForegroundColor Red
     Write-Host "  Ghostscript is REQUIRED for CMYK separations / PDF-X export." -ForegroundColor Red
-    Write-Host "  Install Ghostscript 10.04.0 or update GS_SRC path. Build aborted." -ForegroundColor Red
+    Write-Host "  Install Ghostscript 10.04.0, or build without it: -NoGhostscript" -ForegroundColor Red
+    Write-Host "  Build aborted." -ForegroundColor Red
     exit 1
 }
 
@@ -500,6 +634,30 @@ if (Test-Path $TESS_SRC) {
     Write-Host "  Build aborted to avoid shipping a broken OCR feature." -ForegroundColor Red
     exit 1
 }
+
+# ---- Third-party notices ----
+# Sinh lai NOTICE tu lockfile THAT o moi lan build. Ly do: NOTICE viet tay se lac
+# hau ngay sau lan `pip install` / `npm i` ke tiep, va mot NOTICE sai con te hon
+# khong co -- no la tuyen bo bang van ban rang ta da kiem ma thuc ra chua.
+# Danh sach thanh phan phai khop dung ban DANG dong goi, nen co -NoGhostscript
+# duoc truyen xuong de ban khong-AGPL khong liet ke Ghostscript.
+Write-Host "  Generating THIRD_PARTY_NOTICES.md..." -ForegroundColor DarkGray
+if (-not (Test-Path -LiteralPath $VENV_PYTHON -PathType Leaf)) {
+    Write-Host "ERROR: Khong tim thay $VENV_PYTHON de sinh NOTICE." -ForegroundColor Red
+    exit 1
+}
+$noticeArgs = @("$ROOT\scripts\gen_third_party_notices.py")
+if (-not $BUNDLE_GS) { $noticeArgs += "--no-ghostscript" }
+$env:PYTHONIOENCODING = "utf-8"
+& $VENV_PYTHON @noticeArgs
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Khong sinh duoc THIRD_PARTY_NOTICES.md." -ForegroundColor Red
+    Write-Host "  Khong phat hanh khi chua co danh muc ghi cong hop le." -ForegroundColor Red
+    exit 1
+}
+# Dua NOTICE vao bundle (tauri.conf.json khai resource "THIRD_PARTY_NOTICES.md").
+Copy-Item -Force "$ROOT\THIRD_PARTY_NOTICES.md" "$ROOT\desktop\src-tauri\THIRD_PARTY_NOTICES.md"
+Write-Host "  THIRD_PARTY_NOTICES.md generated and staged for bundle." -ForegroundColor Green
 
 $requiredBundleFiles = @(
     "$ROOT\desktop\src-tauri\bin\pdfium.dll",
@@ -598,6 +756,10 @@ if (-not $SkipTauri) {
         Write-Host "  Installer: $finalInstallerPath"
         Write-Host "  Size:      $([math]::Round((Get-Item $finalInstallerPath).Length / 1MB, 1)) MB"
 
+        if ($Release -and $script:DIELINE_LOCKED -ne "yes") {
+            throw "Release artifact is not dieline-locked. Refusing to publish installer/manifest."
+        }
+
         # ---- Release manifest (audit 2026-07-25) ----
         # App KHONG duoc code-sign nen runtime khong the tu verify exe (xem
         # lib.rs::log_self_exe_hash). Manifest nay la neo DOI CHIEU: khi nghi may khach
@@ -617,7 +779,8 @@ if (-not $SkipTauri) {
             "EXE_SHA256     = $exeHash",
             "SIDECAR_SHA256 = $HASH",
             "FRONTEND_SHA256 = $($env:PRYNX_FRONTEND_HASH)",
-            "CODE_SIGNED    = no (Authenticode chua bat -> runtime khong the tu verify exe)"
+            "CODE_SIGNED    = no (Authenticode chua bat -> runtime khong the tu verify exe)",
+            "DIELINE_LOCKED = $(if ($script:DIELINE_LOCKED) { $script:DIELINE_LOCKED } else { 'no' })"
         )
         Set-Content -Path $manifestPath -Value $manifestLines -Encoding ASCII
         Write-Host "  Manifest:  $manifestPath" -ForegroundColor Cyan

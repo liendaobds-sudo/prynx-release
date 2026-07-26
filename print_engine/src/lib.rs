@@ -29,17 +29,21 @@
 //! Implement từ ISO 32000-2 + spec ICC + so sánh output dạng black-box. Không
 //! đọc, không port, không tham chiếu source Ghostscript / MuPDF / Poppler.
 
+pub mod blend;
 pub mod color;
 pub mod content;
 pub mod error;
 pub mod geom;
 pub mod image;
 pub mod ink;
+pub mod oc;
 pub mod page;
 pub mod pdf;
 pub mod raster;
+pub mod shading;
 pub mod text;
 
+pub use blend::BlendMode;
 pub use color::{ColorSpace, PdfFunction};
 pub use content::{RenderOptions, Renderer};
 pub use error::{PpeError, PpeResult, RenderWarnings};

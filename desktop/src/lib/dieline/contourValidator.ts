@@ -134,6 +134,7 @@ function sharesEndpoint(a: [Point2D, Point2D], b: [Point2D, Point2D]): boolean {
 function collectUnbuddiedEndpoints(
     componentSegs: PathSegment[],
     allEndpoints: Point2D[],
+    creaseLines: [Point2D, Point2D][] = [],
 ): Point2D[] {
     const result: Point2D[] = [];
     for (const seg of componentSegs) {
@@ -147,10 +148,36 @@ function collectUnbuddiedEndpoints(
                 }
             }
             if (count >= 2) continue; // có buddy (CUT/BLEED/CREASE) → khép kín tại đây
+            if (endsOnCreaseBody(e, creaseLines)) continue; // dừng TRÊN THÂN nếp gập
             if (!result.some((r) => ptEq(r, e))) result.push(e); // loại trùng
         }
     }
     return result;
+}
+
+/**
+ * Đầu mút CUT/BLEED dừng TRÊN THÂN một đoạn CREASE (không chỉ trùng đầu mút của nó).
+ *
+ * AUDIT 2026-07-26 — vì sao cần: luật buddy chỉ nhận "trùng ĐẦU MÚT của CREASE" nên
+ * KHÔNG phủ phôi có đường gập LIÊN TỤC. `auto_bottom` vẽ CREASE đáy thành MỘT đoạn
+ * dài `x1→x5` (AutoBottomBox.ts, "Đường CREASE đáy liên tục"), còn free-edge của mảnh
+ * đáy CỐ Ý dừng ở B — nằm GIỮA đoạn gập đó, cách cột góc dán một khe `foldGap`
+ * (AutoBottomBox.ts §D5: "B luôn trái W (khe trên đoạn gấp, mẫu ~0.013W)"). Đầu cắt
+ * kết thúc trên nếp gập là CHỖ CHUYỂN TIẾP SANG NẾP GẬP — đúng cùng bản chất với
+ * trường hợp trùng đầu mút — nên không phải biên ngoài hở.
+ *
+ * KHÔNG làm yếu phép kiểm biên hở thật: một góc biên ngoài bị dịch đi `d` (Req 2.1,
+ * 3.4) nằm trong lòng vật liệu / ngoài nếp gập, không nằm trên đường gập, nên vẫn bị
+ * bắt (xem Property 3 và test "dịch một góc" trong contourValidator.test.ts).
+ *
+ * CHỈ nhận CREASE dạng đường thẳng/polyline; bỏ qua bezier vì `points` của bezier là
+ * điểm điều khiển — nội suy tuyến tính sẽ cho hình học SAI và có thể tha nhầm.
+ */
+function endsOnCreaseBody(e: Point2D, creaseLines: [Point2D, Point2D][]): boolean {
+    for (const [p, q] of creaseLines) {
+        if (pointOnSegment(e, p, q)) return true;
+    }
+    return false;
 }
 
 /**
@@ -267,6 +294,15 @@ export function validateClosedContours(model: DielineModel): ContourValidationRe
         allEndpoints.push(a, b);
     }
 
+    // Thân các đoạn CREASE thẳng (bỏ bezier — xem `endsOnCreaseBody`): dùng để nhận
+    // "đầu cắt dừng TRÊN nếp gập" là chỗ chuyển tiếp gập, không phải biên ngoài hở.
+    const creaseLines: [Point2D, Point2D][] = [];
+    for (const p of model.allPaths) {
+        if (p.tag !== 'CREASE' || p.type === 'bezier') continue;
+        const pts = Array.isArray(p.points) ? p.points : [];
+        for (let i = 0; i + 1 < pts.length; i++) creaseLines.push([pts[i], pts[i + 1]]);
+    }
+
     // 2. Dựng quan hệ liên thông CUT/BLEED theo endpoint trùng (union-find).
     const ends = segs.map((s) => segEndpoints(s));
     const parent: number[] = segs.map((_, i) => i);
@@ -350,7 +386,7 @@ export function validateClosedContours(model: DielineModel): ContourValidationRe
         // Tập đầu mút CUT/BLEED mất buddy của Cut_Piece này (crease-aware): đã
         // loại các đầu mút có buddy (kể cả trùng đầu mút CREASE) — chúng là chỗ
         // chuyển tiếp nếp gập, không phải biên hở.
-        const unbuddied = collectUnbuddiedEndpoints(componentSegs, allEndpoints);
+        const unbuddied = collectUnbuddiedEndpoints(componentSegs, allEndpoints, creaseLines);
 
         // Nắp gập độc lập (standalone foldable flap): TOÀN BỘ đoạn của Cut_Piece
         // thuộc cùng MỘT panel có `pivotEdge` (panel gập được). Đó là một nắp

@@ -478,9 +478,19 @@ fn image_xobject_now_paints_ink() {
 }
 
 #[test]
-fn shading_operator_is_reported() {
+fn shading_operator_with_missing_resource_is_reported() {
+    // `sh` luôn tô một vùng. Không tìm được shading nghĩa là **mất nội dung**, nên
+    // bỏ qua im lặng sẽ để lại khoảng trắng mà báo cáo vẫn nói trang sạch.
     let r = render("/Sh0 sh", dictionary! {});
     assert!(r.warnings.dropped_objects > 0);
+    assert!(
+        r.warnings
+            .skipped_ops
+            .iter()
+            .any(|(op, _)| op.contains("/Shading")),
+        "{:?}",
+        r.warnings.skipped_ops
+    );
 }
 
 #[test]

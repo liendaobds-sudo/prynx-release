@@ -327,6 +327,31 @@ impl ColorManager {
     }
 
     /// Dựng LUT 33³ từ một profile nguồn 3 kênh.
+    /// CMYK → blending RGB theo đúng profile RGB nguồn của `DeviceRGB`.
+    ///
+    /// Khác `cmyk_to_srgb_batch`: hàm này giữ float để dùng làm backdrop blending,
+    /// không lượng tử hoá qua RGB 8-bit.
+    pub fn cmyk_to_rgb_blend_batch(&self, cmyk: &[[f32; 4]]) -> Option<Vec<[f32; 3]>> {
+        let fallback = Profile::new_srgb();
+        let rgb = self.rgb.as_ref().unwrap_or(&fallback);
+        let t: Transform<[f32; 4], [f32; 3]> = Transform::new_flags(
+            &self.cmyk,
+            PixelFormat::CMYK_FLT,
+            rgb,
+            PixelFormat::RGB_FLT,
+            self.intent.to_lcms(),
+            self.cms_flags(),
+        )
+        .ok()?;
+        let src: Vec<[f32; 4]> = cmyk
+            .iter()
+            .map(|c| [c[0] * 100.0, c[1] * 100.0, c[2] * 100.0, c[3] * 100.0])
+            .collect();
+        let mut dst = vec![[0.0f32; 3]; src.len()];
+        t.transform_pixels(&src, &mut dst);
+        Some(dst)
+    }
+
     fn build_lut(
         &self,
         src_profile: &Profile,

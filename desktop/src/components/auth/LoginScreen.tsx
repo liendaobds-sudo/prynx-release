@@ -104,19 +104,11 @@ export default function LoginScreen() {
       if (data && data.success && data.key) {
         // console.log('[AUTO-DISCOVERY] Found license:', data.message);
         
-        // Let's actually verify it to complete the activation in the backend
-        const verifyResp = await supabase.rpc('verify_license', {
-          p_license_key: data.key,
-          p_machine_id: hwid,
-          p_product_id: PRODUCT_ID
-        });
-        
-        if (verifyResp.data && (verifyResp.data as any).status === 'VALID') {
-            setLicenseKey(data.key);
-            // Lấy token license server-ký ngay (backend cưỡng chế token) + bật heartbeat.
-            const ok = await useAuthStore.getState().validateLicense();
-            if (ok) useAuthStore.getState().startHeartbeat();
-        }
+        // Activation and signed-token issuance happen only through the Edge Function
+        // inside validateLicense; the renderer never calls the SECURITY DEFINER RPC.
+        setLicenseKey(data.key);
+        const ok = await useAuthStore.getState().validateLicense();
+        if (ok) useAuthStore.getState().startHeartbeat();
       } else {
         // console.log('[AUTO-DISCOVERY] No active license found automatically.');
       }
@@ -162,26 +154,11 @@ export default function LoginScreen() {
       setLoading(true);
       setErrorMsg('');
       
-      const hwid = await invoke('get_hardware_id') as string;
-      
-      // Using PrintSolutions actual `verify_license` signature
-      const { data, error } = await supabase.rpc('verify_license', {
-        p_license_key: inputKey.trim(),
-        p_machine_id: hwid,
-        p_product_id: PRODUCT_ID
-      });
-
-      if (error) throw error;
-      
-      const res = data as any;
-      if (res && res.status === 'VALID') {
-        setLicenseKey(inputKey.trim());
-        // Lấy token license server-ký ngay (backend cưỡng chế token) + bật heartbeat.
-        const ok = await useAuthStore.getState().validateLicense();
-        if (ok) useAuthStore.getState().startHeartbeat();
-      } else {
-        throw new Error(res?.message || t('misc.login:key_khong_hop_le'));
-      }
+      // validateLicense invokes the rate-limited Edge Function and requires a signed token.
+      setLicenseKey(inputKey.trim());
+      const ok = await useAuthStore.getState().validateLicense();
+      if (!ok) throw new Error(t('misc.login:key_khong_hop_le'));
+      useAuthStore.getState().startHeartbeat();
     } catch (err: any) {
       setErrorMsg(err.message || t('misc.login:loi_xac_thuc_ban_quyen'));
     } finally {

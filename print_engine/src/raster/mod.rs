@@ -7,4 +7,4 @@
 
 pub mod mask;
 
-pub use mask::{FillRule, Rasterizer};
+pub use mask::{Coverage, FillRule, Rasterizer};

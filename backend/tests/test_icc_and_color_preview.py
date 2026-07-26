@@ -120,4 +120,4 @@ async def test_softproof_returns_image(tmp_path):
     )
     assert result.get("softproof_b64")
     assert result.get("profile_available") is True
-    assert result.get("engine") in ("ghostscript+icc", "pdfium+lcms")
+    assert result.get("engine") in ("ppe+lcms", "ghostscript+icc", "pdfium+lcms")

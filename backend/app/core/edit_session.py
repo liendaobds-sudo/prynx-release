@@ -42,6 +42,7 @@ from pydantic import BaseModel
 
 from app.core import edit_io, geometry_reader
 from app.core.edit_debug_log import edit_bug_log_enabled, edit_bug_log_path, log_edit_bug
+from app.core.license_guard import result_access_url
 from app.core.object_mapper import contents_coalesce, map_object_spans, map_text_show_op, parse_page_ops
 from app.core.stream_editor import (
     _has_overlapping_object_sibling,
@@ -2112,7 +2113,7 @@ def commit(session: EditSession) -> dict:
         return {
             "success": True,
             "output_filename": filename,
-            "output_url": f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}",
+            "output_url": result_access_url(f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}"),
             "output_path": abs_output_path,
             "output_fid": output_fid,
         }
@@ -2178,7 +2179,7 @@ def flatten(session: EditSession) -> dict:
         return {
             "success": True,
             "output_filename": filename,
-            "output_url": f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}",
+            "output_url": result_access_url(f"/results/{EDIT_OUTPUT_SUBDIR}/{filename}"),
             "output_path": abs_output_path,
             "output_fid": output_fid,
         }

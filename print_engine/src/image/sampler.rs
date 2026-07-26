@@ -64,6 +64,19 @@ impl SampledImage {
         out
     }
 
+    /// Mẫu DeviceRGB gốc sau `/Decode`, dùng để alpha/blend trước ICC.
+    pub fn device_rgb_at(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+        if !matches!(self.colorspace, Some(ColorSpace::DeviceRGB)) {
+            return None;
+        }
+        let comps = self.components_at(x, y);
+        Some([
+            comps.first().copied().unwrap_or(0.0).clamp(0.0, 1.0),
+            comps.get(1).copied().unwrap_or(0.0).clamp(0.0, 1.0),
+            comps.get(2).copied().unwrap_or(0.0).clamp(0.0, 1.0),
+        ])
+    }
+
     fn decode_component(&self, c: usize, raw: u8, indexed: bool) -> f32 {
         // Indexed: mẫu LÀ chỉ số, không chia 255.
         if indexed {
@@ -290,6 +303,17 @@ pub fn decode_image(
             };
             (data, jpeg_comps, 8, cs)
         }
+        Some(ImageCodec::CcittFax) => {
+            // Fax nhóm 3/4 luôn là **một kênh một bit**, bất kể `/ColorSpace` khai gì.
+            let params = ccitt_params(doc, dict, width, height);
+            let packed = crate::image::ccitt::decode(&decoded.data, &params)?;
+            (
+                unpack_samples(&packed, width, height, 1, 1, !is_indexed),
+                1,
+                1,
+                colorspace,
+            )
+        }
         Some(codec) => {
             return Err(PpeError::Unsupported(format!("codec ảnh {}", codec.name())));
         }
@@ -473,6 +497,78 @@ fn unpack_samples(
         }
     }
     out
+}
+
+/// Tham số `/DecodeParms` của `CCITTFaxDecode`.
+///
+/// `/DecodeParms` có thể là một dict hoặc một mảng song song với `/Filter`. Vì
+/// `CCITTFaxDecode` bắt buộc là filter **cuối**, lấy dict cuối cùng có khoá của CCITT
+/// là đủ và không phụ thuộc việc đếm đúng chỉ số filter.
+fn ccitt_params(
+    doc: &Document,
+    dict: &Dictionary,
+    width: u32,
+    height: u32,
+) -> crate::image::ccitt::CcittParams {
+    use crate::image::ccitt::CcittParams;
+
+    let obj = dict
+        .get(b"DecodeParms")
+        .or_else(|_| dict.get(b"DP"))
+        .ok()
+        .map(|o| pdf::deref(doc, o));
+
+    let mut found: Option<&Dictionary> = None;
+    match obj {
+        Some(Object::Dictionary(d)) => found = Some(d),
+        Some(Object::Array(items)) => {
+            for item in items {
+                if let Object::Dictionary(d) = pdf::deref(doc, item) {
+                    if d.get(b"K").is_ok()
+                        || d.get(b"Columns").is_ok()
+                        || d.get(b"BlackIs1").is_ok()
+                        || d.get(b"EncodedByteAlign").is_ok()
+                        || d.get(b"Rows").is_ok()
+                    {
+                        found = Some(d);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let Some(d) = found else {
+        // Không có `/DecodeParms`: theo spec `/Columns` mặc định 1728. Nhưng nếu ảnh
+        // khai bề rộng khác thì tin `/Width` — dictionary của ảnh cụ thể hơn giá trị
+        // mặc định lịch sử của fax, và dùng 1728 sẽ làm mọi hàng lệch.
+        return CcittParams {
+            columns: if width > 0 { width as usize } else { 1728 },
+            rows: height as usize,
+            ..Default::default()
+        };
+    };
+
+    let k = pdf::dict_get(doc, d, "K").and_then(pdf::as_num).unwrap_or(0.0) as i32;
+    let columns = pdf::dict_get(doc, d, "Columns")
+        .and_then(pdf::as_num)
+        .map(|v| v as usize)
+        .unwrap_or(if width > 0 { width as usize } else { 1728 });
+    let rows = pdf::dict_get(doc, d, "Rows")
+        .and_then(pdf::as_num)
+        .map(|v| v as usize)
+        .filter(|v| *v > 0)
+        .unwrap_or(height as usize);
+    let black_is_1 = matches!(
+        pdf::dict_get(doc, d, "BlackIs1"),
+        Some(Object::Boolean(true))
+    );
+    let encoded_byte_align = matches!(
+        pdf::dict_get(doc, d, "EncodedByteAlign"),
+        Some(Object::Boolean(true))
+    );
+
+    CcittParams { k, columns, rows, black_is_1, encoded_byte_align }
 }
 
 fn filter_names(doc: &Document, dict: &Dictionary) -> Vec<String> {

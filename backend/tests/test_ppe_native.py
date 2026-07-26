@@ -169,6 +169,25 @@ def test_invalid_page_box_is_rejected():
     with pytest.raises(ValueError):
         pdfcompare_native.ppe_separations(str(BLANK), page=1, dpi=72.0, page_box="khong_hop_le")
 
+def test_zero_memory_budget_is_rejected():
+    if not BLANK.is_file():
+        pytest.skip("missing fixture")
+    with pytest.raises(ValueError, match="memory_budget_mb"):
+        pdfcompare_native.ppe_separations(
+            str(BLANK), page=1, dpi=72.0, memory_budget_mb=0
+        )
+
+
+def test_render_fails_loudly_when_memory_budget_is_exceeded():
+    if not BLANK.is_file():
+        pytest.skip("missing fixture")
+    with pytest.raises(RuntimeError, match="MiB"):
+        pdfcompare_native.ppe_separations(
+            str(BLANK), page=1, dpi=100.0, memory_budget_mb=1
+        )
+    assert pdfcompare_native.ppe_capabilities()["memory_budget_default_mb"] == 512
+
+
 
 ICC_DIR = Path(__file__).parent.parent / "app" / "assets" / "icc"
 FOGRA39 = ICC_DIR / "FOGRA39.icc"
@@ -276,8 +295,74 @@ def test_capabilities_do_not_overclaim():
     # Nhưng font KHÔNG nhúng chỉ vẽ được khi caller cấp asset — khai rõ để lớp
     # trên biết vì sao một trang chữ có thể vẫn báo thiếu mực.
     assert caps["text_substitute_font_requires_caller_asset"] is True
-    # Chưa xong tại milestone này:
-    assert caps["shading"] is False
+    # Đã xong sau Milestone H: ảnh nội tuyến, tiling pattern, lưới shading 4–7,
+    # optional content, CCITT.
+    assert caps["inline_images"] is True
+    assert caps["optional_content"] is True
+    assert caps["tiling_pattern"] is True
+    # `/OC` được đọc theo cấu hình **in**, không theo cấu hình xem: một lớp hiện trên
+    # màn hình nhưng khai `/PrintState /OFF` thì tuyệt đối không được tính mực.
+    assert caps["optional_content_config"] == "print"
+    # Còn thiếu — và mỗi khoảng trống khai riêng, không gộp vào một cờ.
+    assert caps["transparency_knockout_groups"] is False
+    assert set(caps["image_filters_missing"]) == {"JPXDecode", "JBIG2Decode"}
+
+
+def test_softproof_is_declared_as_a_view_path_not_a_measurement_path():
+    """Soft-proof có cấu hình **đối nghịch** với đo mực, nên phải khai riêng.
+
+    Nó khử răng cưa và quy mực pha về CMYK — hai điều mà đường đo tuyệt đối không
+    được làm. Nếu lớp trên tưởng đây cũng là một chế độ của tách kẽm, nó sẽ kết luận
+    lượng mực trên một ảnh đã bị làm mượt cạnh và đã mất kẽm spot.
+    """
+    caps = pdfcompare_native.ppe_capabilities()
+    assert caps["softproof"] is True
+    assert caps["softproof_requires_icc"] is True
+    assert hasattr(pdfcompare_native, "ppe_softproof")
+
+
+def test_transparency_gaps_are_declared_separately():
+    """`transparency_groups = True` KHÔNG được hiểu là mọi group đều đo đúng.
+
+    Ba đường group đã dựng (đục / không cách ly / cách ly) nhưng **knockout group**
+    thì chưa: trong knockout, mỗi phần tử composite với nền ban đầu của group chứ
+    không với phần tử vẽ trước nó, nên vùng chồng lấn của engine sẽ đọc ra nhiều
+    mực hơn thực tế. Gộp một cờ sẽ che mất đúng chỗ đó.
+
+    Tương tự với blend mode: mười một mode tách kênh đúng tuyệt đối kể cả trên kẽm
+    spot; bốn mode không tách kênh (Hue/Saturation/Color/Luminosity) phải đi qua
+    xấp xỉ RGB và không chạm kênh spot.
+    """
+    caps = pdfcompare_native.ppe_capabilities()
+    assert caps["transparency_groups"] is True
+    assert caps["transparency_knockout_groups"] is False
+    assert caps["soft_mask"] is True
+    assert set(caps["soft_mask_types"]) == {"Luminosity", "Alpha"}
+    assert caps["blend_modes"] is True
+    separable = set(caps["blend_modes_separable"])
+    approximated = set(caps["blend_modes_approximated"])
+    assert "Multiply" in separable
+    assert approximated == {"Hue", "Saturation", "Color", "Luminosity"}
+    assert not (separable & approximated), "một mode không thể vừa đúng vừa xấp xỉ"
+
+
+def test_shading_type_gaps_are_declared_separately():
+    """`shading = True` KHÔNG được hiểu là mọi gradient đều đo được.
+
+    Kiểu 1/2/3 đã dựng; lưới Gouraud/Coons/tensor (4–7) thì chưa. Gộp thành một cờ
+    sẽ khiến lớp trên tin rằng một trang dùng lưới Coons đã được vẽ, trong khi thực
+    tế nó bị bỏ và báo cáo TAC của trang đó vô nghĩa.
+    """
+    caps = pdfcompare_native.ppe_capabilities()
+    assert caps["shading"] is True
+    assert set(caps["shading_types"]) == {1, 2, 3, 4, 5, 6, 7}
+    assert caps["shading_types_missing"] == []
+    assert caps["shading_pattern"] is True
+    # Tiling pattern vẽ thật (lặp ô mẫu) nhưng có **trần số ô**: vượt trần thì báo
+    # thiếu tính năng chứ không vẽ một phần — vẽ một phần cho lượng mực thấp hơn
+    # thực tế, đúng chiều sai nguy hiểm.
+    assert caps["tiling_pattern"] is True
+    assert caps["tiling_pattern_max_tiles"] > 0
 
 
 def test_image_codec_gaps_are_declared_separately():
@@ -289,8 +374,11 @@ def test_image_codec_gaps_are_declared_separately():
     caps = pdfcompare_native.ppe_capabilities()
     assert "DCTDecode" in caps["image_filters"]
     assert "FlateDecode" in caps["image_filters"]
+    # CCITT (ảnh scan đen trắng) đã dựng ở Milestone H; JPX và JBIG2 thì chưa.
+    assert "CCITTFaxDecode" in caps["image_filters"]
     assert "JPXDecode" in caps["image_filters_missing"]
-    assert "CCITTFaxDecode" in caps["image_filters_missing"]
+    assert "JBIG2Decode" in caps["image_filters_missing"]
+    assert not set(caps["image_filters"]) & set(caps["image_filters_missing"])
 
 
 def test_image_page_now_renders_ink():

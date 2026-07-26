@@ -448,7 +448,8 @@ def _register_form_ocgs(pdf: pikepdf.Pdf, form, src_pdf: pikepdf.Pdf) -> None:
 def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
                   rect: Rect, src_pdf: pikepdf.Pdf, page_idx: int,
                   rotate: int = 0, clip: Rect = None, keep_proportion: bool = False,
-                  out_clip: Rect = None, mirror_x: bool = False, mirror_y: bool = False):
+                  out_clip: Rect = None, mirror_x: bool = False, mirror_y: bool = False,
+                  out_clip_path=None):
     """
     Place a source PDF page onto dest_page at the specified rect.
     Equivalent to pdf_wrapper's Page.show_pdf_page().
@@ -456,6 +457,12 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
     out_clip: nếu có, đây là rectangle (toạ độ output, y-down giống `rect`) dùng làm
     đường CLIP trên trang đích — tách biệt với `rect` (vùng đặt/scale). Dùng để clip
     bleed ở mép trong giữa 2 tem (mỗi bên nửa gap), tránh bleed chồng nhau.
+
+    out_clip_path: clip THEO HÌNH (list ring, mỗi ring là list (x, y) cùng hệ toạ độ
+    y-down với `out_clip`). Khi có, nó THAY THẾ `out_clip` — dùng cho tem tròn/oval/
+    đa giác xếp lồng, nơi bbox của 2 tem chồng nhau dù 2 đường bế vẫn cách đủ gap
+    (xem nup_clip_shape.build_die_clip_rings). Ring luôn được giao sẵn với `out_clip`
+    ở phía dựng hình nên KHÔNG BAO GIỜ nới rộng vùng vẽ.
 
     mirror_x / mirror_y: PHẢN CHIẾU (lật gương) nội dung quanh TÂM của `rect`
     (mirror_x = lật ngang, mirror_y = lật dọc). Dùng cho Mặt sau bình bế 2 mặt:
@@ -524,10 +531,30 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
         cy0 = dest_h - r.y1
         return f"{cx0:.4f} {cy0:.4f} {r.width:.4f} {r.height:.4f} re W n\n"
 
+    def _clip_path(rings) -> str:
+        """Đường clip đa giác (nonzero winding) — ring cùng chiều nên hợp diện tích."""
+        ops = []
+        for ring in rings or ():
+            if not ring or len(ring) < 3:
+                continue
+            x0, y0 = ring[0]
+            ops.append(f"{x0:.4f} {dest_h - y0:.4f} m")
+            for x, y in ring[1:]:
+                ops.append(f"{x:.4f} {dest_h - y:.4f} l")
+            ops.append("h")
+        if not ops:
+            return ""
+        ops.append("W n")
+        return "\n".join(ops) + "\n"
+
+    path_prefix = _clip_path(out_clip_path) if out_clip_path else ""
+
     if clip:
         clip_w = clip.width
         clip_h = clip.height
-        if out_clip is not None:
+        if path_prefix:
+            clip_prefix = path_prefix
+        elif out_clip is not None:
             clip_prefix = _clip_re(out_clip)
         else:
             clip_prefix = f"{dest_x:.4f} {dest_y:.4f} {dest_w:.4f} {dest_h_rect:.4f} re W n\n"
@@ -535,7 +562,10 @@ def show_pdf_page(pdf: pikepdf.Pdf, dest_page: pikepdf.Page,
         clip_w = src_w_full
         clip_h = src_h_full
         clip = Rect(0, 0, src_w_full, src_h_full)
-        clip_prefix = _clip_re(out_clip) if out_clip is not None else ""
+        if path_prefix:
+            clip_prefix = path_prefix
+        else:
+            clip_prefix = _clip_re(out_clip) if out_clip is not None else ""
 
     if rotate % 180 != 0:
         scale_x = dest_w / clip_h if clip_h else 1

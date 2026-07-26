@@ -78,7 +78,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const [pageNum, setPageNum] = useState(initialPageNum);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    // Default ON: Ghostscript tiffsep ≈ Acrobat Output Preview (real plates + ICC).
+    // Default ON: precise RIP path (PPE first, Ghostscript fallback).
     const [useGhostscript, setUseGhostscript] = useState(true);
     const [convertingSpot, setConvertingSpot] = useState('');
 
@@ -98,6 +98,13 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
     const [showSoftProof, setShowSoftProof] = useState(false);
     const [showTacHeatmap, setShowTacHeatmap] = useState(false);
     
+    const isRipResult =
+        accuracyLabel === 'rip_separations'
+        || accuracyLabel === 'rip_separations_approx_geometry';
+    const engineDisplayName = engineUsed === 'ppe'
+        ? 'PrynX PPE'
+        : engineUsed === 'ghostscript' ? 'Ghostscript' : engineUsed;
+
     const setTacHeatmapUrl = useWorkspaceStore(s => s.setTacHeatmapUrl);
 
     const plateDataRef = React.useRef<{ width: number, height: number, arrays: Record<string, Uint8ClampedArray> } | null>(null);
@@ -179,7 +186,7 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
             setError('');
             setSoloPlate(null);
             try {
-                // true → GS tiffsep (chuẩn); false → xấp xỉ RGB→CMYK
+                // true → precise RIP path (PPE first); false → approximate RGB→CMYK.
                 const gsParam = useGhostscript ? '&use_gs=true' : '&use_gs=false';
                 const res = await authenticatedFetch(
                     `${getApiUrl()}/preflight/separations/${fileId}/${pageNum}?dpi=150${gsParam}&profile_id=fogra39`
@@ -360,11 +367,11 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                     </div>
                     {engineUsed && (
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
-                            engineUsed === 'ghostscript' 
-                                ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' 
-                                : 'bg-slate-100 text-slate-500 dark:bg-zinc-800 dark:text-zinc-400'
+                            isRipResult
+                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+                                : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
                         }`}>
-                            {engineUsed === 'ghostscript' ? t('tabs.outputPreview:che_do_chuyen_sau') : t('tabs.outputPreview:che_do_nhanh')}
+                            {isRipResult ? 'RIP' : 'XẤP XỈ'} · {engineDisplayName}
                         </span>
                     )}
                 </div>
@@ -552,15 +559,15 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                                     className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer" 
                                 />
                                 <span className="text-[12px] text-slate-600 dark:text-zinc-300">
-                                    Ghostscript RIP (chuẩn Acrobat)
+                                    Chế độ RIP chính xác (PPE trước)
                                     {!useGhostscript ? ' — đang xấp xỉ' : ''}
                                 </span>
                             </label>
                             <div className="relative group/tooltip flex items-center justify-center w-4 h-4 rounded-full bg-slate-100 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 text-[10px] text-slate-500 hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors cursor-help shrink-0">
                                 ?
                                 <div className="absolute bottom-full right-0 mb-2 w-max max-w-[280px] px-3 py-2.5 bg-slate-800 dark:bg-zinc-700 text-white text-[12px] font-normal leading-relaxed rounded-lg shadow-xl opacity-0 invisible group-hover/tooltip:opacity-100 group-hover/tooltip:visible transition-all z-[100] pointer-events-none text-left whitespace-normal break-words">
-                                    <p className="mb-1 text-emerald-300">Mặc định bật Ghostscript tiffsep — tách kẽm C/M/Y/K + Spot giống RIP/Acrobat Output Preview, có ICC FOGRA39.</p>
-                                    <p className="opacity-90">Tắt = PDF→RGB→CMYK giả (nhanh nhưng màu không chuẩn — chỉ debug).</p>
+                                    <p className="mb-1 text-emerald-300">Mặc định dùng PrynX PPE; nếu PPE không thể dựng trang tin cậy, backend có thể chuyển sang Ghostscript.</p>
+                                    <p className="opacity-90">Tắt = PDF→RGB→CMYK giả (nhanh nhưng không đủ chính xác để chốt kẽm).</p>
                                 </div>
                             </div>
                         </div>
@@ -568,11 +575,11 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                             <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
                                 {engineUsed && (
                                     <span className={`px-1.5 py-0.5 rounded font-bold ${
-                                        accuracyLabel === 'rip_separations'
+                                        isRipResult
                                             ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
                                             : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
                                     }`}>
-                                        {accuracyLabel === 'rip_separations' ? 'RIP' : 'XẤP XỈ'} · {engineUsed}
+                                        {isRipResult ? 'RIP' : 'XẤP XỈ'} · {engineDisplayName}
                                     </span>
                                 )}
                                 {qualityNote && (
@@ -582,9 +589,9 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                         )}
                         {/* C11: user chủ động chọn Ghostscript RIP nhưng backend rơi về xấp xỉ
                             (thường do không tìm thấy Ghostscript) → cảnh báo nổi bật, không chỉ badge nhỏ. */}
-                        {useGhostscript && accuracyLabel && accuracyLabel !== 'rip_separations' && (
+                        {useGhostscript && accuracyLabel && !isRipResult && (
                             <div className="mt-1.5 px-2.5 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                                ⚠️ Bạn đã chọn <strong>Ghostscript RIP</strong> nhưng hệ thống đang chạy ở chế độ <strong>XẤP XỈ</strong> (không tìm thấy Ghostscript). Màu và tách kẽm KHÔNG chuẩn để chốt với xưởng. Kiểm tra cài đặt Ghostscript.
+                                ⚠️ Bạn đã chọn <strong>chế độ RIP chính xác</strong> nhưng PPE và Ghostscript đều không trả được kết quả tin cậy. Kết quả hiện tại là <strong>XẤP XỈ</strong>, không dùng để chốt kẽm.
                             </div>
                         )}
                         {/* C4: composite nhiều plate = CSS multiply, KHÔNG mô phỏng chồng mực thật.
@@ -646,9 +653,9 @@ export default function OutputPreviewTab({ fileId, initialPageNum = 1, totalPage
                     {/* C2: chế độ xấp xỉ KHÔNG tách được bản kẽm spot riêng (spot bị trộn vào
                         RGB→CMYK). detected_spots vẫn liệt kê tên → cảnh báo để user không tưởng
                         là đã tách spot. */}
-                    {detectedSpots.length > 0 && accuracyLabel && accuracyLabel !== 'rip_separations' && (
+                    {detectedSpots.length > 0 && accuracyLabel && !isRipResult && (
                         <div className="mt-1 pt-1.5 border-t border-slate-200 dark:border-zinc-700 text-[10px] text-amber-700 dark:text-amber-300 leading-snug">
-                            ⚠️ Chế độ XẤP XỈ KHÔNG tách bản kẽm spot riêng — các màu spot trên bị trộn vào C/M/Y/K. Bật Ghostscript RIP để tách kẽm spot đúng.
+                            ⚠️ Chế độ XẤP XỈ KHÔNG tách bản kẽm spot riêng — các màu spot trên bị trộn vào C/M/Y/K. Bật chế độ RIP chính xác để tách kẽm spot đúng.
                         </div>
                     )}
                 </div>

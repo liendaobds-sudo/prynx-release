@@ -214,6 +214,20 @@ export function expectedFlatArea(params: BoxParams): number {
             return body + closures + dust;
         }
 
+        case 'auto_bottom': {
+            // Thân giống RTE/SLB
+            const bodyW = G + 2 * L + 2 * W;
+            const body = bodyW * D;
+            // Nắp đậy trên (span W − T) + lưỡi gài (TH), chỉ trên mặt trước
+            const closure = L * (W - T + TH);
+            // 2 tai bụi trên ~ rộng W, cao TH (xấp xỉ hình thang ~ 0.5)
+            const dust = 2 * (W * TH * 0.5);
+            // Đáy dán (mẫu 100010-01): 2 mảnh chính L×0.76W + 2 tai hông
+            // hình thang (bot/top ≈ 0.32 → hệ số diện tích ~0.66)
+            const bottom = 2 * (L * 0.76 * W) + 2 * (W * 0.5 * W * 0.66);
+            return body + closure + dust + bottom;
+        }
+
         case 'gable': {
             // Thân tương tự RTE + đỉnh mái (gable) + tay cầm
             const bodyW = G + 2 * L + 2 * W;

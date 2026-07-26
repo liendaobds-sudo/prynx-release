@@ -420,7 +420,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     tabTitle: 'Khuôn bế',
     icon: '📦',
     description: 'Tạo khuôn bế tham số, 3D mockup, xếp khuôn',
-    longDescription: 'Vẽ khuôn bao bì tham số cho 8 loại hộp: Nắp cài, Đáy gài, Quai xách, Túi giấy, Bọc ly, Pizza, Bì thư, Hộp diêm. Mô phỏng gập 3D và xuất PDF chuẩn 1:1.',
+    longDescription: 'Vẽ khuôn bao bì tham số cho 9 loại hộp: Nắp cài, Đáy gài, Đáy dán, Quai xách, Túi giấy, Bọc ly, Pizza, Bì thư, Hộp diêm. Mô phỏng gập 3D và xuất PDF chuẩn 1:1.',
     category: 'packaging',
     component: DielineTool,
     isEnabled: true,

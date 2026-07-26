@@ -76,6 +76,10 @@ class Settings(BaseSettings):
 
     # Preflight & Auto-Fix Engine
     GHOSTSCRIPT_PATH: str = _find_ghostscript()
+    PRYNX_PRINT_ENGINE: str = "auto"  # auto | ppe | gs
+    PRYNX_ALLOW_GS_FALLBACK: bool = True
+    PRYNX_FORCE_GS: bool = False
+    PRYNX_PPE_MEMORY_BUDGET_MB: int = 512
     ICC_PROFILE_DIR: str = str(Path("./app/assets/icc").resolve())
     DEFAULT_CMYK_PROFILE: str = "FOGRA39.icc"
 

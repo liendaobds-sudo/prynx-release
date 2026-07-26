@@ -50,6 +50,58 @@ fn kill_sidecar() {
     }
 }
 
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn verify_sidecar_startup(secret: &str) -> Result<(), String> {
+    use hmac::{Hmac, Mac};
+    use rand::RngCore;
+    use sha2::Sha256;
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
+
+    let mut challenge_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut challenge_bytes);
+    let challenge = hex::encode(challenge_bytes);
+    let address: SocketAddr = "127.0.0.1:8321".parse().map_err(|e| format!("address: {e}"))?;
+
+    for _ in 0..50 {
+        let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
+            Ok(stream) => stream,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+        };
+        stream.set_read_timeout(Some(Duration::from_millis(750))).ok();
+        stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
+        let request = format!(
+            "GET /health?challenge={} HTTP/1.1\r\nHost: 127.0.0.1:8321\r\nConnection: close\r\n\r\n",
+            challenge
+        );
+        stream.write_all(request.as_bytes()).map_err(|e| format!("health write: {e}"))?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).map_err(|e| format!("health read: {e}"))?;
+        if !response.starts_with("HTTP/1.1 200") {
+            return Err("unknown listener returned a non-200 health response".to_string());
+        }
+        let body = response.split("\r\n\r\n").nth(1)
+            .ok_or_else(|| "health response has no body".to_string())?;
+        let value: serde_json::Value = serde_json::from_str(body)
+            .map_err(|_| "health response is not valid JSON".to_string())?;
+        let proof = value.get("proof").and_then(|v| v.as_str())
+            .ok_or_else(|| "health response has no startup proof".to_string())?;
+        let proof_bytes = hex::decode(proof)
+            .map_err(|_| "health startup proof is malformed".to_string())?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+            .map_err(|_| "cannot initialize startup proof".to_string())?;
+        mac.update(format!("startup:{challenge}").as_bytes());
+        mac.verify_slice(&proof_bytes)
+            .map_err(|_| "health startup proof does not match this PrynX instance".to_string())?;
+        return Ok(());
+    }
+    Err("sidecar did not become ready within 5 seconds".to_string())
+}
+
 fn tile_cache_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("prynx_tile_cache");
     let _ = std::fs::create_dir_all(&dir);
@@ -339,9 +391,12 @@ fn log_frontend_error(
 async fn get_pdf_metadata(
     file_path: String,
 ) -> Result<serde_json::Value, String> {
+    if is_sensitive_path(&file_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
     tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
         let pdfium = ensure_pdfium()?;
-        
+
         let cache_lock = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         let mut cache = lock_mutex(cache_lock);
         
@@ -451,6 +506,12 @@ fn render_tile_jpeg(
     clip_w: Option<i32>,
     clip_h: Option<i32>,
 ) -> Result<Vec<u8>, String> {
+    // Guard: render là ĐỌC file tùy path do renderer truyền (IPC render_pdf_page + protocol
+    // tile://). Nếu không chặn, renderer bị chèn mã có thể render → lấy nội dung file nhạy
+    // cảm (khoá/credential) ra ảnh. Luồng thật chỉ render PDF trong thư mục người dùng.
+    if is_sensitive_path(file_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
     let _total_t0 = std::time::Instant::now();
     // RENDER_VER: đổi token này mỗi khi thay đổi cách render/encode (LCD text, JPEG
     // quality...) → vô hiệu MỌI tile cache cũ (RAM + đĩa) render bằng cấu hình cũ.
@@ -759,16 +820,45 @@ fn get_startup_args() -> Vec<String> {
 }
 
 #[tauri::command]
-/// SECURITY (đồng bộ với fs capability deny): từ chối đọc các vị trí nhạy cảm
-/// (khóa SSH/AWS/GnuPG, credential store Windows) + chặn path traversal ("..").
+/// SECURITY (đồng bộ với fs capability deny + assetProtocol deny): từ chối đọc các vị
+/// trí nhạy cảm + chặn path traversal ("..").
 /// Áp cho các lệnh Rust đọc file vì capability `deny` chỉ ràng plugin-fs, KHÔNG
 /// ràng lệnh Rust tự viết. Không ảnh hưởng mở PDF/ảnh (không nằm ở các thư mục này).
+///
+/// AUDIT 2026-07-26: danh sách này TRƯỚC ĐÂY hẹp hơn cả hai deny-list (thiếu Protect
+/// = master key DPAPI, Vault, profile trình duyệt, `PrynX\*.dat`, `.docker`). Khi đó
+/// lớp chặn thực tế chỉ còn allowlist ĐUÔI FILE của `read_system_file` — thêm một đuôi
+/// mới là mở cửa. Nay đồng bộ đủ 3 nơi (tauri.conf.json, capabilities/default.json,
+/// hàm này) để không phụ thuộc một lớp duy nhất.
 fn is_sensitive_path(path: &str) -> bool {
     let norm = path.replace('/', "\\").to_lowercase();
     // Chống path traversal
     if norm.contains("\\..\\") || norm.ends_with("\\..") || norm.starts_with("..\\") {
         return true;
     }
+
+    // Khoá/bí mật theo TÊN FILE — chặn ở MỌI thư mục (đối xứng `**/.env`, `**/*.pem`,
+    // `**/id_rsa*`… trong assetProtocol deny). Không đụng luồng thật: PDF/ảnh/ICC/font
+    // không mang các đuôi/tên này.
+    let file_name = norm.rsplit('\\').next().unwrap_or("");
+    if file_name == ".env"
+        || file_name.starts_with(".env.")
+        || file_name == ".git-credentials"
+        || file_name == ".npmrc"
+        || file_name == ".pypirc"
+        || file_name == ".netrc"
+        || file_name == "credentials.json"
+        || file_name.ends_with(".kdbx")
+        || file_name.starts_with("id_rsa")
+        || file_name.starts_with("id_ed25519")
+        || file_name.ends_with(".pem")
+        || file_name.ends_with(".pfx")
+        || file_name.ends_with(".p12")
+        || file_name.ends_with(".key")
+    {
+        return true;
+    }
+
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
@@ -782,12 +872,33 @@ fn is_sensitive_path(path: &str) -> bool {
         ".gnupg",
         ".config",
         ".kube",
+        ".docker",
         "appdata\\local\\microsoft\\credentials",
         "appdata\\roaming\\microsoft\\credentials",
+        // Master key DPAPI: đọc được là giải mã được prynx_license.dat ngoài phiên.
+        "appdata\\roaming\\microsoft\\protect",
+        "appdata\\local\\microsoft\\vault",
+        // Profile trình duyệt (cookie/token đăng nhập).
+        "appdata\\local\\google\\chrome\\user data",
+        "appdata\\local\\microsoft\\edge\\user data",
+        "appdata\\roaming\\mozilla\\firefox\\profiles",
     ];
-    blocked
+    if blocked
         .iter()
         .any(|s| norm.starts_with(&format!("{}\\{}", home_l, s)))
+    {
+        return true;
+    }
+
+    // Credential DPAPI của chính PrynX: CHỈ chặn `*.dat` (đối xứng deny
+    // `$HOME/AppData/Roaming/PrynX/*.dat`). KHÔNG chặn cả thư mục — recipe/preset của
+    // app nằm ngay trong đó và đọc qua `read_dir_json` (chặn cả thư mục = giết luồng thật).
+    let prynx_dir = format!("{}\\appdata\\roaming\\prynx", home_l);
+    if norm.starts_with(&prynx_dir) && file_name.ends_with(".dat") {
+        return true;
+    }
+
+    false
 }
 
 /// Guard RIÊNG cho GHI: ngoài các vị trí nhạy cảm dùng chung (is_sensitive_path),
@@ -996,6 +1107,23 @@ fn read_system_file(path: String) -> Result<Response, String> {
 
 #[tauri::command]
 fn get_file_size(path: String) -> Result<u64, String> {
+    // SECURITY (audit 2026-07-26): thêm allowlist ĐUÔI FILE như read_system_file. Trước
+    // đây lệnh này chỉ kiểm is_sensitive_path nên là ORACLE tồn-tại/kích-thước cho MỌI
+    // file ngoài vài thư mục bị chặn. Consumer thật chỉ hỏi size của file người dùng mở
+    // (PDF/ảnh/office) — xem PDFUploader.tsx, SystemIntegrations.tsx.
+    let ext = std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let allowed = [
+        "pdf", "png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "icc", "icm", "svg", "ttf",
+        "otf", "ttc", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "csv", "ppt", "pptx",
+        "odp", "json", "txt",
+    ];
+    if !allowed.contains(&ext.as_str()) {
+        return Err(format!("File type .{} not allowed", ext));
+    }
     if is_sensitive_path(&path) {
         return Err("Access to this location is not allowed".to_string());
     }
@@ -1064,6 +1192,14 @@ fn copy_file_atomic(source: String, path: String) -> Result<(), String> {
     if !allowed.contains(&ext.as_str()) {
         return Err(format!("File type .{} not allowed", ext));
     }
+    let source_ext = std::path::Path::new(&source)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if source_ext != ext || !allowed.contains(&source_ext.as_str()) {
+        return Err("Source and destination file types must match an allowed type".to_string());
+    }
     if is_sensitive_path(&source) || is_sensitive_write_path(&path) {
         return Err("Access to this location is not allowed".to_string());
     }
@@ -1095,12 +1231,35 @@ fn copy_file_atomic(source: String, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn read_dir_json(dir: String) -> Result<Vec<String>, String> {
+fn read_dir_json(app: tauri::AppHandle, dir: String) -> Result<Vec<String>, String> {
     // Đọc nội dung MỌI file .json trong thư mục, trả Vec<String> (mỗi phần tử = nội
     // dung 1 file). Lệnh Rust → KHÔNG vướng scope plugin-fs (giống write_file_atomic).
     // Vì sao cần: readDir của plugin-fs bị chặn scope trên $APPDATA → recipe/preset đã
     // ghi ra đĩa nhưng panel không liệt kê được (bug 2026-07-08). Ghi qua Rust, đọc cũng
     // qua Rust → nhất quán, hết class lỗi scope.
+    //
+    // SECURITY (audit 2026-07-26): trước đây lệnh này KHÔNG kiểm gì cả → WebView bị chèn
+    // mã có thể `invoke('read_dir_json', { dir: '<bất kỳ>' })` và lấy nội dung MỌI file
+    // .json trên máy (vd `.aws\sso\cache\*.json` chứa bearer token, `.docker\config.json`),
+    // ĐI VÒNG cả deny-list của assetProtocol lẫn của plugin-fs. Nay giới hạn đúng nhu cầu
+    // thật: cả 3 consumer (recipeStore, presetManager, appSettingsStore) chỉ đọc thư mục
+    // con của `appDataDir()`, nên chỉ cho phép trong cây đó.
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Không xác định được app data dir: {}", e))?;
+    let requested = std::path::Path::new(&dir);
+    // So sánh sau khi chuẩn hoá về chữ thường + dấu phân cách Windows; `..` đã bị
+    // is_sensitive_path chặn nên không thể trèo ra ngoài bằng traversal.
+    let norm = |p: &std::path::Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+    let base = norm(&app_data);
+    let target = norm(requested);
+    let inside = target == base.trim_end_matches('\\')
+        || target.starts_with(&format!("{}\\", base.trim_end_matches('\\')));
+    if !inside || is_sensitive_path(&dir) {
+        log::warn!("[SECURITY] read_dir_json bị từ chối (ngoài app data dir)");
+        return Err("Access to this location is not allowed".to_string());
+    }
     let path = std::path::Path::new(&dir);
     if !path.is_dir() {
         return Ok(Vec::new()); // thư mục chưa tồn tại → coi như rỗng, không phải lỗi
@@ -1133,6 +1292,9 @@ fn get_pending_system_files(state: tauri::State<SystemFilesState>) -> Vec<String
 
 #[tauri::command]
 async fn normalize_image_to_png(file_path: String) -> Result<tauri::ipc::Response, String> {
+    if is_sensitive_path(&file_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let img = image::open(&file_path).map_err(|e| format!("Failed to open image: {}", e))?;
         let mut buffer = std::io::Cursor::new(Vec::new());
@@ -1414,6 +1576,26 @@ mod batch_folder_tests {
         assert_eq!(files[0].name, "01-source.pdf");
         assert_eq!(files[1].name, "02-report.docx");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sensitive_path_blocks_keys_and_secrets_everywhere() {
+        // Khoá/bí mật theo tên/đuôi bị chặn ở MỌI thư mục (đối xứng deny-list
+        // assetProtocol + capabilities fs:*). `.key` là guard mới (audit 2026-07-26).
+        assert!(is_sensitive_path("C:\\Users\\bob\\Desktop\\server.key"));
+        assert!(is_sensitive_path("D:/work/tls/private.KEY")); // hoa/thường + dấu /
+        assert!(is_sensitive_path("C:\\secrets\\cert.pem"));
+        assert!(is_sensitive_path("C:\\secrets\\store.pfx"));
+        assert!(is_sensitive_path("C:\\proj\\.env"));
+        assert!(is_sensitive_path("C:\\proj\\.env.production"));
+        assert!(is_sensitive_path("C:\\proj\\credentials.json"));
+        assert!(is_sensitive_path("C:\\keys\\id_rsa"));
+        // Chống path traversal.
+        assert!(is_sensitive_path("C:\\a\\..\\b\\x.pdf"));
+        // Luồng thật KHÔNG bị đụng: PDF/ảnh/ICC/font bình thường qua được.
+        assert!(!is_sensitive_path("C:\\Users\\bob\\Documents\\artwork.pdf"));
+        assert!(!is_sensitive_path("D:/jobs/proof.png"));
+        assert!(!is_sensitive_path("C:\\profiles\\CoatedFOGRA39.icc"));
     }
 
     #[test]
@@ -1699,11 +1881,25 @@ pub fn run() {
                 // LISTEN?"). Bind OK → drop ngay (nhả port) → spawn. Trần cứng 1s
                 // (20×50ms): vượt trần vẫn spawn (fail-open sang lưới an toàn ở
                 // main.py — Python sẽ log rõ + exit 48 nếu port thực sự kẹt).
+                let mut port_is_free = false;
                 for _ in 0..20 {
                     match std::net::TcpListener::bind(("127.0.0.1", 8321u16)) {
-                        Ok(l) => { drop(l); break; }
+                        Ok(listener) => {
+                            drop(listener);
+                            port_is_free = true;
+                            break;
+                        }
                         Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
                     }
+                }
+                if !port_is_free {
+                    log::error!("[SIDECAR] Port 8321 remains occupied; refusing to contact an unknown listener.");
+                    let _ = std::process::Command::new("powershell")
+                        .args(["-NoProfile", "-Command",
+                            "[System.Windows.MessageBox]::Show('Cong noi bo 8321 dang bi chiem. PrynX tu choi khoi dong de bao ve du lieu. Hay dong tien trinh lien quan va thu lai.', 'PrynX Security', 'OK', 'Error')"])
+                        .creation_flags(0x08000000)
+                        .output();
+                    std::process::exit(1);
                 }
 
                 let spawn_result = sidecar
@@ -1777,8 +1973,20 @@ pub fn run() {
                 // Write token via stdin pipe — no file on disk ever
                 let token_line = format!("TOKEN:{}\n", sidecar_token);
                 if let Err(e) = child.write(token_line.as_bytes()) {
-                    // Không panic: log lại; backend không có token sẽ tự từ chối request (fail-closed).
                     log::error!("[SIDECAR] Ghi token vao stdin that bai: {}", e);
+                    kill_sidecar();
+                    std::process::exit(1);
+                }
+                if let Err(e) = verify_sidecar_startup(&sidecar_token) {
+                    log::error!("[SIDECAR] Startup identity check failed: {}", e);
+                    startup_breadcrumb(&format!("sidecar startup proof: FAIL {e}"));
+                    kill_sidecar();
+                    let _ = std::process::Command::new("powershell")
+                        .args(["-NoProfile", "-Command",
+                            "[System.Windows.MessageBox]::Show('Tien trinh nen khong xac thuc duoc. PrynX da dung khoi dong de bao ve du lieu.', 'PrynX Security', 'OK', 'Error')"])
+                        .creation_flags(0x08000000)
+                        .output();
+                    std::process::exit(1);
                 }
 
                 log::info!("Python backend sidecar started on port 8321 (token via stdin pipe)");

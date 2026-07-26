@@ -25,6 +25,8 @@ else:
 # Prevent DEV_MODE's application-level SQLite override from replacing the
 # isolated URL above with a persistent ./data/pdfcompare.db.
 os.environ["DEV_MODE"] = "false"
+# Result artifacts are signed in enforced-mode tests with this process-local fixture secret.
+os.environ["PRYNX_SIDECAR_TOKEN"] = "pytest-sidecar-token"
 
 # Tests that exercise the real license/token path must not get an auto Pro override.
 _SKIP_AUTO_PRO = (

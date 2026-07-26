@@ -24,7 +24,7 @@ fn col_alt(p: Option<&Bound<'_, PyDict>>) -> Option<ColAltParams> {
     p.map(|_| ColAltParams { offset_y: opt_f64(p, "offset_y"), col_w: opt_f64(p, "col_w"), step_y: opt_f64(p, "step_y") })
 }
 
-fn candidate_to_pydict(py: Python<'_>, c: &core::LayoutCandidate) -> PyResult<PyObject> {
+fn candidate_to_pydict(py: Python<'_>, c: &core::LayoutCandidate) -> PyResult<Py<PyAny>> {
     let d = PyDict::new(py);
     let items: Vec<Py<PyDict>> = c.items.iter().map(|it| item_to_pydict(py, it)).collect::<PyResult<_>>()?;
     d.set_item("totalItems", c.total_items)?;
@@ -52,7 +52,7 @@ pub fn generate_layout_candidates(
     p6_col_params: Option<&Bound<'_, PyDict>>,
     shape_type: &str,
     shape_props: Option<&Bound<'_, PyDict>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let params = core::OrchestratorParams {
         p5: cluster(p5_params),
         p6: cluster(p6_params),

@@ -227,7 +227,7 @@ export const TOOL_HELP: Record<string, ToolHelp> = {
         'Thiết kế hộp giấy, túi, bao bì cần khuôn bế chuẩn.',
       ]},
       { heading: 'Cách hoạt động', items: [
-        'Chọn 1 trong 8 loại (nắp cài, đáy gài, quai xách, túi giấy, bọc ly, pizza, bì thư, hộp diêm).',
+        'Chọn 1 trong 9 loại (nắp cài, đáy gài, đáy dán, quai xách, túi giấy, bọc ly, pizza, bì thư, hộp diêm).',
         'Nhập kích thước, xem mockup 3D, xuất PDF chuẩn tỉ lệ 1:1.',
       ]},
     ],

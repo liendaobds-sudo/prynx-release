@@ -564,8 +564,9 @@ def test_report_contains_whole_sheet_dimensions_gap_quantity_and_mode(tmp_path):
     text = PdfReader(str(output)).pages[0].extract_text() or ""
     assert "Binh nguyen tam decal" in text
     assert "148 x 210 mm" in text
-    assert "Khoang cach tam X/Y: 5 x 7 mm" in text
-    assert "SL yeu cau: 1" in text
+    # gapX/gapY không còn nhét vào identifier (field 「Mẫu/Trang」) — intentional product.
+    assert "Khoang cach tam" not in text
+    assert "SL yeu cau: 1" in text or "SL/to: 1" in text
     assert "1 mau" in text
 
 

@@ -2,7 +2,29 @@
 
 use tiny_skia::{Mask, Path, PathBuilder, Stroke, Transform};
 
-use crate::geom::Matrix;
+use crate::geom::{Matrix, Region};
+
+/// Độ phủ của một thao tác vẽ, kèm vùng bao của nó.
+///
+/// `data` vẫn được đánh chỉ số theo **cả trang** (`y * width + x`) để mọi tầng dùng
+/// một hệ chỉ số duy nhất; `region` nói phần nào của nó có thể khác 0. Ngoài
+/// `region`, giá trị được bảo đảm là 0.
+pub struct Coverage<'a> {
+    pub data: &'a [f32],
+    pub region: Region,
+}
+
+/// Cho phép dùng `Coverage` như một slice (`cov[i]`, `cov.iter()`).
+///
+/// Tiện cho test và cho những chỗ chỉ cần giá trị; đường vẽ thật vẫn phải truyền
+/// `region` xuống tầng mực, nếu không thì mất luôn tác dụng của việc giới hạn vùng.
+impl<'a> std::ops::Deref for Coverage<'a> {
+    type Target = [f32];
+
+    fn deref(&self) -> &Self::Target {
+        self.data
+    }
+}
 
 /// Quy tắc tô của PDF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +60,11 @@ pub struct Rasterizer {
     scratch_mask: Mask,
     /// Độ phủ cuối cùng (đã nhân clip) truyền cho tầng mực.
     coverage: Vec<f32>,
+    /// Vùng mà `coverage`/`scratch_mask` có thể còn khác 0 từ lần vẽ trước.
+    ///
+    /// Chỉ xoá đúng vùng này thay vì cả buffer: với tiling pattern, số lần xoá bằng
+    /// số ô × số operator, nên xoá cả trang mỗi lần là chi phí chính của cả trang.
+    dirty: Region,
 }
 
 impl Rasterizer {
@@ -48,6 +75,7 @@ impl Rasterizer {
             height,
             scratch_mask,
             coverage: vec![0.0; (width as usize) * (height as usize)],
+            dirty: Region::EMPTY,
         })
     }
 
@@ -76,38 +104,82 @@ impl Rasterizer {
         rule: FillRule,
         anti_alias: bool,
         clip: Option<&Mask>,
-    ) -> Option<&[f32]> {
-        self.scratch_mask.clear();
+        soft_mask: Option<&[f32]>,
+    ) -> Option<Coverage<'_>> {
+        // Xoá vết của lần vẽ trước — chỉ trong vùng nó đã chạm.
+        self.clear_dirty();
+
+        let b = path.bounds();
+        let region = Region::from_bounds(
+            b.left(),
+            b.top(),
+            b.right(),
+            b.bottom(),
+            self.width,
+            self.height,
+        );
+        if region.is_empty() {
+            return None;
+        }
+        self.dirty = region;
+
         self.scratch_mask
             .fill_path(path, rule.into(), anti_alias, Transform::identity());
-        self.apply_clip(clip)
+        self.apply_clip(region, clip, soft_mask)
     }
 
-    /// Nhân mặt nạ vừa vẽ với clip, chuyển sang f32 0..1.
+    /// Xoá `coverage` và `scratch_mask` trong vùng bẩn của lần vẽ trước.
+    fn clear_dirty(&mut self) {
+        if self.dirty.is_empty() {
+            return;
+        }
+        let w = self.width as usize;
+        let mask = self.scratch_mask.data_mut();
+        for y in self.dirty.y0..self.dirty.y1 {
+            let row = y as usize * w;
+            let a = row + self.dirty.x0 as usize;
+            let b = row + self.dirty.x1 as usize;
+            mask[a..b].fill(0);
+            self.coverage[a..b].fill(0.0);
+        }
+        self.dirty = Region::EMPTY;
+    }
+
+    /// Nhân mặt nạ vừa vẽ với clip và soft mask, chuyển sang f32 0..1.
     ///
-    /// Gộp hai việc vào một lượt duyệt: đây là vòng lặp nóng nhất của engine.
-    fn apply_clip(&mut self, clip: Option<&Mask>) -> Option<&[f32]> {
+    /// Gộp cả ba việc vào một lượt duyệt: đây là vòng lặp nóng nhất của engine.
+    ///
+    /// Soft mask đi **cùng đường** với clip thay vì được áp ở tầng mực, để mọi
+    /// nhánh vẽ (tô, nét, glyph, pattern) không thể quên nó — một nhánh quên soft
+    /// mask sẽ đổ mực đúng vào chỗ file muốn che.
+    fn apply_clip(
+        &mut self,
+        region: Region,
+        clip: Option<&Mask>,
+        soft_mask: Option<&[f32]>,
+    ) -> Option<Coverage<'_>> {
         let src = self.scratch_mask.data();
+        let w = self.width as usize;
         let mut any = false;
-        match clip {
-            Some(c) => {
-                let cd = c.data();
-                for (i, out) in self.coverage.iter_mut().enumerate() {
-                    let v = (src[i] as u32 * cd[i] as u32) as f32 / (255.0 * 255.0);
-                    *out = v;
-                    any |= v > 0.0;
+        for y in region.y0..region.y1 {
+            let row = y as usize * w;
+            for x in region.x0..region.x1 {
+                let i = row + x as usize;
+                let mut v = src[i] as f32 / 255.0;
+                if v > 0.0 {
+                    if let Some(c) = clip {
+                        v *= c.data()[i] as f32 / 255.0;
+                    }
+                    if let Some(sm) = soft_mask {
+                        v *= sm.get(i).copied().unwrap_or(1.0);
+                    }
                 }
-            }
-            None => {
-                for (i, out) in self.coverage.iter_mut().enumerate() {
-                    let v = src[i] as f32 / 255.0;
-                    *out = v;
-                    any |= v > 0.0;
-                }
+                self.coverage[i] = v;
+                any |= v > 0.0;
             }
         }
         if any {
-            Some(&self.coverage)
+            Some(Coverage { data: &self.coverage, region })
         } else {
             None
         }
@@ -175,7 +247,7 @@ mod tests {
     fn fill_covers_expected_pixels() {
         let mut r = Rasterizer::new(4, 4).unwrap();
         let path = unit_square_at(0.0, 0.0, 2.0);
-        let cov = r.fill_path(&path, FillRule::NonZero, false, None).unwrap();
+        let cov = r.fill_path(&path, FillRule::NonZero, false, None, None).unwrap();
         // 2x2 pixel góc trên-trái phủ hết, phần còn lại trống.
         assert_eq!(cov[0], 1.0);
         assert_eq!(cov[1], 1.0);
@@ -187,7 +259,7 @@ mod tests {
     fn empty_path_returns_none_so_caller_can_skip() {
         let mut r = Rasterizer::new(4, 4).unwrap();
         let path = unit_square_at(100.0, 100.0, 2.0); // ngoài trang
-        assert!(r.fill_path(&path, FillRule::NonZero, false, None).is_none());
+        assert!(r.fill_path(&path, FillRule::NonZero, false, None, None).is_none());
     }
 
     #[test]
@@ -203,9 +275,36 @@ mod tests {
             tiny_skia::Transform::identity(),
         );
         let path = unit_square_at(0.0, 0.0, 4.0);
-        let cov = r.fill_path(&path, FillRule::NonZero, false, Some(&clip)).unwrap();
+        let cov = r
+            .fill_path(&path, FillRule::NonZero, false, Some(&clip), None)
+            .unwrap();
         assert_eq!(cov[0], 1.0, "trong clip");
         assert_eq!(cov[3], 0.0, "ngoài clip phải bị loại");
+    }
+
+    #[test]
+    fn soft_mask_scales_coverage_per_pixel() {
+        let mut r = Rasterizer::new(4, 4).unwrap();
+        let path = unit_square_at(0.0, 0.0, 4.0);
+        let mut sm = vec![1.0f32; 16];
+        sm[0] = 0.25;
+        sm[1] = 0.0;
+        let cov = r
+            .fill_path(&path, FillRule::NonZero, false, None, Some(&sm))
+            .unwrap();
+        assert!((cov[0] - 0.25).abs() < 1e-6, "cov={}", cov[0]);
+        assert_eq!(cov[1], 0.0, "mask 0 phải chặn hoàn toàn");
+        assert_eq!(cov[2], 1.0);
+    }
+
+    #[test]
+    fn soft_mask_of_all_zero_returns_none() {
+        let mut r = Rasterizer::new(4, 4).unwrap();
+        let path = unit_square_at(0.0, 0.0, 4.0);
+        let sm = vec![0.0f32; 16];
+        assert!(r
+            .fill_path(&path, FillRule::NonZero, false, None, Some(&sm))
+            .is_none());
     }
 
     #[test]
@@ -214,7 +313,9 @@ mod tests {
         let mut clip = Mask::new(4, 4).unwrap();
         clip.clear(); // clip rỗng
         let path = unit_square_at(0.0, 0.0, 4.0);
-        assert!(r.fill_path(&path, FillRule::NonZero, false, Some(&clip)).is_none());
+        assert!(r
+            .fill_path(&path, FillRule::NonZero, false, Some(&clip), None)
+            .is_none());
     }
 
     #[test]
@@ -236,8 +337,12 @@ mod tests {
         let mut r = Rasterizer::new(8, 8).unwrap();
         let center = 4 * 8 + 4;
 
-        let eo = r.fill_path(&path, FillRule::EvenOdd, false, None).unwrap()[center];
-        let nz = r.fill_path(&path, FillRule::NonZero, false, None).unwrap()[center];
+        let eo = r
+            .fill_path(&path, FillRule::EvenOdd, false, None, None)
+            .unwrap()[center];
+        let nz = r
+            .fill_path(&path, FillRule::NonZero, false, None, None)
+            .unwrap()[center];
         assert_eq!(eo, 0.0, "even-odd phải tạo lỗ");
         assert_eq!(nz, 1.0, "nonzero phải đặc");
     }
@@ -247,7 +352,7 @@ mod tests {
         // Chế độ ink_accurate: cạnh phải là 0 hoặc 1 để solid đọc đúng 100% mực.
         let mut r = Rasterizer::new(8, 8).unwrap();
         let path = rect_path(0.0, 0.0, 3.5, 8.0).unwrap();
-        let cov = r.fill_path(&path, FillRule::NonZero, false, None).unwrap();
+        let cov = r.fill_path(&path, FillRule::NonZero, false, None, None).unwrap();
         assert!(cov.iter().all(|v| *v == 0.0 || *v == 1.0), "AA tắt phải nhị phân");
     }
 
@@ -255,7 +360,7 @@ mod tests {
     fn anti_alias_on_produces_partial_edge() {
         let mut r = Rasterizer::new(8, 8).unwrap();
         let path = rect_path(0.0, 0.0, 3.5, 8.0).unwrap();
-        let cov = r.fill_path(&path, FillRule::NonZero, true, None).unwrap();
+        let cov = r.fill_path(&path, FillRule::NonZero, true, None, None).unwrap();
         assert!(
             cov.iter().any(|v| *v > 0.0 && *v < 1.0),
             "AA bật phải có pixel phủ một phần"

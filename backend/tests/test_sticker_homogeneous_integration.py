@@ -518,10 +518,12 @@ class _FakeOutPage:
         self.calls = []
 
     def show_pdf_page(self, rect, src_doc, page_idx, rotate=0, clip=None,
-                      keep_proportion=False, out_clip=None, mirror_x=False, mirror_y=False):
+                      keep_proportion=False, out_clip=None, mirror_x=False, mirror_y=False,
+                      out_clip_path=None):
         self.calls.append({
             "rect": rect, "page_idx": page_idx, "rotate": rotate,
             "clip": clip, "keep_proportion": keep_proportion,
+            "out_clip_path": out_clip_path,
         })
 
 

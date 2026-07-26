@@ -24,6 +24,14 @@ pub enum PpeError {
     #[error("kích thước raster không hợp lệ: {w}x{h} @ {dpi} DPI")]
     BadRasterSize { w: i64, h: i64, dpi: f32 },
 
+    #[error(
+        "vượt ngân sách bộ nhớ raster: cần khoảng {requested_mib} MiB, giới hạn {limit_mib} MiB"
+    )]
+    MemoryBudgetExceeded {
+        requested_mib: usize,
+        limit_mib: usize,
+    },
+
     #[error("vượt trần {limit} mực (colorant); trang dùng nhiều spot hơn engine hỗ trợ")]
     TooManyColorants { limit: usize },
 

@@ -14,7 +14,7 @@ pub fn solve_ratio_stack(
     py: Python<'_>,
     capacity: usize,
     qtys: Vec<i64>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let r = core::solve_ratio_stack(capacity, &qtys);
     let d = PyDict::new(py);
     d.set_item("cellsPerPage", r.cells_per_page)?;

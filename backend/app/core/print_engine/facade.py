@@ -44,9 +44,10 @@ from __future__ import annotations
 
 import base64
 import logging
+import tempfile
 import zlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,83 @@ def _fallback_font_path() -> str | None:
     return None
 
 
+def _memory_budget_mb() -> int:
+    """Per-render PPE memory ceiling configured by the backend."""
+    from app.config import settings
+
+    value = int(getattr(settings, "PRYNX_PPE_MEMORY_BUDGET_MB", 512))
+    if value <= 0:
+        raise ValueError("PRYNX_PPE_MEMORY_BUDGET_MB must be greater than zero")
+    return value
+
+
+_NativeResult = TypeVar("_NativeResult")
+_STRUCTURAL_OPEN_MARKERS = (
+    "invalid file trailer",
+    "invalid xref",
+    "xref",
+    "trailer",
+    "không mở được pdf",
+)
+
+
+def _call_native_with_pdf_recovery(
+    pdf_path: str,
+    call: Callable[[str], _NativeResult],
+) -> tuple[_NativeResult, bool]:
+    """Retry a structural-open failure through a temporary qpdf rewrite.
+
+    `lopdf` intentionally rejects some malformed xref/trailer structures that
+    qpdf/Ghostscript can recover. The retry is deliberately narrow:
+
+    * only a native *open/structure* error is eligible;
+    * the source must be an existing regular file;
+    * the original is never overwritten;
+    * the normalized file lives only for the duration of the native call.
+
+    A render/page/memory error is not retried because rewriting cannot fix it and
+    would hide the real failure behind a second parser.
+    """
+    try:
+        return call(pdf_path), False
+    except RuntimeError as original:
+        message = str(original).lower()
+        source = Path(pdf_path)
+        if not source.is_file() or not any(marker in message for marker in _STRUCTURAL_OPEN_MARKERS):
+            raise
+
+        try:
+            import pikepdf
+        except ImportError as recovery_error:
+            logger.warning("PPE PDF recovery unavailable: pikepdf is not installed")
+            raise original from recovery_error
+
+        with tempfile.TemporaryDirectory(prefix="prynx-ppe-recovery-") as tmp:
+            normalized = Path(tmp) / "normalized.pdf"
+            try:
+                with pikepdf.open(
+                    source,
+                    attempt_recovery=True,
+                    suppress_warnings=True,
+                ) as pdf:
+                    pdf.save(normalized)
+            except (pikepdf.PdfError, OSError, ValueError) as recovery_error:
+                logger.warning(
+                    "PPE PDF structure recovery failed for %s: %s",
+                    source,
+                    recovery_error,
+                )
+                raise original from recovery_error
+
+            logger.warning(
+                "PPE normalized malformed PDF structure in a temporary file: %s",
+                source,
+            )
+            # Lỗi của lần render thứ hai phải nổi nguyên trạng. Chỉ lỗi *rewrite*
+            # mới được nối về lỗi parser ban đầu.
+            return call(str(normalized)), True
+
+
 # Màu hiển thị của kẽm process. Đọc từ `SeparationEngine` lúc chạy (xem
 # `_plate_color`) chứ không copy hằng số sang đây: hai bảng màu song song sẽ lệch
 # nhau khi một bên đổi, và preview đổi màu theo engine là bug người dùng thấy ngay.
@@ -169,10 +247,28 @@ def separations(
 ) -> dict[str, Any]:
     """Tách kẽm một trang bằng PPE, trả contract giống `SeparationEngine`.
 
-    `ink_accurate=True` → đo lượng mực DeviceCMYK: **không** ICC, **không** khử
-    răng cưa, để vùng đặc đọc đúng 100% mực mỗi kênh. Đây là chế độ cho TAC.
-    Quản lý màu ở chế độ này sẽ nén vùng đặc 400% xuống ~292% và biến một file
-    vượt giới hạn mực thành "đạt" — nên ICC bị bỏ *có chủ đích*, không phải quên.
+    `ink_accurate=True` → chế độ đo mực cho TAC: **tắt khử răng cưa** để cạnh nhị
+    phân và vùng đặc đọc đúng 100% mực mỗi kênh.
+
+    # Vì sao chế độ đo mực VẪN nạp profile ICC
+
+    Bất biến prepress ở đây hẹp hơn "TAC thì đừng dùng ICC", và trộn hai điều đó
+    là nguồn của cả một lớp sai:
+
+    * `DeviceCMYK` / `DeviceGray` / `Separation` / `DeviceN` — dữ liệu **đã là
+      mực**. Không bao giờ đi qua ICC. Round-trip nén vùng đặc 400% xuống ~292%
+      và biến một file vượt giới hạn mực thành "đạt". Việc này do chính engine
+      bảo đảm, không phụ thuộc caller (`print_engine/tests/render_icc.rs` có test
+      khoá: bật và tắt ICC cho kết quả **giống từng byte** trên DeviceCMYK).
+    * `DeviceRGB` / `Lab` / `ICCBased` — **chưa** phải mực. Không có profile thì
+      lượng mực chỉ là một công thức UCR tuỳ tiện, nên engine trung thực bật
+      `ink_unsound` và trang bị loại.
+
+    Trước đây facade bỏ ICC cho *toàn bộ* chế độ đo mực. Hệ quả đo được: 4/18
+    fixture (mọi trang có ảnh RGB) bị loại và rơi về Ghostscript, dù §16.3 đã
+    chứng minh PPE khớp GS dưới 1 điểm TAC trên chính nội dung RGB khi cùng
+    profile. Nạp profile ở đây **mở rộng** vùng PPE đo được mà không nới bất biến
+    nào — phần đã là mực vẫn không bị chạm tới.
 
     `allow_geometry_approximation=False` → loại cả trang có font thay thế. Dùng
     khi cần con số diện tích phủ chính xác (ví dụ báo giá mực), không cần cho TAC.
@@ -185,23 +281,30 @@ def separations(
 
     cmyk_profile = None
     rgb_profile = None
-    if not ink_accurate and cmyk_profile_id:
-        # Chỉ đường xem trước mới quản lý màu. Xem docstring: TAC phải đo mực thô.
+    if cmyk_profile_id:
+        # Nạp cho CẢ hai chế độ. Xem docstring: profile chỉ áp cho nội dung chưa
+        # phải mực; `ink_accurate` điều khiển khử răng cưa, không điều khiển ICC.
         from app.core.icc_profiles import resolve_cmyk_profile_path, resolve_srgb_profile_path
 
         cmyk_profile = resolve_cmyk_profile_path(cmyk_profile_id)
         rgb_profile = resolve_srgb_profile_path()
 
-    raw = native.ppe_separations(
-        pdf_path,
-        page=page_num,
-        dpi=float(dpi),
-        ink_accurate=ink_accurate,
-        page_box="crop",
-        cmyk_profile=cmyk_profile,
-        rgb_profile=rgb_profile,
-        fallback_font=_fallback_font_path(),
-    )
+    def _render(candidate_path: str):
+        return native.ppe_separations(
+            candidate_path,
+            page=page_num,
+            dpi=float(dpi),
+            ink_accurate=ink_accurate,
+            page_box="crop",
+            cmyk_profile=cmyk_profile,
+            rgb_profile=rgb_profile,
+            fallback_font=_fallback_font_path(),
+            memory_budget_mb=_memory_budget_mb(),
+        )
+
+    raw_native, pdf_recovered = _call_native_with_pdf_recovery(pdf_path, _render)
+    raw = dict(raw_native)
+    raw["pdf_recovered"] = pdf_recovered
 
     # ── Cổng tin cậy ────────────────────────────────────────────────────────
     # Đặt TRƯỚC khi dựng plate: dựng xong rồi mới loại là tốn công vô ích, và
@@ -247,12 +350,83 @@ def separations(
         "detected_spots": spot_names,
         "engine": "ppe",
         "accuracy": ACCURACY_RIP_APPROX_GEOMETRY if geometry_approx else ACCURACY_RIP,
-        "quality_note": _quality_note(raw, geometry_approx, ink_accurate),
+        "quality_note": _quality_note(
+            raw,
+            geometry_approx,
+            ink_accurate,
+            pdf_recovered,
+        ),
         # Vết chẩn đoán: giữ để UI giải thích được vì sao accuracy bị hạ.
+        "ppe_pdf_recovered": pdf_recovered,
         "ppe_substituted_fonts": list(raw.get("substituted_fonts") or []),
         "ppe_colorspaces_used": list(raw.get("colorspaces_used") or []),
         "ppe_skipped_ops": list(raw.get("skipped_ops") or []),
     }
+    return result
+
+
+def softproof(
+    pdf_path: str,
+    page_num: int,
+    dpi: int = 150,
+    *,
+    cmyk_profile_id: str = "fogra39",
+    render_intent: int = 1,
+) -> dict[str, Any]:
+    """Soft-proof một trang: render trong không gian mực rồi quy sang sRGB qua ICC.
+
+    Trả `{"width", "height", "rgb", "degraded", "ink_unsound"}` với `rgb` là bytes
+    dài `width * height * 3`.
+
+    # Vì sao đường này khác hẳn `separations`
+
+    Soft-proof là câu hỏi **"in ra sẽ trông thế nào"**, không phải **"tốn bao nhiêu
+    mực"**. Hai câu hỏi cần hai cấu hình đối nghịch:
+
+    * khử răng cưa **bật** (xem) thay vì tắt (đo);
+    * mực pha **quy về CMYK** (màn hình không có mực pha) thay vì giữ kẽm riêng.
+
+    Vì vậy kết quả của hàm này tuyệt đối không được dùng để kết luận lượng mực, và
+    đó là lý do nó là một hàm riêng chứ không phải một cờ của `separations`.
+
+    Khác `separations`, ở đây **không** có cổng tin cậy chặn kết quả: một ảnh xem
+    trước thiếu một object vẫn hữu ích, còn một con số TAC thiếu một object thì
+    không. Cờ `ink_unsound` vẫn được trả về để lớp UI nói ra.
+
+    Raises:
+        PpeUnavailable: native chưa có PPE, hoặc build cũ chưa có `ppe_softproof`.
+        RuntimeError: không tìm được profile CMYK (không có profile ⇒ không có
+            soft-proof; đoán một công thức rồi gọi đó là soft-proof là hứa hão).
+    """
+    native = _native()
+    if not hasattr(native, "ppe_softproof"):
+        raise PpeUnavailable(
+            "pdfcompare_native thiếu ppe_softproof — cần rebuild: "
+            "maturin develop --release --manifest-path native/Cargo.toml"
+        )
+
+    from app.core.icc_profiles import resolve_cmyk_profile_path, resolve_srgb_profile_path
+
+    cmyk_profile = resolve_cmyk_profile_path(cmyk_profile_id)
+    if not cmyk_profile:
+        raise RuntimeError(f"không tìm được profile CMYK '{cmyk_profile_id}'")
+
+    def _render(candidate_path: str):
+        return native.ppe_softproof(
+            candidate_path,
+            page=page_num,
+            dpi=float(dpi),
+            cmyk_profile=cmyk_profile,
+            rgb_profile=resolve_srgb_profile_path(),
+            render_intent=int(render_intent),
+            page_box="crop",
+            fallback_font=_fallback_font_path(),
+            memory_budget_mb=_memory_budget_mb(),
+        )
+
+    raw, pdf_recovered = _call_native_with_pdf_recovery(pdf_path, _render)
+    result = dict(raw)
+    result["pdf_recovered"] = pdf_recovered
     return result
 
 
@@ -262,7 +436,7 @@ def _explain_unsound(raw: dict[str, Any]) -> str:
     if raw.get("dropped_objects"):
         parts.append(f"{raw['dropped_objects']} object chưa vẽ được")
     if raw.get("unsupported_transparency"):
-        parts.append("transparency/soft mask chưa dựng")
+        parts.append("transparency chưa đúng blending color space hoặc soft mask chưa hỗ trợ đủ")
     if raw.get("hidden_content_risk"):
         parts.append("có optional content (/OC) chưa xét trạng thái bật/tắt")
     approx = raw.get("approximated_colorspaces") or []
@@ -271,9 +445,19 @@ def _explain_unsound(raw: dict[str, Any]) -> str:
     return "PPE: lượng mực chưa đủ tin (" + "; ".join(parts) + ")" if parts else "PPE: lượng mực chưa đủ tin"
 
 
-def _quality_note(raw: dict[str, Any], geometry_approx: bool, ink_accurate: bool) -> str:
+def _quality_note(
+    raw: dict[str, Any],
+    geometry_approx: bool,
+    ink_accurate: bool,
+    pdf_recovered: bool = False,
+) -> str:
     mode = "đo lượng mực DeviceCMYK" if ink_accurate else "xem trước color-managed"
     note = f"PrynX Print Engine — kẽm process/spot trong không gian mực ({mode})."
+    if pdf_recovered:
+        note += (
+            " Cấu trúc xref/trailer lỗi đã được qpdf phục hồi trong tệp tạm; "
+            "file gốc không bị sửa."
+        )
     if geometry_approx:
         fonts = ", ".join(raw.get("substituted_fonts") or []) or "không rõ"
         note += (

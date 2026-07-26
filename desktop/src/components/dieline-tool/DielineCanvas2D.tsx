@@ -516,6 +516,7 @@ export default function DielineCanvas2D({ rightSlot }: { rightSlot?: React.React
 const DEFAULT_PREVIEWS: Record<string, { label: string }> = {
     rte: { label: 'Hộp Nắp Cài' },
     slb: { label: 'Hộp Đáy Gài' },
+    auto_bottom: { label: 'Hộp Đáy Dán' },
     gable: { label: 'Hộp Quai Xách' },
     paper_bag: { label: 'Túi Giấy SOS' },
     cup_sleeve: { label: 'Bọc Ly' },

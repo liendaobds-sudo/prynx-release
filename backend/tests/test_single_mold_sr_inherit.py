@@ -140,9 +140,20 @@ def test_repeat_master_in_middle_nests_once_and_reuses_cut_master(monkeypatch):
     captured = {}
 
     def _capture(args):
+        # process_chunk args: [... cols, rows, repeat_meta?, homogeneous_mode,
+        # homogeneous_master_idx, page_sheet_mode?].  repeat_meta is at 54 when
+        # present; page_sheet_mode is trailing bool after master idx.
         captured["precalc"] = args[37]
-        captured["homogeneous_mode"] = args[-2]
-        captured["master_idx"] = args[-1]
+        if (
+            len(args) > 56
+            and (args[54] is None or isinstance(args[54], dict))
+        ):
+            # repeat_meta slot present → mode/master shifted to 55/56
+            captured["homogeneous_mode"] = args[55]
+            captured["master_idx"] = args[56]
+        else:
+            captured["homogeneous_mode"] = args[54]
+            captured["master_idx"] = args[55]
         raise _Stop()
 
     monkeypatch.setattr(nup_engine, "_find_largest_die_path", _fake_find)

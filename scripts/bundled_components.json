@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "Danh mục thành phần NHỊ PHÂN được đóng gói vào installer PrynX.",
+    "Đây là phần DUY NHẤT phải khai bằng tay: các binary này không nằm trong",
+    "lockfile nào (không phải package pip/cargo/npm), nên không generator nào dò",
+    "ra được. Khi build_production.ps1 thêm/bớt một binary, PHẢI sửa file này.",
+    "",
+    "Trường `bundled` = false nghĩa là thành phần KHÔNG còn trong installer;",
+    "generator sẽ bỏ khỏi NOTICE. Dùng cho Ghostscript sau khi PPE thay xong."
+  ],
+  "native_components": [
+    {
+      "id": "ghostscript",
+      "name": "Ghostscript",
+      "version": "10.04.0",
+      "license": "AGPL-3.0-or-later",
+      "homepage": "https://www.ghostscript.com/",
+      "source": "https://github.com/ArtifexSoftware/ghostpdl-downloads",
+      "bundled_path": "binaries/gs/",
+      "linkage": "Tiến trình riêng, gọi qua dòng lệnh (không liên kết thư viện)",
+      "used_for": "Tách kẽm CMYK/spot, soft-proof ICC, chuyển màu, PDF/X, flatten, outline font, downsample ảnh, nén PDF",
+      "bundled": true,
+      "notes": "AGPL-3.0. Đang được thay bằng PrynX Print Engine (xem docs/PRYNX_GS_REPLACEMENT_ENGINE_PLAN.md); đặt `bundled: false` khi gỡ khỏi installer."
+    },
+    {
+      "id": "tesseract",
+      "name": "Tesseract OCR",
+      "version": "5.x",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/tesseract-ocr/tesseract",
+      "source": "https://github.com/tesseract-ocr/tesseract",
+      "bundled_path": "binaries/tesseract/",
+      "linkage": "Tiến trình riêng, gọi qua dòng lệnh",
+      "used_for": "Nhận dạng chữ trong ảnh (OCR)",
+      "bundled": true,
+      "notes": "Bundle kèm tessdata. Các thư viện đi cùng trong cùng thư mục: Leptonica (BSD-2-Clause), ICU (Unicode-3.0), libpng/zlib/libtiff/libjpeg (giấy phép permissive tương ứng)."
+    },
+    {
+      "id": "leptonica",
+      "name": "Leptonica",
+      "version": "1.8x",
+      "license": "BSD-2-Clause",
+      "homepage": "http://www.leptonica.org/",
+      "source": "https://github.com/DanBloomberg/leptonica",
+      "bundled_path": "binaries/tesseract/ (DLL)",
+      "linkage": "Thư viện động của Tesseract",
+      "used_for": "Xử lý ảnh nền cho OCR",
+      "bundled": true,
+      "notes": ""
+    },
+    {
+      "id": "pdfium",
+      "name": "PDFium",
+      "version": "bundled build",
+      "license": "BSD-3-Clause",
+      "homepage": "https://pdfium.googlesource.com/pdfium/",
+      "source": "https://pdfium.googlesource.com/pdfium/",
+      "bundled_path": "pdfium.dll (trong sidecar) + pypdfium2",
+      "linkage": "Thư viện động",
+      "used_for": "Render trang, đọc hình học đối tượng PDF",
+      "bundled": true,
+      "notes": "Có chứa mã của Chromium/Skia (BSD-3-Clause) và một phần Apache-2.0."
+    },
+    {
+      "id": "directml",
+      "name": "DirectML",
+      "version": "theo onnxruntime-directml",
+      "license": "MIT",
+      "homepage": "https://github.com/microsoft/DirectML",
+      "source": "https://github.com/microsoft/DirectML",
+      "bundled_path": "onnxruntime/capi/DirectML.dll",
+      "linkage": "Thư viện động của onnxruntime",
+      "used_for": "Tăng tốc GPU cho tách nền ảnh (DirectX 12)",
+      "bundled": true,
+      "notes": "Chỉ có ở bản Windows; bản CPU không kèm."
+    }
+  ]
+}

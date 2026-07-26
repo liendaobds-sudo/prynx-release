@@ -7,6 +7,12 @@
 //! Mặc định chạy chế độ đo mực (không AA) để so đúng với GS `tiffsep` +
 //! `-dUseFastColor=true -dGraphicsAlphaBits=1`. Thêm `preview` để so đường xem
 //! trước có khử răng cưa.
+//!
+//! Đối số 7 là **font thay thế** cho font không nhúng. Nó phải khớp với thứ mà
+//! `backend/app/core/print_engine/facade.py` truyền vào ở đường chạy thật: bộ đo
+//! chạy cấu hình khác cấu hình sản xuất thì con số nó cho ra không nói được gì về
+//! sản phẩm. Trước đây thiếu đối số này, nên mọi trang chữ dùng font không nhúng
+//! hiện ra là "chưa vẽ được" trong bảng đo dù ở sản xuất chúng vẫn được vẽ.
 
 use std::path::Path;
 
@@ -17,7 +23,10 @@ use print_engine::page::{open, render_page_managed, PageBox};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("dùng: plate_stats <file.pdf> [page] [dpi] [preview|ink] [FOGRA39.icc]");
+        eprintln!(
+            "dùng: plate_stats <file.pdf> [page] [dpi] [preview|ink] [FOGRA39.icc] \
+[sRGB.icc] [fallback.ttf]"
+        );
         std::process::exit(2);
     }
     let path = &args[1];
@@ -25,10 +34,25 @@ fn main() {
     let dpi: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(100.0);
     let preview = args.get(4).map(|s| s == "preview").unwrap_or(false);
 
-    let opts = if preview {
+    let base_opts = if preview {
         RenderOptions::default()
     } else {
         RenderOptions::ink_accurate()
+    };
+    // Đối số 7: font thay cho font không nhúng, phải khớp cấu hình sản xuất.
+    let opts = match args.get(7).filter(|s| !s.is_empty()) {
+        Some(p) => match std::fs::read(p) {
+            Ok(data) => base_opts.with_fallback_font(std::sync::Arc::new(data)),
+            Err(e) => {
+                println!(
+                    "{{\"error\":\"không đọc được font thay thế {}: {}\"}}",
+                    escape(p),
+                    escape(&format!("{e}"))
+                );
+                std::process::exit(1);
+            }
+        },
+        None => base_opts,
     };
 
     // Đối số 5: ICC CMYK đích. Đối số 6 (tuỳ chọn): ICC RGB nguồn — chỉ định được
@@ -96,15 +120,27 @@ fn main() {
     let w = &rendered.warnings;
     println!(
         "{{\"engine\":\"ppe\",\"width\":{},\"height\":{},\"rotate\":{},\"max_tac_pct\":{:.3},\
-\"degraded\":{},\"dropped_objects\":{},\"unsupported_transparency\":{},\
+\"degraded\":{},\"ink_unsound\":{},\"geometry_approximate\":{},\"substituted_fonts\":[{}],\
+\"dropped_objects\":{},\"unsupported_transparency\":{},\"hidden_content_risk\":{},\
 \"approximated_colorspaces\":[{}],\"colorspaces_used\":[{}],\"skipped_ops\":[{}],\"plates\":[{}]}}",
         buf.width(),
         buf.height(),
         rendered.rotate,
         buf.max_tac_percent(),
         w.degrades_accuracy(),
+        // Hai trục riêng: bộ đo phải phân biệt được "thiếu mực" (loại kết quả) với
+        // "hình xấp xỉ vì thay font" (vẫn dùng được cho TAC) — gộp lại thì bảng đo
+        // không nói được điều gì hữu ích về trang chữ.
+        w.ink_unsound(),
+        w.geometry_approximate(),
+        w.substituted_fonts
+            .iter()
+            .map(|f| format!("\"{}\"", escape(f)))
+            .collect::<Vec<_>>()
+            .join(","),
         w.dropped_objects,
         w.unsupported_transparency,
+        w.hidden_content_risk,
         w.approximated_colorspaces
             .iter()
             .map(|cs| format!("\"{}\"", escape(cs)))

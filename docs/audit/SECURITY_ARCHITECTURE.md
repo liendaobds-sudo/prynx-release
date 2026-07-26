@@ -838,3 +838,149 @@ ký token `plan=pro`. Không có code signing thì không lớp nào chặn đư
   hình học DUY NHẤT cho `computeDeepBottomKeyPoints`/`buildDeepBottomFlap` (A/B trên fold,
   M sâu hơn & lệch phải C, fillet tại fold, CREASE 45° từ B). Không test nào khác phủ —
   `bleedContours.test.ts:156` chỉ kiểm `outline.length > 8`. Đã bỏ `console.log` (§9).
+
+---
+
+## 24. Re-audit 2026-07-26 — xác minh lại mục 23 + vá phần còn hở
+
+> Toàn bộ kết luận dưới đây được TỰ chạy lại (venv dự án, uvicorn cô lập port 8399,
+> probe trên BẢN ĐÃ CÀI), không tin claim của mục 23 (§14.4).
+
+### 24.1. RÚT LẠI / SỬA phát biểu ở mục 23 (§0.4)
+
+| Phát biểu ở mục 23 | Thực tế đo được | Xử lý |
+|---|---|---|
+| A2: "Bổ sung **cùng danh sách** vào `capabilities/default.json`" | **SAI.** 7 pattern chỉ có ở `assetProtocol.deny`, thiếu ở CẢ 5 permission `fs:*`: `$HOME/.docker/**`, `**/.env`, `**/*.pem`, `**/*.pfx`, `**/*.p12`, `**/id_rsa*`, `**/id_ed25519*` (+ `$DATA/PrynX/*.dat`). Consumer sống: `api.ts:217` `readFile(file.path)` với path tuỳ ý. | ĐÃ VÁ: đồng bộ đủ 3 nơi + ratchet CI `Asset-protocol deny và fs capability deny phải TRÙNG nhau`. |
+| 23.2: "`build_production.ps1` **phát hành** `Ban_Phat_Hanh\release-manifest.txt`" | Code có (đã commit) nhưng **0 artifact tồn tại**: `Ban_Phat_Hanh` chỉ có beta.12 (18/07) và beta.13 (22/07), đều **trước** mọi commit vá của 25/07. Lớp bù trừ "đối chiếu hash" chưa dùng được cho bản đang ở tay khách. | Không phải lỗi code — cần BUILD lại (xem 24.4). |
+| 23.3: "`contourValidator.test.ts` đã property-test `validateClosedContours` trên mọi loại hộp **gồm `auto_bottom`**" (lý do xoá `_debug_open.test.ts`) | Đúng là có test, nhưng test đó **đang ĐỎ** cho `auto_bottom` (3/3 lượt chạy). Xoá test cũ trong khi test còn lại fail = giảm tín hiệu. | ĐÃ VÁ 3 lỗi hình học thật (24.3). |
+
+### 24.2. Đã xác minh ĐÚNG (không đổi)
+
+- **A1 nonce:** payload Rust `security.rs:892` ≡ Python `license_guard.py:245` **khớp từng ký tự**
+  (kể cả `token_hash = hex(sha256(token))`). Nonce chỉ tiêu SAU khi HMAC hợp lệ — harness
+  chứng minh kẻ ngoài **không** đốt được nonce của request thật (chữ ký rác → 403, chính
+  nonce đó với chữ ký đúng → 200). Bảng `_seen_nonces` có trần: bơm 500 nonce quá hạn →
+  còn 11 sau một request hợp lệ.
+- **Che guard 100%:** probe HTTP thật **137/137** cặp (method, path) dưới `/api` trả 401/403
+  khi không header. Lưu ý kỹ thuật: FastAPI 0.138 KHÔNG flatten router (`_IncludedRouter`),
+  đếm bằng `app.routes` không đệ quy sẽ ra **0 route** và tưởng "đã che hết".
+- **23/23 ca tấn công bị chặn:** không header, replay nguyên bộ, replay cho body khác,
+  thiếu/rỗng nonce, ts quá hạn/tương lai, sidecar token sai, tráo license key sau khi ký,
+  trao token khác sau khi ký, token máy khác, token tự ký, token hết hạn, token TTL 30 ngày,
+  chữ ký sai path, Free token → endpoint Pro (403 kèm tên feature), WS không chữ ký + WS replay.
+- **A3 cơ chế tắt docs:** mô phỏng cờ Nuitka `__compiled__` → `_DOCS_ENABLED=False`,
+  `/docs /redoc /openapi.json` = 404, env không bật lại được. Cờ `__compiled__` được chứng
+  minh CÓ hiệu lực trong binary thật: chạy sidecar đã cài với `DEV_MODE=true` → guard vẫn 403.
+- **A4 bất biến TTL:** TTL 72h (259200) ≤ cận chống-lùi-giờ 8 ngày (691200) ở CẢ BA chỗ
+  (`license_guard.py:306`, `security.rs:379`, `lib.rs:1731`).
+- **A5 cách ly test license:** 12 lượt / 4 thứ tự × 3 vòng đều xanh; **và** đã kiểm ĐỘ NHẠY
+  (tiêm lại override Pro qua hook `pytest_runtest_call` → test ĐỎ) ⇒ không phải test rỗng.
+- **A6 fixture preflight:** worktree sạch `HEAD` (0 file pdf) → 18 passed, `git status` sạch
+  ⇒ `expected_rules.json` không bị ghi đè.
+- **A7 mitigations:** `DynamicCode=2`, `Signature=8` khớp enum `PROCESS_MITIGATION_POLICY`;
+  mặc định TẮT.
+- **Rủi ro tồn dư vẫn đúng như mô tả:** integrity không cưỡng chế; `/results/**` không auth;
+  pyo3 RUSTSEC-2026-0176/0177 **không** trên đường chạy (grep `.nth(`/`nth_back`/`new_closure`
+  trên `native/src`, `print_engine/src`, `imposition_core/src` = **0 hit**); gtk-rs là binding
+  Linux; sidecar không giữ service key nên `_verify_with_supabase` trả True (lớp DNS là code
+  chết ở release), độ trễ thu hồi offline = TTL.
+
+### 24.3. Phát hiện MỚI + đã vá
+
+| # | Mức | Phát hiện (đường chạy → sink) | Vá |
+|---|---|---|---|
+| B1 | 🟠 | **`read_dir_json` đi vòng CẢ HAI deny-list.** `invoke('read_dir_json', {dir})` → `lib.rs:1098` → `std::fs::read_dir` → trả **nội dung mọi `*.json`** của thư mục BẤT KỲ, không guard, không scope (comment cũ nói rõ "KHÔNG vướng scope plugin-fs"). Renderer bị chèn mã đọc được `.aws\sso\cache\*.json` (bearer token), `.docker\config.json`, `Code\User\settings.json`… ⇒ A2 chỉ bịt đường asset/fs. | Giới hạn đúng nhu cầu thật: chỉ cho phép trong cây `app_data_dir()` (cả 3 consumer — `recipeStore`, `presetManager`, `appSettingsStore` — đều nằm trong đó) + `is_sensitive_path`. Ratchet CI. |
+| B2 | 🟠 | **`is_sensitive_path` hẹp hơn cả hai deny-list**: thiếu `Roaming\Microsoft\Protect` (master key DPAPI), `Local\Microsoft\Vault`, profile Chrome/Edge/Firefox, `PrynX\*.dat`, `.docker`. Bảo vệ thực tế chỉ còn **allowlist đuôi file** của `read_system_file` — thêm một đuôi là mở cửa. | Bổ sung đủ danh sách + chặn theo TÊN FILE ở mọi thư mục (`.env`, `*.pem/pfx/p12/key`, `id_rsa*`, `id_ed25519*`). `PrynX\*.dat` chặn theo FILE (không chặn cả thư mục — recipe/preset nằm trong đó). |
+| B3 | 🟢 | `get_file_size` (`lib.rs:998`) **không có** allowlist đuôi ⇒ oracle tồn-tại/kích-thước mọi file ngoài vài thư mục bị chặn. | Thêm allowlist đuôi (pdf/ảnh/office/json/txt…) như `read_system_file`. |
+| B4 | 🟠 | **Log khởi động báo SAI posture bảo mật.** `main.py` lifespan đọc `settings.DEV_MODE` thay vì `license_guard._is_dev_mode()`. Tái lập trên BẢN ĐÃ CÀI: log ghi `DEV_MODE=ON — checks are DISABLED` trong khi `/api/system/gpu-status` trả **403** (guard vẫn cưỡng chế). Log sai làm lệch hướng điều tra sự cố (§15.6). | Đọc đúng nguồn chân lý của guard; thêm nhánh cảnh báo "DEV_MODE=true bị BỎ QUA vì đang chạy binary compiled". |
+| B5 | 🔴 | **Biên ngoài phôi `auto_bottom` KHÔNG khép kín — 3 lỗi hình học độc lập** (Property 4 bắt đúng): (a) `filletedFreeEdgeOnFold` fallback "thêm line cực ngắn" tạo điểm **lơ lửng 0.012mm** (> `SNAP_TOLERANCE` 0.01) vì không kéo endpoint segment trước về; (b) cùng chỗ, điểm chèn tính theo **2% chiều dài** segment → với segment ~75mm là **1.5mm**, méo hình; (c) `filletedPolyline` **bỏ qua** đoạn nối ≤0.05mm mà không hàn hai đầu → khe **0.05mm** giữa hai fillet liền kề (chỉ lộ khi các đỉnh free-edge dồn lại, vd `ABD≥28` với `W=30`). Hệ quả thật: khuôn cắt hở ở góc dán đáy. | Vá cả 3: hàn endpoint (`weldFilletStart`/`weldFilletEnd`), đổi 2% → lệch tuyệt đối 0.05mm. Property 4 xanh cho cả 9 generator. |
+| B6 | 🟠 | Luật buddy của `contourValidator` chỉ nhận "trùng **ĐẦU MÚT** CREASE", không phủ phôi có **đường gập liên tục**: `auto_bottom` vẽ CREASE đáy `x1→x5` là MỘT đoạn, còn free-edge cố ý dừng ở B — nằm GIỮA đoạn gập, cách cột góc dán khe `foldGap` (thiết kế theo mẫu 100010-01, §D5). ⇒ báo hở GIẢ. | Thêm `endsOnCreaseBody`: đầu cắt dừng **trên thân** CREASE thẳng = chuyển tiếp nếp gập. Bỏ qua CREASE bezier (points là điểm điều khiển → nội suy sai). KHÔNG nới lỏng phép kiểm biên hở thật (Property 3 / Req 2.1 vẫn xanh). |
+| B7 | 🟠 | **CI không có `cargo audit` / `cargo test`** — đúng bài học §14.3 vẫn chưa vào CI. | Thêm job `rust-audit`: quét CẢ BỐN lockfile + `cargo test` cho `imposition_core`, `print_engine`. |
+| B8 | 🟠 | `imposition_core/Cargo.lock` **vẫn bị gitignore** (lỗi đã ghi ở `GO_NOGO_2026-06-26`). | Bỏ khỏi `.gitignore`, đã `git add`. |
+| B9 | 🟢 | `/ws/jobs/{job_id}/progress` **không có consumer** trong `desktop/src` (0 match `new WebSocket|ws://|wss://`). Guard đúng (đã probe) nhưng là bề mặt tấn công không dùng. | Ghi nhận — quyết định gỡ hay giữ thuộc sản phẩm. |
+| B10 | 🟢 | `pip 25.0.1` trong venv có 6 CVE (PYSEC-2026-196/1795/1796/2875/2876). Không bundle (Nuitka chỉ gom package được import) ⇒ chỉ là tooling. | Khuyến nghị `python -m pip install -U pip`. |
+| B11 | 🟢 | `cargo audit` mới: **anyhow 1.0.102** unsound RUSTSEC-2026-0190 (`downcast_mut` — grep = **0 hit** ⇒ ngoài đường chạy), **ttf-parser 0.25.1** unmaintained RUSTSEC-2026-0192. | Ghi nhận, không chặn phát hành. |
+
+### 24.4. Còn lại — KHÔNG xác minh/không xử lý được trong phiên này
+
+1. **Chưa có bản cài nào chứa vá.** Mọi mục release-only (asset deny lúc runtime với
+   `convertFileSrc`, `/docs` 404 trên binary, đường IN với `PRYNX_MITIGATIONS`, manifest)
+   phải QA lại **sau khi build**. CẤM kết luận từ `tauri dev` (§15.1).
+2. **Hạ cận chống-lùi-giờ 691200 → 345600 (4 ngày)**: chỉ an toàn **từ 2026-08-02**
+   (7 ngày sau commit TTL 72h `b1b40eb` 2026-07-25 20:03, để token 7 ngày cũ hết hạn),
+   và cần xác nhận edge function ĐÃ deploy thật ngày đó — repo không chứng minh được.
+   Sửa đồng thời 3 chỗ: `license_guard.py`, `security.rs`, `lib.rs`.
+3. **pyo3 0.26 → ≥0.29**: hoãn CÓ CHỦ Ý. Đã xác minh 2 CVE không nằm trên đường chạy;
+   migration 3 minor version của pyo3 giữa lúc `print_engine`/`native` đang thay đổi là
+   rủi ro lớn hơn lợi ích. Làm thành task riêng, có `cargo test` + smoke test render.
+4. **`git status` chưa sạch** (đang có WIP của dev). Build phát hành phải từ cây ĐÃ COMMIT
+   (§14.7); pytest trên cây đã commit trước phiên này còn 3 đỏ do commit dở.
+
+---
+
+## 25. Anticrack 2026-07-26 — biến việc kiểm license thành "chịu lực" (resource key)
+
+### 25.1. Vấn đề đang giải
+
+Mọi lớp anticrack trước đây đều kết thúc ở một **BOOLEAN**: `authorize_dieline` trả
+`Result<(), String>`, `verify_sidecar_integrity` trả `Ok/Err`. Kẻ crack không cần token —
+chỉ cần patch chỗ trả về. Đó chính là "đường crack hiện thực nhất" ghi ở §23.2, và **code
+signing KHÔNG bịt được nó**: Windows không từ chối chạy exe vỡ chữ ký, việc verify vẫn do
+code của ta gọi nên vẫn patch được. Cert trả tiền mua **niềm tin của khách** (SmartScreen,
+tên publisher trong UAC), không mua khả năng chống patch.
+
+⇒ Hướng đi: làm cho kết quả kiểm license trở thành **NGUYÊN LIỆU bắt buộc**, không phải
+điều kiện. Tài sản được chọn mở màn: `native/src/generated/dieline_engine.bundle.js`
+(engine dieline) — vốn đã là tài sản chủ động bảo vệ, có gate sẵn, và **không nằm trên
+đường in/render** (nơi từng gây sự cố release, §15.3).
+
+### 25.2. Cơ chế
+
+| Giai đoạn | Cái gì xảy ra |
+|---|---|
+| Build | `build_production.ps1` sinh khoá AES-256 **mới cho mỗi bản phát hành**, đẩy lên Supabase TRƯỚC khi build (fail-fast nếu đẩy lỗi → không bao giờ ship bản không ai mở được), rồi truyền qua env `PRYNX_DIELINE_KEY_B64`. `native/build.rs` mã hoá bundle (AES-256-GCM, **AAD = app version**) vào `OUT_DIR`. Binary chỉ chứa ciphertext; khoá bị xoá khỏi env ngay sau `maturin` để Nuitka/Tauri/NSIS không thấy. |
+| Kích hoạt | Client gửi thêm `app_version`; `license-verify` tra `release_resource_keys` và nhét khoá vào claim **`rk` bên trong payload ĐÃ KÝ** ⇒ client không tự thêm/đổi được. Chỉ cấp khi plan pro/dev hoặc có feature `packaging.dieline`. |
+| Chạy | `authorize_dieline` verify token (đủ mọi kiểm tra cũ) rồi trả `DielineGrant { resource_key }`. `dieline_engine` dùng khoá đó giải mã mới eval được. Khoá sai / thiếu / tráo payload bản khác ⇒ AES-GCM fail ⇒ **không bao giờ eval JS rác**. |
+| Offline | Không cần cache mới: token đã được `store_license_token` giữ bằng DPAPI, nên trong TTL 72h mọi thứ chạy như cũ. |
+| Dev/CI | Không đặt `PRYNX_DIELINE_KEY_B64` → `build.rs` nhúng plaintext (header `PRYNXRAW1`) → `cargo test` và `tauri dev` không đổi. |
+
+### 25.3. Kẻ crack giờ phải làm gì
+
+Trước: patch một hàm, một người làm cả thế giới dùng.
+Sau: **buộc phải có token Pro hợp lệ thật** ⇒ cần một khách hàng trả tiền chịu rò token.
+Và vì khoá đổi mỗi bản phát hành, khoá rò chỉ mở được đúng bản đó — bản kế tiếp phải làm
+lại từ đầu. Đồng thời telemetry thấy một license xuất hiện trên nhiều HWID lạ ⇒ thu hồi.
+
+**Giới hạn (không tự ru ngủ):** khoá vẫn hiện trong RAM lúc giải mã, dump được **trên máy
+có license thật đang chạy** — chứ không phải trên file installer tải về. Muốn siết tiếp thì
+dùng packer chống debug/dump (VMProtect/Themida), và phải QA đường IN + pdfium (§15.3).
+
+### 25.4. Thay đổi + bằng chứng đã chạy
+
+| Nơi | Thay đổi |
+|---|---|
+| `native/build.rs` (mới) | Sinh payload `PRYNXRAW1`/`PRYNXENC1` vào `OUT_DIR`; AAD = version. |
+| `native/Cargo.toml` | `aes-gcm` (dep + build-dep), `base64`/`sha2` build-dep. |
+| `native/src/dieline_engine.rs` | Nhúng payload thay vì bundle; `engine_source(key)`; warmup thành no-op khi đã khoá (chưa có token thì chưa có khoá — không để backend log lỗi mỗi lần khởi động). |
+| `native/src/dieline_license.rs` | `authorize_dieline` → `DielineGrant { resource_key }`; đọc `rk` **sau** khi mọi kiểm tra qua. |
+| `license-verify/index.ts` | Nhận `app_version` (siết regex SemVer-ish), `lookupResourceKey`, thêm `rk` vào payload ký. Lookup lỗi → **không** chặn kích hoạt (bản cũ vẫn dùng được). |
+| `migrations/20260726090000_release_resource_keys.sql` (mới) | Bảng khoá, RLS bật + **không** policy ⇒ chỉ service_role đọc; unique index chống dùng lại khoá cho 2 bản. |
+| `useAuthStore.ts` | Gửi `app_version: APP_VERSION`. |
+| `build_production.ps1` | Sinh/đẩy khoá, fail-fast, xoá khoá khỏi env, `DIELINE_LOCKED` trong release manifest. |
+| `.github/workflows/ci.yml` | Ratchet: cấm nhúng lại bundle trực tiếp, cấm `authorize_dieline` quay về boolean, buộc build script còn khoá. |
+
+**Đã chạy (worktree `HEAD` sạch, vì `print_engine` ở working tree đang lỗi biên dịch do WIP):**
+`cargo test --lib` = **9 passed / 0 failed ở CẢ HAI kiểu build** — build khoá và build plaintext.
+Test mới: `payload_kind_matches_build_env`, `locked_payload_needs_the_right_key`
+(khoá sai/AAD sai đều fail), `locked_build_unlocks_only_with_issued_key` (end-to-end trên
+payload thật: khoá đúng mở được, thiếu khoá và khoá sai đều bị từ chối). `tsc --noEmit` sạch.
+
+### 25.5. Việc PHẢI làm khi triển khai (không làm thì khách kẹt)
+
+1. `supabase db push` migration `release_resource_keys`, rồi **deploy lại** `license-verify`.
+2. Đặt `PRYNX_SUPABASE_URL` + `PRYNX_SUPABASE_SERVICE_KEY` trên máy build (biến môi
+   trường, **không** commit) rồi chạy `build_production.ps1`. Không đặt ⇒ build cảnh báo
+   và ship bản KHÔNG khoá.
+3. QA trên **BẢN ĐÃ CÀI** (§15.1): kích hoạt online → mở tool Dieline; rồi **rút mạng** và
+   mở lại để xác nhận đường offline 72h; và kiểm bản Free **không** mở được Dieline.
+4. Bản cũ đã phát hành không bị ảnh hưởng (binary của chúng nhúng plaintext).

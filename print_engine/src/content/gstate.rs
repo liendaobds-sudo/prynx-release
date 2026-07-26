@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tiny_skia::{LineCap, LineJoin, Mask, Stroke, StrokeDash};
 
+use crate::blend::BlendMode;
 use crate::color::ColorSpace;
 use crate::geom::Matrix;
 use crate::raster::mask::effective_line_width;
@@ -41,6 +42,21 @@ pub struct GraphicsState {
     /// `OPM` — 0 hoặc 1.
     pub overprint_mode: i32,
 
+    /// `BM` — blend mode.
+    pub blend_mode: BlendMode,
+
+    /// Soft mask hiện hành (`/SMask` trong ExtGState), đã raster ở **toạ độ thiết
+    /// bị**, dài `width*height`, giá trị 0.0..=1.0.
+    ///
+    /// Nằm trong graphics state chứ không phải tham số của từng thao tác vẽ vì spec
+    /// bắt nó nhân vào alpha của **mọi** thao tác cho tới khi `gs` khác thay đổi
+    /// (§11.6.4.3). `Arc` vì `q` phải nhân bản trạng thái mà mặt nạ cỡ cả trang.
+    ///
+    /// Mặt nạ được dựng **một lần** tại `gs`, với CTM lúc đó — đúng spec: soft mask
+    /// không đi theo `cm` sau này. Dựng lại theo CTM hiện hành sẽ làm mặt nạ trượt
+    /// khỏi hình mà nó phải che.
+    pub soft_mask: Option<Arc<Vec<f32>>>,
+
     /// Mặt nạ clip hiện hành. `None` = không clip (toàn trang).
     ///
     /// `Arc` để `q` chỉ tăng đếm tham chiếu; clip là mảng cỡ cả trang nên copy
@@ -50,6 +66,14 @@ pub struct GraphicsState {
     /// Tham số text. Nằm trong graphics state (không phải trong text object) nên
     /// sống qua `BT`/`ET` và được `q`/`Q` lưu/phục hồi — đúng §9.3.
     pub text: TextState,
+
+    /// Tên pattern đang chọn cho tô / vẽ nét (`scn` / `SCN` với toán hạng tên).
+    ///
+    /// Lưu **tên** chứ không lưu pattern đã phân giải: chỉ tới lúc vẽ mới cần biết
+    /// nó là shading pattern (vẽ được) hay tiling pattern (chưa dựng), và phân giải
+    /// sớm sẽ làm mọi `scn` phải đọc resources dù có vẽ hay không.
+    pub fill_pattern: Option<String>,
+    pub stroke_pattern: Option<String>,
 }
 
 impl GraphicsState {
@@ -72,8 +96,12 @@ impl GraphicsState {
             fill_overprint: false,
             stroke_overprint: false,
             overprint_mode: 0,
+            blend_mode: BlendMode::Normal,
+            soft_mask: None,
             clip: None,
             text: TextState::default(),
+            fill_pattern: None,
+            stroke_pattern: None,
         }
     }
 

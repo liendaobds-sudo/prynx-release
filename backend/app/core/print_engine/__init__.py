@@ -40,6 +40,7 @@ from .facade import (
     capabilities,
     is_available,
     separations,
+    softproof,
 )
 
 __all__ = [
@@ -50,4 +51,5 @@ __all__ = [
     "capabilities",
     "is_available",
     "separations",
+    "softproof",
 ]

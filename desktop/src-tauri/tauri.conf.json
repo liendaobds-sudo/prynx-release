@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PrynX",
-  "version": "1.0.0-beta.13",
+  "version": "1.0.0-beta.14",
   "identifier": "com.prynx.app",
   "build": {
     "frontendDist": "../dist",
@@ -32,8 +32,15 @@
         "enable": true,
         "scope": {
           "allow": [
-            "**",
-            "**/*"
+            "$DOCUMENT/**/*",
+            "$DOWNLOAD/**/*",
+            "$DESKTOP/**/*",
+            "$TEMP/**/*",
+            "$APPDATA/**/*",
+            "$APPLOCALDATA/**/*",
+            "$APPCACHE/**/*",
+            "$APPLOG/**/*",
+            "$FONT/**/*"
           ],
           "deny": [
             "$HOME/.ssh/**",
@@ -52,9 +59,16 @@
             "$DATA/PrynX/*.dat",
             "$HOME/AppData/Roaming/PrynX/*.dat",
             "**/.env",
+            "**/.git-credentials",
+            "**/.npmrc",
+            "**/.pypirc",
+            "**/.netrc",
+            "**/credentials.json",
+            "**/*.kdbx",
             "**/*.pem",
             "**/*.pfx",
             "**/*.p12",
+            "**/*.key",
             "**/id_rsa*",
             "**/id_ed25519*"
           ]
@@ -86,7 +100,8 @@
       "binaries/gs/**/*",
       "binaries/tesseract/**/*",
       "bin/pdfium.dll",
-      "icons/file-pdf.ico"
+      "icons/file-pdf.ico",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "icon": [
       "icons/32x32.png",

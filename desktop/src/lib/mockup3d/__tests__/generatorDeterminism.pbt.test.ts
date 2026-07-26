@@ -25,6 +25,7 @@ import { arbBoxParams, GeneratorBoxType } from '../../dieline/arbitraries';
 import {
     generateReverseTuckEnd,
     generateSnapLockBottom,
+    generateAutoBottomBox,
     generateGableBox,
     generatePaperBag,
     generateCupSleeve,
@@ -39,6 +40,7 @@ const NUM_RUNS = 100;
 const GENERATORS: { boxType: GeneratorBoxType; name: string; generate: (p: BoxParams) => DielineModel }[] = [
     { boxType: 'rte', name: 'generateReverseTuckEnd', generate: generateReverseTuckEnd },
     { boxType: 'slb', name: 'generateSnapLockBottom', generate: generateSnapLockBottom },
+    { boxType: 'auto_bottom', name: 'generateAutoBottomBox', generate: generateAutoBottomBox },
     { boxType: 'gable', name: 'generateGableBox', generate: generateGableBox },
     { boxType: 'paper_bag', name: 'generatePaperBag', generate: generatePaperBag },
     { boxType: 'cup_sleeve', name: 'generateCupSleeve', generate: generateCupSleeve },

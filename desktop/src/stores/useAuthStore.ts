@@ -4,6 +4,7 @@ import type { User, Session } from '@supabase/supabase-js';
 import { isLicenseTokenValid, readLicenseTokenClaims } from './licenseToken';
 import { normalizePlan, type LicensePlan } from '../lib/license/features';
 import { normalizeLicenseKey } from '../lib/licenseKey';
+import { APP_VERSION } from '../lib/uiErrorDiagnostics';
 import {
   clearPendingSecurityEvents,
   enqueueSecurityEvent,
@@ -33,13 +34,18 @@ export type ChangeLicenseKeyResult = {
  * SECURITY PATCHES:
  * - #7+: License key stored via Windows DPAPI (CryptProtectData).
  *   Encrypted with current user's Windows login session — only the same
- *   user on the same machine can decrypt. Falls back to obfuscated localStorage.
+ *   user on the same machine can decrypt. Native runtime never persists it to localStorage.
  * - #9: Added validateLicense() for periodic heartbeat checks.
  * - #3: checkSession now also validates license key on startup.
  */
 
 const LICENSE_STORAGE_KEY = 'prynx_lk_v2';
 const HWID_STORAGE_KEY = 'prynx_hwid_cache';
+
+function isNativeRuntime(): boolean {
+  return typeof window !== 'undefined'
+    && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__PRYNX_INVOKE__);
+}
 
 // ── DPAPI-backed credential storage (primary) ──
 
@@ -81,9 +87,7 @@ async function ensureKeyRegisteredInRust(licenseKey: string): Promise<void> {
     const token = useAuthStore.getState().licenseToken || '';
     await invoke('register_validated_key', { licenseKey, token });
   } catch (error) {
-    const nativeRuntime = typeof window !== 'undefined'
-      && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__PRYNX_INVOKE__);
-    if (nativeRuntime) throw error;
+    if (isNativeRuntime()) throw error;
     // Browser/dev mode has no native gate; its backend runs with DEV_MODE=true.
   }
 }
@@ -149,20 +153,20 @@ function loadStoredKeySync(): string | null {
   return null;
 }
 
-/** Load license key: try DPAPI first, fallback to localStorage */
+/** Load license key: DPAPI in native; localStorage only for web/dev migration. */
 async function loadStoredKeyAsync(): Promise<string | null> {
   // 1. Try DPAPI (Windows encrypted storage)
   const dpapiKey = await loadFromDPAPI();
   if (dpapiKey) return dpapiKey;
   
-  // 2. Fallback to localStorage (and migrate to DPAPI if possible)
+  // 2. Migrate legacy localStorage once. Native must fail closed if DPAPI is unavailable.
   const localKey = loadStoredKeySync();
   if (localKey) {
-    // Migrate: save to DPAPI and remove from localStorage
     const saved = await saveToDPAPI(localKey);
-    if (saved) {
+    if (isNativeRuntime()) {
       localStorage.removeItem(LICENSE_STORAGE_KEY);
       localStorage.removeItem('prynx_license_key');
+      return saved ? localKey : null;
     }
     return localKey;
   }
@@ -349,7 +353,7 @@ async function checkConnectivity(): Promise<'online' | 'offline' | 'supabase_blo
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   session: null,
-  licenseKey: loadStoredKeySync(),
+  licenseKey: isNativeRuntime() ? null : loadStoredKeySync(),
   licenseToken: null,
   licensePlan: 'free',
   licenseFeatures: null,
@@ -374,15 +378,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
 
     if (key) {
-      // Save to DPAPI (async, fire-and-forget) + localStorage fallback
+      // Save to DPAPI; localStorage fallback is browser/dev-only
       saveToDPAPI(key).then(saved => {
         if (saved) {
           // DPAPI succeeded — remove localStorage copy for security
           localStorage.removeItem(LICENSE_STORAGE_KEY);
           localStorage.removeItem('prynx_license_key');
-        } else {
-          // DPAPI failed — fall back to obfuscated localStorage
+        } else if (!isNativeRuntime()) {
+          // Browser-only development fallback. Never persist a native credential here.
           localStorage.setItem(LICENSE_STORAGE_KEY, encodeKey(key));
+        } else {
+          localStorage.removeItem(LICENSE_STORAGE_KEY);
+          localStorage.removeItem('prynx_license_key');
+          console.error('[SECURITY] DPAPI license storage failed; key kept in memory only');
         }
       });
     } else {
@@ -479,14 +487,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // Fallback to cached HWID if Rust is unavailable
       }
 
-      const { data, error } = await supabase.rpc('verify_license', {
-        p_license_key: licenseKey,
-        p_machine_id: hwid,
-        p_product_id: 'prynx'
+      const { data, error } = await supabase.functions.invoke('license-verify', {
+        body: {
+          license_key: licenseKey,
+          machine_id: hwid,
+          product_id: PRODUCT_ID,
+          app_version: APP_VERSION,
+        },
       });
 
       if (error) {
-        console.warn('[AUTH] License validation RPC error:', error.message);
+        console.warn('[AUTH] License validation edge error:', error.message);
         const lastOnline = await (async () => {
           try {
             const { invoke } = await import('@tauri-apps/api/core');
@@ -610,29 +621,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (get().isRevoking) {
           get().cancelRevocation();
         }
-        // Lấy token ngắn hạn do server ký TRƯỚC (để Rust verify Ed25519 khi register).
-        // Browser dev có thể tiếp tục; native production sẽ fail-closed khi thiếu token.
-        let freshToken = '';
-        try {
-          const { data: tokData } = await supabase.functions.invoke('license-verify', {
-            body: { license_key: licenseKey, machine_id: hwid, product_id: 'prynx' },
-          });
-          if ((tokData as any)?.token) {
-            freshToken = (tokData as any).token as string;
-            const claims = readLicenseTokenClaims(freshToken);
-            set({
-              licenseToken: freshToken,
-              licensePlan: normalizePlan((tokData as any)?.plan || claims?.plan || 'free'),
-              licenseFeatures: Array.isArray((tokData as any)?.features)
-                ? (tokData as any).features
-                : (claims?.features ?? null),
-            });
-            void saveTokenToDPAPI(freshToken);
-          }
-        } catch (error) {
-          console.warn('[AUTH] Could not refresh signed license token:', error);
+        // Verification and token issuance are one atomic Edge Function call. This avoids
+        // exposing the SECURITY DEFINER verification RPC to the renderer and prevents a
+        // status/token time-of-check gap.
+        const freshToken = typeof (data as any)?.token === 'string' ? (data as any).token : '';
+        if (!freshToken) {
+          throw new Error('License server returned VALID without a signed token');
         }
-
+        const claims = readLicenseTokenClaims(freshToken);
+        set({
+          licenseToken: freshToken,
+          licensePlan: normalizePlan((data as any)?.plan || claims?.plan || 'free'),
+          licenseFeatures: Array.isArray((data as any)?.features)
+            ? (data as any).features
+            : (claims?.features ?? null),
+        });
+        await saveTokenToDPAPI(freshToken);
         await ensureKeyRegisteredInRust(licenseKey);
         void flushPendingSecurityEvents();
       }
@@ -752,10 +756,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         };
       }
 
-      const { data, error } = await supabase.rpc('verify_license', {
-        p_license_key: newKey,
-        p_machine_id: hwid,
-        p_product_id: PRODUCT_ID,
+      const { data, error } = await supabase.functions.invoke('license-verify', {
+        body: {
+          license_key: newKey,
+          machine_id: hwid,
+          product_id: PRODUCT_ID,
+          app_version: APP_VERSION,
+        },
       });
 
       if (error) {

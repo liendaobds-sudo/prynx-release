@@ -33,6 +33,53 @@ export const DUST_STEP_H_RATIO = 0.3;
 /** Chiều rộng tab phụ dust flap (mm) */
 export const DUST_TAB_W = 5;
 
+// --- Auto-Bottom (Đáy dán tự động / Crash-Lock đã dán keo) ---
+//
+// Thân + nắp giống Snap-Lock Bottom; chỉ khác phần đáy: 4 mảnh đáy được
+// DÁN KEO sẵn theo cặp chéo nhau (mặt trước↔hông phải, mặt sau↔hông trái).
+//
+// Tỉ lệ đo từ mẫu: Custom Dimensions Tuck End Boxes Double Tray Dieline
+// 100010-01 (SVG) — mọi kích thước dẫn xuất theo W/L, không hardcode mm.
+// Junction giữa flap: copy nguyên approach D5 của SnapLockBottom
+// (lineIntersect V-peak + pointedFillet).
+//
+/** Chiều sâu mảnh đáy chính / W — mẫu ≈ 0.760 */
+export const AB_DEEP_DEPTH_RATIO = 0.76;
+/** Chiều sâu tai hông / W — mẫu ≈ 0.507 */
+export const AB_WING_DEPTH_RATIO = 0.5;
+/** Cạnh 45° vùng dán (glueLeg) / W — mẫu ≈ 0.412; step+glueLeg ≈ hWing */
+export const AB_GLUE_LEG_RATIO = 0.412;
+/** Bước vát 45° trước glueLeg / W — mẫu ≈ 0.091 */
+export const AB_STEP_RATIO = 0.091;
+/** Rộng tai khóa (male ear) / W — mẫu ≈ 0.106 */
+export const AB_EAR_WIDTH_RATIO = 0.106;
+/** Tai khóa thụt vào từ mép góc dán / W — mẫu ≈ 0.040 */
+export const AB_EAR_INSET_RATIO = 0.04;
+/** Kệ ngang sau đường 45° / W — mẫu ≈ 0.501 */
+export const AB_SHELF_RATIO = 0.5;
+/** Nấc dưới kệ / W — mẫu ≈ 0.039 */
+export const AB_NOTCH_RATIO = 0.039;
+/** Vai chéo 45° từ nấc xuống đáy / W — mẫu ≈ 0.215 */
+export const AB_SHOULDER_RATIO = 0.215;
+/** Thụt mép trái đáy / bề rộng panel L — mẫu ≈ 0.036 */
+export const AB_BOT_INSET_RATIO = 0.036;
+/** Vát phía góc dán tai hông / W — mẫu ≈ 0.184 */
+export const AB_WING_INNER_TAPER_RATIO = 0.184;
+/** Vát mép tự do tai hông / W — mẫu ≈ 0.500 */
+export const AB_WING_OUTER_TAPER_RATIO = 0.5;
+/** @deprecated tương thích cũ */
+export const AB_SHELF_SPAN_RATIO = 0.25;
+/** @deprecated */
+export const AB_WING_TAPER_RATIO = 0.4;
+/** @deprecated */
+export const AB_RELIEF_W_RATIO = 0.15;
+/** @deprecated */
+export const AB_RELIEF_H_RATIO = 0.25;
+/** @deprecated */
+export const AB_RELIEF_W_MAX = 8;
+/** @deprecated */
+export const AB_RELIEF_H_MAX = 4;
+
 // --- Fillet chung ---
 /** Bán kính bo tròn tối thiểu (mm) */
 export const FILLET_R_MIN = 2;

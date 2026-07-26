@@ -58,12 +58,12 @@ pub fn compute_placements(
     total_capacity: usize,
     page_count: usize,
     sheet_mapping: Option<&Bound<'_, PyDict>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let _ = sheet_w; // lõi không dùng; giữ để khớp chữ ký Python
     let parsed: Vec<core::AssemblyCell> = cells
         .iter()
         .map(|item| {
-            let d = item.downcast::<PyDict>()?;
+            let d = item.cast::<PyDict>()?;
             cell_from_pydict(d)
         })
         .collect::<PyResult<_>>()?;
@@ -113,15 +113,15 @@ pub fn compute_mark_coords(
     mark_off: f64,
     mark_len: f64,
     bleed_offset: f64,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     // Parse placement dicts → AbsPlacement (chỉ cần các field mark dùng tới).
     let mut parsed: Vec<core::AbsPlacement> = Vec::new();
     for item in placements.iter() {
-        let d = item.downcast::<PyDict>()?;
+        let d = item.cast::<PyDict>()?;
         let g = |k: &str| -> f64 { d.get_item(k).ok().flatten().and_then(|v| v.extract().ok()).unwrap_or(0.0) };
         let cluster_idx: usize = d.get_item("cluster_idx").ok().flatten().and_then(|v| v.extract().ok()).unwrap_or(0);
         let block_id: i64 = d.get_item("cell").ok().flatten()
-            .and_then(|c| c.downcast_into::<PyDict>().ok())
+            .and_then(|c| c.cast_into::<PyDict>().ok())
             .and_then(|c| c.get_item("blockId").ok().flatten())
             .and_then(|v| v.extract().ok())
             .unwrap_or(0);

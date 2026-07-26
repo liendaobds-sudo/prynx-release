@@ -1,6 +1,7 @@
 import { BoxParams, DielineModel } from './types';
 import { generateReverseTuckEnd } from './ReverseTuckEnd';
 import { generateSnapLockBottom } from './SnapLockBottom';
+import { generateAutoBottomBox } from './AutoBottomBox';
 import { generateGableBox } from './GableBox';
 import { generatePaperBag } from './PaperBag';
 import { generateCupSleeve } from './CupSleeve';
@@ -20,6 +21,8 @@ function dispatchGenerator(params: BoxParams): DielineModel {
     switch (params.boxType) {
         case 'slb':
             return generateSnapLockBottom(params);
+        case 'auto_bottom':
+            return generateAutoBottomBox(params);
         case 'gable':
             return generateGableBox(params);
         case 'paper_bag':

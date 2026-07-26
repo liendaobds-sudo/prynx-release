@@ -137,6 +137,12 @@ function applyBoxTypeDefaults(prev: BoxParams, value: BoxParams[keyof BoxParams]
     if (value === 'tray') {
         Object.assign(next, { L: 200, W: 150, D: 40, T: 1, G: 10, TH: 15, sleeveGlue: 15 });
     }
+    if (value === 'auto_bottom') {
+        // Đáy dán cần L > W rõ rệt để 2 tai đáy không đè nhau khi hộp bẹp.
+        Object.assign(next, { ABD: DEFAULT_PARAMS.ABD });
+    } else if (prev.boxType === 'auto_bottom') {
+        Object.assign(next, { ABD: DEFAULT_PARAMS.ABD });
+    }
     return next;
 }
 

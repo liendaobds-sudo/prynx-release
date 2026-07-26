@@ -31,6 +31,7 @@ import { BoxParams, DEFAULT_PARAMS, DielineModel, Panel, PathSegment, Point2D } 
 import { arbBoxParams, GeneratorBoxType } from './arbitraries';
 import { generateReverseTuckEnd } from './ReverseTuckEnd';
 import { generateSnapLockBottom } from './SnapLockBottom';
+import { generateAutoBottomBox } from './AutoBottomBox';
 import { generateGableBox } from './GableBox';
 import { generatePaperBag } from './PaperBag';
 import { generateCupSleeve } from './CupSleeve';
@@ -45,6 +46,7 @@ const GEOMETRY_TOLERANCE = 0.001; // mm
 const GENERATORS: { boxType: GeneratorBoxType; name: string; generate: (p: BoxParams) => DielineModel }[] = [
     { boxType: 'rte', name: 'generateReverseTuckEnd', generate: generateReverseTuckEnd },
     { boxType: 'slb', name: 'generateSnapLockBottom', generate: generateSnapLockBottom },
+    { boxType: 'auto_bottom', name: 'generateAutoBottomBox', generate: generateAutoBottomBox },
     { boxType: 'gable', name: 'generateGableBox', generate: generateGableBox },
     { boxType: 'paper_bag', name: 'generatePaperBag', generate: generatePaperBag },
     { boxType: 'cup_sleeve', name: 'generateCupSleeve', generate: generateCupSleeve },
@@ -172,6 +174,7 @@ const make = (overrides: Partial<BoxParams>): BoxParams => ({ ...DEFAULT_PARAMS,
 const FIXTURES: { name: string; generate: (p: BoxParams) => DielineModel; params: BoxParams }[] = [
     { name: 'rte (Reverse Tuck End)', generate: generateReverseTuckEnd, params: make({ boxType: 'rte', L: 100, W: 60, D: 200 }) },
     { name: 'slb (Snap-Lock Bottom)', generate: generateSnapLockBottom, params: make({ boxType: 'slb', L: 120, W: 80, D: 180 }) },
+    { name: 'auto_bottom (Hộp đáy dán)', generate: generateAutoBottomBox, params: make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180 }) },
     { name: 'gable (Gable Box)', generate: generateGableBox, params: make({ boxType: 'gable', L: 150, W: 90, D: 220 }) },
     { name: 'paper_bag (Túi giấy SOS)', generate: generatePaperBag, params: make({ boxType: 'paper_bag', L: 180, W: 100, D: 250 }) },
     { name: 'cup_sleeve (Bọc ly)', generate: generateCupSleeve, params: make({ boxType: 'cup_sleeve', cupD1: 70, cupD2: 80, cupH: 90 }) },

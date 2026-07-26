@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image
 
 from app.config import settings
+from app.core.license_guard import result_access_url
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class HighlightRenderer:
         cv2.imwrite(str(filepath), bgr)
         logger.info(f"Saved highlight: {filepath}")
 
-        return f"/results/{job_id}/{filename}"
+        return result_access_url(f"/results/{job_id}/{filename}")
 
     def save_gif_image(
         self,
@@ -61,7 +62,7 @@ class HighlightRenderer:
 
         logger.info(f"Saved GIF: {filepath}")
 
-        return f"/results/{job_id}/{filename}"
+        return result_access_url(f"/results/{job_id}/{filename}")
 
     def save_page_image(
         self,
@@ -83,7 +84,7 @@ class HighlightRenderer:
             pil_img = Image.fromarray(image)
 
         pil_img.save(str(filepath), "PNG", optimize=True)
-        return f"/results/{job_id}/{filename}"
+        return result_access_url(f"/results/{job_id}/{filename}")
 
     def create_side_by_side(
         self,

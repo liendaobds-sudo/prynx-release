@@ -15,6 +15,7 @@ Hàm `place_one_artwork` xử lý cho MỘT placement:
 import logging
 
 from app.workers import pdf_wrapper as pdf_lib
+from app.workers.nup_clip_shape import build_die_clip_rings
 
 logger = logging.getLogger(__name__)
 
@@ -652,12 +653,20 @@ def place_one_artwork(
     die_offset_mm=0,
     page_sheet_mode=False,
     geometry_doc=None,
+    shape_clip=True,
+    shape_clip_offset_pt=None,
 ):
     """Đặt MỘT placement `p` lên `out_page`. Trả về (trim_rect, src_page_idx).
 
     Logic rút nguyên văn từ process_chunk — KHÔNG đổi hành vi.
 
     mirror_x / mirror_y: lật gương nội dung quanh tâm ô (cho Mặt sau bình bế 2 mặt).
+
+    shape_clip: bật clip THEO HÌNH đường bế cho tem die-cut (tròn/oval/đa giác xếp
+    lồng) thay vì chỉ bbox chữ nhật. Vùng clip theo hình luôn được GIAO với rect clip
+    cũ nên không bao giờ vẽ rộng hơn trước. Tem chữ nhật tự động bỏ qua (rect đã đủ).
+    shape_clip_offset_pt: bù xén cho clip theo hình; None = min(clip_off_x, clip_off_y)
+    (nửa gap, kẹp bởi bleed) — mức lớn nhất mà 2 vùng clip chắc chắn không giao nhau.
 
     homogeneous_clip / homogeneous_rect (chế độ ĐỒNG NHẤT — sticker-homogeneous-nup):
     khi ``homogeneous_clip`` ≠ None → đi nhánh REGISTRATION: đặt artwork của trang nội
@@ -769,11 +778,36 @@ def place_one_artwork(
             _reg_rotate = 90
         else:
             _reg_rotate = 0
+
+        # ── Clip THEO HÌNH khuôn MASTER (chế độ ĐỒNG NHẤT) ────────────────────
+        # Nhánh này trước đây không truyền out_clip → clip = chính rect ô. Nội dung
+        # được co khít vào khuôn nên phần lấn ít hơn nhánh die-cut, nhưng với tem
+        # tròn/đa giác xếp lồng, GÓC bbox artwork vẫn rơi vào tem bên cạnh. Dùng
+        # khuôn master (đã seed vào die_items_cache) làm clip; bound = reg_rect nên
+        # không bao giờ vẽ rộng hơn hành vi cũ.
+        _hom_rings = None
+        if shape_clip:
+            _hom_die = die_items_cache.get(f"{job_id}_{src_page_idx}")
+            if _hom_die and _hom_die.get('items'):
+                _hom_off = (min(clip_off_x, clip_off_y)
+                            if shape_clip_offset_pt is None else float(shape_clip_offset_pt))
+                _hom_rings = build_die_clip_rings(
+                    _hom_die['items'], _hom_die['rect'],
+                    reg_rect.x0, reg_rect.y0,
+                    offset_pt=_hom_off,
+                    bound_rect=reg_rect,
+                    is_rotated=cell.get('isRotated', False),
+                    is_rotated_180=cell.get('isRotated180', False),
+                    cache_key=f"hom_{job_id}_{src_page_idx}",
+                )
+        _hom_clip_kw = {'out_clip_path': _hom_rings} if _hom_rings else {}
+
         out_page.show_pdf_page(
             reg_rect, src_doc, src_page_idx,
             rotate=_reg_rotate,
             clip=homogeneous_clip, keep_proportion=True,
             mirror_x=mirror_x, mirror_y=mirror_y,
+            **_hom_clip_kw,
         )
         return trim_rect, src_page_idx
 
@@ -947,26 +981,58 @@ def place_one_artwork(
             trim_rect, bleed_rect, cell_out_clip, cut_type, die_size_mode,
         )
 
+        # ── Clip THEO HÌNH khuôn (tem tròn/oval/đa giác xếp lồng) ──────────────
+        # Rect clip ở trên chỉ chặn được chồng lấn theo trục; tem tròn/lồng có bbox
+        # giao nhau dù 2 đường bế còn cách đủ gap → vẫn đè. Dựng clip = polygon
+        # đường bế nở `shape_clip_offset_pt` rồi GIAO với `_die_clip` (không bao giờ
+        # nới rộng hơn hành vi cũ). Trả None (tem chữ nhật / không đọc được hình /
+        # PRYNX_SHAPE_CLIP=0) → giữ nguyên rect clip.
+        # page_sheet_mode (decal cả tờ) căn theo MediaBox, đường bế bên trong KHÔNG
+        # phải biên tem → không được dùng làm clip.
+        _clip_rings = None
+        if shape_clip and not page_sheet_mode:
+            _cached_die = die_items_cache.get(cache_key)
+            if _cached_die and _cached_die.get('items'):
+                if shape_clip_offset_pt is None:
+                    # Bù xén an toàn: nở đều tối đa NỬA khoảng cách nhỏ nhất giữa 2
+                    # khuôn (clip_off_* đã = min(gap/2, bleed)). Nở isotropic nên phải
+                    # lấy min 2 trục, nếu không tem lồng vẫn chạm nhau theo đường chéo.
+                    _shape_off = min(clip_off_x, clip_off_y)
+                else:
+                    _shape_off = float(shape_clip_offset_pt)
+                _clip_rings = build_die_clip_rings(
+                    _cached_die['items'], _cached_die['rect'],
+                    trim_rect.x0, trim_rect.y0,
+                    offset_pt=_shape_off,
+                    bound_rect=_die_clip,
+                    block_rect=_bb,
+                    is_rotated=cell.get('isRotated', False),
+                    is_rotated_180=cell.get('isRotated180', False),
+                    cache_key=cache_key,
+                )
+        # Chỉ truyền kwarg khi thực sự có clip theo hình → luồng cũ bất biến.
+        _clip_kw = {'out_clip_path': _clip_rings} if _clip_rings else {}
+
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_h - rel_ty1)
             shift_y = trim_rect.y0 - rel_tx0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=270, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
         elif cell.get('isRotated180', False):
             shift_x = trim_rect.x0 - (vis_w - rel_tx1)
             shift_y = trim_rect.y0 - (vis_h - rel_ty1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=180, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
         elif cell.get('isRotated', False):
             shift_x = trim_rect.x0 - rel_ty0
             shift_y = trim_rect.y0 - (vis_w - rel_tx1)
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_h, shift_y + vis_w)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, rotate=90, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
         else:
             shift_x = trim_rect.x0 - rel_tx0
             shift_y = trim_rect.y0 - rel_ty0
             target_rect = pdf_lib.Rect(shift_x, shift_y, shift_x + vis_w, shift_y + vis_h)
-            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y)
+            out_page.show_pdf_page(target_rect, src_doc, src_page_idx, out_clip=_die_clip, mirror_x=mirror_x, mirror_y=mirror_y, **_clip_kw)
     else:
         if cell.get('isRotated', False) and cell.get('isRotated180', False):
             out_page.show_pdf_page(bleed_rect, src_doc, src_page_idx, rotate=270, out_clip=cell_out_clip, mirror_x=mirror_x, mirror_y=mirror_y)

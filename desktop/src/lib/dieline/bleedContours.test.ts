@@ -106,7 +106,7 @@ describe('computeBleedContours', () => {
         expect(Math.max(...contour.map((point) => point.y))).toBeGreaterThan(74);
     });
     it('tạo contour hữu hạn cho mọi loại khuôn hiện có', () => {
-        const boxTypes = ['rte', 'slb', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray'] as const;
+        const boxTypes = ['rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray'] as const;
         for (const boxType of boxTypes) {
             const generated = generateDieline({ ...DEFAULT_PARAMS, boxType });
             const contours = computeBleedContours(generated, 3);
@@ -115,6 +115,77 @@ describe('computeBleedContours', () => {
             expect(contours.every((ring) => ring.length >= 3), boxType).toBe(true);
             expect(contours.flat().every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)), boxType).toBe(true);
         }
+    });
+
+    it('bleed không âm vào trong vùng giấy (đỉnh nhọn / khe lõm)', () => {
+        const boxTypes = ['rte', 'slb', 'auto_bottom'] as const;
+        for (const boxType of boxTypes) {
+            const generated = generateDieline({
+                ...DEFAULT_PARAMS, boxType, L: 120, W: 80, D: 180,
+            });
+            const material = computeBleedContours(generated, 0)[0];
+            const bleed = computeBleedContours(generated, 3)[0];
+            expect(material?.length, boxType).toBeGreaterThan(3);
+            expect(bleed?.length, boxType).toBeGreaterThan(3);
+
+            const inside = (pt: Point2D, poly: Point2D[]) => {
+                let odd = false;
+                for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i += 1) {
+                    const a = poly[i];
+                    const b = poly[j];
+                    const hit = (a.y > pt.y) !== (b.y > pt.y)
+                        && pt.x < ((b.x - a.x) * (pt.y - a.y)) / (b.y - a.y) + a.x;
+                    if (hit) odd = !odd;
+                }
+                return odd;
+            };
+            // Không đỉnh bleed nào nằm hẳn trong material (trừ biên số)
+            const negative = bleed.filter((pt) => inside(pt, material));
+            expect(negative.length, `${boxType} negative bleed verts`).toBe(0);
+        }
+    });
+
+    it('auto_bottom: bleed bám free-edge CUT đáy (~3mm), không theo outline rút gọn', () => {
+        const generated = generateDieline({ ...DEFAULT_PARAMS, boxType: 'auto_bottom', L: 120, W: 80, D: 180 });
+        const bottomPanels = generated.panels.filter((panel) => panel.name.startsWith('bottom_'));
+        expect(bottomPanels.length).toBe(4);
+        // Outline đáy phải chi tiết (nhiều hơn tứ giác rút gọn)
+        for (const panel of bottomPanels) {
+            expect(panel.outline && panel.outline.length, panel.name).toBeGreaterThanOrEqual(4);
+        }
+        const deep = bottomPanels.find((panel) => panel.name === 'bottom_main_front');
+        expect(deep?.outline && deep.outline.length).toBeGreaterThan(8);
+
+        const bleed = computeBleedContours(generated, 3);
+        expect(bleed.length).toBeGreaterThan(0);
+        expect(bleed[0].length).toBeGreaterThan(20);
+
+        const freeEdgePts = bottomPanels
+            .flatMap((panel) => panel.paths.filter((seg) => seg.tag === 'CUT'))
+            .flatMap((seg) => seg.points)
+            .filter((pt) => pt.y < -1);
+        expect(freeEdgePts.length).toBeGreaterThan(10);
+
+        const ring = bleed[0];
+        const dists = freeEdgePts.map((pt) => {
+            let min = Infinity;
+            for (let i = 0; i < ring.length; i += 1) {
+                const a = ring[i];
+                const b = ring[(i + 1) % ring.length];
+                const dx = b.x - a.x;
+                const dy = b.y - a.y;
+                const len2 = dx * dx + dy * dy || 1;
+                let t = ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / len2;
+                t = Math.max(0, Math.min(1, t));
+                const d = Math.hypot(pt.x - (a.x + t * dx), pt.y - (a.y + t * dy));
+                if (d < min) min = d;
+            }
+            return min;
+        });
+        const avg = dists.reduce((a, b) => a + b, 0) / dists.length;
+        expect(Math.min(...dists)).toBeGreaterThan(1.5);
+        expect(avg).toBeGreaterThan(2);
+        expect(avg).toBeLessThan(6);
     });
     it('adds closed BLEED vector paths without mutating source or changing placement bbox', () => {
         const source = model(rectangle(10, 20, 40, 30));

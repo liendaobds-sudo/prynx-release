@@ -4,7 +4,7 @@ use pdfium_render::prelude::*;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-pub fn enumerate_objects(py: Python<'_>, pdf_path: &str, page_num: usize) -> PyResult<Vec<PyObject>> {
+pub fn enumerate_objects(py: Python<'_>, pdf_path: &str, page_num: usize) -> PyResult<Vec<Py<PyAny>>> {
     let pdfium = crate::pdfium_init::load_pdfium();
     let doc = pdfium
         .load_pdf_from_file(pdf_path, None)
@@ -17,7 +17,7 @@ pub fn enumerate_objects(py: Python<'_>, pdf_path: &str, page_num: usize) -> PyR
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Page error: {}", e)))?;
 
     let page_height = page.height().value;
-    let mut results: Vec<PyObject> = Vec::new();
+    let mut results: Vec<Py<PyAny>> = Vec::new();
 
     for (idx, obj) in page.objects().iter().enumerate() {
         let dict = PyDict::new(py);

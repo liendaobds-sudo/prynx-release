@@ -164,7 +164,7 @@ describe('triangulate', () => {
 
 describe('expectedFlatArea', () => {
     const types: GeneratorBoxType[] = [
-        'rte', 'slb', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+        'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
     ];
 
     it('returns a positive finite area for every box type', () => {
@@ -187,7 +187,7 @@ describe('expectedFlatArea', () => {
 
 describe('arbBoxParams', () => {
     const types: GeneratorBoxType[] = [
-        'rte', 'slb', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+        'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
     ];
 
     for (const boxType of types) {

@@ -1,3 +1,8 @@
 /target
-Cargo.lock
 /bindings
+
+# Cargo.lock CỐ Ý ĐƯỢC TRACK (audit 2026-07-26, §14.7 release reproducibility):
+# imposition_core là crate ỨNG DỤNG (được desktop/native nạp), không phải library
+# phát hành lên crates.io, nên lockfile phải nằm trong git — nếu không, build từ một
+# checkout sạch có thể lấy phiên bản dependency KHÁC bản đã kiểm thử/quét cargo audit.
+# Đây là lỗi đã ghi ở GO_NOGO_2026-06-26 và tồn tại đến 2026-07-26 mới xử lý.

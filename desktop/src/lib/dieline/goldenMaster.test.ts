@@ -19,6 +19,7 @@ import { BoxParams, DEFAULT_PARAMS, DielineModel } from './types';
 import { buildChains, chainToSvgD, computeEnvelopeDims } from './sharedGeometry';
 import { generateReverseTuckEnd } from './ReverseTuckEnd';
 import { generateSnapLockBottom } from './SnapLockBottom';
+import { generateAutoBottomBox } from './AutoBottomBox';
 import { generateGableBox } from './GableBox';
 import { generatePaperBag } from './PaperBag';
 import { generateCupSleeve } from './CupSleeve';
@@ -49,6 +50,11 @@ const FIXTURES: { name: string; generate: (p: BoxParams) => DielineModel; params
         name: 'slb (Snap-Lock Bottom)',
         generate: generateSnapLockBottom,
         params: make({ boxType: 'slb', L: 120, W: 80, D: 180 }),
+    },
+    {
+        name: 'auto_bottom (Hộp đáy dán)',
+        generate: generateAutoBottomBox,
+        params: make({ boxType: 'auto_bottom', L: 120, W: 80, D: 180 }),
     },
     {
         name: 'gable (Gable Box)',
@@ -110,6 +116,7 @@ describe('golden-master: ổn định giá trị kích thước (computeEnvelope
     const DIM_BASELINE: Record<string, { FH: number; SF: number }> = {
         'rte (Reverse Tuck End)': { FH: 50, SF: 13 },
         'slb (Snap-Lock Bottom)': { FH: 50, SF: 13 },
+        'auto_bottom (Hộp đáy dán)': { FH: 50, SF: 13 },
         'gable (Gable Box)': { FH: 50, SF: 13 },
         'paper_bag (Túi giấy SOS)': { FH: 50, SF: 13 },
         'cup_sleeve (Bọc ly)': { FH: 50, SF: 13 },

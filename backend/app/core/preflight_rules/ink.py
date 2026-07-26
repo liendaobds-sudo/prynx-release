@@ -207,16 +207,20 @@ class InkRulesMixin:
                         page_num,
                         sep.get("engine"),
                     )
+                    # Nói đúng NGUYÊN NHÂN. `quality_note` do engine dựng sát chỗ
+                    # xảy ra nên chính xác hơn mọi câu đoán ở đây; chỉ khi không có
+                    # nó mới dùng câu chung. Ghi sai lý do khiến người dùng đi cài
+                    # Ghostscript trong khi Ghostscript đã có và vấn đề là màu.
+                    detail = (sep.get("quality_note") or "").strip()
                     issues.append(PreflightIssue(
                         rule_id="TAC_EXCEEDED",
                         severity="info",
                         page=page_num,
                         object_ref="Tổng mực (TAC)",
                         description=(
-                            f"Chưa kiểm tra được TAC trang {page_num}: không tách được "
-                            "kênh mực (PrynX Print Engine chưa vẽ đủ trang này và "
-                            "Ghostscript không khả dụng). ĐỪNG coi trang này là đạt "
-                            "ngưỡng mực."
+                            f"Chưa kiểm tra được TAC trang {page_num}: "
+                            + (detail or "không tách được kênh mực thật.")
+                            + " ĐỪNG coi trang này là đạt ngưỡng mực."
                         ),
                         auto_fixable=False,
                     ))

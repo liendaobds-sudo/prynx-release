@@ -54,7 +54,7 @@ export const getApiUrl = () => `${API_BASE}/api`;
 let _cachedTauriCore: TauriCoreInvoker | null = null;
 let _tauriAvailable: boolean | null = null;
 
-async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
+async function getLicenseHeaders(url: string, method = 'GET'): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
   try {
     const { useAuthStore } = await import('../stores/useAuthStore');
@@ -94,6 +94,7 @@ async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
       const signedHeaders = await invoke('sign_api_request', {
         urlPath,
         licenseKey,
+        method,
       }) as Record<string, string>;
       Object.assign(headers, signedHeaders);
     } catch (signErr) {
@@ -111,6 +112,7 @@ async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
           const retryHeaders = await invoke('sign_api_request', {
             urlPath,
             licenseKey: key,
+            method,
           }) as Record<string, string>;
           Object.assign(headers, retryHeaders);
         }
@@ -128,11 +130,9 @@ async function getLicenseHeaders(url: string): Promise<Record<string, string>> {
  * Enhanced fetch that automatically includes license headers + Rust-signed request.
  */
 export async function authenticatedFetch(url: string, init?: RequestInit): Promise<Response> {
-  const licenseHeaders = await getLicenseHeaders(url);
-  const mergedHeaders = {
-    ...licenseHeaders,
-    ...(init?.headers || {}),
-  };
+  const licenseHeaders = await getLicenseHeaders(url, init?.method || 'GET');
+  const mergedHeaders = new Headers(init?.headers as HeadersInit | undefined);
+  for (const [name, value] of Object.entries(licenseHeaders)) mergedHeaders.set(name, value);
   return fetch(url, { ...init, headers: mergedHeaders });
 }
 
@@ -151,8 +151,16 @@ export function installBackendFetchAuth(): void {
   if (_backendFetchPatched || typeof window === 'undefined' || !window.fetch) return;
   _backendFetchPatched = true;
   const origFetch = window.fetch.bind(window);
-  const isBackendUrl = (u: string): boolean =>
-    !!u && (u.startsWith(API_BASE) || u.startsWith('http://localhost:8321') || u.startsWith('http://127.0.0.1:8321'));
+  const backendOrigins = new Set(
+    [API_BASE, 'http://localhost:8321', 'http://127.0.0.1:8321'].map((value) => new URL(value).origin),
+  );
+  const isBackendUrl = (u: string): boolean => {
+    try {
+      return backendOrigins.has(new URL(u).origin);
+    } catch {
+      return false;
+    }
+  };
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     try {
@@ -163,16 +171,20 @@ export function installBackendFetchAuth(): void {
 
       if (isBackendUrl(url)) {
         if (input instanceof Request) {
-          if (!input.headers.has('X-PrynX-Signature')) {
-            const auth = await getLicenseHeaders(url);
-            const merged = new Headers(input.headers);
-            for (const k in auth) if (!merged.has(k)) merged.set(k, auth[k]);
-            return origFetch(new Request(input, { headers: merged }));
+          // Build the effective request first so method/body/header overrides in `init`
+          // are preserved and the HMAC is bound to the method actually sent.
+          const outgoing = new Request(input, init);
+          if (!outgoing.headers.has('X-PrynX-Signature')) {
+            const auth = await getLicenseHeaders(url, outgoing.method);
+            const merged = new Headers(outgoing.headers);
+            for (const k in auth) merged.set(k, auth[k]);
+            return origFetch(new Request(outgoing, { headers: merged }));
           }
+          return origFetch(outgoing);
         } else {
           const merged = new Headers((init?.headers as HeadersInit) || undefined);
           if (!merged.has('X-PrynX-Signature')) {
-            const auth = await getLicenseHeaders(url);
+            const auth = await getLicenseHeaders(url, init?.method || 'GET');
             for (const k in auth) if (!merged.has(k)) merged.set(k, auth[k]);
             return origFetch(url, { ...init, headers: merged });
           }

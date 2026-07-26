@@ -112,6 +112,34 @@ function sampleSegment(segment: PathSegment): Point2D[] {
     return segment.points.map((point) => ({ ...point }));
 }
 
+/**
+ * Chuỗi free-edge CUT của panel (bỏ CREASE). Chuỗi hở hai đầu trên đường
+ * gấp → coi last→first là cạnh ảo dọc nếp gấp, tạo vùng giấy kín.
+ * Đây là nguồn CHÍNH cho bleed: bám đúng đường khuôn vẽ, không phụ thuộc
+ * `panel.outline` rút gọn / lỗi thời.
+ */
+function cutFreeEdgeRing(paths: readonly PathSegment[]): Point2D[] {
+    const cuts = paths.filter((path) => path.tag === 'CUT');
+    if (cuts.length === 0) return [];
+
+    const ring: Point2D[] = [];
+    const push = (point: Point2D) => {
+        if (ring.length === 0) {
+            ring.push({ x: point.x, y: point.y });
+            return;
+        }
+        const last = ring[ring.length - 1];
+        if (!ptEq(last, point)) ring.push({ x: point.x, y: point.y });
+    };
+
+    for (const segment of cuts) {
+        for (const point of sampleSegment(segment)) push(point);
+    }
+
+    if (ring.length > 2 && ptEq(ring[0], ring[ring.length - 1])) ring.pop();
+    return ring.length >= 3 ? ring : [];
+}
+
 /** Preserve CUT curves while retaining virtual CREASE edges from Panel.outline. */
 function detailedPanelRing(panel: Panel): Point2D[] {
     const outline = panel.outline && panel.outline.length >= 3
@@ -140,9 +168,36 @@ function detailedPanelRing(panel: Panel): Point2D[] {
     if (ring.length > 1 && ptEq(ring[0], ring[ring.length - 1])) ring.pop();
     return ring;
 }
+
+/**
+ * Vùng vật liệu của 1 panel cho bleed:
+ * - Flap/đáy (nhiều CUT free-edge): dùng cutFreeEdgeRing → bám khuôn.
+ * - Thân hộp (outline chữ nhật, CUT chỉ vài cạnh): giữ outline/detailed
+ *   vì free-edge CUT không đủ chu vi.
+ */
+function materialRingForPanel(panel: Panel): Point2D[] {
+    const cutRing = cutFreeEdgeRing(panel.paths);
+    const cutArea = cutRing.length >= 3 ? Math.abs(signedArea(cutRing)) : 0;
+
+    if (cutArea > 0.001) {
+        const outline = panel.outline && panel.outline.length >= 3 ? panel.outline : null;
+        if (outline) {
+            const outlineArea = Math.abs(signedArea(outline));
+            // CUT chỉ là vài cạnh thân → diện tích chuỗi free-edge << outline
+            if (outlineArea > cutArea * 1.5) {
+                return detailedPanelRing(panel);
+            }
+        }
+        // Flap đáy / tai: free-edge CUT đủ để tạo vùng giấy
+        return cutRing;
+    }
+
+    return detailedPanelRing(panel);
+}
+
 function panelUnionOuterRings(model: DielineModel): Point2D[][] {
     const features = model.panels.flatMap((panel) => {
-        const raw = detailedPanelRing(panel);
+        const raw = materialRingForPanel(panel);
 
         if (raw.length < 3 || Math.abs(signedArea(raw)) <= 0.001) return [];
         try {
@@ -171,6 +226,15 @@ function panelUnionOuterRings(model: DielineModel): Point2D[][] {
 type ClipperPoint = { X: number; Y: number };
 const CLIPPER_SCALE = 1000;
 
+/**
+ * Phình vùng giấy ra ngoài (solid buffer) — cùng approach các loại hộp khác.
+ *
+ * Dùng `etClosedPolygon` + `jtRound`: biên bleed LUÔN nằm ngoài giấy, không
+ * tự cắt âm vào đỉnh nhọn (như miter parallel-curve từng làm trên auto_bottom).
+ * Khe hẹp hơn 2×bleed sẽ được lấp tự nhiên (đúng vật lý tràn lề in).
+ *
+ * Biên nguồn phải bám free-edge CUT (materialRingForPanel) thì đáy mới đúng form.
+ */
 function bufferMaterialRings(rings: readonly Point2D[][], offset: number): Point2D[][] {
     if (!(offset > 0)) return rings.map((ring) => ring.map((point) => ({ ...point })));
     const paths: ClipperPoint[][] = rings
@@ -181,23 +245,45 @@ function bufferMaterialRings(rings: readonly Point2D[][], offset: number): Point
         })));
     if (paths.length === 0) return [];
 
-    // Clipper requires identical orientation for exterior rings. ClipperOffset
-    // handles concave corners, overlap union and self-intersection internally.
+    // Clipper: orientation thống nhất, làm sạch, rồi phình khối đặc ra ngoài
     for (const path of paths) {
         if (!ClipperLib.Clipper.Orientation(path)) path.reverse();
     }
     const cleaned = ClipperLib.Clipper.CleanPolygons(paths, 0.002 * CLIPPER_SCALE) as ClipperPoint[][];
     const solution: ClipperPoint[][] = [];
-    const offsetter = new ClipperLib.ClipperOffset(2, 0.05 * CLIPPER_SCALE);
-    offsetter.AddPaths(cleaned, ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
+    // jtRound: bo góc lồi, không tạo gai miter âm vào trong đỉnh nhọn
+    const offsetter = new ClipperLib.ClipperOffset(2, 0.25 * CLIPPER_SCALE);
+    offsetter.AddPaths(cleaned, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
     offsetter.Execute(solution, offset * CLIPPER_SCALE);
 
-    return solution
+    const expanded = solution
         .map((path) => path.map((point) => ({
             x: point.X / CLIPPER_SCALE,
             y: point.Y / CLIPPER_SCALE,
         })))
         .filter((ring) => ring.length >= 3 && Math.abs(signedArea(ring)) > 0.001);
+
+    if (expanded.length <= 1) return expanded;
+
+    // Gộp cut-piece gần nhau (bleed chồng) thành một biên ngoài
+    try {
+        const features = expanded.flatMap((ring) => {
+            try {
+                return [featureFromRing(ring)];
+            } catch {
+                return [];
+            }
+        });
+        if (features.length === 0) return expanded;
+        const geometry = features.length === 1
+            ? features[0].geometry
+            : union(featureCollection(features))?.geometry;
+        if (geometry) {
+            const merged = exteriorRings(geometry);
+            if (merged.length > 0) return merged;
+        }
+    } catch { /* keep separate */ }
+    return expanded;
 }
 /**
  * Tạo đường bleed offset thật theo biên vật liệu ngoài cùng của khuôn.

@@ -1,6 +1,90 @@
 [
   {
-    "pdf": "01_clean_blank.pdf",
+    "pdf": "alpha_half_k.pdf",
+    "gs_max_tac_pct": 50.196,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": -0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "blend_darken_k40_k80.pdf",
+    "gs_max_tac_pct": 80.0,
+    "ppe_max_tac_pct": 80.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.137,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "blend_multiply_black_on_cyan.pdf",
+    "gs_max_tac_pct": 200.0,
+    "ppe_max_tac_pct": 200.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "blend_screen_black_on_cyan.pdf",
     "gs_max_tac_pct": 0.0,
     "ppe_max_tac_pct": 0.0,
     "delta_tac_points": 0.0,
@@ -21,259 +105,14 @@
     "ppe_dropped_objects": 0,
     "ppe_skipped_ops": [],
     "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "PASS"
-  },
-  {
-    "pdf": "02_rgb_colorspace.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": 0.0,
-    "worst_plate_mae_255": 0.0,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "PASS"
-  },
-  {
-    "pdf": "03_live_text.pdf",
-    "gs_max_tac_pct": 100.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": -100.0,
-    "worst_plate_mae_255": 1.584,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": true,
-    "ppe_dropped_objects": 8,
-    "ppe_skipped_ops": [
-      "hiển thị text"
-    ],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "CHƯA ĐỦ TÍNH NĂNG"
-  },
-  {
-    "pdf": "04_font_not_embedded.pdf",
-    "gs_max_tac_pct": 100.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": -100.0,
-    "worst_plate_mae_255": 0.531,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": true,
-    "ppe_dropped_objects": 1,
-    "ppe_skipped_ops": [
-      "hiển thị text"
-    ],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "CHƯA ĐỦ TÍNH NĂNG"
-  },
-  {
-    "pdf": "05_page_size_mismatch.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": 0.0,
-    "worst_plate_mae_255": 0.0,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "PASS"
-  },
-  {
-    "pdf": "06_opi_linked_image.pdf",
-    "gs_max_tac_pct": 327.059,
-    "ppe_max_tac_pct": 326.598,
-    "delta_tac_points": -0.461,
-    "worst_plate_mae_255": 1.799,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
     "ppe_colorspaces_used": [
-      "DeviceRGB"
+      "DeviceCMYK"
     ],
     "color_managed": true,
     "verdict": "PASS"
   },
   {
-    "pdf": "06_xmp_linked.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": 0.0,
-    "worst_plate_mae_255": 0.0,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "PASS"
-  },
-  {
-    "pdf": "07_indexed_palette.pdf",
-    "gs_max_tac_pct": 326.275,
-    "ppe_max_tac_pct": 315.753,
-    "delta_tac_points": -10.522,
-    "worst_plate_mae_255": 0.786,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [
-      "Indexed",
-      "DeviceRGB"
-    ],
-    "color_managed": true,
-    "verdict": "FAIL (báo thiếu mực)"
-  },
-  {
-    "pdf": "08_low_res_image.pdf",
-    "gs_max_tac_pct": 173.333,
-    "ppe_max_tac_pct": 172.978,
-    "delta_tac_points": -0.355,
-    "worst_plate_mae_255": 0.582,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [
-      "DeviceRGB"
-    ],
-    "color_managed": true,
-    "verdict": "PASS"
-  },
-  {
-    "pdf": "09_high_dpi_image.pdf",
-    "gs_max_tac_pct": 173.333,
-    "ppe_max_tac_pct": 172.978,
-    "delta_tac_points": -0.355,
-    "worst_plate_mae_255": 0.009,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [
-      "DeviceRGB"
-    ],
-    "color_managed": true,
-    "verdict": "PASS"
-  },
-  {
-    "pdf": "10_overprint.pdf",
+    "pdf": "ccitt_group4.pdf",
     "gs_max_tac_pct": 100.0,
     "ppe_max_tac_pct": 100.0,
     "delta_tac_points": 0.0,
@@ -301,9 +140,9 @@
     "verdict": "PASS"
   },
   {
-    "pdf": "11_transparency.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
+    "pdf": "cmyk_k_only.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
     "delta_tac_points": 0.0,
     "worst_plate_mae_255": 0.0,
     "gs_plates": [
@@ -322,16 +161,18 @@
     "ppe_dropped_objects": 0,
     "ppe_skipped_ops": [],
     "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
     "color_managed": true,
     "verdict": "PASS"
   },
   {
-    "pdf": "12_spot_color.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
+    "pdf": "cmyk_rich_black.pdf",
+    "gs_max_tac_pct": 240.0,
+    "ppe_max_tac_pct": 240.0,
     "delta_tac_points": 0.0,
-    "worst_plate_mae_255": 0.0,
+    "worst_plate_mae_255": 0.069,
     "gs_plates": [
       "Black",
       "Cyan",
@@ -348,122 +189,1029 @@
     "ppe_dropped_objects": 0,
     "ppe_skipped_ops": [],
     "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
     "color_managed": true,
     "verdict": "PASS"
   },
   {
-    "pdf": "13_multipage_15.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": 0.0,
-    "worst_plate_mae_255": 0.0,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "PASS"
-  },
-  {
-    "pdf": "14_progressive_jpeg.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": 0.0,
-    "worst_plate_mae_255": 0.0,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": true,
-    "ppe_dropped_objects": 1,
-    "ppe_skipped_ops": [
-      "Do ảnh (cấu trúc PDF không hợp lệ: DCTDecode lỗi: invalid JPEG format: invalid length in SOF)"
-    ],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "CHƯA ĐỦ TÍNH NĂNG"
-  },
-  {
-    "pdf": "15_pdf_version_old.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": 0.0,
-    "worst_plate_mae_255": 0.0,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": false,
-    "ppe_dropped_objects": 0,
-    "ppe_skipped_ops": [],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "PASS"
-  },
-  {
-    "pdf": "16_object_off_page.pdf",
-    "gs_max_tac_pct": 0.0,
-    "ppe_max_tac_pct": 0.0,
-    "delta_tac_points": 0.0,
-    "worst_plate_mae_255": 0.0,
-    "gs_plates": [
-      "Black",
-      "Cyan",
-      "Magenta",
-      "Yellow"
-    ],
-    "ppe_plates": [
-      "Cyan",
-      "Magenta",
-      "Yellow",
-      "Black"
-    ],
-    "ppe_degraded": true,
-    "ppe_dropped_objects": 1,
-    "ppe_skipped_ops": [
-      "hiển thị text"
-    ],
-    "ppe_approximated_colorspaces": [],
-    "ppe_colorspaces_used": [],
-    "color_managed": true,
-    "verdict": "CHƯA ĐỦ TÍNH NĂNG"
-  },
-  {
-    "pdf": "17_tac_heavy_cmyk.pdf",
+    "pdf": "cmyk_solid_400.pdf",
     "gs_max_tac_pct": 400.0,
     "ppe_max_tac_pct": 400.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "gray_black.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "gray_mid.pdf",
+    "gs_max_tac_pct": 49.804,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": 0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "group_alpha_half_k.pdf",
+    "gs_max_tac_pct": 50.196,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": -0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "group_alpha_overlap.pdf",
+    "gs_max_tac_pct": 50.196,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": -0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "group_isolated_alpha_half_k.pdf",
+    "gs_max_tac_pct": 50.196,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": -0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "group_opaque_k.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "image_cmyk_solid_400.pdf",
+    "gs_max_tac_pct": 400.0,
+    "ppe_max_tac_pct": 400.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "image_gray_black.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "image_rgb_black.pdf",
+    "gs_max_tac_pct": 327.059,
+    "ppe_max_tac_pct": 326.598,
+    "delta_tac_points": -0.461,
+    "worst_plate_mae_255": 0.665,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "image_rgb_mid_gray.pdf",
+    "gs_max_tac_pct": 144.706,
+    "ppe_max_tac_pct": 145.343,
+    "delta_tac_points": 0.637,
+    "worst_plate_mae_255": 0.724,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "knockout_black_on_cyan.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "mesh_type4_solid.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "mesh_type6_solid.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "oc_layer_off.pdf",
+    "gs_max_tac_pct": 0.0,
+    "ppe_max_tac_pct": 0.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "oc_layer_on.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "oc_print_state_off.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 0.0,
+    "delta_tac_points": -100.0,
+    "worst_plate_mae_255": 255.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [
+      "BDC /OC (lớp khai không in — /PrintState /OFF)"
+    ],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [],
+    "color_managed": true,
+    "verdict": "KHÁC GS (có chủ ý)"
+  },
+  {
+    "pdf": "overprint_black_on_cyan.pdf",
+    "gs_max_tac_pct": 200.0,
+    "ppe_max_tac_pct": 200.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_black.pdf",
+    "gs_max_tac_pct": 327.059,
+    "ppe_max_tac_pct": 326.598,
+    "delta_tac_points": -0.461,
+    "worst_plate_mae_255": 0.665,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_blue.pdf",
+    "gs_max_tac_pct": 167.451,
+    "ppe_max_tac_pct": 167.373,
+    "delta_tac_points": -0.078,
+    "worst_plate_mae_255": 0.24,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_dark_brown.pdf",
+    "gs_max_tac_pct": 279.216,
+    "ppe_max_tac_pct": 278.555,
+    "delta_tac_points": -0.661,
+    "worst_plate_mae_255": 0.941,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_green.pdf",
+    "gs_max_tac_pct": 194.902,
+    "ppe_max_tac_pct": 194.823,
+    "delta_tac_points": -0.079,
+    "worst_plate_mae_255": 0.222,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_mid_gray.pdf",
+    "gs_max_tac_pct": 145.49,
+    "ppe_max_tac_pct": 145.798,
+    "delta_tac_points": 0.308,
+    "worst_plate_mae_255": 0.612,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_red.pdf",
+    "gs_max_tac_pct": 172.549,
+    "ppe_max_tac_pct": 172.059,
+    "delta_tac_points": -0.49,
+    "worst_plate_mae_255": 0.796,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "rgb_white.pdf",
+    "gs_max_tac_pct": 0.0,
+    "ppe_max_tac_pct": 0.124,
+    "delta_tac_points": 0.124,
+    "worst_plate_mae_255": 0.315,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceRGB"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "shading_axial_k.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.004,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "shading_axial_k_extend.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.001,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "shading_axial_rich.pdf",
+    "gs_max_tac_pct": 259.608,
+    "ppe_max_tac_pct": 260.0,
+    "delta_tac_points": 0.392,
+    "worst_plate_mae_255": 0.253,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "shading_pattern_half.pdf",
+    "gs_max_tac_pct": 50.196,
+    "ppe_max_tac_pct": 49.804,
+    "delta_tac_points": -0.392,
+    "worst_plate_mae_255": 0.119,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "shading_radial_k.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.179,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "smask_alpha_half.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray",
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "smask_luminosity_bbox_half.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray",
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "smask_luminosity_half.pdf",
+    "gs_max_tac_pct": 49.804,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": 0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceGray",
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "spot_half_tint.pdf",
+    "gs_max_tac_pct": 49.804,
+    "ppe_max_tac_pct": 50.0,
+    "delta_tac_points": 0.196,
+    "worst_plate_mae_255": 0.5,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "PANTONE 485 C",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black",
+      "PANTONE 485 C"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "Separation"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "spot_solid.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.0,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "PANTONE 485 C",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black",
+      "PANTONE 485 C"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "Separation"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "tiling_half_cell.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
+    "delta_tac_points": 0.0,
+    "worst_plate_mae_255": 0.917,
+    "gs_plates": [
+      "Black",
+      "Cyan",
+      "Magenta",
+      "Yellow"
+    ],
+    "ppe_plates": [
+      "Cyan",
+      "Magenta",
+      "Yellow",
+      "Black"
+    ],
+    "ppe_degraded": false,
+    "ppe_dropped_objects": 0,
+    "ppe_skipped_ops": [],
+    "ppe_approximated_colorspaces": [],
+    "ppe_colorspaces_used": [
+      "DeviceCMYK"
+    ],
+    "color_managed": true,
+    "verdict": "PASS"
+  },
+  {
+    "pdf": "tiling_uncoloured_cyan.pdf",
+    "gs_max_tac_pct": 100.0,
+    "ppe_max_tac_pct": 100.0,
     "delta_tac_points": 0.0,
     "worst_plate_mae_255": 0.0,
     "gs_plates": [

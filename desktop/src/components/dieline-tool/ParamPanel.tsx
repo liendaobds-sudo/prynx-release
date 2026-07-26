@@ -54,13 +54,14 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
 
     const isRTE = params.boxType === 'rte';
     const isSLB = params.boxType === 'slb';
+    const isAutoBottom = params.boxType === 'auto_bottom';
     const isGable = params.boxType === 'gable';
     const isPaperBag = params.boxType === 'paper_bag';
     const isCupSleeve = params.boxType === 'cup_sleeve';
     const isPizza = params.boxType === 'pizza';
     const isEnvelope = params.boxType === 'envelope';
     const isTray = params.boxType === 'tray';
-    const isBox = isRTE || isSLB || isGable || isPizza || isTray; // Traditional box types
+    const isBox = isRTE || isSLB || isAutoBottom || isGable || isPizza || isTray; // Traditional box types
 
 
     return (
@@ -92,6 +93,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 >
                     <option value="rte">{t('dieline.param:hop_nap_cai_sole')}</option>
                     <option value="slb">{t('dieline.param:hop_day_gai')}</option>
+                    <option value="auto_bottom">{t('dieline.param:hop_day_dan')}</option>
                     <option value="gable">{t('dieline.param:hop_quai_xach')}</option>
                     <option value="paper_bag">{t('dieline.param:tui_giay')}</option>
                     <option value="cup_sleeve">{t('dieline.param:boc_ly')}</option>
@@ -685,8 +687,8 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         ))}
                     </div>
 
-                    {/* Dust Flap Height — chỉ hiện cho RTE, SLB (có tai bụi) */}
-                    {(isRTE || isSLB) && (() => {
+                    {/* Dust Flap Height — chỉ hiện cho RTE, SLB, Đáy dán (có tai bụi) */}
+                    {(isRTE || isSLB || isAutoBottom) && (() => {
                         const defDFH = Math.round(Math.min(params.L / 2 - 1, params.W + params.T));
                         return (
                             <div className="dt-param-grid" style={{ marginTop: '0.25rem' }}>
@@ -721,7 +723,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 </div>
             )}
 
-            {(isSLB || isGable) && (<>
+            {(isSLB || isGable || isAutoBottom) && (<>
                 <button
                     className="dt-advanced-toggle"
                     onClick={() => setShowExtra(!showExtra)}
@@ -732,8 +734,40 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 {showExtra && (
                     <div className="dt-params-section">
                         <div className="dt-param-grid">
-                            {/* SLP Input */}
-                            <div className="dt-param-cell">
+                            {/* ABD — chiều sâu mảnh đáy dán, chỉ hộp đáy dán */}
+                            {isAutoBottom && (() => {
+                                const defABD = Math.round(params.W * 0.7);
+                                return (
+                                    <div className="dt-param-cell">
+                                        <label className="dt-param-cell-label">{t('dieline.param:sau_day_dan_abd')}</label>
+                                        <input
+                                            type="number"
+                                            defaultValue={params.ABD === 0 ? defABD : params.ABD}
+                                            key={params.ABD === 0 ? `ABD-auto-${defABD}` : `ABD-${params.ABD}-${clampVersion}`}
+                                            min={0}
+                                            max={Math.floor(params.W)}
+                                            step={1}
+                                            className="dt-param-input"
+                                            style={{ textAlign: 'right' }}
+                                            onBlur={(e) => {
+                                                const v = parseFloat(e.target.value);
+                                                if (!isNaN(v)) setParam('ABD', v);
+                                            }}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    const v = parseFloat((e.target as HTMLInputElement).value);
+                                                    if (!isNaN(v)) setParam('ABD', v);
+                                                    (e.target as HTMLInputElement).blur();
+                                                }
+                                            }}
+                                        />
+                                        <span className="dt-param-cell-unit">{params.ABD === 0 ? 'Auto' : 'mm'}</span>
+                                    </div>
+                                );
+                            })()}
+
+                            {/* SLP Input — chỉ đáy gài / quai xách */}
+                            {(isSLB || isGable) && (<div className="dt-param-cell">
                                 <label className="dt-param-cell-label">{t('dieline.param:so_cap_day')}</label>
                                 <input
                                     type="number"
@@ -757,16 +791,16 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                                     }}
                                 />
                                 <span className="dt-param-cell-unit">{params.SLP === 0 ? 'Auto' : ''}</span>
-                            </div>
+                            </div>)}
 
-                            {/* Lock Tab Toggle + Params — chỉ SLB */}
-                            {isSLB && (
+                            {/* Lock Tab Toggle + Params — đáy gài & đáy dán */}
+                            {(isSLB || isAutoBottom) && (
                                 <div className="dt-param-cell" style={{ cursor: 'pointer' }} onClick={() => setParam('lockTab', !params.lockTab)}>
                                     <label className="dt-param-cell-label" style={{ cursor: 'pointer' }}>{t('dieline.param:luoi_khoa_nap')}</label>
                                     <input type="checkbox" checked={params.lockTab as boolean} readOnly style={{ accentColor: 'var(--dt-accent)' }} />
                                 </div>
                             )}
-                            {isSLB && params.lockTab && (() => {
+                            {(isSLB || isAutoBottom) && params.lockTab && (() => {
                                 const lockParams: { key: 'LTW' | 'LTH'; label: string; min: number; max: number }[] = [
                                     { key: 'LTW', label: t('dieline.param:rong_luoi_khoa'), min: 5, max: 40 },
                                     { key: 'LTH', label: t('dieline.param:cao_luoi_khoa'), min: 5, max: 40 },

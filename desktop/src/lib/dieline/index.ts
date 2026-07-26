@@ -1,6 +1,7 @@
 // Engine barrel export
 export { generateReverseTuckEnd } from './ReverseTuckEnd';
 export { generateSnapLockBottom } from './SnapLockBottom';
+export { generateAutoBottomBox } from './AutoBottomBox';
 export { generateGableBox } from './GableBox';
 export { generatePaperBag } from './PaperBag';
 export { generateCupSleeve } from './CupSleeve';

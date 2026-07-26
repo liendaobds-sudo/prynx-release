@@ -84,14 +84,15 @@ function buildValid(boxType: GeneratorBoxType, partial: Partial<BoxParams>): Box
 /**
  * Sinh `BoxParams` hợp lệ cho một loại hộp cụ thể.
  *
- * @param boxType Một trong 8 loại: rte | slb | gable | paper_bag |
- *                cup_sleeve | pizza | envelope | tray
+ * @param boxType Một trong 9 loại: rte | slb | auto_bottom | gable |
+ *                paper_bag | cup_sleeve | pizza | envelope | tray
  * @returns fast-check Arbitrary<BoxParams> đã đi qua validateParams
  */
 export function arbBoxParams(boxType: GeneratorBoxType): fc.Arbitrary<BoxParams> {
     switch (boxType) {
         case 'rte':
         case 'slb':
+        case 'auto_bottom':
         case 'gable': {
             return fc
                 .record({
@@ -101,6 +102,7 @@ export function arbBoxParams(boxType: GeneratorBoxType): fc.Arbitrary<BoxParams>
                     G: arbBiasedInt(5, 30),
                     TH: arbBiasedInt(0, 80),
                     DFH: arbAutoSize(1, 60),
+                    ABD: arbAutoSize(1, 300),
                     SLP: fc.integer({ min: 0, max: 5 }),
                     HW: arbAutoSize(0, 200),
                     HFH: arbAutoSize(0, 120),
@@ -117,6 +119,7 @@ export function arbBoxParams(boxType: GeneratorBoxType): fc.Arbitrary<BoxParams>
                         G: r.G,
                         TH: r.TH,
                         DFH: r.DFH,
+                        ABD: r.ABD,
                         SLP: r.SLP,
                         HW: r.HW,
                         HFH: r.HFH,

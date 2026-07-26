@@ -89,6 +89,26 @@ pub fn launch_external_app(app_path: String, file_path: String) -> Result<(), St
     if !std::path::Path::new(&file_path).is_file() {
         return Err("File not found".to_string());
     }
+    // app_path đến từ detect_design_apps (registry AI/Corel) HOẶC user tự trỏ .exe qua
+    // hộp thoại native (OpenInDesignModal). Không thể whitelist cứng AI/Corel vì luồng
+    // custom-exe hợp lệ. Nhưng SIẾT được ở đây mà không phá luồng đó:
+    //  - phải là .exe (chặn trỏ app_path vào script/DLL/LNK),
+    //  - phải là file tồn tại,
+    //  - KHÔNG nằm ở vị trí nhạy cảm (dùng is_sensitive_path — KHÔNG dùng
+    //    is_sensitive_write_path vì AI/Corel cài trong Program Files, write-guard chặn
+    //    còn read-guard cho qua). Không đụng luồng thật: exe cài ở Program Files / nơi
+    //    user chọn đều qua; chỉ chặn app_path bị nhét vào thư mục credential/khoá.
+    let app_ext = std::path::Path::new(&app_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if app_ext != "exe" {
+        return Err("Application must be an .exe".to_string());
+    }
+    if crate::is_sensitive_path(&app_path) {
+        return Err("Access to this location is not allowed".to_string());
+    }
     if !std::path::Path::new(&app_path).is_file() {
         return Err("Application not found".to_string());
     }

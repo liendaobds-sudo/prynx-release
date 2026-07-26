@@ -29,6 +29,12 @@ const BOX_TYPES: BoxTypeCard[] = [
         image: '/images/dieline/slb.png',
     },
     {
+        type: 'auto_bottom',
+        name: 'Tạo khuôn hộp đáy dán',
+        desc: 'Auto-Bottom — đáy dán keo sẵn, tự bung khi dựng',
+        image: '/images/dieline/auto_bottom.svg',
+    },
+    {
         type: 'paper_bag',
         name: 'Tạo khuôn túi giấy',
         desc: 'Tạo khuôn túi giấy nhiều quy cách',

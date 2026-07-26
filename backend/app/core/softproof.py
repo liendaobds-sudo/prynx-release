@@ -1,12 +1,13 @@
 """ICC Soft-Proofing & Gamut Warning — Acrobat-style screen proof.
 
-Pipeline (preferred):
-  PDF (native CMYK/RGB) → Ghostscript with DefaultCMYKProfile (FOGRA39) +
-  OutputICCProfile (sRGB) → display PNG.
+Thứ tự engine, tốt nhất trước:
 
-Fallback (no GS):
-  pypdfium2 RGB → LittleCMS soft-proof with bundled FOGRA39 (less accurate
-  for CMYK sources but better than unprofiled RGB).
+1. **PrynX Print Engine (PPE)** — render trong không gian mực rồi quy CMYK→sRGB
+   qua ICC. Chỉ **một** lần quy đổi màu, và overprint được mô hình đúng.
+2. **Ghostscript** — cùng ý tưởng nhưng qua tiến trình con và bundle AGPL.
+3. **pypdfium2 + LittleCMS** — đường lùi cuối. Nó render ra RGB (mất overprint,
+   mất mực pha), rồi RGB→CMYK bằng công thức xấp xỉ, rồi CMYK→sRGB. Ba bước, hai
+   lần mất thông tin ⇒ luôn gắn nhãn `approximate`.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import logging
 import os
 import subprocess
 import tempfile
+from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageCms
@@ -30,6 +32,7 @@ from app.core.icc_profiles import (
     resolve_profile_path,
     resolve_srgb_profile_path,
 )
+from app.core.print_engine import PpeUnavailable
 from app.utils.subprocess_utils import run_hidden
 
 logger = logging.getLogger(__name__)
@@ -110,7 +113,27 @@ class SoftProofEngine:
         engine = "pdfium+lcms"
         accuracy = "approximate"
 
-        if gs_path and os.path.isfile(gs_path):
+        # PPE trước, Ghostscript sau. Khác với đường tách kẽm, ở đây PPE có một lợi
+        # thế mà pdfium không thể có: nó render **trong không gian mực** rồi mới quy
+        # sang sRGB, nên soft-proof là CMYK→sRGB thật thay vì RGB→CMYK→sRGB. Đường
+        # pdfium đi qua RGB hai lần và mất hết thông tin overprint.
+        try:
+            proofed = await asyncio.to_thread(
+                self._render_ppe_softproof,
+                pdf_path,
+                page_num,
+                dpi,
+                profile_path,
+                intent,
+            )
+            engine = "ppe+lcms"
+            accuracy = "rip_softproof"
+        except PpeUnavailable as exc:
+            logger.info("PPE soft-proof không khả dụng (%s)", exc)
+        except Exception as exc:
+            logger.warning("PPE soft-proof thất bại (%s); thử Ghostscript", exc)
+
+        if proofed is None and gs_path and os.path.isfile(gs_path):
             try:
                 proofed = await asyncio.to_thread(
                     self._render_gs_softproof,
@@ -171,7 +194,7 @@ class SoftProofEngine:
             "engine": engine,
             "accuracy": accuracy,
             "warning": None if accuracy == "rip_softproof" else (
-                "Soft-proof gần đúng (PDF→RGB→ICC). Cài Ghostscript để proof CMYK giống RIP hơn."
+                "Soft-proof gần đúng (PDF→RGB→ICC): đường này mất overprint và mực pha."
                 if engine.startswith("pdfium") else None
             ),
         }
@@ -187,6 +210,56 @@ class SoftProofEngine:
             return bitmap.to_pil().convert("RGB")
         finally:
             doc.close()
+
+    def _render_ppe_softproof(
+        self,
+        pdf_path: str,
+        page_num: int,
+        dpi: int,
+        profile_path: str,
+        intent: str,
+    ) -> Image.Image:
+        """Soft-proof bằng PPE: mực → sRGB, một lần quy đổi.
+
+        Khác đường `pdfium+lcms` ở chỗ **không đi qua RGB hai lần**. Đường pdfium
+        render ra RGB (mất overprint, mất mực pha), rồi RGB→CMYK bằng một công thức
+        xấp xỉ, rồi CMYK→sRGB qua ICC. Ba bước, hai lần mất thông tin. PPE render
+        thẳng trong không gian mực nên chỉ còn một bước quy đổi và overprint được
+        mô hình đúng.
+
+        `profile_path` được truyền dưới dạng **id** cho facade để nó tự phân giải:
+        facade dùng cùng bảng profile với phần còn lại của backend, nên không có cơ
+        hội hai nơi trỏ hai file khác nhau.
+        """
+        from app.core.print_engine import softproof as ppe_softproof
+
+        # `intent` của PDF: 0 perceptual, 1 relative, 2 saturation, 3 absolute.
+        intent_code = {
+            "perceptual": 0,
+            "relative": 1,
+            "saturation": 2,
+            "absolute": 3,
+        }.get((intent or "relative").strip().lower(), 1)
+
+        profile_id = Path(profile_path).stem.lower() if profile_path else "fogra39"
+        result = ppe_softproof(
+            pdf_path,
+            page_num,
+            dpi=dpi,
+            cmyk_profile_id=profile_id,
+            render_intent=intent_code,
+        )
+        img = Image.frombytes(
+            "RGB", (result["width"], result["height"]), bytes(result["rgb"])
+        )
+        if result.get("ink_unsound"):
+            # Ảnh vẫn dùng được để xem, nhưng có nội dung engine chưa vẽ đủ. Ghi log
+            # thay vì im lặng: người dùng cần biết vì sao bản proof thiếu chi tiết.
+            logger.warning(
+                "PPE soft-proof: trang %s có nội dung chưa dựng đủ (ink_unsound)",
+                page_num,
+            )
+        return img
 
     def _render_gs_softproof(
         self,

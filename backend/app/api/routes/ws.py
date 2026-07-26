@@ -33,14 +33,35 @@ async def job_progress_ws(
     duyệt không gửi được custom headers. Bỏ qua ở dev mode. Chữ ký ký trên path
     "/ws/jobs/{job_id}/progress" và phải kèm `nonce` dùng-một-lần (audit 2026-07-25).
     """
-    from app.core.license_guard import verify_sidecar_signature
-    url_path = f"/ws/jobs/{job_id}/progress"
+    from app.core.license_guard import (
+        _clock_guard,
+        _enforce_license_token,
+        verify_license_token,
+        verify_sidecar_signature,
+    )
+    raw_path = websocket.scope.get("raw_path")
+    if isinstance(raw_path, bytes):
+        try:
+            url_path = raw_path.split(b"?", 1)[0].decode("ascii")
+        except UnicodeDecodeError:
+            url_path = f"/ws/jobs/{job_id}/progress"
+    else:
+        url_path = f"/ws/jobs/{job_id}/progress"
     ok, _reason = verify_sidecar_signature(
-        url_path, ts, sig, license_key, hwid, license_token, nonce
+        url_path, ts, sig, license_key, hwid, license_token, nonce, "GET"
     )
     if not ok:
         await websocket.close(code=4001, reason="Unauthorized")
         return
+    if _enforce_license_token():
+        token_ok, _token_reason = verify_license_token(license_token, hwid, license_key)
+        if not token_ok:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
+        clock_ok, _clock_reason = _clock_guard()
+        if not clock_ok:
+            await websocket.close(code=4001, reason="Unauthorized")
+            return
 
     await websocket.accept()
     logger.info(f"WebSocket connected for job: {job_id}")

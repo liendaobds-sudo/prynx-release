@@ -3,6 +3,8 @@
 use lopdf::{Dictionary, Document, Object};
 
 use crate::color::icc::ColorManager;
+use crate::color::space::resolve_colorspace;
+use crate::color::ColorSpace;
 use crate::content::{RenderOptions, Renderer};
 use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::geom::{Matrix, Rect};
@@ -80,7 +82,10 @@ pub fn render_page_managed(
     let total = pages.len();
     let page_id = *pages
         .get(&(page_number as u32))
-        .ok_or(PpeError::PageOutOfRange { requested: page_number, total })?;
+        .ok_or(PpeError::PageOutOfRange {
+            requested: page_number,
+            total,
+        })?;
 
     let page_dict = doc
         .get_dictionary(page_id)
@@ -93,19 +98,23 @@ pub fn render_page_managed(
         .and_then(|r| r.intersect(&media))
         .unwrap_or(media);
 
-    let rotate = normalize_rotate(
-        inherited_num(doc, page_dict, "Rotate").unwrap_or(0.0) as i32,
-    );
+    let rotate = normalize_rotate(inherited_num(doc, page_dict, "Rotate").unwrap_or(0.0) as i32);
 
+    let resources = collect_resources(doc, page_dict);
+    let blend_space_cmyk = page_group_is_device_cmyk(doc, page_dict, resources.as_ref());
     let (width_px, height_px) = raster_size(&target, dpi, rotate)?;
     let device = device_matrix(&target, dpi, rotate);
 
-    let buffer = InkBuffer::new(width_px, height_px, InkSpace::new())?;
-    let mut renderer = Renderer::new(doc, buffer, opts, color)?;
+    let space = if opts.flatten_spots {
+        InkSpace::process_only()
+    } else {
+        InkSpace::new()
+    };
+    let buffer =
+        InkBuffer::new_with_memory_budget(width_px, height_px, space, opts.memory_budget_bytes)?;
+    let mut renderer = Renderer::new(doc, buffer, opts, color, blend_space_cmyk)?;
 
-    let resources = collect_resources(doc, page_dict);
-    let content = doc
-        .get_page_content(page_id);
+    let content = doc.get_page_content(page_id);
     if content.is_empty() {
         // Trang trắng hợp lệ; không phải lỗi. Không ghi cảnh báo để khỏi hạ
         // accuracy oan cho trang thật sự trắng.
@@ -113,7 +122,12 @@ pub fn render_page_managed(
     renderer.run(&content, resources.as_ref(), device)?;
 
     let (buffer, warnings) = renderer.into_parts();
-    Ok(PageRender { buffer, warnings, box_used: target, rotate })
+    Ok(PageRender {
+        buffer,
+        warnings,
+        box_used: target,
+        rotate,
+    })
 }
 
 /// Mở PDF từ file.
@@ -153,11 +167,20 @@ pub fn raster_size(page_box: &Rect, dpi: f32, rotate: i32) -> PpeResult<(u32, u3
     };
     let w = (w_pt * s).round().max(1.0);
     let h = (h_pt * s).round().max(1.0);
-    if !w.is_finite() || !h.is_finite() || w > MAX_RASTER_SIDE as f32 || h > MAX_RASTER_SIDE as f32 {
-        return Err(PpeError::BadRasterSize { w: w as i64, h: h as i64, dpi });
+    if !w.is_finite() || !h.is_finite() || w > MAX_RASTER_SIDE as f32 || h > MAX_RASTER_SIDE as f32
+    {
+        return Err(PpeError::BadRasterSize {
+            w: w as i64,
+            h: h as i64,
+            dpi,
+        });
     }
     if (w as u64) * (h as u64) > MAX_RASTER_PIXELS {
-        return Err(PpeError::BadRasterSize { w: w as i64, h: h as i64, dpi });
+        return Err(PpeError::BadRasterSize {
+            w: w as i64,
+            h: h as i64,
+            dpi,
+        });
     }
     Ok((w as u32, h as u32))
 }
@@ -179,8 +202,7 @@ pub fn device_matrix(page_box: &Rect, dpi: f32, rotate: i32) -> Matrix {
 
 /// Đọc một hộp trang, có kế thừa từ `/Pages` cha.
 fn inherited_rect(doc: &Document, page: &Dictionary, which: PageBox) -> Option<Rect> {
-    let v = inherited(doc, page, which.key())
-        .and_then(|o| pdf::num_array(doc, o))?;
+    let v = inherited(doc, page, which.key()).and_then(|o| pdf::num_array(doc, o))?;
     if v.len() < 4 {
         return None;
     }
@@ -193,8 +215,27 @@ fn inherited_rect(doc: &Document, page: &Dictionary, which: PageBox) -> Option<R
 }
 
 fn inherited_num(doc: &Document, page: &Dictionary, key: &str) -> Option<f32> {
+
     inherited(doc, page, key).and_then(pdf::as_num)
 }
+fn page_group_is_device_cmyk(
+    doc: &Document,
+    page: &Dictionary,
+    resources: Option<&Dictionary>,
+) -> bool {
+    let Some(group) = pdf::dict_get_dict(doc, page, "Group") else {
+        return false;
+    };
+    let Some(cs) = pdf::dict_get(doc, group, "CS") else {
+        return false;
+    };
+    let mut warnings = RenderWarnings::default();
+    matches!(
+        resolve_colorspace(doc, cs, resources, &mut warnings),
+        Ok(ColorSpace::DeviceCMYK)
+    )
+}
+
 
 /// Trần độ cao cây trang khi truy ngược `/Parent`, chống vòng lặp cha-con.
 const MAX_PAGE_TREE_DEPTH: u32 = 64;
@@ -351,8 +392,14 @@ mod tests {
             let maxy = ys.iter().cloned().fold(f32::MIN, f32::max);
             assert!(minx.abs() < 1e-2, "rot={rot} minx={minx}");
             assert!(miny.abs() < 1e-2, "rot={rot} miny={miny}");
-            assert!((maxx - w as f32).abs() < 1e-2, "rot={rot} maxx={maxx} w={w}");
-            assert!((maxy - h as f32).abs() < 1e-2, "rot={rot} maxy={maxy} h={h}");
+            assert!(
+                (maxx - w as f32).abs() < 1e-2,
+                "rot={rot} maxx={maxx} w={w}"
+            );
+            assert!(
+                (maxy - h as f32).abs() < 1e-2,
+                "rot={rot} maxy={maxy} h={h}"
+            );
         }
     }
 }

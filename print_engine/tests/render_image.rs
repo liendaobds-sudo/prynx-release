@@ -487,6 +487,47 @@ fn image_respects_clip() {
 }
 
 #[test]
+fn cmyk_image_overprint_mode_1_keeps_background_channels() {
+    // Hồi quy: đường ảnh dựng `InkPaint` trực tiếp nên từng bỏ sót ngữ nghĩa
+    // `OPM = 1`. Ảnh CMYK có C=M=Y=0 overprint lên nền Cyan phải KHÔNG khoét nền.
+    let mut doc = Document::with_version("1.7");
+    let img_id = doc.add_object(Stream::new(
+        base_image(1, 1, 8, "DeviceCMYK"),
+        vec![0, 0, 0, 255],
+    ));
+    let resources_id = doc.add_object(dictionary! {
+        "XObject" => dictionary! { "Im0" => Object::Reference(img_id) },
+        "ExtGState" => dictionary! { "GS" => dictionary! { "op" => true, "OPM" => 1 } },
+    });
+    let content_id = doc.add_object(Stream::new(
+        dictionary! {},
+        b"1 0 0 0 k 0 0 10 10 re f /GS gs q 10 0 0 10 0 0 cm /Im0 Do Q".to_vec(),
+    ));
+    let pages_object_id = (doc.new_object_id().0, 0);
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(pages_object_id),
+        "Contents" => Object::Reference(content_id),
+        "Resources" => Object::Reference(resources_id),
+        "MediaBox" => vec![0.into(), 0.into(), 10.into(), 10.into()],
+    });
+    doc.set_object(
+        pages_object_id,
+        dictionary! { "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1 },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog", "Pages" => Object::Reference(pages_object_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+
+    let r = render_page(&doc, 1, 72.0, PageBox::Crop, RenderOptions::ink_accurate()).unwrap();
+    let (cx, cy) = center(&r);
+    assert_eq!(px(&r, 0, cx, cy), 255, "OPM=1 phải giữ Cyan nền");
+    assert_eq!(px(&r, 3, cx, cy), 255);
+    assert!((r.buffer.max_tac_percent() - 200.0).abs() < 0.5);
+}
+
+#[test]
 fn image_honours_overprint() {
     // Ảnh K-only overprint trên nền Cyan: Cyan phải còn.
     let mut doc = Document::with_version("1.7");

@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { generateReverseTuckEnd } from '../../dieline/ReverseTuckEnd';
 import { generateSnapLockBottom } from '../../dieline/SnapLockBottom';
+import { generateAutoBottomBox } from '../../dieline/AutoBottomBox';
 import { generateGableBox } from '../../dieline/GableBox';
 import { generatePaperBag } from '../../dieline/PaperBag';
 import { generatePizzaBox } from '../../dieline/PizzaBox';
@@ -120,6 +121,12 @@ describe('foldPrintOutward — physical print face points outside after full fol
         const r = evaluateOutward(model);
         expect(r.inverted, `inverted: ${r.inverted.join(', ')}`).toEqual([]);
         expect(r.ok.length).toBeGreaterThan(0);
+    });
+
+    it('Auto-bottom structural panels: print outward', () => {
+        const model = generateAutoBottomBox(makeParams({ boxType: 'auto_bottom' }));
+        const r = evaluateOutward(model);
+        expect(r.inverted, `inverted: ${r.inverted.join(', ')}`).toEqual([]);
     });
 
     it('SLB structural panels: print outward', () => {

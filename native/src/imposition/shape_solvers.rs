@@ -49,7 +49,7 @@ pub(crate) fn item_to_pydict(py: Python<'_>, it: &StickerItem) -> PyResult<Py<Py
     Ok(d.into())
 }
 
-fn shape_to_pydict(py: Python<'_>, r: &core::ShapeResult) -> PyResult<PyObject> {
+fn shape_to_pydict(py: Python<'_>, r: &core::ShapeResult) -> PyResult<Py<PyAny>> {
     let d = PyDict::new(py);
     let items: Vec<Py<PyDict>> = r.items.iter().map(|it| item_to_pydict(py, it)).collect::<PyResult<_>>()?;
     d.set_item("totalItems", r.total_items)?;
@@ -65,46 +65,46 @@ fn shape_to_pydict(py: Python<'_>, r: &core::ShapeResult) -> PyResult<PyObject> 
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated=false))]
-pub fn shape_pointy_hex(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, is_rotated: bool) -> PyResult<PyObject> {
+pub fn shape_pointy_hex(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, is_rotated: bool) -> PyResult<Py<PyAny>> {
     shape_to_pydict(py, &core::pointy_hex(usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated))
 }
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated=false))]
-pub fn shape_flat_hex(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, is_rotated: bool) -> PyResult<PyObject> {
+pub fn shape_flat_hex(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, is_rotated: bool) -> PyResult<Py<PyAny>> {
     shape_to_pydict(py, &core::flat_hex(usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated))
 }
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props, is_rotated_90=false))]
-pub fn shape_trapezoid(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, shape_props: &Bound<'_, PyDict>, is_rotated_90: bool) -> PyResult<PyObject> {
+pub fn shape_trapezoid(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, shape_props: &Bound<'_, PyDict>, is_rotated_90: bool) -> PyResult<Py<PyAny>> {
     let sp = props_from_pydict(shape_props);
     shape_to_pydict(py, &core::trapezoid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, &sp, is_rotated_90))
 }
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props, is_rotated_90=false))]
-pub fn shape_triangle(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, shape_props: &Bound<'_, PyDict>, is_rotated_90: bool) -> PyResult<PyObject> {
+pub fn shape_triangle(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, shape_props: &Bound<'_, PyDict>, is_rotated_90: bool) -> PyResult<Py<PyAny>> {
     let sp = props_from_pydict(shape_props);
     shape_to_pydict(py, &core::triangle(usable_w, usable_h, item_w, item_h, gap_x, gap_y, &sp, is_rotated_90))
 }
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props, is_rotated_90=false, start_with_down=false))]
-pub fn shape_pentagon(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, shape_props: &Bound<'_, PyDict>, is_rotated_90: bool, start_with_down: bool) -> PyResult<PyObject> {
+pub fn shape_pentagon(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, shape_props: &Bound<'_, PyDict>, is_rotated_90: bool, start_with_down: bool) -> PyResult<Py<PyAny>> {
     let sp = props_from_pydict(shape_props);
     shape_to_pydict(py, &core::pentagon(usable_w, usable_h, item_w, item_h, gap_x, gap_y, &sp, is_rotated_90, start_with_down))
 }
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, item_w, item_h, gap_x, gap_y, shape_props))]
-pub fn shape_parallelogram(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, shape_props: &Bound<'_, PyDict>) -> PyResult<PyObject> {
+pub fn shape_parallelogram(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, shape_props: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
     let sp = props_from_pydict(shape_props);
     shape_to_pydict(py, &core::parallelogram(usable_w, usable_h, item_w, item_h, gap_x, gap_y, &sp))
 }
 
 #[pyfunction]
-pub fn shape_l_layout(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64) -> PyResult<PyObject> {
+pub fn shape_l_layout(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64) -> PyResult<Py<PyAny>> {
     let r = core::l_layout(usable_w, usable_h, item_w, item_h, gap_x, gap_y);
     // l_shape gốc có thêm itemActualW/itemActualH
     let d = PyDict::new(py);
@@ -121,19 +121,19 @@ pub fn shape_l_layout(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64,
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, bb_w, bb_h, gap_h, gap_v, shape_props, disable_l_shape=false))]
-pub fn shape_hammer(py: Python<'_>, usable_w: f64, usable_h: f64, bb_w: f64, bb_h: f64, gap_h: f64, gap_v: f64, shape_props: &Bound<'_, PyDict>, disable_l_shape: bool) -> PyResult<PyObject> {
+pub fn shape_hammer(py: Python<'_>, usable_w: f64, usable_h: f64, bb_w: f64, bb_h: f64, gap_h: f64, gap_v: f64, shape_props: &Bound<'_, PyDict>, disable_l_shape: bool) -> PyResult<Py<PyAny>> {
     let sp = props_from_pydict(shape_props);
     shape_to_pydict(py, &core::hammer(usable_w, usable_h, bb_w, bb_h, gap_h, gap_v, &sp, disable_l_shape))
 }
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, item_w, item_h, gap_x, gap_y, big_end_axis_frac=0.65, is_rotated_90=false))]
-pub fn shape_dumbbell_pair_col(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, big_end_axis_frac: f64, is_rotated_90: bool) -> PyResult<PyObject> {
+pub fn shape_dumbbell_pair_col(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, big_end_axis_frac: f64, is_rotated_90: bool) -> PyResult<Py<PyAny>> {
     shape_to_pydict(py, &core::dumbbell_pair_col(usable_w, usable_h, item_w, item_h, gap_x, gap_y, big_end_axis_frac, is_rotated_90))
 }
 
 #[pyfunction]
 #[pyo3(signature = (usable_w, usable_h, item_w, item_h, gap_x, gap_y, big_end_axis_frac=0.65, is_rotated_90=false))]
-pub fn shape_dumbbell_pair_row(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, big_end_axis_frac: f64, is_rotated_90: bool) -> PyResult<PyObject> {
+pub fn shape_dumbbell_pair_row(py: Python<'_>, usable_w: f64, usable_h: f64, item_w: f64, item_h: f64, gap_x: f64, gap_y: f64, big_end_axis_frac: f64, is_rotated_90: bool) -> PyResult<Py<PyAny>> {
     shape_to_pydict(py, &core::dumbbell_pair_row(usable_w, usable_h, item_w, item_h, gap_x, gap_y, big_end_axis_frac, is_rotated_90))
 }

@@ -209,6 +209,7 @@ def verify_sidecar_signature(
     hwid: str,
     license_token: str,
     nonce: str = "",
+    method: str = "GET",
 ) -> tuple[bool, str]:
     """
     Nguồn chân lý duy nhất để xác thực một request đến từ Tauri host (không phải caller ngoài).
@@ -244,7 +245,13 @@ def verify_sidecar_signature(
         return False, "Request expired (timestamp too old)"
 
     token_hash = hashlib.sha256(license_token.encode()).hexdigest()
-    sign_payload = f"{ts}:{nonce}:{url_path}:{license_key}:{hwid}:{token_hash}"
+    normalized_method = (method or "").strip().upper()
+    if not normalized_method:
+        return False, "Missing request method"
+    sign_payload = (
+        f"{ts}:{nonce}:{normalized_method}:{url_path}:"
+        f"{license_key}:{hwid}:{token_hash}"
+    )
     expected_hex = hmac_mod.new(
         _SIDECAR_TOKEN.encode(), sign_payload.encode(), hashlib.sha256
     ).hexdigest()
@@ -261,6 +268,31 @@ def verify_sidecar_signature(
 
 
 # ── Server-signed license token (VECTOR: bỏ tin client) ──────────────────────
+def result_access_url(path: str) -> str:
+    """Return a path-scoped signed URL for a generated result artifact."""
+    if not path.startswith("/results/") or "?" in path or "#" in path:
+        raise ValueError("Invalid result path")
+    if not _SIDECAR_TOKEN:
+        if not _enforce_license_token():
+            return path
+        raise RuntimeError("Missing sidecar token for protected result URL")
+    signature = hmac_mod.new(
+        _SIDECAR_TOKEN.encode(), f"result:{path}".encode(), hashlib.sha256
+    ).hexdigest()
+    return f"{path}?access={signature}"
+
+
+def verify_result_access(path: str, signature: str) -> bool:
+    """Verify a path-scoped result URL signature without exposing the sidecar secret."""
+    if not _SIDECAR_TOKEN:
+        return not _enforce_license_token()
+    if not path.startswith("/results/") or len(signature or "") != 64:
+        return False
+    expected = hmac_mod.new(
+        _SIDECAR_TOKEN.encode(), f"result:{path}".encode(), hashlib.sha256
+    ).hexdigest()
+    return hmac_mod.compare_digest(signature, expected)
+
 # Edge function Supabase ký token bằng PRIVATE key (giữ ở server); sidecar verify bằng
 # PUBLIC key dưới đây. Client bị crack KHÔNG giả được token (không có private key).
 # Token ngắn hạn → buộc tái xác thực online định kỳ; thu hồi license có hiệu lực nhanh.
@@ -426,7 +458,26 @@ def verify_license_token(token: str, hwid: str = "", license_key: str = "") -> t
         if not hmac_mod.compare_digest(str(token_key_hash), kh):
             return False, "License token key mismatch"
 
+    # Product is a mandatory audience boundary, not informational metadata.
+    # A token issued for another PrintSolutions product must never unlock PrynX.
+    token_product = payload.get("p")
+    if token_product != "prynx":
+        if token_product is None:
+            return False, "License token missing required field: product"
+        return False, "License token product mismatch"
+
     return True, ""
+
+
+def request_signature_path(request: Request) -> str:
+    """Return the exact percent-encoded ASGI path used by the native signer."""
+    raw_path = request.scope.get("raw_path")
+    if isinstance(raw_path, bytes):
+        try:
+            return raw_path.split(b"?", 1)[0].decode("ascii")
+        except UnicodeDecodeError:
+            pass
+    return request.url.path
 
 
 def _read_verified_entitlements(token: str) -> dict:
@@ -479,13 +530,14 @@ async def require_license(request: Request) -> dict:
     # ── Step 1: Verify credential-bound HMAC signature (skipped in dev mode) ──
     # VECTOR #1/#4 FIX: dùng nguồn chân lý duy nhất verify_sidecar_signature().
     ok, reason = verify_sidecar_signature(
-        request.url.path,
+        request_signature_path(request),
         request.headers.get("X-PrynX-Timestamp", ""),
         request.headers.get("X-PrynX-Signature", ""),
         license_key,
         hwid,
         lic_token,
         request.headers.get("X-PrynX-Nonce", ""),
+        request.method,
     )
     if not ok:
         raise HTTPException(status_code=403, detail=reason)

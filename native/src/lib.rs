@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 
 /// Rust native module for PDF operations via PDFium.
 /// Provides high-performance capabilities that pikepdf/pypdfium2 Python wrappers lack.
-#[pymodule]
+#[pymodule(gil_used = true)]
 fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Existing PDFium operations
     m.add_function(wrap_pyfunction!(enumerate_page_objects, m)?)?;
@@ -27,6 +27,7 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // PrynX Print Engine (PPE) — tách kẽm / TAC trong không gian mực, không GS.
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_separations, m)?)?;
+    m.add_function(wrap_pyfunction!(print_engine_py::ppe_softproof, m)?)?;
     m.add_function(wrap_pyfunction!(print_engine_py::ppe_capabilities, m)?)?;
 
     // Imposition grid solver
@@ -83,7 +84,7 @@ fn pdfcompare_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Enumerate all objects (text, image, path) on a page with precise bounding boxes.
 /// Returns list of dicts: [{type, bbox, content?, index}]
 #[pyfunction]
-fn enumerate_page_objects(py: Python<'_>, pdf_path: &str, page_num: usize) -> PyResult<Vec<PyObject>> {
+fn enumerate_page_objects(py: Python<'_>, pdf_path: &str, page_num: usize) -> PyResult<Vec<Py<PyAny>>> {
     objects::enumerate_objects(py, pdf_path, page_num)
 }
 
@@ -96,26 +97,26 @@ fn render_page_svg(pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<String
 /// Delete specific objects from a page by their indices.
 /// Returns the modified PDF as bytes.
 #[pyfunction]
-fn delete_page_objects(py: Python<'_>, pdf_path: &str, page_num: usize, indices: Vec<usize>) -> PyResult<PyObject> {
+fn delete_page_objects(py: Python<'_>, pdf_path: &str, page_num: usize, indices: Vec<usize>) -> PyResult<Py<PyAny>> {
     redact::delete_objects(py, pdf_path, page_num, indices)
 }
 
 /// Render a page to JPEG bytes at given DPI.
 #[pyfunction]
-fn render_page_image(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<PyObject> {
+fn render_page_image(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32) -> PyResult<Py<PyAny>> {
     render::render_image(py, pdf_path, page_num, dpi)
 }
 
 /// Get OCG (Optional Content Group) layers from a PDF.
 /// Returns list of dicts: [{name, index, visible}]
 #[pyfunction]
-fn get_ocg_layers(py: Python<'_>, pdf_path: &str) -> PyResult<Vec<PyObject>> {
+fn get_ocg_layers(py: Python<'_>, pdf_path: &str) -> PyResult<Vec<Py<PyAny>>> {
     layers::get_layers(py, pdf_path)
 }
 
 /// Render page with specific OCG layers toggled off.
 /// Returns JPEG image bytes.
 #[pyfunction]
-fn set_ocg_visibility(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32, hidden_indices: Vec<usize>) -> PyResult<PyObject> {
+fn set_ocg_visibility(py: Python<'_>, pdf_path: &str, page_num: usize, dpi: u32, hidden_indices: Vec<usize>) -> PyResult<Py<PyAny>> {
     layers::render_with_visibility(py, pdf_path, page_num, dpi, hidden_indices)
 }

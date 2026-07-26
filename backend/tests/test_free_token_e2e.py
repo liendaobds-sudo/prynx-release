@@ -48,7 +48,7 @@ def _make_free_token(signing_key: Ed25519PrivateKey) -> str:
     return f"{payload_b64}.{_b64url(signature)}"
 
 
-def _headers(path: str, license_token: str) -> dict[str, str]:
+def _headers(path: str, license_token: str, method: str = "POST") -> dict[str, str]:
     """Dựng bộ header y như Rust `sign_api_request`.
 
     Nonce mới cho MỖI request (dùng-một-lần phía sidecar, audit 2026-07-25).
@@ -56,7 +56,7 @@ def _headers(path: str, license_token: str) -> dict[str, str]:
     timestamp = str(int(time.time()))
     nonce = uuid.uuid4().hex
     token_hash = hashlib.sha256(license_token.encode()).hexdigest()
-    payload = f"{timestamp}:{nonce}:{path}:{LICENSE_KEY}:{HARDWARE_ID}:{token_hash}"
+    payload = f"{timestamp}:{nonce}:{method}:{path}:{LICENSE_KEY}:{HARDWARE_ID}:{token_hash}"
     signature = hmac.new(
         SIDECAR_TOKEN.encode(),
         payload.encode(),

@@ -26,7 +26,7 @@ pub fn solve_grid(
     item_w: f64, item_h: f64,
     gap_x: f64, gap_y: f64,
     is_rotated: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let g = core::solve_grid(usable_w, usable_h, item_w, item_h, gap_x, gap_y, is_rotated);
     let d = PyDict::new(py);
     d.set_item("cols", g.cols)?;
@@ -48,7 +48,7 @@ pub fn solve_optimal_layout(
     gap_x: f64, gap_y: f64,
     strategy: &str,
     secondary_gap: Option<f64>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let r = core::solve_optimal_layout(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, strategy, secondary_gap);
     let d = PyDict::new(py);
     d.set_item("totalItems", r.total_items)?;
@@ -68,7 +68,7 @@ pub fn solve_manual(
     item_w: f64, item_h: f64,
     gap_x: f64, gap_y: f64,
     cols: usize, rows: usize,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let r = core::solve_manual(item_w, item_h, gap_x, gap_y, cols, rows);
     let d = PyDict::new(py);
     d.set_item("totalItems", r.total_items)?;

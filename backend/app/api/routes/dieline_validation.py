@@ -18,7 +18,7 @@ BOOLEAN_PARAMS = {
 }
 ENUM_PARAMS: dict[str, set[str]] = {
     "glueSide": {"left", "right"},
-    "boxType": {"rte", "slb", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray"},
+    "boxType": {"rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray"},
     "panelOrder": {"WLWL", "LWLW"},
     "handleShape": {"oval", "roundRect"},
     "handleY": {"bottom", "center"},

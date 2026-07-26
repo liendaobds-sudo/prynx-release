@@ -36,7 +36,7 @@ pub fn fast_diff_mask_gray<'py>(
             });
     } else {
         // Fallback for non-contiguous arrays (rare for OpenCV images, but possible)
-        py.allow_threads(|| {
+        py.detach(|| {
             // Using ndarray's Zip for iteration
             use numpy::ndarray::Zip;
             Zip::from(&mut result)

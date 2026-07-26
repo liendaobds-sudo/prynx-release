@@ -1,19 +1,24 @@
 """
 FastAPI application entry point.
 """
+import hashlib
+import hmac
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import PlainTextResponse
 
 from app.config import settings
 from app.database import engine, Base
 from app.api.routes import upload, compare, results, ws, qc
+from app.core.license_guard import verify_result_access
 
 # ── Logging ──
 # stdout (dev/console) + file xoay vòng (production: stdout mất khi process die).
@@ -61,12 +66,25 @@ async def lifespan(app: FastAPI):
     # ── SECURITY: cảnh báo trạng thái guard ──
     # DEV_MODE bỏ qua kiểm tra token + chữ ký → CHỈ dùng khi phát triển cục bộ.
     # Bản đóng gói (Tauri) phải spawn sidecar với env DEV_MODE=false.
-    if settings.DEV_MODE:
+    # AUDIT 2026-07-26: PHẢI đọc `license_guard._is_dev_mode()`, KHÔNG đọc
+    # `settings.DEV_MODE`. Trên BINARY compiled, `_is_dev_mode()` luôn False (cờ Nuitka
+    # `__compiled__`) nên guard vẫn cưỡng chế dù .env có DEV_MODE=true — trong khi dòng
+    # log cũ lại tuyên bố "checks are DISABLED". Đã tái lập trên bản đã cài: log nói
+    # DISABLED nhưng /api/system/gpu-status trả 403. Log sai posture làm lệch hướng
+    # điều tra sự cố (§15.6), nên lấy đúng nguồn chân lý mà guard dùng.
+    from app.core.license_guard import _is_dev_mode as _guard_is_dev_mode
+
+    if _guard_is_dev_mode():
         logger.warning(
             "⚠️  [SECURITY] DEV_MODE=ON — license token/signature checks are DISABLED. "
             "Do NOT ship a build with DEV_MODE enabled."
         )
     else:
+        if settings.DEV_MODE:
+            logger.warning(
+                "🔒 [SECURITY] DEV_MODE=true trong cấu hình nhưng đang chạy BINARY "
+                "compiled → bị BỎ QUA (fail-closed): token/chữ ký VẪN được cưỡng chế."
+            )
         from app.core.license_guard import _SIDECAR_TOKEN
         if not _SIDECAR_TOKEN:
             logger.error(
@@ -179,6 +197,15 @@ async def hide_server_header(request, call_next):
         del response.headers["x-powered-by"]
     return response
 
+@app.middleware("http")
+async def protect_result_artifacts(request, call_next):
+    path = request.url.path
+    if path.startswith("/results/"):
+        signature = request.query_params.get("access", "")
+        if not verify_result_access(path, signature):
+            return PlainTextResponse("Forbidden", status_code=403)
+    return await call_next(request)
+
 # ── Static files (serve results images) ──
 results_path = Path(settings.RESULTS_DIR)
 results_path.mkdir(parents=True, exist_ok=True)
@@ -205,8 +232,20 @@ app.include_router(cut_export_router, prefix="/api", tags=["Cut Export"])
 
 
 @app.get("/health")
-def health_check():
-    return {"status": "ok", "app": settings.APP_NAME}
+def health_check(challenge: str = ""):
+    response = {"status": "ok", "app": settings.APP_NAME}
+    if challenge:
+        if not re.fullmatch(r"[0-9a-f]{64}", challenge):
+            raise HTTPException(status_code=400, detail="Invalid health challenge")
+        from app.core.license_guard import _SIDECAR_TOKEN
+        if not _SIDECAR_TOKEN:
+            raise HTTPException(status_code=503, detail="Sidecar identity is not initialized")
+        response["proof"] = hmac.new(
+            _SIDECAR_TOKEN.encode(),
+            f"startup:{challenge}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+    return response
 
 
 # ── Entry point cho bản đóng gói (Nuitka sidecar) ──

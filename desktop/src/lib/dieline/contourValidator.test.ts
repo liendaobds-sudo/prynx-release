@@ -20,6 +20,7 @@ import { BoxParams, DielineModel, PathSegment, Point2D } from './types';
 
 import { generateReverseTuckEnd } from './ReverseTuckEnd';
 import { generateSnapLockBottom } from './SnapLockBottom';
+import { generateAutoBottomBox } from './AutoBottomBox';
 import { generateGableBox } from './GableBox';
 import { generatePaperBag } from './PaperBag';
 import { generateCupSleeve } from './CupSleeve';
@@ -59,6 +60,7 @@ import { DEFAULT_PARAMS, Panel } from './types';
 const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     rte: generateReverseTuckEnd,
     slb: generateSnapLockBottom,
+    auto_bottom: generateAutoBottomBox,
     gable: generateGableBox,
     paper_bag: generatePaperBag,
     cup_sleeve: generateCupSleeve,
@@ -73,9 +75,9 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
 // hoàn toàn theo định nghĩa crease-aware của Contour_Validator
 // (mọi đầu mút CUT/BLEED trùng một đầu mút khác, kể cả CREASE).
 //
-// 5 generator dưới đây thỏa mãn. 3 generator còn lại — rte, slb
-// (rãnh gài/relief slit của lưỡi đút: đường cắt cố ý kết thúc
-// giữa vật liệu) và envelope (vết cắt ngón dạng cung hở trên nắp)
+// 5 generator dưới đây thỏa mãn. 4 generator còn lại — rte, slb,
+// auto_bottom (rãnh gài/relief slit của lưỡi đút: đường cắt cố ý
+// kết thúc giữa vật liệu) và envelope (vết cắt ngón dạng cung hở)
 // — CỐ Ý chứa đặc trưng cắt hở nội bộ, vốn không phải "biên ngoài"
 // của Cut_Piece, nên bị loại khỏi khẳng định allClosed=true (xem
 // ghi chú phạm vi trong contourValidator.ts). Sửa hình học của
@@ -247,6 +249,9 @@ function perturbOneEndpoint(
 
 describe('Property 1 — validateClosedContours phân loại tính khép kín', () => {
     for (const boxType of CLOSEABLE_TYPES) {
+        // paper_bag generator + property runs are heavy (often 10–20s); default
+        // 30s flaked under parallel suite load during release QA.
+        const timeoutMs = boxType === 'paper_bag' ? 90_000 : 30_000;
         it(`closed model is allClosed; perturbed endpoint is reported open (${boxType})`, () => {
             fc.assert(
                 fc.property(
@@ -287,7 +292,7 @@ describe('Property 1 — validateClosedContours phân loại tính khép kín', 
                 ),
                 { numRuns: 100 },
             );
-        }, 30000); // PBT nặng: 100 vòng × validator O(n²); nới timeout (mặc định 5s) cho loại hộp nhiều đoạn như paper_bag.
+        }, timeoutMs); // PBT nặng: 100 vòng × validator O(n²); paper_bag nới 90s.
     }
 });
 
@@ -511,7 +516,7 @@ const SEED_P4 = 0x4f00d4; // 5177556
 
 // ─── 8 generator (loại hộp) ─────────────────────────────────
 const ALL_GENERATOR_TYPES: GeneratorBoxType[] = [
-    'rte', 'slb', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
+    'rte', 'slb', 'auto_bottom', 'gable', 'paper_bag', 'cup_sleeve', 'pizza', 'envelope', 'tray',
 ];
 
 // ─── Helpers dựng model tổng hợp (chỉ dùng nội bộ file test) ──

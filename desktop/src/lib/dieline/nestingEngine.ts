@@ -1107,8 +1107,8 @@ function calcSmart(
         return chooseBest(interlock);
     }
 
-    if (params.boxType === 'slb') {
-        // SLB: luôn dùng 180° interlock (xoay đầu đuôi để lồng crash-lock)
+    if (params.boxType === 'slb' || params.boxType === 'auto_bottom') {
+        // SLB / Đáy dán: luôn dùng 180° interlock (xoay đầu đuôi để lồng đáy)
         const lockTabH = params.lockTab ? (params.LTH || 0) : 0;
         const interlock = calcSLBInterlock(dieW, dieH, gap, areaW, areaH, ox, oy, closureH, tuckH, safeDustH, params.D, lockTabH, params.L, params.W, params.G);
         return chooseBest(interlock);

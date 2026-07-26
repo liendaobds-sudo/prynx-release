@@ -405,6 +405,11 @@ fn verify_token_with_pubkey(
             return Err("license token key mismatch".to_string());
         }
     }
+    match payload.get("p").and_then(|v| v.as_str()) {
+        Some("prynx") => {}
+        Some(_) => return Err("license token product mismatch".to_string()),
+        None => return Err("license token missing required field: product".to_string()),
+    }
     Ok(())
 }
 
@@ -550,6 +555,28 @@ mod token_tests {
         let tok = mk_token(&sk, "HW123", "LIC-A", future);
         assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-B", &pubk).is_err());
         // key khác
+    }
+
+    #[test]
+    fn wrong_or_missing_product_rejected() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pubk = STANDARD.encode(sk.verifying_key().to_bytes());
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
+        let kh = hex::encode(Sha256::digest(b"LIC-KEY"));
+        for product in [Some("sticker"), None] {
+            let mut payload = serde_json::json!({
+                "k": &kh[..16], "m": "HW123", "exp": future
+            });
+            if let Some(value) = product {
+                payload["p"] = serde_json::Value::String(value.to_string());
+            }
+            let tok = mk_token_payload(&sk, payload);
+            assert!(verify_token_with_pubkey(&tok, "HW123", "LIC-KEY", &pubk).is_err());
+        }
     }
 
     // DS-4: token ký hợp lệ nhưng THIẾU field "m" hoặc "k" phải bị từ chối
@@ -847,6 +874,7 @@ pub fn set_sidecar_token(token: &str) {
 pub fn sign_api_request(
     url_path: String,
     license_key: String,
+    method: String,
 ) -> Result<HashMap<String, String>, String> {
     // Gate 1: Check license in Rust cache (mandatory, not opt-in)
     let now_secs = std::time::SystemTime::now()
@@ -888,9 +916,21 @@ pub fn sign_api_request(
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
     };
     let timestamp = now_secs.to_string();
+    let normalized_method = method.trim().to_ascii_uppercase();
+    if normalized_method.is_empty()
+        || !normalized_method.bytes().all(|b| b.is_ascii_uppercase() || b == b'-')
+    {
+        return Err("Invalid HTTP method".to_string());
+    }
     let sign_payload = format!(
-        "{}:{}:{}:{}:{}:{}",
-        timestamp, nonce, url_path, license_key, binding.hardware_id, binding.license_token_hash
+        "{}:{}:{}:{}:{}:{}:{}",
+        timestamp,
+        nonce,
+        normalized_method,
+        url_path,
+        license_key,
+        binding.hardware_id,
+        binding.license_token_hash
     );
 
     use hmac::{Hmac, Mac};
