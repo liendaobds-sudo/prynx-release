@@ -123,6 +123,15 @@ class _EmbeddedFont:
         self.upem = 1000.0
         self.widths: dict[int, float] = {}
         self.code_to_glyph: dict[int, str] = {}
+        # `Type0` dùng mã HAI byte; mọi phép tính advance và tra glyph đều rẽ
+        # theo cờ này. Word spacing (`Tw`) cũng KHÔNG áp cho mã 2 byte (§9.3.3)
+        # — áp nhầm sẽ giãn chữ ở mọi ký tự chứa byte 0x20.
+        self.two_byte = False
+        self.default_width = 1000.0
+
+        if str(font_dict.get("/Subtype", "")) == "/Type0":
+            self._init_type0(font_dict, TTFont)
+            return
 
         try:
             desc = font_dict.get("/FontDescriptor")
@@ -150,6 +159,84 @@ class _EmbeddedFont:
             logger.debug("không nạp được font nhúng: %s", exc)
             self.ok = False
 
+    def _init_type0(self, font_dict, TTFont) -> None:
+        """Nạp `Type0` / `Identity-H` / `CIDFontType2`.
+
+        Ở dạng này mã 2 byte **chính là CID**, và `/CIDToGIDMap /Identity` cho
+        GID = CID — nên tra glyph chỉ là chỉ số trong glyph order, không qua
+        cmap. Nếu `/CIDToGIDMap` là stream thì đọc bảng 2 byte big-endian.
+        """
+        import io as _io
+
+        try:
+            kid = _descendant_of(font_dict)
+            desc = kid.get("/FontDescriptor")
+            desc = desc if isinstance(desc, pikepdf.Dictionary) else desc.resolve()
+            ff = desc.get("/FontFile2")
+            data = bytes((ff if isinstance(ff, pikepdf.Stream) else ff.resolve()).read_bytes())
+
+            tt = TTFont(_io.BytesIO(data), fontNumber=0, lazy=True)
+            self.glyph_set = tt.getGlyphSet()
+            self.upem = float(tt["head"].unitsPerEm) if "head" in tt else 1000.0
+            glyph_order = tt.getGlyphOrder()
+
+            cid_to_gid = None
+            c2g = kid.get("/CIDToGIDMap")
+            if c2g is not None and not isinstance(c2g, pikepdf.Name):
+                raw = bytes((c2g if isinstance(c2g, pikepdf.Stream) else c2g.resolve()).read_bytes())
+                cid_to_gid = raw
+
+            self.two_byte = True
+            self.default_width = float(kid.get("/DW", 1000))
+            self._parse_w(kid.get("/W"))
+
+            # Dựng bảng CID → tên glyph một lần; file thật dùng vài trăm CID nên
+            # duyệt hết glyph order rẻ hơn tra từng lần.
+            limit = len(glyph_order)
+            for cid in range(min(limit, 0x10000)):
+                gid = cid
+                if cid_to_gid is not None:
+                    idx = cid * 2
+                    if idx + 1 >= len(cid_to_gid):
+                        continue
+                    gid = (cid_to_gid[idx] << 8) | cid_to_gid[idx + 1]
+                if 0 <= gid < limit:
+                    self.code_to_glyph[cid] = glyph_order[gid]
+            self.ok = bool(self.code_to_glyph)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("không nạp được font Type0: %s", exc)
+            self.ok = False
+
+    def _parse_w(self, w_array) -> None:
+        """`/W` của CIDFont: `[c [w…]]` hoặc `[cFirst cLast w]`, xen kẽ nhau."""
+        if w_array is None:
+            return
+        try:
+            items = [x if not hasattr(x, "resolve") else x.resolve() for x in w_array]
+            i = 0
+            while i < len(items):
+                first = int(items[i])
+                if i + 1 >= len(items):
+                    break
+                nxt = items[i + 1]
+                if isinstance(nxt, pikepdf.Array):
+                    for offset, width in enumerate(nxt):
+                        self.widths[first + offset] = float(width)
+                    i += 2
+                else:
+                    if i + 2 >= len(items):
+                        break
+                    last = int(nxt)
+                    width = float(items[i + 2])
+                    # Khoảng CID có thể rất rộng; chỉ ghi khi hợp lý để không
+                    # dựng bảng hàng triệu ô cho một font.
+                    if 0 <= last - first <= 65535:
+                        for cid in range(first, last + 1):
+                            self.widths[cid] = width
+                    i += 3
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("không đọc được /W: %s", exc)
+
     def _build_encoding(self, font_dict, tt) -> None:
         """Mã 1 byte → tên glyph.
 
@@ -165,14 +252,20 @@ class _EmbeddedFont:
             cmap = tt.getBestCmap() or {}
         except Exception:  # noqa: BLE001
             cmap = {}
+        # Font subset thường chỉ mang một bảng cmap hẹp. Ngoài (3,0) symbol,
+        # (1,0) Mac Roman cũng hay là bảng DUY NHẤT trong subset TrueType —
+        # bỏ nó thì phần lớn mã không tra được glyph và chữ biến mất.
         symbol_cmap = {}
+        mac_cmap = {}
         try:
             for table in tt["cmap"].tables:
-                if (table.platformID, table.platEncID) == (3, 0):
+                pair = (table.platformID, table.platEncID)
+                if pair == (3, 0) and not symbol_cmap:
                     symbol_cmap = table.cmap
-                    break
+                elif pair == (1, 0) and not mac_cmap:
+                    mac_cmap = table.cmap
         except Exception:  # noqa: BLE001
-            symbol_cmap = {}
+            pass
 
         base_names: dict[int, str] = {}
         encoding = font_dict.get("/Encoding")
@@ -222,9 +315,14 @@ class _EmbeddedFont:
             if name and name in glyph_order:
                 self.code_to_glyph[code] = name
                 continue
-            # Symbolic: cmap (3,0) khoá theo 0xF000|code hoặc chính code.
-            for key in (0xF000 | code, code):
-                gname = symbol_cmap.get(key)
+            # Symbolic: cmap (3,0) khoá theo 0xF000|code hoặc chính code;
+            # rồi (1,0) Mac Roman khoá thẳng theo mã.
+            for source, key in (
+                (symbol_cmap, 0xF000 | code),
+                (symbol_cmap, code),
+                (mac_cmap, code),
+            ):
+                gname = source.get(key)
                 if gname:
                     self.code_to_glyph[code] = gname
                     break
@@ -253,6 +351,8 @@ class _EmbeddedFont:
         """Bề rộng theo đơn vị 1/1000 em (quy ước `/Widths` của PDF)."""
         if code in self.widths:
             return self.widths[code]
+        if self.two_byte:
+            return self.default_width
         name = self.code_to_glyph.get(code)
         if name and self.glyph_set is not None:
             try:
@@ -293,12 +393,40 @@ class _EmbeddedFont:
             return False
 
 
+def _descendant_of(font_dict):
+    """Font con của một `Type0`, hoặc `None`."""
+    try:
+        kids = font_dict.get("/DescendantFonts")
+        if kids is None or len(kids) == 0:
+            return None
+        kid = kids[0]
+        return kid if isinstance(kid, pikepdf.Dictionary) else kid.resolve()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _font_is_outlineable(font_dict) -> bool:
     """Font có nằm trong phạm vi dựng lại được không (xem docstring module)."""
     try:
         subtype = str(font_dict.get("/Subtype", ""))
-        if subtype in ("/Type0", "/Type3"):
+        if subtype == "/Type3":
             return False
+
+        if subtype == "/Type0":
+            # Chỉ nhận `Identity-H`: mã 2 byte CHÍNH LÀ CID, không phải qua bảng
+            # CMap nào. `Identity-V` bị loại vì viết dọc đổi chiều tiến con chữ —
+            # dùng chung công thức advance ngang sẽ xếp chữ sai hẳn.
+            if str(font_dict.get("/Encoding", "")) != "/Identity-H":
+                return False
+            kid = _descendant_of(font_dict)
+            if kid is None or str(kid.get("/Subtype", "")) != "/CIDFontType2":
+                return False
+            desc = kid.get("/FontDescriptor")
+            if desc is None:
+                return False
+            desc = desc if isinstance(desc, pikepdf.Dictionary) else desc.resolve()
+            return desc.get("/FontFile2") is not None
+
         desc = font_dict.get("/FontDescriptor")
         if desc is None:
             return False
@@ -346,15 +474,36 @@ def outline_content_stream(
         nonlocal tm, glyphs
         if font is None or not font.ok:
             return False
-        for code in raw:
+        if font.two_byte:
+            if len(raw) % 2:
+                return False  # chuỗi lẻ byte trong font 2-byte: dữ liệu hỏng
+            codes = [
+                (raw[i] << 8) | raw[i + 1] for i in range(0, len(raw), 2)
+            ]
+        else:
+            codes = list(raw)
+        for code in codes:
             if render_mode not in (3, 7):  # 3/7 = ẩn, không lên mực
-                trm = _Matrix(size * hscale, 0.0, 0.0, size, 0.0, rise).then(tm).then(ctm)
+                # KHÔNG nhân CTM vào đây: path được chèn vào ĐÚNG vị trí cũ
+                # trong stream, nên lệnh `cm` phía trước vẫn còn hiệu lực và sẽ
+                # tự áp. Nhân thêm ở đây là áp CTM hai lần — trang không có
+                # `cm` thì không lộ, trang có thì lệch hẳn (đo được: kẽm Cyan
+                # lệch 233/255 trên một file corpus).
+                trm = _Matrix(size * hscale, 0.0, 0.0, size, 0.0, rise).then(tm)
                 scale = 1.0 / font.upem
                 glyph_matrix = _Matrix(scale, 0.0, 0.0, scale, 0.0, 0.0).then(trm)
                 if font.draw(code, glyph_matrix, out):
                     glyphs += 1
+                else:
+                    # Không tra được glyph nghĩa là chữ đó sẽ BIẾN MẤT. Bỏ qua
+                    # âm thầm là kiểu hỏng tệ nhất ở đây — file trông vẫn có
+                    # chữ, chỉ thiếu vài ký tự, và không ai thấy tới lúc in.
+                    return False
             w0 = font.width(code) / 1000.0
-            adv = (w0 * size + char_sp + (word_sp if code == 32 else 0.0)) * hscale
+            # `Tw` chỉ áp cho mã MỘT byte bằng 32 (§9.3.3) — với font 2 byte,
+            # áp nhầm sẽ giãn chữ ở mọi ký tự có byte 0x20 bên trong.
+            word = word_sp if (code == 32 and not font.two_byte) else 0.0
+            adv = (w0 * size + char_sp + word) * hscale
             tm = _Matrix(1.0, 0.0, 0.0, 1.0, adv, 0.0).then(tm)
         return True
 
@@ -565,6 +714,20 @@ def outline_fonts(input_path: str, output_path: str) -> dict:
                 pass
 
 
+def _has_form_xobject(resources) -> bool:
+    try:
+        xobjects = resources.get("/XObject")
+        if xobjects is None:
+            return False
+        for _n, xo in dict(xobjects).items():
+            xo = xo if isinstance(xo, pikepdf.Stream) else xo.resolve()
+            if str(xo.get("/Subtype", "")) == "/Form":
+                return True
+    except Exception:  # noqa: BLE001
+        return True  # không đọc được ⇒ coi như có, để từ chối cho an toàn
+    return False
+
+
 def _has_annotations(pdf_path: str) -> bool:
     try:
         with pikepdf.open(pdf_path) as pdf:
@@ -585,6 +748,17 @@ def _outline_document(
             font_dict = resources.get("/Font")
             if font_dict is None:
                 continue
+
+            # Chữ nằm trong Form XObject KHÔNG được bộ này duyệt. Nếu vẫn xoá
+            # `/Font` của trang thì chữ trong Form mất hẳn — đo được: kẽm Cyan
+            # lệch 233/255 trên một file corpus. Chưa đệ quy vào Form thì phải
+            # từ chối, không đoán.
+            if _has_form_xobject(resources):
+                result["supported"] = False
+                result["warnings"].append(
+                    "trang có Form XObject — chữ bên trong chưa được outline"
+                )
+                return result
 
             fonts: dict[str, _EmbeddedFont] = {}
             for name, ref in dict(font_dict).items():

@@ -1651,7 +1651,7 @@ những gì đã gỡ không lặng lẽ quay về.
 | **PDF/X-4** | **chạy** — 31/33 file corpus đạt chuẩn (xem 19.2) |
 | `FLATTEN_TRANSPARENCY` | **chạy** (§19.4) |
 | `PDF/X-1a` | **chạy** (§19.4) |
-| `OUTLINE_FONTS` | **chạy cho font simple đã nhúng** — 4/12 file corpus; font Type0/CID vẫn cần GS (§19.5) |
+| `OUTLINE_FONTS` | **chạy** — 12/33 file corpus; còn lại rơi về GS vì chữ trong Form XObject, font Type1 `/FontFile`, hoặc verify chặn (§19.5) |
 
 Nghĩa là **không còn đường nào gãy hẳn**. `OUTLINE_FONTS` là chỗ duy nhất còn
 rơi về Ghostscript trên file thật, và chỉ với một lớp font cụ thể.
@@ -1719,10 +1719,25 @@ toàn không bao giờ kêu thì bằng không có.
 outline dày hơn glyph gốc chút ở biên do vành fill-adjust). Chữ đặt sai chỗ cho
 phủ gần **gấp đôi** nên ngưỡng bắt được ngay.
 
-Phạm vi có chủ ý: font **đã nhúng** + **simple font 1 byte**. `Type0`/CID cần
-giải CMap và `/CIDToGIDMap`; sai ở đó ra glyph khác hẳn chứ không phải lệch
-nhẹ. Đo corpus 12 file: **4 xong bằng pikepdf, 8 cần GS** vì dùng Type0 — phổ
-biến với tiếng Việt, nên **mở rộng Identity-H là bước tiếp theo rõ ràng**.
+Phạm vi: font **đã nhúng**, simple font 1 byte **và `Type0`/`Identity-H`/
+`CIDFontType2`** — khảo sát corpus cho thấy đó là dạng Type0 **duy nhất** xuất
+hiện (52/52 font), nơi mã 2 byte chính là CID và `/CIDToGIDMap /Identity` cho
+GID = CID. `Identity-V` bị loại vì viết dọc đổi chiều tiến con chữ. `Tw` không
+áp cho mã 2 byte (§9.3.3) — áp nhầm sẽ giãn chữ ở mọi ký tự chứa byte `0x20`.
+
+Đo toàn corpus 33 file: **12 xong bằng pikepdf, 21 rơi về Ghostscript**. Lý do
+rơi, theo thứ tự: chữ nằm trong **Form XObject** (bộ này chưa đệ quy vào, mà
+xoá `/Font` của trang thì chữ trong Form mất hẳn — đo được kẽm Cyan lệch
+233/255, nên từ chối), font **Type1 nhúng qua `/FontFile`** (chưa đọc), và
+toán tử chữ ngoài danh sách đã mô hình hoá.
+
+**Chốt verify đã chứng minh giá trị ngay trong lúc phát triển**: nó bắt hai file
+mà bộ chuyển tưởng là thành công. Truy ra hai bug thật — (1) path glyph bị nhân
+CTM **hai lần** vì lệnh `cm` vẫn còn trong stream (trang không có `cm` thì không
+lộ, nên test tự dựng ban đầu bỏ sót); (2) glyph không tra được bị bỏ qua **âm
+thầm**, làm chữ biến mất mà file trông vẫn có chữ. Cả hai đã sửa; còn **một
+file corpus vẫn bị verify chặn** với nguyên nhân chưa truy ra — và đó đúng là
+hành vi mong muốn: chặn còn hơn giao một bản in sai.
 
 Hồi quy tự gây ra và đã đóng: đường native ban đầu bỏ sót text trong
 annotation/AcroForm — đúng lỗi mà đợt hardening §16.7 đã sửa công phu cho đường
@@ -1734,6 +1749,7 @@ GS, và test cũ bắt được. Nay bake annotation bằng pypdfium2 trước k
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.8 | 2026-07-27 | `OUTLINE_FONTS` mở sang **Type0/Identity-H/CIDFontType2** — dạng Type0 duy nhất có trong corpus (52/52 font). Corpus 12/33 file xong bằng pikepdf. Chốt verify bắt được **hai bug thật** trong lúc phát triển: path glyph bị nhân CTM hai lần (lệnh `cm` vẫn còn trong stream — trang không có `cm` thì không lộ), và glyph không tra được bị bỏ qua âm thầm làm chữ biến mất. Thêm cmap (1,0) Mac Roman cho subset TrueType. Từ chối trang có Form XObject thay vì xoá `/Font` làm mất chữ bên trong. Backend **1367 pass**. §19.5. |
 | 3.7 | 2026-07-27 | Đóng nốt 3 đường còn gãy: `FLATTEN_TRANSPARENCY` (no-op khi không có trong suốt; raster PPE + hạ DPI tự động khi vượt ngân sách, kèm cảnh báo mất vector/gộp spot), `PDF/X-1a` (flatten → đường X-4, ép version 1.3), `OUTLINE_FONTS` (fontTools text→path, **luôn verify bằng so kẽm**, có test chứng minh chốt bắt được chữ dịch 30pt). **Không còn đường nào gãy hẳn** khi tắt Ghostscript; `OUTLINE_FONTS` còn rơi về GS với font Type0/CID (4/12 file corpus xong bằng pikepdf). Ba bug đóng kèm: `analyze_font_embedding` fail-open khi không đọc được file; `detect_transparency` đếm object mồ côi; đường native outline bỏ sót annotation (hồi quy so với §16.7, test cũ bắt). Backend **1367 pass**. §19.4, §19.5. |
 | 3.6 | 2026-07-27 | **Phép thử quyết định**: tắt hẳn Ghostscript rồi chạy mọi đường sản xuất (§19, `test_no_ghostscript_survival.py`). Chạy được: separations ink-accurate, soft-proof, preflight đầy đủ, 6 action, spot→CMYK, flatten OCG, resize, **và PDF/X-4** (31/33 file corpus đạt chuẩn). Còn GÃY đúng 3: `OUTLINE_FONTS`, `FLATTEN_TRANSPARENCY`, `PDF/X-1a` — đều là action người dùng chủ động bấm, không chặn dùng hằng ngày. PDF/X-4 object-level lắp từ các mảnh đã có; tự đặt TrimBox khi file thiếu (GS **không** thêm — nó báo thành công rồi trả file không đạt chuẩn) kèm cảnh báo bắt buộc về bleed, trả kèm trong response. Backend **1357 pass**. |
 | 3.5 | 2026-07-27 | Đo tỉ lệ GS trên corpus bằng bộ đếm vừa dựng: **66/66 thao tác (33 PDF × separations ink-accurate + soft-proof) KHÔNG cần GS = 100%**, 0 lỗi — §8.1 giờ chỉ còn chờ dữ liệu khách. PDF/X-4: dùng output GS làm golden thì lộ bug — `-dPDFX=true` ép version về 1.3 và ghi định danh vào Info, trong khi ISO 15930-7 đòi PDF 1.6 + XMP `pdfxid:GTS_PDFXVersion`; file KHAI X-4 mà cấu trúc là X-3. Sửa bằng hậu xử lý pikepdf, thêm kiểm `PDFX_IDENTIFICATION` (trước đó `check_compliance` không kiểm định danh nên file khai sai vẫn PASS). Corpus 7/8 PASS, 1 FAIL đúng lý do (thiếu TrimBox trong file gốc). Backend **1345 pass**. §18.2b, §18.4. |
