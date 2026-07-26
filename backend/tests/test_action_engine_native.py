@@ -639,6 +639,89 @@ def test_spot_to_cmyk_named_leaves_other_channels_alive(tmp_path):
     assert b"0 0.91 0.76 0 k" in data, "spot được chỉ định phải chuyển"
 
 
+def test_spot_with_lab_alternate_matches_ghostscript_exactly(tmp_path):
+    """Pantone hiện đại khai alternate Lab. Giá trị CMYK phải khớp GHOSTSCRIPT.
+
+    Con số dưới đây không phải "trông hợp lý" mà là đo: render fixture bằng
+    `gs -sDEVICE=tiffsep -dMaxSpots=0` (ép GS tự map spot qua alternate) rồi so
+    từng kênh — khớp 0/255 sau khi cờ Little CMS trùng cấu hình của GS
+    (BLACKPOINTCOMPENSATION + NOOPTIMIZE). Không có hai cờ đó thì lệch 13–14/255
+    ở Cyan/Magenta, đủ để một khách hàng khó tính từ chối lô hàng.
+    """
+    from app.core import icc_profiles
+
+    pdf = pikepdf.Pdf.new()
+    lab = pikepdf.Array([
+        pikepdf.Name("/Lab"),
+        pikepdf.Dictionary(
+            WhitePoint=[0.964203, 1.0, 0.824905], BlackPoint=[0, 0, 0],
+            Range=[-128, 127, -128, 127],
+        ),
+    ])
+    fn = pikepdf.Dictionary(
+        FunctionType=2, Domain=[0, 1], C0=[100, 0, 0], C1=[28.627, 8.0, -30.0],
+        N=1, Range=[0, 100, -128, 127, -128, 127],
+    )
+    sep = pikepdf.Array([
+        pikepdf.Name("/Separation"), pikepdf.Name("/PANTONE#20test"),
+        lab, pdf.make_indirect(fn),
+    ])
+    res = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(CS0=pdf.make_indirect(sep)))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100], Resources=res,
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"/CS0 cs 1 scn 0 0 100 100 re f\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "lab_spot.pdf"
+    pdf.save(str(src))
+    pdf.close()
+    out = tmp_path / "lab_spot_out.pdf"
+
+    res_out = pdf_actions_native.convert_spot_to_cmyk(
+        str(src), str(out), None, icc_profiles.resolve_cmyk_profile_path()
+    )
+    assert res_out["supported"], res_out["blockers"]
+    assert res_out["ops"] == 1
+
+    with pikepdf.open(str(out)) as opened:
+        data = bytes(opened.pages[0].Contents.read_bytes()).decode("latin-1")
+    values = [float(v) for v in data.split(" k")[0].split()[-4:]]
+    # Ghostscript đo được: (226, 200, 69, 34)/255.
+    expected = [226 / 255, 200 / 255, 69 / 255, 34 / 255]
+    for got, want, name in zip(values, expected, "CMYK"):
+        assert abs(got - want) <= 1.5 / 255, f"kênh {name}: {got:.4f} vs GS {want:.4f}"
+
+
+def test_spot_lab_without_profile_falls_back_instead_of_guessing(tmp_path):
+    """Không có profile CMYK thì KHÔNG đoán — trả về fallback."""
+    pdf = pikepdf.Pdf.new()
+    lab = pikepdf.Array([
+        pikepdf.Name("/Lab"),
+        pikepdf.Dictionary(WhitePoint=[0.9642, 1.0, 0.8249], Range=[-128, 127, -128, 127]),
+    ])
+    fn = pikepdf.Dictionary(
+        FunctionType=2, Domain=[0, 1], C0=[100, 0, 0], C1=[30, 10, -20], N=1,
+        Range=[0, 100, -128, 127, -128, 127],
+    )
+    sep = pikepdf.Array([
+        pikepdf.Name("/Separation"), pikepdf.Name("/SpotLab"),
+        lab, pdf.make_indirect(fn),
+    ])
+    res = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(CS0=pdf.make_indirect(sep)))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100], Resources=res,
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"/CS0 cs 1 scn 0 0 50 50 re f\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "lab_nop.pdf"
+    pdf.save(str(src))
+    pdf.close()
+
+    res_out = pdf_actions_native.convert_spot_to_cmyk(str(src), str(tmp_path / "o.pdf"))
+    assert res_out["supported"] is False
+    assert any("Lab" in b for b in res_out["blockers"]), res_out["blockers"]
+
+
 def test_spot_to_cmyk_declines_postscript_tint_transform(tmp_path):
     """FunctionType 4 là chương trình PostScript — không đoán, trả về fallback."""
     pdf = pikepdf.Pdf.new()

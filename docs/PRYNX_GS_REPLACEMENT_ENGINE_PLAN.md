@@ -1467,16 +1467,30 @@ sạch mọi Separation cùng lúc — kể cả kênh bế người dùng đang
 `/None` và `/All` không bao giờ bị đụng (chúng là colorant đặc biệt, không
 phải màu pha).
 
-Fallback GS khi: `FunctionType 0/4`, hoặc **alternate space là Lab**. Ca Lab
-đáng chú ý — đo trên corpus, cả 2 file fallback đều thuộc nhóm này (Pantone
-7460 C, 7687 C, TOYO 0098): Adobe hiện đại mô tả Pantone bằng Lab vì chính xác
-hơn CMYK. Chuyển được qua ICC nhưng phải đúng thang (L 0..100, a/b −128..127);
-sai thang là sai màu pha — thứ khách hàng đặt tên riêng để đòi cho đúng. **Việc
-mở tiếp theo**, cần đo golden trước.
+**Alternate Lab cũng chuyển được** (Adobe hiện đại mô tả Pantone bằng Lab vì
+chính xác hơn CMYK). Đây là chỗ *bắt buộc* phải đo chứ không được tin mắt:
+render fixture bằng `gs -sDEVICE=tiffsep -dMaxSpots=0` — ép GS tự map spot qua
+alternate — rồi so từng kênh.
 
-Đo corpus 33 PDF: 4 file có Separation chuyển được (`Hộp nước hoa` đổi thật 2
-lệnh tô TOYO 0002; 3 file còn lại có kênh tên `Black` nhưng không lệnh tô nào
-dùng nên `ops=0`), 2 file fallback vì alternate Lab.
+| Cấu hình Little CMS | Lệch so với GS |
+|---|---|
+| mặc định `ImageCms` | **13–14/255** ở Cyan/Magenta |
+| `+ BLACKPOINTCOMPENSATION` | 1/255 |
+| `+ NOOPTIMIZE` | **0/255 — khớp từng byte** |
+
+Ghostscript chạy `-dRenderIntent=1 -dBlackPtComp=1`; thiếu BPC là lệch ngay, và
+`NOOPTIMIZE` tắt bảng tra rút gọn của lcms để đổi tốc độ lấy độ chính xác (mỗi
+tài liệu chỉ quy đổi vài chục màu, lại có cache). Cùng hai cờ đó đã được áp cho
+**cả đường RGB→CMYK** của `CONVERT_TO_CMYK` — nó vốn lệch tới 19/255 so với cấu
+hình mà separations/soft-proof/TAC dùng, tức cùng một file sẽ ra màu khác nhau
+tuỳ đi qua action nào, và sai lệch đó không bao giờ hiện ra trên UI.
+
+Fallback GS còn lại: `FunctionType 0/4`, hoặc không truyền được profile CMYK.
+
+Đo corpus 33 PDF: **6 file có Separation, chuyển được cả 6, 0 fallback**
+(`ThuBon` đổi 15 lệnh tô cho PANTONE 7460 C + 7687 C; `Hộp nước hoa` 2 lệnh
+TOYO 0002; `Keycard` 1 lệnh TOYO 0098; 3 file còn lại có kênh tên `Black` nhưng
+không lệnh tô nào dùng nên `ops=0`).
 
 ### 17.5 Bẫy API đã đóng
 
@@ -1541,7 +1555,7 @@ in **khác** điều kiện đã được đo. Đã chuyển sang `icc_profiles
 2. **Compliance suite PDF/X** rồi mới tới `export_pdfx` non-GS (§8.3).
 3. **Quyết định sản phẩm** về Flatten/Outline (§8.5): raster có cảnh báo, hay
    GS optional do người dùng tự cài.
-4. Spot alternate **Lab** → CMYK qua ICC (§17.4) — đóng nốt 2 file corpus.
+4. ~~Spot alternate Lab → CMYK~~ — **XONG**, khớp GS 0/255 (§17.4).
 5. `sticker_engine` sang PPE sau khi đo golden mép trim; `layer_engine`
    flatten OCG bằng pikepdf; gỡ chuỗi `viewer_preview` chết.
 
@@ -1581,6 +1595,7 @@ không chạm tới Ghostscript.
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.4 | 2026-07-27 | Spot alternate **Lab** → CMYK (Pantone hiện đại) — đo đối chứng `gs -dMaxSpots=0`: mặc định `ImageCms` lệch 13–14/255, `+BLACKPOINTCOMPENSATION` còn 1, `+NOOPTIMIZE` khớp **0/255**. Áp cùng hai cờ cho đường RGB→CMYK của `CONVERT_TO_CMYK` (vốn lệch tới 19/255 so với cấu hình mà separations/soft-proof/TAC dùng — cùng file ra màu khác nhau tuỳ đi qua action nào). Corpus: **6/6 file có spot chuyển được, 0 fallback**. Backend **1343 pass**. §17.4. |
 | 3.3 | 2026-07-27 | Thiết bị đo GS fallback (`gs_usage.py` + hook duy nhất ở `run_hidden` + `GET /system/gs-usage`) — mở khoá đường đóng §8.1, giờ chỉ còn chờ 30 ngày dữ liệu khách. Nhãn tự dò module gọi nên bắt cả call site thêm sau; `action_engine` khai `action:<TÊN>`. Đo thử: **2 lệnh GS trên 8 action**, đúng OUTLINE_FONTS và FLATTEN_TRANSPARENCY. Backend **1341 pass**. §18.4. |
 | 3.2 | 2026-07-27 | **Gate Phase 1 ĐẠT** (4/4, kèm số đo) và **gate Phase 2 ĐẠT** (4/6 action non-GS): thêm `CONVERT_TO_CMYK` object-level (spot sống, gray giữ K thuần, Indexed đổi bảng màu; 12/13 file corpus có RGB xử lý được) và sửa nhãn `SET_BLACK_OVERPRINT` (đã rời GS từ lâu nhưng registry còn khai ghostscript nên gate đếm thiếu). Ngoài action: resize downsample dùng chung `downscale_images`; spot→CMYK object-level trong `ink_manager` (chuyển ĐÚNG kênh được yêu cầu, khác GS nuốt sạch mọi Separation). Kiểm kê lại §2 theo code — phát hiện `viewer_preview` là code chết. Sửa bug PDF/X: OutputIntent luôn khai ICC generic của Ghostscript thay vì FOGRA39 vì `except: pass` nuốt ImportError sau refactor. Thêm test chạy-khi-không-có-GS cho cả 4 action. §17, §18. Backend **1335 pass**. |
 | 3.1 | 2026-07-27 | Phase 2 mở màn: `DOWNSCALE_IMAGES` và `EMBED_FONTS` có đường non-GS (`pdf_actions_native.py`). Downscale tự duyệt content stream lấy CTM (đệ quy Form + `/Matrix`, khoá theo objgen, lấy placement lớn nhất) thay vì ghép heuristic của PDFium; giữ nguyên content stream từng byte, hạ `/SMask` cùng tỉ lệ, bỏ qua 1-bit/Indexed/spot/JPX. Embed-fonts chỉ phân tích rồi copy khi đã đủ font, cố ý KHÔNG tự thay font thiếu (rủi ro chạy chữ). Bug đã đóng: `/SMask` bị đếm là ảnh-không-xử-lý-được → fallback GS oan (6/16/3 mặt nạ mỗi file trên corpus thật); `hasattr(o,"resolve")` luôn đúng nên nuốt nhánh colorspace hợp lệ → dùng `is_indirect`. `ActionLogEntry.engine` ghi engine THỰC TẾ. Gate Phase 2: 2/6 action, log engine ✔, regression ✔. Backend **1320 pass**. §17. |

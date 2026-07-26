@@ -155,13 +155,14 @@ class InkManagerEngine:
         output_path = str(self.output_dir / output_name)
 
         try:
-            from app.core import pdf_actions_native
+            from app.core import icc_profiles, pdf_actions_native
 
             native = await asyncio.to_thread(
                 pdf_actions_native.convert_spot_to_cmyk,
                 file_path,
                 output_path,
                 spot_name,
+                icc_profiles.resolve_cmyk_profile_path(),
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("convert_spot object-level lỗi, fallback GS: %s", e)

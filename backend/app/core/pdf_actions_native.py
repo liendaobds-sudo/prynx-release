@@ -656,6 +656,23 @@ def _font_is_embedded(font_obj) -> bool:
 # đường gray.
 _RGB_TO_CMYK_OP = {"rg": "k", "RG": "K"}
 
+
+def _CMS_FLAGS():
+    """Cờ Little CMS phải khớp cấu hình đo mực của phần còn lại trong app.
+
+    Đo đối chứng Ghostscript (`-dRenderIntent=1 -dBlackPtComp=1`) trên một màu
+    Pantone Lab: mặc định của `ImageCms` lệch **13–14/255** ở Cyan/Magenta; bật
+    `BLACKPOINTCOMPENSATION` kéo về 1; thêm `NOOPTIMIZE` thì khớp **chính xác
+    từng byte**. `NOOPTIMIZE` tắt bảng tra rút gọn của lcms — chậm hơn nhưng ở
+    đây mỗi tài liệu chỉ quy đổi vài chục màu và kết quả đã có cache.
+
+    Không thống nhất cờ với đường đo mực thì cùng một file sẽ có màu khác nhau
+    tuỳ đi qua action nào — sai lệch không bao giờ hiện ra trên UI.
+    """
+    from PIL import ImageCms
+
+    return ImageCms.Flags.BLACKPOINTCOMPENSATION | ImageCms.Flags.NOOPTIMIZE
+
 # Colorspace mà việc chuyển sang CMYK là **mất mát không phục hồi được** hoặc
 # vượt tầm object-level. Gặp là trả `supported=False` để caller fallback GS.
 _UNCONVERTIBLE_HINTS = ("/Lab", "/CalRGB")
@@ -679,6 +696,7 @@ class _CmykTransform:
             "RGB",
             "CMYK",
             renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+            flags=_CMS_FLAGS(),
         )
         self._cache: dict[tuple[int, int, int], tuple[float, float, float, float]] = {}
 
@@ -1132,7 +1150,57 @@ def _eval_tint_transform(fn, tint: float) -> list[float] | None:
     return None
 
 
-def _separation_to_cmyk(cs, tint: float) -> list[float] | None:
+class _LabToCmyk:
+    """Lab (thang PDF) → CMYK 0..1 qua ICC, có cache.
+
+    Thang là chỗ duy nhất dễ sai và sai thì không ai thấy cho tới lúc in:
+    PDF khai Lab với L trong 0..100 và a/b trong `/Range` (mặc định −100..100,
+    thực tế thường −128..127), còn chế độ `LAB` của Pillow là 8-bit — L nén về
+    0..255 và a/b cộng offset 128. Nhầm một trong hai là màu pha lệch hẳn, mà
+    màu pha lại đúng thứ khách đặt tên riêng để đòi cho chính xác.
+
+    Profile Lab của Little CMS dùng điểm trắng D50, khớp `/WhitePoint` D50 mà
+    trình dàn trang ghi cho Pantone.
+    """
+
+    def __init__(self, cmyk_profile: str):
+        from PIL import Image, ImageCms
+
+        self._Image = Image
+        self._tf = ImageCms.buildTransform(
+            ImageCms.createProfile("LAB"),
+            ImageCms.getOpenProfile(cmyk_profile),
+            "LAB",
+            "CMYK",
+            renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+            flags=_CMS_FLAGS(),
+        )
+        self._ImageCms = ImageCms
+        self._cache: dict[tuple[int, int, int], list[float]] = {}
+
+    def __call__(self, lab: list[float]) -> list[float] | None:
+        if len(lab) < 3:
+            return None
+        l_val = max(0.0, min(100.0, lab[0]))
+        a_val = max(-128.0, min(127.0, lab[1]))
+        b_val = max(-128.0, min(127.0, lab[2]))
+        key = (
+            int(round(l_val * 255.0 / 100.0)),
+            int(round(a_val + 128.0)),
+            int(round(b_val + 128.0)),
+        )
+        hit = self._cache.get(key)
+        if hit is not None:
+            return hit
+        src = self._Image.new("LAB", (1, 1), key)
+        dst = self._ImageCms.applyTransform(src, self._tf)
+        c, m, y, k = dst.getpixel((0, 0))
+        out = [c / 255.0, m / 255.0, y / 255.0, k / 255.0]
+        self._cache[key] = out
+        return out
+
+
+def _separation_to_cmyk(cs, tint: float, lab_tf: "_LabToCmyk | None" = None) -> list[float] | None:
     """Màu CMYK tương đương của một `Separation` tại tint cho trước.
 
     Theo §8.6.6.4, khi thiết bị không có kênh riêng cho màu pha thì nó phải
@@ -1144,12 +1212,19 @@ def _separation_to_cmyk(cs, tint: float) -> list[float] | None:
         return None
     if str(_deref(cs[0])) != "/Separation":
         return None
-    if _alternate_kind(cs[2]) != "cmyk":
-        return None
+    kind = _alternate_kind(cs[2])
     out = _eval_tint_transform(cs[3], tint)
-    if out is None or len(out) != 4:
+    if out is None:
         return None
-    return [max(0.0, min(1.0, v)) for v in out]
+    if kind == "cmyk":
+        if len(out) != 4:
+            return None
+        return [max(0.0, min(1.0, v)) for v in out]
+    if kind == "lab" and lab_tf is not None:
+        if len(out) != 3:
+            return None
+        return lab_tf(out)
+    return None
 
 
 def _alternate_kind(alternate) -> str:
@@ -1176,17 +1251,28 @@ def convert_spot_to_cmyk(
     input_path: str,
     output_path: str,
     spot_name: str | None = None,
+    cmyk_profile: str | None = None,
 ) -> dict:
     """Thay màu pha bằng CMYK tương đương, giữ nguyên phần còn lại của file.
 
     `spot_name = None` chuyển mọi spot; đưa tên thì chỉ chuyển đúng kênh đó
     (so sánh không phân biệt hoa/thường, có giải mã `#20` trong tên PDF).
 
+    `cmyk_profile` cần cho spot có alternate **Lab** (dạng Adobe dùng cho
+    Pantone hiện đại). Không truyền thì nhóm đó rơi về Ghostscript.
+
     Trả dict: `supported` (False ⇒ fallback GS), `converted` (tên spot đã
     chuyển), `blockers`, `ops`.
     """
     result: dict = {"supported": True, "converted": [], "blockers": [], "ops": 0}
     want = _normalize_colorant(spot_name) if spot_name else None
+
+    lab_tf = None
+    if cmyk_profile:
+        try:
+            lab_tf = _LabToCmyk(cmyk_profile)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("spot: không dựng được transform Lab→CMYK: %s", exc)
 
     with pikepdf.open(input_path) as pdf:
         # ── Lập danh sách spot chuyển được, theo tên resource của từng trang ──
@@ -1217,7 +1303,7 @@ def convert_spot_to_cmyk(
                     continue
                 if want is not None and colorant != want:
                     continue
-                if _separation_to_cmyk(cs, 1.0) is None:
+                if _separation_to_cmyk(cs, 1.0, lab_tf) is None:
                     kind = _alternate_kind(cs[2])
                     if kind == "lab":
                         # Adobe mô tả Pantone hiện đại bằng alternate Lab vì nó
@@ -1253,7 +1339,7 @@ def convert_spot_to_cmyk(
                 data = bytes(stream.read_bytes())
             except Exception:  # noqa: BLE001
                 return
-            new = _replace_spot_ops(pdf, data, mapping, stats)
+            new = _replace_spot_ops(pdf, data, mapping, stats, lab_tf)
             if new is not None:
                 stream.write(new)
 
@@ -1313,7 +1399,7 @@ def _normalize_colorant(name: str) -> str:
 
 
 def _replace_spot_ops(
-    pdf: pikepdf.Pdf, data: bytes, mapping: dict, stats: dict
+    pdf: pikepdf.Pdf, data: bytes, mapping: dict, stats: dict, lab_tf=None
 ) -> bytes | None:
     """Đổi `/CSx cs <tint> scn` của spot thành `<c m y k> k` trong content stream."""
     try:
@@ -1346,7 +1432,7 @@ def _replace_spot_ops(
             target = fill_cs if op in ("sc", "scn") else stroke_cs
             if target is not None and len(operands) == 1:
                 try:
-                    cmyk = _separation_to_cmyk(target, float(operands[0]))
+                    cmyk = _separation_to_cmyk(target, float(operands[0]), lab_tf)
                 except Exception:  # noqa: BLE001
                     cmyk = None
                 if cmyk is not None:
