@@ -169,14 +169,31 @@ class PdfxExportEngine:
         default_cmyk.icc đi kèm Ghostscript (luôn có cạnh binary gs).
         Trả (path, condition_id, condition_name) hoặc (None, None, None).
         """
-        # 1) FOGRA39 / coated CMYK trên hệ thống (dùng registry của softproof)
+        # 1) Profile CMYK CỦA APP. OutputIntent khai điều kiện in của file, nên
+        # nó phải đúng profile mà separations / soft-proof / TAC đã dùng để
+        # kiểm — khai điều kiện khác là nói với nhà in một chuyện chưa được
+        # kiểm chứng.
+        #
+        # Trước đây chỗ này gọi `softproof.KNOWN_PROFILES`; biểu tượng đó đã bị
+        # bỏ trong một lần refactor nên `except Exception: pass` nuốt trọn
+        # ImportError và PDF/X LUÔN rơi xuống nhánh 2 — file xuất ra mang
+        # OutputIntent "Generic CMYK (Ghostscript default)" thay vì FOGRA39,
+        # trong khi FOGRA39 vẫn nằm sẵn trong `app/assets/icc/`.
         try:
-            from app.core.softproof import KNOWN_PROFILES, _find_icc_file
-            fogra = _find_icc_file(KNOWN_PROFILES["fogra39"]["filenames"])
-            if fogra:
-                return fogra, "FOGRA39", "Coated FOGRA39 (ISO 12647-2:2004)"
-        except Exception:
-            pass
+            from app.core import icc_profiles
+
+            path = icc_profiles.resolve_cmyk_profile_path()
+            if path and os.path.isfile(path):
+                base = os.path.basename(path)
+                if "fogra39" in base.lower():
+                    return path, "FOGRA39", "Coated FOGRA39 (ISO 12647-2:2004)"
+                return (
+                    path,
+                    os.path.splitext(base)[0],
+                    f"{base} (profile CMYK của PrynX)",
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PDF/X: không lấy được ICC CMYK của app: %s", exc)
         # 2) Ghostscript bundled default_cmyk.icc (cạnh binary gs)
         try:
             gs_dir = Path(self.gs_path).resolve().parent

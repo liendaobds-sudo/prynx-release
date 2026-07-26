@@ -1496,10 +1496,62 @@ Số chốt: backend **1327 pass** (1305 + 22 test mới), gồm cả smoke corp
 
 ---
 
+## 18. Đối chiếu §8 và đánh giá Phase 3 (2026-07-27)
+
+### 18.1 Sáu điều kiện gỡ bundle GS — trạng thái thật
+
+| # | Điều kiện | Trạng thái |
+|---|---|---|
+| 1 | ≥95% job prepress 30 ngày không cần GS fallback | **CHƯA ĐO ĐƯỢC.** Cần telemetry từ máy khách thật; không có cách nào rút ngắn bằng test nội bộ |
+| 2 | Separations + Soft-proof + TAC: PPE default, badge không "approximate" trên DeviceCMYK | **ĐẠT về code** (PPE-first + badge). Vẫn nên xác nhận trên bản ship |
+| 3 | PDF/X: ≥1 standard pass compliance suite nội bộ | **CHƯA** — xem §18.2 |
+| 4 | Actions P1 (Convert CMYK, Downscale, Embed) non-GS | **ĐẠT** — cả ba, cộng `SET_BLACK_OVERPRINT`, có test chạy khi `GHOSTSCRIPT_PATH` trỏ vào chỗ không tồn tại |
+| 5 | Flatten/Outline: PPE raster có warning **hoặc** GS optional không bundle | **CHƯA QUYẾT** — quyết định sản phẩm, không phải việc kỹ thuật |
+| 6 | `build_production` không copy GS; release QA green | **CHƯA** — phụ thuộc 1, 3, 5 |
+
+### 18.2 Phase 3 — PDF/X: đường đi đã rõ, chưa nên làm vội
+
+`check_compliance` đã là **pikepdf thuần**, không đụng GS. Chỉ `export_pdfx`
+còn cần GS, và nó dùng GS cho hai việc: chuẩn hoá tài liệu, và nhúng
+OutputIntent qua pdfmark. Việc thứ hai pikepdf làm được trực tiếp (dựng stream
+ICC + dict `/OutputIntents` + `/GTS_PDFXVersion` trong XMP). Việc thứ nhất giờ
+đã có sẵn nguyên liệu: `EMBED_FONTS` và `CONVERT_TO_CMYK` non-GS vừa xong
+chính là hai phép chuẩn hoá mà PDF/X đòi.
+
+**Vì sao vẫn chưa làm:** PDF/X là chuẩn có bên thứ ba kiểm. Một file khai
+`GTS_PDFXVersion` mà không thật sự đạt chuẩn thì **tệ hơn file không khai** —
+nhà in nhận, tin lời khai, và lỗi chỉ lộ ra trên máy in. Việc này cần bộ
+compliance suite để đối chứng (Acrobat Preflight hoặc veraPDF) trước khi viết
+đường xuất, đúng như điều kiện §8.3 đã yêu cầu. Làm ngược lại là tự cấp chứng
+chỉ cho chính mình.
+
+**Bug đã sửa nhân tiện:** `_resolve_output_intent_icc` gọi
+`softproof.KNOWN_PROFILES` — biểu tượng đã bị bỏ trong một lần refactor, và
+`except Exception: pass` nuốt trọn `ImportError`. Hệ quả: mọi file PDF/X xuất
+ra đều khai OutputIntent **"Generic CMYK (Ghostscript default)"** thay vì
+FOGRA39, trong khi FOGRA39 nằm sẵn trong `app/assets/icc/` và là profile mà
+separations/soft-proof/TAC dùng để kiểm. Tức file nói với nhà in một điều kiện
+in **khác** điều kiện đã được đo. Đã chuyển sang `icc_profiles
+.resolve_cmyk_profile_path()` và khoá bằng `tests/test_pdfx_output_intent.py`.
+
+### 18.3 Việc còn lại, theo thứ tự đòn bẩy
+
+1. **Telemetry GS fallback** (§8.1) — không có nó thì không bao giờ đóng được
+   gate, và nó rẻ hơn mọi việc còn lại.
+2. **Compliance suite PDF/X** rồi mới tới `export_pdfx` non-GS (§8.3).
+3. **Quyết định sản phẩm** về Flatten/Outline (§8.5): raster có cảnh báo, hay
+   GS optional do người dùng tự cài.
+4. Spot alternate **Lab** → CMYK qua ICC (§17.4) — đóng nốt 2 file corpus.
+5. `sticker_engine` sang PPE sau khi đo golden mép trim; `layer_engine`
+   flatten OCG bằng pikepdf; gỡ chuỗi `viewer_preview` chết.
+
+---
+
 ## 15. Lịch sử tài liệu
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.2 | 2026-07-27 | **Gate Phase 1 ĐẠT** (4/4, kèm số đo) và **gate Phase 2 ĐẠT** (4/6 action non-GS): thêm `CONVERT_TO_CMYK` object-level (spot sống, gray giữ K thuần, Indexed đổi bảng màu; 12/13 file corpus có RGB xử lý được) và sửa nhãn `SET_BLACK_OVERPRINT` (đã rời GS từ lâu nhưng registry còn khai ghostscript nên gate đếm thiếu). Ngoài action: resize downsample dùng chung `downscale_images`; spot→CMYK object-level trong `ink_manager` (chuyển ĐÚNG kênh được yêu cầu, khác GS nuốt sạch mọi Separation). Kiểm kê lại §2 theo code — phát hiện `viewer_preview` là code chết. Sửa bug PDF/X: OutputIntent luôn khai ICC generic của Ghostscript thay vì FOGRA39 vì `except: pass` nuốt ImportError sau refactor. Thêm test chạy-khi-không-có-GS cho cả 4 action. §17, §18. Backend **1335 pass**. |
 | 3.1 | 2026-07-27 | Phase 2 mở màn: `DOWNSCALE_IMAGES` và `EMBED_FONTS` có đường non-GS (`pdf_actions_native.py`). Downscale tự duyệt content stream lấy CTM (đệ quy Form + `/Matrix`, khoá theo objgen, lấy placement lớn nhất) thay vì ghép heuristic của PDFium; giữ nguyên content stream từng byte, hạ `/SMask` cùng tỉ lệ, bỏ qua 1-bit/Indexed/spot/JPX. Embed-fonts chỉ phân tích rồi copy khi đã đủ font, cố ý KHÔNG tự thay font thiếu (rủi ro chạy chữ). Bug đã đóng: `/SMask` bị đếm là ảnh-không-xử-lý-được → fallback GS oan (6/16/3 mặt nạ mỗi file trên corpus thật); `hasattr(o,"resolve")` luôn đúng nên nuốt nhánh colorspace hợp lệ → dùng `is_indirect`. `ActionLogEntry.engine` ghi engine THỰC TẾ. Gate Phase 2: 2/6 action, log engine ✔, regression ✔. Backend **1320 pass**. §17. |
 | 3.0 | 2026-07-26 | P0 downscale đóng bằng đo, không threshold corpus: fixture một-biến BÁC giả thuyết "GS béo hoá ratio ≥ 3" (GS = nearest thuần tới ratio 11,5; số cũ là artifact tie suy biến). Bốn root cause thật: neo raster dồn dư lên đỉnh (đóng `banner`/`Seminar`); ảnh có `/SMask` lấy mẫu trên bbox pixel-nguyên căng ~1px (khớp GS từng pixel 184/184@75, 371/371@150); tie nửa-mở-trái + f64 + tie-alternate max-TAC trong 1e-3 texel (`tra gung` −8,2 → −0,0 PASS); parser APP14 thay substring "Adobe" (fixture DCT meanΔ 0,00). Gỡ footprint-avg-alpha (bù lệch pha cũ, bơm mực ma sau khi căn lưới). Corpus @72 **28/31** (còn `50 hộp` +10,2 có sẵn, Steam Iron 3,56 quyết định sản phẩm, `túi` 3,15 tái phân loại hairline vector); @150 **28/30 không đổi**; @100 **30/31** — `banner` −2,4 là PHƠI LỘ thiếu hụt blend-stack có sẵn (đỉnh này @150 đã −2,4 từ trước; ảnh đơn lẻ khớp GS từng byte, chỉ composite lệch ~1%) → P0 kế tiếp. Fixture **50+1/51 ở cả 72 lẫn 100**. Rust **545**, backend **1305**. §16.9. |
 | 2.9 | 2026-07-26 | Audit độc lập tái hiện đúng v2.8 rồi đóng hai residual: kaptone là bug đo (mean f32 → f64, thật 0,46 PASS); Steam Iron do GS nở fill ~0,15 px — thêm vành fill-adjust 0,16 px (TAC-guard, tắt trong ô pattern, không áp nét) → 1,28 PASS; raw golden 100 DPI **31/31**. Đo đủ 72 DPI lần đầu (13/31) rồi mở conservative cho fill đục từ scale 1.0 + phục hồi footprint alpha ảnh: **25/31, 0 hồi quy**; residual còn 6 (bảng §16.8). Ghi nhận GS chỉ áp một trong hai lớp image-SMask × luminosity-SMask (PPE theo spec §11.6.4). Rust **541**, facade smoke **58**, backend 1192 pass (37 test shapely không chạy được trong môi trường audit). Gate unbundle vẫn đóng. |
