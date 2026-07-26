@@ -22,6 +22,36 @@ class GhostscriptNotFoundError(RuntimeError):
     """Ghostscript không tồn tại ở đường dẫn đã cấu hình."""
 
 
+# Namespace định danh PDF/X trong XMP (ISO 15930-7 §6.2).
+_PDFX_ID_NS = "http://www.npes.org/pdfx/ns/id/"
+
+
+def _finalize_pdfx4_identification(pdf_path: str) -> None:
+    """Bổ sung phần định danh PDF/X-4 mà Ghostscript không ghi được.
+
+    `-dPDFX=true` của Ghostscript chỉ nhắm PDF/X-1a/X-3 — nó **ép
+    CompatibilityLevel về 1.3** bất kể ta truyền 1.6, và ghi
+    `/GTS_PDFXVersion` vào *Info dict* theo lối X-1a. Nhưng PDF/X-4
+    (ISO 15930-7) đòi PDF **1.6** và định danh nằm trong **XMP**
+    (`pdfxid:GTS_PDFXVersion`).
+
+    Hệ quả nếu bỏ qua: file khai "PDF/X-4" mà cấu trúc là X-3 và thiếu XMP —
+    validator sẽ từ chối, và một file khai sai chuẩn còn tệ hơn file không
+    khai gì, vì nhà in tin lời khai rồi mới phát hiện trên máy.
+
+    Bước này chỉ **thêm định danh**, không đụng nội dung trang; lỗi ở đây
+    không được làm hỏng file đã xuất nên chỉ cảnh báo.
+    """
+    try:
+        with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+            with pdf.open_metadata(set_pikepdf_as_editor=False) as meta:
+                meta[f"{{{_PDFX_ID_NS}}}GTS_PDFXVersion"] = "PDF/X-4"
+            # Info dict giữ nguyên: Acrobat vẫn đọc nó, và X-1a/X-3 dùng nó.
+            pdf.save(pdf_path, min_version="1.6")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PDF/X-4: không ghi được định danh XMP/version: %s", exc)
+
+
 def _ensure_gs(gs_path: str) -> None:
     """Kiểm Ghostscript tồn tại TRƯỚC khi gọi → báo lỗi tiếng Việt rõ ràng thay vì
     FileNotFoundError khó hiểu (hoặc treo). Path resolve ở config._find_ghostscript()."""
@@ -141,15 +171,49 @@ class PdfxExportEngine:
 
         # 6. PDF version check
         pdf_version = str(doc.pdf_version)
-        version_ok = True
-        if standard == "x1a" and "1.3" not in pdf_version and "1.4" not in pdf_version:
-            version_ok = "1.3" in pdf_version or "1.4" in pdf_version or "PDF" in pdf_version
         checks.append({
             "id": "PDF_VERSION",
             "label": "Phiên bản PDF",
-            "passed": True,  # Ghostscript will handle version conversion
+            "passed": True,  # bước xuất tự nâng version cho đúng chuẩn
             "detail": pdf_version or "Không xác định"
         })
+
+        # 7. Định danh PDF/X — chỗ khác nhau giữa hai chuẩn và là chỗ dễ khai sai.
+        #
+        # X-1a/X-3 (PDF 1.3/1.4) đặt `/GTS_PDFXVersion` trong **Info dict**;
+        # X-4 (ISO 15930-7) đòi PDF **1.6** và định danh trong **XMP**
+        # (`pdfxid:GTS_PDFXVersion`). Kiểm cả hai vì một file khai sai chuẩn
+        # còn tệ hơn file không khai: nhà in tin lời khai rồi mới phát hiện
+        # trên máy in.
+        if standard == "x1a":
+            info_ver = None
+            try:
+                info_ver = str(doc.docinfo.get("/GTS_PDFXVersion", "")) if doc.docinfo else ""
+            except Exception:  # noqa: BLE001
+                info_ver = ""
+            checks.append({
+                "id": "PDFX_IDENTIFICATION",
+                "label": "Định danh PDF/X (Info)",
+                "passed": bool(info_ver and "PDF/X" in info_ver),
+                "detail": info_ver or "Thiếu /GTS_PDFXVersion trong Info",
+            })
+        else:
+            xmp_ver = ""
+            try:
+                meta = doc.open_metadata()
+                xmp_ver = str(meta.get(f"{{{_PDFX_ID_NS}}}GTS_PDFXVersion", "") or "")
+            except Exception:  # noqa: BLE001
+                xmp_ver = ""
+            version_ok = pdf_version >= "1.6"
+            checks.append({
+                "id": "PDFX_IDENTIFICATION",
+                "label": "Định danh PDF/X-4 (XMP + version)",
+                "passed": bool(xmp_ver and "PDF/X-4" in xmp_ver) and version_ok,
+                "detail": (
+                    f"XMP={xmp_ver or 'thiếu'}, PDF {pdf_version}"
+                    + ("" if version_ok else " — X-4 đòi ≥ 1.6")
+                ),
+            })
 
         doc.close()
 
@@ -365,5 +429,6 @@ class PdfxExportEngine:
             err = (proc.stderr.decode(errors='replace') + "\n" + proc.stdout.decode(errors='replace'))[:800]
             raise RuntimeError(f"PDF/X-4 export failed: {err}")
 
+        _finalize_pdfx4_identification(output_path)
         logger.info(f"Exported PDF/X-4 → {output_path}")
         return output_path

@@ -1518,10 +1518,33 @@ Số chốt: backend **1327 pass** (1305 + 22 test mới), gồm cả smoke corp
 |---|---|---|
 | 1 | ≥95% job prepress 30 ngày không cần GS fallback | **THIẾT BỊ ĐO ĐÃ CÓ** (§18.4), còn chờ dữ liệu 30 ngày từ máy khách thật |
 | 2 | Separations + Soft-proof + TAC: PPE default, badge không "approximate" trên DeviceCMYK | **ĐẠT về code** (PPE-first + badge). Vẫn nên xác nhận trên bản ship |
-| 3 | PDF/X: ≥1 standard pass compliance suite nội bộ | **CHƯA** — xem §18.2 |
+| 3 | PDF/X: ≥1 standard pass compliance suite nội bộ | **MỘT PHẦN** — định danh X-4 nay đúng chuẩn và 7/8 file corpus pass bộ kiểm nội bộ (§18.2b); còn thiếu bộ kiểm ĐỘC LẬP (§18.2) |
 | 4 | Actions P1 (Convert CMYK, Downscale, Embed) non-GS | **ĐẠT** — cả ba, cộng `SET_BLACK_OVERPRINT`, có test chạy khi `GHOSTSCRIPT_PATH` trỏ vào chỗ không tồn tại |
 | 5 | Flatten/Outline: PPE raster có warning **hoặc** GS optional không bundle | **CHƯA QUYẾT** — quyết định sản phẩm, không phải việc kỹ thuật |
 | 6 | `build_production` không copy GS; release QA green | **CHƯA** — phụ thuộc 1, 3, 5 |
+
+### 18.2b PDF/X-4 khai sai chuẩn — bug đã sửa
+
+Dùng chính output PDF/X của Ghostscript làm **golden black-box** (đúng cách đã
+dùng cho engine render suốt kế hoạch này) thì lộ ra ngay: đường "PDF/X-4" của
+sản phẩm cho ra file **PDF 1.3, không có XMP**, chỉ có `/GTS_PDFXVersion` trong
+Info dict.
+
+Nguyên nhân: `-dPDFX=true` của Ghostscript chỉ nhắm PDF/X-1a/X-3 — nó **ép
+CompatibilityLevel về 1.3** bất kể ta truyền `-dCompatibilityLevel=1.6`, và ghi
+định danh theo lối X-1a. Nhưng ISO 15930-7 đòi PDF **1.6** và định danh nằm
+trong **XMP** (`pdfxid:GTS_PDFXVersion`). Tức file *khai* PDF/X-4 mà cấu trúc
+là X-3: validator từ chối, và một file khai sai chuẩn còn tệ hơn file không
+khai — nhà in tin lời khai rồi mới phát hiện trên máy in.
+
+Sửa bằng bước hậu xử lý pikepdf sau GS (`_finalize_pdfx4_identification`): ghi
+XMP đúng namespace và nâng version, **không đụng nội dung trang**.
+`check_compliance` cũng được bổ sung kiểm `PDFX_IDENTIFICATION` phân biệt hai
+chuẩn (X-1a đọc Info, X-4 đọc XMP + version) — trước đó nó không hề kiểm phần
+định danh, nên file khai sai vẫn "PASS".
+
+Đo trên 8 PDF corpus: **7 PASS**, 1 FAIL đúng lý do thật (`TRIMBOX_EXISTS` —
+file gốc thiếu TrimBox, GS không tự thêm).
 
 ### 18.2 Phase 3 — PDF/X: đường đi đã rõ, chưa nên làm vội
 
@@ -1532,12 +1555,14 @@ ICC + dict `/OutputIntents` + `/GTS_PDFXVersion` trong XMP). Việc thứ nhất
 đã có sẵn nguyên liệu: `EMBED_FONTS` và `CONVERT_TO_CMYK` non-GS vừa xong
 chính là hai phép chuẩn hoá mà PDF/X đòi.
 
-**Vì sao vẫn chưa làm:** PDF/X là chuẩn có bên thứ ba kiểm. Một file khai
-`GTS_PDFXVersion` mà không thật sự đạt chuẩn thì **tệ hơn file không khai** —
-nhà in nhận, tin lời khai, và lỗi chỉ lộ ra trên máy in. Việc này cần bộ
-compliance suite để đối chứng (Acrobat Preflight hoặc veraPDF) trước khi viết
-đường xuất, đúng như điều kiện §8.3 đã yêu cầu. Làm ngược lại là tự cấp chứng
-chỉ cho chính mình.
+**Vì sao vẫn chưa gỡ GS khỏi đường xuất:** phần *định danh* đã đúng chuẩn
+(§18.2b) và kiểm được bằng golden của GS, nhưng phần *chuẩn hoá tài liệu* thì
+chưa: X-4 còn đòi không mã hoá, không JavaScript/annotation cấm, mọi
+colorspace có ICC, và hàng loạt ràng buộc nữa mà `check_compliance` của ta
+không kiểm. Tự viết validator rồi tự tuyên bố đạt là **tự cấp chứng chỉ cho
+chính mình**. Bước còn thiếu là chạy một bộ kiểm độc lập (Acrobat Preflight
+hoặc veraPDF) trên output — đúng như §8.3 đã yêu cầu — rồi mới thay nốt phần
+Ghostscript còn lại.
 
 **Bug đã sửa nhân tiện:** `_resolve_output_intent_icc` gọi
 `softproof.KNOWN_PROFILES` — biểu tượng đã bị bỏ trong một lần refactor, và
@@ -1584,6 +1609,19 @@ và có test khoá riêng tính chất đó.
 
 Đọc số: `GET /system/gs-usage` (`since_process_start` + `persisted`).
 
+**Đo ngay trên corpus, không chờ 30 ngày.** Con số gate đòi phải đến từ máy
+khách, nhưng bộ đếm dùng được luôn cho corpus nội bộ — và nó trả lời được câu
+"đang đứng ở đâu":
+
+| Đường chạy | Kết quả |
+|---|---|
+| 33 PDF × {separations ink-accurate @100 DPI, soft-proof} | **66/66 thao tác không cần GS = 100%**, 0 lỗi |
+| 8 action trên một file có ảnh 1200 DPI + RGB + font | 2 lệnh GS (`OUTLINE_FONTS`, `FLATTEN_TRANSPARENCY`) |
+
+Hai đường đầu chính là đường prepress chạy thường xuyên nhất (TAC sản xuất
+dùng đúng `ink_accurate` @100 DPI). Việc còn lại của §8.1 thuần tuý là **để
+bộ đếm chạy trên máy khách** rồi đọc số sau 30 ngày.
+
 **Đo thử ngay khi dựng xong** — chạy cả 8 action trên một trang có ảnh 1200 DPI
 + RGB + font base-14: **2 lệnh GS trên 8 action**, đúng
 `action:OUTLINE_FONTS` và `action:FLATTEN_TRANSPARENCY`. Sáu action còn lại
@@ -1595,6 +1633,7 @@ không chạm tới Ghostscript.
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 3.5 | 2026-07-27 | Đo tỉ lệ GS trên corpus bằng bộ đếm vừa dựng: **66/66 thao tác (33 PDF × separations ink-accurate + soft-proof) KHÔNG cần GS = 100%**, 0 lỗi — §8.1 giờ chỉ còn chờ dữ liệu khách. PDF/X-4: dùng output GS làm golden thì lộ bug — `-dPDFX=true` ép version về 1.3 và ghi định danh vào Info, trong khi ISO 15930-7 đòi PDF 1.6 + XMP `pdfxid:GTS_PDFXVersion`; file KHAI X-4 mà cấu trúc là X-3. Sửa bằng hậu xử lý pikepdf, thêm kiểm `PDFX_IDENTIFICATION` (trước đó `check_compliance` không kiểm định danh nên file khai sai vẫn PASS). Corpus 7/8 PASS, 1 FAIL đúng lý do (thiếu TrimBox trong file gốc). Backend **1345 pass**. §18.2b, §18.4. |
 | 3.4 | 2026-07-27 | Spot alternate **Lab** → CMYK (Pantone hiện đại) — đo đối chứng `gs -dMaxSpots=0`: mặc định `ImageCms` lệch 13–14/255, `+BLACKPOINTCOMPENSATION` còn 1, `+NOOPTIMIZE` khớp **0/255**. Áp cùng hai cờ cho đường RGB→CMYK của `CONVERT_TO_CMYK` (vốn lệch tới 19/255 so với cấu hình mà separations/soft-proof/TAC dùng — cùng file ra màu khác nhau tuỳ đi qua action nào). Corpus: **6/6 file có spot chuyển được, 0 fallback**. Backend **1343 pass**. §17.4. |
 | 3.3 | 2026-07-27 | Thiết bị đo GS fallback (`gs_usage.py` + hook duy nhất ở `run_hidden` + `GET /system/gs-usage`) — mở khoá đường đóng §8.1, giờ chỉ còn chờ 30 ngày dữ liệu khách. Nhãn tự dò module gọi nên bắt cả call site thêm sau; `action_engine` khai `action:<TÊN>`. Đo thử: **2 lệnh GS trên 8 action**, đúng OUTLINE_FONTS và FLATTEN_TRANSPARENCY. Backend **1341 pass**. §18.4. |
 | 3.2 | 2026-07-27 | **Gate Phase 1 ĐẠT** (4/4, kèm số đo) và **gate Phase 2 ĐẠT** (4/6 action non-GS): thêm `CONVERT_TO_CMYK` object-level (spot sống, gray giữ K thuần, Indexed đổi bảng màu; 12/13 file corpus có RGB xử lý được) và sửa nhãn `SET_BLACK_OVERPRINT` (đã rời GS từ lâu nhưng registry còn khai ghostscript nên gate đếm thiếu). Ngoài action: resize downsample dùng chung `downscale_images`; spot→CMYK object-level trong `ink_manager` (chuyển ĐÚNG kênh được yêu cầu, khác GS nuốt sạch mọi Separation). Kiểm kê lại §2 theo code — phát hiện `viewer_preview` là code chết. Sửa bug PDF/X: OutputIntent luôn khai ICC generic của Ghostscript thay vì FOGRA39 vì `except: pass` nuốt ImportError sau refactor. Thêm test chạy-khi-không-có-GS cho cả 4 action. §17, §18. Backend **1335 pass**. |
