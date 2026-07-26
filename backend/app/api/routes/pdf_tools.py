@@ -645,6 +645,49 @@ async def optimize_pdf_endpoint(
     do_strip = strip_metadata.lower() in ("true", "1", "yes")
     do_gray = grayscale.lower() in ("true", "1", "yes")
 
+    # Đường object-level trước: lắp từ downscale_images + convert_to_grayscale
+    # + nén cấu trúc qua qpdf. Khác `pdfwrite` ở chỗ nó KHÔNG subset lại font và
+    # không quy đổi colorspace ngoài yêu cầu — người dùng bấm "tối ưu" để file
+    # nhẹ hơn, không phải để đổi màu. Route này trước đây gọi Ghostscript thẳng.
+    try:
+        from app.core import pdf_actions_native
+
+        native = await asyncio.to_thread(
+            pdf_actions_native.optimize_pdf,
+            source_path,
+            output_path,
+            preset,
+            float(image_dpi) if preset == "custom" else None,
+            do_gray,
+        )
+    except Exception as ne:  # noqa: BLE001
+        logger.warning("optimize object-level lỗi, fallback Ghostscript: %s", ne)
+        native = None
+
+    if native is not None and native.get("supported"):
+        if do_strip:
+            try:
+                _strip_pdf_metadata(output_path)
+            except Exception as se:  # noqa: BLE001
+                logger.warning("strip metadata sau optimize lỗi: %s", se)
+        new_size = os.path.getsize(output_path)
+        return FileResponse(
+            path=output_path,
+            filename=f"optimized_{file.filename}",
+            media_type="application/pdf",
+            headers={
+                "X-Original-Size": str(original_size),
+                "X-Optimized-Size": str(new_size),
+                "X-Compression-Ratio": f"{(1 - new_size / max(original_size, 1)) * 100:.1f}",
+                "X-PrynX-Engine": "pikepdf",
+            },
+        )
+    if native is not None:
+        logger.info(
+            "optimize: object-level không xử lý được (%s) → Ghostscript",
+            "; ".join(native.get("warnings", [])),
+        )
+
     # Build Ghostscript command
     gs_path = settings.GHOSTSCRIPT_PATH
     cmd = [

@@ -362,3 +362,47 @@ def test_grayscale_keeps_spot_channels_alive(sample_pdf, tmp_path):
         assert str(cs[1]) == "/CutContour"
     assert b"/CS0 cs" in data and b"1 scn" in data, "lệnh tô spot bị viết lại"
     assert b" rg" not in data and b" k\n" not in data, "còn toán tử màu process"
+
+
+def test_optimize_pdf_without_gs(no_ghostscript, sample_pdf, tmp_path):
+    """Route /pdf-tools/optimize cũng từng gọi Ghostscript thẳng.
+
+    Nó có người dùng thật (OptimizeTool + recipe runner), nên thiếu GS là mất
+    một nút trên UI.
+    """
+    from app.core import gs_usage, pdf_actions_native
+
+    gs_usage.reset_for_tests()
+    out = str(tmp_path / "opt.pdf")
+    result = pdf_actions_native.optimize_pdf(sample_pdf, out, "ebook")
+
+    assert result["supported"], result["warnings"]
+    assert os.path.isfile(out) and os.path.getsize(out) > 0
+    assert _gs_calls() == 0
+
+
+def test_optimize_never_returns_a_bigger_file(tmp_path):
+    """Bấm "tối ưu" mà nhận file NẶNG hơn là phản tác dụng.
+
+    File đã nén tốt sẵn thì mọi phép ghi lại đều có thể phình ra; khi đó phải
+    giữ bản gốc chứ không giao bản to hơn.
+    """
+    import pikepdf
+
+    from app.core import pdf_actions_native
+
+    pdf = pikepdf.Pdf.new()
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 50, 50],
+        Resources=pikepdf.Dictionary(),
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"0 0 0 1 k 1 1 10 10 re f\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "tiny.pdf"
+    pdf.save(str(src))
+    pdf.close()
+
+    out = str(tmp_path / "tiny_opt.pdf")
+    result = pdf_actions_native.optimize_pdf(str(src), out, "ebook")
+    assert result["supported"]
+    assert os.path.getsize(out) <= os.path.getsize(str(src))

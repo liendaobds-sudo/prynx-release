@@ -1653,6 +1653,7 @@ những gì đã gỡ không lặng lẽ quay về.
 | `PDF/X-1a` | **chạy** (§19.4) |
 | `OUTLINE_FONTS` | **chạy** — 12/33 file corpus; còn lại rơi về GS vì font Type1 `/FontFile` hoặc toán tử chữ chưa mô hình hoá, 1 file do verify chặn (§19.5) |
 | `/preflight/convert-colors` | **chạy** — RGB→CMYK dùng `convert_to_cmyk`, nhánh đen trắng dùng `convert_to_grayscale` (§19.6) |
+| `/pdf-tools/optimize` | **chạy** — lắp từ `downscale_images` + `convert_to_grayscale` + nén cấu trúc qpdf (§19.6) |
 
 Nghĩa là **không còn đường nào gãy hẳn**. `OUTLINE_FONTS` là chỗ duy nhất còn
 rơi về Ghostscript trên file thật, và chỉ với một lớp font cụ thể.
@@ -1759,12 +1760,21 @@ khớp thứ người dùng đã xem ở chỗ khác. Ảnh process đổi sang 
 **Spot/DeviceN không bị đụng**: nút "đen trắng" hứa đổi màu process, không hứa
 xoá kênh bế hay Pantone. Đo 10 file corpus: **10 xong, 0 fallback**.
 
+`/pdf-tools/optimize` là điểm cùng loại thứ hai — cũng gọi GS thẳng, và cũng có
+người dùng thật (OptimizeTool + recipe runner). Nay lắp từ `downscale_images` +
+`convert_to_grayscale` + nén cấu trúc bằng qpdf. Khác `pdfwrite` ở chỗ nó
+**không subset lại font và không quy đổi colorspace ngoài yêu cầu** — người
+dùng bấm "tối ưu" để file nhẹ hơn, không phải để đổi màu. Nếu kết quả **phình
+ra** thì giữ nguyên bản gốc, vì trả về file nặng hơn là phản tác dụng. Đo 6 file
+corpus: giảm 0–24% tuỳ file.
+
 ---
 
 ## 15. Lịch sử tài liệu
 
 | Ver | Ngày | Thay đổi |
 |---|---|---|
+| 4.0 | 2026-07-27 | Đóng nốt `/pdf-tools/optimize` — điểm gọi GS thẳng thứ hai nằm trong file route (có người dùng thật: OptimizeTool + recipe runner). Lắp từ `downscale_images` + `convert_to_grayscale` + nén qpdf; giữ bản gốc nếu kết quả phình ra. **Mọi đường sản xuất nay đều có path non-GS**; Ghostscript chỉ còn là fallback, và chỗ duy nhất còn rơi về nó trên file thật là `OUTLINE_FONTS` với font Type1 `/FontFile`. Backend **1372 pass**. §19.6. |
 | 3.9 | 2026-07-27 | Đóng `/preflight/convert-colors` — điểm gọi GS thẳng KHÔNG fallback, bị bỏ sót vì kiểm kê §2 chỉ grep `app/core` chứ không grep file route. RGB→CMYK dùng lại `convert_to_cmyk`; thêm `convert_to_grayscale` (§10.4 cho CMYK, Rec.601 cho RGB, spot không bị đụng) — 10/10 file corpus, 0 fallback. `outline_text` đệ quy vào Form XObject (font kế thừa theo §8.10.1, mỗi form outline một lần). Backend **1369 pass**. §19.6. |
 | 3.8 | 2026-07-27 | `OUTLINE_FONTS` mở sang **Type0/Identity-H/CIDFontType2** — dạng Type0 duy nhất có trong corpus (52/52 font). Corpus 12/33 file xong bằng pikepdf. Chốt verify bắt được **hai bug thật** trong lúc phát triển: path glyph bị nhân CTM hai lần (lệnh `cm` vẫn còn trong stream — trang không có `cm` thì không lộ), và glyph không tra được bị bỏ qua âm thầm làm chữ biến mất. Thêm cmap (1,0) Mac Roman cho subset TrueType. Từ chối trang có Form XObject thay vì xoá `/Font` làm mất chữ bên trong. Backend **1367 pass**. §19.5. |
 | 3.7 | 2026-07-27 | Đóng nốt 3 đường còn gãy: `FLATTEN_TRANSPARENCY` (no-op khi không có trong suốt; raster PPE + hạ DPI tự động khi vượt ngân sách, kèm cảnh báo mất vector/gộp spot), `PDF/X-1a` (flatten → đường X-4, ép version 1.3), `OUTLINE_FONTS` (fontTools text→path, **luôn verify bằng so kẽm**, có test chứng minh chốt bắt được chữ dịch 30pt). **Không còn đường nào gãy hẳn** khi tắt Ghostscript; `OUTLINE_FONTS` còn rơi về GS với font Type0/CID (4/12 file corpus xong bằng pikepdf). Ba bug đóng kèm: `analyze_font_embedding` fail-open khi không đọc được file; `detect_transparency` đếm object mồ côi; đường native outline bỏ sót annotation (hồi quy so với §16.7, test cũ bắt). Backend **1367 pass**. §19.4, §19.5. |

@@ -950,6 +950,100 @@ def _convert_image_to_cmyk(obj: pikepdf.Stream, tf: _CmykTransform) -> bool:
     return True
 
 
+# DPI đích theo preset, khớp ý nghĩa `-dPDFSETTINGS` của Ghostscript.
+_OPTIMIZE_PRESET_DPI = {
+    "screen": 72.0,
+    "ebook": 150.0,
+    "printer": 300.0,
+    "prepress": 300.0,
+}
+
+
+def optimize_pdf(
+    input_path: str,
+    output_path: str,
+    preset: str = "ebook",
+    image_dpi: float | None = None,
+    grayscale: bool = False,
+) -> dict:
+    """Giảm dung lượng file: hạ ảnh + (tuỳ chọn) đen trắng + nén lại cấu trúc.
+
+    Lắp từ các mảnh đã có thay vì gọi `pdfwrite`: hạ ảnh dùng chung
+    `downscale_images` (cùng cách tính DPI hiệu dụng với rule preflight), đen
+    trắng dùng `convert_to_grayscale` (giữ spot). Phần còn lại là nén lại cấu
+    trúc bằng qpdf qua pikepdf — object stream + nén stream.
+
+    Khác Ghostscript ở một điểm quan trọng với xưởng in: `pdfwrite` **subset lại
+    font và quy đổi colorspace** kể cả khi người dùng chỉ muốn giảm dung lượng.
+    Đường này không đụng tới font và chỉ đổi màu khi được yêu cầu.
+
+    Trả dict: `supported`, `images_downscaled`, `grayscale_ops`, `warnings`.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    result: dict = {
+        "supported": True,
+        "images_downscaled": 0,
+        "grayscale_ops": 0,
+        "warnings": [],
+    }
+
+    target_dpi = float(image_dpi) if image_dpi else _OPTIMIZE_PRESET_DPI.get(preset, 150.0)
+    stage_in = input_path
+    temps: list[str] = []
+
+    try:
+        down = tempfile.mktemp(suffix="_down.pdf")
+        temps.append(down)
+        # Ngưỡng 1.5× như pdfwrite: hạ ảnh chỉ hơn mức đích một chút chỉ làm mờ
+        # mà gần như không giảm dung lượng.
+        res = downscale_images(stage_in, down, target_dpi, target_dpi * 1.5)
+        result["images_downscaled"] = res.get("changed", 0)
+        result["warnings"].extend(res.get("warnings", []))
+        stage_in = down
+
+        if grayscale:
+            gray = tempfile.mktemp(suffix="_gray.pdf")
+            temps.append(gray)
+            gres = convert_to_grayscale(stage_in, gray)
+            if not gres.get("supported"):
+                result["supported"] = False
+                result["warnings"].extend(gres.get("blockers", []))
+                return result
+            result["grayscale_ops"] = gres.get("ops", 0)
+            stage_in = gray
+
+        with pikepdf.open(stage_in) as pdf:
+            pdf.remove_unreferenced_resources()
+            pdf.save(
+                output_path,
+                compress_streams=True,
+                object_stream_mode=pikepdf.ObjectStreamMode.generate,
+                linearize=False,
+            )
+
+        # Nén xong mà file PHÌNH ra thì giữ bản gốc: người dùng bấm "tối ưu" để
+        # nhẹ hơn, trả về bản nặng hơn là phản tác dụng.
+        if os.path.getsize(output_path) >= os.path.getsize(input_path):
+            shutil.copyfile(input_path, output_path)
+            result["warnings"].append(
+                "Không giảm được dung lượng — giữ nguyên file gốc."
+            )
+    except Exception as exc:  # noqa: BLE001
+        result["supported"] = False
+        result["warnings"].append(f"tối ưu thất bại: {exc}")
+    finally:
+        for path in temps:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    return result
+
+
 def convert_to_grayscale(input_path: str, output_path: str) -> dict:
     """Chuyển nội dung sang thang xám ở mức object.
 
