@@ -63,7 +63,7 @@ AVAILABLE_ACTIONS = {
     "FLATTEN_TRANSPARENCY": {
         "title": "Flatten Transparency",
         "description": "Xóa bỏ mọi hiệu ứng trong suốt (bóng đổ, blend mode) để máy CTP không bị lỗi.",
-        "engine": "ghostscript",
+        "engine": "ppe+ghostscript",
     },
     "OUTLINE_FONTS": {
         "title": "Khóa Font (Outline Text)",
@@ -514,6 +514,38 @@ class ActionEngine:
         except Exception as e:
             logger.debug("detect OCG/spot trước flatten thất bại: %s", e)
 
+        # Đường object-level: file KHÔNG có trong suốt thì không đụng gì (ca phổ
+        # biến nhất — người dùng bấm nút phòng xa). File có trong suốt thì raster
+        # hoá qua PPE và **nói rõ mất gì**; Ghostscript cũng phá y vậy (gộp/mất
+        # OCG, spot→process) nhưng phá âm thầm.
+        if not params.get("force_gs"):
+            try:
+                from app.core import pdf_actions_native
+
+                native = await asyncio.to_thread(
+                    pdf_actions_native.flatten_transparency,
+                    input_path,
+                    output_path,
+                    float(params.get("dpi", 300)),
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("FLATTEN_TRANSPARENCY object-level lỗi, fallback GS: %s", e)
+                native = None
+
+            if native is not None and native.get("supported"):
+                self._last_engine = "ppe"
+                self._last_report = {
+                    "pages_rasterized": native.get("flattened", 0),
+                    "warnings": warnings + list(native.get("warnings", [])),
+                }
+                return True
+            if native is not None:
+                logger.info(
+                    "FLATTEN_TRANSPARENCY: PPE không xử lý được (%s) → Ghostscript",
+                    "; ".join(native.get("warnings", [])),
+                )
+
+        self._last_engine = "gs"
         cmd = [
             self.gs_path,
             "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
@@ -606,7 +638,10 @@ class ActionEngine:
                 logger.warning("EMBED_FONTS phân tích font lỗi, fallback GS: %s", e)
                 info = None
 
-            if info is not None and not info.get("missing"):
+            # `readable=False` nghĩa là KHÔNG ĐỌC ĐƯỢC file, không phải
+            # "không thiếu font" — coi hai thứ đó như nhau là bỏ qua bước
+            # nhúng trên đúng file đang hỏng.
+            if info is not None and info.get("readable", True) and not info.get("missing"):
                 shutil.copyfile(input_path, output_path)
                 self._last_engine = "pikepdf"
                 warnings = list(info.get("warnings", []))

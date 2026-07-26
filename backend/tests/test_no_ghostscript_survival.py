@@ -194,6 +194,114 @@ def test_pdfx4_warns_when_it_sets_trimbox_itself(no_ghostscript, tmp_path):
             os.remove(out)
 
 
+def test_flatten_is_a_noop_when_there_is_no_transparency(no_ghostscript, tmp_path):
+    """Không có gì trong suốt thì đừng đụng vào file.
+
+    Đây là ca phổ biến nhất — người dùng bấm nút phòng xa. Ghostscript vẫn dựng
+    lại cả tài liệu (và hạ PDF 1.3, gộp/mất OCG) để thu về đúng thứ đang có.
+    """
+    import pikepdf
+
+    from app.core import gs_usage, pdf_actions_native
+    from app.core.action_engine import ActionEngine
+
+    pdf = pikepdf.Pdf.new()
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100],
+        Resources=pikepdf.Dictionary(),
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"0 0 0 1 k 5 5 50 50 re f\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "opaque.pdf"
+    pdf.save(str(src))
+    pdf.close()
+
+    assert pdf_actions_native.detect_transparency(str(src)) == []
+
+    gs_usage.reset_for_tests()
+    engine = ActionEngine()
+    engine.gs_path = no_ghostscript
+    result = asyncio.run(engine.execute(str(src), "FLATTEN_TRANSPARENCY"))
+    assert result.success
+    assert result.log[0].report["pages_rasterized"] == 0, "đã raster hoá dù không cần"
+    assert _gs_calls() == 0
+
+
+def test_flatten_removes_transparency_and_says_what_it_cost(no_ghostscript, sample_pdf):
+    """Có trong suốt → raster hoá, và PHẢI nói rõ mất vector.
+
+    `sample_pdf` có ảnh + spot CutContour. Raster hoá làm mất vector và gộp spot
+    vào CMYK — cả hai đều nghiêm trọng với tem bế, nên im lặng là không chấp
+    nhận được.
+    """
+    import pikepdf
+
+    from app.core import gs_usage, pdf_actions_native
+    from app.core.action_engine import ActionEngine
+
+    # Thêm trong suốt vào file mẫu.
+    with pikepdf.open(sample_pdf, allow_overwriting_input=True) as pdf:
+        gs = pikepdf.Dictionary(Type=pikepdf.Name("/ExtGState"), ca=0.5, CA=0.5)
+        pdf.pages[0].Resources["/ExtGState"] = pikepdf.Dictionary(
+            GS0=pdf.make_indirect(gs)
+        )
+        pdf.save(sample_pdf)
+
+    assert pdf_actions_native.detect_transparency(sample_pdf)
+
+    gs_usage.reset_for_tests()
+    engine = ActionEngine()
+    engine.gs_path = no_ghostscript
+    result = asyncio.run(engine.execute(sample_pdf, "FLATTEN_TRANSPARENCY"))
+    assert result.success
+    assert result.log[0].engine == "ppe"
+    assert _gs_calls() == 0
+
+    warnings = result.log[0].report["warnings"]
+    assert any("MẤT VECTOR" in w for w in warnings), warnings
+    assert any("Spot" in w for w in warnings), "gộp spot mà không cảnh báo"
+    assert pdf_actions_native.detect_transparency(result.output_path) == []
+
+
+def test_pdfx1a_export_without_gs(no_ghostscript, sample_pdf):
+    """X-1a phải ra PDF 1.3 — chính phiên bản đó mới bảo đảm hết trong suốt."""
+    import pikepdf
+
+    from app.core import gs_usage
+    from app.core.pdfx_export import PdfxExportEngine
+
+    gs_usage.reset_for_tests()
+    engine = PdfxExportEngine()
+    engine.gs_path = no_ghostscript
+    out = asyncio.run(engine.export_pdfx(sample_pdf, "x1a"))
+    try:
+        assert engine.last_engine == "pikepdf"
+        assert _gs_calls() == 0
+        with pikepdf.open(out) as pdf:
+            assert pdf.pdf_version <= "1.4", f"X-1a đòi ≤1.4, có {pdf.pdf_version}"
+            assert "PDF/X" in str(pdf.docinfo.get("/GTS_PDFXVersion", ""))
+        assert engine.check_compliance(out, "x1a")["passed"]
+    finally:
+        if os.path.isfile(out):
+            os.remove(out)
+
+
+def test_font_analysis_does_not_report_unreadable_file_as_complete(tmp_path):
+    """Không đọc được file KHÁC không thiếu font.
+
+    Gộp hai thứ đó thì `missing == []` trên một file hỏng sẽ được hiểu là "đủ
+    font", và bước nhúng bị bỏ qua đúng lúc cần nhất.
+    """
+    from app.core import pdf_actions_native
+
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"khong phai PDF")
+
+    info = pdf_actions_native.analyze_font_embedding(str(broken))
+    assert info["readable"] is False
+    assert info["missing"] == []
+
+
 def test_spot_to_cmyk_without_gs(no_ghostscript, sample_pdf):
     from app.core import gs_usage
     from app.core.ink_manager import InkManagerEngine

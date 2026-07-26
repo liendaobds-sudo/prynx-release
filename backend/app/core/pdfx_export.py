@@ -254,11 +254,18 @@ class PdfxExportEngine:
                 info_ver = str(doc.docinfo.get("/GTS_PDFXVersion", "")) if doc.docinfo else ""
             except Exception:  # noqa: BLE001
                 info_ver = ""
+            # X-1a đòi PDF 1.3: chính phiên bản đó mới bảo đảm không còn trong
+            # suốt (PDF 1.3 không có khái niệm này). Khai X-1a trên file 1.6 là
+            # mâu thuẫn tự thân, nên phải kiểm cả hai.
+            version_ok = pdf_version <= "1.4"
             checks.append({
                 "id": "PDFX_IDENTIFICATION",
-                "label": "Định danh PDF/X (Info)",
-                "passed": bool(info_ver and "PDF/X" in info_ver),
-                "detail": info_ver or "Thiếu /GTS_PDFXVersion trong Info",
+                "label": "Định danh PDF/X-1a (Info + version)",
+                "passed": bool(info_ver and "PDF/X" in info_ver) and version_ok,
+                "detail": (
+                    f"Info={info_ver or 'thiếu'}, PDF {pdf_version}"
+                    + ("" if version_ok else " — X-1a đòi ≤ 1.4")
+                ),
             })
         else:
             xmp_ver = ""
@@ -407,16 +414,18 @@ class PdfxExportEngine:
         self.last_warnings = []
         self.last_engine = None
 
-        if standard != "x1a":
-            try:
-                if await asyncio.to_thread(
-                    self._export_x4_native, file_path, output_path
-                ):
-                    self.last_engine = "pikepdf"
-                    logger.info(f"Exported PDF/X-4 (pikepdf) → {output_path}")
-                    return output_path
-            except Exception as e:  # noqa: BLE001
-                logger.warning("PDF/X-4 object-level lỗi, fallback Ghostscript: %s", e)
+        try:
+            native_ok = await asyncio.to_thread(
+                self._export_x1a_native if standard == "x1a" else self._export_x4_native,
+                file_path,
+                output_path,
+            )
+            if native_ok:
+                self.last_engine = "pikepdf"
+                logger.info(f"Exported PDF/X-{standard} (pikepdf) → {output_path}")
+                return output_path
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PDF/X object-level lỗi, fallback Ghostscript: %s", e)
 
         self.last_engine = "ghostscript"
         _ensure_gs(self.gs_path)
@@ -426,7 +435,56 @@ class PdfxExportEngine:
         else:
             return await self._export_x4(file_path, output_path)
 
-    def _export_x4_native(self, input_path: str, output_path: str) -> bool:
+    def _export_x1a_native(self, input_path: str, output_path: str) -> bool:
+        """PDF/X-1a bằng pikepdf: flatten trong suốt rồi đi tiếp đường X-4.
+
+        X-1a khác X-4 ở hai điểm: **không cho phép trong suốt** và **không cho
+        ICC ngoài OutputIntent**. Điểm đầu nay xử lý được nhờ `flatten_transparency`
+        (raster hoá qua PPE, có cảnh báo mất vector). Điểm thứ hai được thoả gián
+        tiếp: `convert_to_cmyk` đã đưa mọi thứ về DeviceCMYK.
+
+        Trả `False` để fallback Ghostscript khi flatten không xử lý nổi.
+        """
+        import tempfile as _tempfile
+
+        from app.core import pdf_actions_native
+
+        signs = pdf_actions_native.detect_transparency(input_path)
+        source = input_path
+        tmp_flat = None
+        try:
+            if signs:
+                fd, tmp_flat = _tempfile.mkstemp(suffix="_flat.pdf", dir=str(self.output_dir))
+                os.close(fd)
+                flat = pdf_actions_native.flatten_transparency(input_path, tmp_flat, 300.0)
+                if not flat.get("supported"):
+                    return False
+                self.last_warnings.extend(flat.get("warnings", []))
+                source = tmp_flat
+
+            if not self._export_x4_native(source, output_path, version="1.3"):
+                return False
+        finally:
+            if tmp_flat and os.path.exists(tmp_flat):
+                try:
+                    os.remove(tmp_flat)
+                except OSError:
+                    pass
+
+        # Định danh X-1a nằm ở Info dict (PDF 1.3 chưa dùng XMP cho việc này),
+        # và bản thân **phiên bản PDF phải là 1.3**: đó là cách chuẩn bảo đảm
+        # không còn trong suốt, vì PDF 1.3 không có khái niệm đó. Ghi 1.6 rồi
+        # khai X-1a là mâu thuẫn tự thân — `force_version` mới hạ được (
+        # `min_version` chỉ nâng lên).
+        with pikepdf.open(output_path, allow_overwriting_input=True) as pdf:
+            pdf.docinfo["/GTS_PDFXVersion"] = pikepdf.String("PDF/X-1:2001")
+            pdf.docinfo["/GTS_PDFXConformance"] = pikepdf.String("PDF/X-1a:2001")
+            pdf.save(output_path, force_version="1.3")
+        return True
+
+    def _export_x4_native(
+        self, input_path: str, output_path: str, version: str = "1.6"
+    ) -> bool:
         """PDF/X-4 bằng pikepdf. `False` ⇒ caller fallback Ghostscript.
 
         Từ chối (chứ không cố sửa) khi file thiếu điều kiện mà bước này không
@@ -441,6 +499,9 @@ class PdfxExportEngine:
             return False
 
         fonts = pdf_actions_native.analyze_font_embedding(input_path)
+        if not fonts.get("readable", True):
+            logger.info("PDF/X native: không đọc được font của file → Ghostscript")
+            return False
         if fonts.get("missing"):
             logger.info(
                 "PDF/X-4 native: còn font chưa nhúng (%s) → Ghostscript",
@@ -491,7 +552,8 @@ class PdfxExportEngine:
         if pages_without_trim:
             _ensure_trimbox(output_path)
         _attach_output_intent(output_path, icc_path, cond_id, cond_name)
-        _finalize_pdfx4_identification(output_path)
+        if version == "1.6":
+            _finalize_pdfx4_identification(output_path)
         return True
 
     async def _export_x1a(self, input_path: str, output_path: str) -> str:

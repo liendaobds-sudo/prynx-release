@@ -583,10 +583,14 @@ def analyze_font_embedding(pdf_path: str) -> dict:
         "base14": [],
         "missing": [],
         "warnings": [],
+        "readable": True,
     }
     try:
         pdf = pikepdf.open(pdf_path)
     except Exception as exc:  # noqa: BLE001
+        # KHÔNG được để "không đọc được" trông giống "không thiếu font": caller
+        # đọc `missing == []` rồi kết luận file đủ font và bỏ qua bước nhúng.
+        result["readable"] = False
         result["warnings"].append(f"Không mở được PDF: {exc}")
         return result
 
@@ -1451,6 +1455,252 @@ def _replace_spot_ops(
         return pikepdf.unparse_content_stream(out)
     except Exception:  # noqa: BLE001
         return None
+
+
+def detect_transparency(pdf_path: str) -> list[str]:
+    """Liệt kê dấu hiệu trong suốt trong file (rỗng = không có gì để flatten).
+
+    Bốn dấu hiệu theo §11: transparency group (`/Group /S /Transparency`), soft
+    mask trong gstate (`/SMask` khác `/None`), alpha hằng (`/ca`,`/CA` < 1), và
+    blend mode khác `/Normal`. Ảnh có `/SMask` cũng tính — nó là alpha per-pixel.
+    """
+    found: list[str] = []
+
+    def note(msg: str) -> None:
+        if msg not in found:
+            found.append(msg)
+
+    # Duyệt từ CÂY TRANG, không quét `pdf.objects`: một file đã flatten vẫn còn
+    # object mồ côi mang `/Group` nằm lại trong xref, và quét thô sẽ báo "vẫn
+    # còn trong suốt" cho chính file mình vừa làm sạch. Câu hỏi cần trả lời là
+    # "nội dung SẼ RENDER có trong suốt không".
+    seen: set[tuple[int, int]] = set()
+
+    def visit_resources(resources, depth: int) -> None:
+        if resources is None or depth > _MAX_FORM_DEPTH:
+            return
+        resources = _deref(resources)
+        try:
+            gs_dict = _deref(resources.get("/ExtGState"))
+            if gs_dict is not None:
+                for _n, gs in dict(gs_dict).items():
+                    gs = _deref(gs)
+                    sm = gs.get("/SMask")
+                    if sm is not None and str(_deref(sm)) != "/None":
+                        note("soft mask trong ExtGState")
+                    for key in ("/ca", "/CA"):
+                        val = gs.get(key)
+                        if val is not None and float(val) < 1.0:
+                            note("alpha hằng < 1")
+                    bm = gs.get("/BM")
+                    if bm is not None:
+                        names = (
+                            [str(b) for b in bm]
+                            if isinstance(bm, pikepdf.Array)
+                            else [str(bm)]
+                        )
+                        if any(n not in ("/Normal", "/Compatible") for n in names):
+                            note("blend mode khác Normal")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            xobjects = _deref(resources.get("/XObject"))
+            if xobjects is None:
+                return
+            for _n, xo in dict(xobjects).items():
+                xo = _deref(xo)
+                key = _objkey(xo)
+                if key is not None:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                subtype = str(xo.get("/Subtype", ""))
+                if subtype == "/Image":
+                    if xo.get("/SMask") is not None:
+                        note("ảnh có /SMask")
+                    continue
+                group = _deref(xo.get("/Group"))
+                if group is not None and str(group.get("/S", "")) == "/Transparency":
+                    note("transparency group")
+                visit_resources(xo.get("/Resources"), depth + 1)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        with pikepdf.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                try:
+                    group = _deref(page.get("/Group"))
+                    if group is not None and str(group.get("/S", "")) == "/Transparency":
+                        note("transparency group")
+                    visit_resources(page.get("/Resources"), 0)
+                    annots = _deref(page.get("/Annots"))
+                    if annots is not None:
+                        for annot in annots:
+                            ap = _deref(_deref(annot).get("/AP"))
+                            if ap is None:
+                                continue
+                            for _slot, val in dict(ap).items():
+                                val = _deref(val)
+                                streams = (
+                                    [val]
+                                    if isinstance(val, pikepdf.Stream)
+                                    else [_deref(v) for v in dict(val).values()]
+                                    if isinstance(val, pikepdf.Dictionary)
+                                    else []
+                                )
+                                for st in streams:
+                                    if not isinstance(st, pikepdf.Stream):
+                                        continue
+                                    g = _deref(st.get("/Group"))
+                                    if g is not None and str(g.get("/S", "")) == "/Transparency":
+                                        note("transparency group")
+                                    visit_resources(st.get("/Resources"), 1)
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("detect_transparency lỗi: %s", exc)
+    return found
+
+
+def flatten_transparency(input_path: str, output_path: str, dpi: float = 300.0) -> dict:
+    """Xoá trong suốt. Không có gì trong suốt thì chỉ sao chép.
+
+    Trang CÓ trong suốt được **rasterize qua PPE** rồi thay bằng một ảnh CMYK.
+    Đây là bản MVP mà kế hoạch §5 cho phép, và nó **mất vector** — với tem bế
+    hay đường CutContour thì đó là mất mát nghiêm trọng, nên hàm luôn trả cảnh
+    báo và caller phải hiển thị.
+
+    So với Ghostscript (`-dCompatibilityLevel=1.3`): GS cũng phá — nó gộp/mất
+    OCG và có thể chuyển spot sang process ở vùng chồng lấp — nhưng phá **âm
+    thầm** và không nói rõ trang nào. Ở đây mất mát được liệt kê ra.
+
+    Trả dict: `flattened` (số trang đã raster), `warnings`, `supported`.
+    """
+    result: dict = {"supported": True, "flattened": 0, "warnings": []}
+
+    signs = detect_transparency(input_path)
+    if not signs:
+        # Không có gì trong suốt: dựng lại file là phá hoại vô cớ.
+        import shutil
+
+        shutil.copyfile(input_path, output_path)
+        return result
+
+    try:
+        import base64
+        import zlib
+
+        import numpy as np
+
+        from app.core.print_engine import facade
+    except Exception as exc:  # noqa: BLE001
+        result["supported"] = False
+        result["warnings"].append(f"không nạp được PPE: {exc}")
+        return result
+
+    spot_lost: set[str] = set()
+
+    # PPE fail-loud khi trang vượt ngân sách bộ nhớ raster — đúng cho việc ĐO
+    # mực (thà không có số còn hơn số sai), nhưng ở đây ta chỉ raster hoá, nên
+    # bỏ cuộc là để người dùng tay trắng. Hạ DPI dần và NÓI RÕ mức thực dùng.
+    dpi_ladder = [d for d in (dpi, 200.0, 150.0, 100.0) if d <= dpi] or [dpi]
+    used_dpi = dpi
+
+    with pikepdf.open(input_path) as pdf:
+        n_pages = len(pdf.pages)
+        for index in range(n_pages):
+            sep = None
+            last_error = ""
+            for candidate in dpi_ladder:
+                try:
+                    sep = facade.separations(
+                        input_path, index + 1, int(candidate), ink_accurate=False
+                    )
+                    used_dpi = min(used_dpi, candidate)
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_error = str(exc)
+                    continue
+            if sep is None:
+                result["supported"] = False
+                result["warnings"].append(
+                    f"PPE không render được trang {index + 1}: {last_error}"
+                )
+                return result
+
+            width, height = int(sep["width"]), int(sep["height"])
+            planes: dict[str, "np.ndarray"] = {}
+            for plate in sep["plates"]:
+                raw = zlib.decompress(base64.b64decode(plate["alpha_data"]))
+                arr = np.frombuffer(raw, dtype=np.uint8)
+                if arr.size != width * height:
+                    arr = np.resize(arr, width * height)
+                planes[plate["name"]] = arr.reshape(height, width)
+                if plate.get("is_spot"):
+                    spot_lost.add(plate["name"])
+
+            # Spot phải được GỘP vào process, không được bỏ: bỏ đi là mất hẳn
+            # nội dung khỏi bản in. Gộp bằng cộng bão hoà theo màu process gần
+            # nhất mà PPE đã tính cho kẽm đó.
+            cmyk = [
+                planes.get(name, np.zeros((height, width), dtype=np.uint8)).astype(np.uint16)
+                for name in ("Cyan", "Magenta", "Yellow", "Black")
+            ]
+            for plate in sep["plates"]:
+                if not plate.get("is_spot"):
+                    continue
+                spot = planes[plate["name"]].astype(np.uint16)
+                colour = plate.get("color") or [0, 0, 0, 255]
+                for ch in range(4):
+                    weight = (colour[ch] if ch < len(colour) else 0) / 255.0
+                    if weight > 0:
+                        cmyk[ch] = np.minimum(cmyk[ch] + (spot * weight).astype(np.uint16), 255)
+
+            interleaved = np.stack([c.astype(np.uint8) for c in cmyk], axis=-1).tobytes()
+
+            page = pdf.pages[index]
+            box = page.get("/CropBox") or page.get("/MediaBox")
+            x0, y0, x1, y1 = (float(v) for v in box)
+            img = pikepdf.Stream(
+                pdf,
+                zlib.compress(interleaved, 6),
+                Type=pikepdf.Name("/XObject"),
+                Subtype=pikepdf.Name("/Image"),
+                Width=width,
+                Height=height,
+                BitsPerComponent=8,
+                ColorSpace=pikepdf.Name("/DeviceCMYK"),
+                Filter=pikepdf.Name("/FlateDecode"),
+            )
+            content = (
+                f"q {x1 - x0:.4f} 0 0 {y1 - y0:.4f} {x0:.4f} {y0:.4f} cm /FlatIm Do Q\n"
+            ).encode("latin-1")
+            page["/Resources"] = pikepdf.Dictionary(
+                XObject=pikepdf.Dictionary(FlatIm=pdf.make_indirect(img))
+            )
+            page["/Contents"] = pdf.make_indirect(pikepdf.Stream(pdf, content))
+            # `/Group` còn lại sẽ khiến consumer vẫn coi trang là trong suốt.
+            if "/Group" in page:
+                del page["/Group"]
+            result["flattened"] += 1
+
+        pdf.remove_unreferenced_resources()
+        pdf.save(output_path)
+
+    result["dpi_used"] = used_dpi
+    result["warnings"].append(
+        f"Đã raster hoá {result['flattened']} trang ở {int(used_dpi)} DPI để xoá trong suốt "
+        f"({', '.join(signs[:3])}). Trang MẤT VECTOR: chữ và đường nét không còn "
+        "chỉnh sửa được và sẽ in theo độ phân giải này."
+    )
+    if spot_lost:
+        result["warnings"].append(
+            "Kênh Spot đã được GỘP vào CMYK: "
+            + ", ".join(sorted(spot_lost))
+            + ". Nếu cần in bằng mực pha (Pantone) hoặc giữ kênh bế, ĐỪNG dùng bản này."
+        )
+    return result
 
 
 def has_rgb_content(pdf_path: str) -> bool:
