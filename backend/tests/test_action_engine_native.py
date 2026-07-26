@@ -566,6 +566,133 @@ def test_action_log_records_engine_pikepdf_for_convert_cmyk(tmp_path):
     assert result.log[0].report["color_ops_converted"] == 1
 
 
+# ── Spot → CMYK ─────────────────────────────────────────────────────────────
+
+def _spot_pdf(tmp_path, name="spot2.pdf"):
+    """Trang có HAI spot: PANTONE 485 C và CutContour (đường bế)."""
+    pdf = pikepdf.Pdf.new()
+
+    def sep(colorant, c1):
+        tint = pikepdf.Dictionary(
+            FunctionType=2, Domain=[0, 1], C0=[0, 0, 0, 0], C1=c1, N=1,
+            Range=[0, 1, 0, 1, 0, 1, 0, 1],
+        )
+        return pdf.make_indirect(pikepdf.Array([
+            pikepdf.Name("/Separation"), pikepdf.Name(colorant),
+            pikepdf.Name("/DeviceCMYK"), pdf.make_indirect(tint),
+        ]))
+
+    res = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(
+        CS0=sep("/PANTONE#20485#20C", [0, 0.91, 0.76, 0]),
+        CS1=sep("/CutContour", [0, 1, 0, 0]),
+    ))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100], Resources=res,
+        Contents=pdf.make_indirect(pikepdf.Stream(
+            pdf,
+            b"/CS0 cs 1 scn 0 0 50 50 re f\n"
+            b"/CS0 cs 0.5 scn 5 5 10 10 re f\n"
+            b"/CS1 cs 1 scn 60 60 20 20 re f\n",
+        )),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    p = tmp_path / name
+    pdf.save(str(p))
+    pdf.close()
+    return p
+
+
+def test_spot_to_cmyk_uses_the_files_own_tint_transform(tmp_path):
+    """Màu thay vào phải lấy từ tintTransform của chính file, không phải bảng đoán."""
+    src = _spot_pdf(tmp_path)
+    out = tmp_path / "spot_all.pdf"
+
+    res = pdf_actions_native.convert_spot_to_cmyk(str(src), str(out))
+    assert res["supported"] and res["ops"] == 3
+
+    with pikepdf.open(str(out)) as pdf:
+        data = bytes(pdf.pages[0].Contents.read_bytes())
+    # tint 1.0 → đúng C1; tint 0.5 với N=1 → nội suy tuyến tính.
+    assert b"0 0.91 0.76 0 k" in data, data
+    assert b"0 0.455 0.38 0 k" in data, data
+    assert b"scn" not in data and b" cs" not in data
+
+
+def test_spot_to_cmyk_named_leaves_other_channels_alive(tmp_path):
+    """Chỉ định một spot thì kênh bế phải SỐNG.
+
+    Đây là điểm hơn hẳn `pdfwrite -sColorConversionStrategy=CMYK`: nó nuốt sạch
+    mọi Separation cùng lúc, kể cả kênh người dùng đang muốn giữ.
+    """
+    src = _spot_pdf(tmp_path, name="spot_named.pdf")
+    out = tmp_path / "spot_one.pdf"
+
+    res = pdf_actions_native.convert_spot_to_cmyk(str(src), str(out), "PANTONE 485 C")
+    assert res["supported"]
+    assert res["converted"] == ["PANTONE 485 C"], res["converted"]
+
+    with pikepdf.open(str(out)) as pdf:
+        data = bytes(pdf.pages[0].Contents.read_bytes())
+        cs1 = pdf.pages[0].Resources.ColorSpace.CS1
+    assert b"/CS1 cs" in data and b"1 scn" in data, "kênh bế bị chuyển oan"
+    assert str(cs1[1]) == "/CutContour"
+    assert b"0 0.91 0.76 0 k" in data, "spot được chỉ định phải chuyển"
+
+
+def test_spot_to_cmyk_declines_postscript_tint_transform(tmp_path):
+    """FunctionType 4 là chương trình PostScript — không đoán, trả về fallback."""
+    pdf = pikepdf.Pdf.new()
+    fn = pikepdf.Stream(pdf, b"{ dup 0.5 mul exch 0.2 mul 0 0 }")
+    fn["/FunctionType"] = 4
+    fn["/Domain"] = [0, 1]
+    fn["/Range"] = [0, 1, 0, 1, 0, 1, 0, 1]
+    sep = pikepdf.Array([
+        pikepdf.Name("/Separation"), pikepdf.Name("/SpotX"),
+        pikepdf.Name("/DeviceCMYK"), pdf.make_indirect(fn),
+    ])
+    res = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(CS0=pdf.make_indirect(sep)))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100], Resources=res,
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"/CS0 cs 1 scn 0 0 50 50 re f\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "ps_tint.pdf"
+    pdf.save(str(src))
+    pdf.close()
+
+    res_out = pdf_actions_native.convert_spot_to_cmyk(str(src), str(tmp_path / "o.pdf"))
+    assert res_out["supported"] is False
+    assert res_out["blockers"]
+
+
+def test_spot_to_cmyk_never_touches_none_colorant(tmp_path):
+    """`/None` không phải màu pha — nó nghĩa là KHÔNG vẽ gì (§8.6.6.4)."""
+    pdf = pikepdf.Pdf.new()
+    tint = pikepdf.Dictionary(
+        FunctionType=2, Domain=[0, 1], C0=[0, 0, 0, 0], C1=[1, 1, 1, 1], N=1,
+        Range=[0, 1, 0, 1, 0, 1, 0, 1],
+    )
+    sep = pikepdf.Array([
+        pikepdf.Name("/Separation"), pikepdf.Name("/None"),
+        pikepdf.Name("/DeviceCMYK"), pdf.make_indirect(tint),
+    ])
+    res = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(CS0=pdf.make_indirect(sep)))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100], Resources=res,
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"/CS0 cs 1 scn 0 0 50 50 re f\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "none_sep.pdf"
+    pdf.save(str(src))
+    pdf.close()
+    out = tmp_path / "none_out.pdf"
+
+    res_out = pdf_actions_native.convert_spot_to_cmyk(str(src), str(out))
+    assert res_out["supported"] and res_out["ops"] == 0
+    with pikepdf.open(str(out)) as opened:
+        assert b"/CS0 cs" in bytes(opened.pages[0].Contents.read_bytes())
+
+
 # ── Bảo vệ thành quả: chạy được khi KHÔNG có Ghostscript ────────────────────
 
 def test_four_actions_still_work_without_ghostscript(tmp_path, monkeypatch):

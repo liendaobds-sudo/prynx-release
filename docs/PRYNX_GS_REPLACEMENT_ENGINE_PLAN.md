@@ -1454,7 +1454,31 @@ giữa gradient lệch thấy được.
 **12 xử lý được object-level, 1 fallback** (shading RGB), **0 lỗi**, và không
 file nào còn sót RGB sau khi chuyển.
 
-### 17.4 Bẫy API đã đóng
+### 17.4 Spot → CMYK object-level (`ink_manager`)
+
+Thay đúng lệnh tô màu pha bằng CMYK lấy từ **chính `tintTransform` của file**
+(§8.6.6.4 — đúng cách spec định nghĩa màu pha render trên thiết bị không có
+kênh đó), không phải bảng tra đoán. Hỗ trợ `FunctionType 2` và `3` (ghép các
+hàm kiểu 2) — dạng mà mọi trình dàn trang sinh ra cho màu pha.
+
+Hơn `pdfwrite -sColorConversionStrategy=CMYK` ở chỗ **chuyển đúng kênh được
+yêu cầu**: gọi với tên spot cụ thể thì các kênh còn lại vẫn sống, còn GS nuốt
+sạch mọi Separation cùng lúc — kể cả kênh bế người dùng đang muốn giữ.
+`/None` và `/All` không bao giờ bị đụng (chúng là colorant đặc biệt, không
+phải màu pha).
+
+Fallback GS khi: `FunctionType 0/4`, hoặc **alternate space là Lab**. Ca Lab
+đáng chú ý — đo trên corpus, cả 2 file fallback đều thuộc nhóm này (Pantone
+7460 C, 7687 C, TOYO 0098): Adobe hiện đại mô tả Pantone bằng Lab vì chính xác
+hơn CMYK. Chuyển được qua ICC nhưng phải đúng thang (L 0..100, a/b −128..127);
+sai thang là sai màu pha — thứ khách hàng đặt tên riêng để đòi cho đúng. **Việc
+mở tiếp theo**, cần đo golden trước.
+
+Đo corpus 33 PDF: 4 file có Separation chuyển được (`Hộp nước hoa` đổi thật 2
+lệnh tô TOYO 0002; 3 file còn lại có kênh tên `Black` nhưng không lệnh tô nào
+dùng nên `ops=0`), 2 file fallback vì alternate Lab.
+
+### 17.5 Bẫy API đã đóng
 
 `hasattr(obj, "resolve")` — thành ngữ đang dùng ở vài chỗ trong repo — **luôn
 đúng** với mọi `pikepdf.Object`, nhưng gọi `.resolve()` trên object trực tiếp

@@ -137,17 +137,52 @@ class InkManagerEngine:
 
     async def convert_spot_to_cmyk(self, file_path: str, spot_name: str | None = None) -> str:
         """
-        Chuyển spot color → CMYK vĩnh viễn bằng Ghostscript.
+        Chuyển spot color → CMYK vĩnh viễn. Ưu tiên object-level, fallback GS.
         spot_name: None = convert ALL spots.
-        """
-        if not self.gs_path or not Path(self.gs_path).exists():
-            raise RuntimeError(f"Ghostscript không tìm thấy tại: {self.gs_path}")
 
+        Đường object-level thay đúng lệnh tô màu pha bằng CMYK tương đương lấy
+        từ chính `tintTransform` của file (§8.6.6.4 — đúng cách spec định nghĩa
+        màu pha render trên thiết bị không có kênh đó). Khác Ghostscript ở chỗ
+        nó chỉ đụng vào **những spot được yêu cầu**: `spot_name` cụ thể thì các
+        kênh còn lại vẫn sống, còn `pdfwrite -sColorConversionStrategy=CMYK`
+        nuốt sạch mọi Separation cùng lúc — kể cả kênh bế mà người dùng đang
+        muốn giữ.
+        """
         if not Path(file_path).exists():
             raise RuntimeError(f"File PDF không tồn tại: {file_path}")
 
         output_name = f"{Path(file_path).stem}_cmyk_{uuid.uuid4().hex[:6]}.pdf"
         output_path = str(self.output_dir / output_name)
+
+        try:
+            from app.core import pdf_actions_native
+
+            native = await asyncio.to_thread(
+                pdf_actions_native.convert_spot_to_cmyk,
+                file_path,
+                output_path,
+                spot_name,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("convert_spot object-level lỗi, fallback GS: %s", e)
+            native = None
+
+        if native is not None and native.get("supported"):
+            logger.info(
+                "Converted spot→CMYK bằng pikepdf: %s (%d lệnh tô)",
+                ", ".join(native.get("converted", [])) or "không có spot nào",
+                native.get("ops", 0),
+            )
+            return output_path
+
+        if native is not None:
+            logger.info(
+                "convert_spot: object-level không xử lý được (%s) → Ghostscript",
+                "; ".join(native.get("blockers", [])),
+            )
+
+        if not self.gs_path or not Path(self.gs_path).exists():
+            raise RuntimeError(f"Ghostscript không tìm thấy tại: {self.gs_path}")
 
         cmd = [
             self.gs_path,

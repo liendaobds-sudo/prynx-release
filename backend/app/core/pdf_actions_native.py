@@ -1079,6 +1079,294 @@ def convert_to_cmyk(
     return result
 
 
+def _eval_tint_transform(fn, tint: float) -> list[float] | None:
+    """Chạy hàm tint transform của `Separation` tại một giá trị tint.
+
+    Chỉ nhận `FunctionType 2` (mũ) và `FunctionType 3` (ghép các hàm con kiểu
+    2). Đó là dạng mà mọi trình dàn trang sinh ra cho màu pha. Type 0 (bảng
+    mẫu) và Type 4 (chương trình PostScript) trả `None` để caller fallback
+    Ghostscript thay vì đoán.
+    """
+    fn = _deref(fn)
+    if fn is None:
+        return None
+    try:
+        ftype = int(fn.get("/FunctionType", -1))
+    except Exception:  # noqa: BLE001
+        return None
+
+    if ftype == 2:
+        try:
+            n = float(fn.get("/N", 1))
+            c0 = [float(v) for v in (fn.get("/C0") or [0.0])]
+            c1 = [float(v) for v in (fn.get("/C1") or [1.0])]
+        except Exception:  # noqa: BLE001
+            return None
+        if len(c0) != len(c1):
+            return None
+        t = max(0.0, min(1.0, tint)) ** n
+        return [a + t * (b - a) for a, b in zip(c0, c1)]
+
+    if ftype == 3:
+        try:
+            fns = [_deref(f) for f in fn.get("/Functions")]
+            bounds = [float(b) for b in (fn.get("/Bounds") or [])]
+            encode = [float(e) for e in (fn.get("/Encode") or [])]
+            domain = [float(d) for d in (fn.get("/Domain") or [0.0, 1.0])]
+        except Exception:  # noqa: BLE001
+            return None
+        if not fns:
+            return None
+        d0, d1 = domain[0], domain[1]
+        x = max(d0, min(d1, tint))
+        # Tìm khoảng con chứa x, rồi ánh xạ x về miền của hàm con đó (§7.10.4).
+        i = 0
+        while i < len(bounds) and x >= bounds[i]:
+            i += 1
+        low = d0 if i == 0 else bounds[i - 1]
+        high = d1 if i >= len(bounds) else bounds[i]
+        e0, e1 = (encode[2 * i], encode[2 * i + 1]) if len(encode) > 2 * i + 1 else (0.0, 1.0)
+        sub = e0 if high == low else e0 + (x - low) * (e1 - e0) / (high - low)
+        return _eval_tint_transform(fns[i], sub)
+
+    return None
+
+
+def _separation_to_cmyk(cs, tint: float) -> list[float] | None:
+    """Màu CMYK tương đương của một `Separation` tại tint cho trước.
+
+    Theo §8.6.6.4, khi thiết bị không có kênh riêng cho màu pha thì nó phải
+    render qua `alternateSpace` + `tintTransform` — nên đây không phải xấp xỉ
+    tự nghĩ ra mà đúng đường mà spec đã định nghĩa.
+    """
+    cs = _deref(cs)
+    if not isinstance(cs, pikepdf.Array) or len(cs) < 4:
+        return None
+    if str(_deref(cs[0])) != "/Separation":
+        return None
+    if _alternate_kind(cs[2]) != "cmyk":
+        return None
+    out = _eval_tint_transform(cs[3], tint)
+    if out is None or len(out) != 4:
+        return None
+    return [max(0.0, min(1.0, v)) for v in out]
+
+
+def _alternate_kind(alternate) -> str:
+    """Phân loại alternate space của một `Separation`: `cmyk` | `lab` | `khác`."""
+    alternate = _deref(alternate)
+    name = str(alternate)
+    if name in ("/DeviceCMYK", "/CMYK"):
+        return "cmyk"
+    try:
+        if isinstance(alternate, pikepdf.Array) and len(alternate) > 0:
+            family = str(_deref(alternate[0]))
+            if family == "/Lab":
+                return "lab"
+            if family == "/ICCBased" and len(alternate) > 1:
+                stream = _deref(alternate[1])
+                if int(stream.get("/N", 0)) == 4:
+                    return "cmyk"
+    except Exception:  # noqa: BLE001
+        return "khác"
+    return "khác"
+
+
+def convert_spot_to_cmyk(
+    input_path: str,
+    output_path: str,
+    spot_name: str | None = None,
+) -> dict:
+    """Thay màu pha bằng CMYK tương đương, giữ nguyên phần còn lại của file.
+
+    `spot_name = None` chuyển mọi spot; đưa tên thì chỉ chuyển đúng kênh đó
+    (so sánh không phân biệt hoa/thường, có giải mã `#20` trong tên PDF).
+
+    Trả dict: `supported` (False ⇒ fallback GS), `converted` (tên spot đã
+    chuyển), `blockers`, `ops`.
+    """
+    result: dict = {"supported": True, "converted": [], "blockers": [], "ops": 0}
+    want = _normalize_colorant(spot_name) if spot_name else None
+
+    with pikepdf.open(input_path) as pdf:
+        # ── Lập danh sách spot chuyển được, theo tên resource của từng trang ──
+        # Cùng một tên `/CS0` ở hai trang có thể trỏ hai spot khác nhau, nên
+        # bản đồ phải dựng theo từng bộ resources chứ không phải toàn cục.
+        blockers: list[str] = []
+        converted: set[str] = set()
+
+        def spot_map_for(resources) -> dict[str, list[float] | None]:
+            """{tên resource → None (không đụng) hoặc hàm tint đã kiểm}"""
+            out: dict[str, list[float] | None] = {}
+            try:
+                cs_dict = _deref(resources.get("/ColorSpace")) if resources else None
+            except Exception:  # noqa: BLE001
+                return out
+            if cs_dict is None:
+                return out
+            for name, cs in dict(cs_dict).items():
+                cs = _deref(cs)
+                if not isinstance(cs, pikepdf.Array) or len(cs) < 4:
+                    continue
+                if str(_deref(cs[0])) != "/Separation":
+                    continue
+                colorant = _normalize_colorant(str(_deref(cs[1])))
+                # `/None` và `/All` là colorant đặc biệt (§8.6.6.4), không phải
+                # màu pha thật — đụng vào chúng là đổi ngữ nghĩa trang.
+                if colorant in ("none", "all"):
+                    continue
+                if want is not None and colorant != want:
+                    continue
+                if _separation_to_cmyk(cs, 1.0) is None:
+                    kind = _alternate_kind(cs[2])
+                    if kind == "lab":
+                        # Adobe mô tả Pantone hiện đại bằng alternate Lab vì nó
+                        # chính xác hơn CMYK. Chuyển được, nhưng phải qua ICC
+                        # với đúng thang Lab (L 0..100, a/b −128..127) — sai
+                        # thang là sai màu pha, thứ khách hàng đặt tên riêng để
+                        # đòi cho đúng. Giao Ghostscript cho tới khi đo được.
+                        blockers.append(f"alternate space Lab: {colorant}")
+                    else:
+                        blockers.append(
+                            f"tint transform hoặc alternate không đọc được: {colorant}"
+                        )
+                    continue
+                out[str(name)] = cs
+                converted.add(_decode_pdf_name(str(_deref(cs[1]))))
+            return out
+
+        stats: dict = {}
+        seen: set[tuple[int, int]] = set()
+
+        def convert_stream(stream, resources) -> None:
+            if not isinstance(stream, pikepdf.Stream):
+                return
+            key = _objkey(stream)
+            if key is not None:
+                if key in seen:
+                    return
+                seen.add(key)
+            mapping = spot_map_for(resources)
+            if not mapping:
+                return
+            try:
+                data = bytes(stream.read_bytes())
+            except Exception:  # noqa: BLE001
+                return
+            new = _replace_spot_ops(pdf, data, mapping, stats)
+            if new is not None:
+                stream.write(new)
+
+        for page in pdf.pages:
+            try:
+                resources = page.get("/Resources")
+                contents = page.get("/Contents")
+                if contents is None:
+                    continue
+                if isinstance(contents, pikepdf.Array):
+                    for c in contents:
+                        convert_stream(_deref(c), resources)
+                else:
+                    convert_stream(_deref(contents), resources)
+
+                xobjects = _deref(resources.get("/XObject")) if resources else None
+                if xobjects is not None:
+                    for _n, target in dict(xobjects).items():
+                        target = _deref(target)
+                        if str(target.get("/Subtype", "")) == "/Form":
+                            convert_stream(target, target.get("/Resources") or resources)
+            except Exception as exc:  # noqa: BLE001
+                blockers.append(f"bỏ qua một trang: {exc}")
+
+        if blockers:
+            result["supported"] = False
+            result["blockers"] = blockers
+            return result
+
+        result["ops"] = stats.get("ops", 0)
+        result["converted"] = sorted(converted)
+        pdf.save(output_path)
+    return result
+
+
+def _decode_pdf_name(name: str) -> str:
+    """Tên PDF về dạng người đọc được: bỏ `/`, giải chuỗi thoát `#20` (§7.3.5)."""
+    s = str(name).lstrip("/")
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == "#" and i + 2 < len(s):
+            try:
+                out.append(chr(int(s[i + 1 : i + 3], 16)))
+                i += 3
+                continue
+            except ValueError:
+                pass
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
+def _normalize_colorant(name: str) -> str:
+    """Tên colorant về dạng so sánh được (đã giải mã, hạ chữ thường)."""
+    return _decode_pdf_name(name).strip().lower()
+
+
+def _replace_spot_ops(
+    pdf: pikepdf.Pdf, data: bytes, mapping: dict, stats: dict
+) -> bytes | None:
+    """Đổi `/CSx cs <tint> scn` của spot thành `<c m y k> k` trong content stream."""
+    try:
+        instructions = pikepdf.parse_content_stream(pikepdf.Stream(pdf, data))
+    except Exception:  # noqa: BLE001
+        return None
+
+    out = []
+    fill_cs = None
+    stroke_cs = None
+    changed = False
+
+    for instr in instructions:
+        op = str(instr.operator)
+        operands = list(instr.operands)
+
+        if op in ("cs", "CS") and operands:
+            name = str(operands[0])
+            target = mapping.get(name)
+            if op == "cs":
+                fill_cs = target
+            else:
+                stroke_cs = target
+            if target is not None:
+                # Bỏ hẳn lệnh `cs`: `k`/`K` phía sau đã tự khai DeviceCMYK.
+                changed = True
+                continue
+
+        if op in ("sc", "scn", "SC", "SCN"):
+            target = fill_cs if op in ("sc", "scn") else stroke_cs
+            if target is not None and len(operands) == 1:
+                try:
+                    cmyk = _separation_to_cmyk(target, float(operands[0]))
+                except Exception:  # noqa: BLE001
+                    cmyk = None
+                if cmyk is not None:
+                    out.append(
+                        (cmyk, pikepdf.Operator("k" if op in ("sc", "scn") else "K"))
+                    )
+                    stats["ops"] = stats.get("ops", 0) + 1
+                    changed = True
+                    continue
+
+        out.append(instr)
+
+    if not changed:
+        return None
+    try:
+        return pikepdf.unparse_content_stream(out)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def has_rgb_content(pdf_path: str) -> bool:
     """Dò nhanh file có nội dung RGB không, để khỏi chạy chuyển đổi vô ích."""
     try:
