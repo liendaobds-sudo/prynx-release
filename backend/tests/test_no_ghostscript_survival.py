@@ -313,3 +313,52 @@ def test_spot_to_cmyk_without_gs(no_ghostscript, sample_pdf):
     out = asyncio.run(manager.convert_spot_to_cmyk(sample_pdf, None))
     assert os.path.isfile(out)
     assert _gs_calls() == 0
+
+
+def test_convert_colors_paths_work_without_gs(no_ghostscript, sample_pdf, tmp_path):
+    """Route /preflight/convert-colors từng gọi Ghostscript THẲNG, không fallback.
+
+    Đây là điểm bị bỏ sót khi kiểm kê §2 vì nó nằm trong file route chứ không
+    phải module core — thiếu GS là hỏng hẳn chức năng "Chuyển hệ màu".
+    """
+    from app.core import gs_usage, icc_profiles, pdf_actions_native
+
+    gs_usage.reset_for_tests()
+
+    cmyk_out = str(tmp_path / "cc_cmyk.pdf")
+    res = pdf_actions_native.convert_to_cmyk(
+        sample_pdf, cmyk_out,
+        icc_profiles.resolve_cmyk_profile_path(),
+        icc_profiles.resolve_srgb_profile_path(),
+    )
+    assert res["supported"], res["blockers"]
+    assert os.path.isfile(cmyk_out)
+
+    gray_out = str(tmp_path / "cc_gray.pdf")
+    res = pdf_actions_native.convert_to_grayscale(sample_pdf, gray_out)
+    assert res["supported"], res["blockers"]
+    assert os.path.isfile(gray_out)
+    assert _gs_calls() == 0
+
+
+def test_grayscale_keeps_spot_channels_alive(sample_pdf, tmp_path):
+    """Chuyển sang đen trắng KHÔNG được nuốt kênh pha.
+
+    Nút "đen trắng" hứa đổi màu process, không hứa xoá kênh bế / Pantone — gộp
+    chúng vào xám là mất hẳn khả năng in bằng mực pha.
+    """
+    import pikepdf
+
+    from app.core import pdf_actions_native
+
+    out = str(tmp_path / "gray.pdf")
+    result = pdf_actions_native.convert_to_grayscale(sample_pdf, out)
+    assert result["supported"]
+
+    with pikepdf.open(out) as pdf:
+        data = bytes(pdf.pages[0].Contents.read_bytes())
+        cs = pdf.pages[0].Resources.ColorSpace.CS0
+        assert str(cs[0]) == "/Separation"
+        assert str(cs[1]) == "/CutContour"
+    assert b"/CS0 cs" in data and b"1 scn" in data, "lệnh tô spot bị viết lại"
+    assert b" rg" not in data and b" k\n" not in data, "còn toán tử màu process"

@@ -1314,6 +1314,58 @@ async def convert_colors(req: ConvertColorsRequest):
 
             elif conv in ("rgb_to_cmyk", "gray_to_cmyk"):
                 import subprocess, uuid, asyncio
+
+                # Đường object-level trước: chỉ sửa đúng object cần sửa và GIỮ
+                # SPOT, trong khi pdfwrite dựng lại cả tài liệu và hay nuốt
+                # Separation thành process (mất kênh bế / Pantone). Route này
+                # trước đây gọi thẳng Ghostscript, không fallback — thiếu GS là
+                # hỏng hẳn chức năng.
+                try:
+                    from app.core import icc_profiles, pdf_actions_native
+
+                    native_out = str(
+                        Path(settings.RESULTS_DIR) / "preflight_output"
+                        / f"cc_{conv}_{Path(current_path).stem}_{uuid.uuid4().hex[:6]}.pdf"
+                    )
+                    Path(native_out).parent.mkdir(parents=True, exist_ok=True)
+                    if conv == "rgb_to_cmyk":
+                        profile = None
+                        if req.icc_profile and req.icc_profile != "auto":
+                            profile = icc_profiles.resolve_cmyk_profile_path(req.icc_profile)
+                        native = await asyncio.to_thread(
+                            pdf_actions_native.convert_to_cmyk,
+                            current_path,
+                            native_out,
+                            profile or icc_profiles.resolve_cmyk_profile_path(),
+                            icc_profiles.resolve_srgb_profile_path(),
+                        )
+                    else:
+                        native = await asyncio.to_thread(
+                            pdf_actions_native.convert_to_grayscale,
+                            current_path,
+                            native_out,
+                        )
+                except Exception as ne:  # noqa: BLE001
+                    logger.warning("convert-colors object-level lỗi, fallback GS: %s", ne)
+                    native = None
+
+                if native is not None and native.get("supported"):
+                    _cleanup_intermediate(prev_intermediate)
+                    prev_intermediate = native_out
+                    current_path = native_out
+                    ms = round((time.time() - t0) * 1000)
+                    label = "RGB → CMYK" if conv == "rgb_to_cmyk" else "Chuyển sang Grayscale (đen trắng)"
+                    log.append({
+                        "action_id": conv, "status": "success",
+                        "message": f"{label} (pikepdf, giữ spot)", "duration_ms": ms,
+                    })
+                    continue
+                if native is not None:
+                    logger.info(
+                        "convert-colors: object-level không xử lý được (%s) → Ghostscript",
+                        "; ".join(native.get("blockers", [])),
+                    )
+
                 gs_path = settings.GHOSTSCRIPT_PATH
                 # Ghi output vào preflight_output — ĐÚNG nơi /preflight/download phục
                 # vụ. (Trước đây ghi cạnh file gốc trong UPLOAD_DIR → download 404.)

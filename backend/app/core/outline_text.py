@@ -35,6 +35,9 @@ _TEXT_OPS = {
     "Tr", "Tj", "TJ", "'", '"',
 }
 
+# Trần độ sâu Form XObject lồng nhau — chặn file tự tham chiếu làm đệ quy vô hạn.
+_MAX_FORM_DEPTH = 12
+
 
 class _Matrix:
     __slots__ = ("a", "b", "c", "d", "e", "f")
@@ -736,9 +739,95 @@ def _has_annotations(pdf_path: str) -> bool:
         return False
 
 
+def _load_fonts(font_dict, pdf, result) -> dict | None:
+    """Nạp mọi font trong một bộ resources. `None` ⇒ ngoài phạm vi, đã ghi lý do."""
+    fonts: dict[str, _EmbeddedFont] = {}
+    for name, ref in dict(font_dict).items():
+        fd = ref if isinstance(ref, pikepdf.Dictionary) else ref.resolve()
+        if not _font_is_outlineable(fd):
+            result["supported"] = False
+            result["warnings"].append(
+                f"font {str(fd.get('/BaseFont', name))} ngoài phạm vi "
+                "(chưa nhúng, Type1 /FontFile, Type0 không Identity-H, hoặc Type3)"
+            )
+            return None
+        loaded = _EmbeddedFont(fd, pdf)
+        if not loaded.ok:
+            result["supported"] = False
+            result["warnings"].append(f"không đọc được font {name}")
+            return None
+        fonts[str(name)] = loaded
+    return fonts
+
+
+def _outline_forms(pdf, resources, inherited_fonts, result, depth: int) -> bool:
+    """Outline chữ trong mọi Form XObject của một bộ resources (đệ quy).
+
+    Form không khai `/Resources` thì kế thừa của cha (§8.10.1) — nên font phải
+    được truyền xuống, không tra lại từ đầu.
+    """
+    if depth > _MAX_FORM_DEPTH or resources is None:
+        return True
+    try:
+        xobjects = resources.get("/XObject")
+        if xobjects is None:
+            return True
+        items = list(dict(xobjects).items())
+    except Exception:  # noqa: BLE001
+        return True
+
+    for _name, ref in items:
+        try:
+            form = ref if isinstance(ref, pikepdf.Stream) else ref.resolve()
+            if str(form.get("/Subtype", "")) != "/Form":
+                continue
+            key = _objkey(form)
+            if key is not None and key in _outlined_forms:
+                continue
+            inner_res = form.get("/Resources")
+            own_fonts = dict(inherited_fonts)
+            if inner_res is not None:
+                inner_font_dict = inner_res.get("/Font")
+                if inner_font_dict is not None:
+                    loaded = _load_fonts(inner_font_dict, pdf, result)
+                    if loaded is None:
+                        return False
+                    own_fonts.update(loaded)
+            target_res = inner_res if inner_res is not None else resources
+
+            if not _outline_forms(pdf, inner_res, own_fonts, result, depth + 1):
+                return False
+
+            data = bytes(form.read_bytes())
+            new, count = outline_content_stream(pdf, data, target_res, own_fonts)
+            if new is None:
+                result["supported"] = False
+                result["warnings"].append(
+                    "Form XObject có tính năng chữ chưa hỗ trợ"
+                )
+                return False
+            form.write(new)
+            result["_form_glyphs"] = result.get("_form_glyphs", 0) + count
+            if key is not None:
+                _outlined_forms.add(key)
+            if inner_res is not None and "/Font" in inner_res:
+                del inner_res["/Font"]
+        except Exception as exc:  # noqa: BLE001
+            result["supported"] = False
+            result["warnings"].append(f"không outline được Form XObject: {exc}")
+            return False
+    return True
+
+
+_outlined_forms: set = set()
+
+
 def _outline_document(
     input_path: str, output_path: str, verify_against: str, result: dict
 ) -> dict:
+    # Form dùng lại ở nhiều trang chỉ được outline MỘT lần; chạy hai lần trên
+    # cùng stream sẽ nhân đôi path và làm chữ dày lên.
+    _outlined_forms.clear()
     with pikepdf.open(input_path) as pdf:
         total = 0
         for page in pdf.pages:
@@ -749,33 +838,17 @@ def _outline_document(
             if font_dict is None:
                 continue
 
-            # Chữ nằm trong Form XObject KHÔNG được bộ này duyệt. Nếu vẫn xoá
-            # `/Font` của trang thì chữ trong Form mất hẳn — đo được: kẽm Cyan
-            # lệch 233/255 trên một file corpus. Chưa đệ quy vào Form thì phải
-            # từ chối, không đoán.
-            if _has_form_xobject(resources):
-                result["supported"] = False
-                result["warnings"].append(
-                    "trang có Form XObject — chữ bên trong chưa được outline"
-                )
+            fonts = _load_fonts(font_dict, pdf, result)
+            if fonts is None:
                 return result
 
-            fonts: dict[str, _EmbeddedFont] = {}
-            for name, ref in dict(font_dict).items():
-                fd = ref if isinstance(ref, pikepdf.Dictionary) else ref.resolve()
-                if not _font_is_outlineable(fd):
-                    result["supported"] = False
-                    result["warnings"].append(
-                        f"font {str(fd.get('/BaseFont', name))} ngoài phạm vi "
-                        "(chưa nhúng, Type0 hoặc Type3)"
-                    )
-                    return result
-                loaded = _EmbeddedFont(fd, pdf)
-                if not loaded.ok:
-                    result["supported"] = False
-                    result["warnings"].append(f"không đọc được font {name}")
-                    return result
-                fonts[str(name)] = loaded
+            # Chữ cũng nằm trong Form XObject — outline chúng TRƯỚC, vì sau đó
+            # `/Font` của trang bị xoá và Form kế thừa resources của trang khi
+            # tự nó không khai (§8.10.1); bỏ sót thì chữ trong Form mất hẳn
+            # (đo được: kẽm Cyan lệch 233/255 trên một file corpus).
+            if not _outline_forms(pdf, resources, fonts, result, 0):
+                return result
+            total += result.pop("_form_glyphs", 0)
 
             contents = page.get("/Contents")
             streams = (

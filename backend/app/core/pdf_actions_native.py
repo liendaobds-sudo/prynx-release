@@ -950,6 +950,184 @@ def _convert_image_to_cmyk(obj: pikepdf.Stream, tf: _CmykTransform) -> bool:
     return True
 
 
+def convert_to_grayscale(input_path: str, output_path: str) -> dict:
+    """Chuyển nội dung sang thang xám ở mức object.
+
+    Dùng công thức độ sáng của PDF cho `DeviceCMYK` (§10.4): mực càng dày thì
+    xám càng tối, và K cộng thẳng vào cả ba kênh. Với `DeviceRGB` dùng trọng số
+    Rec.601 — cùng trọng số mà mọi công cụ prepress dùng, nên bản xám khớp với
+    thứ người dùng đã xem ở chỗ khác.
+
+    Spot/`DeviceN` **không bị đụng**: chuyển một kênh pha thành xám là mất hẳn
+    khả năng in bằng mực pha, và đó không phải điều nút "chuyển sang đen trắng"
+    hứa hẹn. Ai muốn gộp spot thì chạy `convert_spot_to_cmyk` trước.
+
+    Trả dict: `supported`, `ops`, `images`, `blockers`, `warnings`.
+    """
+    result: dict = {"supported": True, "ops": 0, "images": 0, "blockers": [], "warnings": []}
+
+    with pikepdf.open(input_path) as pdf:
+        blockers = _scan_convertibility(pdf)
+        if blockers:
+            result["supported"] = False
+            result["blockers"] = blockers
+            return result
+
+        stats: dict = {}
+        seen: set[tuple[int, int]] = set()
+
+        for obj in pdf.objects:
+            try:
+                if not isinstance(obj, pikepdf.Stream):
+                    continue
+                if str(obj.get("/Subtype", "")) != "/Image":
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            if _image_to_grayscale(obj):
+                result["images"] += 1
+
+        def convert_stream(stream, resources) -> None:
+            if not isinstance(stream, pikepdf.Stream):
+                return
+            key = _objkey(stream)
+            if key is not None:
+                if key in seen:
+                    return
+                seen.add(key)
+            try:
+                data = bytes(stream.read_bytes())
+            except Exception:  # noqa: BLE001
+                return
+            new = _grayscale_content_stream(pdf, data, resources, stats)
+            if new is not None:
+                stream.write(new)
+            try:
+                group = stream.get("/Group")
+                if group is not None and group.get("/CS") is not None:
+                    group["/CS"] = pikepdf.Name("/DeviceGray")
+            except Exception:  # noqa: BLE001
+                pass
+
+        def walk_forms(resources, depth: int) -> None:
+            if depth > _MAX_FORM_DEPTH or resources is None:
+                return
+            try:
+                xobjects = _deref(resources.get("/XObject"))
+                if xobjects is None:
+                    return
+                for _n, target in dict(xobjects).items():
+                    target = _deref(target)
+                    if str(target.get("/Subtype", "")) != "/Form":
+                        continue
+                    inner = target.get("/Resources") or resources
+                    convert_stream(target, inner)
+                    walk_forms(inner, depth + 1)
+            except Exception:  # noqa: BLE001
+                return
+
+        for page in pdf.pages:
+            resources = page.get("/Resources")
+            contents = page.get("/Contents")
+            if contents is not None:
+                if isinstance(contents, pikepdf.Array):
+                    for c in contents:
+                        convert_stream(_deref(c), resources)
+                else:
+                    convert_stream(_deref(contents), resources)
+            walk_forms(resources, 0)
+            try:
+                group = page.get("/Group")
+                if group is not None and group.get("/CS") is not None:
+                    group["/CS"] = pikepdf.Name("/DeviceGray")
+            except Exception:  # noqa: BLE001
+                pass
+
+        result["ops"] = stats.get("ops", 0)
+        pdf.save(output_path)
+    return result
+
+
+def _cmyk_to_gray(c: float, m: float, y: float, k: float) -> float:
+    """CMYK → mức xám 0..1 (1 = trắng), theo §10.4."""
+    return max(0.0, min(1.0, 1.0 - min(1.0, c * 0.3 + m * 0.59 + y * 0.11 + k)))
+
+
+def _rgb_to_gray(r: float, g: float, b: float) -> float:
+    return max(0.0, min(1.0, 0.299 * r + 0.587 * g + 0.114 * b))
+
+
+def _grayscale_content_stream(pdf, data: bytes, resources, stats: dict) -> bytes | None:
+    """Đổi toán tử màu sang `g`/`G`. Spot (`scn` qua `cs`) giữ nguyên."""
+    try:
+        instructions = pikepdf.parse_content_stream(pikepdf.Stream(pdf, data))
+    except Exception:  # noqa: BLE001
+        return None
+
+    out = []
+    changed = False
+    for instr in instructions:
+        op = str(instr.operator)
+        operands = list(instr.operands)
+        try:
+            if op in ("rg", "RG") and len(operands) == 3:
+                v = _rgb_to_gray(*(float(x) for x in operands))
+                out.append(([v], pikepdf.Operator("g" if op == "rg" else "G")))
+                stats["ops"] = stats.get("ops", 0) + 1
+                changed = True
+                continue
+            if op in ("k", "K") and len(operands) == 4:
+                v = _cmyk_to_gray(*(float(x) for x in operands))
+                out.append(([v], pikepdf.Operator("g" if op == "k" else "G")))
+                stats["ops"] = stats.get("ops", 0) + 1
+                changed = True
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        out.append(instr)
+
+    if not changed:
+        return None
+    try:
+        return pikepdf.unparse_content_stream(out)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _image_to_grayscale(obj: pikepdf.Stream) -> bool:
+    """Đổi một image XObject sang DeviceGray. `False` = không đụng tới."""
+    cs = _deref(obj.get("/ColorSpace"))
+    if cs is None or bool(obj.get("/ImageMask", False)):
+        return False
+    if str(cs) in ("/DeviceGray", "/G", "/CalGray"):
+        return False
+    n = _colorspace_components(obj)
+    if n is None or _is_indexed(obj):
+        return False  # spot/DeviceN/Indexed: giữ nguyên, xem docstring
+    if any(f not in _RESAMPLABLE_FILTERS for f in _filter_names(obj.get("/Filter"))):
+        return False
+    try:
+        from PIL import Image
+
+        pil = pikepdf.PdfImage(obj).as_pil_image()
+        gray = pil.convert("L")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("không chuyển được ảnh sang xám: %s", exc)
+        return False
+    raw = gray.tobytes()
+    if len(raw) != gray.width * gray.height:
+        return False
+    obj.write(raw, filter=pikepdf.Name("/FlateDecode"))
+    obj["/ColorSpace"] = pikepdf.Name("/DeviceGray")
+    obj["/BitsPerComponent"] = 8
+    obj["/Width"] = gray.width
+    obj["/Height"] = gray.height
+    for dead in ("/DecodeParms", "/DP", "/Decode", "/D"):
+        if dead in obj:
+            del obj[dead]
+    return True
+
+
 def convert_to_cmyk(
     input_path: str,
     output_path: str,
