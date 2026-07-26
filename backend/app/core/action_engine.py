@@ -68,7 +68,7 @@ AVAILABLE_ACTIONS = {
     "OUTLINE_FONTS": {
         "title": "Khóa Font (Outline Text)",
         "description": "Convert toàn bộ chữ thành Vector (Curves) để chống lỗi font 100% khi in.",
-        "engine": "ghostscript",
+        "engine": "pikepdf+ghostscript",
     },
     # Hai action dưới chạy pikepdf khi làm được và chỉ rơi về Ghostscript khi
     # cần; `engine` ở đây là engine DỰ KIẾN, còn engine thật của mỗi lần chạy
@@ -695,8 +695,39 @@ class ActionEngine:
         Params:
           - ``skip_embed=True``   bỏ bước embed (khi caller đã tự embed).
           - ``skip_flatten=True`` bỏ bước flatten (khi caller đã tự flatten).
+          - ``force_gs=True``     bỏ qua đường object-level.
         """
         import os
+
+        # Đường object-level: dựng lại chữ thành path bằng fontTools, chỉ đụng
+        # content stream. Kết quả LUÔN được verify bằng cách so kẽm với bản gốc
+        # — một ma trận chữ sai cho ra file trông vẫn "có chữ" và lỗi chỉ lộ khi
+        # bản in đã chạy, nên không verify thì không được dùng.
+        if not params.get("force_gs"):
+            try:
+                from app.core import outline_text
+
+                native = await asyncio.to_thread(
+                    outline_text.outline_fonts, input_path, output_path
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("OUTLINE_FONTS object-level lỗi, fallback GS: %s", e)
+                native = None
+
+            if native is not None and native.get("supported"):
+                self._last_engine = "pikepdf"
+                self._last_report = {
+                    "glyphs_outlined": native.get("glyphs", 0),
+                    "warnings": list(native.get("warnings", [])),
+                }
+                return True
+            if native is not None:
+                logger.info(
+                    "OUTLINE_FONTS: object-level không dùng được (%s) → Ghostscript",
+                    "; ".join(native.get("warnings", [])),
+                )
+
+        self._last_engine = "gs"
         import tempfile
 
         from app.core.outline_fonts import (

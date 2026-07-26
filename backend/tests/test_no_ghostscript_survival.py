@@ -126,6 +126,7 @@ def test_preflight_full_run_without_gs(no_ghostscript, sample_pdf):
         "SET_BLACK_OVERPRINT",
         "FIX_METADATA",
         "FIX_HAIRLINES",
+        "FLATTEN_TRANSPARENCY",
     ],
 )
 def test_action_without_gs(no_ghostscript, sample_pdf, action):
