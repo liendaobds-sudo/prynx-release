@@ -273,12 +273,22 @@ Config:
 | `preflight_rules/ink.py` | TAC → PPE |
 | Tests | `test_icc_and_color_preview.py`, preflight golden TAC |
 
-**Gate Phase 1 (ra “PPE preview”):**
+**Gate Phase 1 (ra “PPE preview”): ĐẠT 2026-07-27.**
 
-- [ ] ≥ 80% golden sep/TAC/softproof pass ngưỡng  
-- [ ] Không GS: Separations + Soft-proof + TAC preflight **chạy được** trên 20 PDF khách tem  
-- [ ] UI badge đúng engine  
-- [ ] Fallback GS vẫn bật mặc định nếu PPE fail  
+- [x] ≥ 80% golden sep/TAC/softproof pass ngưỡng — raw golden **31/31 @100 DPI**
+  (DPI của TAC sản xuất), **28/31 @72**, **28/30 @150**; fixture một-biến
+  **50/51 + 1 khác-GS-có-chủ-ý** ở cả 72 lẫn 100 (§16.9)
+- [x] Không GS: Separations + Soft-proof + TAC preflight chạy được trên 20 PDF
+  khách tem — facade corpus **129/129 trang trusted** trên 33 PDF thật, kể cả
+  2 file hỏng trailer phục hồi qua tệp tạm (§16.8)
+- [x] UI badge đúng engine — badge tên engine + độ tin cậy, từ v1.8
+- [x] Fallback GS vẫn bật mặc định nếu PPE fail — routing `auto|ppe|gs`, mọi
+  đường fail-loud đều rơi về GS
+
+Ba residual @72 còn lại KHÔNG chặn gate: `50 hộp` +10,2 (báo **thừa** mực —
+chiều an toàn), `Steam Iron` mean 3,56 (khác biệt có chủ ý với GS theo ISO
+32000 §11.6.4, xem §16.8), `túi nước mắm` mean 3,15 (hairline vector, báo thừa).
+Sản xuất chạy TAC ở 100 DPI — nơi đã 31/31.
 
 **Chưa gỡ** bundle GS khỏi installer.
 
@@ -304,8 +314,11 @@ Config:
 
 **Gate Phase 2:**
 
-- [ ] 4/6 action GS có path non-GS trên PDF đơn giản — **2/6 xong**
-  (`DOWNSCALE_IMAGES`, `EMBED_FONTS`; xem §17)
+- [x] 4/6 action GS có path non-GS trên PDF đơn giản — **4/6 ĐẠT 2026-07-27**:
+  `DOWNSCALE_IMAGES`, `EMBED_FONTS`, `CONVERT_TO_CMYK` (§17) và
+  `SET_BLACK_OVERPRINT` (đã rời GS từ lúc chuyển sang `overprint_black`, nhưng
+  registry còn dán nhãn `ghostscript` tới 2026-07-27 nên gate bị đếm thiếu).
+  Còn `FLATTEN_TRANSPARENCY` và `OUTLINE_FONTS` dùng GS.
 - [x] Action log ghi `engine=ppe|pikepdf|gs` — `ActionLogEntry.engine` mang
   engine **thực tế đã chạy**, khác `AVAILABLE_ACTIONS[id]["engine"]` (dự kiến)
 - [x] Test regression action_engine — `backend/tests/test_action_engine_native.py`
@@ -1402,7 +1415,34 @@ một font không có trong file thì phải mượn font hệ thống rồi d�
 `/Widths`/`/Encoding`; sai bảng width là **chạy chữ** — tràn khung, lệch ngắt
 dòng — và lỗi đó chỉ lộ lúc in. Việc đó giao cho Ghostscript.
 
-### 17.3 Bẫy API đã đóng
+### 17.3 `CONVERT_TO_CMYK` — object-level, spot sống
+
+Lợi ích quyết định so với Ghostscript ở action này **không phải tốc độ** mà là
+**giữ được spot**: `pdfwrite` với `ColorConversionStrategy=CMYK` hay nuốt
+`Separation`/`DeviceN` thành process, tức mất kênh bế (CutContour/Dieline) và
+màu pha Pantone — đúng thứ mà cảnh báo trên UI đang phải dặn người dùng tự
+kiểm. Đường object-level không đụng tới spot, nên cảnh báo đó cũng hết cần.
+
+Chuyển: toán tử `rg`→`k`, `RG`→`K`; `cs`/`CS` trỏ DeviceRGB **hoặc ICCBased
+N=3** → `/DeviceCMYK` kèm `sc`/`scn` 3→4 toán hạng (theo dõi fill và stroke
+riêng — dùng chung một biến sẽ đổi nhầm màu nét thành màu tô); ảnh RGB qua
+lcms; **bảng màu ảnh Indexed** (chỉ đổi bảng, chỉ số pixel nguyên vẹn — rẻ và
+an toàn hơn cả ảnh thường); `/Group /CS` của trang lẫn form. Duyệt cả
+appearance stream của annotation vì chúng cũng lên bản in.
+
+Giữ nguyên có chủ ý: `g`/`G` (xám in bằng K thuần; đẩy thành 4 kênh chỉ tăng
+TAC và bẩn bản), CMYK sẵn có, và spot.
+
+Từ chối (trả `supported=False` → fallback GS): shading colorspace RGB. Với
+`FunctionType 2` chỉ cần đổi `/C0`,`/C1`, nhưng nội suy tuyến tính **trong
+CMYK** không cho cùng dải màu với nội suy trong RGB rồi mới quy đổi — khúc
+giữa gradient lệch thấy được.
+
+Đo trên corpus thật (33 PDF): 20 file vốn không có RGB; trong 13 file còn lại
+**12 xử lý được object-level, 1 fallback** (shading RGB), **0 lỗi**, và không
+file nào còn sót RGB sau khi chuyển.
+
+### 17.4 Bẫy API đã đóng
 
 `hasattr(obj, "resolve")` — thành ngữ đang dùng ở vài chỗ trong repo — **luôn
 đúng** với mọi `pikepdf.Object`, nhưng gọi `.resolve()` trên object trực tiếp
@@ -1410,7 +1450,13 @@ dòng — và lỗi đó chỉ lộ lúc in. Việc đó giao cho Ghostscript.
 `/DeviceRGB` thường bị đọc thành "không rõ colorspace" và không hạ được gì.
 Phải kiểm `is_indirect` (helper `_deref`).
 
-Số chốt: backend **1320 pass** (1305 + 15 test mới), gồm cả smoke corpus thật.
+`pikepdf.Stream(pikepdf.Pdf.new(), data)` dựng tại chỗ: tài liệu tạm bị thu hồi
+ngay khi hết biểu thức, `Stream` trỏ vào nó thành vô hiệu và
+`parse_content_stream` ném "không phải Dictionary hoặc Stream". Trong
+`try/except` điều đó biểu hiện thành **đường đổi màu im lặng không làm gì** —
+ảnh vẫn chuyển nên nhìn qua tưởng chạy đúng. Phải truyền tài liệu ĐANG MỞ.
+
+Số chốt: backend **1327 pass** (1305 + 22 test mới), gồm cả smoke corpus thật.
 
 ---
 

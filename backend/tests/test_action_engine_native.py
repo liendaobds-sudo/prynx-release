@@ -361,3 +361,206 @@ def test_action_log_records_engine_pikepdf_for_embed_fonts(tmp_path):
     result = asyncio.run(engine.execute(str(p), "EMBED_FONTS"))
     assert result.success
     assert result.log[0].engine == "pikepdf"
+
+
+# ── CONVERT_TO_CMYK ─────────────────────────────────────────────────────────
+
+def _profiles():
+    from app.core import icc_profiles
+
+    return icc_profiles.resolve_cmyk_profile_path(), icc_profiles.resolve_srgb_profile_path()
+
+
+def _color_page(tmp_path, content: bytes, resources=None, name="c.pdf"):
+    pdf = pikepdf.Pdf.new()
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100],
+        Resources=resources if resources is not None else pikepdf.Dictionary(),
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, content)),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    p = tmp_path / name
+    pdf.save(str(p))
+    pdf.close()
+    return p
+
+
+def test_convert_rewrites_rgb_fill_and_stroke_operators(tmp_path):
+    cmyk, srgb = _profiles()
+    src = _color_page(tmp_path, b"1 0 0 rg 0 0 50 50 re f\n0 0 1 RG 2 w 0 0 m 9 9 l S\n")
+    out = tmp_path / "out.pdf"
+
+    res = pdf_actions_native.convert_to_cmyk(str(src), str(out), cmyk, srgb)
+    assert res["supported"] and res["ops"] == 2
+
+    with pikepdf.open(str(out)) as pdf:
+        data = bytes(pdf.pages[0].Contents.read_bytes())
+    assert b" k\n" in data and b" K\n" in data, data
+    assert b" rg" not in data and b" RG" not in data
+    assert not pdf_actions_native.has_rgb_content(str(out))
+
+
+def test_convert_keeps_devicegray_as_k_only(tmp_path):
+    """Xám in bằng K thuần. Đẩy nó thành 4 kênh chỉ tăng TAC và bẩn bản."""
+    cmyk, srgb = _profiles()
+    src = _color_page(tmp_path, b"0.5 g 0 0 50 50 re f\n0 G 1 w 0 0 m 9 9 l S\n")
+    out = tmp_path / "gray_out.pdf"
+
+    res = pdf_actions_native.convert_to_cmyk(str(src), str(out), cmyk, srgb)
+    assert res["supported"]
+    with pikepdf.open(str(out)) as pdf:
+        data = bytes(pdf.pages[0].Contents.read_bytes())
+    assert b"0.5 g" in data and b"0 G" in data, "toán tử gray phải nguyên vẹn"
+
+
+def test_convert_leaves_spot_separation_untouched(tmp_path):
+    """Bất biến quan trọng nhất: kênh bế / Pantone phải sống sót.
+
+    Đây chính là lý do đường object-level tồn tại — Ghostscript pdfwrite hay
+    nuốt Separation thành process, làm mất kênh CutContour.
+    """
+    cmyk, srgb = _profiles()
+    pdf = pikepdf.Pdf.new()
+    tint = pikepdf.Dictionary(
+        FunctionType=2, Domain=[0, 1], C0=[0, 0, 0, 0], C1=[0, 0.91, 0.76, 0], N=1,
+        Range=[0, 1, 0, 1, 0, 1, 0, 1],
+    )
+    sep = pikepdf.Array([
+        pikepdf.Name("/Separation"), pikepdf.Name("/CutContour"),
+        pikepdf.Name("/DeviceCMYK"), pdf.make_indirect(tint),
+    ])
+    resources = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(CS0=pdf.make_indirect(sep)))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100], Resources=resources,
+        Contents=pdf.make_indirect(pikepdf.Stream(
+            pdf, b"/CS0 cs 1 scn 0 0 50 50 re f\n1 0 0 rg 10 10 20 20 re f\n"
+        )),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "spot.pdf"
+    pdf.save(str(src))
+    pdf.close()
+    out = tmp_path / "spot_out.pdf"
+
+    res = pdf_actions_native.convert_to_cmyk(str(src), str(out), cmyk, srgb)
+    assert res["supported"]
+    with pikepdf.open(str(out)) as opened:
+        data = bytes(opened.pages[0].Contents.read_bytes())
+        cs = opened.pages[0].Resources.ColorSpace.CS0
+        assert str(cs[0]) == "/Separation", "colorspace spot bị đổi"
+        assert str(cs[1]) == "/CutContour", "tên kênh bế bị đổi"
+    assert b"/CS0 cs" in data and b"1 scn" in data, "lệnh tô spot bị viết lại"
+    assert b" rg" not in data, "phần RGB vẫn phải được chuyển"
+
+
+def test_convert_indexed_palette_keeps_pixel_indices(tmp_path):
+    """Ảnh Indexed chỉ đổi BẢNG MÀU — chỉ số pixel phải nguyên vẹn từng byte.
+
+    Đây là lý do ca này an toàn hơn hẳn ảnh RGB thường: không giải nén, không
+    nội suy, không mất chi tiết. Bỏ nó sang Ghostscript là phí (đo trên corpus:
+    2/13 file có RGB rơi vào đây).
+    """
+    cmyk, srgb = _profiles()
+    pdf = pikepdf.Pdf.new()
+    palette = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])  # 4 ô RGB
+    indices = bytes([0, 1, 2, 3])
+    cs = pikepdf.Array([
+        pikepdf.Name("/Indexed"), pikepdf.Name("/DeviceRGB"), 3,
+        pdf.make_stream(palette),
+    ])
+    img = pikepdf.Stream(
+        pdf, zlib.compress(indices),
+        Type=pikepdf.Name("/XObject"), Subtype=pikepdf.Name("/Image"),
+        Width=2, Height=2, BitsPerComponent=8, ColorSpace=cs,
+        Filter=pikepdf.Name("/FlateDecode"),
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100],
+        Resources=pikepdf.Dictionary(XObject=pikepdf.Dictionary(Im0=pdf.make_indirect(img))),
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"q 50 0 0 50 0 0 cm /Im0 Do Q\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "idx.pdf"
+    pdf.save(str(src))
+    pdf.close()
+    out = tmp_path / "idx_out.pdf"
+
+    res = pdf_actions_native.convert_to_cmyk(str(src), str(out), cmyk, srgb)
+    assert res["supported"] and res["images"] == 1
+
+    with pikepdf.open(str(out)) as opened:
+        for obj in opened.objects:
+            if isinstance(obj, pikepdf.Stream) and str(obj.get("/Subtype", "")) == "/Image":
+                cs_out = obj.ColorSpace
+                assert str(cs_out[1]) == "/DeviceCMYK", "nền bảng màu phải thành CMYK"
+                assert bytes(obj.read_bytes()) == indices, "chỉ số pixel bị đổi"
+                table = bytes(cs_out[3].read_bytes())
+                assert len(table) == 4 * 4, "bảng phải là 4 ô × 4 kênh"
+                # Ô trắng (255,255,255) phải ra gần như không mực.
+                assert sum(table[12:16]) < 40, table[12:16]
+                break
+        else:
+            pytest.fail("không tìm thấy ảnh Indexed trong output")
+
+
+def test_convert_declines_shading_rgb_instead_of_guessing(tmp_path):
+    """Shading RGB đòi viết lại hàm nội suy — trả về không-hỗ-trợ để fallback GS."""
+    cmyk, srgb = _profiles()
+    pdf = pikepdf.Pdf.new()
+    fn = pikepdf.Dictionary(
+        FunctionType=2, Domain=[0, 1], C0=[1, 0, 0], C1=[0, 0, 1], N=1,
+    )
+    shading = pikepdf.Dictionary(
+        ShadingType=2, ColorSpace=pikepdf.Name("/DeviceRGB"),
+        Coords=[0, 0, 100, 0], Function=pdf.make_indirect(fn),
+    )
+    resources = pikepdf.Dictionary(Shading=pikepdf.Dictionary(Sh0=pdf.make_indirect(shading)))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100], Resources=resources,
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"/Sh0 sh\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "sh.pdf"
+    pdf.save(str(src))
+    pdf.close()
+
+    res = pdf_actions_native.convert_to_cmyk(str(src), str(tmp_path / "sh_out.pdf"), cmyk, srgb)
+    assert res["supported"] is False
+    assert any("shading" in b for b in res["blockers"])
+
+
+def test_convert_handles_scn_under_rgb_colorspace_resource(tmp_path):
+    """`cs` trỏ resource ICCBased RGB rồi `scn` 3 số — cũng phải thành CMYK."""
+    cmyk, srgb = _profiles()
+    pdf = pikepdf.Pdf.new()
+    icc = pikepdf.Stream(pdf, b"\x00" * 8)
+    icc["/N"] = 3
+    cs = pikepdf.Array([pikepdf.Name("/ICCBased"), pdf.make_indirect(icc)])
+    resources = pikepdf.Dictionary(ColorSpace=pikepdf.Dictionary(CS0=pdf.make_indirect(cs)))
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"), MediaBox=[0, 0, 100, 100], Resources=resources,
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"/CS0 cs 1 0 0 scn 0 0 50 50 re f\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "icc.pdf"
+    pdf.save(str(src))
+    pdf.close()
+    out = tmp_path / "icc_out.pdf"
+
+    res = pdf_actions_native.convert_to_cmyk(str(src), str(out), cmyk, srgb)
+    assert res["supported"] and res["ops"] == 1
+    with pikepdf.open(str(out)) as opened:
+        data = bytes(opened.pages[0].Contents.read_bytes())
+    assert b"/DeviceCMYK cs" in data, data
+    # 4 toán hạng cho scn sau khi đổi sang CMYK.
+    scn_line = [ln for ln in data.split(b"\n") if ln.endswith(b" scn")][0]
+    assert len(scn_line.split()) == 5, scn_line
+
+
+def test_action_log_records_engine_pikepdf_for_convert_cmyk(tmp_path):
+    src = _color_page(tmp_path, b"1 0 0 rg 0 0 50 50 re f\n", name="engine_cv.pdf")
+    engine = ActionEngine()
+    result = asyncio.run(engine.execute(str(src), "CONVERT_TO_CMYK"))
+    assert result.success
+    assert result.log[0].engine == "pikepdf"
+    assert result.log[0].report["color_ops_converted"] == 1

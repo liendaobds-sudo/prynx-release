@@ -58,7 +58,7 @@ AVAILABLE_ACTIONS = {
     "CONVERT_TO_CMYK": {
         "title": "Chuyển đổi sang CMYK",
         "description": "Chuyển toàn bộ Object RGB sang hệ màu CMYK với ICC Profile chuẩn in offset.",
-        "engine": "ghostscript",
+        "engine": "pikepdf+ghostscript",
     },
     "FLATTEN_TRANSPARENCY": {
         "title": "Flatten Transparency",
@@ -93,10 +93,14 @@ AVAILABLE_ACTIONS = {
         "description": "Tăng độ dày các nét < 0.25pt để không bị mất khi in offset.",
         "engine": "pikepdf",
     },
+    # Đã rời Ghostscript từ lúc chuyển sang `app.core.overprint_black`: pdfwrite
+    # chỉ ghi `/OPM` chứ không ghi cờ `/OP`/`/op` nên object đen vẫn knockout —
+    # đường pikepdf chèn ExtGState vào đúng object mới thật sự bật overprint.
+    # Nhãn cũ còn sót lại làm gate Phase 2 đếm thiếu một action.
     "SET_BLACK_OVERPRINT": {
         "title": "Overprint Text Đen",
         "description": "Đặt overprint cho text và nét đen (K>95%), tránh lỗi knockout khi in offset.",
-        "engine": "ghostscript",
+        "engine": "pikepdf",
     },
     "REMOVE_CHANNELS": {
         "title": "Gỡ kênh màu (Channel Remover)",
@@ -371,6 +375,55 @@ class ActionEngine:
             raise FileNotFoundError(f"ICC Profile không tìm thấy: {icc_path}")
 
         warnings: list[str] = []
+
+        # ── Đường object-level (pikepdf + lcms) ──
+        # Ưu điểm quyết định so với GS ở đây KHÔNG phải tốc độ mà là **spot sống**:
+        # pdfwrite thường nuốt Separation/DeviceN thành process, tức mất kênh bế và
+        # màu pha — chính thứ cảnh báo bên dưới đang phải dặn người dùng tự kiểm.
+        # Đường này không đụng tới spot nên cảnh báo đó cũng không còn cần thiết.
+        if not params.get("force_gs"):
+            try:
+                from app.core import icc_profiles, pdf_actions_native
+
+                srgb = icc_profiles.resolve_srgb_profile_path()
+                native = None
+                if srgb:
+                    native = await asyncio.to_thread(
+                        pdf_actions_native.convert_to_cmyk,
+                        input_path,
+                        output_path,
+                        icc_path,
+                        srgb,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("CONVERT_TO_CMYK object-level lỗi, fallback GS: %s", e)
+                native = None
+
+            if native is not None and native.get("supported"):
+                self._last_engine = "pikepdf"
+                report_warnings = list(native.get("warnings", []))
+                report_warnings.append(
+                    "Chuyển ở mức object: màu Spot/Separation được GIỮ NGUYÊN "
+                    "(kênh bế, Pantone không bị nuốt thành process)."
+                )
+                self._last_report = {
+                    "color_ops_converted": native.get("ops", 0),
+                    "images_converted": native.get("images", 0),
+                    "warnings": report_warnings,
+                }
+                return True
+            if native is not None:
+                logger.info(
+                    "CONVERT_TO_CMYK: object-level không xử lý được (%s) → Ghostscript",
+                    "; ".join(native.get("blockers", [])),
+                )
+                warnings.append(
+                    "Dùng Ghostscript vì "
+                    + "; ".join(native.get("blockers", []))
+                    + " — đường này CÓ THỂ chuyển Spot thành process."
+                )
+
+        self._last_engine = "gs"
 
         # ── Cảnh báo spot/dieline trước khi chuyển ──
         try:
@@ -967,6 +1020,7 @@ class ActionEngine:
             return apply_black_overprint(pdf_path, output_path, params or {})
 
         count = await asyncio.to_thread(_work)
+        self._last_engine = "pikepdf"
         logger.info(f"SET_BLACK_OVERPRINT: bật overprint cho {count} thao tác vẽ object đen")
         return True
 
